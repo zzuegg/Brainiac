@@ -1,0 +1,304 @@
+package io.github.zzuegg.brainiac.train;
+
+import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.data.Batch;
+import io.github.zzuegg.brainiac.data.Dataset;
+import io.github.zzuegg.brainiac.nn.Loss;
+import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Tensor;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * Trains a {@link Model} on a {@link Dataset}.
+ *
+ * <pre>{@code
+ * TrainingResult result = Trainer.of(model)
+ *         .loss(Loss.MSE)
+ *         .optimizer(Optimizer.adam(0.01f))
+ *         .batchSize(4)
+ *         .epochs(2_000)
+ *         .listener(Progress.every(100))
+ *         .seed(42)
+ *         .fit(data);
+ * }</pre>
+ *
+ * <p>Defaults: MSE loss, Adam with learning rate 0.001, batch size 32, 100 epochs,
+ * shuffling every epoch, no validation, no early stopping. Configuration methods return
+ * this trainer; {@link #fit} may be called again to continue training.
+ */
+public final class Trainer {
+
+    private final Model model;
+    private Loss loss = Loss.MSE;
+    private Optimizer optimizer;
+    private int batchSize = 32;
+    private int epochs = 100;
+    private boolean shuffle = true;
+    private long seed = 0;
+    private Dataset validation;
+    private int patience = -1;
+    private final List<Metric> metrics = new ArrayList<>();
+    private final List<TrainingListener> listeners = new ArrayList<>();
+    private int epochsDone;
+
+    private Trainer(Model model) {
+        this.model = Objects.requireNonNull(model, "model");
+    }
+
+    /**
+     * Starts configuring training for a model.
+     *
+     * @param model the model to train; its parameters are updated in place
+     * @return a trainer with default settings
+     */
+    public static Trainer of(Model model) {
+        return new Trainer(model);
+    }
+
+    /**
+     * Sets the loss to minimize.
+     *
+     * @param loss the loss
+     * @return this trainer
+     */
+    public Trainer loss(Loss loss) {
+        this.loss = Objects.requireNonNull(loss, "loss");
+        return this;
+    }
+
+    /**
+     * Sets how parameters are updated.
+     *
+     * @param optimizer the optimizer
+     * @return this trainer
+     */
+    public Trainer optimizer(Optimizer optimizer) {
+        this.optimizer = Objects.requireNonNull(optimizer, "optimizer");
+        return this;
+    }
+
+    /**
+     * Sets how many samples are used per update.
+     *
+     * @param batchSize at least 1
+     * @return this trainer
+     */
+    public Trainer batchSize(int batchSize) {
+        if (batchSize < 1) {
+            throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+        }
+        this.batchSize = batchSize;
+        return this;
+    }
+
+    /**
+     * Sets how many passes over the data {@link #fit} makes at most.
+     *
+     * @param epochs at least 1
+     * @return this trainer
+     */
+    public Trainer epochs(int epochs) {
+        if (epochs < 1) {
+            throw new IllegalArgumentException("epochs must be at least 1, got " + epochs);
+        }
+        this.epochs = epochs;
+        return this;
+    }
+
+    /**
+     * Sets whether samples are reshuffled every epoch. On by default.
+     *
+     * @param shuffle whether to shuffle
+     * @return this trainer
+     */
+    public Trainer shuffle(boolean shuffle) {
+        this.shuffle = shuffle;
+        return this;
+    }
+
+    /**
+     * Sets the seed for shuffling, so runs are reproducible.
+     *
+     * @param seed the seed
+     * @return this trainer
+     */
+    public Trainer seed(long seed) {
+        this.seed = seed;
+        return this;
+    }
+
+    /**
+     * Adds metrics to compute each epoch.
+     *
+     * @param metrics the metrics
+     * @return this trainer
+     */
+    public Trainer metric(Metric... metrics) {
+        this.metrics.addAll(List.of(metrics));
+        return this;
+    }
+
+    /**
+     * Sets data to evaluate after every epoch without training on it.
+     *
+     * @param validation the validation data
+     * @return this trainer
+     */
+    public Trainer validation(Dataset validation) {
+        this.validation = Objects.requireNonNull(validation, "validation");
+        return this;
+    }
+
+    /**
+     * Stops when the loss (on validation data if given, else on training data) has not
+     * improved for {@code patience} epochs, and restores the best weights.
+     *
+     * @param patience epochs to wait for an improvement
+     * @return this trainer
+     */
+    public Trainer earlyStopping(int patience) {
+        if (patience < 1) {
+            throw new IllegalArgumentException("patience must be at least 1, got " + patience);
+        }
+        this.patience = patience;
+        return this;
+    }
+
+    /**
+     * Adds a listener called after every epoch.
+     *
+     * @param listener the listener
+     * @return this trainer
+     */
+    public Trainer listener(TrainingListener listener) {
+        this.listeners.add(Objects.requireNonNull(listener, "listener"));
+        return this;
+    }
+
+    /**
+     * Moves the model to a device; batches follow it automatically.
+     *
+     * @param device the device to train on
+     * @return this trainer
+     */
+    public Trainer device(Device device) {
+        model.to(device);
+        return this;
+    }
+
+    /**
+     * Trains the model.
+     *
+     * @param data the training data
+     * @return the history and outcome
+     */
+    public TrainingResult fit(Dataset data) {
+        checkSizes(data);
+        if (validation != null) {
+            checkSizes(validation);
+        }
+        if (optimizer == null) {
+            optimizer = Optimizer.adam(0.001f);
+        }
+        Device device = model.device();
+        List<Var> params = model.parameters();
+        List<EpochResult> history = new ArrayList<>();
+        List<Batch> fixedBatches = shuffle ? null : data.batches(batchSize, device);
+
+        float bestScore = Float.POSITIVE_INFINITY;
+        int bestEpoch = 0;
+        List<Tensor> bestWeights = null;
+        boolean stoppedEarly = false;
+
+        for (int e = 1; e <= epochs; e++) {
+            int epoch = ++epochsDone;
+            List<Batch> batches = shuffle ? data.shuffle(seed + epoch).batches(batchSize, device) : fixedBatches;
+            double lossSum = 0;
+            Map<String, Double> metricSums = new LinkedHashMap<>();
+            for (Batch batch : batches) {
+                Var out = model.forward(Var.of(batch.features()));
+                Var l = loss.compute(out, batch.targets());
+                l.backward();
+                optimizer.step(params);
+                lossSum += l.value().item() * batch.size();
+                for (Metric m : metrics) {
+                    metricSums.merge(m.name(), (double) m.compute(out.value(), batch.targets()) * batch.size(), Double::sum);
+                }
+            }
+            Map<String, Float> trainMetrics = new LinkedHashMap<>();
+            metricSums.forEach((k, v) -> trainMetrics.put(k, (float) (v / data.size())));
+
+            float valLoss = Float.NaN;
+            Map<String, Float> valMetrics = Map.of();
+            if (validation != null) {
+                Evaluation ev = evaluate(validation);
+                valLoss = ev.loss();
+                valMetrics = ev.metrics();
+            }
+            EpochResult result = new EpochResult(epoch, (float) (lossSum / data.size()),
+                    Collections.unmodifiableMap(trainMetrics), valLoss, valMetrics);
+            history.add(result);
+            for (TrainingListener listener : listeners) {
+                listener.onEpoch(result);
+            }
+
+            float score = validation != null ? valLoss : result.loss();
+            if (score < bestScore) {
+                bestScore = score;
+                bestEpoch = history.size();
+                if (patience > 0) {
+                    bestWeights = params.stream().map(Var::value).toList();
+                }
+            } else if (patience > 0 && history.size() - bestEpoch >= patience) {
+                stoppedEarly = true;
+                break;
+            }
+        }
+        if (bestWeights != null && bestEpoch != history.size()) {
+            for (int i = 0; i < params.size(); i++) {
+                params.get(i).assign(bestWeights.get(i));
+            }
+        } else {
+            bestEpoch = history.size();
+        }
+        return new TrainingResult(List.copyOf(history), bestEpoch, stoppedEarly);
+    }
+
+    /**
+     * Computes the loss and the configured metrics on a dataset without training.
+     *
+     * @param data the data
+     * @return the evaluation
+     */
+    public Evaluation evaluate(Dataset data) {
+        checkSizes(data);
+        Device device = model.device();
+        double lossSum = 0;
+        Map<String, Double> sums = new LinkedHashMap<>();
+        for (Batch batch : data.batches(Math.max(batchSize, 256), device)) {
+            Var out = model.forward(Var.of(batch.features()));
+            lossSum += loss.compute(out, batch.targets()).value().item() * batch.size();
+            for (Metric m : metrics) {
+                sums.merge(m.name(), (double) m.compute(out.value(), batch.targets()) * batch.size(), Double::sum);
+            }
+        }
+        Map<String, Float> result = new LinkedHashMap<>();
+        sums.forEach((k, v) -> result.put(k, (float) (v / data.size())));
+        return new Evaluation((float) (lossSum / data.size()), Collections.unmodifiableMap(result));
+    }
+
+    private void checkSizes(Dataset data) {
+        if (data.featureCount() != model.inputSize() || data.targetCount() != model.outputSize()) {
+            throw new IllegalArgumentException("model maps " + model.inputSize() + " inputs to " + model.outputSize()
+                    + " outputs, but the data has " + data.featureCount() + " features and "
+                    + data.targetCount() + " targets");
+        }
+    }
+}

@@ -3,5 +3,6 @@
  */
 module io.github.zzuegg.brainiac.train {
     requires transitive io.github.zzuegg.brainiac.nn;
-    // exports io.github.zzuegg.brainiac.train; (added with the first public type)
+    requires transitive io.github.zzuegg.brainiac.data;
+    exports io.github.zzuegg.brainiac.train;
 }
