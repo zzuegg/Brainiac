@@ -4,4 +4,5 @@ plugins {
 
 dependencies {
     api(project(":brainiac-tensor"))
+    testRuntimeOnly(project(":brainiac-backend-cpu"))
 }
