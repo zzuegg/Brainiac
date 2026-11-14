@@ -79,6 +79,63 @@ public final class Shape {
         return dims.clone();
     }
 
+    /**
+     * Returns the row-major strides: how many values to skip to move one step along each
+     * dimension.
+     *
+     * @return the strides, outermost first
+     */
+    public long[] strides() {
+        long[] strides = new long[dims.length];
+        long step = 1;
+        for (int i = dims.length - 1; i >= 0; i--) {
+            strides[i] = step;
+            step *= dims[i];
+        }
+        return strides;
+    }
+
+    /**
+     * Returns the shape that results from broadcasting two shapes together. Shapes are
+     * aligned at their last dimension; each pair of dimensions must be equal or one of
+     * them must be 1.
+     *
+     * @param a the first shape
+     * @param b the second shape
+     * @return the broadcast shape
+     * @throws IllegalArgumentException if the shapes are not compatible
+     */
+    public static Shape broadcast(Shape a, Shape b) {
+        int rank = Math.max(a.rank(), b.rank());
+        int[] out = new int[rank];
+        for (int i = 0; i < rank; i++) {
+            int da = i < rank - a.rank() ? 1 : a.dims[i - (rank - a.rank())];
+            int db = i < rank - b.rank() ? 1 : b.dims[i - (rank - b.rank())];
+            if (da != db && da != 1 && db != 1) {
+                throw new IllegalArgumentException("shapes " + a + " and " + b + " cannot be broadcast together");
+            }
+            out[i] = Math.max(da, db);
+        }
+        return new Shape(out);
+    }
+
+    /**
+     * Returns the strides to read a tensor of this shape as if it had the larger
+     * {@code target} shape: broadcast dimensions get stride 0.
+     *
+     * @param target a shape this shape broadcasts to
+     * @return strides with one entry per dimension of {@code target}
+     */
+    long[] broadcastStrides(Shape target) {
+        long[] own = strides();
+        long[] out = new long[target.rank()];
+        int offset = target.rank() - rank();
+        for (int i = 0; i < rank(); i++) {
+            out[i + offset] = dims[i] == 1 ? 0 : own[i];
+        }
+        return out;
+    }
+
     @Override
     public boolean equals(Object o) {
         return o instanceof Shape other && Arrays.equals(dims, other.dims);
