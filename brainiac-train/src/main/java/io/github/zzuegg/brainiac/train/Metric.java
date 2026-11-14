@@ -1,0 +1,60 @@
+package io.github.zzuegg.brainiac.train;
+
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
+
+/** A human-friendly score reported during training, such as accuracy. */
+public interface Metric {
+
+    /**
+     * Share of correct predictions. With several outputs the largest output must match the
+     * one-hot target; with one output, values above 0.5 count as 1.
+     */
+    Metric ACCURACY = new Metric() {
+        @Override
+        public String name() {
+            return "accuracy";
+        }
+
+        @Override
+        public float compute(Tensor prediction, Tensor target) {
+            Tensor correct;
+            if (prediction.shape().dim(-1) == 1) {
+                Tensor half = Tensor.full(Shape.of(), 0.5f, prediction.device());
+                correct = prediction.greater(half).equalTo(target.greater(half));
+            } else {
+                correct = prediction.argmax(-1).equalTo(target.argmax(-1));
+            }
+            return correct.mean().item();
+        }
+    };
+
+    /** Mean absolute difference between prediction and target. */
+    Metric MEAN_ABSOLUTE_ERROR = new Metric() {
+        @Override
+        public String name() {
+            return "mae";
+        }
+
+        @Override
+        public float compute(Tensor prediction, Tensor target) {
+            return prediction.sub(target).abs().mean().item();
+        }
+    };
+
+    /**
+     * Returns the name used in results and progress output.
+     *
+     * @return the name
+     */
+    String name();
+
+    /**
+     * Scores a batch of predictions.
+     *
+     * @param prediction model outputs, shape {@code [batch, outputs]}
+     * @param target expected outputs, same shape
+     * @return the score
+     */
+    float compute(Tensor prediction, Tensor target);
+}
