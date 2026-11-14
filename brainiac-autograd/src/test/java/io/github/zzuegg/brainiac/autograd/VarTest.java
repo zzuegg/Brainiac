@@ -99,6 +99,18 @@ class VarTest {
     }
 
     @Test
+    void onlyParametersCanBeAssigned() {
+        Var p = Var.param(Tensor.of(1, 2));
+        Var before = p.mul(2);
+        p.assign(Tensor.of(5, 6));
+        assertArrayEquals(new float[] {5, 6}, p.value().toArray());
+        assertArrayEquals(new float[] {2, 4}, before.value().toArray());
+        assertThrows(IllegalArgumentException.class, () -> p.assign(Tensor.of(1)));
+        assertThrows(IllegalStateException.class, () -> before.assign(Tensor.of(1, 1)));
+        assertThrows(IllegalStateException.class, () -> Var.of(Tensor.of(1)).assign(Tensor.of(2)));
+    }
+
+    @Test
     void gradCheckReportsWrongGradients() {
         // detach() hides the dependency from backward(), but finite differences still see it
         GradCheck.Result r = GradCheck.check(v -> v.get(0).detach().add(v.get(0)).sum(), List.of(Tensor.of(1, 2)));

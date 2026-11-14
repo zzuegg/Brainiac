@@ -43,7 +43,7 @@ public final class Var {
 
     private static final Var[] NO_INPUTS = new Var[0];
 
-    private final Tensor value;
+    private Tensor value;
     private final boolean requiresGrad;
     private final Var[] inputs;
     private final Backward backward;
@@ -112,6 +112,24 @@ public final class Var {
      */
     public Tensor grad() {
         return grad;
+    }
+
+    /**
+     * Replaces the value of a parameter, for example after an optimizer step. Values
+     * computed earlier keep the value they were computed from.
+     *
+     * @param newValue the new value; must have the same shape
+     * @throws IllegalStateException if this is not a parameter created by
+     *     {@link #param(Tensor)}
+     */
+    public void assign(Tensor newValue) {
+        if (!requiresGrad || backward != null) {
+            throw new IllegalStateException("only parameters can be assigned");
+        }
+        if (!newValue.shape().equals(value.shape())) {
+            throw new IllegalArgumentException("new value shape " + newValue.shape() + " does not match " + value.shape());
+        }
+        value = newValue;
     }
 
     /** Clears the accumulated gradient. */
