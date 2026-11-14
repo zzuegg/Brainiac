@@ -42,6 +42,19 @@ class ShapeTest {
     }
 
     @Test
+    void computesRowMajorStrides() {
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new long[] {6, 3, 1}, Shape.of(4, 2, 3).strides());
+    }
+
+    @Test
+    void broadcastsCompatibleShapes() {
+        assertEquals(Shape.of(2, 3), Shape.broadcast(Shape.of(2, 3), Shape.of(3)));
+        assertEquals(Shape.of(2, 3), Shape.broadcast(Shape.of(2, 1), Shape.of(1, 3)));
+        assertEquals(Shape.of(4), Shape.broadcast(Shape.of(), Shape.of(4)));
+        assertThrows(IllegalArgumentException.class, () -> Shape.broadcast(Shape.of(2, 3), Shape.of(2)));
+    }
+
+    @Test
     void rejectsInvalidDimensions() {
         assertThrows(IllegalArgumentException.class, () -> Shape.of(2, 0));
         assertThrows(IndexOutOfBoundsException.class, () -> Shape.of(2).dim(1));
