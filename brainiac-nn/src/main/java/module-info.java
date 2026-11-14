@@ -4,5 +4,5 @@
 module io.github.zzuegg.brainiac.nn {
     requires transitive io.github.zzuegg.brainiac.tensor;
     requires transitive io.github.zzuegg.brainiac.autograd;
-    // exports io.github.zzuegg.brainiac.nn; (added with the first public type)
+    exports io.github.zzuegg.brainiac.nn;
 }
