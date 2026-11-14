@@ -6,8 +6,8 @@ Brainiac aims to cover everything from a tiny fully connected network to a full 
 suite behind a small, easy public API. Every calculation goes through a pluggable
 `Backend`, so the same model can later run on the GPU.
 
-> Status: project skeleton. The first milestone (tensors, autograd, dense layers,
-> training, data loading, XOR and Iris examples) is in progress.
+> Status: milestone 1 complete: tensors, autograd, dense networks, training and data
+> loading, with XOR, spiral and Iris examples.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 
 ```sh
 ./gradlew build                      # compile, test, javadoc
-./gradlew :brainiac-examples:run     # run the example
+./gradlew :brainiac-examples:run --args=iris   # run an example
 ```
 
 ## Modules
@@ -38,21 +38,61 @@ Shared build configuration lives in `build-logic/` as Gradle convention plugins
 (`brainiac.java-library`, `brainiac.java-application`). Each module has a
 `module-info.java`; only public API packages are exported.
 
-## Planned API
+## Example
 
 ```java
-var model = Model.sequential()
-    .input(2)
-    .dense(8, Activation.TANH)
-    .dense(1, Activation.SIGMOID)
-    .build();
+Dataset data = Dataset.of(
+        new float[][] {{0, 0}, {0, 1}, {1, 0}, {1, 1}},
+        new float[][] {{0}, {1}, {1}, {0}});
 
-model.trainer()
-    .device(Device.best())          // GPU when a GPU backend is available, else CPU
-    .loss(Loss.MSE)
-    .optimizer(Optimizer.adam(0.01f))
-    .epochs(2_000)
-    .fit(data);
+Model model = Model.sequential()
+        .input(2)
+        .dense(8, Activation.TANH)
+        .dense(1, Activation.SIGMOID)
+        .seed(42)
+        .build();
 
-float[] out = model.predict(1, 0);
+Trainer.of(model)
+        .loss(Loss.MSE)
+        .optimizer(Optimizer.adam(0.05f))
+        .batchSize(4)
+        .epochs(2_000)
+        .listener(Progress.every(250))
+        .fit(data);
+
+float[] out = model.predict(1, 0);   // ~[0.999]
+```
+
+Loading CSV data, splitting and validating:
+
+```java
+Dataset iris = Dataset.csv(Path.of("iris.csv"))
+        .features("sepal_length", "sepal_width", "petal_length", "petal_width")
+        .label("species").oneHot()
+        .load();
+Dataset.Split split = iris.shuffle(42).split(0.8);
+
+Trainer.of(model)
+        .loss(Loss.CROSS_ENTROPY)
+        .metric(Metric.ACCURACY)
+        .validation(split.test())
+        .earlyStopping(30)
+        .fit(split.train());
+```
+
+Tensors and gradients directly:
+
+```java
+Var w = Var.param(Tensor.uniform(Shape.of(2, 8), -1, 1, new SplittableRandom(1)));
+Var loss = Var.of(x).matmul(w).tanh().sub(y).square().mean();
+loss.backward();
+Tensor dw = w.grad();
+```
+
+Run the examples:
+
+```sh
+./gradlew :brainiac-examples:run --args=xor
+./gradlew :brainiac-examples:run --args=spiral
+./gradlew :brainiac-examples:run --args=iris
 ```
