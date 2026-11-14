@@ -8,5 +8,5 @@ dependencies {
 
 application {
     mainModule = "io.github.zzuegg.brainiac.examples"
-    mainClass = "io.github.zzuegg.brainiac.examples.Hello"
+    mainClass = "io.github.zzuegg.brainiac.examples.Examples"
 }
