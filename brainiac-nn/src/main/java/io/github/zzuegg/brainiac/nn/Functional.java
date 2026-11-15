@@ -583,6 +583,169 @@ public final class Functional {
         return x.reshape(split).permute(perm).reshape(out);
     }
 
+    // ---------------------------------------------------------------- attention
+
+    /** Large enough to zero a softmax weight, small enough to stay finite. */
+    static final float MASKED = -1e9f;
+
+    /**
+     * Scaled dot-product attention: {@code softmax(q k^T * scale + bias) v}, per batch and
+     * head. Key/value heads may be fewer than query heads (grouped-query or multi-query
+     * attention); each serves {@code heads / kvHeads} query heads.
+     *
+     * @param q queries {@code [batch, heads, queries, dk]}
+     * @param k keys {@code [batch, kvHeads, keys, dk]}
+     * @param v values {@code [batch, kvHeads, keys, dv]}
+     * @param bias added to the scores before the softmax, broadcast to
+     *     {@code [batch, heads, queries, keys]}, or {@code null}; use {@link #causalMask},
+     *     {@link #keyMask} and {@link #alibi} or your own
+     * @param scale the score scale, usually {@code 1 / sqrt(dk)}
+     * @param dropout the share of attention weights dropped while training
+     * @param random the random source for dropout, or {@code null} when not dropping
+     * @return {@code [batch, heads, queries, dv]}
+     */
+    public static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
+            java.util.random.RandomGenerator random) {
+        int heads = q.shape().dim(1);
+        int kvHeads = k.shape().dim(1);
+        if (heads % kvHeads != 0 || v.shape().dim(1) != kvHeads) {
+            throw new IllegalArgumentException("query heads " + heads + " must be a multiple of key/value heads "
+                    + kvHeads + " (and keys and values need the same heads)");
+        }
+        if (kvHeads != heads) {
+            k = repeatHeads(k, heads / kvHeads);
+            v = repeatHeads(v, heads / kvHeads);
+        }
+        Var scores = q.matmul(k.transpose()).mul(scale);
+        if (bias != null) {
+            scores = scores.add(bias);
+        }
+        Var weights = Activation.SOFTMAX.forward(scores);
+        if (dropout > 0 && random != null) {
+            Tensor keep = Tensor.uniform(weights.shape(), 0, 1, random).to(weights.value().device())
+                    .greater(Tensor.full(Shape.of(), dropout, weights.value().device()));
+            weights = weights.mul(keep.div(1 - dropout));
+        }
+        return weights.matmul(v);
+    }
+
+    private static Var repeatHeads(Var x, int times) {
+        int[] s = x.shape().toArray();
+        Var e = x.reshape(s[0], s[1], 1, s[2], s[3]).expand(Shape.of(s[0], s[1], times, s[2], s[3]));
+        return e.reshape(s[0], s[1] * times, s[2], s[3]);
+    }
+
+    /**
+     * A causal mask: query {@code i} sees keys up to {@code i + keys - queries}, so the
+     * last query sees every key (which also fits a cache of earlier keys).
+     *
+     * @param queries the number of queries
+     * @param keys the number of keys
+     * @param device where to create it
+     * @return {@code [queries, keys]} with 0 where allowed and a large negative value elsewhere
+     */
+    public static Tensor causalMask(int queries, int keys, Device device) {
+        float[] m = new float[queries * keys];
+        int offset = keys - queries;
+        for (int i = 0; i < queries; i++) {
+            for (int j = i + offset + 1; j < keys; j++) {
+                m[i * keys + j] = MASKED;
+            }
+        }
+        return Tensor.of(Shape.of(queries, keys), m, device);
+    }
+
+    /**
+     * Turns a padding mask into a score bias.
+     *
+     * @param keep {@code [batch, keys]}, 1 for real keys and 0 for padding
+     * @return {@code [batch, 1, 1, keys]}, to add to attention scores
+     */
+    public static Tensor keyMask(Tensor keep) {
+        int n = keep.shape().dim(0);
+        int keys = keep.shape().dim(-1);
+        return keep.reshape(n, 1, 1, keys).sub(1f).mul(-MASKED);
+    }
+
+    /**
+     * ALiBi position biases: each head penalizes distant keys linearly, with slopes
+     * {@code 2^(-8 h / heads)}, instead of position embeddings.
+     *
+     * @param heads the number of heads
+     * @param queries the number of queries
+     * @param keys the number of keys
+     * @param device where to create it
+     * @return {@code [heads, queries, keys]}
+     */
+    public static Tensor alibi(int heads, int queries, int keys, Device device) {
+        float[] m = new float[heads * queries * keys];
+        int offset = keys - queries;
+        for (int h = 0; h < heads; h++) {
+            double slope = Math.pow(2, -8.0 * (h + 1) / heads);
+            for (int i = 0; i < queries; i++) {
+                for (int j = 0; j < keys; j++) {
+                    m[(h * queries + i) * keys + j] = (float) (-slope * Math.abs(i + offset - j));
+                }
+            }
+        }
+        return Tensor.of(Shape.of(heads, queries, keys), m, device);
+    }
+
+    /**
+     * Rotary position embedding (RoPE): rotates pairs of features by an angle that grows
+     * with the position, so dot products depend on relative positions. Uses the
+     * half-split layout: feature {@code i} pairs with {@code i + d/2}.
+     *
+     * @param x {@code [..., steps, d]} with even {@code d}
+     * @param base the frequency base, usually 10000
+     * @param offset the position of the first step
+     * @return the rotated values
+     */
+    public static Var rotary(Var x, float base, int offset) {
+        Shape s = x.shape();
+        int steps = s.dim(-2);
+        int d = s.dim(-1);
+        if (d % 2 != 0) {
+            throw new IllegalArgumentException("rotary embedding needs an even feature size, got " + d);
+        }
+        int half = d / 2;
+        float[] cos = new float[steps * half];
+        float[] sin = new float[steps * half];
+        for (int t = 0; t < steps; t++) {
+            for (int i = 0; i < half; i++) {
+                double angle = (t + offset) * Math.pow(base, -2.0 * i / d);
+                cos[t * half + i] = (float) Math.cos(angle);
+                sin[t * half + i] = (float) Math.sin(angle);
+            }
+        }
+        Device device = x.value().device();
+        Tensor c = Tensor.of(Shape.of(steps, half), cos, device);
+        Tensor sn = Tensor.of(Shape.of(steps, half), sin, device);
+        Var x1 = x.slice(-1, 0, half);
+        Var x2 = x.slice(-1, half, d);
+        return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn)));
+    }
+
+    /**
+     * Fixed sinusoidal position encodings from "Attention Is All You Need".
+     *
+     * @param steps the number of positions
+     * @param features the feature size
+     * @param base the frequency base, usually 10000
+     * @param device where to create them
+     * @return {@code [steps, features]}
+     */
+    public static Tensor sinusoidal(int steps, int features, float base, Device device) {
+        float[] m = new float[steps * features];
+        for (int t = 0; t < steps; t++) {
+            for (int i = 0; i < features; i++) {
+                double angle = t / Math.pow(base, 2.0 * (i / 2) / features);
+                m[t * features + i] = (float) (i % 2 == 0 ? Math.sin(angle) : Math.cos(angle));
+            }
+        }
+        return Tensor.of(Shape.of(steps, features), m, device);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /** Multiplies one axis by a matrix {@code [in, out]}. */

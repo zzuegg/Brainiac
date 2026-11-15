@@ -55,4 +55,20 @@ class AcceptanceTest {
                 .metric(Metric.ACCURACY).evaluate(test).get(Metric.ACCURACY);
         assertTrue(accuracy >= 0.95f, "test accuracy " + accuracy);
     }
+
+    @Test
+    void recurrentNetworkForecastsAWave() {
+        Model model = SequenceExample.forecaster();
+        float mse = SequenceExample.trainForecaster(model, SequenceExample.waves(800, 1), 10, false)
+                .evaluate(SequenceExample.waves(300, 2)).loss();
+        assertTrue(mse < 0.01f, "test MSE " + mse);
+    }
+
+    @Test
+    void transformerLearnsToReverseSequences() {
+        Model model = SequenceExample.reverser();
+        float accuracy = SequenceExample.trainReverser(model, SequenceExample.reversal(2000, 3), 6, false)
+                .evaluate(SequenceExample.reversal(500, 4)).get(Metric.ACCURACY);
+        assertTrue(accuracy >= 0.95f, "test accuracy " + accuracy);
+    }
 }

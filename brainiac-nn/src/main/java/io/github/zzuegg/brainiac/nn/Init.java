@@ -26,6 +26,51 @@ public interface Init {
     Init LECUN = (shape, fanIn, fanOut, random) ->
             Tensor.normal(shape, 0, (float) Math.sqrt(1.0 / fanIn), random);
 
+    /**
+     * A random orthogonal matrix (rows or columns orthonormal, whichever fits), the usual
+     * choice for recurrent weights because it keeps gradients from exploding or vanishing.
+     * Tensors with more than two dimensions are treated as {@code [dim0, rest]}.
+     */
+    Init ORTHOGONAL = (shape, fanIn, fanOut, random) -> {
+        int rows = shape.dim(0);
+        int cols = Math.toIntExact(shape.size() / rows);
+        boolean transpose = rows < cols;
+        int r = transpose ? cols : rows;
+        int c = transpose ? rows : cols;
+        double[][] q = new double[c][r];   // c orthonormal vectors of length r
+        for (int j = 0; j < c; j++) {
+            for (int i = 0; i < r; i++) {
+                q[j][i] = random.nextGaussian();
+            }
+            for (int pass = 0; pass < 2; pass++) {
+                for (int k = 0; k < j; k++) {
+                    double dot = 0;
+                    for (int i = 0; i < r; i++) {
+                        dot += q[j][i] * q[k][i];
+                    }
+                    for (int i = 0; i < r; i++) {
+                        q[j][i] -= dot * q[k][i];
+                    }
+                }
+            }
+            double norm = 0;
+            for (int i = 0; i < r; i++) {
+                norm += q[j][i] * q[j][i];
+            }
+            norm = Math.sqrt(norm);
+            for (int i = 0; i < r; i++) {
+                q[j][i] /= norm;
+            }
+        }
+        float[] v = new float[rows * cols];
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                v[i * cols + j] = (float) (transpose ? q[i][j] : q[j][i]);
+            }
+        }
+        return Tensor.of(shape, v);
+    };
+
     /** All zeros. */
     Init ZEROS = (shape, fanIn, fanOut, random) -> Tensor.zeros(shape);
 

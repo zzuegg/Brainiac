@@ -72,6 +72,25 @@ public final class Tensor {
     }
 
     /**
+     * Creates a tensor of a given type from values in row-major order, rounding each value
+     * to the type's precision.
+     *
+     * @param shape the shape
+     * @param values the values; their count must equal {@code shape.size()}
+     * @param dtype the number format
+     * @param device where the tensor lives
+     * @return the tensor
+     */
+    public static Tensor of(Shape shape, double[] values, DType dtype, Device device) {
+        Objects.requireNonNull(shape, "shape");
+        if (values.length != shape.size()) {
+            throw new IllegalArgumentException(
+                    "shape " + shape + " needs " + shape.size() + " values, got " + values.length);
+        }
+        return new Tensor(shape, device, device.backend().upload(values, dtype));
+    }
+
+    /**
      * Creates a one-dimensional tensor on the default device.
      *
      * @param values the values
@@ -131,7 +150,19 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor zeros(Shape shape, Device device) {
-        return new Tensor(shape, device, device.backend().allocate(shape.size()));
+        return zeros(shape, DType.FLOAT32, device);
+    }
+
+    /**
+     * Creates a tensor of zeros of a given type.
+     *
+     * @param shape the shape
+     * @param dtype the number format
+     * @param device where the tensor lives
+     * @return the tensor
+     */
+    public static Tensor zeros(Shape shape, DType dtype, Device device) {
+        return new Tensor(shape, device, device.backend().allocate(shape.size(), dtype));
     }
 
     /**
@@ -164,8 +195,21 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor full(Shape shape, float value, Device device) {
+        return full(shape, value, DType.FLOAT32, device);
+    }
+
+    /**
+     * Creates a tensor of a given type filled with one value.
+     *
+     * @param shape the shape
+     * @param value the value of every element
+     * @param dtype the number format
+     * @param device where the tensor lives
+     * @return the tensor
+     */
+    public static Tensor full(Shape shape, float value, DType dtype, Device device) {
         Backend backend = device.backend();
-        Storage s = backend.allocate(shape.size());
+        Storage s = backend.allocate(shape.size(), dtype);
         if (value != 0f) {
             backend.fill(s, value);
         }
@@ -280,7 +324,43 @@ public final class Tensor {
         if (target.equals(device)) {
             return this;
         }
-        return new Tensor(shape, target, target.backend().upload(toArray()));
+        if (dtype() == DType.FLOAT32) {
+            return new Tensor(shape, target, target.backend().upload(toArray()));
+        }
+        return new Tensor(shape, target, target.backend().upload(toDoubleArray(), dtype()));
+    }
+
+    /**
+     * Returns the number format of this tensor's values.
+     *
+     * @return the type
+     */
+    public DType dtype() {
+        return storage.dtype();
+    }
+
+    /**
+     * Returns this tensor converted to another number format, rounding where needed.
+     *
+     * @param type the new type
+     * @return a tensor of {@code type}; {@code this} if it already is
+     */
+    public Tensor to(DType type) {
+        if (type == dtype()) {
+            return this;
+        }
+        Storage out = backend().allocate(size(), type);
+        backend().convert(storage, out);
+        return new Tensor(shape, device, out);
+    }
+
+    /**
+     * Copies all values to a new Java array of doubles, without rounding them to float.
+     *
+     * @return the values
+     */
+    public double[] toDoubleArray() {
+        return backend().downloadDouble(storage);
     }
 
     /**
@@ -442,7 +522,7 @@ public final class Tensor {
         dims[a] = end - start;
         Shape outShape = Shape.of(dims);
         long[] strides = shape.strides();
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().copy(storage, start * strides[a], strides, dims, out, 0, outShape.strides());
         return new Tensor(outShape, device, out);
     }
@@ -476,11 +556,16 @@ public final class Tensor {
             total += d[a];
         }
         dims[a] = total;
+        DType type = first.dtype();
+        for (Tensor t : parts) {
+            type = DType.promote(type, t.dtype());
+        }
         Shape outShape = Shape.of(dims);
         long[] outStrides = outShape.strides();
-        Storage out = first.backend().allocate(outShape.size());
+        Storage out = first.backend().allocate(outShape.size(), type);
         long offset = 0;
-        for (Tensor t : parts) {
+        for (Tensor part : parts) {
+            Tensor t = part.to(type);
             first.backend().copy(t.storage, 0, t.shape.strides(), t.shape.toArray(), out, offset, outStrides);
             offset += t.shape.dim(a) * outStrides[a];
         }
@@ -488,7 +573,7 @@ public final class Tensor {
     }
 
     private Tensor strided(long[] strides, Shape outShape) {
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().copy(storage, strides, outShape.toArray(), out);
         return new Tensor(outShape, device, out);
     }
@@ -736,7 +821,7 @@ public final class Tensor {
      * @return {@code f(this)}
      */
     public Tensor activation(ActivationOp op, float param) {
-        Storage out = backend().allocate(size());
+        Storage out = backend().allocate(size(), dtype());
         backend().activation(op, param, storage, out);
         return new Tensor(shape, device, out);
     }
@@ -754,13 +839,14 @@ public final class Tensor {
         if (!grad.shape.equals(shape)) {
             throw new IllegalArgumentException("gradient shape " + grad.shape + " does not match " + shape);
         }
-        Storage out = backend().allocate(size());
+        grad = grad.to(dtype());
+        Storage out = backend().allocate(size(), dtype());
         backend().activationBackward(op, param, storage, grad.storage, out);
         return new Tensor(shape, device, out);
     }
 
     private Tensor unary(UnaryOp op) {
-        Storage out = backend().allocate(size());
+        Storage out = backend().allocate(size(), dtype());
         backend().unary(op, storage, out);
         return new Tensor(shape, device, out);
     }
@@ -768,14 +854,31 @@ public final class Tensor {
     private Tensor binary(BinaryOp op, Tensor other) {
         sameDevice(other);
         Shape outShape = Shape.broadcast(shape, other.shape);
-        Storage out = backend().allocate(outShape.size());
-        backend().binary(op, storage, shape.broadcastStrides(outShape),
-                other.storage, other.shape.broadcastStrides(outShape), outShape.toArray(), out);
+        DType type = resultType(this, other);
+        Tensor a = to(type);
+        Tensor b = other.to(type);
+        Storage out = backend().allocate(outShape.size(), type);
+        backend().binary(op, a.storage, shape.broadcastStrides(outShape),
+                b.storage, other.shape.broadcastStrides(outShape), outShape.toArray(), out);
         return new Tensor(outShape, device, out);
     }
 
     private Tensor constant(float value) {
-        return full(Shape.of(), value, device);
+        return full(Shape.of(), value, dtype(), device);
+    }
+
+    /** Promotes, except that a single value takes the other side's type. */
+    private static DType resultType(Tensor a, Tensor b) {
+        if (a.dtype() == b.dtype()) {
+            return a.dtype();
+        }
+        if (b.size() == 1 && a.size() > 1) {
+            return a.dtype();
+        }
+        if (a.size() == 1 && b.size() > 1) {
+            return b.dtype();
+        }
+        return DType.promote(a.dtype(), b.dtype());
     }
 
     // ---------------------------------------------------------------- linear algebra
@@ -793,6 +896,10 @@ public final class Tensor {
      */
     public Tensor matmul(Tensor other) {
         sameDevice(other);
+        if (other.dtype() != dtype()) {
+            DType type = DType.promote(dtype(), other.dtype());
+            return to(type).matmul(other.to(type));
+        }
         if (rank() < 2 || other.rank() < 2) {
             throw new IllegalArgumentException(
                     "matmul needs at least two dimensions on both sides, got shapes " + shape + " and " + other.shape);
@@ -806,7 +913,7 @@ public final class Tensor {
         }
         if (rank() == 2 && other.rank() == 2) {
             Shape outShape = Shape.of(m, n);
-            Storage out = backend().allocate(outShape.size());
+            Storage out = backend().allocate(outShape.size(), dtype());
             backend().matmul(storage, other.storage, m, k, n, out);
             return new Tensor(outShape, device, out);
         }
@@ -827,7 +934,7 @@ public final class Tensor {
         outDims[batch.rank()] = m;
         outDims[batch.rank() + 1] = n;
         Shape outShape = Shape.of(outDims);
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().matmulBatched(a.storage, b.storage, count, m, k, n, out);
         return new Tensor(outShape, device, out);
     }
@@ -857,7 +964,7 @@ public final class Tensor {
             throw new IllegalArgumentException("im2col expects images " + geometry.imageShape() + ", got " + shape);
         }
         Shape outShape = geometry.columnShape();
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().im2col(storage, geometry, padValue, out);
         return new Tensor(outShape, device, out);
     }
@@ -874,7 +981,7 @@ public final class Tensor {
             throw new IllegalArgumentException("col2im expects columns " + geometry.columnShape() + ", got " + shape);
         }
         Shape outShape = geometry.imageShape();
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().col2im(storage, geometry, out);
         return new Tensor(outShape, device, out);
     }
@@ -908,7 +1015,7 @@ public final class Tensor {
         System.arraycopy(idx, 0, outDims, a, idx.length);
         System.arraycopy(dims, a + 1, outDims, a + idx.length, dims.length - a - 1);
         Shape outShape = Shape.of(outDims);
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().gather(storage, outer, dims[a], inner, indices.storage, count, out);
         return new Tensor(outShape, device, out);
     }
@@ -951,7 +1058,7 @@ public final class Tensor {
         outDims[a] = length;
         System.arraycopy(dims, a + idxRank, outDims, a + 1, dims.length - a - idxRank);
         Shape outShape = Shape.of(outDims);
-        Storage out = backend().allocate(outShape.size());
+        Storage out = backend().allocate(outShape.size(), dtype());
         backend().scatterAdd(storage, outer, Math.toIntExact(indices.size()), inner, indices.storage, length, out);
         return new Tensor(outShape, device, out);
     }
@@ -1054,7 +1161,7 @@ public final class Tensor {
     }
 
     private Tensor reduceAll(ReduceOp op) {
-        Storage out = backend().allocate(1);
+        Storage out = backend().allocate(1, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
         backend().reduce(op, storage, 1, size(), 1, out);
         return new Tensor(Shape.of(), device, out);
     }
@@ -1079,7 +1186,7 @@ public final class Tensor {
             System.arraycopy(dims, 0, outDims, 0, a);
             System.arraycopy(dims, a + 1, outDims, a, dims.length - a - 1);
         }
-        Storage out = backend().allocate(outer * inner);
+        Storage out = backend().allocate(outer * inner, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
         backend().reduce(op, storage, outer, dims[a], inner, out);
         return new Tensor(Shape.of(outDims), device, out);
     }
