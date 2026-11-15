@@ -374,49 +374,6 @@ public interface Activation extends Layer {
     }
 
     /**
-     * Gives different groups of units different activations: the units are split into
-     * equal contiguous groups (the first groups get one more unit when the width does not
-     * divide evenly), one per activation.
-     *
-     * <pre>{@code
-     * // 32 units: 16 ReLU, 16 tanh
-     * model.dense(32, Activation.split(Activation.RELU, Activation.TANH));
-     * }</pre>
-     *
-     * @param activations one activation per group; learnable ones get their own
-     *     parameters for their group
-     * @return the activation
-     */
-    static Activation split(Activation... activations) {
-        return SplitActivation.of(null, activations);
-    }
-
-    /**
-     * Gives different groups of units different activations, with group sizes of your
-     * choice. Use sizes of 1 to choose an activation for every single unit.
-     *
-     * @param sizes the number of units in each group, adding up to the layer width
-     * @param activations one activation per group
-     * @return the activation
-     */
-    static Activation split(int[] sizes, Activation... activations) {
-        return SplitActivation.of(Objects.requireNonNull(sizes, "sizes"), activations);
-    }
-
-    /**
-     * A learned blend of several activations: every unit computes
-     * {@code sum_k w_k * f_k(x)} with its own weights {@code w = softmax(logits)}, which
-     * start equal and are trained with the rest of the model, so the network picks the
-     * activation each unit works best with.
-     *
-     * @param candidates the activations to blend, at least two
-     * @return the activation template
-     */
-    static Activation mix(Activation... candidates) {
-        return MixedActivation.of(candidates);
-    }
-
-    /**
      * Creates a learnable activation. Each layer using it gets its own parameters,
      * created by {@code init} from the layer's width.
      *
