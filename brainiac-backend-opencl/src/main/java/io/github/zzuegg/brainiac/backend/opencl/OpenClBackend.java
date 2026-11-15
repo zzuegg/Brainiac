@@ -428,7 +428,8 @@ public final class OpenClBackend implements Backend {
             }
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
-        if (flushEvery != 0 && ++sinceFlush >= flushInterval) {
+        sinceSync++;
+        if (flushEvery != 0 && sinceSync > FLUSH_AFTER && ++sinceFlush >= flushInterval) {
             // some drivers hold commands back until a flush, leaving the device idle meanwhile
             cl.flush(queue);
             sinceFlush = 0;
@@ -947,9 +948,17 @@ public final class OpenClBackend implements Backend {
     private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 4);
     private int flushInterval = Math.max(1, flushEvery);
     private int sinceFlush;
+    /** Launches since the host last waited for the device. */
+    private int sinceSync;
+    /**
+     * Short bursts between waits (inference batches) are left to the driver, which submits
+     * them at the wait; flushing them measurably slowed inference on AMD.
+     */
+    private static final int FLUSH_AFTER = 16;
 
     /** Called after the host waited for the device: the next launches start it again quickly. */
     private void synced() {
+        sinceSync = 0;
         if (flushEvery < 0) {
             flushInterval = 1;
             sinceFlush = 0;
