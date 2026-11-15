@@ -49,6 +49,8 @@ public final class Trainer {
     private final List<TrainingListener> listeners = new ArrayList<>();
     private int epochsDone;
     private float l2;
+    private float clipNorm;
+    private float clipValue;
     private LearningRateSchedule schedule;
     private float baseLearningRate = Float.NaN;
 
@@ -204,6 +206,67 @@ public final class Trainer {
     }
 
     /**
+     * Rescales all gradients together whenever their global L2 norm exceeds
+     * {@code maxNorm}, which keeps recurrent networks and transformers from diverging.
+     *
+     * @param maxNorm the largest allowed norm, positive
+     * @return this trainer
+     */
+    public Trainer clipGradientNorm(float maxNorm) {
+        if (!(maxNorm > 0)) {
+            throw new IllegalArgumentException("maxNorm must be positive, got " + maxNorm);
+        }
+        this.clipNorm = maxNorm;
+        return this;
+    }
+
+    /**
+     * Clamps every gradient value to {@code [-limit, limit]}.
+     *
+     * @param limit the largest allowed magnitude, positive
+     * @return this trainer
+     */
+    public Trainer clipGradientValue(float limit) {
+        if (!(limit > 0)) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        this.clipValue = limit;
+        return this;
+    }
+
+    private void clip(List<Var> params) {
+        if (clipValue > 0) {
+            for (Var p : params) {
+                if (p.grad() != null) {
+                    Tensor lim = Tensor.full(Shape.of(), clipValue, p.grad().device());
+                    p.setGrad(p.grad().minimum(lim).maximum(lim.neg()));
+                }
+            }
+        }
+        if (clipNorm > 0) {
+            Tensor total = null;
+            for (Var p : params) {
+                if (p.grad() != null) {
+                    Tensor sq = p.grad().square().sum();
+                    total = total == null ? sq : total.add(sq);
+                }
+            }
+            if (total == null) {
+                return;
+            }
+            float norm = (float) Math.sqrt(total.item());
+            if (norm > clipNorm) {
+                float scale = clipNorm / norm;
+                for (Var p : params) {
+                    if (p.grad() != null) {
+                        p.setGrad(p.grad().mul(scale));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Adds a listener called after every epoch.
      *
      * @param listener the listener
@@ -271,6 +334,7 @@ public final class Trainer {
                     }
                 }
                 l.backward();
+                clip(params);
                 optimizer.step(params);
                 lossSum += l.value().item() * batch.size();
                 for (Metric m : metrics) {

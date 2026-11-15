@@ -133,6 +133,19 @@ public final class Var {
         value = newValue;
     }
 
+    /**
+     * Replaces the accumulated gradient, for gradient clipping, accumulation or custom
+     * update rules.
+     *
+     * @param newGrad the gradient, same shape as the value, or {@code null} to clear it
+     */
+    public void setGrad(Tensor newGrad) {
+        if (newGrad != null && !newGrad.shape().equals(value.shape())) {
+            throw new IllegalArgumentException("gradient shape " + newGrad.shape() + " does not match " + value.shape());
+        }
+        grad = newGrad;
+    }
+
     /** Clears the accumulated gradient. */
     public void zeroGrad() {
         grad = null;

@@ -731,6 +731,83 @@ public final class Model {
         }
 
         /**
+         * Adds an LSTM over {@code [steps, features]}. Use {@code add(Recurrent.lstm(...))}
+         * for bidirectional layers and every other option.
+         *
+         * @param units the hidden size
+         * @param returnSequences {@code true} for every step {@code [steps, units]}, {@code false} for the last
+         * @return this builder
+         */
+        public Builder lstm(int units, boolean returnSequences) {
+            return add(Recurrent.lstm(units).returnSequences(returnSequences));
+        }
+
+        /**
+         * Adds a GRU over {@code [steps, features]}.
+         *
+         * @param units the hidden size
+         * @param returnSequences {@code true} for every step, {@code false} for the last
+         * @return this builder
+         */
+        public Builder gru(int units, boolean returnSequences) {
+            return add(Recurrent.gru(units).returnSequences(returnSequences));
+        }
+
+        /**
+         * Adds a simple tanh RNN over {@code [steps, features]}.
+         *
+         * @param units the hidden size
+         * @param returnSequences {@code true} for every step, {@code false} for the last
+         * @return this builder
+         */
+        public Builder rnn(int units, boolean returnSequences) {
+            return add(Recurrent.rnn(units).returnSequences(returnSequences));
+        }
+
+        /**
+         * Adds multi-head self-attention over {@code [steps, features]}. Use
+         * {@code add(MultiHeadAttention.of(...))} for every option.
+         *
+         * @param heads the number of heads; must divide the features
+         * @param causal whether each step sees only itself and earlier steps
+         * @return this builder
+         */
+        public Builder attention(int heads, boolean causal) {
+            return add(MultiHeadAttention.of(heads).causal(causal));
+        }
+
+        /**
+         * Adds a pre-norm transformer encoder block (or a GPT-style block if causal). Use
+         * {@code add(TransformerBlock.of(...))} for every option.
+         *
+         * @param heads the number of heads; must divide the features
+         * @param causal whether self-attention is causal
+         * @return this builder
+         */
+        public Builder transformer(int heads, boolean causal) {
+            return add(TransformerBlock.of(heads).causal(causal));
+        }
+
+        /**
+         * Adds fixed sinusoidal position encodings to {@code [steps, features]}.
+         *
+         * @return this builder
+         */
+        public Builder positionalEncoding() {
+            return layer(PositionalEncoding.sinusoidal(current().dim(-1)));
+        }
+
+        /**
+         * Reduces {@code [steps, features]} to {@code [features]}.
+         *
+         * @param kind mean, max, sum, first or last step
+         * @return this builder
+         */
+        public Builder sequencePool(SequencePool.Kind kind) {
+            return layer(new SequencePool(kind));
+        }
+
+        /**
          * Fixes the random seed for weight initialization, so builds are reproducible.
          * Without it every build gets different starting weights.
          *

@@ -80,6 +80,11 @@ final class Registry {
         simple("pixel_shuffle", PixelShuffle.class, PixelShuffle::write, PixelShuffle::read);
         simple("layer_norm", LayerNorm.class, LayerNorm::write, LayerNorm::read);
         simple("group_norm", GroupNorm.class, GroupNorm::write, GroupNorm::read);
+        simple("recurrent", Recurrent.class, Recurrent::write, Recurrent::read);
+        simple("attention", MultiHeadAttention.class, MultiHeadAttention::write, MultiHeadAttention::read);
+        simple("transformer", TransformerBlock.class, TransformerBlock::write, TransformerBlock::read);
+        simple("positions", PositionalEncoding.class, PositionalEncoding::write, PositionalEncoding::read);
+        simple("sequence_pool", SequencePool.class, SequencePool::write, SequencePool::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
                 Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
