@@ -12,6 +12,12 @@ final class ClStorage implements Storage {
     final MemorySegment mem;
     final long size;
     final DType dtype;
+    /** The element-wise expression not yet computed into {@link #mem}, or null once it is. */
+    Fused.Expr pending;
+    /** The size of {@link #pending} in nodes, inlined inputs included. */
+    int pendingNodes;
+    /** The backend's sync generation when {@link #pending} was recorded. */
+    long pendingGeneration;
 
     ClStorage(OpenClBackend owner, MemorySegment mem, long size, DType dtype) {
         this.owner = owner;
