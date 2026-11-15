@@ -485,6 +485,62 @@ public final class Var {
         return unary(value.reshape(dims), g -> new Tensor[] {g.reshape(original)});
     }
 
+    /**
+     * Returns the part of this value from {@code start} to {@code end} (exclusive) along
+     * one axis.
+     *
+     * @param axis the axis; negative counts from the end
+     * @param start the first index to keep
+     * @param end one past the last index to keep
+     * @return the slice
+     */
+    public Var slice(int axis, int start, int end) {
+        Tensor out = value.slice(axis, start, end);
+        int a = axis < 0 ? shape().rank() + axis : axis;
+        Shape original = shape();
+        return unary(out, g -> {
+            List<Tensor> parts = new ArrayList<>(3);
+            if (start > 0) {
+                int[] before = original.toArray();
+                before[a] = start;
+                parts.add(Tensor.zeros(Shape.of(before), g.device()));
+            }
+            parts.add(g);
+            if (end < original.dim(a)) {
+                int[] after = original.toArray();
+                after[a] = original.dim(a) - end;
+                parts.add(Tensor.zeros(Shape.of(after), g.device()));
+            }
+            return new Tensor[] {parts.size() == 1 ? g : Tensor.concat(a, parts.toArray(Tensor[]::new))};
+        });
+    }
+
+    /**
+     * Joins values along one axis; see {@link Tensor#concat(int, Tensor...)}.
+     *
+     * @param axis the axis to join along; negative counts from the end
+     * @param parts the values, at least one
+     * @return the joined value
+     */
+    public static Var concat(int axis, Var... parts) {
+        Tensor[] values = new Tensor[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            values[i] = parts[i].value;
+        }
+        Tensor out = Tensor.concat(axis, values);
+        int a = axis < 0 ? out.rank() + axis : axis;
+        return op(out, parts.clone(), g -> {
+            Tensor[] grads = new Tensor[parts.length];
+            int start = 0;
+            for (int i = 0; i < parts.length; i++) {
+                int length = values[i].shape().dim(a);
+                grads[i] = g.slice(a, start, start + length);
+                start += length;
+            }
+            return grads;
+        });
+    }
+
     // ---------------------------------------------------------------- reductions
 
     /** @return the sum of all values, as a scalar */

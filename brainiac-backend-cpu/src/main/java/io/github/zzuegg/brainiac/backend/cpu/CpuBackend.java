@@ -204,21 +204,49 @@ public final class CpuBackend implements Backend {
     }
 
     @Override
-    public void copy(Storage in, long[] strides, int[] shape, Storage out) {
+    public void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out, long outOffset,
+            long[] outStrides) {
         float[] x = data(in);
         float[] z = data(out);
         int rank = shape.length;
+        long count = 1;
+        for (int d : shape) {
+            count *= d;
+        }
+        if (count == 0) {
+            return;
+        }
+        if (rank == 0) {
+            z[(int) outOffset] = x[(int) inOffset];
+            return;
+        }
+        // copy along the last axis in a tight loop, step the other axes like an odometer
+        int last = rank - 1;
+        int run = shape[last];
+        long inStep = inStrides[last];
+        long outStep = outStrides[last];
         int[] index = new int[rank];
-        long offset = 0;
-        for (int i = 0; i < z.length; i++) {
-            z[i] = x[(int) offset];
-            for (int d = rank - 1; d >= 0; d--) {
+        long src = inOffset;
+        long dst = outOffset;
+        for (long done = 0; done < count; done += run) {
+            if (inStep == 1 && outStep == 1) {
+                System.arraycopy(x, (int) src, z, (int) dst, run);
+            } else {
+                long s = src;
+                long t = dst;
+                for (int k = 0; k < run; k++, s += inStep, t += outStep) {
+                    z[(int) t] = x[(int) s];
+                }
+            }
+            for (int d = last - 1; d >= 0; d--) {
                 index[d]++;
-                offset += strides[d];
+                src += inStrides[d];
+                dst += outStrides[d];
                 if (index[d] < shape[d]) {
                     break;
                 }
-                offset -= strides[d] * shape[d];
+                src -= inStrides[d] * shape[d];
+                dst -= outStrides[d] * shape[d];
                 index[d] = 0;
             }
         }
