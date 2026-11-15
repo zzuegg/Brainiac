@@ -443,6 +443,13 @@ public final class OpenClBackend implements Backend {
     /** Whether element-wise chains are fused ({@code -Dbrainiac.opencl.fusion=false} turns it off). */
     private final boolean fusion = !"false".equalsIgnoreCase(System.getProperty("brainiac.opencl.fusion"));
     private final Map<String, Future<MemorySegment>> fusedKernels = new HashMap<>();
+    /**
+     * Whether fused kernels also store the pending inputs they compute, so chains can span
+     * other kernels ({@code -Dbrainiac.opencl.fusion.store=false} ends chains at other
+     * kernels instead).
+     */
+    private final boolean storeIntermediates = !"false".equalsIgnoreCase(
+            System.getProperty("brainiac.opencl.fusion.store"));
     /** Compiles fused kernels in the background ({@code -Dbrainiac.opencl.fusion.async=false} compiles inline). */
     private final ExecutorService compiler = "false".equalsIgnoreCase(
             System.getProperty("brainiac.opencl.fusion.async")) ? null
@@ -479,7 +486,8 @@ public final class OpenClBackend implements Backend {
     private void defer(ClStorage out, Fused.Expr e) {
         program(out.dtype);
         for (Fused.Src in : Fused.sources(e)) {
-            if (!in.direct() && in.storage().pending != null && in.storage().pendingGeneration != generation) {
+            if ((!in.direct() || !storeIntermediates) && in.storage().pending != null
+                    && in.storage().pendingGeneration != generation) {
                 ready(in.storage());
             }
         }
@@ -504,7 +512,7 @@ public final class OpenClBackend implements Backend {
 
     private void materialize(ClStorage s) {
         long genStart = profiling ? System.nanoTime() : 0;
-        Fused.Kernel k = Fused.generate(s.pending);
+        Fused.Kernel k = Fused.generate(s.pending, storeIntermediates);
         if (profiling) {
             hostGenerateNanos += System.nanoTime() - genStart;
         }
@@ -512,7 +520,7 @@ public final class OpenClBackend implements Backend {
             for (ClStorage in : Fused.inputs(s.pending)) {
                 ready(in);
             }
-            k = Fused.generate(s.pending);
+            k = Fused.generate(s.pending, storeIntermediates);
         }
         Fused.Expr e = s.pending;
         s.pending = null;
@@ -520,7 +528,7 @@ public final class OpenClBackend implements Backend {
         MemorySegment kernel = fusedKernel(s.dtype, k.source());
         if (kernel == null) {
             // the kernel is still compiling in the background; run the steps one by one meanwhile
-            eager(e, s, true);
+            eager(e, s, storeIntermediates);
             eagerFallbacks++;
             return;
         }

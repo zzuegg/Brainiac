@@ -136,9 +136,9 @@ final class Fused {
     }
 
     /** Generates the kernel computing {@code root} for every element of a result. */
-    static Kernel generate(Expr root) {
+    static Kernel generate(Expr root, boolean store) {
         Gen g = new Gen();
-        g.root = "i";
+        g.root = store ? "i" : null;
         String v = g.eval(root, "i");
         StringBuilder src = new StringBuilder("__kernel void fused(__global T* out, long n");
         src.append(g.params);
