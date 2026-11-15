@@ -87,7 +87,7 @@ public interface Activation extends Layer {
     /**
      * The settings needed to recreate this activation when a model is loaded, passed to
      * the factory {@linkplain #register(String, Function) registered} under its name
-     * ({@link #toString()}). Learnable parameters are not part of it; they are saved
+     * ({@code toString()}). Learnable parameters are not part of it; they are saved
      * with the model's other parameters.
      *
      * @return the settings; empty unless overridden
@@ -97,7 +97,7 @@ public interface Activation extends Layer {
     }
 
     /**
-     * Makes an activation loadable from model files under its name ({@link #toString()}).
+     * Makes an activation loadable from model files under its name ({@code toString()}).
      * Built-in activations are registered already. A learnable template is rebuilt and
      * bound to the saved width, then its parameters are restored.
      *
@@ -112,7 +112,7 @@ public interface Activation extends Layer {
      * Makes activations with settings loadable from model files: the file stores the name
      * and {@link #config()}, and loading calls {@code factory} with that config.
      *
-     * @param name the activation's name, as its {@link #toString()} returns it
+     * @param name the activation's name, as its {@code toString()} returns it
      * @param factory recreates the activation (or learnable template) from its config
      */
     static void register(String name, Function<Config, Activation> factory) {
