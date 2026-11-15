@@ -20,6 +20,20 @@ public interface Optimizer {
     void step(List<Var> parameters);
 
     /**
+     * Returns the current learning rate.
+     *
+     * @return the learning rate
+     */
+    float learningRate();
+
+    /**
+     * Changes the learning rate, for example from a {@link LearningRateSchedule}.
+     *
+     * @param learningRate the new rate, positive
+     */
+    void learningRate(float learningRate);
+
+    /**
      * Plain stochastic gradient descent: {@code w -= learningRate * grad}.
      *
      * @param learningRate the step size, for example {@code 0.1f}

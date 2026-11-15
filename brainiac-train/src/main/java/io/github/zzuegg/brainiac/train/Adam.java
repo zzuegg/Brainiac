@@ -9,7 +9,7 @@ import java.util.Map;
 
 /** The Adam optimizer. */
 final class Adam implements Optimizer {
-    private final float learningRate;
+    private float learningRate;
     private final float beta1;
     private final float beta2;
     private final float epsilon;
@@ -48,6 +48,19 @@ final class Adam implements Optimizer {
             p.assign(p.value().sub(mHat.div(vHat.sqrt().add(epsilon)).mul(learningRate)));
             p.zeroGrad();
         }
+    }
+
+    @Override
+    public float learningRate() {
+        return learningRate;
+    }
+
+    @Override
+    public void learningRate(float learningRate) {
+        if (learningRate <= 0) {
+            throw new IllegalArgumentException("learningRate must be positive, got " + learningRate);
+        }
+        this.learningRate = learningRate;
     }
 
     @Override

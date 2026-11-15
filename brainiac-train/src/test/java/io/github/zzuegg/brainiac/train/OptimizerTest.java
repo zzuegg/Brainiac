@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.train;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -53,5 +54,15 @@ class OptimizerTest {
         assertArrayEquals(new float[] {1}, p.value().toArray());
         assertThrows(IllegalArgumentException.class, () -> Optimizer.sgd(0));
         assertThrows(IllegalArgumentException.class, () -> Optimizer.momentum(0.1f, 1));
+    }
+
+    @Test
+    void learningRateCanBeChanged() {
+        for (Optimizer opt : List.of(Optimizer.sgd(0.1f), Optimizer.momentum(0.1f, 0.9f), Optimizer.adam(0.1f))) {
+            assertEquals(0.1f, opt.learningRate());
+            opt.learningRate(0.02f);
+            assertEquals(0.02f, opt.learningRate());
+            assertThrows(IllegalArgumentException.class, () -> opt.learningRate(0));
+        }
     }
 }

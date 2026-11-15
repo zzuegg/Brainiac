@@ -9,7 +9,7 @@ import java.util.Map;
 
 /** SGD with optional momentum. */
 final class Momentum implements Optimizer {
-    private final float learningRate;
+    private float learningRate;
     private final float momentum;
     private final Map<Var, Tensor> velocity = new IdentityHashMap<>();
 
@@ -40,6 +40,19 @@ final class Momentum implements Optimizer {
             p.assign(p.value().sub(update.mul(learningRate)));
             p.zeroGrad();
         }
+    }
+
+    @Override
+    public float learningRate() {
+        return learningRate;
+    }
+
+    @Override
+    public void learningRate(float learningRate) {
+        if (learningRate <= 0) {
+            throw new IllegalArgumentException("learningRate must be positive, got " + learningRate);
+        }
+        this.learningRate = learningRate;
     }
 
     @Override
