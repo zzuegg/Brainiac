@@ -253,7 +253,11 @@ public final class OpenClBackend implements Backend {
         cl = lib;
         program(DType.FLOAT32);
         if (profiling) {
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> System.err.print(profile()), "opencl-profile"));
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (!kernelTimes.isEmpty() || !launched.isEmpty()) {
+                    System.err.print(profile());
+                }
+            }, "opencl-profile"));
         }
     }
 
@@ -423,6 +427,11 @@ public final class OpenClBackend implements Backend {
         ClStorage s = raw(size, dtype);
         run(dtype, "fill", size, s, 0f, size);
         return s;
+    }
+
+    @Override
+    public synchronized Storage allocateUninitialized(long size, DType dtype) {
+        return raw(size, dtype);
     }
 
     /** Allocates without clearing. */
