@@ -32,7 +32,7 @@ final class Fused {
     }
 
     /** A value per element of an index space; evaluated at one linear index. */
-    sealed interface Expr permits Src, Un, Act, ActBack, Bin {
+    sealed interface Expr permits Src, Un, Act, ActBack, Bin, MatMul {
     }
 
     /**
@@ -52,6 +52,14 @@ final class Fused {
     }
 
     record Bin(int op, Expr a, Expr b) implements Expr {
+    }
+
+    /**
+     * A matrix product not yet run: the precompiled kernel's arguments after the output and
+     * its work sizes. Only ever the value of a storage, never part of a larger expression;
+     * an element-wise chain on it becomes the matmul kernel's epilogue.
+     */
+    record MatMul(Object[] args, long[] global, long[] local) implements Expr {
     }
 
     /** A source reading all of {@code s} in order, as an index space of its own size. */
@@ -78,11 +86,95 @@ final class Fused {
     static int nodes(Expr e) {
         return switch (e) {
             case Src s -> 1 + (s.storage().pending != null ? s.storage().pendingNodes : 0);
+            case MatMul m -> 1;
             case Un u -> 1 + nodes(u.x());
             case Act a -> 1 + nodes(a.x());
             case ActBack a -> 1 + nodes(a.x()) + nodes(a.grad());
             case Bin b -> 1 + nodes(b.a()) + nodes(b.b());
         };
+    }
+
+    /**
+     * The pending matrix products a chain reads, looking through pending inputs, each with
+     * whether every read of it is element for element at the chain's own index.
+     */
+    static Map<ClStorage, Boolean> matmuls(Expr e) {
+        Map<ClStorage, Boolean> out = new IdentityHashMap<>();
+        matmuls(e, true, out);
+        return out;
+    }
+
+    private static void matmuls(Expr e, boolean direct, Map<ClStorage, Boolean> out) {
+        switch (e) {
+            case Src s -> {
+                ClStorage st = s.storage();
+                boolean d = direct && s.direct();
+                if (st.pending instanceof MatMul) {
+                    out.merge(st, d, Boolean::logicalAnd);
+                } else if (st.pending != null) {
+                    matmuls(st.pending, d, out);
+                }
+            }
+            case MatMul m -> {
+            }
+            case Un u -> matmuls(u.x(), direct, out);
+            case Act a -> matmuls(a.x(), direct, out);
+            case ActBack a -> {
+                matmuls(a.x(), direct, out);
+                matmuls(a.grad(), direct, out);
+            }
+            case Bin b -> {
+                matmuls(b.a(), direct, out);
+                matmuls(b.b(), direct, out);
+            }
+        }
+    }
+
+    /**
+     * Generates a matmul kernel (the precompiled one's tiling and order) that applies
+     * {@code root} to each product before storing it: the product is stored to {@code base}'s
+     * buffer and the chain's value to the result. Arguments after {@code out, total} are the
+     * matmul's, then {@link Kernel#args}.
+     */
+    static Kernel generateMatMul(Expr root, ClStorage base, boolean store) {
+        Gen g = new Gen();
+        g.root = store ? "i" : null;
+        g.base = base;
+        g.argBytes += 8 * 3 + 4 * 3 + 8 * 9;
+        String v = g.eval(root, "i");
+        String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
+                + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
+                + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol" + g.params + ") {\n"
+                + "    int col = get_global_id(0);\n"
+                + "    int row = get_global_id(1);\n"
+                + "    long batch = get_global_id(2);\n"
+                + "    int lc = get_local_id(0);\n"
+                + "    int lr = get_local_id(1);\n"
+                + "    __local ACC tileA[TS][TS];\n"
+                + "    __local ACC tileB[TS][TS];\n"
+                + "    long aBase = aOff + batch * strideA;\n"
+                + "    long bBase = bOff + batch * strideB;\n"
+                + "    ACC acc = (ACC) 0;\n"
+                + "    for (int t = 0; t < K; t += TS) {\n"
+                + "        int ac = t + lc;\n"
+                + "        int br = t + lr;\n"
+                + "        tileA[lr][lc] = row < M && ac < K ? LOAD(ma, aBase + (long) row * aRow + (long) ac * aCol)"
+                + " : (ACC) 0;\n"
+                + "        tileB[lr][lc] = br < K && col < N ? LOAD(mb, bBase + (long) br * bRow + (long) col * bCol)"
+                + " : (ACC) 0;\n"
+                + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
+                + "        for (int q = 0; q < TS; q++) {\n"
+                + "            acc += tileA[lr][q] * tileB[q][lc];\n"
+                + "        }\n"
+                + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
+                + "    }\n"
+                + "    if (row < M && col < N) {\n"
+                + "    long i = batch * strideZ + (long) row * N + col;\n"
+                + "    STORE(mz, i, acc);\n"
+                + g.body
+                + "    STORE(out, i, " + v + ");\n"
+                + "    }\n}\n";
+        return new Kernel(src, g.args, g.argBytes, g.outputs);
     }
 
     /** The sources of an expression node, not looking into pending inputs. */
@@ -95,6 +187,8 @@ final class Fused {
     private static void sources(Expr e, List<Src> out) {
         switch (e) {
             case Src s -> out.add(s);
+            case MatMul m -> {
+            }
             case Un u -> sources(u.x(), out);
             case Act a -> sources(a.x(), out);
             case ActBack a -> {
@@ -118,6 +212,8 @@ final class Fused {
     private static void collect(Expr e, List<ClStorage> out) {
         switch (e) {
             case Src s -> out.add(s.storage());
+            case MatMul m -> {
+            }
             case Un u -> collect(u.x(), out);
             case Act a -> collect(a.x(), out);
             case ActBack a -> {
@@ -203,6 +299,8 @@ final class Fused {
         final List<ClStorage> outputs = new ArrayList<>();
         /** The index of the result, or null when the kernel writes nothing but its result. */
         String root;
+        /** A matrix product computed by the kernel itself, as {@code acc}. */
+        ClStorage base;
         /** Values already computed in this kernel, by storage and index variable. */
         final Map<ClStorage, Map<String, String>> values = new IdentityHashMap<>();
         int argBytes = 16;
@@ -211,6 +309,7 @@ final class Fused {
         String eval(Expr e, String idx) {
             return switch (e) {
                 case Src s -> source(s, idx);
+                case MatMul m -> throw new IllegalStateException("a matrix product inside a chain");
                 case Un u -> let("unary_op(" + u.op() + ", " + eval(u.x(), idx) + ")");
                 case Act a -> let("activation_op(" + a.op() + ", " + literal(a.param()) + ", "
                         + eval(a.x(), idx) + ")");
@@ -230,6 +329,9 @@ final class Fused {
         private String source(Src s, String idx) {
             String at = s.direct() ? idx : index(s, idx);
             ClStorage st = s.storage();
+            if (st == base) {
+                return "acc";
+            }
             Map<String, String> seen = values.computeIfAbsent(st, k -> new java.util.HashMap<>());
             String known = seen.get(at);
             if (known != null) {

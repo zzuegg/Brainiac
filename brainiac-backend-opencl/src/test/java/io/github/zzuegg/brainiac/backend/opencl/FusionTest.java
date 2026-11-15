@@ -104,6 +104,21 @@ class FusionTest {
     }
 
     @Test
+    void matmulEpiloguesMatchTheCpu() {
+        Tensor w = random(20, 7, 5);
+        Tensor bias = random(21, 5);
+        same(DType.FLOAT32, x -> x.matmul(w.to(x.device())).add(bias.to(x.device())).relu().mul(2f),
+                random(22, 9, 7));
+        // the product is also used on its own, through a view, and in a reduction
+        same(DType.FLOAT32, x -> {
+            Tensor z = x.matmul(w.to(x.device()));
+            return z.tanh().add(z.transpose().transpose()).sum(0).add(z.sum(0));
+        }, random(23, 9, 7));
+        // batched, with a transposed operand read in place
+        same(DType.FLOAT32, x -> x.matmul(x.transpose()).sigmoid(), random(24, 3, 4, 6));
+    }
+
+    @Test
     void gradientsOfActivationsFuse() {
         same(DType.FLOAT32, x -> x.mul(2f).activationBackward(ActivationOp.SILU, 0, x.sigmoid()).add(x),
                 random(11, 33));
@@ -151,7 +166,12 @@ class FusionTest {
         b.reduce(ReduceOp.MEAN, z, 1, 40, 300, cols);
         Storage all = b.allocateUninitialized(1, DType.FLOAT32);
         b.reduce(ReduceOp.MAX, z, 1, 12_000, 1, all);
-        return new float[][] {b.download(rows), b.download(cols), b.download(all), b.download(z)};
+        Storage p = b.allocateUninitialized(40 * 40, DType.FLOAT32);
+        b.matmul(z, x, 40, 300, 40, p);   // x read as 300 x 40: shapes only need to agree in size
+        Storage q = b.allocateUninitialized(40 * 40, DType.FLOAT32);
+        b.activation(ActivationOp.TANH, 0, p, q);
+        return new float[][] {b.download(rows), b.download(cols), b.download(all), b.download(z), b.download(q),
+                b.download(p)};
     }
 
     @Test
