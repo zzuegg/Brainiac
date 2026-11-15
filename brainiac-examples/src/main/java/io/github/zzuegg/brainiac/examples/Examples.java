@@ -21,6 +21,7 @@ public final class Examples {
             case "iris" -> IrisExample.main(new String[0]);
             case "sequence" -> SequenceExample.main(new String[0]);
             case "sentiment" -> SentimentExample.main(new String[0]);
+            case "rl" -> RlExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "mnist" -> {
                 try {
                     MnistExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
@@ -37,6 +38,7 @@ public final class Examples {
                       iris    classify iris flowers from CSV
                       sequence  forecast a wave with an LSTM, reverse digits with a transformer
                       sentiment  learn word embeddings to read made-up reviews
+                      rl      reinforcement learning: cliff walk, cart-pole, pendulum
                       mnist   recognize handwritten digits with a CNN (downloads MNIST)
                       gpu     list devices, compare CPU and GPU speed
                       bench   run any model on any task: bench <task> [model...] [--epochs N]""");

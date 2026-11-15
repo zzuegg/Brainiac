@@ -8,6 +8,7 @@ dependencies {
     api(project(":brainiac-nn"))
     api(project(":brainiac-train"))
     api(project(":brainiac-data"))
+    api(project(":brainiac-rl"))
 }
 
 dependencies {

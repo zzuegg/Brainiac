@@ -34,6 +34,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-nn` | Layers, activations, losses, initializers, models |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
+| `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac` | Facade: depend on this one module to get the whole API |
 | `brainiac-examples` | Runnable examples |
 | `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
@@ -278,6 +279,59 @@ made-up reviews such as "it is great but the plot is dull". A bag of words (the 
 vectors, ignoring order) gets about 87%, and a bi-LSTM and a masked transformer get 100%,
 because they read "not" and "but" in order. It then prints each word's nearest neighbours:
 "good" lands next to "wonderful, excellent, fun", and "awful" next to "boring, dull, bad, poor".
+
+## Reinforcement learning
+
+`brainiac-rl` has environments to act in and agents that learn from rewards.
+
+Environments implement `Environment`: `reset(random)` and `step(action)`, with
+`Space.discrete(n)` or `Space.box(low, high)` actions.
+
+| Environment | Actions | What |
+| --- | --- | --- |
+| `CartPole` | 2 | balance a pole, +1 per step, up to 500 |
+| `MountainCar` | 3 | build momentum to climb a hill (sparse; optional `shaped(true)`) |
+| `Pendulum` | continuous `[-2, 2]` | swing up and hold a pendulum |
+| `GridWorld` | 4 | maps from text: walls, holes, cliffs, `slippery(p)`; `cliff()`, `lake()` |
+| `Bandit` | k | multi-armed bandit |
+
+`env.limit(steps)` adds a time limit. Write your own environment by implementing the interface.
+
+```java
+Space actions = new CartPole().actionSpace();
+
+Tabular.qLearning(4).learningRate(0.5).epsilon(Schedule.constant(0.1));    // also sarsa(), EXPECTED_SARSA
+
+Reinforce.of(Nets.mlp(4, 2, 1, 32), actions)               // policy gradient
+        .baseline(Nets.mlp(4, 1, 2, 32)).entropyBonus(0.01f).episodesPerUpdate(4);
+
+Ppo.of(policy, value, actions)                              // PPO: GAE, clipping, minibatch epochs
+        .rolloutSteps(256).epochs(10).minibatchSize(64).clipRange(0.2f).gaeLambda(0.95f)
+        .clipValue(true).targetKl(0.02f).annealLearningRate(true).entropyBonus(0.0f);
+Ppo.a2c(policy, value, actions);                            // A2C settings
+ppo.fit(CartPole::new, 8, 200_000, RlListener.every(50));   // 8 environments in step
+
+Dqn.of(() -> Nets.mlp(4, 2, Activation.RELU, 1, 64, 64), 2)  // DQN
+        .doubleQ(true).dueling(false).nSteps(3)
+        .prioritized(0.6, Schedule.linear(0.4, 1, 50_000))
+        .targetUpdateEvery(1_000)                           // or softTargetUpdate(0.005f)
+        .epsilon(Schedule.linear(1, 0.05, 10_000)).bufferSize(50_000).batchSize(64);
+
+RlResult result = agent.fit(new CartPole(), 50_000, RlListener.every(20));
+Rl.evaluate(agent, new CartPole(), 10, seed);               // mean greedy return
+Rl.watch(agent, new CartPole(), seed, 100);                 // text frames of one episode
+```
+
+Policies output logits for discrete actions, or Gaussian means for continuous ones (a
+learned log standard deviation sets the spread). The networks are ordinary `Model`s, so
+they can be saved, moved to the GPU, or built from any layers. `ReplayBuffer` and
+`PrioritizedReplayBuffer` can also be used on their own.
+
+`./gradlew :brainiac-examples:run --args=rl` (about 40 seconds) does three things:
+
+- On the cliff walk, Q-learning takes the edge (-12) and SARSA the safer path (-16).
+- On cart-pole, REINFORCE and A2C reach the maximum of 500, PPO about 490 and DQN about 440. A random agent gets 23.
+- On the pendulum, PPO goes from -1786 to about -186, holding it within about 6 degrees of upright.
 
 ## Benchmarks: test any model
 

@@ -8,6 +8,7 @@ module io.github.zzuegg.brainiac {
     requires transitive io.github.zzuegg.brainiac.nn;
     requires transitive io.github.zzuegg.brainiac.train;
     requires transitive io.github.zzuegg.brainiac.data;
+    requires transitive io.github.zzuegg.brainiac.rl;
     requires io.github.zzuegg.brainiac.backend.cpu;
 
     exports io.github.zzuegg.brainiac;
