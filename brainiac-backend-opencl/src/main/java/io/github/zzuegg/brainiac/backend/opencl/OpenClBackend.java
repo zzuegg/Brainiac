@@ -474,9 +474,9 @@ public final class OpenClBackend implements Backend {
     /** Records {@code e} as the pending value of {@code out}, computing large inputs first. */
     private void defer(ClStorage out, Fused.Expr e) {
         program(out.dtype);
-        for (ClStorage in : Fused.inputs(e)) {
-            if (in.pending != null && in.pendingGeneration != generation) {
-                ready(in);
+        for (Fused.Src in : Fused.sources(e)) {
+            if (!in.direct() && in.storage().pending != null && in.storage().pendingGeneration != generation) {
+                ready(in.storage());
             }
         }
         int n = Fused.nodes(e);
@@ -512,9 +512,13 @@ public final class OpenClBackend implements Backend {
         MemorySegment kernel = fusedKernel(s.dtype, k.source());
         if (kernel == null) {
             // the kernel is still compiling in the background; run the steps one by one meanwhile
-            eager(e, s);
+            eager(e, s, true);
             eagerFallbacks++;
             return;
+        }
+        for (ClStorage w : k.outputs()) {
+            w.pending = null;
+            w.pendingNodes = 0;
         }
         Object[] args = new Object[k.args().size() + 2];
         args[0] = s;
@@ -632,25 +636,29 @@ public final class OpenClBackend implements Backend {
         }
     }
 
-    /** Computes {@code e} into {@code out} with the precompiled kernels, one per step. */
-    private void eager(Fused.Expr e, ClStorage out) {
+    /**
+     * Computes {@code e} into {@code out} with the precompiled kernels, one per step, keeping
+     * exactly the inputs the generated kernel would keep ({@code atRoot}: {@code e} is
+     * evaluated at the result's own index).
+     */
+    private void eager(Fused.Expr e, ClStorage out, boolean atRoot) {
         DType t = out.dtype;
         long n = out.size;
         switch (e) {
             case Fused.Src src -> {
-                ClStorage from = computed(src.storage());
+                ClStorage from = computed(src.storage(), atRoot && src.direct());
                 quietCopy(from, src.offset(), src.strides(), src.dims(), out);
             }
-            case Fused.Un u -> quiet(t, "unary", n, u.op(), value(u.x(), out), out, n);
-            case Fused.Act a -> quiet(t, "activation", n, a.op(), a.param(), value(a.x(), out), out, n);
-            case Fused.ActBack a -> quiet(t, "activation_backward", n, a.op(), a.param(), value(a.x(), out),
-                    value(a.grad(), out), out, n);
+            case Fused.Un u -> quiet(t, "unary", n, u.op(), value(u.x(), out, atRoot), out, n);
+            case Fused.Act a -> quiet(t, "activation", n, a.op(), a.param(), value(a.x(), out, atRoot), out, n);
+            case Fused.ActBack a -> quiet(t, "activation_backward", n, a.op(), a.param(),
+                    value(a.x(), out, atRoot), value(a.grad(), out, atRoot), out, n);
             case Fused.Bin b -> {
                 int[] shape = b.a() instanceof Fused.Src sa ? sa.dims()
                         : b.b() instanceof Fused.Src sb ? sb.dims() : new int[] {Math.toIntExact(n)};
                 long[] dense = contiguous(shape);
-                ClStorage x = operand(b.a(), out);
-                ClStorage y = operand(b.b(), out);
+                ClStorage x = operand(b.a(), out, atRoot);
+                ClStorage y = operand(b.b(), out, atRoot);
                 long[] xs = b.a() instanceof Fused.Src sa ? sa.strides() : dense;
                 long[] ys = b.b() instanceof Fused.Src sb ? sb.strides() : dense;
                 if (Arrays.equals(xs, dense) && Arrays.equals(ys, dense)) {
@@ -663,34 +671,41 @@ public final class OpenClBackend implements Backend {
     }
 
     /** A step's input as a buffer of the result's size, computing it if it is itself a step. */
-    private ClStorage value(Fused.Expr e, ClStorage like) {
+    private ClStorage value(Fused.Expr e, ClStorage like, boolean atRoot) {
         if (e instanceof Fused.Src s && s.direct()) {
-            return computed(s.storage());
+            return computed(s.storage(), atRoot);
         }
         ClStorage v = raw(like.size, like.dtype);
-        eager(e, v);
+        eager(e, v, atRoot);
         return v;
     }
 
     /** A binary step's operand: a source as it is (read through its strides), anything else computed. */
-    private ClStorage operand(Fused.Expr e, ClStorage like) {
+    private ClStorage operand(Fused.Expr e, ClStorage like, boolean atRoot) {
         if (e instanceof Fused.Src s) {
-            return computed(s.storage());
+            return computed(s.storage(), atRoot && s.direct());
         }
-        return value(e, like);
+        return value(e, like, atRoot);
     }
 
     /**
-     * The values of a storage for a step-by-step run. A pending input is computed into a
-     * temporary buffer and stays pending, so later chains are recorded exactly as they will
-     * be once their kernels are compiled.
+     * The values of a storage for a step-by-step run. With {@code keep} it is computed into
+     * its own buffer, as the generated kernel would; otherwise into a temporary buffer and it
+     * stays pending, so later chains are recorded exactly as with compiled kernels.
      */
-    private ClStorage computed(ClStorage s) {
+    private ClStorage computed(ClStorage s, boolean keep) {
         if (s.pending == null) {
             return s;
         }
+        if (keep) {
+            Fused.Expr e = s.pending;
+            s.pending = null;
+            s.pendingNodes = 0;
+            eager(e, s, true);
+            return s;
+        }
         ClStorage v = raw(s.size, s.dtype);
-        eager(s.pending, v);
+        eager(s.pending, v, false);
         return v;
     }
 

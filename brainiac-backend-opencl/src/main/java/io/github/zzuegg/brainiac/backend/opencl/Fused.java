@@ -85,6 +85,29 @@ final class Fused {
         };
     }
 
+    /** The sources of an expression node, not looking into pending inputs. */
+    static List<Src> sources(Expr e) {
+        List<Src> out = new ArrayList<>();
+        sources(e, out);
+        return out;
+    }
+
+    private static void sources(Expr e, List<Src> out) {
+        switch (e) {
+            case Src s -> out.add(s);
+            case Un u -> sources(u.x(), out);
+            case Act a -> sources(a.x(), out);
+            case ActBack a -> {
+                sources(a.x(), out);
+                sources(a.grad(), out);
+            }
+            case Bin b -> {
+                sources(b.a(), out);
+                sources(b.b(), out);
+            }
+        }
+    }
+
     /** The direct sources of an expression node, not looking into pending inputs. */
     static List<ClStorage> inputs(Expr e) {
         List<ClStorage> out = new ArrayList<>();
@@ -109,19 +132,20 @@ final class Fused {
     }
 
     /** A generated kernel: its source and the arguments that follow {@code out, n}. */
-    record Kernel(String source, List<Object> args, int argBytes) {
+    record Kernel(String source, List<Object> args, int argBytes, List<ClStorage> outputs) {
     }
 
     /** Generates the kernel computing {@code root} for every element of a result. */
     static Kernel generate(Expr root) {
         Gen g = new Gen();
+        g.root = "i";
         String v = g.eval(root, "i");
         StringBuilder src = new StringBuilder("__kernel void fused(__global T* out, long n");
         src.append(g.params);
         src.append(") {\n    long i = get_global_id(0);\n    if (i >= n) return;\n");
         src.append(g.body);
         src.append("    STORE(out, i, ").append(v).append(");\n}\n");
-        return new Kernel(src.toString(), g.args, g.argBytes);
+        return new Kernel(src.toString(), g.args, g.argBytes, g.outputs);
     }
 
     /**
@@ -167,7 +191,7 @@ final class Fused {
                     .append("    if (lid == 0) {\n        ACC acc = part[0];\n        STORE(out, r, ")
                     .append(finish).append(");\n    }\n}\n");
         }
-        return new Kernel(src.toString(), g.args, g.argBytes);
+        return new Kernel(src.toString(), g.args, g.argBytes, g.outputs);
     }
 
     private static final class Gen {
@@ -175,6 +199,10 @@ final class Fused {
         final StringBuilder body = new StringBuilder();
         final List<Object> args = new ArrayList<>();
         final Map<ClStorage, String> buffers = new IdentityHashMap<>();
+        /** Pending inputs computed at the result's own index, written to their buffers too. */
+        final List<ClStorage> outputs = new ArrayList<>();
+        /** The index of the result, or null when the kernel writes nothing but its result. */
+        String root;
         /** Values already computed in this kernel, by storage and index variable. */
         final Map<ClStorage, Map<String, String>> values = new IdentityHashMap<>();
         int argBytes = 16;
@@ -210,6 +238,15 @@ final class Fused {
             String v;
             if (st.pending != null) {
                 v = eval(st.pending, at);
+                if (at.equals(root)) {
+                    // every element of the input is computed here exactly once: keep it
+                    String w = "w" + outputs.size();
+                    outputs.add(st);
+                    params.append(", __global T* ").append(w);
+                    args.add(st);
+                    argBytes += 8;
+                    body.append("    STORE(").append(w).append(", ").append(at).append(", ").append(v).append(");\n");
+                }
             } else {
                 String b = buffers.get(st);
                 if (b == null) {
