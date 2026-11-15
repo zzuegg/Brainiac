@@ -453,14 +453,19 @@ are cached on the device, so training does not create device memory on every ope
 Element-wise operations are fused: instead of one kernel per add, multiply or activation,
 the backend records chains of them and generates one OpenCL C kernel per chain when the
 values are needed (by a matmul, a reduction or a download); a reduction also computes its
-input chain on the fly. This works for any model, without per-layer kernels, and the
+input chain on the fly (long rows are split across a work-group). Transposes, slices and
+other strided copies are not copied either: they are read in place by the chain or matmul
+that uses them. This works for any model, without per-layer kernels, and the
 generated code is plain OpenCL C 1.2, so it runs on every vendor's driver. Shapes and
 strides are kernel arguments, so a training loop needs a few dozen generated kernels.
 They compile in the background (the operations run one by one until then) and are cached
 on disk, so later runs start at full speed. Results are the same with and without fusion.
 Properties: `brainiac.opencl.fusion` (`false` turns it off), `brainiac.opencl.fusion.async`
 (`false` compiles before running), `brainiac.opencl.cache` (directory, default
-`~/.cache/brainiac/opencl`, or `none`).
+`~/.cache/brainiac/opencl`, or `none`), `brainiac.opencl.flushEvery` (launches between
+explicit queue flushes, default 1; some drivers otherwise hold commands back and leave
+the GPU idle), `brainiac.opencl.fusion.store` (`true` also stores intermediates so chains
+can span other kernels: fewer launches, but slower on some drivers).
 Without an OpenCL GPU the backend reports itself unavailable and its tests are skipped;
 CI runs them on PoCL.
 

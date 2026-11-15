@@ -10,6 +10,9 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
+import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
+import io.github.zzuegg.brainiac.tensor.spi.Storage;
 
 import java.util.Optional;
 import java.util.SplittableRandom;
@@ -122,6 +125,55 @@ class FusionTest {
             }
         }
         assertTrue(Float.isFinite(first[0]));
+    }
+
+    /** Runs a chain ending in reductions through the backend directly. */
+    private static float[][] chain(OpenClBackend b) {
+        SplittableRandom r = new SplittableRandom(15);
+        float[] xs = new float[40 * 300];
+        float[] ws = new float[300];
+        for (int i = 0; i < xs.length; i++) {
+            xs[i] = (float) r.nextDouble(-1, 1);
+        }
+        for (int i = 0; i < ws.length; i++) {
+            ws[i] = (float) r.nextDouble(-1, 1);
+        }
+        int[] shape = {40, 300};
+        Storage x = b.upload(xs);
+        Storage w = b.upload(ws);
+        Storage y = b.allocateUninitialized(xs.length, DType.FLOAT32);
+        b.binary(BinaryOp.MUL, x, new long[] {300, 1}, w, new long[] {0, 1}, shape, y);
+        Storage z = b.allocateUninitialized(xs.length, DType.FLOAT32);
+        b.activation(ActivationOp.GELU, 0, y, z);
+        Storage rows = b.allocateUninitialized(40, DType.FLOAT32);
+        b.reduce(ReduceOp.SUM, z, 40, 300, 1, rows);
+        Storage cols = b.allocateUninitialized(300, DType.FLOAT32);
+        b.reduce(ReduceOp.MEAN, z, 1, 40, 300, cols);
+        Storage all = b.allocateUninitialized(1, DType.FLOAT32);
+        b.reduce(ReduceOp.MAX, z, 1, 12_000, 1, all);
+        return new float[][] {b.download(rows), b.download(cols), b.download(all), b.download(z)};
+    }
+
+    @Test
+    void fusedAndUnfusedResultsAreIdentical() {
+        String old = System.getProperty("brainiac.opencl.fusion");
+        System.setProperty("brainiac.opencl.fusion", "false");
+        OpenClBackend plain = new OpenClBackend();
+        System.setProperty("brainiac.opencl.fusion", "true");
+        OpenClBackend fused = new OpenClBackend();
+        if (old == null) {
+            System.clearProperty("brainiac.opencl.fusion");
+        } else {
+            System.setProperty("brainiac.opencl.fusion", old);
+        }
+        assumeTrue(plain.isAvailable() && fused.isAvailable());
+        float[][] expected = chain(plain);
+        for (int run = 0; run < 5; run++) {
+            float[][] actual = chain(fused);
+            for (int i = 0; i < expected.length; i++) {
+                assertArrayEquals(expected[i], actual[i], "result " + i + ", run " + run);
+            }
+        }
     }
 
     @Test

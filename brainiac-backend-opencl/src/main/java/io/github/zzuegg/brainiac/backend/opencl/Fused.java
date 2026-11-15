@@ -85,6 +85,29 @@ final class Fused {
         };
     }
 
+    /** The sources of an expression node, not looking into pending inputs. */
+    static List<Src> sources(Expr e) {
+        List<Src> out = new ArrayList<>();
+        sources(e, out);
+        return out;
+    }
+
+    private static void sources(Expr e, List<Src> out) {
+        switch (e) {
+            case Src s -> out.add(s);
+            case Un u -> sources(u.x(), out);
+            case Act a -> sources(a.x(), out);
+            case ActBack a -> {
+                sources(a.x(), out);
+                sources(a.grad(), out);
+            }
+            case Bin b -> {
+                sources(b.a(), out);
+                sources(b.b(), out);
+            }
+        }
+    }
+
     /** The direct sources of an expression node, not looking into pending inputs. */
     static List<ClStorage> inputs(Expr e) {
         List<ClStorage> out = new ArrayList<>();
@@ -109,47 +132,66 @@ final class Fused {
     }
 
     /** A generated kernel: its source and the arguments that follow {@code out, n}. */
-    record Kernel(String source, List<Object> args, int argBytes) {
+    record Kernel(String source, List<Object> args, int argBytes, List<ClStorage> outputs) {
     }
 
     /** Generates the kernel computing {@code root} for every element of a result. */
-    static Kernel generate(Expr root) {
+    static Kernel generate(Expr root, boolean store) {
         Gen g = new Gen();
+        g.root = store ? "i" : null;
         String v = g.eval(root, "i");
         StringBuilder src = new StringBuilder("__kernel void fused(__global T* out, long n");
         src.append(g.params);
         src.append(") {\n    long i = get_global_id(0);\n    if (i >= n) return;\n");
         src.append(g.body);
         src.append("    STORE(out, i, ").append(v).append(");\n}\n");
-        return new Kernel(src.toString(), g.args, g.argBytes);
+        return new Kernel(src.toString(), g.args, g.argBytes, g.outputs);
     }
 
     /**
-     * Generates a kernel reducing {@code input} along one axis: one work item per output,
-     * looping over {@code len} values {@code inner} apart. Operation codes are
-     * {@code ReduceOp} ordinals (sum, mean, max, min).
+     * Generates a kernel reducing {@code input} along one axis: per output, {@code len} values
+     * {@code inner} apart. Operation codes are {@code ReduceOp} ordinals (sum, mean, max, min).
+     * With {@code group > 1} a work-group of that many items shares each output (for long
+     * rows); otherwise one work item loops over its row.
      */
-    static Kernel generateReduce(Expr input, int op) {
+    static Kernel generateReduce(Expr input, int op, int group) {
         Gen g = new Gen();
         g.argBytes += 16;
         String v = g.eval(input, "x");
         String init = op == 2 ? "(ACC) -INFINITY" : op == 3 ? "(ACC) INFINITY" : "(ACC) 0";
-        String combine = op == 2 ? "acc = isnan(" + v + ") || isnan(acc) ? " + v + " + acc : fmax(acc, " + v + ");"
-                : op == 3 ? "acc = isnan(" + v + ") || isnan(acc) ? " + v + " + acc : fmin(acc, " + v + ");"
-                : "acc += " + v + ";";
-        String src = "__kernel void fused(__global T* out, long n, long len, long inner" + g.params + ") {\n"
-                + "    long r = get_global_id(0);\n"
-                + "    if (r >= n) return;\n"
-                + "    long base = (r / inner) * len * inner + r % inner;\n"
-                + "    ACC acc = " + init + ";\n"
-                + "    for (long t = 0; t < len; t++) {\n"
-                + "    long x = base + t * inner;\n"
-                + g.body
-                + "    " + combine + "\n"
-                + "    }\n"
-                + "    STORE(out, r, " + (op == 1 ? "acc / (ACC) len" : "acc") + ");\n"
-                + "}\n";
-        return new Kernel(src, g.args, g.argBytes);
+        String finish = op == 1 ? "acc / (ACC) len" : "acc";
+        StringBuilder src = new StringBuilder();
+        src.append("ACC combine_(ACC a, ACC b) {\n    return ")
+                .append(op == 2 ? "isnan(a) || isnan(b) ? a + b : fmax(a, b)"
+                        : op == 3 ? "isnan(a) || isnan(b) ? a + b : fmin(a, b)" : "a + b")
+                .append(";\n}\n");
+        src.append("__kernel void fused(__global T* out, long n, long len, long inner").append(g.params)
+                .append(") {\n");
+        if (group <= 1) {
+            src.append("    long r = get_global_id(0);\n    if (r >= n) return;\n")
+                    .append("    long base = (r / inner) * len * inner + r % inner;\n")
+                    .append("    ACC acc = ").append(init).append(";\n")
+                    .append("    for (long t = 0; t < len; t++) {\n    long x = base + t * inner;\n")
+                    .append(g.body)
+                    .append("    acc = combine_(acc, ").append(v).append(");\n    }\n")
+                    .append("    STORE(out, r, ").append(finish).append(");\n}\n");
+        } else {
+            src.append("    __local ACC part[").append(group).append("];\n")
+                    .append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n")
+                    .append("    long base = (r / inner) * len * inner + r % inner;\n")
+                    .append("    ACC acc = ").append(init).append(";\n")
+                    .append("    for (long t = lid; t < len; t += ").append(group).append(") {\n")
+                    .append("    long x = base + t * inner;\n")
+                    .append(g.body)
+                    .append("    acc = combine_(acc, ").append(v).append(");\n    }\n")
+                    .append("    part[lid] = acc;\n    barrier(CLK_LOCAL_MEM_FENCE);\n")
+                    .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
+                    .append("        if (lid < s) part[lid] = combine_(part[lid], part[lid + s]);\n")
+                    .append("        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n")
+                    .append("    if (lid == 0) {\n        ACC acc = part[0];\n        STORE(out, r, ")
+                    .append(finish).append(");\n    }\n}\n");
+        }
+        return new Kernel(src.toString(), g.args, g.argBytes, g.outputs);
     }
 
     private static final class Gen {
@@ -157,6 +199,10 @@ final class Fused {
         final StringBuilder body = new StringBuilder();
         final List<Object> args = new ArrayList<>();
         final Map<ClStorage, String> buffers = new IdentityHashMap<>();
+        /** Pending inputs computed at the result's own index, written to their buffers too. */
+        final List<ClStorage> outputs = new ArrayList<>();
+        /** The index of the result, or null when the kernel writes nothing but its result. */
+        String root;
         /** Values already computed in this kernel, by storage and index variable. */
         final Map<ClStorage, Map<String, String>> values = new IdentityHashMap<>();
         int argBytes = 16;
@@ -192,6 +238,15 @@ final class Fused {
             String v;
             if (st.pending != null) {
                 v = eval(st.pending, at);
+                if (at.equals(root)) {
+                    // every element of the input is computed here exactly once: keep it
+                    String w = "w" + outputs.size();
+                    outputs.add(st);
+                    params.append(", __global T* ").append(w);
+                    args.add(st);
+                    argBytes += 8;
+                    body.append("    STORE(").append(w).append(", ").append(at).append(", ").append(v).append(");\n");
+                }
             } else {
                 String b = buffers.get(st);
                 if (b == null) {

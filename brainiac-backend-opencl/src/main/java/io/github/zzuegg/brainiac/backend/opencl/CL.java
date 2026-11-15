@@ -45,6 +45,8 @@ final class CL {
     static final long MEM_READ_ONLY = 1L << 2;
     static final long MEM_COPY_HOST_PTR = 1L << 5;
     static final long QUEUE_PROFILING_ENABLE = 1L << 1;
+    static final int PROFILING_COMMAND_QUEUED = 0x1280;
+    static final int PROFILING_COMMAND_SUBMIT = 0x1281;
     static final int PROFILING_COMMAND_START = 0x1282;
     static final int PROFILING_COMMAND_END = 0x1283;
     static final int OUT_OF_RESOURCES = -5;
@@ -82,6 +84,7 @@ final class CL {
     private final MethodHandle setKernelArg;
     private final MethodHandle enqueueNDRangeKernel;
     private final MethodHandle finish;
+    private final MethodHandle flush;
     private final MethodHandle getEventProfilingInfo;
     private final MethodHandle getProgramInfo;
     private final MethodHandle createProgramWithBinary;
@@ -118,6 +121,7 @@ final class CL {
         enqueueNDRangeKernel = handle(linker, lib, "clEnqueueNDRangeKernel", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT,
                 ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS);
         finish = handle(linker, lib, "clFinish", JAVA_INT, ADDRESS);
+        flush = handle(linker, lib, "clFlush", JAVA_INT, ADDRESS);
         getEventProfilingInfo = handle(linker, lib, "clGetEventProfilingInfo", JAVA_INT, ADDRESS, JAVA_INT,
                 JAVA_LONG, ADDRESS, ADDRESS);
         releaseEvent = handle(linker, lib, "clReleaseEvent", JAVA_INT, ADDRESS);
@@ -497,9 +501,36 @@ final class CL {
         }
     }
 
+    /** Device timestamps of a finished command: queued, submitted, started, ended. */
+    long[] timestamps(MemorySegment event) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment v = arena.allocate(JAVA_LONG);
+            long[] out = new long[4];
+            int[] params = {PROFILING_COMMAND_QUEUED, PROFILING_COMMAND_SUBMIT, PROFILING_COMMAND_START,
+                    PROFILING_COMMAND_END};
+            for (int i = 0; i < 4; i++) {
+                check((int) getEventProfilingInfo.invokeExact(event, params[i], 8L, v, MemorySegment.NULL),
+                        "clGetEventProfilingInfo");
+                out[i] = v.get(JAVA_LONG, 0);
+            }
+            return out;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
     void releaseEvent(MemorySegment event) {
         try {
             check((int) releaseEvent.invokeExact(event), "clReleaseEvent");
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Hands queued commands to the device without waiting for them. */
+    void flush(MemorySegment queue) {
+        try {
+            check((int) flush.invokeExact(queue), "clFlush");
         } catch (Throwable t) {
             throw rethrow(t);
         }
