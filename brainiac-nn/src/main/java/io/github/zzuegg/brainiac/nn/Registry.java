@@ -88,6 +88,7 @@ final class Registry {
         simple("embedding", Embedding.class, Embedding::write, Embedding::read);
         simple("padding_mask", PaddingMask.class, PaddingMask::write, PaddingMask::read);
         simple("masked_pool", MaskedPool.class, MaskedPool::write, MaskedPool::read);
+        simple("brain", Brain.class, Brain::write, Brain::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
                 Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,

@@ -49,6 +49,7 @@ public final class Trainer {
     private final List<Metric> metrics = new ArrayList<>();
     private final List<TrainingListener> listeners = new ArrayList<>();
     private int epochsDone;
+    private long stepsDone;
     private DType mixedType;
     private float lossScale = 1f;
     private int growthInterval;
@@ -452,6 +453,13 @@ public final class Trainer {
                 }
                 clip(params);
                 optimizer.step(params);
+                stepsDone++;
+                if (!listeners.isEmpty()) {
+                    float batchLoss = l.value().item();
+                    for (TrainingListener listener : listeners) {
+                        listener.onBatch(epoch, stepsDone, batchLoss);
+                    }
+                }
             }
             Map<String, Float> trainMetrics = new LinkedHashMap<>();
             metricSums.forEach((k, v) -> trainMetrics.put(k, (float) (v / data.size())));

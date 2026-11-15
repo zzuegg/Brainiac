@@ -31,8 +31,8 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
 | `brainiac-backend-opencl` | Optional GPU backend: OpenCL through the Foreign Function and Memory API |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
-| `brainiac-nn` | Layers, activations, losses, initializers, models |
-| `brainiac-train` | Optimizers, training loop, metrics, listeners |
+| `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
+| `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -332,6 +332,51 @@ they can be saved, moved to the GPU, or built from any layers. `ReplayBuffer` an
 - On the cliff walk, Q-learning takes the edge (-12) and SARSA the safer path (-16).
 - On cart-pole, REINFORCE and A2C reach the maximum of 500, PPO about 490 and DQN about 440. A random agent gets 23.
 - On the pendulum, PPO goes from -1786 to about -186, holding it within about 6 degrees of upright.
+
+## A growing brain
+
+`Brain` is a layer made of named regions of neurons joined by sparse projections. While it
+learns, `Plasticity` changes its structure. Each region has a fixed capacity, of which some
+neurons are active. Each projection is a weight matrix with a mask. Shapes never change, so
+a brain trains with any optimizer, runs on the GPU, and saves like any other layer.
+
+```java
+Brain.Spec brain = Brain.builder()
+        .region("sensory", 64).initialNeurons(16).activation(Activation.RELU)
+        .region("association", 32).initialNeurons(8)
+        .region("motor", 16)
+        .connect("input", "sensory", 0.1)            // 10% of possible connections
+        .connect("sensory", "association", 0.2)
+        .connect("association", "motor", 0.2)
+        .connect("association", "sensory", 0.1)      // feedback: reads the previous tick
+        .connect("motor", "association", 0.2)
+        .output("motor")
+        .ticks(3)                                     // activity settles over 3 steps
+        .build();
+Model model = Model.sequential().input(256).add(brain).dense(3, Activation.SOFTMAX).build();
+
+Plasticity plasticity = Plasticity.of(model)
+        .rewire(25, 0.3).until(1_000)                // prune weakest 30%, regrow as many, cosine to 0
+        .growth(Plasticity.Growth.GRADIENT)          // where the gradient is largest (RigL), or RANDOM (SET)
+        .neurogenesis(4, 0.02, 8)                    // loss stalls 4 epochs: wake 8 neurons
+        .pruneDeadNeurons(1e-4)                      // put silent neurons back to sleep
+        .verbose(true);
+Trainer.of(model).listener(plasticity).fit(data);
+plasticity.events();   plasticity.history();   brain.describe();
+```
+
+You can also drive a `Brain` by hand with `prune(fraction)`, `grow(projection, count,
+byGradient, random)`, `addNeurons(region, count, random)` and `removeDeadNeurons(threshold)`.
+`regions()`, `projections()`, `connections()` and `growthPressure()` inspect it.
+`TrainingListener.onBatch` is the per-step hook that `Plasticity` uses.
+
+`./gradlew :brainiac-examples:run --args=brain` runs two demos:
+
+- **Five spiral arms.** A brain that starts with 8 neurons grows to about 87 whenever its
+  loss stalls, and reaches 98.6% test accuracy.
+- **Bars and crosses.** A three-region brain with feedback keeps about 2,500 connections,
+  13% of a dense network with the same neurons. It scores 77% against the dense network's
+  85%, and against 64% for a dense network with the same number of connections.
 
 ## Benchmarks: test any model
 
