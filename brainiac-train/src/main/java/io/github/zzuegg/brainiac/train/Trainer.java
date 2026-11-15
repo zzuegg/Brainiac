@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.data.Batch;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -48,6 +49,11 @@ public final class Trainer {
     private final List<Metric> metrics = new ArrayList<>();
     private final List<TrainingListener> listeners = new ArrayList<>();
     private int epochsDone;
+    private DType mixedType;
+    private float lossScale = 1f;
+    private int growthInterval;
+    private int goodSteps;
+    private int skippedSteps;
     private float l2;
     private float clipNorm;
     private float clipValue;
@@ -243,6 +249,40 @@ public final class Trainer {
         return this;
     }
 
+    /**
+     * Puts the float32 master weights back and turns the scaled low-precision gradients
+     * into float32 ones; adjusts the loss scale.
+     *
+     * @return whether the gradients are finite, so the step can be taken
+     */
+    private boolean unscale(List<Var> params, List<Tensor> masters) {
+        Tensor check = null;
+        for (int i = 0; i < params.size(); i++) {
+            Var p = params.get(i);
+            p.assign(masters.get(i));
+            if (p.grad() != null) {
+                Tensor g = p.grad().to(DType.FLOAT32).div(lossScale);
+                p.setGrad(g);
+                Tensor s = g.abs().sum();
+                check = check == null ? s : check.add(s);
+            }
+        }
+        if (check != null && !Float.isFinite(check.item())) {
+            for (Var p : params) {
+                p.zeroGrad();
+            }
+            lossScale = Math.max(lossScale / 2, Float.MIN_NORMAL);
+            goodSteps = 0;
+            skippedSteps++;
+            return false;
+        }
+        if (growthInterval > 0 && ++goodSteps >= growthInterval) {
+            lossScale = Math.min(lossScale * 2, 1 << 24);
+            goodSteps = 0;
+        }
+        return true;
+    }
+
     private void clip(List<Var> params) {
         if (clipValue > 0) {
             for (Var p : params) {
@@ -273,6 +313,54 @@ public final class Trainer {
                 }
             }
         }
+    }
+
+    /**
+     * Trains in mixed precision: every step runs the forward and backward pass with
+     * weights converted to {@code type}, while the optimizer updates exact float32 master
+     * weights. For {@code FLOAT16} the loss is multiplied by a scale so small gradients do
+     * not round to zero; when a step's gradients overflow, the step is skipped and the
+     * scale halved, and after {@code growthInterval} good steps in a row it doubles.
+     * {@code BFLOAT16} has float32's range and trains with a scale of 1.
+     *
+     * @param type {@code FLOAT16} or {@code BFLOAT16}
+     * @return this trainer
+     */
+    public Trainer mixedPrecision(DType type) {
+        return mixedPrecision(type, type == DType.FLOAT16 ? 65536f : 1f, type == DType.FLOAT16 ? 2000 : 0);
+    }
+
+    /**
+     * Trains in mixed precision with explicit loss scaling.
+     *
+     * @param type the type to compute in, such as {@code FLOAT16}
+     * @param initialScale the first loss scale, positive
+     * @param growthInterval good steps in a row before the scale doubles; 0 to keep it
+     *     fixed except for halving on overflow
+     * @return this trainer
+     * @see #mixedPrecision(DType)
+     */
+    public Trainer mixedPrecision(DType type, float initialScale, int growthInterval) {
+        if (type == DType.FLOAT32) {
+            throw new IllegalArgumentException("mixed precision needs a type other than FLOAT32");
+        }
+        if (!(initialScale > 0) || growthInterval < 0) {
+            throw new IllegalArgumentException("need a positive scale and a growth interval of at least 0");
+        }
+        this.mixedType = type;
+        this.lossScale = initialScale;
+        this.growthInterval = growthInterval;
+        return this;
+    }
+
+    /** @return the current mixed-precision loss scale; 1 without mixed precision */
+    public float lossScale() {
+        return mixedType == null ? 1f : lossScale;
+    }
+
+    /** @return the steps skipped so far because mixed-precision gradients overflowed */
+    public int skippedSteps() {
+        return skippedSteps;
     }
 
     /**
@@ -333,6 +421,14 @@ public final class Trainer {
             double lossSum = 0;
             Map<String, Double> metricSums = new LinkedHashMap<>();
             for (Batch batch : batches) {
+                List<Tensor> masters = null;
+                if (mixedType != null) {
+                    masters = new ArrayList<>(params.size());
+                    for (Var p : params) {
+                        masters.add(p.value());
+                        p.assign(p.value().to(mixedType));
+                    }
+                }
                 Var out = model.forward(Var.of(batch.features()), true);
                 Tensor targets = shaped(batch.targets(), out);
                 Var l = loss.compute(out, targets);
@@ -342,13 +438,20 @@ public final class Trainer {
                         l = l.add(penalty.mul(l2));
                     }
                 }
-                l.backward();
-                clip(params);
-                optimizer.step(params);
                 lossSum += l.value().item() * batch.size();
                 for (Metric m : metrics) {
                     metricSums.merge(m.name(), (double) m.compute(out.value(), targets) * batch.size(), Double::sum);
                 }
+                if (masters != null) {
+                    l.mul(lossScale).backward();
+                    if (!unscale(params, masters)) {
+                        continue;
+                    }
+                } else {
+                    l.backward();
+                }
+                clip(params);
+                optimizer.step(params);
             }
             Map<String, Float> trainMetrics = new LinkedHashMap<>();
             metricSums.forEach((k, v) -> trainMetrics.put(k, (float) (v / data.size())));
