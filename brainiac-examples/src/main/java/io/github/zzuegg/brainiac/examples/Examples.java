@@ -20,6 +20,7 @@ public final class Examples {
             case "spiral" -> SpiralExample.main(new String[0]);
             case "iris" -> IrisExample.main(new String[0]);
             case "sequence" -> SequenceExample.main(new String[0]);
+            case "sentiment" -> SentimentExample.main(new String[0]);
             case "mnist" -> {
                 try {
                     MnistExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
@@ -35,6 +36,7 @@ public final class Examples {
                       spiral  classify three spiral arms
                       iris    classify iris flowers from CSV
                       sequence  forecast a wave with an LSTM, reverse digits with a transformer
+                      sentiment  learn word embeddings to read made-up reviews
                       mnist   recognize handwritten digits with a CNN (downloads MNIST)
                       gpu     list devices, compare CPU and GPU speed
                       bench   run any model on any task: bench <task> [model...] [--epochs N]""");

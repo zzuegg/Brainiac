@@ -78,6 +78,24 @@ class AcceptanceTest {
     }
 
     @Test
+    void learnedEmbeddingsReadNegationThatABagOfWordsMisses() {
+        Task task = SentimentExample.task().limit(2000, 500);
+        Report bag = Benchmark.run(task, "bag", SentimentExample.bag(), t -> t.epochs(6));
+        Report lstm = Benchmark.run(task, "bilstm", SentimentExample.bilstm(), t -> t.epochs(6));
+        assertTrue(lstm.accuracy() >= 0.95f, "bi-LSTM accuracy " + lstm.accuracy());
+        assertTrue(bag.accuracy() < lstm.accuracy(), "bag " + bag.accuracy() + ", bi-LSTM " + lstm.accuracy());
+    }
+
+    @Test
+    void tokenTasksWorkWithTheGenericSequenceModels() {
+        Task quick = SentimentExample.task().limit(200, 100);
+        for (String name : List.of("bilstm", "gru", "transformer")) {
+            Report r = Benchmark.run(quick, name, BenchmarkExample.model(name, quick), t -> t.epochs(1));
+            assertTrue(Float.isFinite(r.test().loss()), name + ": " + r);
+        }
+    }
+
+    @Test
     void everyOfflineTaskRunsItsDefaultModelAndAGenericOne() {
         for (Task task : Tasks.offline()) {
             Task quick = task.limit(200, 100);

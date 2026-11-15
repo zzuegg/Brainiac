@@ -408,6 +408,18 @@ public final class Node {
     }
 
     /**
+     * Looks up a learned {@code dimension}-vector for every token id; see {@link Embedding}
+     * for padding, pretrained and frozen vectors.
+     *
+     * @param vocabulary the number of token ids
+     * @param dimension the size of each vector
+     * @return the layer's output
+     */
+    public Node embedding(int vocabulary, int dimension) {
+        return add(Embedding.of(vocabulary, dimension));
+    }
+
+    /**
      * Adds this node and another element-wise, as in a residual (skip) connection.
      *
      * @param other a node of the same shape

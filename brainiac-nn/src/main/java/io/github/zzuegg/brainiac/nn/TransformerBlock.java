@@ -47,10 +47,12 @@ public final class TransformerBlock implements MultiInputLayer {
      * @param alibi whether to add ALiBi biases
      * @param dropout the dropout rate
      * @param bias whether projections have biases
+     * @param keyMask whether the last input is a {@code [steps]} mask with 1 for real steps
+     *     and 0 for padding that self-attention ignores
      */
     public record Settings(int features, int memoryFeatures, int heads, int kvHeads, int ffnSize,
             Activation activation, boolean gated, boolean rmsNorm, boolean preNorm, boolean causal, float rotaryBase,
-            boolean alibi, float dropout, boolean bias) {
+            boolean alibi, float dropout, boolean bias, boolean keyMask) {
     }
 
     private final Settings settings;
@@ -75,7 +77,7 @@ public final class TransformerBlock implements MultiInputLayer {
         int d = s.features();
         MultiHeadAttention.Settings self = new MultiHeadAttention.Settings(d, d, s.heads(), s.kvHeads(),
                 d / s.heads(), d / s.heads(), d, s.bias(), s.causal(), s.rotaryBase(), s.alibi(), s.dropout(), 0,
-                false);
+                s.keyMask());
         if (d % s.heads() != 0) {
             throw new IllegalArgumentException(s.heads() + " heads do not divide " + d + " features");
         }
@@ -122,6 +124,7 @@ public final class TransformerBlock implements MultiInputLayer {
         private float dropout;
         private boolean bias = true;
         private boolean cross;
+        private boolean keyMask;
 
         private Spec(int heads) {
             if (heads < 1) {
@@ -144,6 +147,7 @@ public final class TransformerBlock implements MultiInputLayer {
             s.dropout = dropout;
             s.bias = bias;
             s.cross = cross;
+            s.keyMask = keyMask;
             return s;
         }
 
@@ -237,10 +241,30 @@ public final class TransformerBlock implements MultiInputLayer {
             return s;
         }
 
+        /**
+         * Ignores padding: the block then takes a {@code [steps]} mask as its last input,
+         * 1 for real steps and 0 for padding, wired with {@code Node.merge(spec, mask)}
+         * (see {@link PaddingMask}).
+         *
+         * @param mask whether to take a key padding mask
+         * @return the new spec
+         */
+        public Spec keyMask(boolean mask) {
+            Spec s = copy();
+            s.keyMask = mask;
+            return s;
+        }
+
         Settings settings(List<Shape> inputs) {
-            if (inputs.size() != (cross ? 2 : 1)) {
-                throw new IllegalArgumentException(cross ? "a decoder block takes the sequence and the encoder output"
-                        : "a transformer block takes one input; set crossAttention(true) for two");
+            int expected = (cross ? 2 : 1) + (keyMask ? 1 : 0);
+            if (inputs.size() != expected) {
+                throw new IllegalArgumentException("this transformer block takes the sequence"
+                        + (cross ? ", the encoder output" : "") + (keyMask ? " and a padding mask" : "")
+                        + ": " + expected + " inputs, got " + inputs.size());
+            }
+            if (keyMask && inputs.get(expected - 1).size() != inputs.get(0).dim(0)) {
+                throw new IllegalArgumentException("the padding mask must have one value per step, got "
+                        + inputs.get(expected - 1) + " for " + inputs.get(0));
             }
             Shape x = inputs.get(0);
             if (x.rank() != 2 || (cross && inputs.get(1).rank() != 2)) {
@@ -249,7 +273,7 @@ public final class TransformerBlock implements MultiInputLayer {
             int d = x.dim(1);
             return new Settings(d, cross ? inputs.get(1).dim(1) : 0, heads, kvHeads > 0 ? kvHeads : heads,
                     ffnSize > 0 ? ffnSize : 4 * d, activation, gated, rmsNorm, preNorm, causal, rotaryBase, alibi,
-                    dropout, bias);
+                    dropout, bias, keyMask);
         }
 
         @Override
@@ -302,7 +326,9 @@ public final class TransformerBlock implements MultiInputLayer {
     @Override
     public Var forward(List<Var> inputs, boolean training) {
         Var x = inputs.get(0);
-        x = sublayer(x, norm1, h -> selfAttention.forward(List.of(h), training), training);
+        Var mask = settings.keyMask() ? inputs.get(inputs.size() - 1) : null;
+        x = sublayer(x, norm1, h -> selfAttention.forward(mask != null ? List.of(h, mask) : List.of(h), training),
+                training);
         if (crossAttention != null) {
             Var memory = inputs.get(1);
             x = sublayer(x, norm3, h -> crossAttention.forward(List.of(h, memory), training), training);
@@ -350,7 +376,8 @@ public final class TransformerBlock implements MultiInputLayer {
     @Override
     public String toString() {
         return "TransformerBlock(" + settings.features() + ", " + settings.heads() + " heads"
-                + (settings.causal() ? ", causal" : "") + (crossAttention != null ? ", cross" : "") + ")";
+                + (settings.causal() ? ", causal" : "") + (crossAttention != null ? ", cross" : "")
+                + (settings.keyMask() ? ", masked" : "") + ")";
     }
 
     static Config write(TransformerBlock b) {
@@ -361,6 +388,7 @@ public final class TransformerBlock implements MultiInputLayer {
                 .put("activation", s.activation()).put("gated", s.gated()).put("rmsNorm", s.rmsNorm())
                 .put("preNorm", s.preNorm()).put("causal", s.causal()).put("rotaryBase", s.rotaryBase())
                 .put("alibi", s.alibi()).put("dropout", s.dropout()).put("bias", s.bias())
+                .put("keyMask", s.keyMask())
                 .build();
     }
 
@@ -368,6 +396,7 @@ public final class TransformerBlock implements MultiInputLayer {
         return new TransformerBlock(new Settings(c.getInt("features"), c.getInt("memoryFeatures"), c.getInt("heads"),
                 c.getInt("kvHeads"), c.getInt("ffnSize"), c.getActivation("activation"), c.getBoolean("gated"),
                 c.getBoolean("rmsNorm"), c.getBoolean("preNorm"), c.getBoolean("causal"), c.getFloat("rotaryBase"),
-                c.getBoolean("alibi"), c.getFloat("dropout"), c.getBoolean("bias")), new SplittableRandom());
+                c.getBoolean("alibi"), c.getFloat("dropout"), c.getBoolean("bias"),
+                c.has("keyMask") && c.getBoolean("keyMask")), new SplittableRandom());
     }
 }

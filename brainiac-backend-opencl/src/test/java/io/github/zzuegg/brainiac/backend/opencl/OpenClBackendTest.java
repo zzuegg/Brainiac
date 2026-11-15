@@ -181,6 +181,23 @@ class OpenClBackendTest {
     }
 
     @Test
+    void embeddingsWithPaddingMasksMatchTheCpu() {
+        io.github.zzuegg.brainiac.nn.Node ids = io.github.zzuegg.brainiac.nn.Node.input(6);
+        io.github.zzuegg.brainiac.nn.Node mask = ids.layer(new io.github.zzuegg.brainiac.nn.PaddingMask(0));
+        io.github.zzuegg.brainiac.nn.Node out = ids
+                .add(io.github.zzuegg.brainiac.nn.Embedding.of(9, 8).paddingIndex(0).maxNorm(2))
+                .positionalEncoding()
+                .merge(io.github.zzuegg.brainiac.nn.TransformerBlock.of(2).keyMask(true), mask)
+                .merge(io.github.zzuegg.brainiac.nn.MaskedPool.of(io.github.zzuegg.brainiac.nn.SequencePool.Kind.MAX),
+                        mask)
+                .dense(3, Activation.SOFTMAX);
+        Model cpu = Model.graph(ids, out).seed(3).build();
+        Model device = Model.graph(ids, out).seed(3).build().to(gpu);
+        Tensor x = Tensor.of(Shape.of(2, 6), 1, 5, 8, 0, 0, 0, 2, 2, 7, 3, 1, 0);
+        same(DType.FLOAT32, "embedding model", t -> (t.device().equals(gpu) ? device : cpu).predict(t), x);
+    }
+
+    @Test
     void manyTemporaryTensorsAreFreed() {
         Tensor t = Tensor.zeros(Shape.of(1 << 18), gpu);
         for (int i = 0; i < 300; i++) {

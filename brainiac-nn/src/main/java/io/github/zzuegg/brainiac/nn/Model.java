@@ -839,6 +839,18 @@ public final class Model {
         }
 
         /**
+         * Looks up a learned {@code dimension}-vector for every token id; see {@link Embedding}
+         * for padding, pretrained and frozen vectors.
+         *
+         * @param vocabulary the number of token ids
+         * @param dimension the size of each vector
+         * @return this builder
+         */
+        public Builder embedding(int vocabulary, int dimension) {
+            return add(Embedding.of(vocabulary, dimension));
+        }
+
+        /**
          * Fixes the random seed for weight initialization, so builds are reproducible.
          * Without it every build gets different starting weights.
          *

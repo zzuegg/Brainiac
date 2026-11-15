@@ -24,6 +24,7 @@ import java.util.List;
  *   <tr><td>shapes</td><td>[1, 16, 16]</td><td>[3]</td><td>synthetic bars and crosses</td></tr>
  *   <tr><td>waves</td><td>[24, 1]</td><td>[1]</td><td>forecast the next value of a noisy wave</td></tr>
  *   <tr><td>reversal</td><td>[8, 6]</td><td>[8, 6]</td><td>reverse a sequence of digits</td></tr>
+ *   <tr><td>sentiment</td><td>[12]</td><td>[2]</td><td>made-up reviews as word ids, with negation</td></tr>
  *   <tr><td>spiral</td><td>[2]</td><td>[3]</td><td>three interleaved spiral arms</td></tr>
  *   <tr><td>iris</td><td>[4]</td><td>[3]</td><td>iris species from flower measurements</td></tr>
  *   <tr><td>xor</td><td>[2]</td><td>[1]</td><td>exclusive or</td></tr>
@@ -36,7 +37,7 @@ public final class Tasks {
 
     /** The task names, in the order {@link #all()} returns them. */
     public static final List<String> NAMES =
-            List.of("mnist", "fashion", "shapes", "waves", "reversal", "spiral", "iris", "xor");
+            List.of("mnist", "fashion", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
 
     /** Where Fashion-MNIST is downloaded to, relative to the working directory. */
     public static final Path FASHION_DIR = Path.of("data", "fashion-mnist");
@@ -62,6 +63,7 @@ public final class Tasks {
             case "shapes" -> shapes();
             case "waves" -> waves();
             case "reversal" -> reversal();
+            case "sentiment" -> SentimentExample.task();
             case "spiral" -> spiral();
             case "iris" -> iris();
             case "xor" -> xor();
@@ -75,7 +77,7 @@ public final class Tasks {
      * @return the tasks
      */
     public static List<Task> offline() {
-        return List.of(shapes(), waves(), reversal(), spiral(), iris(), xor());
+        return List.of(shapes(), waves(), reversal(), SentimentExample.task(), spiral(), iris(), xor());
     }
 
     /**
