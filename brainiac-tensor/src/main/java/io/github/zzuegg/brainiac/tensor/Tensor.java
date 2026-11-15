@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.tensor;
 
+import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
@@ -709,6 +710,39 @@ public final class Tensor {
     /** @return {@code log(1 + e^x)} for each value, without overflow */
     public Tensor softplus() {
         return unary(UnaryOp.SOFTPLUS);
+    }
+
+    /**
+     * Applies an activation function in one pass, instead of as a chain of simpler
+     * operations.
+     *
+     * @param op the activation
+     * @param param its parameter (such as the leaky ReLU slope); ignored by activations
+     *     without one
+     * @return {@code f(this)}
+     */
+    public Tensor activation(ActivationOp op, float param) {
+        Storage out = backend().allocate(size());
+        backend().activation(op, param, storage, out);
+        return new Tensor(shape, device, out);
+    }
+
+    /**
+     * Computes an activation's input gradient in one pass: {@code grad * f'(this)}.
+     *
+     * @param op the activation
+     * @param param its parameter
+     * @param grad the gradient of {@code f(this)}; same shape as this tensor
+     * @return the gradient with respect to this tensor
+     */
+    public Tensor activationBackward(ActivationOp op, float param, Tensor grad) {
+        sameDevice(grad);
+        if (!grad.shape.equals(shape)) {
+            throw new IllegalArgumentException("gradient shape " + grad.shape + " does not match " + shape);
+        }
+        Storage out = backend().allocate(size());
+        backend().activationBackward(op, param, storage, grad.storage, out);
+        return new Tensor(shape, device, out);
     }
 
     private Tensor unary(UnaryOp op) {

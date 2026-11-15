@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.backend.cpu;
 
 import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
@@ -70,6 +71,33 @@ public final class CpuBackend implements Backend {
     }
 
     @Override
+    public void activation(ActivationOp op, float param, Storage in, Storage out) {
+        float[] x = data(in);
+        float[] y = data(out);
+        if (SIMD && VectorActivationKernels.supports(op)) {
+            Parallel.forRange(x.length, ActivationKernels.cost(op),
+                    (from, to) -> VectorActivationKernels.forward(op, param, x, y, from, to));
+        } else {
+            Parallel.forRange(x.length, ActivationKernels.cost(op),
+                    (from, to) -> ActivationKernels.forward(op, param, x, y, from, to));
+        }
+    }
+
+    @Override
+    public void activationBackward(ActivationOp op, float param, Storage in, Storage grad, Storage out) {
+        float[] x = data(in);
+        float[] g = data(grad);
+        float[] z = data(out);
+        if (SIMD && VectorActivationKernels.supports(op)) {
+            Parallel.forRange(x.length, ActivationKernels.cost(op),
+                    (from, to) -> VectorActivationKernels.backward(op, param, x, g, z, from, to));
+        } else {
+            Parallel.forRange(x.length, ActivationKernels.cost(op),
+                    (from, to) -> ActivationKernels.backward(op, param, x, g, z, from, to));
+        }
+    }
+
+    @Override
     public void binary(BinaryOp op, Storage a, long[] aStrides, Storage b, long[] bStrides, int[] shape, Storage out) {
         float[] x = data(a);
         float[] y = data(b);
@@ -80,17 +108,32 @@ public final class CpuBackend implements Backend {
         boolean aContiguous = Arrays.equals(aStrides, contiguous);
         boolean bContiguous = Arrays.equals(bStrides, contiguous);
 
+        boolean simd = SIMD && VectorActivationKernels.supports(op);
         if (aContiguous && bContiguous) {
-            Parallel.forRange(z.length, cost, (from, to) -> Kernels.binary(op, x, y, z, from, to));
+            if (simd) {
+                Parallel.forRange(z.length, cost, (from, to) -> VectorActivationKernels.binary(op, x, y, z, from, to));
+            } else {
+                Parallel.forRange(z.length, cost, (from, to) -> Kernels.binary(op, x, y, z, from, to));
+            }
         } else if (aContiguous && isZero(bStrides)) {
             float s = y[0];
-            Parallel.forRange(z.length, cost, (from, to) -> Kernels.binaryScalarRight(op, x, s, z, from, to));
+            if (simd) {
+                Parallel.forRange(z.length, cost,
+                        (from, to) -> VectorActivationKernels.binaryScalarRight(op, x, s, z, from, to));
+            } else {
+                Parallel.forRange(z.length, cost, (from, to) -> Kernels.binaryScalarRight(op, x, s, z, from, to));
+            }
         } else if (bContiguous && isZero(aStrides)) {
             float s = x[0];
             Parallel.forRange(z.length, cost, (from, to) -> Kernels.binaryScalarLeft(op, s, y, z, from, to));
         } else if (aContiguous && rank >= 2 && isRowBroadcast(bStrides)) {
             int n = shape[rank - 1];
-            Parallel.forRange(z.length / n, cost * n, (from, to) -> Kernels.binaryRows(op, x, y, z, n, from, to));
+            if (simd) {
+                Parallel.forRange(z.length / n, cost * n,
+                        (from, to) -> VectorActivationKernels.binaryRows(op, x, y, z, n, from, to));
+            } else {
+                Parallel.forRange(z.length / n, cost * n, (from, to) -> Kernels.binaryRows(op, x, y, z, n, from, to));
+            }
         } else {
             Parallel.forRange(z.length, cost + 4,
                     (from, to) -> Kernels.binaryStrided(op, x, aStrides, y, bStrides, shape, z, from, to));
@@ -142,7 +185,8 @@ public final class CpuBackend implements Backend {
     }
 
     /**
-     * Returns whether matrix multiplication uses SIMD instructions through the Vector API.
+     * Returns whether matrix multiplication, element-wise arithmetic and the arithmetic-only
+     * activations use SIMD instructions through the Vector API.
      * That needs the {@code jdk.incubator.vector} module in the JVM (add it with
      * {@code --add-modules jdk.incubator.vector}); {@code -Dbrainiac.cpu.simd=false} turns
      * it off. Both paths give the same results for any thread count, but may differ from

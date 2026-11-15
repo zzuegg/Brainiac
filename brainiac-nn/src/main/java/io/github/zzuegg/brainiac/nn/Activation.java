@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.nn;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -68,45 +69,40 @@ public interface Activation extends Layer {
     Activation LOG_SOFTMAX = logSoftmax(-1);
 
     /** SiLU, {@code x * sigmoid(x)}: Swish with a fixed {@code beta = 1}. */
-    Activation SILU = named("silu", Init.HE, x -> x.mul(x.sigmoid()));
+    Activation SILU = named("silu", Init.HE, x -> x.activation(ActivationOp.SILU, 0));
 
     /** GELU, {@code x * Phi(x)} with the exact normal CDF {@code Phi}; common in transformers. */
-    Activation GELU = named("gelu", Init.HE,
-            x -> x.mul(x.mul((float) (1 / Math.sqrt(2))).erf().add(1)).mul(0.5f));
+    Activation GELU = named("gelu", Init.HE, x -> x.activation(ActivationOp.GELU, 0));
 
     /** GELU with the faster tanh approximation of the normal CDF. */
-    Activation GELU_TANH = named("gelu_tanh", Init.HE, x -> {
-        Var inner = x.add(x.pow(3).mul(0.044715f)).mul((float) Math.sqrt(2 / Math.PI));
-        return x.mul(inner.tanh().add(1)).mul(0.5f);
-    });
+    Activation GELU_TANH = named("gelu_tanh", Init.HE, x -> x.activation(ActivationOp.GELU_TANH, 0));
 
     /** Softplus, {@code log(1 + e^x)}: a smooth ReLU. */
     Activation SOFTPLUS = named("softplus", Init.HE, Var::softplus);
 
     /** Mish, {@code x * tanh(softplus(x))}. */
-    Activation MISH = named("mish", Init.HE, x -> x.mul(x.softplus().tanh()));
+    Activation MISH = named("mish", Init.HE, x -> x.activation(ActivationOp.MISH, 0));
 
     /**
      * SELU: a scaled {@link #elu(float) ELU} that keeps activations normalized; use it with
      * {@link Init#LECUN}, its preferred init.
      */
-    Activation SELU = named("selu", Config.EMPTY, Init.LECUN,
-            x -> eluOf(x, 1.6732632423543772f).mul(1.0507009873554805f));
+    Activation SELU = named("selu", Config.EMPTY, Init.LECUN, x -> x.activation(ActivationOp.SELU, 0));
 
     /** {@code min(max(0, x), 6)}. */
-    Activation RELU6 = named("relu6", Init.HE, x -> x.clamp(0, 6));
+    Activation RELU6 = named("relu6", Init.HE, x -> x.activation(ActivationOp.RELU6, 0));
 
     /** {@code clamp(x, -1, 1)}: a cheap tanh. */
-    Activation HARD_TANH = named("hard_tanh", x -> x.clamp(-1, 1));
+    Activation HARD_TANH = named("hard_tanh", x -> x.activation(ActivationOp.HARD_TANH, 0));
 
     /** {@code clamp(x / 6 + 1/2, 0, 1)}: a cheap sigmoid. */
-    Activation HARD_SIGMOID = named("hard_sigmoid", x -> x.div(6).add(0.5f).clamp(0, 1));
+    Activation HARD_SIGMOID = named("hard_sigmoid", x -> x.activation(ActivationOp.HARD_SIGMOID, 0));
 
     /** {@code x * hardSigmoid(x)}: a cheap Swish. */
-    Activation HARD_SWISH = named("hard_swish", Init.HE, x -> x.mul(x.div(6).add(0.5f).clamp(0, 1)));
+    Activation HARD_SWISH = named("hard_swish", Init.HE, x -> x.activation(ActivationOp.HARD_SWISH, 0));
 
     /** Softsign, {@code x / (1 + |x|)}. */
-    Activation SOFTSIGN = named("softsign", x -> x.div(x.abs().add(1)));
+    Activation SOFTSIGN = named("softsign", x -> x.activation(ActivationOp.SOFTSIGN, 0));
 
     /**
      * Returns the activation to use in a layer with {@code width} units. Activations
@@ -311,7 +307,7 @@ public interface Activation extends Layer {
      */
     static Activation leakyRelu(float slope) {
         return named("leaky_relu", Config.builder().put("slope", slope).build(), Init.HE,
-                x -> x.relu().sub(x.neg().relu().mul(slope)));
+                x -> x.activation(ActivationOp.LEAKY_RELU, slope));
     }
 
     /**
@@ -330,12 +326,8 @@ public interface Activation extends Layer {
      * @return the activation
      */
     static Activation elu(float alpha) {
-        return named("elu", Config.builder().put("alpha", alpha).build(), Init.HE, x -> eluOf(x, alpha));
-    }
-
-    private static Var eluOf(Var x, float alpha) {
-        // exp of min(x, 0), so large positive inputs cannot overflow into the unused branch
-        return Var.where(x.greater(0), x, x.minimum(0).exp().sub(1).mul(alpha));
+        return named("elu", Config.builder().put("alpha", alpha).build(), Init.HE,
+                x -> x.activation(ActivationOp.ELU, alpha));
     }
 
     /**

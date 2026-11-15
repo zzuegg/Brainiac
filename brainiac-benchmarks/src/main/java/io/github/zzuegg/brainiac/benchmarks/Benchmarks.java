@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.benchmarks;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Loss;
@@ -11,9 +12,12 @@ import io.github.zzuegg.brainiac.train.Trainer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.SplittableRandom;
+import java.util.function.UnaryOperator;
 
 /**
  * Measures the speed of core operations and of a training loop.
@@ -100,6 +104,25 @@ public final class Benchmarks {
         cases.add(new Case("sum axis 0 4096x1024", elements / 1e6, "M elem/s", () -> rows.sum(0)));
         cases.add(new Case("transpose 4096x1024", elements / 1e6, "M elem/s", rows::transpose));
 
+        // activations, forward and backward: fused kernels against the same function
+        // written as a chain of Var operations
+        Var in = Var.param(rows);
+        Map<String, UnaryOperator<Var>> composed = new LinkedHashMap<>();
+        composed.put("gelu", t -> t.mul(t.mul((float) (1 / Math.sqrt(2))).erf().add(1)).mul(0.5f));
+        composed.put("silu", t -> t.mul(t.sigmoid()));
+        composed.put("leaky_relu", t -> t.relu().sub(t.neg().relu().mul(0.01f)));
+        composed.put("hard_swish", t -> t.mul(t.div(6).add(0.5f).clamp(0, 1)));
+        Map<String, Activation> fused = Map.of("gelu", Activation.GELU, "silu", Activation.SILU,
+                "leaky_relu", Activation.leakyRelu(), "hard_swish", Activation.HARD_SWISH);
+        for (var e : composed.entrySet()) {
+            Activation a = fused.get(e.getKey());
+            UnaryOperator<Var> f = e.getValue();
+            cases.add(new Case(e.getKey() + " fwd+bwd 4M fused", elements / 1e6, "M elem/s",
+                    () -> activationStep(in, a::forward)));
+            cases.add(new Case(e.getKey() + " fwd+bwd 4M composed", elements / 1e6, "M elem/s",
+                    () -> activationStep(in, f)));
+        }
+
         int samples = quick ? 1024 : 4096;
         float[][] features = new float[samples][784];
         float[][] labels = new float[samples][10];
@@ -118,6 +141,13 @@ public final class Benchmarks {
         cases.add(new Case("train MLP 784-256-128-10, 1 epoch", samples / 1e3, "k samples/s", () -> trainer.fit(data)));
         return cases;
     }
+
+    private static void activationStep(Var in, UnaryOperator<Var> f) {
+        in.zeroGrad();
+        f.apply(in).backward(ONES_4M);
+    }
+
+    private static final Tensor ONES_4M = Tensor.ones(Shape.of(4096, 1024));
 
     private static double measure(Runnable run, boolean quick) {
         // warm up for a fixed time so the JIT compiler has compiled the hot loops
