@@ -137,11 +137,23 @@ Run the examples:
 ## Performance
 
 The CPU backend splits large operations across all cores (limit with
-`-Dbrainiac.cpu.threads=N`); results are bit-identical for any thread count. Measure on
-your machine with:
+`-Dbrainiac.cpu.threads=N`); results are bit-identical for any thread count.
+
+Matrix multiplication can also use SIMD instructions through Java's incubating Vector
+API, which is about 8x faster. It is opt-in, because the JVM prints a warning for
+incubator modules: start your program with `--add-modules jdk.incubator.vector`
+(the examples and benchmarks already do). `CpuBackend.simd()` tells whether it is on.
+
+| 4-core machine | plain Java | with SIMD |
+| --- | --- | --- |
+| matmul 1024x1024 | 15 GFLOP/s | 147 GFLOP/s |
+| train MLP 784-256-128-10 | 8.2 k samples/s | 20 k samples/s |
+
+Measure on your machine with:
 
 ```sh
 ./gradlew :brainiac-benchmarks:run                        # all cases
 ./gradlew :brainiac-benchmarks:run --args="--quick"       # shorter
 ./gradlew :brainiac-benchmarks:run --args="--threads 1"   # single-threaded
+./gradlew :brainiac-benchmarks:run --args="--no-simd"     # without the Vector API
 ```

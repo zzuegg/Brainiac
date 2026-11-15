@@ -27,6 +27,7 @@ import java.util.SplittableRandom;
  * ./gradlew :brainiac-benchmarks:run --args="--quick"         # fewer, shorter cases
  * ./gradlew :brainiac-benchmarks:run --args="--threads 1"     # single-threaded backend
  * ./gradlew :brainiac-benchmarks:run --args="--filter matmul" # cases whose name contains "matmul"
+ * ./gradlew :brainiac-benchmarks:run --args="--no-simd"      # plain Java kernels only
  * </pre>
  */
 public final class Benchmarks {
@@ -41,7 +42,7 @@ public final class Benchmarks {
     /**
      * Runs the benchmarks.
      *
-     * @param args {@code --quick}, {@code --threads N}, {@code --filter TEXT}
+     * @param args {@code --quick}, {@code --threads N}, {@code --filter TEXT}, {@code --no-simd}
      */
     public static void main(String[] args) {
         boolean quick = false;
@@ -51,14 +52,17 @@ public final class Benchmarks {
                 case "--quick" -> quick = true;
                 case "--threads" -> System.setProperty("brainiac.cpu.threads", args[++i]);
                 case "--filter" -> filter = args[++i];
+                case "--no-simd" -> System.setProperty("brainiac.cpu.simd", "false");
                 default -> throw new IllegalArgumentException("unknown option " + args[i]
-                        + "; use --quick, --threads N or --filter TEXT");
+                        + "; use --quick, --threads N, --filter TEXT or --no-simd");
             }
         }
         String threads = System.getProperty("brainiac.cpu.threads",
                 String.valueOf(Runtime.getRuntime().availableProcessors()));
-        System.out.printf(Locale.ROOT, "Brainiac benchmarks: Java %s, %s threads%n%n",
-                Runtime.version(), threads);
+        boolean simd = ModuleLayer.boot().findModule("jdk.incubator.vector").isPresent()
+                && Boolean.parseBoolean(System.getProperty("brainiac.cpu.simd", "true"));
+        System.out.printf(Locale.ROOT, "Brainiac benchmarks: Java %s, %s threads, SIMD %s%n%n",
+                Runtime.version(), threads, simd ? "on" : "off");
         System.out.printf(Locale.ROOT, "%-36s %12s %16s%n", "case", "median", "throughput");
 
         for (Case c : cases(quick)) {

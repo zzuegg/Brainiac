@@ -17,6 +17,8 @@ import java.util.Arrays;
  */
 public final class CpuBackend implements Backend {
 
+    private static final boolean SIMD = simdAvailable();
+
     /** Creates the backend; called by {@link java.util.ServiceLoader}. */
     public CpuBackend() {
     }
@@ -132,7 +134,38 @@ public final class CpuBackend implements Backend {
         float[] y = data(b);
         float[] z = data(out);
         Arrays.fill(z, 0, m * n, 0f);
-        Parallel.forRange(m, 2L * k * n, (from, to) -> Kernels.matmulRows(x, y, z, k, n, from, to));
+        if (SIMD) {
+            Parallel.forRange(m, 2L * k * n, (from, to) -> VectorKernels.matmulRows(x, y, z, k, n, from, to));
+        } else {
+            Parallel.forRange(m, 2L * k * n, (from, to) -> Kernels.matmulRows(x, y, z, k, n, from, to));
+        }
+    }
+
+    /**
+     * Returns whether matrix multiplication uses SIMD instructions through the Vector API.
+     * That needs the {@code jdk.incubator.vector} module in the JVM (add it with
+     * {@code --add-modules jdk.incubator.vector}); {@code -Dbrainiac.cpu.simd=false} turns
+     * it off. Both paths give the same results for any thread count, but may differ from
+     * each other in the last bit.
+     *
+     * @return {@code true} if SIMD kernels are used
+     */
+    public static boolean simd() {
+        return SIMD;
+    }
+
+    private static boolean simdAvailable() {
+        if (!Boolean.parseBoolean(System.getProperty("brainiac.cpu.simd", "true"))) {
+            return false;
+        }
+        if (ModuleLayer.boot().findModule("jdk.incubator.vector").isEmpty()) {
+            return false;
+        }
+        try {
+            return VectorKernels.lanes() >= 4;
+        } catch (LinkageError e) {
+            return false;
+        }
     }
 
     @Override
