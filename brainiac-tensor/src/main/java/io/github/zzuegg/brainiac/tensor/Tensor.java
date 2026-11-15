@@ -8,6 +8,8 @@ import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.random.RandomGenerator;
 
@@ -208,9 +210,39 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor full(Shape shape, float value, DType dtype, Device device) {
+        if (shape.rank() == 0) {
+            // Tensors are immutable, so single values are shared; on a GPU each new one
+            // would otherwise cost a device command.
+            ScalarKey key = new ScalarKey(device, dtype, Float.floatToRawIntBits(value));
+            synchronized (SCALARS) {
+                Tensor t = SCALARS.get(key);
+                if (t == null) {
+                    t = filled(shape, value, dtype, device);
+                    SCALARS.put(key, t);
+                }
+                return t;
+            }
+        }
+        return filled(shape, value, dtype, device);
+    }
+
+    private record ScalarKey(Device device, DType dtype, int bits) {
+    }
+
+    private static final Map<ScalarKey, Tensor> SCALARS = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<ScalarKey, Tensor> eldest) {
+            return size() > 1_024;
+        }
+    };
+
+    private static Tensor filled(Shape shape, float value, DType dtype, Device device) {
         Backend backend = device.backend();
-        Storage s = backend.allocate(shape.size(), dtype);
-        if (value != 0f) {
+        Storage s;
+        if (value == 0f) {
+            s = backend.allocate(shape.size(), dtype);
+        } else {
+            s = backend.allocateUninitialized(shape.size(), dtype);
             backend.fill(s, value);
         }
         return new Tensor(shape, device, s);
@@ -349,7 +381,7 @@ public final class Tensor {
         if (type == dtype()) {
             return this;
         }
-        Storage out = backend().allocate(size(), type);
+        Storage out = backend().allocateUninitialized(size(), type);
         backend().convert(storage, out);
         return new Tensor(shape, device, out);
     }
@@ -522,7 +554,7 @@ public final class Tensor {
         dims[a] = end - start;
         Shape outShape = Shape.of(dims);
         long[] strides = shape.strides();
-        Storage out = backend().allocate(outShape.size(), dtype());
+        Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().copy(storage, start * strides[a], strides, dims, out, 0, outShape.strides());
         return new Tensor(outShape, device, out);
     }
@@ -562,7 +594,7 @@ public final class Tensor {
         }
         Shape outShape = Shape.of(dims);
         long[] outStrides = outShape.strides();
-        Storage out = first.backend().allocate(outShape.size(), type);
+        Storage out = first.backend().allocateUninitialized(outShape.size(), type);
         long offset = 0;
         for (Tensor part : parts) {
             Tensor t = part.to(type);
@@ -573,7 +605,7 @@ public final class Tensor {
     }
 
     private Tensor strided(long[] strides, Shape outShape) {
-        Storage out = backend().allocate(outShape.size(), dtype());
+        Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().copy(storage, strides, outShape.toArray(), out);
         return new Tensor(outShape, device, out);
     }
@@ -821,7 +853,7 @@ public final class Tensor {
      * @return {@code f(this)}
      */
     public Tensor activation(ActivationOp op, float param) {
-        Storage out = backend().allocate(size(), dtype());
+        Storage out = backend().allocateUninitialized(size(), dtype());
         backend().activation(op, param, storage, out);
         return new Tensor(shape, device, out);
     }
@@ -840,13 +872,13 @@ public final class Tensor {
             throw new IllegalArgumentException("gradient shape " + grad.shape + " does not match " + shape);
         }
         grad = grad.to(dtype());
-        Storage out = backend().allocate(size(), dtype());
+        Storage out = backend().allocateUninitialized(size(), dtype());
         backend().activationBackward(op, param, storage, grad.storage, out);
         return new Tensor(shape, device, out);
     }
 
     private Tensor unary(UnaryOp op) {
-        Storage out = backend().allocate(size(), dtype());
+        Storage out = backend().allocateUninitialized(size(), dtype());
         backend().unary(op, storage, out);
         return new Tensor(shape, device, out);
     }
@@ -857,7 +889,7 @@ public final class Tensor {
         DType type = resultType(this, other);
         Tensor a = to(type);
         Tensor b = other.to(type);
-        Storage out = backend().allocate(outShape.size(), type);
+        Storage out = backend().allocateUninitialized(outShape.size(), type);
         backend().binary(op, a.storage, shape.broadcastStrides(outShape),
                 b.storage, other.shape.broadcastStrides(outShape), outShape.toArray(), out);
         return new Tensor(outShape, device, out);
@@ -913,7 +945,7 @@ public final class Tensor {
         }
         if (rank() == 2 && other.rank() == 2) {
             Shape outShape = Shape.of(m, n);
-            Storage out = backend().allocate(outShape.size(), dtype());
+            Storage out = backend().allocateUninitialized(outShape.size(), dtype());
             backend().matmul(storage, other.storage, m, k, n, out);
             return new Tensor(outShape, device, out);
         }
@@ -934,7 +966,7 @@ public final class Tensor {
         outDims[batch.rank()] = m;
         outDims[batch.rank() + 1] = n;
         Shape outShape = Shape.of(outDims);
-        Storage out = backend().allocate(outShape.size(), dtype());
+        Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().matmulBatched(a.storage, b.storage, count, m, k, n, out);
         return new Tensor(outShape, device, out);
     }
@@ -964,7 +996,7 @@ public final class Tensor {
             throw new IllegalArgumentException("im2col expects images " + geometry.imageShape() + ", got " + shape);
         }
         Shape outShape = geometry.columnShape();
-        Storage out = backend().allocate(outShape.size(), dtype());
+        Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().im2col(storage, geometry, padValue, out);
         return new Tensor(outShape, device, out);
     }
@@ -1015,7 +1047,7 @@ public final class Tensor {
         System.arraycopy(idx, 0, outDims, a, idx.length);
         System.arraycopy(dims, a + 1, outDims, a + idx.length, dims.length - a - 1);
         Shape outShape = Shape.of(outDims);
-        Storage out = backend().allocate(outShape.size(), dtype());
+        Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().gather(storage, outer, dims[a], inner, indices.storage, count, out);
         return new Tensor(outShape, device, out);
     }
@@ -1161,7 +1193,7 @@ public final class Tensor {
     }
 
     private Tensor reduceAll(ReduceOp op) {
-        Storage out = backend().allocate(1, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
+        Storage out = backend().allocateUninitialized(1, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
         backend().reduce(op, storage, 1, size(), 1, out);
         return new Tensor(Shape.of(), device, out);
     }
@@ -1186,7 +1218,7 @@ public final class Tensor {
             System.arraycopy(dims, 0, outDims, 0, a);
             System.arraycopy(dims, a + 1, outDims, a, dims.length - a - 1);
         }
-        Storage out = backend().allocate(outer * inner, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
+        Storage out = backend().allocateUninitialized(outer * inner, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
         backend().reduce(op, storage, outer, dims[a], inner, out);
         return new Tensor(Shape.of(outDims), device, out);
     }

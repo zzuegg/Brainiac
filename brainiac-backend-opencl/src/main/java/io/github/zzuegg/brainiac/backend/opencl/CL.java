@@ -28,7 +28,10 @@ final class CL {
     static final long DEVICE_TYPE_ACCELERATOR = 1L << 3;
     static final long DEVICE_TYPE_ALL = 0xFFFFFFFFL;
     static final int DEVICE_TYPE = 0x1000;
+    static final int DEVICE_MAX_COMPUTE_UNITS = 0x1002;
     static final int DEVICE_MAX_WORK_GROUP_SIZE = 0x1004;
+    static final int DEVICE_MAX_CLOCK_FREQUENCY = 0x100C;
+    static final int DEVICE_HOST_UNIFIED_MEMORY = 0x1035;
     static final int DEVICE_GLOBAL_MEM_SIZE = 0x101F;
     static final int DEVICE_NAME = 0x102B;
     static final int DEVICE_EXTENSIONS = 0x1030;
@@ -37,6 +40,9 @@ final class CL {
     static final long MEM_READ_WRITE = 1L;
     static final long MEM_READ_ONLY = 1L << 2;
     static final long MEM_COPY_HOST_PTR = 1L << 5;
+    static final long QUEUE_PROFILING_ENABLE = 1L << 1;
+    static final int PROFILING_COMMAND_START = 0x1282;
+    static final int PROFILING_COMMAND_END = 0x1283;
     static final int OUT_OF_RESOURCES = -5;
     static final int MEM_OBJECT_ALLOCATION_FAILURE = -4;
 
@@ -72,6 +78,8 @@ final class CL {
     private final MethodHandle setKernelArg;
     private final MethodHandle enqueueNDRangeKernel;
     private final MethodHandle finish;
+    private final MethodHandle getEventProfilingInfo;
+    private final MethodHandle releaseEvent;
 
     private CL(SymbolLookup lib) {
         Linker linker = Linker.nativeLinker();
@@ -104,6 +112,9 @@ final class CL {
         enqueueNDRangeKernel = handle(linker, lib, "clEnqueueNDRangeKernel", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT,
                 ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS);
         finish = handle(linker, lib, "clFinish", JAVA_INT, ADDRESS);
+        getEventProfilingInfo = handle(linker, lib, "clGetEventProfilingInfo", JAVA_INT, ADDRESS, JAVA_INT,
+                JAVA_LONG, ADDRESS, ADDRESS);
+        releaseEvent = handle(linker, lib, "clReleaseEvent", JAVA_INT, ADDRESS);
     }
 
     /**
@@ -246,10 +257,11 @@ final class CL {
         }
     }
 
-    MemorySegment createQueue(MemorySegment context, MemorySegment device) {
+    MemorySegment createQueue(MemorySegment context, MemorySegment device, boolean profiling) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment err = arena.allocate(JAVA_INT);
-            MemorySegment q = (MemorySegment) createCommandQueue.invokeExact(context, device, 0L, err);
+            MemorySegment q = (MemorySegment) createCommandQueue.invokeExact(context, device,
+                    profiling ? QUEUE_PROFILING_ENABLE : 0L, err);
             check(err.get(JAVA_INT, 0), "clCreateCommandQueue");
             return q;
         } catch (Throwable t) {
@@ -287,8 +299,14 @@ final class CL {
     }
 
     void write(MemorySegment queue, MemorySegment buffer, long offset, MemorySegment data) {
+        write(queue, buffer, offset, data, true);
+    }
+
+    /** Enqueues a copy to the device; without blocking, {@code data} must stay alive until the queue is done. */
+    void write(MemorySegment queue, MemorySegment buffer, long offset, MemorySegment data, boolean blocking) {
         try {
-            check((int) enqueueWriteBuffer.invokeExact(queue, buffer, 1, offset, data.byteSize(), data, 0,
+            check((int) enqueueWriteBuffer.invokeExact(queue, buffer, blocking ? 1 : 0, offset, data.byteSize(), data,
+                    0,
                     MemorySegment.NULL, MemorySegment.NULL), "clEnqueueWriteBuffer");
         } catch (Throwable t) {
             throw rethrow(t);
@@ -370,7 +388,13 @@ final class CL {
         }
     }
 
-    void run(MemorySegment queue, MemorySegment kernel, long[] global, long[] local) {
+    /**
+     * Enqueues a kernel.
+     *
+     * @return the kernel's event when {@code event} is true (release it with
+     *         {@link #releaseEvent}), otherwise {@link MemorySegment#NULL}
+     */
+    MemorySegment run(MemorySegment queue, MemorySegment kernel, long[] global, long[] local, boolean event) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment g = arena.allocate(JAVA_LONG, global.length);
             for (int i = 0; i < global.length; i++) {
@@ -383,8 +407,33 @@ final class CL {
                     l.setAtIndex(JAVA_LONG, i, local[i]);
                 }
             }
+            MemorySegment e = event ? arena.allocate(ADDRESS) : MemorySegment.NULL;
             check((int) enqueueNDRangeKernel.invokeExact(queue, kernel, global.length, MemorySegment.NULL, g, l, 0,
-                    MemorySegment.NULL, MemorySegment.NULL), "clEnqueueNDRangeKernel");
+                    MemorySegment.NULL, e), "clEnqueueNDRangeKernel");
+            return event ? e.get(ADDRESS, 0) : MemorySegment.NULL;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Nanoseconds a finished command spent executing on the device. */
+    long elapsedNanos(MemorySegment event) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment start = arena.allocate(JAVA_LONG);
+            MemorySegment end = arena.allocate(JAVA_LONG);
+            check((int) getEventProfilingInfo.invokeExact(event, PROFILING_COMMAND_START, 8L, start,
+                    MemorySegment.NULL), "clGetEventProfilingInfo");
+            check((int) getEventProfilingInfo.invokeExact(event, PROFILING_COMMAND_END, 8L, end,
+                    MemorySegment.NULL), "clGetEventProfilingInfo");
+            return end.get(JAVA_LONG, 0) - start.get(JAVA_LONG, 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    void releaseEvent(MemorySegment event) {
+        try {
+            check((int) releaseEvent.invokeExact(event), "clReleaseEvent");
         } catch (Throwable t) {
             throw rethrow(t);
         }

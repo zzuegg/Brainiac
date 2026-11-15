@@ -200,6 +200,19 @@ public interface Backend {
     }
 
     /**
+     * Allocates storage whose contents are undefined, for results that an operation
+     * overwrites completely. Backends where clearing costs a device command (such as a GPU)
+     * skip it; the default clears anyway.
+     *
+     * @param size the number of values
+     * @param dtype the type
+     * @return the new storage
+     */
+    default Storage allocateUninitialized(long size, DType dtype) {
+        return allocate(size, dtype);
+    }
+
+    /**
      * Allocates zero-filled storage of a type.
      *
      * @param size the number of values
