@@ -132,10 +132,30 @@ public interface Activation extends Layer {
     }
 
     /**
+     * The name model files store and the {@linkplain #register(String, Function) registry}
+     * looks up.
+     *
+     * @return the name; {@code toString()} unless overridden
+     */
+    default String name() {
+        return toString();
+    }
+
+    /**
+     * The width this copy is bound to, so a loaded model can bind it again before its
+     * parameters are restored.
+     *
+     * @return the bound width, or -1 if the activation is not bound to one
+     */
+    default int boundWidth() {
+        return -1;
+    }
+
+    /**
      * The settings needed to recreate this activation when a model is loaded, passed to
-     * the factory {@linkplain #register(String, Function) registered} under its name
-     * ({@code toString()}). Learnable parameters are not part of it; they are saved
-     * with the model's other parameters.
+     * the factory {@linkplain #register(String, Function) registered} under its
+     * {@link #name()}. Learnable parameters are not part of it; they are saved with the
+     * model's other parameters.
      *
      * @return the settings; empty unless overridden
      */
@@ -144,7 +164,7 @@ public interface Activation extends Layer {
     }
 
     /**
-     * Makes an activation loadable from model files under its name ({@code toString()}).
+     * Makes an activation loadable from model files under its {@link #name()}.
      * Built-in activations are registered already. A learnable template is rebuilt and
      * bound to the saved width, then its parameters are restored.
      *
@@ -152,14 +172,14 @@ public interface Activation extends Layer {
      */
     static void register(Activation activation) {
         Objects.requireNonNull(activation, "activation");
-        register(activation.toString(), config -> activation);
+        register(activation.name(), config -> activation);
     }
 
     /**
      * Makes activations with settings loadable from model files: the file stores the name
      * and {@link #config()}, and loading calls {@code factory} with that config.
      *
-     * @param name the activation's name, as its {@code toString()} returns it
+     * @param name the activation's {@link #name()}
      * @param factory recreates the activation (or learnable template) from its config
      */
     static void register(String name, Function<Config, Activation> factory) {
@@ -319,6 +339,49 @@ public interface Activation extends Layer {
     }
 
     /**
+     * Gives different groups of units different activations: the units are split into
+     * equal contiguous groups (the first groups get one more unit when the width does not
+     * divide evenly), one per activation.
+     *
+     * <pre>{@code
+     * // 32 units: 16 ReLU, 16 tanh
+     * model.dense(32, Activation.split(Activation.RELU, Activation.TANH));
+     * }</pre>
+     *
+     * @param activations one activation per group; learnable ones get their own
+     *     parameters for their group
+     * @return the activation
+     */
+    static Activation split(Activation... activations) {
+        return SplitActivation.of(null, activations);
+    }
+
+    /**
+     * Gives different groups of units different activations, with group sizes of your
+     * choice. Use sizes of 1 to choose an activation for every single unit.
+     *
+     * @param sizes the number of units in each group, adding up to the layer width
+     * @param activations one activation per group
+     * @return the activation
+     */
+    static Activation split(int[] sizes, Activation... activations) {
+        return SplitActivation.of(Objects.requireNonNull(sizes, "sizes"), activations);
+    }
+
+    /**
+     * A learned blend of several activations: every unit computes
+     * {@code sum_k w_k * f_k(x)} with its own weights {@code w = softmax(logits)}, which
+     * start equal and are trained with the rest of the model, so the network picks the
+     * activation each unit works best with.
+     *
+     * @param candidates the activations to blend, at least two
+     * @return the activation template
+     */
+    static Activation mix(Activation... candidates) {
+        return MixedActivation.of(candidates);
+    }
+
+    /**
      * Creates a learnable activation. Each layer using it gets its own parameters,
      * created by {@code init} from the layer's width.
      *
@@ -456,8 +519,8 @@ public interface Activation extends Layer {
             return weightInit;
         }
 
-        /** @return the width this copy is bound to, or -1 for a template */
-        public int width() {
+        @Override
+        public int boundWidth() {
             return width;
         }
 

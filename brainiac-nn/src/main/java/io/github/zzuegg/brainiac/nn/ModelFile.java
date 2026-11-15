@@ -85,9 +85,9 @@ final class ModelFile {
         }
         out.writeInt(activations.size());
         for (Activation a : activations) {
-            out.writeUTF(a.toString());
+            out.writeUTF(a.name());
             writeConfig(a.config(), activationIndex, out);
-            out.writeInt(a instanceof Activation.Parametric p ? p.width() : -1);
+            out.writeInt(a.boundWidth());
         }
         out.writeInt(layers.size());
         for (int i = 0; i < layers.size(); i++) {

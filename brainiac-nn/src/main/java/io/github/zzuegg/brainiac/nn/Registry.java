@@ -72,13 +72,15 @@ final class Registry {
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
                 Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
                 Activation.HARD_SWISH, Activation.SOFTSIGN}) {
-            activation(a.toString(), c -> a);
+            activation(a.name(), c -> a);
         }
         activation("softmax", c -> c.has("axis") ? Activation.softmax(c.getInt("axis")) : Activation.SOFTMAX);
         activation("log_softmax",
                 c -> c.has("axis") ? Activation.logSoftmax(c.getInt("axis")) : Activation.LOG_SOFTMAX);
         activation("leaky_relu", c -> Activation.leakyRelu(c.getFloat("slope")));
         activation("elu", c -> Activation.elu(c.getFloat("alpha")));
+        activation("split", SplitActivation.factory());
+        activation("mix", MixedActivation.factory());
         activation("prelu", c -> Activation.prelu());
         activation("swish", c -> Activation.swish());
     }
