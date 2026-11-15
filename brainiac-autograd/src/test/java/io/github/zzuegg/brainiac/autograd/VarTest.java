@@ -99,7 +99,7 @@ class VarTest {
     }
 
     @Test
-    void onlyParametersCanBeAssigned() {
+    void onlyLeavesCanBeAssigned() {
         Var p = Var.param(Tensor.of(1, 2));
         Var before = p.mul(2);
         p.assign(Tensor.of(5, 6));
@@ -107,7 +107,9 @@ class VarTest {
         assertArrayEquals(new float[] {2, 4}, before.value().toArray());
         assertThrows(IllegalArgumentException.class, () -> p.assign(Tensor.of(1)));
         assertThrows(IllegalStateException.class, () -> before.assign(Tensor.of(1, 1)));
-        assertThrows(IllegalStateException.class, () -> Var.of(Tensor.of(1)).assign(Tensor.of(2)));
+        Var constant = Var.of(Tensor.of(1));
+        constant.assign(Tensor.of(2));
+        assertEquals(2f, constant.value().item());
     }
 
     @Test

@@ -115,16 +115,16 @@ public final class Var {
     }
 
     /**
-     * Replaces the value of a parameter, for example after an optimizer step. Values
-     * computed earlier keep the value they were computed from.
+     * Replaces the value of a leaf (a parameter or a constant), for example after an
+     * optimizer step or to update a layer's running statistics. Values computed earlier
+     * keep the value they were computed from.
      *
      * @param newValue the new value; must have the same shape
-     * @throws IllegalStateException if this is not a parameter created by
-     *     {@link #param(Tensor)}
+     * @throws IllegalStateException if this value was computed from other values
      */
     public void assign(Tensor newValue) {
-        if (!requiresGrad || backward != null) {
-            throw new IllegalStateException("only parameters can be assigned");
+        if (backward != null) {
+            throw new IllegalStateException("only leaf values (parameters and constants) can be assigned");
         }
         if (!newValue.shape().equals(value.shape())) {
             throw new IllegalArgumentException("new value shape " + newValue.shape() + " does not match " + value.shape());

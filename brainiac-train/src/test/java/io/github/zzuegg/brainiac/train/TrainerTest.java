@@ -166,4 +166,14 @@ class TrainerTest {
         assertTrue(model.predict(0, 1)[0] > 0.8, "loss " + result.finalLoss());
         assertTrue(model.predict(1, 1)[0] < 0.2, "loss " + result.finalLoss());
     }
+
+    @Test
+    void trainsWithBatchNorm() {
+        Model model = Model.sequential().input(2).dense(16).batchNorm().activation(Activation.TANH)
+                .dense(1, Activation.SIGMOID).seed(42).build();
+        TrainingResult result = Trainer.of(model).loss(Loss.MSE).optimizer(Optimizer.adam(0.05f)).batchSize(4)
+                .epochs(1_000).seed(42).fit(XOR);
+        assertTrue(model.predict(0, 1)[0] > 0.8, "loss " + result.finalLoss());
+        assertTrue(model.predict(1, 1)[0] < 0.2, "loss " + result.finalLoss());
+    }
 }

@@ -44,6 +44,17 @@ public interface Layer {
     }
 
     /**
+     * Returns state that is not trained by gradients but belongs to the model, such as
+     * the running statistics of {@link BatchNorm}. It moves with the model between
+     * devices and is saved with it.
+     *
+     * @return the buffers, in a stable order; empty for layers without any
+     */
+    default List<Var> buffers() {
+        return List.of();
+    }
+
+    /**
      * Returns how many features each output row has, given the input width.
      *
      * @param inputSize the number of input features
