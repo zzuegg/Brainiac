@@ -14,6 +14,7 @@ rootProject.name = "brainiac-root"
 include(
     "brainiac-tensor",
     "brainiac-backend-cpu",
+    "brainiac-backend-opencl",
     "brainiac-autograd",
     "brainiac-nn",
     "brainiac-train",

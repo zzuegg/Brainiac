@@ -27,8 +27,9 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 
 | Module | Contents |
 | --- | --- |
-| `brainiac-tensor` | Shapes, float32 tensors, tensor math, and the `Backend` SPI |
+| `brainiac-tensor` | Shapes, tensors (float32, float64, float16, bfloat16), tensor math, and the `Backend` SPI |
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
+| `brainiac-backend-opencl` | Optional GPU backend: OpenCL through the Foreign Function and Memory API |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners |
@@ -287,6 +288,47 @@ From the command line, with built-in models (`default`, `linear`, `mlp`, `cnn`, 
 ./gradlew :brainiac-examples:run --args="bench mnist linear mlp lenet cnn --epochs 1"
 ./gradlew :brainiac-examples:run --args="bench offline"          # every task without a download
 ./gradlew :brainiac-examples:run --args="bench fashion my-model.brainiac --confusion"
+```
+
+## GPU and number formats
+
+Add `brainiac-backend-opencl` to run on a GPU. It calls the graphics driver's OpenCL
+library directly through Java's Foreign Function and Memory API, so there is nothing
+native to build. Allow it to call native code with
+`--enable-native-access=io.github.zzuegg.brainiac.backend.opencl` (or `ALL-UNNAMED` on
+the class path).
+
+```java
+Device gpu = Device.best();          // the GPU if OpenCL finds one, else the CPU
+Model model = ... .build().to(gpu);  // parameters move to device memory
+Trainer.of(model).fit(data);         // batches follow the model
+```
+
+The same kernels run every model: layers are written once against tensor operations,
+and each operation launches one precompiled OpenCL kernel. Memory of unreachable tensors
+is returned when they are garbage collected. System properties:
+`brainiac.opencl.devices` (`gpu` by default, `cpu` or `all` to include OpenCL CPU drivers
+such as PoCL), `brainiac.opencl.device` (index), `brainiac.opencl.memory` (MB budget).
+Without an OpenCL GPU the backend reports itself unavailable and its tests are skipped;
+CI runs them on PoCL.
+
+Tensors and models come in four number formats:
+
+```java
+Model precise = model.to(DType.FLOAT64);              // double precision
+Model small = model.to(DType.BFLOAT16);               // half the memory
+Trainer.of(model).mixedPrecision(DType.FLOAT16);      // compute in float16, float32 weights,
+                                                      // dynamic loss scaling
+```
+
+Mixed types promote to the wider one, gradients keep their value's format, and saved
+models keep each tensor's format. On the CPU, float32 uses the fast kernels and the other
+formats are computed in double precision; on OpenCL, float64 needs `cl_khr_fp64` and
+float16/bfloat16 are stored in 16 bits and computed in float32.
+
+```
+./gradlew :brainiac-examples:run --args="gpu"                     # devices and speed
+./gradlew :brainiac-examples:run --args="bench mnist cnn --device gpu --mixed f16"
 ```
 
 ## Performance

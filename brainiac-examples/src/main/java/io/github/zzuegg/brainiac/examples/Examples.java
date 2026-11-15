@@ -27,6 +27,7 @@ public final class Examples {
                     throw new java.io.UncheckedIOException(e);
                 }
             }
+            case "gpu" -> GpuExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "bench" -> BenchmarkExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
@@ -35,6 +36,7 @@ public final class Examples {
                       iris    classify iris flowers from CSV
                       sequence  forecast a wave with an LSTM, reverse digits with a transformer
                       mnist   recognize handwritten digits with a CNN (downloads MNIST)
+                      gpu     list devices, compare CPU and GPU speed
                       bench   run any model on any task: bench <task> [model...] [--epochs N]""");
         }
     }
