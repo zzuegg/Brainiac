@@ -110,6 +110,23 @@ Node output = block.concat(hidden).dense(3, Activation.SOFTMAX);
 Model model = Model.graph(input, output).seed(42).build();
 ```
 
+Custom and learnable activations (autograd derives the gradient):
+
+```java
+Activation swish = Activation.named("swish", x -> x.mul(x.sigmoid()));
+Activation scaledTanh = Activation.withParameters("scaled-tanh",
+        width -> List.of(Tensor.ones(Shape.of(width))),   // one learnable scale per unit
+        (x, p) -> x.tanh().mul(p.get(0)));
+
+Model model = Model.sequential()
+        .input(4)
+        .dense(32, Activation.prelu())      // learnable negative slope per unit
+        .dense(32, Activation.swish())      // learnable beta per unit
+        .dense(16, scaledTanh)
+        .dense(3, Activation.SOFTMAX)
+        .build();
+```
+
 Saving and loading:
 
 ```java

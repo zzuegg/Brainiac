@@ -76,7 +76,7 @@ public final class Node {
      * @return the layer's output
      */
     public Node dense(int units, Activation activation) {
-        return dense(units, activation, activation == Activation.RELU ? Init.HE : Init.XAVIER);
+        return dense(units, activation, activation.preferredInit());
     }
 
     /**
@@ -127,7 +127,9 @@ public final class Node {
      * @return the activated values
      */
     public Node activation(Activation activation) {
-        return layer(Objects.requireNonNull(activation, "activation"));
+        Objects.requireNonNull(activation, "activation");
+        int in = width;
+        return new Node(Kind.LAYER, List.of(this), random -> activation.bind(in), width);
     }
 
     /**

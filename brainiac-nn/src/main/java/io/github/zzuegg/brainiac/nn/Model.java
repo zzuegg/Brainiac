@@ -239,7 +239,8 @@ public final class Model {
     }
 
     /**
-     * Returns every trainable parameter, layer by layer.
+     * Returns every trainable parameter, layer by layer, each once even when layers
+     * share it.
      *
      * @return the parameters
      */
@@ -248,7 +249,7 @@ public final class Model {
         for (Layer layer : layers) {
             params.addAll(layer.parameters());
         }
-        return params;
+        return distinct(params);
     }
 
     /**
@@ -262,7 +263,19 @@ public final class Model {
         for (Layer layer : layers) {
             buffers.addAll(layer.buffers());
         }
-        return buffers;
+        return distinct(buffers);
+    }
+
+    /** Drops repeats, which appear when layers share a parameter (e.g. one bound activation). */
+    private static List<Var> distinct(List<Var> vars) {
+        Set<Var> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<Var> out = new ArrayList<>(vars.size());
+        for (Var v : vars) {
+            if (seen.add(v)) {
+                out.add(v);
+            }
+        }
+        return out;
     }
 
     /**
@@ -403,15 +416,16 @@ public final class Model {
         }
 
         /**
-         * Adds a fully connected layer. Weights use He init for ReLU and Xavier init
-         * otherwise.
+         * Adds a fully connected layer. Weights use the activation's
+         * {@linkplain Activation#preferredInit() preferred init}: He for the ReLU family,
+         * Xavier otherwise.
          *
          * @param units the number of outputs
          * @param activation the activation
          * @return this builder
          */
         public Builder dense(int units, Activation activation) {
-            return dense(units, activation, activation == Activation.RELU ? Init.HE : Init.XAVIER);
+            return dense(units, activation, activation.preferredInit());
         }
 
         /**
@@ -467,7 +481,10 @@ public final class Model {
          * @return this builder
          */
         public Builder activation(Activation activation) {
-            return layer(Objects.requireNonNull(activation, "activation"));
+            Objects.requireNonNull(activation, "activation");
+            int in = currentWidth();
+            pending.add(random -> activation.bind(in));
+            return this;
         }
 
         /**
