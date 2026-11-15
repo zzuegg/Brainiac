@@ -23,6 +23,12 @@ import java.io.UncheckedIOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.ref.Cleaner;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +38,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -76,6 +88,8 @@ public final class OpenClBackend implements Backend {
     private String unavailable;
     private boolean initialized;
     private boolean fp64;
+    /** Identifies the device and driver in the program cache. */
+    private String fingerprint = "";
     private int tile;
     private long budget;
     private final AtomicLong allocated = new AtomicLong();
@@ -248,6 +262,8 @@ public final class OpenClBackend implements Backend {
         long memory = lib.deviceLong(device, CL.DEVICE_GLOBAL_MEM_SIZE);
         Integer mb = Integer.getInteger("brainiac.opencl.memory");
         budget = mb != null ? (long) mb << 20 : memory / 10 * 8;
+        fingerprint = lib.deviceString(device, CL.DEVICE_NAME) + "|" + lib.deviceString(device, CL.DEVICE_VERSION)
+                + "|" + lib.deviceString(device, CL.DRIVER_VERSION) + "|" + Runtime.version().feature();
         context = lib.createContext(device);
         queue = lib.createQueue(context, device, profiling);
         cl = lib;
@@ -302,7 +318,7 @@ public final class OpenClBackend implements Backend {
                     + " (the device lacks cl_khr_fp64)");
         }
         String source = prelude(type) + kernelSource();
-        MemorySegment program = cl.buildProgram(context, device, source, "");
+        MemorySegment program = build(source);
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_partial", "reduce_final", "argmax", "matmul", "im2col",
@@ -376,7 +392,21 @@ public final class OpenClBackend implements Backend {
                 return;
             }
         }
-        MemorySegment k = program(type).kernels().get(kernel);
+        launch(kernel, program(type).kernels().get(kernel), global, local, args);
+        generation++;
+    }
+
+    private void launch(String name, MemorySegment k, long[] global, long[] local, Object... args) {
+        for (long g : global) {
+            if (g == 0) {
+                return;
+            }
+        }
+        for (Object a : args) {
+            if (a instanceof ClStorage s) {
+                ready(s);
+            }
+        }
         try (Arena arena = Arena.ofConfined()) {
             for (int i = 0; i < args.length; i++) {
                 MemorySegment value = switch (args[i]) {
@@ -392,12 +422,271 @@ public final class OpenClBackend implements Backend {
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
         if (profiling) {
-            launched.add(new Launch(kernel, event));
+            launched.add(new Launch(name, event));
             if (launched.size() >= 4_096) {
                 cl.finish(queue);
                 settled();
             }
         }
+    }
+
+    // ---------------------------------------------------------------- fusion
+
+    /** Whether element-wise chains are fused ({@code -Dbrainiac.opencl.fusion=false} turns it off). */
+    private final boolean fusion = !"false".equalsIgnoreCase(System.getProperty("brainiac.opencl.fusion"));
+    private final Map<String, Future<MemorySegment>> fusedKernels = new HashMap<>();
+    /** Compiles fused kernels in the background ({@code -Dbrainiac.opencl.fusion.async=false} compiles inline). */
+    private final ExecutorService compiler = "false".equalsIgnoreCase(
+            System.getProperty("brainiac.opencl.fusion.async")) ? null
+            : Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "brainiac-opencl-compiler");
+                t.setDaemon(true);
+                return t;
+            });
+    private long eagerFallbacks;
+    private String helpers;
+    /**
+     * Counts launches of other kernels. A pending result recorded before the latest of them
+     * is computed before anything builds on it, so chains end at the same points in every
+     * training step and their generated kernels repeat instead of growing.
+     */
+    private long generation;
+    private int fusedCompiled;
+    private long fusedCompileNanos;
+
+    /** Whether an element-wise result can be recorded instead of computed now. */
+    private boolean fusable(ClStorage out, Storage... inputs) {
+        if (!fusion || (out.dtype != DType.FLOAT32 && out.dtype != DType.FLOAT64) || out.size == 0) {
+            return false;
+        }
+        for (Storage in : inputs) {
+            if (cl(in).dtype != out.dtype) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Records {@code e} as the pending value of {@code out}, computing large inputs first. */
+    private void defer(ClStorage out, Fused.Expr e) {
+        program(out.dtype);
+        for (ClStorage in : Fused.inputs(e)) {
+            if (in.pending != null && in.pendingGeneration != generation) {
+                ready(in);
+            }
+        }
+        int n = Fused.nodes(e);
+        if (n > Fused.MAX_NODES) {
+            for (ClStorage in : Fused.inputs(e)) {
+                ready(in);
+            }
+            n = Fused.nodes(e);
+        }
+        out.pending = e;
+        out.pendingNodes = n;
+        out.pendingGeneration = generation;
+    }
+
+    /** Computes a pending storage, so that its buffer holds its values. */
+    private void ready(ClStorage s) {
+        if (s.pending != null) {
+            materialize(s);
+        }
+    }
+
+    private void materialize(ClStorage s) {
+        Fused.Kernel k = Fused.generate(s.pending);
+        if (k.argBytes() > Fused.MAX_ARG_BYTES) {
+            for (ClStorage in : Fused.inputs(s.pending)) {
+                ready(in);
+            }
+            k = Fused.generate(s.pending);
+        }
+        Fused.Expr e = s.pending;
+        s.pending = null;
+        s.pendingNodes = 0;
+        MemorySegment kernel = fusedKernel(s.dtype, k.source());
+        if (kernel == null) {
+            // the kernel is still compiling in the background; run the steps one by one meanwhile
+            eager(e, s);
+            eagerFallbacks++;
+            return;
+        }
+        Object[] args = new Object[k.args().size() + 2];
+        args[0] = s;
+        args[1] = s.size;
+        for (int i = 0; i < k.args().size(); i++) {
+            args[i + 2] = k.args().get(i);
+        }
+        launch("fused", kernel, new long[] {s.size}, null, args);
+    }
+
+    /**
+     * Where compiled programs are kept between runs ({@code -Dbrainiac.opencl.cache=<dir>}, or
+     * {@code none} to always compile). The key covers the device, driver and source, so a
+     * driver update or a changed kernel compiles anew.
+     */
+    private Path cacheDir() {
+        String dir = System.getProperty("brainiac.opencl.cache");
+        if (dir == null) {
+            return Path.of(System.getProperty("user.home"), ".cache", "brainiac", "opencl");
+        }
+        return dir.isBlank() || dir.equalsIgnoreCase("none") ? null : Path.of(dir);
+    }
+
+    /** Builds a program, from the on-disk cache when an earlier run compiled the same source. */
+    private MemorySegment build(String source) {
+        Path dir = cacheDir();
+        Path file = null;
+        if (dir != null) {
+            try {
+                MessageDigest sha = MessageDigest.getInstance("SHA-256");
+                sha.update(fingerprint.getBytes(StandardCharsets.UTF_8));
+                sha.update((byte) 0);
+                sha.update(source.getBytes(StandardCharsets.UTF_8));
+                file = dir.resolve(HexFormat.of().formatHex(sha.digest()) + ".bin");
+                if (Files.isRegularFile(file)) {
+                    MemorySegment p = cl.buildProgramFromBinary(context, device, Files.readAllBytes(file), "");
+                    if (p != null) {
+                        return p;
+                    }
+                }
+            } catch (IOException | NoSuchAlgorithmException | RuntimeException e) {
+                file = null;   // the cache is only an optimization
+            }
+        }
+        MemorySegment program = cl.buildProgram(context, device, source, "");
+        if (file != null) {
+            byte[] binary = cl.programBinary(program);
+            if (binary != null) {
+                try {
+                    Files.createDirectories(dir);
+                    Path tmp = Files.createTempFile(dir, "kernel", ".tmp");
+                    Files.write(tmp, binary);
+                    Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (IOException | RuntimeException e) {
+                    // not cached; compiled again next run
+                }
+            }
+        }
+        return program;
+    }
+
+    /** The compiled kernel for a generated source, or null while it is compiling in the background. */
+    private MemorySegment fusedKernel(DType type, String kernelSource) {
+        String key = type + "\n" + kernelSource;
+        Future<MemorySegment> compiled = fusedKernels.get(key);
+        if (compiled == null) {
+            if (helpers == null) {
+                String all = kernelSource();
+                // no contraction into fused multiply-adds: each step rounds as the separate kernels do
+                helpers = "#pragma OPENCL FP_CONTRACT OFF\n" + all.substring(0, all.indexOf("__kernel"));
+            }
+            String source = prelude(type) + helpers + kernelSource;
+            Callable<MemorySegment> build = () -> {
+                long start = System.nanoTime();
+                MemorySegment program = build(source);
+                MemorySegment kernel = cl.createKernel(program, "fused");
+                synchronized (fusedKernels) {
+                    fusedCompiled++;
+                    fusedCompileNanos += System.nanoTime() - start;
+                }
+                return kernel;
+            };
+            if (compiler != null) {
+                compiled = compiler.submit(build);
+            } else {
+                FutureTask<MemorySegment> now = new FutureTask<>(build);
+                now.run();
+                compiled = now;
+            }
+            fusedKernels.put(key, compiled);
+        }
+        if (!compiled.isDone()) {
+            return null;
+        }
+        try {
+            return compiled.get();
+        } catch (ExecutionException ex) {
+            throw ex.getCause() instanceof RuntimeException r ? r : new IllegalStateException(ex.getCause());
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while compiling a fused kernel", ex);
+        }
+    }
+
+    /** Computes {@code e} into {@code out} with the precompiled kernels, one per step. */
+    private void eager(Fused.Expr e, ClStorage out) {
+        DType t = out.dtype;
+        long n = out.size;
+        switch (e) {
+            case Fused.Src src -> {
+                ClStorage from = computed(src.storage());
+                quietCopy(from, src.offset(), src.strides(), src.dims(), out);
+            }
+            case Fused.Un u -> quiet(t, "unary", n, u.op(), value(u.x(), out), out, n);
+            case Fused.Act a -> quiet(t, "activation", n, a.op(), a.param(), value(a.x(), out), out, n);
+            case Fused.ActBack a -> quiet(t, "activation_backward", n, a.op(), a.param(), value(a.x(), out),
+                    value(a.grad(), out), out, n);
+            case Fused.Bin b -> {
+                int[] shape = b.a() instanceof Fused.Src sa ? sa.dims()
+                        : b.b() instanceof Fused.Src sb ? sb.dims() : new int[] {Math.toIntExact(n)};
+                long[] dense = contiguous(shape);
+                ClStorage x = operand(b.a(), out);
+                ClStorage y = operand(b.b(), out);
+                long[] xs = b.a() instanceof Fused.Src sa ? sa.strides() : dense;
+                long[] ys = b.b() instanceof Fused.Src sb ? sb.strides() : dense;
+                if (Arrays.equals(xs, dense) && Arrays.equals(ys, dense)) {
+                    quiet(t, "binary_contiguous", n, b.op(), x, y, out, n);
+                } else {
+                    quiet(t, "binary_strided", n, b.op(), x, y, out, n, shape.length, meta(meta(shape, xs, ys)));
+                }
+            }
+        }
+    }
+
+    /** A step's input as a buffer of the result's size, computing it if it is itself a step. */
+    private ClStorage value(Fused.Expr e, ClStorage like) {
+        if (e instanceof Fused.Src s && s.direct()) {
+            return computed(s.storage());
+        }
+        ClStorage v = raw(like.size, like.dtype);
+        eager(e, v);
+        return v;
+    }
+
+    /** A binary step's operand: a source as it is (read through its strides), anything else computed. */
+    private ClStorage operand(Fused.Expr e, ClStorage like) {
+        if (e instanceof Fused.Src s) {
+            return computed(s.storage());
+        }
+        return value(e, like);
+    }
+
+    /**
+     * The values of a storage for a step-by-step run. A pending input is computed into a
+     * temporary buffer and stays pending, so later chains are recorded exactly as they will
+     * be once their kernels are compiled.
+     */
+    private ClStorage computed(ClStorage s) {
+        if (s.pending == null) {
+            return s;
+        }
+        ClStorage v = raw(s.size, s.dtype);
+        eager(s.pending, v);
+        return v;
+    }
+
+    private void quietCopy(ClStorage in, long offset, long[] strides, int[] dims, ClStorage out) {
+        int[] shape = dims.length == 0 ? new int[] {1} : dims;
+        long[] inStrides = dims.length == 0 ? new long[] {1} : strides;
+        Temp meta = meta(meta(shape, inStrides, contiguous(shape)));
+        quiet(out.dtype, "copy_strided", out.size, in, offset, out, 0L, out.size, shape.length, meta);
+    }
+
+    /** Runs a precompiled kernel without starting a new fusion generation. */
+    private void quiet(DType type, String kernel, long n, Object... args) {
+        launch(kernel, program(type).kernels().get(kernel), new long[] {n}, null, args);
     }
 
     private void run(DType type, String kernel, long n, Object... args) {
@@ -563,6 +852,11 @@ public final class OpenClBackend implements Backend {
             total += t[1];
         }
         StringBuilder out = new StringBuilder(String.format(Locale.ROOT, "OpenCL kernel time %.1f ms%n", total / 1e6));
+        if (fusedCompiled > 0) {
+            out.append(String.format(Locale.ROOT,
+                    "  %d fused kernels generated, compiled in %.1f ms; %d chains run unfused while compiling%n",
+                    fusedCompiled, fusedCompileNanos / 1e6, eagerFallbacks));
+        }
         List<Map.Entry<String, long[]>> rows = new ArrayList<>(kernelTimes.entrySet());
         rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
         for (Map.Entry<String, long[]> e : rows) {
@@ -628,6 +922,7 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized float[] download(Storage src) {
         ClStorage s = cl(src);
+        ready(s);
         if (s.dtype == DType.FLOAT32) {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment host = arena.allocate(JAVA_FLOAT, Math.max(1, s.size));
@@ -649,6 +944,7 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized double[] downloadDouble(Storage src) {
         ClStorage s = cl(src);
+        ready(s);
         double[] out = new double[Math.toIntExact(s.size)];
         if (s.size == 0) {
             return out;
@@ -683,6 +979,7 @@ public final class OpenClBackend implements Backend {
     public synchronized void convert(Storage in, Storage out) {
         ClStorage a = cl(in);
         ClStorage b = cl(out);
+        ready(a);
         if (a.dtype == b.dtype) {
             if (a.size > 0) {
                 cl.copy(queue, a.mem, b.mem, a.bytes());
@@ -720,18 +1017,30 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void unary(UnaryOp op, Storage in, Storage out) {
         ClStorage o = cl(out);
+        if (fusable(o, in)) {
+            defer(o, new Fused.Un(op.ordinal(), Fused.whole(cl(in))));
+            return;
+        }
         run(o.dtype, "unary", o.size, op.ordinal(), as(in, o.dtype), o, o.size);
     }
 
     @Override
     public synchronized void activation(ActivationOp op, float param, Storage in, Storage out) {
         ClStorage o = cl(out);
+        if (fusable(o, in)) {
+            defer(o, new Fused.Act(op.ordinal(), param, Fused.whole(cl(in))));
+            return;
+        }
         run(o.dtype, "activation", o.size, op.ordinal(), param, as(in, o.dtype), o, o.size);
     }
 
     @Override
     public synchronized void activationBackward(ActivationOp op, float param, Storage in, Storage grad, Storage out) {
         ClStorage o = cl(out);
+        if (fusable(o, in, grad)) {
+            defer(o, new Fused.ActBack(op.ordinal(), param, Fused.whole(cl(in)), Fused.whole(cl(grad))));
+            return;
+        }
         run(o.dtype, "activation_backward", o.size, op.ordinal(), param, as(in, o.dtype), as(grad, o.dtype), o,
                 o.size);
     }
@@ -740,6 +1049,11 @@ public final class OpenClBackend implements Backend {
     public synchronized void binary(BinaryOp op, Storage a, long[] aStrides, Storage b, long[] bStrides, int[] shape,
             Storage out) {
         ClStorage o = cl(out);
+        if (fusable(o, a, b) && shape.length <= MAX_RANK) {
+            defer(o, new Fused.Bin(op.ordinal(), Fused.strided(cl(a), 0, shape, aStrides),
+                    Fused.strided(cl(b), 0, shape, bStrides)));
+            return;
+        }
         ClStorage x = as(a, o.dtype);
         ClStorage y = as(b, o.dtype);
         long[] contiguous = contiguous(shape);
@@ -810,6 +1124,9 @@ public final class OpenClBackend implements Backend {
             }
             return;
         }
+        if (fusable(o, x) && (rows >= 1024 || length <= 256) && fusedReduce(op, x, outer, length, inner, o)) {
+            return;
+        }
         ClStorage src = as(x, o.dtype);
         long chunks = rows >= 1024 || length <= 256 ? 1 : Math.min(Math.ceilDiv(length, 256), Math.max(1, 65536 / rows));
         long chunkLen = Math.ceilDiv(length, chunks);
@@ -817,6 +1134,34 @@ public final class OpenClBackend implements Backend {
         ClStorage part = raw(rows * chunks, o.dtype == DType.FLOAT64 ? DType.FLOAT64 : DType.FLOAT32);
         run(o.dtype, "reduce_partial", rows * chunks, op.ordinal(), src, part, outer, length, inner, chunks, chunkLen);
         run(o.dtype, "reduce_final", rows, op.ordinal(), part, o, outer, length, inner, chunks);
+    }
+
+    /**
+     * Reduces in one generated kernel that also computes a pending input on the fly, in the
+     * same order as the precompiled pair of kernels with a single chunk.
+     */
+    private boolean fusedReduce(ReduceOp op, ClStorage x, long outer, long length, long inner, ClStorage o) {
+        Fused.Expr input = Fused.whole(x);
+        Fused.Kernel k = Fused.generateReduce(input, op.ordinal());
+        if (k.argBytes() > Fused.MAX_ARG_BYTES) {
+            return false;
+        }
+        MemorySegment kernel = fusedKernel(o.dtype, k.source());
+        if (kernel == null) {
+            eagerFallbacks++;
+            return false;
+        }
+        Object[] args = new Object[k.args().size() + 4];
+        args[0] = o;
+        args[1] = outer * inner;
+        args[2] = length;
+        args[3] = inner;
+        for (int i = 0; i < k.args().size(); i++) {
+            args[i + 4] = k.args().get(i);
+        }
+        launch("fused_reduce", kernel, new long[] {outer * inner}, null, args);
+        generation++;
+        return true;
     }
 
     @Override

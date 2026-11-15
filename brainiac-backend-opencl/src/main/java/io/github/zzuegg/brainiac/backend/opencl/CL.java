@@ -36,6 +36,10 @@ final class CL {
     static final int DEVICE_NAME = 0x102B;
     static final int DEVICE_EXTENSIONS = 0x1030;
     static final int PLATFORM_NAME = 0x0902;
+    static final int DRIVER_VERSION = 0x102D;
+    static final int DEVICE_VERSION = 0x102F;
+    static final int PROGRAM_BINARY_SIZES = 0x1165;
+    static final int PROGRAM_BINARIES = 0x1166;
     static final int PROGRAM_BUILD_LOG = 0x1183;
     static final long MEM_READ_WRITE = 1L;
     static final long MEM_READ_ONLY = 1L << 2;
@@ -79,6 +83,8 @@ final class CL {
     private final MethodHandle enqueueNDRangeKernel;
     private final MethodHandle finish;
     private final MethodHandle getEventProfilingInfo;
+    private final MethodHandle getProgramInfo;
+    private final MethodHandle createProgramWithBinary;
     private final MethodHandle releaseEvent;
 
     private CL(SymbolLookup lib) {
@@ -115,6 +121,10 @@ final class CL {
         getEventProfilingInfo = handle(linker, lib, "clGetEventProfilingInfo", JAVA_INT, ADDRESS, JAVA_INT,
                 JAVA_LONG, ADDRESS, ADDRESS);
         releaseEvent = handle(linker, lib, "clReleaseEvent", JAVA_INT, ADDRESS);
+        getProgramInfo = handle(linker, lib, "clGetProgramInfo", JAVA_INT, ADDRESS, JAVA_INT, JAVA_LONG, ADDRESS,
+                ADDRESS);
+        createProgramWithBinary = handle(linker, lib, "clCreateProgramWithBinary", ADDRESS, ADDRESS, JAVA_INT,
+                ADDRESS, ADDRESS, ADDRESS, ADDRESS, ADDRESS);
     }
 
     /**
@@ -351,6 +361,62 @@ final class CL {
             return program;
         } catch (Throwable t) {
             throw rethrow(t);
+        }
+    }
+
+    /**
+     * The device binary of a built program, for caching; null if the driver offers none.
+     */
+    byte[] programBinary(MemorySegment program) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment size = arena.allocate(JAVA_LONG);
+            if ((int) getProgramInfo.invokeExact(program, PROGRAM_BINARY_SIZES, 8L, size, MemorySegment.NULL)
+                    != SUCCESS) {
+                return null;
+            }
+            long n = size.get(JAVA_LONG, 0);
+            if (n <= 0 || n > Integer.MAX_VALUE - 8) {
+                return null;
+            }
+            MemorySegment data = arena.allocate(n);
+            MemorySegment pointers = arena.allocate(ADDRESS);
+            pointers.set(ADDRESS, 0, data);
+            if ((int) getProgramInfo.invokeExact(program, PROGRAM_BINARIES, ADDRESS.byteSize(), pointers,
+                    MemorySegment.NULL) != SUCCESS) {
+                return null;
+            }
+            return data.toArray(java.lang.foreign.ValueLayout.JAVA_BYTE);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds a program from a binary that {@link #programBinary} returned earlier.
+     *
+     * @return the program, or null if the driver rejects the binary (it is then rebuilt from source)
+     */
+    MemorySegment buildProgramFromBinary(MemorySegment context, MemorySegment device, byte[] binary,
+            String options) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment devices = arena.allocate(ADDRESS);
+            devices.set(ADDRESS, 0, device);
+            MemorySegment lengths = arena.allocateFrom(JAVA_LONG, binary.length);
+            MemorySegment data = arena.allocateFrom(java.lang.foreign.ValueLayout.JAVA_BYTE, binary);
+            MemorySegment pointers = arena.allocate(ADDRESS);
+            pointers.set(ADDRESS, 0, data);
+            MemorySegment status = arena.allocate(JAVA_INT);
+            MemorySegment err = arena.allocate(JAVA_INT);
+            MemorySegment program = (MemorySegment) createProgramWithBinary.invokeExact(context, 1, devices, lengths,
+                    pointers, status, err);
+            if (err.get(JAVA_INT, 0) != SUCCESS || status.get(JAVA_INT, 0) != SUCCESS) {
+                return null;
+            }
+            int code = (int) buildProgram.invokeExact(program, 1, devices, arena.allocateFrom(options),
+                    MemorySegment.NULL, MemorySegment.NULL);
+            return code == SUCCESS ? program : null;
+        } catch (Throwable t) {
+            return null;
         }
     }
 
