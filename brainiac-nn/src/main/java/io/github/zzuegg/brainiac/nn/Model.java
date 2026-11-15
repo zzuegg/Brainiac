@@ -124,6 +124,20 @@ public final class Model {
     }
 
     /**
+     * Returns the non-trainable state of all layers, such as batch-norm running
+     * statistics, in layer order.
+     *
+     * @return the buffers
+     */
+    public List<Var> buffers() {
+        List<Var> buffers = new ArrayList<>();
+        for (Layer layer : layers) {
+            buffers.addAll(layer.buffers());
+        }
+        return buffers;
+    }
+
+    /**
      * Returns the total number of trainable values.
      *
      * @return the parameter count
@@ -146,6 +160,9 @@ public final class Model {
     public Model to(Device device) {
         for (Var p : parameters()) {
             p.assign(p.value().to(device));
+        }
+        for (Var b : buffers()) {
+            b.assign(b.value().to(device));
         }
         return this;
     }
@@ -280,6 +297,31 @@ public final class Model {
             currentWidth();
             pending.add(random -> new Dropout(rate, random.split()));
             return this;
+        }
+
+        /**
+         * Adds batch normalization over the current features: each feature is normalized
+         * to zero mean and unit variance over the batch while training (and with running
+         * averages for predictions), then scaled and shifted by learned values. Usually
+         * placed between a linear {@code dense(...)} layer and its activation.
+         *
+         * @return this builder
+         */
+        public Builder batchNorm() {
+            int in = currentWidth();
+            pending.add(random -> new BatchNorm(in));
+            return this;
+        }
+
+        /**
+         * Applies an activation function on its own, for example after
+         * {@link #batchNorm()}.
+         *
+         * @param activation the activation
+         * @return this builder
+         */
+        public Builder activation(Activation activation) {
+            return layer(Objects.requireNonNull(activation, "activation"));
         }
 
         /**
