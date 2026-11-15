@@ -34,6 +34,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac` | Facade: depend on this one module to get the whole API |
 | `brainiac-examples` | Runnable examples |
+| `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
 
 Shared build configuration lives in `build-logic/` as Gradle convention plugins
 (`brainiac.java-library`, `brainiac.java-application`). Each module has a
@@ -131,4 +132,16 @@ Run the examples:
 ./gradlew :brainiac-examples:run --args=xor
 ./gradlew :brainiac-examples:run --args=spiral
 ./gradlew :brainiac-examples:run --args=iris
+```
+
+## Performance
+
+The CPU backend splits large operations across all cores (limit with
+`-Dbrainiac.cpu.threads=N`); results are bit-identical for any thread count. Measure on
+your machine with:
+
+```sh
+./gradlew :brainiac-benchmarks:run                        # all cases
+./gradlew :brainiac-benchmarks:run --args="--quick"       # shorter
+./gradlew :brainiac-benchmarks:run --args="--threads 1"   # single-threaded
 ```
