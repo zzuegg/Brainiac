@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.autograd;
 
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
@@ -120,7 +121,8 @@ public final class Var {
      * optimizer step or to update a layer's running statistics. Values computed earlier
      * keep the value they were computed from.
      *
-     * @param newValue the new value; must have the same shape
+     * @param newValue the new value; must have the same shape, and may have another
+     *     number format
      * @throws IllegalStateException if this value was computed from other values
      */
     public void assign(Tensor newValue) {
@@ -152,6 +154,26 @@ public final class Var {
     }
 
     /**
+     * Converts to another number format. Gradients flow back converted to this value's
+     * format, so a float16 computation can train float32 parameters.
+     *
+     * @param type the new type
+     * @return the converted value; {@code this} if it already has that type
+     */
+    public Var to(DType type) {
+        if (type == value.dtype()) {
+            return this;
+        }
+        DType original = value.dtype();
+        return unary(value.to(type), g -> new Tensor[] {g.to(original)});
+    }
+
+    /** @return the number format of the value */
+    public DType dtype() {
+        return value.dtype();
+    }
+
+    /**
      * Returns the same value cut off from the graph: no gradient flows back through it.
      *
      * @return a constant {@code Var} with this value
@@ -174,7 +196,7 @@ public final class Var {
             throw new IllegalStateException(
                     "backward() needs a scalar such as a loss, got shape " + shape() + "; use backward(Tensor)");
         }
-        backward(Tensor.full(shape(), 1f, value.device()));
+        backward(Tensor.full(shape(), 1f, value.dtype(), value.device()));
     }
 
     /**
@@ -198,15 +220,17 @@ public final class Var {
             if (g == null) {
                 continue;
             }
+            // a gradient always has its value's number format
+            g = g.to(node.value.dtype());
             if (node.backward == null) {
-                node.grad = node.grad == null ? g : node.grad.add(g);
+                node.grad = node.grad == null ? g : node.grad.add(g).to(node.value.dtype());
                 continue;
             }
             Tensor[] inputGrads = node.backward.apply(g);
             for (int i = 0; i < node.inputs.length; i++) {
                 Var in = node.inputs[i];
                 if (in.requiresGrad) {
-                    grads.merge(in, inputGrads[i], Tensor::add);
+                    grads.merge(in, inputGrads[i].to(in.value.dtype()), Tensor::add);
                 }
             }
         }
@@ -284,7 +308,7 @@ public final class Var {
             }
             for (int i = 0; i < grads.length; i++) {
                 if (grads[i] == null) {
-                    grads[i] = Tensor.zeros(values[i].shape(), values[i].device());
+                    grads[i] = Tensor.zeros(values[i].shape(), values[i].dtype(), values[i].device());
                 } else if (!grads[i].shape().equals(values[i].shape())) {
                     throw new IllegalStateException(op.name() + ": gradient " + i + " has shape " + grads[i].shape()
                             + ", input " + i + " has shape " + values[i].shape());

@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -183,7 +184,7 @@ public final class Model {
      */
     public Var forward(Var input, boolean training) {
         Var[] values = new Var[steps.size() + 1];
-        values[0] = shaped(input);
+        values[0] = shaped(input).to(dtype());
         for (int i = 0; i < steps.size(); i++) {
             Step step = steps.get(i);
             int[] in = step.inputs;
@@ -329,6 +330,36 @@ public final class Model {
             b.assign(b.value().to(device));
         }
         return this;
+    }
+
+    /**
+     * Converts all parameters and buffers to a number format: {@code FLOAT64} for precise
+     * numerics, {@code FLOAT16} or {@code BFLOAT16} for half the memory. Inputs are
+     * converted to it automatically. For training in half precision, prefer keeping the
+     * model in float32 and using {@code Trainer.mixedPrecision}, which keeps exact float32
+     * weights and scales the loss so small gradients survive.
+     *
+     * @param type the number format
+     * @return this model
+     */
+    public Model to(DType type) {
+        for (Var p : parameters()) {
+            p.assign(p.value().to(type));
+        }
+        for (Var b : buffers()) {
+            b.assign(b.value().to(type));
+        }
+        return this;
+    }
+
+    /**
+     * Returns the number format of the parameters.
+     *
+     * @return the type; {@code FLOAT32} for a model without parameters
+     */
+    public DType dtype() {
+        List<Var> params = parameters();
+        return params.isEmpty() ? DType.FLOAT32 : params.get(0).value().dtype();
     }
 
     /**

@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -22,27 +23,30 @@ import java.util.function.Function;
 
 /**
  * Reads and writes the Brainiac model file format. All numbers are big endian except
- * tensor data, which is little-endian float32. Version 2:
+ * tensor data, which is little-endian in the tensor's own format (float32, float64, or
+ * the 16 bits of float16 and bfloat16). Version 4:
  *
  * <pre>
  * int    magic "BRNC"   int version
- * int    inputSize      int outputSize
+ * shape  input, shape output (each: int rank, int[] dims)
  * int    activationCount  per activation: utf name, config, int width (-1 unless bound)
  * int    layerCount     per layer: utf type, config
  * int    stepCount      per step: byte kind, int inputCount, int[] inputs, int layerIndex (-1 if none)
- * int    tensorCount    per tensor: int rank, int[] dims, float[] values
+ * int    tensorCount    per tensor: byte dtype, int rank, int[] dims, values
  * config: int count, per entry: utf key, byte tag, value (see {@link #writeConfig})
  * </pre>
  *
  * Layer types and activations are looked up by name in the {@link Registry}. Activations
  * are stored once in their own table and referenced by index, so an activation shared by
  * several layers stays shared. Tensors are every parameter, then every buffer, in model
- * order. Version 1 files (fixed layer types, activations by name) can still be read.
+ * order. Older versions can still be read: version 3 has float32 tensors without a type
+ * byte, version 2 also stores the input and output as sizes, and version 1 has fixed layer
+ * types and activations by name.
  */
 final class ModelFile {
 
     private static final int MAGIC = 0x42524E43;
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
 
     private static final byte BOOLEAN = 0;
     private static final byte INT = 1;
@@ -217,7 +221,7 @@ final class ModelFile {
         List<Layer> layers = version == 1 ? readLayersV1(in) : readLayers(in);
         List<Model.Step> steps = readSteps(in, layers);
         Model model = Model.fromSteps(inputShape, outputShape, steps);
-        readState(model, in);
+        readState(model, in, version);
         return model.to(device);
     }
 
@@ -251,7 +255,7 @@ final class ModelFile {
             in.readInt();
         }
         Device device = model.device();
-        readState(model, in);
+        readState(model, in, version);
         model.to(device);
     }
 
@@ -380,7 +384,7 @@ final class ModelFile {
         return all;
     }
 
-    private static void readState(Model model, DataInputStream in) throws IOException {
+    private static void readState(Model model, DataInputStream in, int version) throws IOException {
         List<Var> targets = state(model);
         int count = in.readInt();
         if (count != targets.size()) {
@@ -388,7 +392,7 @@ final class ModelFile {
         }
         List<Tensor> values = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            Tensor t = readTensor(in);
+            Tensor t = readTensor(in, version);
             if (!t.shape().equals(targets.get(i).shape())) {
                 throw new IOException("tensor " + i + " has shape " + t.shape() + ", model expects " + targets.get(i).shape());
             }
@@ -499,18 +503,36 @@ final class ModelFile {
     // ---------------------------------------------------------------- tensors
 
     private static void writeTensor(Tensor t, DataOutputStream out) throws IOException {
+        DType type = t.dtype();
+        out.writeByte(type.ordinal());
         int[] dims = t.shape().toArray();
         out.writeInt(dims.length);
         for (int d : dims) {
             out.writeInt(d);
         }
-        float[] values = t.toArray();
-        ByteBuffer bytes = ByteBuffer.allocate(values.length * Float.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        bytes.asFloatBuffer().put(values);
+        ByteBuffer bytes = ByteBuffer.allocate(Math.toIntExact(t.size() * type.bytes())).order(ByteOrder.LITTLE_ENDIAN);
+        switch (type) {
+            case FLOAT32 -> bytes.asFloatBuffer().put(t.toArray());
+            case FLOAT64 -> bytes.asDoubleBuffer().put(t.toDoubleArray());
+            case FLOAT16, BFLOAT16 -> {
+                for (double v : t.toDoubleArray()) {
+                    bytes.putShort(type == DType.FLOAT16 ? Float.floatToFloat16((float) v)
+                            : DType.floatToBfloat16((float) v));
+                }
+            }
+        }
         out.write(bytes.array());
     }
 
-    private static Tensor readTensor(DataInputStream in) throws IOException {
+    private static Tensor readTensor(DataInputStream in, int version) throws IOException {
+        DType type = DType.FLOAT32;
+        if (version >= 4) {
+            int tag = in.readUnsignedByte();
+            if (tag >= DType.values().length) {
+                throw new IOException("unknown number format " + tag);
+            }
+            type = DType.values()[tag];
+        }
         int rank = in.readInt();
         if (rank < 0 || rank > 8) {
             throw new IOException("bad tensor rank " + rank);
@@ -523,16 +545,34 @@ final class ModelFile {
                 throw new IOException("bad tensor dimension " + dims[i]);
             }
             size *= dims[i];
-            if (size > Integer.MAX_VALUE / Float.BYTES) {
+            if (size > Integer.MAX_VALUE / type.bytes()) {
                 throw new IOException("tensor too large");
             }
         }
-        byte[] raw = in.readNBytes((int) size * Float.BYTES);
-        if (raw.length != size * Float.BYTES) {
+        byte[] raw = in.readNBytes((int) size * type.bytes());
+        if (raw.length != size * type.bytes()) {
             throw new IOException("file ends inside a tensor");
         }
-        float[] values = new float[(int) size];
-        ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(values);
-        return Tensor.of(Shape.of(dims), values);
+        ByteBuffer bytes = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
+        if (type == DType.FLOAT32) {
+            float[] values = new float[(int) size];
+            bytes.asFloatBuffer().get(values);
+            return Tensor.of(Shape.of(dims), values);
+        }
+        double[] values = new double[(int) size];
+        switch (type) {
+            case FLOAT64 -> bytes.asDoubleBuffer().get(values);
+            case FLOAT16 -> {
+                for (int i = 0; i < values.length; i++) {
+                    values[i] = Float.float16ToFloat(bytes.getShort());
+                }
+            }
+            default -> {
+                for (int i = 0; i < values.length; i++) {
+                    values[i] = DType.bfloat16ToFloat(bytes.getShort());
+                }
+            }
+        }
+        return Tensor.of(Shape.of(dims), values, type, Device.getDefault());
     }
 }

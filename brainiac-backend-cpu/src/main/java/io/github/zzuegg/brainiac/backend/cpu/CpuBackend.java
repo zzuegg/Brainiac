@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.backend.cpu;
 
 import io.github.zzuegg.brainiac.tensor.ConvGeometry;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
@@ -14,8 +15,12 @@ import java.util.Arrays;
 /**
  * Runs tensor operations on the CPU in plain Java. Large operations are split across
  * threads (set {@code -Dbrainiac.cpu.threads=N} to limit them); results are the same for
- * any number of threads. Storage is a {@code float[]}, so a tensor holds at most about 2
+ * any number of threads. Storage is a Java array, so a tensor holds at most about 2
  * billion values.
+ *
+ * <p>All four {@link DType}s are supported. Float32 runs the fast (SIMD where available)
+ * kernels; float64, float16 and bfloat16 run simpler kernels in double precision, and
+ * float16 and bfloat16 are rounded once when results are stored.
  */
 public final class CpuBackend implements Backend {
 
@@ -37,11 +42,21 @@ public final class CpuBackend implements Backend {
 
     @Override
     public Storage allocate(long size) {
+        return allocate(size, DType.FLOAT32);
+    }
+
+    @Override
+    public boolean supports(DType dtype) {
+        return true;
+    }
+
+    @Override
+    public Storage allocate(long size, DType dtype) {
         if (size > Integer.MAX_VALUE - 8) {
             throw new IllegalArgumentException("the CPU backend holds at most " + (Integer.MAX_VALUE - 8)
                     + " values per tensor, requested " + size);
         }
-        return new CpuStorage(new float[(int) size]);
+        return CpuStorage.allocate((int) size, dtype);
     }
 
     @Override
@@ -50,17 +65,49 @@ public final class CpuBackend implements Backend {
     }
 
     @Override
+    public Storage upload(double[] data, DType dtype) {
+        CpuStorage s = CpuStorage.allocate(data.length, dtype);
+        s.write(data);
+        return s;
+    }
+
+    @Override
     public float[] download(Storage src) {
-        return data(src).clone();
+        return cpu(src).readFloat();
+    }
+
+    @Override
+    public double[] downloadDouble(Storage src) {
+        CpuStorage s = cpu(src);
+        return s.wide != null ? s.wide.clone() : s.read();
+    }
+
+    @Override
+    public void convert(Storage in, Storage out) {
+        cpu(out).write(cpu(in).read());
     }
 
     @Override
     public void fill(Storage dst, float value) {
-        Arrays.fill(data(dst), value);
+        CpuStorage s = cpu(dst);
+        if (s.data != null) {
+            Arrays.fill(s.data, value);
+        } else {
+            double[] v = s.target();
+            Arrays.fill(v, value);
+            s.write(v);
+        }
     }
 
     @Override
     public void unary(UnaryOp op, Storage in, Storage out) {
+        if (wide(in, out)) {
+            CpuStorage o = cpu(out);
+            double[] y = o.target();
+            WideKernels.unary(op, cpu(in).read(), y);
+            o.write(y);
+            return;
+        }
         float[] x = data(in);
         float[] y = data(out);
         long cost = switch (op) {
@@ -73,6 +120,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void activation(ActivationOp op, float param, Storage in, Storage out) {
+        if (wide(in, out)) {
+            CpuStorage o = cpu(out);
+            double[] y = o.target();
+            WideKernels.activation(op, param, cpu(in).read(), y);
+            o.write(y);
+            return;
+        }
         float[] x = data(in);
         float[] y = data(out);
         if (SIMD && VectorActivationKernels.supports(op)) {
@@ -86,6 +140,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void activationBackward(ActivationOp op, float param, Storage in, Storage grad, Storage out) {
+        if (wide(in, grad, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.activationBackward(op, param, cpu(in).read(), cpu(grad).read(), z);
+            o.write(z);
+            return;
+        }
         float[] x = data(in);
         float[] g = data(grad);
         float[] z = data(out);
@@ -100,6 +161,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void binary(BinaryOp op, Storage a, long[] aStrides, Storage b, long[] bStrides, int[] shape, Storage out) {
+        if (wide(a, b, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.binary(op, cpu(a).read(), aStrides, cpu(b).read(), bStrides, shape, z);
+            o.write(z);
+            return;
+        }
         float[] x = data(a);
         float[] y = data(b);
         float[] z = data(out);
@@ -153,6 +221,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void reduce(ReduceOp op, Storage in, long outer, long length, long inner, Storage out) {
+        if (wide(in, out)) {
+            CpuStorage o = cpu(out);
+            double[] y = o.target();
+            WideKernels.reduce(op, cpu(in).read(), (int) outer, (int) length, (int) inner, y);
+            o.write(y);
+            return;
+        }
         float[] x = data(in);
         float[] y = data(out);
         int out0 = (int) outer;
@@ -174,6 +249,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void matmul(Storage a, Storage b, int m, int k, int n, Storage out) {
+        if (wide(a, b, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.matmul(cpu(a).read(), cpu(b).read(), z, 1, m, k, n, true);
+            o.write(z);
+            return;
+        }
         float[] x = data(a);
         float[] y = data(b);
         float[] z = data(out);
@@ -187,6 +269,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
+        if (wide(a, b, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.matmul(cpu(a).read(), cpu(b).read(), z, batch, m, k, n, false);
+            o.write(z);
+            return;
+        }
         float[] x = data(a);
         float[] y = data(b);
         float[] z = data(out);
@@ -195,6 +284,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void im2col(Storage in, ConvGeometry geometry, float padValue, Storage out) {
+        if (wide(in, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.im2col(cpu(in).read(), new WindowKernels.Plan(geometry), geometry.batch(), padValue, z);
+            o.write(z);
+            return;
+        }
         float[] x = data(in);
         float[] z = data(out);
         WindowKernels.Plan plan = new WindowKernels.Plan(geometry);
@@ -206,6 +302,13 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void col2im(Storage cols, ConvGeometry geometry, Storage out) {
+        if (wide(cols, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.col2im(cpu(cols).read(), new WindowKernels.Plan(geometry), geometry.batch(), z);
+            o.write(z);
+            return;
+        }
         float[] x = data(cols);
         float[] z = data(out);
         WindowKernels.Plan plan = new WindowKernels.Plan(geometry);
@@ -217,9 +320,16 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void gather(Storage in, long outer, long length, long inner, Storage indices, int count, Storage out) {
+        int[] idx = indices(indices, count, (int) length);
+        if (wide(in, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.gather(cpu(in).read(), (int) outer, (int) length, (int) inner, idx, z);
+            o.write(z);
+            return;
+        }
         float[] x = data(in);
         float[] z = data(out);
-        int[] idx = indices(data(indices), count, (int) length);
         int in0 = (int) inner;
         int len = (int) length;
         Parallel.forRange((int) outer * count, in0, (from, to) -> WindowKernels.gather(x, len, in0, idx, z, from, to));
@@ -228,9 +338,16 @@ public final class CpuBackend implements Backend {
     @Override
     public void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
             Storage out) {
+        int[] idx = indices(indices, count, (int) length);
+        if (wide(src, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.target();
+            WideKernels.scatterAdd(cpu(src).read(), (int) outer, (int) length, (int) inner, idx, z);
+            o.write(z);
+            return;
+        }
         float[] x = data(src);
         float[] z = data(out);
-        int[] idx = indices(data(indices), count, (int) length);
         int out0 = (int) outer;
         int len = (int) length;
         int in0 = (int) inner;
@@ -239,7 +356,9 @@ public final class CpuBackend implements Backend {
                 (from, to) -> WindowKernels.scatterAdd(x, out0, len, in0, idx, z, from, to));
     }
 
-    private static int[] indices(float[] values, int count, int length) {
+    private static int[] indices(Storage storage, int count, int length) {
+        CpuStorage s = cpu(storage);
+        float[] values = s.data != null ? s.data : s.readFloat();
         int[] idx = new int[count];
         for (int i = 0; i < count; i++) {
             idx[i] = WindowKernels.index(values[i], length);
@@ -278,6 +397,13 @@ public final class CpuBackend implements Backend {
     @Override
     public void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out, long outOffset,
             long[] outStrides) {
+        if (wide(in, out)) {
+            CpuStorage o = cpu(out);
+            double[] z = o.wide != null ? o.wide : o.read();   // keep what the copy does not cover
+            WideKernels.copy(cpu(in).read(), inOffset, inStrides, shape, z, outOffset, outStrides);
+            o.write(z);
+            return;
+        }
         float[] x = data(in);
         float[] z = data(out);
         int rank = shape.length;
@@ -320,9 +446,23 @@ public final class CpuBackend implements Backend {
     }
 
     private static float[] data(Storage s) {
+        return cpu(s).data;
+    }
+
+    private static CpuStorage cpu(Storage s) {
         if (s instanceof CpuStorage c) {
-            return c.data;
+            return c;
         }
         throw new IllegalArgumentException("storage " + s + " does not belong to the CPU backend");
+    }
+
+    /** @return whether any storage is not float32, which takes the double-precision path */
+    private static boolean wide(Storage... storages) {
+        for (Storage s : storages) {
+            if (cpu(s).dtype != DType.FLOAT32) {
+                return true;
+            }
+        }
+        return false;
     }
 }
