@@ -5,6 +5,14 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -45,7 +53,7 @@ public final class Model {
      * One computation: a layer, a sum or a concatenation of earlier values. Value 0 is the
      * model input, step {@code i} produces value {@code i + 1}.
      */
-    private record Step(Node.Kind kind, int[] inputs, Layer layer) {
+    record Step(Node.Kind kind, int[] inputs, Layer layer) {
     }
 
     private Model(int inputSize, int outputSize, List<Step> steps) {
@@ -64,6 +72,71 @@ public final class Model {
         }
         this.layers = List.copyOf(distinct);
         this.chain = isChain;
+    }
+
+    static Model fromSteps(int inputSize, int outputSize, List<Step> steps) {
+        return new Model(inputSize, outputSize, steps);
+    }
+
+    List<Step> steps() {
+        return steps;
+    }
+
+    /**
+     * Saves the model, its structure and all weights and buffers, to a file.
+     * {@link #load(Path)} restores it. Models with custom layers or activations can be
+     * saved too, but only restored with {@link #loadWeights(Path)}.
+     *
+     * @param path the file to write; replaced if it exists
+     * @throws IOException if the file cannot be written
+     */
+    public void save(Path path) throws IOException {
+        try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(path))) {
+            ModelFile.write(this, out);
+        }
+    }
+
+    /**
+     * Loads a model saved with {@link #save(Path)} onto the default device.
+     *
+     * @param path the file
+     * @return the model
+     * @throws IOException if the file cannot be read, is not a model file, or contains
+     *     custom layers
+     */
+    public static Model load(Path path) throws IOException {
+        return load(path, Device.getDefault());
+    }
+
+    /**
+     * Loads a model saved with {@link #save(Path)}.
+     *
+     * @param path the file
+     * @param device the device to put the weights on
+     * @return the model
+     * @throws IOException if the file cannot be read, is not a model file, or contains
+     *     custom layers
+     */
+    public static Model load(Path path, Device device) throws IOException {
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(path))) {
+            return ModelFile.read(in, device);
+        }
+    }
+
+    /**
+     * Replaces this model's weights and buffers with those saved in a file. The file must
+     * come from a model with the same structure; this also works for models with custom
+     * layers.
+     *
+     * @param path the file
+     * @return this model
+     * @throws IOException if the file cannot be read or its tensors do not match
+     */
+    public Model loadWeights(Path path) throws IOException {
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(path))) {
+            ModelFile.readWeights(this, in);
+        }
+        return this;
     }
 
     /**
