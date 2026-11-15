@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.autograd;
 
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -464,20 +465,31 @@ public final class Var {
 
     /** @return the hyperbolic tangent of each value */
     public Var tanh() {
-        Tensor out = value.tanh();
-        return unary(out, g -> new Tensor[] {g.mul(out.square().neg().add(1))});
+        return activation(ActivationOp.TANH, 0);
     }
 
     /** @return the logistic sigmoid of each value */
     public Var sigmoid() {
-        Tensor out = value.sigmoid();
-        return unary(out, g -> new Tensor[] {g.mul(out).mul(out.neg().add(1))});
+        return activation(ActivationOp.SIGMOID, 0);
     }
 
     /** @return {@code max(0, x)} for each value; the gradient at 0 is 0 */
     public Var relu() {
+        return activation(ActivationOp.RELU, 0);
+    }
+
+    /**
+     * Applies an activation function with a fused kernel: one pass forward and one pass
+     * backward, instead of a chain of simpler operations.
+     *
+     * @param op the activation
+     * @param param its parameter (such as the leaky ReLU slope or the ELU alpha); ignored
+     *     by activations without one
+     * @return {@code f(this)}
+     */
+    public Var activation(ActivationOp op, float param) {
         Tensor x = value;
-        return unary(x.relu(), g -> new Tensor[] {g.mul(x.step())});
+        return unary(x.activation(op, param), g -> new Tensor[] {x.activationBackward(op, param, g)});
     }
 
     /** @return the Gauss error function of each value */
@@ -489,8 +501,7 @@ public final class Var {
 
     /** @return {@code log(1 + e^x)} for each value, computed without overflow */
     public Var softplus() {
-        Tensor x = value;
-        return unary(x.softplus(), g -> new Tensor[] {g.mul(x.sigmoid())});
+        return activation(ActivationOp.SOFTPLUS, 0);
     }
 
     /**

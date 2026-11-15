@@ -200,6 +200,19 @@ incubator modules: start your program with `--add-modules jdk.incubator.vector`
 | matmul 1024x1024 | 15 GFLOP/s | 147 GFLOP/s |
 | train MLP 784-256-128-10 | 8.2 k samples/s | 20 k samples/s |
 
+Built-in activations run as fused kernels: one pass forward and one pass backward,
+instead of a chain of operations that each read and write the whole tensor. With SIMD
+on, element-wise arithmetic and the arithmetic-only activations (ReLU, leaky ReLU,
+ReLU6, hard tanh/sigmoid/swish, softsign) use the Vector API too, with bit-identical
+results. Your own activations can use them through `Var.activation(ActivationOp, param)`.
+
+| 4-core machine, forward + backward, 4M values | composed | fused |
+| --- | --- | --- |
+| GELU | ~25 M/s | ~55 M/s |
+| SiLU | ~50 M/s | ~90 M/s |
+| leaky ReLU | ~100 M/s | ~600 M/s |
+| hard swish | ~110 M/s | ~720 M/s |
+
 Measure on your machine with:
 
 ```sh

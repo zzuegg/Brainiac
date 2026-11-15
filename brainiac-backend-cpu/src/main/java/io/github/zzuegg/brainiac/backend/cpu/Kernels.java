@@ -33,22 +33,27 @@ final class Kernels {
             case RELU -> { for (int i = from; i < to; i++) y[i] = x[i] > 0f ? x[i] : 0f; }
             case STEP -> { for (int i = from; i < to; i++) y[i] = x[i] > 0f ? 1f : 0f; }
             case SIGN -> { for (int i = from; i < to; i++) y[i] = Math.signum(x[i]); }
-            case ERF -> { for (int i = from; i < to; i++) y[i] = erf(x[i]); }
+            case ERF -> { for (int i = from; i < to; i++) y[i] = (float) erf(x[i]); }
             case SOFTPLUS -> { for (int i = from; i < to; i++) y[i] = softplus(x[i]); }
         }
     }
 
     /**
-     * The error function, with an absolute error below {@code 1.2e-7} (Numerical Recipes'
-     * Chebyshev fit of the complementary error function).
+     * The error function, with an absolute error below {@code 1.5e-7} (Abramowitz and
+     * Stegun 7.1.26).
      */
-    static float erf(float x) {
+    static double erf(double x) {
         double z = Math.abs(x);
-        double t = 1.0 / (1.0 + 0.5 * z);
-        double erfc = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418
-                + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587
-                + t * (-0.82215223 + t * 0.17087277)))))))));
-        return (float) (x >= 0f ? 1.0 - erfc : erfc - 1.0);
+        return erf(x, Math.exp(-z * z));
+    }
+
+    /** {@link #erf(double)} given {@code e^(-x^2)}, which callers often need anyway. */
+    static double erf(double x, double expMinusXSquared) {
+        double z = Math.abs(x);
+        double t = 1 / (1 + 0.3275911 * z);
+        double poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+        double r = 1 - poly * expMinusXSquared;
+        return x >= 0 ? r : -r;
     }
 
     static float softplus(float x) {

@@ -99,6 +99,30 @@ class BuiltInActivationsTest {
         }
     }
 
+    /** The fused activations agree with the same functions written out with Var operations. */
+    @Test
+    void fusedKernelsMatchComposedDefinitions() {
+        Var x = Var.of(X);
+        float c = (float) Math.sqrt(2 / Math.PI);
+        assertClose(x.mul(x.sigmoid()), Activation.SILU, x);
+        assertClose(x.mul(x.mul((float) (1 / Math.sqrt(2))).erf().add(1)).mul(0.5f), Activation.GELU, x);
+        assertClose(x.mul(x.add(x.pow(3).mul(0.044715f)).mul(c).tanh().add(1)).mul(0.5f), Activation.GELU_TANH, x);
+        assertClose(x.mul(x.softplus().tanh()), Activation.MISH, x);
+        assertClose(Var.where(x.greater(0), x, x.minimum(0).exp().sub(1).mul(1.6732632f)).mul(1.0507010f),
+                Activation.SELU, x);
+        assertClose(Var.where(x.greater(0), x, x.minimum(0).exp().sub(1).mul(0.7f)), Activation.elu(0.7f), x);
+        assertClose(x.relu().sub(x.neg().relu().mul(0.1f)), Activation.leakyRelu(0.1f), x);
+        assertClose(x.clamp(0, 6), Activation.RELU6, x);
+        assertClose(x.clamp(-1, 1), Activation.HARD_TANH, x);
+        assertClose(x.div(6).add(0.5f).clamp(0, 1), Activation.HARD_SIGMOID, x);
+        assertClose(x.mul(x.div(6).add(0.5f).clamp(0, 1)), Activation.HARD_SWISH, x);
+        assertClose(x.div(x.abs().add(1)), Activation.SOFTSIGN, x);
+    }
+
+    private static void assertClose(Var expected, Activation a, Var x) {
+        assertArrayEquals(expected.value().toArray(), a.forward(x).value().toArray(), 2e-6f, a.toString());
+    }
+
     @Test
     void logSoftmaxIsTheLogOfSoftmax() {
         float[] sm = Activation.SOFTMAX.forward(Var.of(X)).value().toArray();

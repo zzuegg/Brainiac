@@ -85,6 +85,28 @@ public interface Backend {
     void unary(UnaryOp op, Storage in, Storage out);
 
     /**
+     * Applies an activation in one pass: {@code out[i] = f(in[i])}.
+     *
+     * @param op the activation
+     * @param param its parameter, ignored by activations without one
+     * @param in the inputs
+     * @param out where to write the results; same size
+     */
+    void activation(ActivationOp op, float param, Storage in, Storage out);
+
+    /**
+     * Computes an activation's input gradient in one pass:
+     * {@code out[i] = grad[i] * f'(in[i])}.
+     *
+     * @param op the activation
+     * @param param its parameter, ignored by activations without one
+     * @param in the activation's inputs
+     * @param grad the gradient of the activation's outputs; same size
+     * @param out where to write the input gradient; same size
+     */
+    void activationBackward(ActivationOp op, float param, Storage in, Storage grad, Storage out);
+
+    /**
      * Applies an element-wise binary function with broadcasting:
      * {@code out[idx] = op(a[idx . aStrides], b[idx . bStrides])} for every index of
      * {@code shape}. A stride of 0 repeats a value along that axis.
