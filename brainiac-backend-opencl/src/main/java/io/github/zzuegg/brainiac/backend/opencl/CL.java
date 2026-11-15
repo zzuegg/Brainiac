@@ -290,8 +290,14 @@ final class CL {
     }
 
     void write(MemorySegment queue, MemorySegment buffer, long offset, MemorySegment data) {
+        write(queue, buffer, offset, data, true);
+    }
+
+    /** Enqueues a copy to the device; without blocking, {@code data} must stay alive until the queue is done. */
+    void write(MemorySegment queue, MemorySegment buffer, long offset, MemorySegment data, boolean blocking) {
         try {
-            check((int) enqueueWriteBuffer.invokeExact(queue, buffer, 1, offset, data.byteSize(), data, 0,
+            check((int) enqueueWriteBuffer.invokeExact(queue, buffer, blocking ? 1 : 0, offset, data.byteSize(), data,
+                    0,
                     MemorySegment.NULL, MemorySegment.NULL), "clEnqueueWriteBuffer");
         } catch (Throwable t) {
             throw rethrow(t);

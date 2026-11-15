@@ -506,13 +506,39 @@ public final class OpenClBackend implements Backend {
         }
     }
 
+    /**
+     * Host copies of uploads still in flight. Uploads do not block (a blocking write would
+     * also wait for every kernel queued before it), so their host memory is kept until the
+     * queue is known to be done: after the next blocking read, or a finish.
+     */
+    private final List<Arena> inFlight = new ArrayList<>();
+    private long inFlightBytes;
+
+    private void writeAsync(ClStorage s, Arena arena, MemorySegment host) {
+        cl.write(queue, s.mem, 0, host, false);
+        inFlight.add(arena);
+        inFlightBytes += host.byteSize();
+        if (inFlightBytes > 256L << 20) {
+            cl.finish(queue);
+            settled();
+        }
+    }
+
+    /** Frees the host copies of finished uploads; call only when the queue is idle. */
+    private void settled() {
+        for (Arena a : inFlight) {
+            a.close();
+        }
+        inFlight.clear();
+        inFlightBytes = 0;
+    }
+
     @Override
     public synchronized Storage upload(float[] data) {
         ClStorage s = raw(data.length, DType.FLOAT32);
         if (data.length > 0) {
-            try (Arena arena = Arena.ofConfined()) {
-                cl.write(queue, s.mem, 0, arena.allocateFrom(JAVA_FLOAT, data));
-            }
+            Arena arena = Arena.ofShared();
+            writeAsync(s, arena, arena.allocateFrom(JAVA_FLOAT, data));
         }
         return s;
     }
@@ -523,7 +549,8 @@ public final class OpenClBackend implements Backend {
         if (data.length == 0) {
             return s;
         }
-        try (Arena arena = Arena.ofConfined()) {
+        Arena arena = Arena.ofShared();
+        {
             MemorySegment host = switch (dtype) {
                 case FLOAT64 -> arena.allocateFrom(JAVA_DOUBLE, data);
                 case FLOAT32 -> {
@@ -542,7 +569,7 @@ public final class OpenClBackend implements Backend {
                     yield arena.allocateFrom(JAVA_SHORT, h);
                 }
             };
-            cl.write(queue, s.mem, 0, host);
+            writeAsync(s, arena, host);
         }
         return s;
     }
@@ -555,6 +582,7 @@ public final class OpenClBackend implements Backend {
                 MemorySegment host = arena.allocate(JAVA_FLOAT, Math.max(1, s.size));
                 if (s.size > 0) {
                     cl.read(queue, s.mem, 0, host.asSlice(0, s.bytes()));
+                    settled();     // a blocking read on the in-order queue means all earlier work is done
                 }
                 return host.asSlice(0, s.bytes()).toArray(JAVA_FLOAT);
             }
@@ -577,6 +605,7 @@ public final class OpenClBackend implements Backend {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment host = arena.allocate(s.bytes(), 8);
             cl.read(queue, s.mem, 0, host);
+            settled();
             switch (s.dtype) {
                 case FLOAT64 -> MemorySegment.copy(host, JAVA_DOUBLE, 0, out, 0, out.length);
                 case FLOAT32 -> {
@@ -905,6 +934,7 @@ public final class OpenClBackend implements Backend {
     public synchronized void finish() {
         if (cl != null) {
             cl.finish(queue);
+            settled();
         }
     }
 }
