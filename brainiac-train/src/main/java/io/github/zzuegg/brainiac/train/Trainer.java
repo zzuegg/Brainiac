@@ -47,6 +47,9 @@ public final class Trainer {
     private final List<Metric> metrics = new ArrayList<>();
     private final List<TrainingListener> listeners = new ArrayList<>();
     private int epochsDone;
+    private float l2;
+    private LearningRateSchedule schedule;
+    private float baseLearningRate = Float.NaN;
 
     private Trainer(Model model) {
         this.model = Objects.requireNonNull(model, "model");
@@ -172,6 +175,34 @@ public final class Trainer {
     }
 
     /**
+     * Adds L2 regularization (weight decay): {@code lambda * sum(w^2)} over all weight
+     * matrices (parameters with two or more dimensions; biases are not penalized) is added
+     * to the loss. Keeps weights small and reduces overfitting.
+     *
+     * @param lambda the strength, for example {@code 1e-4f}
+     * @return this trainer
+     */
+    public Trainer l2(float lambda) {
+        if (lambda < 0) {
+            throw new IllegalArgumentException("lambda must not be negative, got " + lambda);
+        }
+        this.l2 = lambda;
+        return this;
+    }
+
+    /**
+     * Changes the learning rate every epoch. The optimizer's learning rate at the first
+     * {@link #fit} is the base rate the schedule scales.
+     *
+     * @param schedule the schedule, for example {@code LearningRateSchedule.cosine(100, 0.01f)}
+     * @return this trainer
+     */
+    public Trainer schedule(LearningRateSchedule schedule) {
+        this.schedule = Objects.requireNonNull(schedule, "schedule");
+        return this;
+    }
+
+    /**
      * Adds a listener called after every epoch.
      *
      * @param listener the listener
@@ -217,14 +248,26 @@ public final class Trainer {
         List<Tensor> bestWeights = null;
         boolean stoppedEarly = false;
 
+        if (Float.isNaN(baseLearningRate)) {
+            baseLearningRate = optimizer.learningRate();
+        }
         for (int e = 1; e <= epochs; e++) {
             int epoch = ++epochsDone;
+            if (schedule != null) {
+                optimizer.learningRate(schedule.rate(epoch, baseLearningRate));
+            }
             List<Batch> batches = shuffle ? data.shuffle(seed + epoch).batches(batchSize, device) : fixedBatches;
             double lossSum = 0;
             Map<String, Double> metricSums = new LinkedHashMap<>();
             for (Batch batch : batches) {
-                Var out = model.forward(Var.of(batch.features()));
+                Var out = model.forward(Var.of(batch.features()), true);
                 Var l = loss.compute(out, batch.targets());
+                if (l2 > 0) {
+                    Var penalty = l2Penalty(params);
+                    if (penalty != null) {
+                        l = l.add(penalty.mul(l2));
+                    }
+                }
                 l.backward();
                 optimizer.step(params);
                 lossSum += l.value().item() * batch.size();
@@ -243,7 +286,7 @@ public final class Trainer {
                 valMetrics = ev.metrics();
             }
             EpochResult result = new EpochResult(epoch, (float) (lossSum / data.size()),
-                    Collections.unmodifiableMap(trainMetrics), valLoss, valMetrics);
+                    Collections.unmodifiableMap(trainMetrics), valLoss, valMetrics, optimizer.learningRate());
             history.add(result);
             for (TrainingListener listener : listeners) {
                 listener.onEpoch(result);
@@ -292,6 +335,17 @@ public final class Trainer {
         Map<String, Float> result = new LinkedHashMap<>();
         sums.forEach((k, v) -> result.put(k, (float) (v / data.size())));
         return new Evaluation((float) (lossSum / data.size()), Collections.unmodifiableMap(result));
+    }
+
+    private static Var l2Penalty(List<Var> params) {
+        Var sum = null;
+        for (Var p : params) {
+            if (p.shape().rank() >= 2) {
+                Var s = p.square().sum();
+                sum = sum == null ? s : sum.add(s);
+            }
+        }
+        return sum;
     }
 
     private void checkSizes(Dataset data) {

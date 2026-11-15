@@ -10,9 +10,10 @@ import java.util.Map;
  * @param metrics training metrics by name
  * @param validationLoss the loss on the validation data, or {@code NaN} without validation
  * @param validationMetrics validation metrics by name; empty without validation
+ * @param learningRate the optimizer's learning rate during the epoch
  */
 public record EpochResult(int epoch, float loss, Map<String, Float> metrics,
-                          float validationLoss, Map<String, Float> validationMetrics) {
+                          float validationLoss, Map<String, Float> validationMetrics, float learningRate) {
 
     /** @return whether validation data was evaluated */
     public boolean hasValidation() {

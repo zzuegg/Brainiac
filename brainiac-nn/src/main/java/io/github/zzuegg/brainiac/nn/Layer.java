@@ -22,6 +22,19 @@ public interface Layer {
     Var forward(Var input);
 
     /**
+     * Computes the layer's output in training or inference mode. Layers that behave
+     * differently while training, such as {@link Dropout}, override this; the default
+     * ignores the mode.
+     *
+     * @param input a batch of inputs, shape {@code [batch, inputSize]}
+     * @param training {@code true} while training, {@code false} for predictions
+     * @return a batch of outputs
+     */
+    default Var forward(Var input, boolean training) {
+        return forward(input);
+    }
+
+    /**
      * Returns the trainable parameters, in a stable order.
      *
      * @return the parameters; empty for layers without any

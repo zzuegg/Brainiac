@@ -47,15 +47,27 @@ public final class Model {
     }
 
     /**
-     * Runs the network on a batch and records the computation for training.
+     * Runs the network on a batch in inference mode, recording the computation so
+     * gradients can flow back.
      *
      * @param input a batch, shape {@code [batch, inputSize]}
      * @return the output, shape {@code [batch, outputSize]}
      */
     public Var forward(Var input) {
+        return forward(input, false);
+    }
+
+    /**
+     * Runs the network on a batch, recording the computation so gradients can flow back.
+     *
+     * @param input a batch, shape {@code [batch, inputSize]}
+     * @param training {@code true} while training (enables dropout and similar layers)
+     * @return the output, shape {@code [batch, outputSize]}
+     */
+    public Var forward(Var input, boolean training) {
         Var x = input;
         for (Layer layer : layers) {
-            x = layer.forward(x);
+            x = layer.forward(x, training);
         }
         return x;
     }
@@ -253,6 +265,20 @@ public final class Model {
             Objects.requireNonNull(init, "init");
             pending.add(random -> new Dense(in, units, activation, init, random));
             width = units;
+            return this;
+        }
+
+        /**
+         * Adds dropout: while training, each value is zeroed with probability
+         * {@code rate} and the rest are scaled up to keep the expected sum. Reduces
+         * overfitting; has no effect on predictions.
+         *
+         * @param rate the share of values to drop, in [0, 1)
+         * @return this builder
+         */
+        public Builder dropout(float rate) {
+            currentWidth();
+            pending.add(random -> new Dropout(rate, random.split()));
             return this;
         }
 

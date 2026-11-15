@@ -119,4 +119,51 @@ class TrainerTest {
         var p3 = io.github.zzuegg.brainiac.tensor.Tensor.of(new float[][] {{0.1f, 0.7f, 0.2f}, {0.2f, 0.5f, 0.3f}});
         assertEquals(0.5f, Metric.ACCURACY.compute(p3, t3), 1e-6);
     }
+
+    private static double squaredWeights(Model model) {
+        double sum = 0;
+        for (var p : model.parameters()) {
+            if (p.value().shape().rank() >= 2) {
+                for (float v : p.value().toArray()) {
+                    sum += v * v;
+                }
+            }
+        }
+        return sum;
+    }
+
+    @Test
+    void l2KeepsWeightsSmaller() {
+        Model plain = xorModel();
+        Model regularized = xorModel();
+        Trainer.of(plain).loss(Loss.MSE).optimizer(Optimizer.adam(0.05f)).batchSize(4).epochs(500).seed(1).fit(XOR);
+        Trainer.of(regularized).loss(Loss.MSE).optimizer(Optimizer.adam(0.05f)).batchSize(4).epochs(500).seed(1)
+                .l2(0.01f).fit(XOR);
+        assertTrue(squaredWeights(regularized) < squaredWeights(plain),
+                squaredWeights(regularized) + " vs " + squaredWeights(plain));
+        assertThrows(IllegalArgumentException.class, () -> Trainer.of(plain).l2(-1));
+    }
+
+    @Test
+    void scheduleSetsTheLearningRateEachEpoch() {
+        Optimizer adam = Optimizer.adam(0.1f);
+        TrainingResult result = Trainer.of(xorModel()).loss(Loss.MSE).optimizer(adam).batchSize(4).epochs(5).seed(1)
+                .schedule(LearningRateSchedule.step(0.5f, 2))
+                .fit(XOR);
+        float[] rates = new float[5];
+        for (int i = 0; i < 5; i++) {
+            rates[i] = result.history().get(i).learningRate();
+        }
+        assertArrayEquals(new float[] {0.1f, 0.1f, 0.05f, 0.05f, 0.025f}, rates, 1e-7f);
+    }
+
+    @Test
+    void trainsWithDropout() {
+        Model model = Model.sequential().input(2).dense(16, Activation.TANH).dropout(0.1f)
+                .dense(1, Activation.SIGMOID).seed(42).build();
+        TrainingResult result = Trainer.of(model).loss(Loss.MSE).optimizer(Optimizer.adam(0.05f)).batchSize(4)
+                .epochs(1_500).seed(42).metric(Metric.ACCURACY).fit(XOR);
+        assertTrue(model.predict(0, 1)[0] > 0.8, "loss " + result.finalLoss());
+        assertTrue(model.predict(1, 1)[0] < 0.2, "loss " + result.finalLoss());
+    }
 }
