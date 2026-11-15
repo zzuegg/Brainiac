@@ -14,8 +14,12 @@ import java.util.concurrent.RecursiveAction;
  */
 final class Parallel {
 
-    /** Rough number of floating-point operations below which splitting is not worth it. */
-    private static final long MIN_WORK_PER_TASK = 32_768;
+    /**
+     * Rough number of floating-point operations below which splitting is not worth it.
+     * Tunable with {@code -Dbrainiac.cpu.minWork}; the default was picked with the
+     * benchmark harness.
+     */
+    private static final long MIN_WORK_PER_TASK = Long.getLong("brainiac.cpu.minWork", 1L << 20);
 
     private static final int THREADS = threadCount();
     private static final ForkJoinPool POOL = THREADS > 1 ? new ForkJoinPool(THREADS) : null;

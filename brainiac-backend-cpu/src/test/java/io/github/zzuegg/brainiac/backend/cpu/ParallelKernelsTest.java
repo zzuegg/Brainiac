@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.backend.cpu;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
@@ -30,6 +31,20 @@ class ParallelKernelsTest {
         return v;
     }
 
+    private static float[] naiveMatmul(float[] a, float[] b, int m, int k, int n, boolean fma) {
+        float[] out = new float[m * n];
+        for (int i = 0; i < m; i++) {
+            for (int p = 0; p < k; p++) {
+                for (int j = 0; j < n; j++) {
+                    float av = a[i * k + p];
+                    float bv = b[p * n + j];
+                    out[i * n + j] = fma ? Math.fma(av, bv, out[i * n + j]) : out[i * n + j] + av * bv;
+                }
+            }
+        }
+        return out;
+    }
+
     @Test
     void matmulMatchesNaiveExactly() {
         int m = 67;
@@ -37,18 +52,33 @@ class ParallelKernelsTest {
         int n = 131;
         float[] a = random(m * k, 1);
         float[] b = random(k * n, 2);
-        float[] expected = new float[m * n];
-        for (int i = 0; i < m; i++) {
-            for (int p = 0; p < k; p++) {
-                for (int j = 0; j < n; j++) {
-                    expected[i * n + j] += a[i * k + p] * b[p * n + j];
-                }
-            }
-        }
         Storage out = backend.allocate(m * n);
         backend.fill(out, 7); // must be overwritten, not accumulated into
         backend.matmul(backend.upload(a), backend.upload(b), m, k, n, out);
-        assertArrayEquals(expected, backend.download(out));
+        assertArrayEquals(naiveMatmul(a, b, m, k, n, CpuBackend.simd()), backend.download(out));
+    }
+
+    @Test
+    void bothMatmulKernelsMatchTheirReference() {
+        // sizes around the vector width and the 4-row tiles
+        for (int[] size : new int[][] {{1, 1, 1}, {3, 5, 7}, {4, 9, 16}, {9, 300, 33}, {5, 2, 70}}) {
+            int m = size[0];
+            int k = size[1];
+            int n = size[2];
+            float[] a = random(m * k, m);
+            float[] b = random(k * n, n);
+            float[] plain = new float[m * n];
+            Kernels.matmulRows(a, b, plain, k, n, 0, m);
+            assertArrayEquals(naiveMatmul(a, b, m, k, n, false), plain);
+            float[] simd = new float[m * n];
+            VectorKernels.matmulRows(a, b, simd, k, n, 0, m);
+            assertArrayEquals(naiveMatmul(a, b, m, k, n, true), simd);
+        }
+    }
+
+    @Test
+    void simdIsEnabledWhenTheVectorModuleIsPresent() {
+        assertTrue(CpuBackend.simd(), "tests run with --add-modules jdk.incubator.vector");
     }
 
     @Test
