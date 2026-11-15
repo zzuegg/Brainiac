@@ -4,7 +4,9 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.random.RandomGenerator;
 
 /**
@@ -24,7 +26,8 @@ public final class Dense implements Layer {
      *
      * @param inputSize the number of input features
      * @param units the number of outputs
-     * @param activation the activation applied to the outputs
+     * @param activation the activation applied to the outputs; a learnable one is bound
+     *     to {@code units}, so this layer gets its own copy of its parameters
      * @param init how weights are initialized
      * @param random the random source for the initializer
      */
@@ -53,24 +56,36 @@ public final class Dense implements Layer {
         }
         this.inputSize = inputSize;
         this.units = units;
-        this.activation = activation;
+        this.activation = Objects.requireNonNull(activation, "activation").bind(units);
         this.weight = Var.param(weight);
         this.bias = Var.param(bias);
     }
 
     @Override
     public Var forward(Var input) {
+        return forward(input, false);
+    }
+
+    @Override
+    public Var forward(Var input, boolean training) {
         Shape s = input.shape();
         if (s.rank() != 2 || s.dim(1) != inputSize) {
             throw new IllegalArgumentException(
                     "Dense(" + units + ") expects input [*, " + inputSize + "], got " + s);
         }
-        return activation.forward(input.matmul(weight).add(bias));
+        return activation.forward(input.matmul(weight).add(bias), training);
     }
 
     @Override
     public List<Var> parameters() {
-        return List.of(weight, bias);
+        List<Var> params = new ArrayList<>(List.of(weight, bias));
+        params.addAll(activation.parameters());
+        return params;
+    }
+
+    @Override
+    public List<Var> buffers() {
+        return activation.buffers();
     }
 
     @Override
@@ -88,7 +103,7 @@ public final class Dense implements Layer {
         return bias;
     }
 
-    /** @return the activation */
+    /** @return the activation, bound to this layer's width */
     public Activation activation() {
         return activation;
     }

@@ -144,6 +144,17 @@ public final class Tensor {
     }
 
     /**
+     * Creates a tensor filled with one value, on the default device.
+     *
+     * @param shape the shape
+     * @param value the value of every element
+     * @return the tensor
+     */
+    public static Tensor full(Shape shape, float value) {
+        return full(shape, value, Device.getDefault());
+    }
+
+    /**
      * Creates a tensor filled with one value.
      *
      * @param shape the shape
