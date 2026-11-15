@@ -7,6 +7,8 @@ import io.github.zzuegg.brainiac.nn.Padding;
 import io.github.zzuegg.brainiac.nn.Recurrent;
 import io.github.zzuegg.brainiac.nn.SequencePool;
 import io.github.zzuegg.brainiac.nn.TransformerBlock;
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.train.Benchmark;
 import io.github.zzuegg.brainiac.train.Benchmark.Kind;
@@ -192,7 +194,8 @@ public final class BenchmarkExample {
      *
      * @param args a task name, {@code offline} or {@code all}; then model names or files;
      *        then {@code --epochs N}, {@code --limit N} (training samples), {@code --train},
-     *        {@code --quiet}, {@code --confusion}
+     *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best},
+     *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16}
      */
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -205,8 +208,19 @@ public final class BenchmarkExample {
         boolean trainLoaded = false;
         boolean quiet = false;
         boolean confusion = false;
+        Device device = Device.getDefault();
+        DType dtype = DType.FLOAT32;
+        DType mixed = null;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
+                case "--device" -> device = switch (args[++i]) {
+                    case "cpu" -> Device.cpu();
+                    case "gpu" -> Device.gpu();
+                    case "best" -> Device.best();
+                    default -> throw new IllegalArgumentException("--device takes cpu, gpu or best");
+                };
+                case "--dtype" -> dtype = dtype(args[++i]);
+                case "--mixed" -> mixed = dtype(args[++i]);
                 case "--epochs" -> epochs = Integer.parseInt(args[++i]);
                 case "--limit" -> limit = Integer.parseInt(args[++i]);
                 case "--train" -> trainLoaded = true;
@@ -223,8 +237,9 @@ public final class BenchmarkExample {
             case "offline" -> Tasks.offline();
             default -> List.of(Tasks.get(args[0]));
         };
-        Integer epochCount = epochs;
-        boolean verbose = !quiet;
+        Options options = new Options(epochs, !quiet, device, dtype, mixed);
+        System.out.println("device " + device + (dtype != DType.FLOAT32 ? ", " + dtype : "")
+                + (mixed != null ? ", mixed precision " + mixed : ""));
         List<Report> reports = new ArrayList<>();
         for (Task task : tasks) {
             Task t = limit == Integer.MAX_VALUE ? task : task.limit(limit, Integer.MAX_VALUE);
@@ -234,18 +249,18 @@ public final class BenchmarkExample {
                 Report r;
                 Path file = Path.of(name);
                 if (Files.isRegularFile(file)) {
-                    Model model = load(file);
-                    r = trainLoaded ? Benchmark.run(t, file.getFileName().toString(), model,
-                            settings(epochCount, verbose)) : Benchmark.evaluate(t, file.getFileName().toString(), model);
+                    Model model = options.prepare(load(file));
+                    r = trainLoaded ? Benchmark.run(t, file.getFileName().toString(), model, options.settings())
+                            : Benchmark.evaluate(t, file.getFileName().toString(), model);
                 } else {
                     Model model;
                     try {
-                        model = model(name, t);
+                        model = options.prepare(model(name, t));
                     } catch (IllegalArgumentException e) {
                         System.out.println("skipping " + name + ": " + e.getMessage());
                         continue;
                     }
-                    r = Benchmark.run(t, name, model, settings(epochCount, verbose));
+                    r = Benchmark.run(t, name, model, options.settings());
                 }
                 System.out.print(r);
                 if (confusion) {
@@ -258,14 +273,35 @@ public final class BenchmarkExample {
         System.out.print(Benchmark.table(reports));
     }
 
-    private static Consumer<Trainer> settings(Integer epochs, boolean verbose) {
-        return t -> {
-            if (epochs != null) {
-                t.epochs(epochs);
-            }
-            if (verbose) {
-                t.listener(Progress.every(Math.max(1, t.epochs() / 10)));
-            }
+    /** How models are placed and trained, from the command line. */
+    private record Options(Integer epochs, boolean verbose, Device device, DType dtype, DType mixed) {
+
+        Model prepare(Model model) {
+            return model.to(device).to(dtype);
+        }
+
+        Consumer<Trainer> settings() {
+            return t -> {
+                if (epochs != null) {
+                    t.epochs(epochs);
+                }
+                if (mixed != null) {
+                    t.mixedPrecision(mixed);
+                }
+                if (verbose) {
+                    t.listener(Progress.every(Math.max(1, t.epochs() / 10)));
+                }
+            };
+        }
+    }
+
+    private static DType dtype(String name) {
+        return switch (name) {
+            case "f32", "float32" -> DType.FLOAT32;
+            case "f64", "float64" -> DType.FLOAT64;
+            case "f16", "float16" -> DType.FLOAT16;
+            case "bf16", "bfloat16" -> DType.BFLOAT16;
+            default -> throw new IllegalArgumentException("unknown number format " + name + ", try f32, f64, f16, bf16");
         };
     }
 
@@ -286,6 +322,9 @@ public final class BenchmarkExample {
                   --limit N     train on at most N samples
                   --train       train a loaded model further before testing it
                   --confusion   print the confusion matrix
-                  --quiet       no per-epoch progress""".formatted(Tasks.NAMES, MODELS));
+                  --quiet       no per-epoch progress
+                  --device D    cpu, gpu (OpenCL) or best
+                  --dtype T     run the model in f64, f16 or bf16 instead of f32
+                  --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights""".formatted(Tasks.NAMES, MODELS));
     }
 }
