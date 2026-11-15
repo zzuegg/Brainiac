@@ -413,6 +413,7 @@ public final class OpenClBackend implements Backend {
                 ready(s);
             }
         }
+        long hostStart = profiling ? System.nanoTime() : 0;
         try (Arena arena = Arena.ofConfined()) {
             for (int i = 0; i < args.length; i++) {
                 MemorySegment value = switch (args[i]) {
@@ -428,6 +429,7 @@ public final class OpenClBackend implements Backend {
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
         if (profiling) {
+            hostLaunchNanos += System.nanoTime() - hostStart;
             launched.add(new Launch(name, event));
             if (launched.size() >= 4_096) {
                 cl.finish(queue);
@@ -501,7 +503,11 @@ public final class OpenClBackend implements Backend {
     }
 
     private void materialize(ClStorage s) {
+        long genStart = profiling ? System.nanoTime() : 0;
         Fused.Kernel k = Fused.generate(s.pending);
+        if (profiling) {
+            hostGenerateNanos += System.nanoTime() - genStart;
+        }
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             for (ClStorage in : Fused.inputs(s.pending)) {
                 ready(in);
@@ -851,6 +857,12 @@ public final class OpenClBackend implements Backend {
     private final boolean profiling = Boolean.getBoolean("brainiac.opencl.profile");
     private final List<Launch> launched = new ArrayList<>();
     private final Map<String, long[]> kernelTimes = new HashMap<>();
+    private long queuedToStart;
+    private long deviceIdle;
+    private long firstStart;
+    private long lastEnd;
+    private long hostLaunchNanos;
+    private long hostGenerateNanos;
 
     private record Launch(String kernel, MemorySegment event) {
     }
@@ -859,8 +871,17 @@ public final class OpenClBackend implements Backend {
     private void settled() {
         for (Launch l : launched) {
             long[] t = kernelTimes.computeIfAbsent(l.kernel(), k -> new long[2]);
+            long[] ts = cl.timestamps(l.event());
             t[0]++;
-            t[1] += cl.elapsedNanos(l.event());
+            t[1] += ts[3] - ts[2];
+            queuedToStart += ts[2] - ts[0];
+            if (lastEnd != 0 && ts[2] > lastEnd) {
+                deviceIdle += ts[2] - lastEnd;
+            }
+            if (firstStart == 0) {
+                firstStart = ts[2];
+            }
+            lastEnd = Math.max(lastEnd, ts[3]);
             cl.releaseEvent(l.event());
         }
         launched.clear();
@@ -889,6 +910,17 @@ public final class OpenClBackend implements Backend {
             out.append(String.format(Locale.ROOT,
                     "  %d fused kernels generated, compiled in %.1f ms; %d chains run unfused while compiling%n",
                     fusedCompiled, fusedCompileNanos / 1e6, eagerFallbacks));
+        }
+        long launches = 0;
+        for (long[] t : kernelTimes.values()) {
+            launches += t[0];
+        }
+        if (launches > 0) {
+            out.append(String.format(Locale.ROOT,
+                    "  %d launches; device span %.1f ms, idle between kernels %.1f ms; queued-to-start %.1f us avg%n",
+                    launches, (lastEnd - firstStart) / 1e6, deviceIdle / 1e6, queuedToStart / 1e3 / launches));
+            out.append(String.format(Locale.ROOT, "  host: %.1f ms enqueuing (%.1f us each), %.1f ms generating code%n",
+                    hostLaunchNanos / 1e6, hostLaunchNanos / 1e3 / launches, hostGenerateNanos / 1e6));
         }
         List<Map.Entry<String, long[]>> rows = new ArrayList<>(kernelTimes.entrySet());
         rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));

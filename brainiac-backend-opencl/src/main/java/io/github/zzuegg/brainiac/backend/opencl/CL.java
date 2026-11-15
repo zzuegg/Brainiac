@@ -45,6 +45,8 @@ final class CL {
     static final long MEM_READ_ONLY = 1L << 2;
     static final long MEM_COPY_HOST_PTR = 1L << 5;
     static final long QUEUE_PROFILING_ENABLE = 1L << 1;
+    static final int PROFILING_COMMAND_QUEUED = 0x1280;
+    static final int PROFILING_COMMAND_SUBMIT = 0x1281;
     static final int PROFILING_COMMAND_START = 0x1282;
     static final int PROFILING_COMMAND_END = 0x1283;
     static final int OUT_OF_RESOURCES = -5;
@@ -492,6 +494,24 @@ final class CL {
             check((int) getEventProfilingInfo.invokeExact(event, PROFILING_COMMAND_END, 8L, end,
                     MemorySegment.NULL), "clGetEventProfilingInfo");
             return end.get(JAVA_LONG, 0) - start.get(JAVA_LONG, 0);
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Device timestamps of a finished command: queued, submitted, started, ended. */
+    long[] timestamps(MemorySegment event) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment v = arena.allocate(JAVA_LONG);
+            long[] out = new long[4];
+            int[] params = {PROFILING_COMMAND_QUEUED, PROFILING_COMMAND_SUBMIT, PROFILING_COMMAND_START,
+                    PROFILING_COMMAND_END};
+            for (int i = 0; i < 4; i++) {
+                check((int) getEventProfilingInfo.invokeExact(event, params[i], 8L, v, MemorySegment.NULL),
+                        "clGetEventProfilingInfo");
+                out[i] = v.get(JAVA_LONG, 0);
+            }
+            return out;
         } catch (Throwable t) {
             throw rethrow(t);
         }
