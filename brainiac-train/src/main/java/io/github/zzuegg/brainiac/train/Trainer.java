@@ -105,6 +105,15 @@ public final class Trainer {
     }
 
     /**
+     * Returns how many passes over the data {@link #fit} makes at most.
+     *
+     * @return the epochs
+     */
+    public int epochs() {
+        return epochs;
+    }
+
+    /**
      * Sets how many passes over the data {@link #fit} makes at most.
      *
      * @param epochs at least 1
