@@ -49,7 +49,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ul>
  *   <li>{@code brainiac.opencl.devices}: {@code gpu} (default), {@code cpu} or {@code all}
  *       device types to consider, so OpenCL CPU drivers such as PoCL can be used too</li>
- *   <li>{@code brainiac.opencl.device}: the index among those devices, default 0</li>
+ *   <li>{@code brainiac.opencl.device}: the index among those devices; by default the one
+ *       with dedicated memory and the most compute units (a graphics card before integrated
+ *       graphics)</li>
  *   <li>{@code brainiac.opencl.memory}: the device memory to use, in MB; by default 80%
  *       of the device's memory. Unreachable tensors are freed by the garbage collector,
  *       which is triggered when this budget runs out.</li>
@@ -70,12 +72,80 @@ public final class OpenClBackend implements Backend {
     private MemorySegment context;
     private MemorySegment queue;
     private String deviceName = "";
+    private String deviceList = "";
     private String unavailable;
     private boolean initialized;
     private boolean fp64;
     private int tile;
     private long budget;
     private final AtomicLong allocated = new AtomicLong();
+    private final Pool pool = new Pool();
+    private final Map<MetaKey, MemorySegment> metas = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<MetaKey, MemorySegment> eldest) {
+            if (size() > 1024) {
+                cl.release(eldest.getValue());   // freed by OpenCL once queued kernels are done
+                return true;
+            }
+            return false;
+        }
+    };
+
+    /** Shape and stride tables, cached on the device because training repeats them. */
+    private record MetaKey(long[] values) {
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof MetaKey k && Arrays.equals(values, k.values);
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(values);
+        }
+    }
+
+    /**
+     * Buffers of unreachable tensors, kept for reuse by size: creating device buffers is slow
+     * on discrete GPUs. Reuse is safe because the command queue runs in order, so kernels
+     * still reading a recycled buffer finish before any later kernel writes it.
+     */
+    static final class Pool {
+        private final Map<Long, java.util.concurrent.ConcurrentLinkedQueue<MemorySegment>> free =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final AtomicLong bytes = new AtomicLong();
+
+        void put(long size, MemorySegment mem) {
+            free.computeIfAbsent(size, k -> new java.util.concurrent.ConcurrentLinkedQueue<>()).add(mem);
+            bytes.addAndGet(size);
+        }
+
+        MemorySegment take(long size) {
+            java.util.concurrent.ConcurrentLinkedQueue<MemorySegment> q = free.get(size);
+            MemorySegment m = q == null ? null : q.poll();
+            if (m != null) {
+                bytes.addAndGet(-size);
+            }
+            return m;
+        }
+
+        long bytes() {
+            return bytes.get();
+        }
+
+        /** Releases every pooled buffer; returns the bytes freed. */
+        long drain(CL cl) {
+            long freed = 0;
+            for (Map.Entry<Long, java.util.concurrent.ConcurrentLinkedQueue<MemorySegment>> e : free.entrySet()) {
+                MemorySegment m;
+                while ((m = e.getValue().poll()) != null) {
+                    cl.release(m);
+                    freed += e.getKey();
+                    bytes.addAndGet(-e.getKey());
+                }
+            }
+            return freed;
+        }
+    }
     private final Map<DType, Program> programs = new EnumMap<>(DType.class);
     private final Map<String, Tables> tables = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -138,7 +208,8 @@ public final class OpenClBackend implements Backend {
         if (!isAvailable()) {
             return "unavailable: " + unavailable;
         }
-        return deviceName + ", " + (budget >> 20) + " MB budget" + (fp64 ? ", float64" : ", no float64");
+        return deviceName + ", " + (budget >> 20) + " MB budget" + (fp64 ? ", float64" : ", no float64")
+                + "; devices " + deviceList;
     }
 
     private void init() {
@@ -158,11 +229,18 @@ public final class OpenClBackend implements Backend {
             throw new IllegalStateException("no OpenCL " + types + " device found"
                     + (types.equals("gpu") ? " (set -Dbrainiac.opencl.devices=all to use OpenCL CPU drivers)" : ""));
         }
-        int index = Integer.getInteger("brainiac.opencl.device", 0);
+        Integer chosen = Integer.getInteger("brainiac.opencl.device");
+        int index = chosen != null ? chosen : best(lib, found);
         if (index < 0 || index >= found.size()) {
             throw new IllegalStateException("brainiac.opencl.device=" + index + " but only " + found.size()
                     + " devices were found");
         }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < found.size(); i++) {
+            names.append(i == 0 ? "" : ", ").append(i).append(": ").append(lib.deviceString(found.get(i),
+                    CL.DEVICE_NAME)).append(i == index ? " (in use)" : "");
+        }
+        deviceList = names.toString();
         device = found.get(index);
         deviceName = lib.deviceString(device, CL.DEVICE_NAME);
         fp64 = (" " + lib.deviceString(device, CL.DEVICE_EXTENSIONS) + " ").contains(" cl_khr_fp64 ");
@@ -174,6 +252,35 @@ public final class OpenClBackend implements Backend {
         queue = lib.createQueue(context, device);
         cl = lib;
         program(DType.FLOAT32);
+    }
+
+    /**
+     * Picks the fastest-looking device: dedicated memory before memory shared with the host
+     * (integrated graphics), then the most compute units times clock speed, then the most
+     * memory.
+     */
+    private static int best(CL lib, List<MemorySegment> devices) {
+        int best = 0;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < devices.size(); i++) {
+            MemorySegment d = devices.get(i);
+            double score;
+            try {
+                boolean shared = (lib.deviceLong(d, CL.DEVICE_HOST_UNIFIED_MEMORY) & 0xFFFFFFFFL) != 0;
+                boolean gpu = (lib.deviceLong(d, CL.DEVICE_TYPE) & CL.DEVICE_TYPE_GPU) != 0;
+                double compute = (double) (lib.deviceLong(d, CL.DEVICE_MAX_COMPUTE_UNITS) & 0xFFFFFFFFL)
+                        * Math.max(1, lib.deviceLong(d, CL.DEVICE_MAX_CLOCK_FREQUENCY) & 0xFFFFFFFFL);
+                double memory = lib.deviceLong(d, CL.DEVICE_GLOBAL_MEM_SIZE);
+                score = (shared ? 0 : 4e18) + (gpu ? 2e18 : 0) + compute * 1e6 + memory / 1e12;
+            } catch (RuntimeException e) {
+                score = -i;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = i;
+            }
+        }
+        return best;
     }
 
     // ---------------------------------------------------------------- programs
@@ -312,19 +419,30 @@ public final class OpenClBackend implements Backend {
     private ClStorage raw(long size, DType dtype) {
         program(dtype);
         long bytes = Math.max(1, size) * dtype.bytes();
-        MemorySegment mem = createBuffer(CL.MEM_READ_WRITE, bytes, MemorySegment.NULL);
-        allocated.addAndGet(bytes);
+        MemorySegment mem = pool.take(bytes);
+        if (mem == null) {
+            mem = createBuffer(CL.MEM_READ_WRITE, bytes, MemorySegment.NULL);
+            allocated.addAndGet(bytes);
+        }
         ClStorage s = new ClStorage(this, mem, size, dtype);
-        CLEANER.register(s, new Release(cl, mem, bytes, allocated));
+        CLEANER.register(s, new Release(cl, mem, bytes, allocated, pool, budget / 4));
         return s;
     }
 
-    /** Frees a buffer once its storage is unreachable. Holds no reference to the storage. */
-    private record Release(CL cl, MemorySegment mem, long bytes, AtomicLong allocated) implements Runnable {
+    /**
+     * Returns a buffer to the pool once its storage is unreachable, or frees it when the
+     * pool is full. Holds no reference to the storage.
+     */
+    private record Release(CL cl, MemorySegment mem, long bytes, AtomicLong allocated, Pool pool, long poolLimit)
+            implements Runnable {
         @Override
         public void run() {
-            allocated.addAndGet(-bytes);
-            cl.release(mem);
+            if (pool.bytes() + bytes <= poolLimit) {
+                pool.put(bytes, mem);
+            } else {
+                allocated.addAndGet(-bytes);
+                cl.release(mem);
+            }
         }
     }
 
@@ -340,7 +458,11 @@ public final class OpenClBackend implements Backend {
                             + bytes + " bytes (" + (allocated.get() >> 20) + " MB in use)");
                 }
             }
-            // Unreachable tensors still hold device memory until collected.
+            // Pooled buffers and unreachable tensors still hold device memory.
+            allocated.addAndGet(-pool.drain(cl));
+            if (allocated.get() + bytes <= budget) {
+                continue;
+            }
             System.gc();
             try {
                 Thread.sleep(5L << attempt);
@@ -359,6 +481,17 @@ public final class OpenClBackend implements Backend {
         try (Arena arena = Arena.ofConfined()) {
             return temp(arena.allocateFrom(JAVA_INT, values.length == 0 ? new int[] {0} : values));
         }
+    }
+
+    /** A cached device copy of a shape and stride table; never released by the caller. */
+    private Temp meta(long[] values) {
+        MetaKey key = new MetaKey(values);
+        MemorySegment m = metas.get(key);
+        if (m == null) {
+            m = longs(values).mem();
+            metas.put(key, m);
+        }
+        return new Temp(m);
     }
 
     private Temp longs(long... values) {
@@ -534,9 +667,8 @@ public final class OpenClBackend implements Backend {
             run(o.dtype, "binary_contiguous", o.size, op.ordinal(), x, y, o, o.size);
             return;
         }
-        Temp meta = longs(meta(shape, aStrides, bStrides));
+        Temp meta = meta(meta(shape, aStrides, bStrides));
         run(o.dtype, "binary_strided", o.size, op.ordinal(), x, y, o, o.size, shape.length, meta);
-        release(meta);
     }
 
     @Override
@@ -555,9 +687,8 @@ public final class OpenClBackend implements Backend {
             inStrides = new long[] {1};
             outStrides = new long[] {1};
         }
-        Temp meta = longs(meta(shape, inStrides, outStrides));
+        Temp meta = meta(meta(shape, inStrides, outStrides));
         run(o.dtype, "copy_strided", n, as(in, o.dtype), inOffset, o, outOffset, n, shape.length, meta);
-        release(meta);
     }
 
     private static long[] meta(int[] shape, long[] first, long[] second) {
@@ -602,13 +733,10 @@ public final class OpenClBackend implements Backend {
         ClStorage src = as(x, o.dtype);
         long chunks = rows >= 1024 || length <= 256 ? 1 : Math.min(Math.ceilDiv(length, 256), Math.max(1, 65536 / rows));
         long chunkLen = Math.ceilDiv(length, chunks);
-        int accBytes = o.dtype == DType.FLOAT64 ? 8 : 4;
-        MemorySegment partial = createBuffer(CL.MEM_READ_WRITE, Math.max(1, rows * chunks) * accBytes,
-                MemorySegment.NULL);
-        Temp part = new Temp(partial);
+        // partial results in the accumulator type, from the buffer pool
+        ClStorage part = raw(rows * chunks, o.dtype == DType.FLOAT64 ? DType.FLOAT64 : DType.FLOAT32);
         run(o.dtype, "reduce_partial", rows * chunks, op.ordinal(), src, part, outer, length, inner, chunks, chunkLen);
         run(o.dtype, "reduce_final", rows, op.ordinal(), part, o, outer, length, inner, chunks);
-        release(part);
     }
 
     @Override

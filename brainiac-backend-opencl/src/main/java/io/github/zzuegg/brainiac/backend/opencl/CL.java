@@ -28,7 +28,10 @@ final class CL {
     static final long DEVICE_TYPE_ACCELERATOR = 1L << 3;
     static final long DEVICE_TYPE_ALL = 0xFFFFFFFFL;
     static final int DEVICE_TYPE = 0x1000;
+    static final int DEVICE_MAX_COMPUTE_UNITS = 0x1002;
     static final int DEVICE_MAX_WORK_GROUP_SIZE = 0x1004;
+    static final int DEVICE_MAX_CLOCK_FREQUENCY = 0x100C;
+    static final int DEVICE_HOST_UNIFIED_MEMORY = 0x1035;
     static final int DEVICE_GLOBAL_MEM_SIZE = 0x101F;
     static final int DEVICE_NAME = 0x102B;
     static final int DEVICE_EXTENSIONS = 0x1030;

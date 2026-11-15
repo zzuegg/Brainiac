@@ -445,7 +445,10 @@ The same kernels run every model: layers are written once against tensor operati
 and each operation launches one precompiled OpenCL kernel. Memory of unreachable tensors
 is returned when they are garbage collected. System properties:
 `brainiac.opencl.devices` (`gpu` by default, `cpu` or `all` to include OpenCL CPU drivers
-such as PoCL), `brainiac.opencl.device` (index), `brainiac.opencl.memory` (MB budget).
+such as PoCL), `brainiac.opencl.device` (index; by default a dedicated graphics card is preferred over
+integrated graphics), `brainiac.opencl.memory` (MB budget). `OpenClBackend.status()` lists
+the devices found. Buffers of collected tensors are pooled and reused, and shape tables
+are cached on the device, so training does not create device memory on every operation.
 Without an OpenCL GPU the backend reports itself unavailable and its tests are skipped;
 CI runs them on PoCL.
 
