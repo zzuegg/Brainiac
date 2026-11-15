@@ -428,10 +428,13 @@ public final class OpenClBackend implements Backend {
             }
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
-        if (flushEvery > 0 && ++sinceFlush >= flushEvery) {
+        if (flushEvery != 0 && ++sinceFlush >= flushInterval) {
             // some drivers hold commands back until a flush, leaving the device idle meanwhile
             cl.flush(queue);
             sinceFlush = 0;
+            if (flushEvery < 0) {
+                flushInterval = Math.min(flushInterval * 2, 64);
+            }
         }
         if (profiling) {
             hostLaunchNanos += System.nanoTime() - hostStart;
@@ -875,11 +878,22 @@ public final class OpenClBackend implements Backend {
     private long lastEnd;
     private long hostLaunchNanos;
     /**
-     * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}, 0 leaves
-     * submission to the driver).
+     * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}; 0 leaves
+     * submission to the driver). By default (-1) it adapts: right after the host waited for
+     * the device every launch is flushed so the device starts at once, then the interval
+     * doubles up to 64 while the host keeps queueing, so long streams are submitted in batches.
      */
-    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 1);
+    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", -1);
+    private int flushInterval = Math.max(1, flushEvery);
     private int sinceFlush;
+
+    /** Called after the host waited for the device: the next launches start it again quickly. */
+    private void synced() {
+        if (flushEvery < 0) {
+            flushInterval = 1;
+            sinceFlush = 0;
+        }
+    }
     private long hostGenerateNanos;
 
     private record Launch(String kernel, MemorySegment event) {
@@ -1011,7 +1025,8 @@ public final class OpenClBackend implements Backend {
                 MemorySegment host = arena.allocate(JAVA_FLOAT, Math.max(1, s.size));
                 if (s.size > 0) {
                     cl.read(queue, s.mem, 0, host.asSlice(0, s.bytes()));
-                    settled();     // a blocking read on the in-order queue means all earlier work is done
+                    settled();
+                    synced();     // a blocking read on the in-order queue means all earlier work is done
                 }
                 return host.asSlice(0, s.bytes()).toArray(JAVA_FLOAT);
             }
@@ -1036,6 +1051,7 @@ public final class OpenClBackend implements Backend {
             MemorySegment host = arena.allocate(s.bytes(), 8);
             cl.read(queue, s.mem, 0, host);
             settled();
+            synced();
             switch (s.dtype) {
                 case FLOAT64 -> MemorySegment.copy(host, JAVA_DOUBLE, 0, out, 0, out.length);
                 case FLOAT32 -> {
