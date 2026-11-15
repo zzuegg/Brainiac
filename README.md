@@ -132,6 +132,13 @@ Saving and loading:
 ```java
 model.save(Path.of("iris.brainiac"));
 Model restored = Model.load(Path.of("iris.brainiac"));
+
+// custom activations and layers load once registered (learned values are restored automatically)
+Activation.register(scaledTanh);
+Layer.register("my-layer", MyLayer.class, new LayerCodec<>() {
+    public Config write(MyLayer l) { return Config.builder().put("width", l.width()).build(); }
+    public MyLayer read(Config c) { return new MyLayer(c.getInt("width")); }
+});
 ```
 
 Tensors and gradients directly:

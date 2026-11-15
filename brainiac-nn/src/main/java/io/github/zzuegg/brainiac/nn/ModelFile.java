@@ -16,32 +16,52 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.SplittableRandom;
+import java.util.function.Function;
 
 /**
- * Reads and writes the Brainiac model file format (version 1). All numbers are big
- * endian except tensor data, which is little-endian float32.
+ * Reads and writes the Brainiac model file format. All numbers are big endian except
+ * tensor data, which is little-endian float32. Version 2:
  *
  * <pre>
  * int    magic "BRNC"   int version
  * int    inputSize      int outputSize
- * int    layerCount     layer specs (type name, then type-specific fields)
+ * int    activationCount  per activation: utf name, config, int width (-1 unless bound)
+ * int    layerCount     per layer: utf type, config
  * int    stepCount      per step: byte kind, int inputCount, int[] inputs, int layerIndex (-1 if none)
  * int    tensorCount    per tensor: int rank, int[] dims, float[] values
+ * config: int count, per entry: utf key, byte tag, value (see {@link #writeConfig})
  * </pre>
  *
- * Tensors are every parameter, then every buffer, in model order.
+ * Layer types and activations are looked up by name in the {@link Registry}. Activations
+ * are stored once in their own table and referenced by index, so an activation shared by
+ * several layers stays shared. Tensors are every parameter, then every buffer, in model
+ * order. Version 1 files (fixed layer types, activations by name) can still be read.
  */
 final class ModelFile {
 
     private static final int MAGIC = 0x42524E43;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
-    private static final List<Activation> ACTIVATIONS =
-            List.of(Activation.IDENTITY, Activation.RELU, Activation.SIGMOID, Activation.TANH, Activation.SOFTMAX);
+    private static final byte BOOLEAN = 0;
+    private static final byte INT = 1;
+    private static final byte LONG = 2;
+    private static final byte FLOAT = 3;
+    private static final byte DOUBLE = 4;
+    private static final byte STRING = 5;
+    private static final byte INTS = 6;
+    private static final byte FLOATS = 7;
+    private static final byte CONFIG = 8;
+    private static final byte ACTIVATION = 9;
+
+    private static final String HINT = "; register it before loading, or build the model in code and use"
+            + " loadWeights(path) instead";
 
     private ModelFile() {
     }
+
+    // ---------------------------------------------------------------- writing
 
     static void write(Model model, OutputStream stream) throws IOException {
         DataOutputStream out = new DataOutputStream(stream);
@@ -49,13 +69,32 @@ final class ModelFile {
         out.writeInt(VERSION);
         out.writeInt(model.inputSize());
         out.writeInt(model.outputSize());
+
         List<Layer> layers = model.layers();
         Map<Layer, Integer> layerIndex = new IdentityHashMap<>();
-        out.writeInt(layers.size());
+        List<String> types = new ArrayList<>();
+        List<Config> configs = new ArrayList<>();
         for (Layer layer : layers) {
             layerIndex.put(layer, layerIndex.size());
-            writeLayer(layer, out);
+            describe(layer, types, configs);
         }
+        Map<Activation, Integer> activationIndex = new IdentityHashMap<>();
+        List<Activation> activations = new ArrayList<>();
+        for (Config c : configs) {
+            intern(c, activationIndex, activations);
+        }
+        out.writeInt(activations.size());
+        for (Activation a : activations) {
+            out.writeUTF(a.toString());
+            writeConfig(a.config(), activationIndex, out);
+            out.writeInt(a instanceof Activation.Parametric p ? p.width() : -1);
+        }
+        out.writeInt(layers.size());
+        for (int i = 0; i < layers.size(); i++) {
+            out.writeUTF(types.get(i));
+            writeConfig(configs.get(i), activationIndex, out);
+        }
+
         List<Model.Step> steps = model.steps();
         out.writeInt(steps.size());
         for (Model.Step step : steps) {
@@ -74,16 +113,243 @@ final class ModelFile {
         out.flush();
     }
 
+    private static void describe(Layer layer, List<String> types, List<Config> configs) {
+        if (layer instanceof Activation a) {
+            types.add("activation");
+            configs.add(Config.builder().put("activation", a).build());
+            return;
+        }
+        Registry.LayerType<?> type = Registry.layerType(layer.getClass());
+        if (type == null) {
+            // still saved, so loadWeights works; load explains how to register it
+            types.add("custom");
+            configs.add(Config.builder().put("class", layer.getClass().getName())
+                    .put("description", String.valueOf(layer)).build());
+            return;
+        }
+        types.add(type.name());
+        configs.add(Objects.requireNonNull(type.write(layer), "codec for " + type.name() + " returned null"));
+    }
+
+    /** Adds every activation a config refers to, dependencies first. */
+    private static void intern(Config config, Map<Activation, Integer> index, List<Activation> table) {
+        for (Object v : config.values().values()) {
+            if (v instanceof Config nested) {
+                intern(nested, index, table);
+            } else if (v instanceof Activation a && !index.containsKey(a)) {
+                intern(a.config(), index, table);
+                index.put(a, table.size());
+                table.add(a);
+            }
+        }
+    }
+
+    /**
+     * Writes a config. Tags: 0 boolean, 1 int, 2 long, 3 float, 4 double, 5 utf string,
+     * 6 int array, 7 float array (each: int length, values), 8 nested config,
+     * 9 activation (int index into the activation table).
+     */
+    private static void writeConfig(Config config, Map<Activation, Integer> activations, DataOutputStream out)
+            throws IOException {
+        Map<String, Object> values = config.values();
+        out.writeInt(values.size());
+        for (var e : values.entrySet()) {
+            out.writeUTF(e.getKey());
+            switch (e.getValue()) {
+                case Boolean b -> {
+                    out.writeByte(BOOLEAN);
+                    out.writeBoolean(b);
+                }
+                case Integer i -> {
+                    out.writeByte(INT);
+                    out.writeInt(i);
+                }
+                case Long l -> {
+                    out.writeByte(LONG);
+                    out.writeLong(l);
+                }
+                case Float f -> {
+                    out.writeByte(FLOAT);
+                    out.writeFloat(f);
+                }
+                case Double d -> {
+                    out.writeByte(DOUBLE);
+                    out.writeDouble(d);
+                }
+                case String str -> {
+                    out.writeByte(STRING);
+                    out.writeUTF(str);
+                }
+                case int[] a -> {
+                    out.writeByte(INTS);
+                    out.writeInt(a.length);
+                    for (int x : a) {
+                        out.writeInt(x);
+                    }
+                }
+                case float[] a -> {
+                    out.writeByte(FLOATS);
+                    out.writeInt(a.length);
+                    for (float x : a) {
+                        out.writeFloat(x);
+                    }
+                }
+                case Config c -> {
+                    out.writeByte(CONFIG);
+                    writeConfig(c, activations, out);
+                }
+                case Activation a -> {
+                    out.writeByte(ACTIVATION);
+                    out.writeInt(activations.get(a));
+                }
+                default -> throw new IllegalStateException("unsupported config value " + e.getValue());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reading
+
     static Model read(InputStream stream, Device device) throws IOException {
         DataInputStream in = new DataInputStream(stream);
-        readHeader(in);
+        int version = readHeader(in);
         int inputSize = in.readInt();
         int outputSize = in.readInt();
+        List<Layer> layers = version == 1 ? readLayersV1(in) : readLayers(in);
+        List<Model.Step> steps = readSteps(in, layers);
+        Model model = Model.fromSteps(inputSize, outputSize, steps);
+        readState(model, in);
+        return model.to(device);
+    }
+
+    static void readWeights(Model model, InputStream stream) throws IOException {
+        DataInputStream in = new DataInputStream(stream);
+        int version = readHeader(in);
+        in.readInt();
+        in.readInt();
+        if (version == 1) {
+            int layerCount = in.readInt();
+            for (int i = 0; i < layerCount; i++) {
+                skipLayerV1(in);
+            }
+        } else {
+            int activationCount = in.readInt();
+            for (int i = 0; i < activationCount; i++) {
+                in.readUTF();
+                readConfig(in, null);
+                in.readInt();
+            }
+            int layerCount = in.readInt();
+            for (int i = 0; i < layerCount; i++) {
+                in.readUTF();
+                readConfig(in, null);
+            }
+        }
+        int stepCount = in.readInt();
+        for (int s = 0; s < stepCount; s++) {
+            in.readUnsignedByte();
+            in.skipNBytes(4L * in.readInt());
+            in.readInt();
+        }
+        Device device = model.device();
+        readState(model, in);
+        model.to(device);
+    }
+
+    private static List<Layer> readLayers(DataInputStream in) throws IOException {
+        int activationCount = in.readInt();
+        List<Activation> activations = new ArrayList<>(activationCount);
+        for (int i = 0; i < activationCount; i++) {
+            String name = in.readUTF();
+            Config config = readConfig(in, activations);
+            int width = in.readInt();
+            Function<Config, Activation> factory = Registry.activation(name);
+            if (factory == null) {
+                throw new IOException("the file uses activation `" + name + "`, which is not registered with"
+                        + " Activation.register(...)" + HINT);
+            }
+            Activation a = factory.apply(config);
+            activations.add(width >= 0 ? a.bind(width) : a);
+        }
         int layerCount = in.readInt();
         List<Layer> layers = new ArrayList<>(layerCount);
         for (int i = 0; i < layerCount; i++) {
-            layers.add(readLayer(in));
+            String type = in.readUTF();
+            Config config = readConfig(in, activations);
+            layers.add(switch (type) {
+                case "activation" -> config.getActivation("activation");
+                case "custom" -> throw new IOException("the file contains the custom layer `"
+                        + config.getString("description") + "` (" + config.getString("class")
+                        + "), which is not registered with Layer.register(...)" + HINT);
+                default -> {
+                    Registry.LayerType<?> t = Registry.layerType(type);
+                    if (t == null) {
+                        throw new IOException("the file uses layer type `" + type + "`, which is not registered"
+                                + " with Layer.register(...)" + HINT);
+                    }
+                    yield t.codec().read(config);
+                }
+            });
         }
+        return layers;
+    }
+
+    /** Reads a config; with {@code activations == null} activation references are skipped. */
+    private static Config readConfig(DataInputStream in, List<Activation> activations) throws IOException {
+        int count = in.readInt();
+        if (count < 0) {
+            throw new IOException("bad config size " + count);
+        }
+        Config.Builder b = Config.builder();
+        for (int i = 0; i < count; i++) {
+            String key = in.readUTF();
+            byte tag = in.readByte();
+            switch (tag) {
+                case BOOLEAN -> b.put(key, in.readBoolean());
+                case INT -> b.put(key, in.readInt());
+                case LONG -> b.put(key, in.readLong());
+                case FLOAT -> b.put(key, in.readFloat());
+                case DOUBLE -> b.put(key, in.readDouble());
+                case STRING -> b.put(key, in.readUTF());
+                case INTS -> {
+                    int[] a = new int[arrayLength(in)];
+                    for (int k = 0; k < a.length; k++) {
+                        a[k] = in.readInt();
+                    }
+                    b.put(key, a);
+                }
+                case FLOATS -> {
+                    float[] a = new float[arrayLength(in)];
+                    for (int k = 0; k < a.length; k++) {
+                        a[k] = in.readFloat();
+                    }
+                    b.put(key, a);
+                }
+                case CONFIG -> b.put(key, readConfig(in, activations));
+                case ACTIVATION -> {
+                    int index = in.readInt();
+                    if (activations != null) {
+                        if (index < 0 || index >= activations.size()) {
+                            throw new IOException("config `" + key + "` refers to activation " + index
+                                    + ", which does not exist yet");
+                        }
+                        b.put(key, activations.get(index));
+                    }
+                }
+                default -> throw new IOException("unknown config value tag " + tag);
+            }
+        }
+        return b.build();
+    }
+
+    private static int arrayLength(DataInputStream in) throws IOException {
+        int n = in.readInt();
+        if (n < 0 || n > (1 << 24)) {
+            throw new IOException("bad config array length " + n);
+        }
+        return n;
+    }
+
+    private static List<Model.Step> readSteps(DataInputStream in, List<Layer> layers) throws IOException {
         int stepCount = in.readInt();
         List<Model.Step> steps = new ArrayList<>(stepCount);
         Node.Kind[] kinds = Node.Kind.values();
@@ -100,31 +366,12 @@ final class ModelFile {
                 }
             }
             int layer = in.readInt();
+            if (layer >= layers.size()) {
+                throw new IOException("step " + s + " uses layer " + layer + ", which does not exist");
+            }
             steps.add(new Model.Step(kinds[kind], inputs, layer < 0 ? null : layers.get(layer)));
         }
-        Model model = Model.fromSteps(inputSize, outputSize, steps);
-        readState(model, in);
-        return model.to(device);
-    }
-
-    static void readWeights(Model model, InputStream stream) throws IOException {
-        DataInputStream in = new DataInputStream(stream);
-        readHeader(in);
-        in.readInt();
-        in.readInt();
-        int layerCount = in.readInt();
-        for (int i = 0; i < layerCount; i++) {
-            skipLayer(in);
-        }
-        int stepCount = in.readInt();
-        for (int s = 0; s < stepCount; s++) {
-            in.readUnsignedByte();
-            in.skipNBytes(4L * in.readInt());
-            in.readInt();
-        }
-        Device device = model.device();
-        readState(model, in);
-        model.to(device);
+        return steps;
     }
 
     private static List<Var> state(Model model) {
@@ -152,81 +399,56 @@ final class ModelFile {
         }
     }
 
-    private static void readHeader(DataInputStream in) throws IOException {
+    private static int readHeader(DataInputStream in) throws IOException {
         if (in.readInt() != MAGIC) {
             throw new IOException("not a Brainiac model file");
         }
         int version = in.readInt();
-        if (version != VERSION) {
-            throw new IOException("unsupported model file version " + version + ", expected " + VERSION);
+        if (version != 1 && version != VERSION) {
+            throw new IOException("unsupported model file version " + version + ", expected 1 to " + VERSION);
         }
+        return version;
     }
 
-    private static void writeLayer(Layer layer, DataOutputStream out) throws IOException {
-        switch (layer) {
-            case Dense d -> {
-                out.writeUTF("dense");
-                out.writeInt(d.weight().shape().dim(0));
-                out.writeInt(d.weight().shape().dim(1));
-                out.writeUTF(activationName(d.activation()));
-            }
-            case Dropout d -> {
-                out.writeUTF("dropout");
-                out.writeFloat(d.rate());
-            }
-            case BatchNorm b -> {
-                out.writeUTF("batchnorm");
-                out.writeInt(b.features());
-                out.writeFloat(b.momentum());
-                out.writeFloat(b.epsilon());
-            }
-            case Activation a when ACTIVATIONS.contains(a) -> {
-                out.writeUTF("activation");
-                out.writeUTF(a.toString());
-            }
-            default -> {
-                out.writeUTF("custom");
-                out.writeUTF(layer.getClass().getName() + ": " + layer);
-            }
+    // ---------------------------------------------------------------- version 1
+
+    private static List<Layer> readLayersV1(DataInputStream in) throws IOException {
+        int layerCount = in.readInt();
+        List<Layer> layers = new ArrayList<>(layerCount);
+        for (int i = 0; i < layerCount; i++) {
+            layers.add(readLayerV1(in));
         }
+        return layers;
     }
 
-    private static String activationName(Activation activation) {
-        if (!ACTIVATIONS.contains(activation)) {
-            return "custom:" + activation;
+    private static Activation activationV1(String name) throws IOException {
+        Function<Config, Activation> factory = name.startsWith("custom:") ? null : Registry.activation(name);
+        if (factory == null) {
+            throw new IOException("the file uses activation `" + name + "`, which cannot be restored; build the model"
+                    + " in code and use loadWeights(path) instead");
         }
-        return activation.toString();
+        return factory.apply(Config.EMPTY);
     }
 
-    private static Activation activation(String name) throws IOException {
-        for (Activation a : ACTIVATIONS) {
-            if (a.toString().equals(name)) {
-                return a;
-            }
-        }
-        throw new IOException("the file uses activation `" + name + "`, which cannot be restored; build the model"
-                + " in code and use loadWeights(path) instead");
-    }
-
-    private static Layer readLayer(DataInputStream in) throws IOException {
+    private static Layer readLayerV1(DataInputStream in) throws IOException {
         String type = in.readUTF();
         return switch (type) {
             case "dense" -> {
                 int inputs = in.readInt();
                 int units = in.readInt();
-                Activation activation = activation(in.readUTF());
+                Activation activation = activationV1(in.readUTF());
                 yield new Dense(inputs, units, activation, Tensor.zeros(Shape.of(inputs, units)), Tensor.zeros(Shape.of(units)));
             }
             case "dropout" -> new Dropout(in.readFloat(), new SplittableRandom());
             case "batchnorm" -> new BatchNorm(in.readInt(), in.readFloat(), in.readFloat());
-            case "activation" -> activation(in.readUTF());
+            case "activation" -> activationV1(in.readUTF());
             case "custom" -> throw new IOException("the file contains the custom layer `" + in.readUTF()
                     + "`, which cannot be restored; build the model in code and use loadWeights(path) instead");
             default -> throw new IOException("unknown layer type " + type);
         };
     }
 
-    private static void skipLayer(DataInputStream in) throws IOException {
+    private static void skipLayerV1(DataInputStream in) throws IOException {
         String type = in.readUTF();
         switch (type) {
             case "dense" -> {
@@ -244,6 +466,8 @@ final class ModelFile {
             default -> throw new IOException("unknown layer type " + type);
         }
     }
+
+    // ---------------------------------------------------------------- tensors
 
     private static void writeTensor(Tensor t, DataOutputStream out) throws IOException {
         int[] dims = t.shape().toArray();
