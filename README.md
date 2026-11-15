@@ -241,6 +241,54 @@ Run the examples:
 ./gradlew :brainiac-examples:run --args="mnist data/mnist 3"   # directory, epochs
 ```
 
+## Benchmarks: test any model
+
+`Benchmark` trains and tests any model on a fixed task, with the same data, split and
+training settings every time, and reports test accuracy (or mean absolute error), loss,
+per-class accuracy, the confusion matrix, the most common mistakes, parameter count,
+training time and inference speed. `Tasks` in the examples has every example's problem
+ready to use:
+
+| task | input | output | what |
+|---|---|---|---|
+| `mnist` | `[1, 28, 28]` | `[10]` | handwritten digits (downloads 11 MB) |
+| `fashion` | `[1, 28, 28]` | `[10]` | Fashion-MNIST clothing photos (downloads 30 MB) |
+| `shapes` | `[1, 16, 16]` | `[3]` | synthetic bars and crosses |
+| `waves` | `[24, 1]` | `[1]` | forecast the next value of a noisy wave |
+| `reversal` | `[8, 6]` | `[8, 6]` | reverse a sequence of digits |
+| `spiral` | `[2]` | `[3]` | three interleaved spiral arms |
+| `iris` | `[4]` | `[3]` | iris species from flower measurements |
+| `xor` | `[2]` | `[1]` | exclusive or |
+
+```java
+Benchmark.Task task = Tasks.mnist();
+Model mine = Model.sequential().input(1, 28, 28) /* ... */ .build();
+
+Benchmark.Report report = Benchmark.run(task, "mine", mine);           // task's default training
+Benchmark.Report quick = Benchmark.run(task, "mine", other, t -> t.epochs(1).batchSize(128));
+Benchmark.Report saved = Benchmark.evaluate(task, "saved", Model.load(Path.of("mnist.brainiac")));
+System.out.println(report);
+System.out.println(report.confusionTable());
+
+List<Benchmark.Report> all = Benchmark.compare(task,
+        Map.of("small", () -> small(), "big", () -> big()), t -> t.epochs(2));
+System.out.println(Benchmark.table(all));
+```
+
+A model fits a task when its input and output hold as many values as the task's shapes, so
+a flat `input(784)` model works on MNIST too. Your own data becomes a task with
+`Benchmark.Task.classification(name, train, test, inputShape, outputShape)` or
+`regression(...)`.
+
+From the command line, with built-in models (`default`, `linear`, `mlp`, `cnn`, `lenet`,
+`bilstm`, `gru`, `transformer`) or saved model files:
+
+```
+./gradlew :brainiac-examples:run --args="bench mnist linear mlp lenet cnn --epochs 1"
+./gradlew :brainiac-examples:run --args="bench offline"          # every task without a download
+./gradlew :brainiac-examples:run --args="bench fashion my-model.brainiac --confusion"
+```
+
 ## Performance
 
 The CPU backend splits large operations across all cores (limit with

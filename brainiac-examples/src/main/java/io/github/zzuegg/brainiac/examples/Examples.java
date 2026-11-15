@@ -27,13 +27,15 @@ public final class Examples {
                     throw new java.io.UncheckedIOException(e);
                 }
             }
+            case "bench" -> BenchmarkExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
                       xor     learn XOR with a tiny network
                       spiral  classify three spiral arms
                       iris    classify iris flowers from CSV
                       sequence  forecast a wave with an LSTM, reverse digits with a transformer
-                      mnist   recognize handwritten digits with a CNN (downloads MNIST)""");
+                      mnist   recognize handwritten digits with a CNN (downloads MNIST)
+                      bench   run any model on any task: bench <task> [model...] [--epochs N]""");
         }
     }
 }

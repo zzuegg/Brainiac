@@ -5,8 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.train.Benchmark;
+import io.github.zzuegg.brainiac.train.Benchmark.Report;
+import io.github.zzuegg.brainiac.train.Benchmark.Task;
 import io.github.zzuegg.brainiac.train.Metric;
 import io.github.zzuegg.brainiac.train.TrainingResult;
+
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -70,5 +75,17 @@ class AcceptanceTest {
         float accuracy = SequenceExample.trainReverser(model, SequenceExample.reversal(2000, 3), 6, false)
                 .evaluate(SequenceExample.reversal(500, 4)).get(Metric.ACCURACY);
         assertTrue(accuracy >= 0.95f, "test accuracy " + accuracy);
+    }
+
+    @Test
+    void everyOfflineTaskRunsItsDefaultModelAndAGenericOne() {
+        for (Task task : Tasks.offline()) {
+            Task quick = task.limit(200, 100);
+            for (String name : List.of("default", "mlp")) {
+                Report r = Benchmark.run(
+                        quick, name, BenchmarkExample.model(name, quick), t -> t.epochs(1));
+                assertTrue(Float.isFinite(r.test().loss()), task.name() + " " + name + ": " + r);
+            }
+        }
     }
 }

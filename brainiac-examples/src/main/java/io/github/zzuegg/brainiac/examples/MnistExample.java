@@ -143,19 +143,51 @@ public final class MnistExample {
      * @throws IOException if the download fails
      */
     public static void download(Path dir) throws IOException {
+        download(dir, MIRROR);
+    }
+
+    /**
+     * Downloads the four MNIST-format files from a mirror into a directory, skipping files
+     * that are there already. Fashion-MNIST uses the same file names.
+     *
+     * @param dir the directory
+     * @param mirror the base URL, ending in {@code /}
+     * @throws IOException if the download fails
+     */
+    public static void download(Path dir, String mirror) throws IOException {
         Files.createDirectories(dir);
         for (String file : FILES) {
             Path target = dir.resolve(file);
             if (Files.exists(target)) {
                 continue;
             }
-            System.out.println("downloading " + MIRROR + file);
+            System.out.println("downloading " + mirror + file);
             Path part = dir.resolve(file + ".part");
-            try (InputStream in = URI.create(MIRROR + file).toURL().openStream()) {
+            try (InputStream in = URI.create(mirror + file).toURL().openStream()) {
                 Files.copy(in, part, StandardCopyOption.REPLACE_EXISTING);
             }
             Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
         }
+    }
+
+    /**
+     * Downloads if needed and loads MNIST-format data.
+     *
+     * @param dir the directory with (or for) the four files
+     * @param mirror where to download missing files from
+     * @param trainLimit the most training images to load
+     * @return the 60,000 training and 10,000 test images
+     * @throws IOException if the data cannot be downloaded or read
+     */
+    public static Dataset.Split load(Path dir, String mirror, int trainLimit) throws IOException {
+        download(dir, mirror);
+        return new Dataset.Split(Dataset.idx(dir.resolve(FILES[0]), dir.resolve(FILES[1]), trainLimit),
+                Dataset.idx(dir.resolve(FILES[2]), dir.resolve(FILES[3])));
+    }
+
+    /** @return the default MNIST mirror */
+    public static String mirror() {
+        return MIRROR;
     }
 
     /**
