@@ -84,8 +84,10 @@ public final class Model {
 
     /**
      * Saves the model, its structure and all weights and buffers, to a file.
-     * {@link #load(Path)} restores it. Models with custom layers or activations can be
-     * saved too, but only restored with {@link #loadWeights(Path)}.
+     * {@link #load(Path)} restores it. Custom layers and activations load too once they
+     * are registered with {@link Layer#register(String, Class, LayerCodec)} or
+     * {@link Activation#register(Activation)}; unregistered ones are still saved, and the
+     * weights can be restored into a model built in code with {@link #loadWeights(Path)}.
      *
      * @param path the file to write; replaced if it exists
      * @throws IOException if the file cannot be written
@@ -102,7 +104,7 @@ public final class Model {
      * @param path the file
      * @return the model
      * @throws IOException if the file cannot be read, is not a model file, or contains
-     *     custom layers
+     *     layers or activations that are not registered
      */
     public static Model load(Path path) throws IOException {
         return load(path, Device.getDefault());
@@ -115,7 +117,7 @@ public final class Model {
      * @param device the device to put the weights on
      * @return the model
      * @throws IOException if the file cannot be read, is not a model file, or contains
-     *     custom layers
+     *     layers or activations that are not registered
      */
     public static Model load(Path path, Device device) throws IOException {
         try (InputStream in = new BufferedInputStream(Files.newInputStream(path))) {

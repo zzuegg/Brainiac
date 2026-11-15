@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.UnaryOperator;
 
@@ -32,6 +33,9 @@ import java.util.function.UnaryOperator;
  *         width -> List.of(Tensor.ones(Shape.of(width))),
  *         (x, p) -> x.tanh().mul(p.get(0)));
  * }</pre>
+ *
+ * <p>To load saved models that use a custom activation, {@linkplain #register(Activation)
+ * register} it first.
  */
 public interface Activation extends Layer {
 
@@ -78,6 +82,41 @@ public interface Activation extends Layer {
      */
     default Init preferredInit() {
         return Init.XAVIER;
+    }
+
+    /**
+     * The settings needed to recreate this activation when a model is loaded, passed to
+     * the factory {@linkplain #register(String, Function) registered} under its name
+     * ({@code toString()}). Learnable parameters are not part of it; they are saved
+     * with the model's other parameters.
+     *
+     * @return the settings; empty unless overridden
+     */
+    default Config config() {
+        return Config.EMPTY;
+    }
+
+    /**
+     * Makes an activation loadable from model files under its name ({@code toString()}).
+     * Built-in activations are registered already. A learnable template is rebuilt and
+     * bound to the saved width, then its parameters are restored.
+     *
+     * @param activation the activation or learnable template
+     */
+    static void register(Activation activation) {
+        Objects.requireNonNull(activation, "activation");
+        register(activation.toString(), config -> activation);
+    }
+
+    /**
+     * Makes activations with settings loadable from model files: the file stores the name
+     * and {@link #config()}, and loading calls {@code factory} with that config.
+     *
+     * @param name the activation's name, as its {@code toString()} returns it
+     * @param factory recreates the activation (or learnable template) from its config
+     */
+    static void register(String name, Function<Config, Activation> factory) {
+        Registry.activation(name, factory);
     }
 
     /**

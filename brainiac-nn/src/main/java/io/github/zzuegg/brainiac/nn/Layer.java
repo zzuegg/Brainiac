@@ -9,7 +9,8 @@ import java.util.List;
  * of outputs {@code [batch, outputSize(inputSize)]}.
  *
  * <p>Implement this interface to add your own layer type; express {@link #forward(Var)}
- * with {@link Var} operations and gradients come for free.
+ * with {@link Var} operations and gradients come for free. To load saved models that use
+ * it, {@linkplain #register(String, Class, LayerCodec) register} the class first.
  */
 public interface Layer {
 
@@ -62,5 +63,18 @@ public interface Layer {
      */
     default int outputSize(int inputSize) {
         return inputSize;
+    }
+
+    /**
+     * Makes a custom layer class loadable from model files. Built-in layers are
+     * registered already; activations use {@link Activation#register(Activation)}.
+     *
+     * @param name the type name stored in files
+     * @param type the layer class
+     * @param codec turns the layer's settings into a {@link Config} and back
+     * @param <L> the layer class
+     */
+    static <L extends Layer> void register(String name, Class<L> type, LayerCodec<L> codec) {
+        Registry.layer(name, type, codec);
     }
 }
