@@ -115,6 +115,14 @@ Built-in activations: `IDENTITY`, `RELU`, `RELU6`, `leakyRelu(slope)`, `elu(alph
 `HARD_SWISH`, `TANH`, `HARD_TANH`, `softmax(axis)`/`SOFTMAX`, `logSoftmax(axis)`/`LOG_SOFTMAX`,
 and the learnable `prelu()` and `swish()`. Each one picks a suitable weight init.
 
+Different activations per group of units, or a learned blend per unit:
+
+```java
+model.dense(32, Activation.split(Activation.RELU, Activation.TANH))          // 16 + 16 units
+model.dense(4, Activation.split(new int[] {1, 1, 2}, RELU, SIGMOID, GELU))   // any sizes, even per unit
+model.dense(32, Activation.mix(Activation.RELU, Activation.TANH, Activation.SILU))  // learns the mix
+```
+
 Custom and learnable activations (autograd derives the gradient):
 
 ```java
