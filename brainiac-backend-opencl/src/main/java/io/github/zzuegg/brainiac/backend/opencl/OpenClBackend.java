@@ -428,6 +428,11 @@ public final class OpenClBackend implements Backend {
             }
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
+        if (flushEvery > 0 && ++sinceFlush >= flushEvery) {
+            // some drivers hold commands back until a flush, leaving the device idle meanwhile
+            cl.flush(queue);
+            sinceFlush = 0;
+        }
         if (profiling) {
             hostLaunchNanos += System.nanoTime() - hostStart;
             launched.add(new Launch(name, event));
@@ -870,6 +875,12 @@ public final class OpenClBackend implements Backend {
     private long firstStart;
     private long lastEnd;
     private long hostLaunchNanos;
+    /**
+     * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}, 0 leaves
+     * submission to the driver).
+     */
+    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 4);
+    private int sinceFlush;
     private long hostGenerateNanos;
 
     private record Launch(String kernel, MemorySegment event) {

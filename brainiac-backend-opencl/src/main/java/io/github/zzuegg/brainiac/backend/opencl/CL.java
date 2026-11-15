@@ -84,6 +84,7 @@ final class CL {
     private final MethodHandle setKernelArg;
     private final MethodHandle enqueueNDRangeKernel;
     private final MethodHandle finish;
+    private final MethodHandle flush;
     private final MethodHandle getEventProfilingInfo;
     private final MethodHandle getProgramInfo;
     private final MethodHandle createProgramWithBinary;
@@ -120,6 +121,7 @@ final class CL {
         enqueueNDRangeKernel = handle(linker, lib, "clEnqueueNDRangeKernel", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT,
                 ADDRESS, ADDRESS, ADDRESS, JAVA_INT, ADDRESS, ADDRESS);
         finish = handle(linker, lib, "clFinish", JAVA_INT, ADDRESS);
+        flush = handle(linker, lib, "clFlush", JAVA_INT, ADDRESS);
         getEventProfilingInfo = handle(linker, lib, "clGetEventProfilingInfo", JAVA_INT, ADDRESS, JAVA_INT,
                 JAVA_LONG, ADDRESS, ADDRESS);
         releaseEvent = handle(linker, lib, "clReleaseEvent", JAVA_INT, ADDRESS);
@@ -520,6 +522,15 @@ final class CL {
     void releaseEvent(MemorySegment event) {
         try {
             check((int) releaseEvent.invokeExact(event), "clReleaseEvent");
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /** Hands queued commands to the device without waiting for them. */
+    void flush(MemorySegment queue) {
+        try {
+            check((int) flush.invokeExact(queue), "clFlush");
         } catch (Throwable t) {
             throw rethrow(t);
         }
