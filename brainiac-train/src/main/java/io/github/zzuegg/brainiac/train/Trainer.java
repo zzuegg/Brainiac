@@ -6,6 +6,7 @@ import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
@@ -261,7 +262,8 @@ public final class Trainer {
             Map<String, Double> metricSums = new LinkedHashMap<>();
             for (Batch batch : batches) {
                 Var out = model.forward(Var.of(batch.features()), true);
-                Var l = loss.compute(out, batch.targets());
+                Tensor targets = shaped(batch.targets(), out);
+                Var l = loss.compute(out, targets);
                 if (l2 > 0) {
                     Var penalty = l2Penalty(params);
                     if (penalty != null) {
@@ -272,7 +274,7 @@ public final class Trainer {
                 optimizer.step(params);
                 lossSum += l.value().item() * batch.size();
                 for (Metric m : metrics) {
-                    metricSums.merge(m.name(), (double) m.compute(out.value(), batch.targets()) * batch.size(), Double::sum);
+                    metricSums.merge(m.name(), (double) m.compute(out.value(), targets) * batch.size(), Double::sum);
                 }
             }
             Map<String, Float> trainMetrics = new LinkedHashMap<>();
@@ -327,14 +329,21 @@ public final class Trainer {
         Map<String, Double> sums = new LinkedHashMap<>();
         for (Batch batch : data.batches(Math.max(batchSize, 256), device)) {
             Var out = model.forward(Var.of(batch.features()));
-            lossSum += loss.compute(out, batch.targets()).value().item() * batch.size();
+            Tensor targets = shaped(batch.targets(), out);
+            lossSum += loss.compute(out, targets).value().item() * batch.size();
             for (Metric m : metrics) {
-                sums.merge(m.name(), (double) m.compute(out.value(), batch.targets()) * batch.size(), Double::sum);
+                sums.merge(m.name(), (double) m.compute(out.value(), targets) * batch.size(), Double::sum);
             }
         }
         Map<String, Float> result = new LinkedHashMap<>();
         sums.forEach((k, v) -> result.put(k, (float) (v / data.size())));
         return new Evaluation((float) (lossSum / data.size()), Collections.unmodifiableMap(result));
+    }
+
+    /** Flat target rows take the model's output shape, such as one target per time step. */
+    private static Tensor shaped(Tensor targets, Var out) {
+        Shape s = out.shape();
+        return s.equals(targets.shape()) || s.size() != targets.size() ? targets : targets.reshape(s);
     }
 
     private static Var l2Penalty(List<Var> params) {

@@ -209,6 +209,20 @@ public final class Tensor {
         return of(shape, v);
     }
 
+    /**
+     * Creates {@code [0, 1, ..., n - 1]}.
+     *
+     * @param n how many values
+     * @return the vector
+     */
+    public static Tensor arange(int n) {
+        float[] v = new float[n];
+        for (int i = 0; i < n; i++) {
+            v[i] = i;
+        }
+        return of(Shape.of(n), v);
+    }
+
     private static int checkedSize(Shape shape) {
         if (shape.size() > Integer.MAX_VALUE - 8) {
             throw new IllegalArgumentException("shape " + shape + " is too large for host memory");
@@ -767,27 +781,178 @@ public final class Tensor {
     // ---------------------------------------------------------------- linear algebra
 
     /**
-     * Multiplies two matrices: {@code [m, k] x [k, n] -> [m, n]}.
+     * Multiplies matrices. Two matrices {@code [m, k] x [k, n]} give {@code [m, n]}. With
+     * more dimensions the last two are the matrices and the leading ones are a batch,
+     * broadcast like element-wise operations: {@code [b, m, k] x [k, n]} multiplies every
+     * matrix of the batch by the same right matrix, and {@code [b, h, m, k] x [b, h, k, n]}
+     * gives {@code [b, h, m, n]}.
      *
-     * @param other the right-hand matrix
-     * @return the matrix product
+     * @param other the right operand
+     * @return the product
+     * @throws IllegalArgumentException if the inner dimensions do not match
      */
     public Tensor matmul(Tensor other) {
         sameDevice(other);
-        if (rank() != 2 || other.rank() != 2) {
+        if (rank() < 2 || other.rank() < 2) {
             throw new IllegalArgumentException(
-                    "matmul needs two matrices, got shapes " + shape + " and " + other.shape);
+                    "matmul needs at least two dimensions on both sides, got shapes " + shape + " and " + other.shape);
         }
-        int m = shape.dim(0);
-        int k = shape.dim(1);
-        int n = other.shape.dim(1);
-        if (other.shape.dim(0) != k) {
+        int m = shape.dim(-2);
+        int k = shape.dim(-1);
+        int n = other.shape.dim(-1);
+        if (other.shape.dim(-2) != k) {
             throw new IllegalArgumentException(
-                    "matmul shapes " + shape + " and " + other.shape + " do not fit: " + k + " != " + other.shape.dim(0));
+                    "matmul shapes " + shape + " and " + other.shape + " do not fit: " + k + " != " + other.shape.dim(-2));
         }
-        Shape outShape = Shape.of(m, n);
+        if (rank() == 2 && other.rank() == 2) {
+            Shape outShape = Shape.of(m, n);
+            Storage out = backend().allocate(outShape.size());
+            backend().matmul(storage, other.storage, m, k, n, out);
+            return new Tensor(outShape, device, out);
+        }
+        if (other.rank() == 2) {
+            // the same right matrix for the whole batch: one big matmul
+            int[] dims = shape.toArray();
+            Tensor flat = reshape(Math.toIntExact(size() / k), k).matmul(other);
+            dims[dims.length - 1] = n;
+            return flat.reshape(dims);
+        }
+        Shape batchA = Shape.of(Arrays.copyOf(shape.toArray(), rank() - 2));
+        Shape batchB = Shape.of(Arrays.copyOf(other.shape.toArray(), other.rank() - 2));
+        Shape batch = Shape.broadcast(batchA, batchB);
+        Tensor a = withBatch(this, batch, m, k);
+        Tensor b = withBatch(other, batch, k, n);
+        int count = Math.toIntExact(batch.size());
+        int[] outDims = Arrays.copyOf(batch.toArray(), batch.rank() + 2);
+        outDims[batch.rank()] = m;
+        outDims[batch.rank() + 1] = n;
+        Shape outShape = Shape.of(outDims);
         Storage out = backend().allocate(outShape.size());
-        backend().matmul(storage, other.storage, m, k, n, out);
+        backend().matmulBatched(a.storage, b.storage, count, m, k, n, out);
+        return new Tensor(outShape, device, out);
+    }
+
+    private static Tensor withBatch(Tensor t, Shape batch, int rows, int cols) {
+        int[] dims = Arrays.copyOf(batch.toArray(), batch.rank() + 2);
+        dims[batch.rank()] = rows;
+        dims[batch.rank() + 1] = cols;
+        Shape target = Shape.of(dims);
+        return t.shape.equals(target) ? t : t.expand(target);
+    }
+
+    // ---------------------------------------------------------------- sliding windows and indexing
+
+    /**
+     * Unrolls every window of a sliding-window geometry into a row: the building block
+     * of convolution and pooling. This tensor holds the images,
+     * {@code [batch, channels, image...]}.
+     *
+     * @param geometry the windows
+     * @param padValue the value read from cells outside the image
+     * @return {@code [batch * positions, channels * kernel]}, columns ordered by channel
+     *     then window cell
+     */
+    public Tensor im2col(ConvGeometry geometry, float padValue) {
+        if (!shape.equals(geometry.imageShape())) {
+            throw new IllegalArgumentException("im2col expects images " + geometry.imageShape() + ", got " + shape);
+        }
+        Shape outShape = geometry.columnShape();
+        Storage out = backend().allocate(outShape.size());
+        backend().im2col(storage, geometry, padValue, out);
+        return new Tensor(outShape, device, out);
+    }
+
+    /**
+     * Adds unrolled windows back into images: the adjoint of {@link #im2col}, used for
+     * gradients and transposed convolution. Values from padding cells are dropped.
+     *
+     * @param geometry the windows
+     * @return the images, {@code [batch, channels, image...]}
+     */
+    public Tensor col2im(ConvGeometry geometry) {
+        if (!shape.equals(geometry.columnShape())) {
+            throw new IllegalArgumentException("col2im expects columns " + geometry.columnShape() + ", got " + shape);
+        }
+        Shape outShape = geometry.imageShape();
+        Storage out = backend().allocate(outShape.size());
+        backend().col2im(storage, geometry, out);
+        return new Tensor(outShape, device, out);
+    }
+
+    /**
+     * Picks entries along an axis by index, like a table lookup. The axis is replaced by
+     * the dimensions of {@code indices}: a weight table {@code [vocab, dim]} gathered on
+     * axis 0 with ids {@code [batch, time]} gives {@code [batch, time, dim]}.
+     *
+     * @param axis the axis to index; negative values count from the end
+     * @param indices whole numbers in {@code [0, dim(axis))}, on the same device
+     * @return the picked entries
+     * @throws IllegalArgumentException if an index is out of range (checked on the CPU)
+     */
+    public Tensor gather(int axis, Tensor indices) {
+        sameDevice(indices);
+        int a = axis(axis);
+        int[] dims = shape.toArray();
+        long outer = 1;
+        long inner = 1;
+        for (int i = 0; i < a; i++) {
+            outer *= dims[i];
+        }
+        for (int i = a + 1; i < dims.length; i++) {
+            inner *= dims[i];
+        }
+        int count = Math.toIntExact(indices.size());
+        int[] idx = indices.shape.toArray();
+        int[] outDims = new int[dims.length - 1 + idx.length];
+        System.arraycopy(dims, 0, outDims, 0, a);
+        System.arraycopy(idx, 0, outDims, a, idx.length);
+        System.arraycopy(dims, a + 1, outDims, a + idx.length, dims.length - a - 1);
+        Shape outShape = Shape.of(outDims);
+        Storage out = backend().allocate(outShape.size());
+        backend().gather(storage, outer, dims[a], inner, indices.storage, count, out);
+        return new Tensor(outShape, device, out);
+    }
+
+    /**
+     * The adjoint of {@link #gather}: adds entries into a zero tensor at the given
+     * indices along an axis; repeated indices add up. This tensor has the shape a gather
+     * with {@code indices} would produce.
+     *
+     * @param axis the axis of the result that is indexed
+     * @param indices the indices, as passed to {@code gather}
+     * @param length the size of that axis in the result
+     * @return the sums, with {@code indices}' dimensions replaced by {@code length}
+     */
+    public Tensor scatterAdd(int axis, Tensor indices, int length) {
+        sameDevice(indices);
+        int[] dims = shape.toArray();
+        int idxRank = indices.rank();
+        int outRank = dims.length - idxRank + 1;
+        int a = axis < 0 ? outRank + axis : axis;
+        if (a < 0 || a >= outRank || length < 1) {
+            throw new IllegalArgumentException("bad scatterAdd axis " + axis + " or length " + length + " for " + shape);
+        }
+        for (int i = 0; i < idxRank; i++) {
+            if (dims[a + i] != indices.shape.dim(i)) {
+                throw new IllegalArgumentException("scatterAdd values " + shape + " do not fit indices "
+                        + indices.shape + " at axis " + a);
+            }
+        }
+        long outer = 1;
+        long inner = 1;
+        for (int i = 0; i < a; i++) {
+            outer *= dims[i];
+        }
+        for (int i = a + idxRank; i < dims.length; i++) {
+            inner *= dims[i];
+        }
+        int[] outDims = new int[outRank];
+        System.arraycopy(dims, 0, outDims, 0, a);
+        outDims[a] = length;
+        System.arraycopy(dims, a + idxRank, outDims, a + 1, dims.length - a - idxRank);
+        Shape outShape = Shape.of(outDims);
+        Storage out = backend().allocate(outShape.size());
+        backend().scatterAdd(storage, outer, Math.toIntExact(indices.size()), inner, indices.storage, length, out);
         return new Tensor(outShape, device, out);
     }
 

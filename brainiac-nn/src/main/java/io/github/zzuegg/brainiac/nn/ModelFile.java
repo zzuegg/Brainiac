@@ -42,7 +42,7 @@ import java.util.function.Function;
 final class ModelFile {
 
     private static final int MAGIC = 0x42524E43;
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     private static final byte BOOLEAN = 0;
     private static final byte INT = 1;
@@ -67,8 +67,8 @@ final class ModelFile {
         DataOutputStream out = new DataOutputStream(stream);
         out.writeInt(MAGIC);
         out.writeInt(VERSION);
-        out.writeInt(model.inputSize());
-        out.writeInt(model.outputSize());
+        writeShape(model.inputShape(), out);
+        writeShape(model.outputShape(), out);
 
         List<Layer> layers = model.layers();
         Map<Layer, Integer> layerIndex = new IdentityHashMap<>();
@@ -212,11 +212,11 @@ final class ModelFile {
     static Model read(InputStream stream, Device device) throws IOException {
         DataInputStream in = new DataInputStream(stream);
         int version = readHeader(in);
-        int inputSize = in.readInt();
-        int outputSize = in.readInt();
+        Shape inputShape = readShape(in, version);
+        Shape outputShape = readShape(in, version);
         List<Layer> layers = version == 1 ? readLayersV1(in) : readLayers(in);
         List<Model.Step> steps = readSteps(in, layers);
-        Model model = Model.fromSteps(inputSize, outputSize, steps);
+        Model model = Model.fromSteps(inputShape, outputShape, steps);
         readState(model, in);
         return model.to(device);
     }
@@ -224,8 +224,8 @@ final class ModelFile {
     static void readWeights(Model model, InputStream stream) throws IOException {
         DataInputStream in = new DataInputStream(stream);
         int version = readHeader(in);
-        in.readInt();
-        in.readInt();
+        readShape(in, version);
+        readShape(in, version);
         if (version == 1) {
             int layerCount = in.readInt();
             for (int i = 0; i < layerCount; i++) {
@@ -404,10 +404,39 @@ final class ModelFile {
             throw new IOException("not a Brainiac model file");
         }
         int version = in.readInt();
-        if (version != 1 && version != VERSION) {
+        if (version < 1 || version > VERSION) {
             throw new IOException("unsupported model file version " + version + ", expected 1 to " + VERSION);
         }
         return version;
+    }
+
+    private static void writeShape(Shape shape, DataOutputStream out) throws IOException {
+        out.writeInt(shape.rank());
+        for (int d : shape.toArray()) {
+            out.writeInt(d);
+        }
+    }
+
+    private static Shape readShape(DataInputStream in, int version) throws IOException {
+        if (version < 3) {
+            int size = in.readInt();
+            if (size < 1) {
+                throw new IOException("bad size " + size);
+            }
+            return Shape.of(size);
+        }
+        int rank = in.readInt();
+        if (rank < 1 || rank > 8) {
+            throw new IOException("bad shape rank " + rank);
+        }
+        int[] dims = new int[rank];
+        for (int i = 0; i < rank; i++) {
+            dims[i] = in.readInt();
+            if (dims[i] < 1) {
+                throw new IOException("bad dimension " + dims[i]);
+            }
+        }
+        return Shape.of(dims);
     }
 
     // ---------------------------------------------------------------- version 1

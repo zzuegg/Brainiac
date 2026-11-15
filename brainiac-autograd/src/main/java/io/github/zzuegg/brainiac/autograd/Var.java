@@ -612,7 +612,8 @@ public final class Var {
     // ---------------------------------------------------------------- linear algebra and shape
 
     /**
-     * Multiplies matrices: {@code [m, k] x [k, n] -> [m, n]}.
+     * Multiplies matrices: {@code [m, k] x [k, n] -> [m, n]}, or batches of them with
+     * leading dimensions broadcast as in {@link Tensor#matmul(Tensor)}.
      *
      * @param other the right-hand matrix
      * @return the matrix product
@@ -620,8 +621,78 @@ public final class Var {
     public Var matmul(Var other) {
         Tensor a = value;
         Tensor b = other.value;
-        return binary(other, a.matmul(b),
-                g -> new Tensor[] {g.matmul(b.transpose()), a.transpose().matmul(g)});
+        if (a.rank() == 2 && b.rank() == 2) {
+            return binary(other, a.matmul(b),
+                    g -> new Tensor[] {g.matmul(b.transpose()), a.transpose().matmul(g)});
+        }
+        return binary(other, a.matmul(b), g -> new Tensor[] {
+            g.matmul(b.transpose()).sumTo(a.shape()),
+            a.rank() > 2 && b.rank() == 2
+                    ? a.reshape(Math.toIntExact(a.size() / a.shape().dim(-1)), a.shape().dim(-1)).transpose()
+                            .matmul(g.reshape(Math.toIntExact(g.size() / g.shape().dim(-1)), g.shape().dim(-1)))
+                    : a.transpose().matmul(g).sumTo(b.shape())
+        });
+    }
+
+    /**
+     * Reorders dimensions.
+     *
+     * @param axes for each output dimension, the input dimension it takes
+     * @return the permuted value
+     */
+    public Var permute(int... axes) {
+        int[] inverse = new int[axes.length];
+        for (int i = 0; i < axes.length; i++) {
+            inverse[axes[i] < 0 ? axes[i] + axes.length : axes[i]] = i;
+        }
+        return unary(value.permute(axes), g -> new Tensor[] {g.permute(inverse)});
+    }
+
+    /**
+     * Repeats size-1 dimensions (and adds leading ones) to reach a larger shape, as
+     * broadcasting would.
+     *
+     * @param target the shape to expand to
+     * @return the expanded value
+     */
+    public Var expand(Shape target) {
+        Shape original = shape();
+        return unary(value.expand(target), g -> new Tensor[] {g.sumTo(original)});
+    }
+
+    /**
+     * Picks entries along an axis by index; see {@link Tensor#gather(int, Tensor)}. The
+     * gradient adds up for repeated indices, as an embedding table needs.
+     *
+     * @param axis the axis to index
+     * @param indices whole-number indices; not differentiated
+     * @return the picked entries
+     */
+    public Var gather(int axis, Tensor indices) {
+        int a = axis < 0 ? shape().rank() + axis : axis;
+        int length = shape().dim(a);
+        return unary(value.gather(a, indices), g -> new Tensor[] {g.scatterAdd(a, indices, length)});
+    }
+
+    /**
+     * Unrolls sliding windows into rows; see {@link Tensor#im2col}.
+     *
+     * @param geometry the windows
+     * @param padValue the value read from padding
+     * @return the unrolled windows
+     */
+    public Var im2col(io.github.zzuegg.brainiac.tensor.ConvGeometry geometry, float padValue) {
+        return unary(value.im2col(geometry, padValue), g -> new Tensor[] {g.col2im(geometry)});
+    }
+
+    /**
+     * Adds unrolled windows back into images; see {@link Tensor#col2im}.
+     *
+     * @param geometry the windows
+     * @return the images
+     */
+    public Var col2im(io.github.zzuegg.brainiac.tensor.ConvGeometry geometry) {
+        return unary(value.col2im(geometry), g -> new Tensor[] {g.im2col(geometry, 0f)});
     }
 
     /**

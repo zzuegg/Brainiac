@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.backend.cpu;
 
+import io.github.zzuegg.brainiac.tensor.ConvGeometry;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
@@ -182,6 +183,68 @@ public final class CpuBackend implements Backend {
         } else {
             Parallel.forRange(m, 2L * k * n, (from, to) -> Kernels.matmulRows(x, y, z, k, n, from, to));
         }
+    }
+
+    @Override
+    public void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
+        float[] x = data(a);
+        float[] y = data(b);
+        float[] z = data(out);
+        Parallel.forRange(batch * m, 2L * k * n, (from, to) -> WindowKernels.matmulBatched(x, y, z, m, k, n, from, to));
+    }
+
+    @Override
+    public void im2col(Storage in, ConvGeometry geometry, float padValue, Storage out) {
+        float[] x = data(in);
+        float[] z = data(out);
+        WindowKernels.Plan plan = new WindowKernels.Plan(geometry);
+        int[] table = plan.table();
+        int rows = geometry.batch() * plan.positions;
+        Parallel.forRange(rows, (long) plan.channels * plan.kernelSize,
+                (from, to) -> WindowKernels.im2col(x, plan, table, padValue, z, from, to));
+    }
+
+    @Override
+    public void col2im(Storage cols, ConvGeometry geometry, Storage out) {
+        float[] x = data(cols);
+        float[] z = data(out);
+        WindowKernels.Plan plan = new WindowKernels.Plan(geometry);
+        int[] table = plan.table();
+        int planes = geometry.batch() * plan.channels;
+        Parallel.forRange(planes, (long) plan.positions * plan.kernelSize,
+                (from, to) -> WindowKernels.col2im(x, plan, table, z, from, to));
+    }
+
+    @Override
+    public void gather(Storage in, long outer, long length, long inner, Storage indices, int count, Storage out) {
+        float[] x = data(in);
+        float[] z = data(out);
+        int[] idx = indices(data(indices), count, (int) length);
+        int in0 = (int) inner;
+        int len = (int) length;
+        Parallel.forRange((int) outer * count, in0, (from, to) -> WindowKernels.gather(x, len, in0, idx, z, from, to));
+    }
+
+    @Override
+    public void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
+            Storage out) {
+        float[] x = data(src);
+        float[] z = data(out);
+        int[] idx = indices(data(indices), count, (int) length);
+        int out0 = (int) outer;
+        int len = (int) length;
+        int in0 = (int) inner;
+        // columns of the inner block never collide, so they split safely across threads
+        Parallel.forRange(in0, (long) out0 * (count + len),
+                (from, to) -> WindowKernels.scatterAdd(x, out0, len, in0, idx, z, from, to));
+    }
+
+    private static int[] indices(float[] values, int count, int length) {
+        int[] idx = new int[count];
+        for (int i = 0; i < count; i++) {
+            idx[i] = WindowKernels.index(values[i], length);
+        }
+        return idx;
     }
 
     /**

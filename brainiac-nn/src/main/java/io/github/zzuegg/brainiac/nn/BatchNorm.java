@@ -67,14 +67,28 @@ public final class BatchNorm implements Layer {
     @Override
     public Var forward(Var input, boolean training) {
         Shape shape = input.shape();
-        if (shape.rank() != 2 || shape.dim(1) != features) {
-            throw new IllegalArgumentException("BatchNorm(" + features + ") expects [batch, " + features + "], got " + shape);
+        if (shape.rank() < 2 || shape.dim(1) != features) {
+            throw new IllegalArgumentException("BatchNorm(" + features + ") expects [batch, " + features
+                    + ", ...], got " + shape);
         }
+        if (shape.rank() == 2) {
+            return normalize(input, training);
+        }
+        // images and other grids: one set of statistics per channel, over batch and positions
+        int n = shape.dim(0);
+        int positions = Math.toIntExact(shape.size() / ((long) n * features));
+        Var rows = input.reshape(n, features, positions).permute(0, 2, 1).reshape(n * positions, features);
+        int[] dims = shape.toArray();
+        return normalize(rows, training).reshape(n, positions, features).permute(0, 2, 1).reshape(dims);
+    }
+
+    private Var normalize(Var input, boolean training) {
+        Shape shape = input.shape();
         Var normalized;
         if (training) {
             long n = shape.dim(0);
             if (n < 2) {
-                throw new IllegalArgumentException("batch normalization needs at least 2 samples per training batch");
+                throw new IllegalArgumentException("batch normalization needs at least 2 values per channel while training");
             }
             Var mean = input.mean(0, false);
             Var centered = input.sub(mean);

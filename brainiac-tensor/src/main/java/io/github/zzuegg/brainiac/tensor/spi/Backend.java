@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.tensor.spi;
 
+import io.github.zzuegg.brainiac.tensor.ConvGeometry;
 import io.github.zzuegg.brainiac.tensor.Device;
 
 /**
@@ -180,4 +181,91 @@ public interface Backend {
      * @param outStrides the output strides, one per axis of {@code shape}
      */
     void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out, long outOffset, long[] outStrides);
+    // ---------------------------------------------------------------- optional operations
+    //
+    // The operations below have default implementations that throw, so a new backend can
+    // start small; the layers that need them fail with a clear message until it adds them.
+
+    /**
+     * Multiplies a batch of matrices: {@code out[b] = a[b] x b[b]} for each of
+     * {@code batch} pairs of row-major matrices stored one after another.
+     *
+     * @param a the left matrices, {@code [batch, m, k]}
+     * @param b the right matrices, {@code [batch, k, n]}
+     * @param batch the number of pairs
+     * @param m rows of each left matrix
+     * @param k columns of each left matrix and rows of each right matrix
+     * @param n columns of each right matrix
+     * @param out the output, {@code [batch, m, n]}
+     */
+    default void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
+        throw unsupported("batched matmul");
+    }
+
+    /**
+     * Unrolls every window of a sliding-window geometry into a row: {@code out} is
+     * {@code [batch * positions, channels * kernel]}, with rows ordered by image then
+     * position and columns by channel then window cell. Cells outside the image read
+     * {@code padValue}.
+     *
+     * @param in the images, {@code [batch, channels, image...]}
+     * @param geometry the windows
+     * @param padValue the value of padding cells
+     * @param out the unrolled windows
+     */
+    default void im2col(Storage in, ConvGeometry geometry, float padValue, Storage out) {
+        throw unsupported("im2col (convolution and pooling)");
+    }
+
+    /**
+     * The adjoint of {@link #im2col}: adds every row of {@code cols} back onto the image
+     * cells its window covers, dropping padding cells. {@code out} is overwritten.
+     *
+     * @param cols the unrolled windows, {@code [batch * positions, channels * kernel]}
+     * @param geometry the windows
+     * @param out the images, {@code [batch, channels, image...]}
+     */
+    default void col2im(Storage cols, ConvGeometry geometry, Storage out) {
+        throw unsupported("col2im (convolution and pooling)");
+    }
+
+    /**
+     * Picks slices along one axis by index. The input is viewed as
+     * {@code [outer, length, inner]}, the output as {@code [outer, count, inner]}, and
+     * {@code out[o, i, j] = in[o, indices[i], j]}. Indices are stored as floats holding
+     * whole numbers in {@code [0, length)}.
+     *
+     * @param in the input
+     * @param outer the product of the dimensions before the axis
+     * @param length the size of the axis
+     * @param inner the product of the dimensions after the axis
+     * @param indices the {@code count} indices
+     * @param count the number of indices
+     * @param out the output
+     */
+    default void gather(Storage in, long outer, long length, long inner, Storage indices, int count, Storage out) {
+        throw unsupported("gather");
+    }
+
+    /**
+     * The adjoint of {@link #gather}: {@code out[o, indices[i], j] += src[o, i, j]}, with
+     * {@code out} viewed as {@code [outer, length, inner]} and overwritten first with
+     * zeros. Repeated indices add up.
+     *
+     * @param src the values, {@code [outer, count, inner]}
+     * @param outer the product of the dimensions before the axis
+     * @param count the number of indices
+     * @param inner the product of the dimensions after the axis
+     * @param indices the {@code count} indices
+     * @param length the size of the axis in the output
+     * @param out the output
+     */
+    default void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
+            Storage out) {
+        throw unsupported("scatterAdd");
+    }
+
+    private UnsupportedOperationException unsupported(String what) {
+        return new UnsupportedOperationException("the " + name() + " backend does not support " + what);
+    }
 }

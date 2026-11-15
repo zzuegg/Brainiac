@@ -15,6 +15,7 @@ public final class Dropout implements Layer {
 
     private final float rate;
     private final RandomGenerator random;
+    private final boolean channelwise;
 
     /**
      * Creates a dropout layer.
@@ -23,11 +24,29 @@ public final class Dropout implements Layer {
      * @param random the random source for the masks
      */
     public Dropout(float rate, RandomGenerator random) {
+        this(rate, random, false);
+    }
+
+    /**
+     * Creates a dropout layer that can drop whole channels.
+     *
+     * @param rate the share of values (or channels) to drop while training, in [0, 1)
+     * @param random the random source for the masks
+     * @param channelwise {@code true} to drop whole channels of {@code [batch, channels, ...]}
+     *     inputs (spatial dropout), which suits convolutional layers whose neighbouring
+     *     values are correlated
+     */
+    public Dropout(float rate, RandomGenerator random, boolean channelwise) {
+        check(rate);
+        this.rate = rate;
+        this.random = random;
+        this.channelwise = channelwise;
+    }
+
+    static void check(float rate) {
         if (!(rate >= 0 && rate < 1)) {
             throw new IllegalArgumentException("dropout rate must be in [0, 1), got " + rate);
         }
-        this.rate = rate;
-        this.random = random;
     }
 
     @Override
@@ -40,7 +59,15 @@ public final class Dropout implements Layer {
         if (!training || rate == 0) {
             return input;
         }
-        Tensor keep = Tensor.uniform(input.shape(), 0, 1, random).to(input.value().device())
+        Shape maskShape = input.shape();
+        if (channelwise && maskShape.rank() > 2) {
+            int[] dims = new int[maskShape.rank()];
+            java.util.Arrays.fill(dims, 1);
+            dims[0] = maskShape.dim(0);
+            dims[1] = maskShape.dim(1);
+            maskShape = Shape.of(dims);
+        }
+        Tensor keep = Tensor.uniform(maskShape, 0, 1, random).to(input.value().device())
                 .greater(Tensor.full(Shape.of(), rate, input.value().device()));
         return input.mul(keep.div(1 - rate));
     }
@@ -50,8 +77,13 @@ public final class Dropout implements Layer {
         return rate;
     }
 
+    /** @return whether whole channels are dropped */
+    public boolean channelwise() {
+        return channelwise;
+    }
+
     @Override
     public String toString() {
-        return "Dropout(" + rate + ")";
+        return (channelwise ? "SpatialDropout(" : "Dropout(") + rate + ")";
     }
 }

@@ -6,9 +6,10 @@ Brainiac aims to cover everything from a tiny fully connected network to a full 
 suite behind a small, easy public API. Every calculation goes through a pluggable
 `Backend`, so the same model can later run on the GPU.
 
-> Status: milestone 2 complete: on top of tensors, autograd, dense networks, training
-> and data loading, there are dropout, batch norm, L2, learning-rate schedules, graph
-> models with skip connections, and saving and loading models.
+> Status: on top of tensors, autograd, dense networks, training and data loading, there
+> are dropout, normalization, L2, learning-rate schedules, graph models, saving and
+> loading, custom ops, 21 activations, and convolutional networks for 1-d, 2-d and 3-d
+> data.
 
 ## Requirements
 
@@ -154,6 +155,60 @@ assert GradCheck.check(cube, x).passed();
 Activation cubeActivation = Activation.named("cube", v -> Var.apply(cube, v));
 ```
 
+## Images: convolution and pooling
+
+Models take samples of any shape. Images are channels first (`input(3, 32, 32)`), and the
+number of kernel sizes picks 1-d, 2-d, 3-d (or higher) convolutions. Flat dataset rows are
+reshaped to the input shape automatically.
+
+```java
+Model cnn = Model.sequential()
+        .input(1, 28, 28)
+        .add(Conv.of(16, 3, 3).padding(Padding.SAME).bias(false))
+        .batchNorm()
+        .activation(Activation.RELU)
+        .maxPool(2, 2)
+        .conv2d(32, 3, Activation.RELU)
+        .globalAvgPool()
+        .dense(10, Activation.SOFTMAX)
+        .build();
+```
+
+Every option lives on a spec, used with `add(...)` on a builder or a `Node`:
+
+```java
+Conv.of(64, 3, 3)
+    .stride(2)                        // or per dimension: stride(2, 1)
+    .padding(Padding.SAME)            // VALID, SAME, FULL, of(1), explicit(before, after)
+    .padMode(PadMode.REFLECT)         // CONSTANT (padValue), REFLECT, SYMMETRIC, REPLICATE, CIRCULAR
+    .dilation(2)                      // atrous
+    .groups(4)                        // grouped
+    .bias(false).activation(Activation.prelu()).init(Init.HE);
+Conv.depthwise(3, 3).multiplier(2);                         // depthwise
+builder.separableConv(64, Activation.RELU, 3, 3);           // depthwise + pointwise
+Conv.transposed(32, 4, 4).stride(2).padding(1);              // upsampling, outputPadding(...)
+Conv.of(8, 5).stride(2);  Conv.of(8, 3, 3, 3);               // 1-d and 3-d
+
+Pool.max(3, 3).stride(2).padding(1).ceilMode(true).dilation(1);
+Pool.avg(2, 2).countPadding(false);  Pool.lp(2, 3, 3);  Pool.min(2, 2);  Pool.sum(2, 2);
+GlobalPool.avg();  GlobalPool.max();  AdaptivePool.avg(7, 7);  AdaptivePool.max(1, 1);
+```
+
+More image layers: `Pad` (any mode, negative amounts crop), `Resize` (nearest,
+bilinear/trilinear, bicubic, by factor or to a size, `alignCorners`), `PixelShuffle`
+(sub-pixel up/down), `Reshape`/`flatten()`, `Permute`, `spatialDropout(rate)`,
+`BatchNorm` per channel, `GroupNorm`, `GroupNorm.instance(c)`, `LayerNorm` and
+`LayerNorm.rms(n)`. Graphs can `concat` channels, `add` and `multiply` feature maps.
+
+The same math is available as functions on `Var` in `Functional` (`conv`,
+`convTranspose`, `pool`, `globalPool`, `adaptivePool`, `pad`, `resize`, `pixelShuffle`),
+built on two backend operations, `Tensor.im2col` and `Tensor.col2im`, plus batched
+`matmul`, `gather` and `scatterAdd`.
+
+MNIST (IDX files, plain or gzipped) loads with
+`Dataset.idx(images, labels)`; `./gradlew :brainiac-examples:run --args=mnist` downloads it
+and trains a small CNN to about 99% test accuracy.
+
 Saving and loading:
 
 ```java
@@ -183,6 +238,7 @@ Run the examples:
 ./gradlew :brainiac-examples:run --args=xor
 ./gradlew :brainiac-examples:run --args=spiral
 ./gradlew :brainiac-examples:run --args=iris
+./gradlew :brainiac-examples:run --args="mnist data/mnist 3"   # directory, epochs
 ```
 
 ## Performance

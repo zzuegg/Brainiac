@@ -44,4 +44,15 @@ class AcceptanceTest {
             assertArrayEquals(a.parameters().get(i).value().toArray(), b.parameters().get(i).value().toArray());
         }
     }
+
+    @Test
+    void convolutionalNetworkLearnsImageShapes() {
+        Dataset train = MnistExample.shapes(600, 12, 1);
+        Dataset test = MnistExample.shapes(200, 12, 2);
+        Model model = MnistExample.model(12, 3);
+        MnistExample.train(model, train, null, 6, false);
+        float accuracy = io.github.zzuegg.brainiac.train.Trainer.of(model)
+                .metric(Metric.ACCURACY).evaluate(test).get(Metric.ACCURACY);
+        assertTrue(accuracy >= 0.95f, "test accuracy " + accuracy);
+    }
 }
