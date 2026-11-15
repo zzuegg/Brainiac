@@ -450,11 +450,10 @@ public final class OpenClBackend implements Backend {
     private final Map<String, Future<MemorySegment>> fusedKernels = new HashMap<>();
     /**
      * Whether fused kernels also store the pending inputs they compute, so chains can span
-     * other kernels ({@code -Dbrainiac.opencl.fusion.store=false} ends chains at other
-     * kernels instead).
+     * other kernels ({@code -Dbrainiac.opencl.fusion.store=true}). Off by default: on AMD's
+     * driver, kernels writing several buffers cost more than the launches they save.
      */
-    private final boolean storeIntermediates = !"false".equalsIgnoreCase(
-            System.getProperty("brainiac.opencl.fusion.store"));
+    private final boolean storeIntermediates = Boolean.getBoolean("brainiac.opencl.fusion.store");
     /** Compiles fused kernels in the background ({@code -Dbrainiac.opencl.fusion.async=false} compiles inline). */
     private final ExecutorService compiler = "false".equalsIgnoreCase(
             System.getProperty("brainiac.opencl.fusion.async")) ? null
@@ -879,7 +878,7 @@ public final class OpenClBackend implements Backend {
      * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}, 0 leaves
      * submission to the driver).
      */
-    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 4);
+    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 1);
     private int sinceFlush;
     private long hostGenerateNanos;
 
