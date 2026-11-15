@@ -125,31 +125,49 @@ final class Fused {
     }
 
     /**
-     * Generates a kernel reducing {@code input} along one axis: one work item per output,
-     * looping over {@code len} values {@code inner} apart. Operation codes are
-     * {@code ReduceOp} ordinals (sum, mean, max, min).
+     * Generates a kernel reducing {@code input} along one axis: per output, {@code len} values
+     * {@code inner} apart. Operation codes are {@code ReduceOp} ordinals (sum, mean, max, min).
+     * With {@code group > 1} a work-group of that many items shares each output (for long
+     * rows); otherwise one work item loops over its row.
      */
-    static Kernel generateReduce(Expr input, int op) {
+    static Kernel generateReduce(Expr input, int op, int group) {
         Gen g = new Gen();
         g.argBytes += 16;
         String v = g.eval(input, "x");
         String init = op == 2 ? "(ACC) -INFINITY" : op == 3 ? "(ACC) INFINITY" : "(ACC) 0";
-        String combine = op == 2 ? "acc = isnan(" + v + ") || isnan(acc) ? " + v + " + acc : fmax(acc, " + v + ");"
-                : op == 3 ? "acc = isnan(" + v + ") || isnan(acc) ? " + v + " + acc : fmin(acc, " + v + ");"
-                : "acc += " + v + ";";
-        String src = "__kernel void fused(__global T* out, long n, long len, long inner" + g.params + ") {\n"
-                + "    long r = get_global_id(0);\n"
-                + "    if (r >= n) return;\n"
-                + "    long base = (r / inner) * len * inner + r % inner;\n"
-                + "    ACC acc = " + init + ";\n"
-                + "    for (long t = 0; t < len; t++) {\n"
-                + "    long x = base + t * inner;\n"
-                + g.body
-                + "    " + combine + "\n"
-                + "    }\n"
-                + "    STORE(out, r, " + (op == 1 ? "acc / (ACC) len" : "acc") + ");\n"
-                + "}\n";
-        return new Kernel(src, g.args, g.argBytes);
+        String finish = op == 1 ? "acc / (ACC) len" : "acc";
+        StringBuilder src = new StringBuilder();
+        src.append("ACC combine_(ACC a, ACC b) {\n    return ")
+                .append(op == 2 ? "isnan(a) || isnan(b) ? a + b : fmax(a, b)"
+                        : op == 3 ? "isnan(a) || isnan(b) ? a + b : fmin(a, b)" : "a + b")
+                .append(";\n}\n");
+        src.append("__kernel void fused(__global T* out, long n, long len, long inner").append(g.params)
+                .append(") {\n");
+        if (group <= 1) {
+            src.append("    long r = get_global_id(0);\n    if (r >= n) return;\n")
+                    .append("    long base = (r / inner) * len * inner + r % inner;\n")
+                    .append("    ACC acc = ").append(init).append(";\n")
+                    .append("    for (long t = 0; t < len; t++) {\n    long x = base + t * inner;\n")
+                    .append(g.body)
+                    .append("    acc = combine_(acc, ").append(v).append(");\n    }\n")
+                    .append("    STORE(out, r, ").append(finish).append(");\n}\n");
+        } else {
+            src.append("    __local ACC part[").append(group).append("];\n")
+                    .append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n")
+                    .append("    long base = (r / inner) * len * inner + r % inner;\n")
+                    .append("    ACC acc = ").append(init).append(";\n")
+                    .append("    for (long t = lid; t < len; t += ").append(group).append(") {\n")
+                    .append("    long x = base + t * inner;\n")
+                    .append(g.body)
+                    .append("    acc = combine_(acc, ").append(v).append(");\n    }\n")
+                    .append("    part[lid] = acc;\n    barrier(CLK_LOCAL_MEM_FENCE);\n")
+                    .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
+                    .append("        if (lid < s) part[lid] = combine_(part[lid], part[lid + s]);\n")
+                    .append("        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n")
+                    .append("    if (lid == 0) {\n        ACC acc = part[0];\n        STORE(out, r, ")
+                    .append(finish).append(");\n    }\n}\n");
+        }
+        return new Kernel(src.toString(), g.args, g.argBytes);
     }
 
     private static final class Gen {

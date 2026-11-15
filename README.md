@@ -453,7 +453,9 @@ are cached on the device, so training does not create device memory on every ope
 Element-wise operations are fused: instead of one kernel per add, multiply or activation,
 the backend records chains of them and generates one OpenCL C kernel per chain when the
 values are needed (by a matmul, a reduction or a download); a reduction also computes its
-input chain on the fly. This works for any model, without per-layer kernels, and the
+input chain on the fly (long rows are split across a work-group). Transposes, slices and
+other strided copies are not copied either: they are read in place by the chain or matmul
+that uses them. This works for any model, without per-layer kernels, and the
 generated code is plain OpenCL C 1.2, so it runs on every vendor's driver. Shapes and
 strides are kernel arguments, so a training loop needs a few dozen generated kernels.
 They compile in the background (the operations run one by one until then) and are cached

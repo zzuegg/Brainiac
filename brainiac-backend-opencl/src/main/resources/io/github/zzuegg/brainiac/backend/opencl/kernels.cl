@@ -224,8 +224,11 @@ __kernel void argmax(__global const T* x, __global float* y, long outer, long le
 }
 
 // z[b] = a[b] x b[b] for [m, k] x [k, n] matrices; strides in elements between batch entries.
+// a(i, j) is a[aOff + batch * strideA + i * aRow + j * aCol], b likewise, so transposed or
+// sliced operands are read in place.
 __kernel void matmul(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
-                     long strideA, long strideB, long strideZ) {
+                     long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol,
+                     long bOff, long bRow, long bCol) {
     int col = get_global_id(0);
     int row = get_global_id(1);
     long batch = get_global_id(2);
@@ -233,14 +236,14 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
     int lr = get_local_id(1);
     __local ACC tileA[TS][TS];
     __local ACC tileB[TS][TS];
-    long aBase = batch * strideA;
-    long bBase = batch * strideB;
+    long aBase = aOff + batch * strideA;
+    long bBase = bOff + batch * strideB;
     ACC acc = (ACC) 0;
     for (int t = 0; t < k; t += TS) {
         int ac = t + lc;
         int br = t + lr;
-        tileA[lr][lc] = row < m && ac < k ? LOAD(a, aBase + (long) row * k + ac) : (ACC) 0;
-        tileB[lr][lc] = br < k && col < n ? LOAD(b, bBase + (long) br * n + col) : (ACC) 0;
+        tileA[lr][lc] = row < m && ac < k ? LOAD(a, aBase + (long) row * aRow + (long) ac * aCol) : (ACC) 0;
+        tileB[lr][lc] = br < k && col < n ? LOAD(b, bBase + (long) br * bRow + (long) col * bCol) : (ACC) 0;
         barrier(CLK_LOCAL_MEM_FENCE);
         for (int i = 0; i < TS; i++) {
             acc += tileA[lr][i] * tileB[i][lc];

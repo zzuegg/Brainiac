@@ -91,6 +91,8 @@ public final class OpenClBackend implements Backend {
     /** Identifies the device and driver in the program cache. */
     private String fingerprint = "";
     private int tile;
+    /** Work items sharing one output of a long reduction: a power of two the device allows. */
+    private int reduceGroup = 64;
     private long budget;
     private final AtomicLong allocated = new AtomicLong();
     private final Pool pool = new Pool();
@@ -258,7 +260,9 @@ public final class OpenClBackend implements Backend {
         device = found.get(index);
         deviceName = lib.deviceString(device, CL.DEVICE_NAME);
         fp64 = (" " + lib.deviceString(device, CL.DEVICE_EXTENSIONS) + " ").contains(" cl_khr_fp64 ");
-        tile = lib.deviceLong(device, CL.DEVICE_MAX_WORK_GROUP_SIZE) >= 256 ? 16 : 8;
+        long maxGroup = lib.deviceLong(device, CL.DEVICE_MAX_WORK_GROUP_SIZE);
+        tile = maxGroup >= 256 ? 16 : 8;
+        reduceGroup = (int) Math.min(128, Long.highestOneBit(Math.max(1, maxGroup)));
         long memory = lib.deviceLong(device, CL.DEVICE_GLOBAL_MEM_SIZE);
         Integer mb = Integer.getInteger("brainiac.opencl.memory");
         budget = mb != null ? (long) mb << 20 : memory / 10 * 8;
@@ -537,21 +541,16 @@ public final class OpenClBackend implements Backend {
     /** Builds a program, from the on-disk cache when an earlier run compiled the same source. */
     private MemorySegment build(String source) {
         Path dir = cacheDir();
-        Path file = null;
-        if (dir != null) {
+        Path file = cacheFile(source);
+        if (file != null) {
             try {
-                MessageDigest sha = MessageDigest.getInstance("SHA-256");
-                sha.update(fingerprint.getBytes(StandardCharsets.UTF_8));
-                sha.update((byte) 0);
-                sha.update(source.getBytes(StandardCharsets.UTF_8));
-                file = dir.resolve(HexFormat.of().formatHex(sha.digest()) + ".bin");
                 if (Files.isRegularFile(file)) {
                     MemorySegment p = cl.buildProgramFromBinary(context, device, Files.readAllBytes(file), "");
                     if (p != null) {
                         return p;
                     }
                 }
-            } catch (IOException | NoSuchAlgorithmException | RuntimeException e) {
+            } catch (IOException | RuntimeException e) {
                 file = null;   // the cache is only an optimization
             }
         }
@@ -570,6 +569,23 @@ public final class OpenClBackend implements Backend {
             }
         }
         return program;
+    }
+
+    /** The cache file for a program source, or null when caching is off. */
+    private Path cacheFile(String source) {
+        Path dir = cacheDir();
+        if (dir == null) {
+            return null;
+        }
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            sha.update(fingerprint.getBytes(StandardCharsets.UTF_8));
+            sha.update((byte) 0);
+            sha.update(source.getBytes(StandardCharsets.UTF_8));
+            return dir.resolve(HexFormat.of().formatHex(sha.digest()) + ".bin");
+        } catch (NoSuchAlgorithmException e) {
+            return null;
+        }
     }
 
     /** The compiled kernel for a generated source, or null while it is compiling in the background. */
@@ -593,7 +609,8 @@ public final class OpenClBackend implements Backend {
                 }
                 return kernel;
             };
-            if (compiler != null) {
+            Path cached = cacheFile(source);
+            if (compiler != null && (cached == null || !Files.isRegularFile(cached))) {
                 compiled = compiler.submit(build);
             } else {
                 FutureTask<MemorySegment> now = new FutureTask<>(build);
@@ -1076,6 +1093,12 @@ public final class OpenClBackend implements Backend {
         if (n == 0) {
             return;
         }
+        if (outOffset == 0 && n == o.size && Arrays.equals(outStrides, contiguous(shape)) && fusable(o, in)
+                && shape.length <= MAX_RANK) {
+            // a view: recorded, and read through its strides by whatever uses it
+            defer(o, Fused.strided(cl(in), inOffset, shape, inStrides));
+            return;
+        }
         if (shape.length == 0) {
             shape = new int[] {1};
             inStrides = new long[] {1};
@@ -1124,7 +1147,7 @@ public final class OpenClBackend implements Backend {
             }
             return;
         }
-        if (fusable(o, x) && (rows >= 1024 || length <= 256) && fusedReduce(op, x, outer, length, inner, o)) {
+        if (fusable(o, x) && fusedReduce(op, x, outer, length, inner, o)) {
             return;
         }
         ClStorage src = as(x, o.dtype);
@@ -1142,7 +1165,9 @@ public final class OpenClBackend implements Backend {
      */
     private boolean fusedReduce(ReduceOp op, ClStorage x, long outer, long length, long inner, ClStorage o) {
         Fused.Expr input = Fused.whole(x);
-        Fused.Kernel k = Fused.generateReduce(input, op.ordinal());
+        long rows = outer * inner;
+        int group = rows >= 1024 || length <= 256 ? 1 : reduceGroup;
+        Fused.Kernel k = Fused.generateReduce(input, op.ordinal(), group);
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             return false;
         }
@@ -1159,7 +1184,11 @@ public final class OpenClBackend implements Backend {
         for (int i = 0; i < k.args().size(); i++) {
             args[i + 4] = k.args().get(i);
         }
-        launch("fused_reduce", kernel, new long[] {outer * inner}, null, args);
+        if (group > 1) {
+            launch("fused_reduce", kernel, new long[] {rows * group}, new long[] {group}, args);
+        } else {
+            launch("fused_reduce", kernel, new long[] {rows}, null, args);
+        }
         generation++;
         return true;
     }
@@ -1174,8 +1203,51 @@ public final class OpenClBackend implements Backend {
         ClStorage o = cl(out);
         long[] global = {roundUp(n, tile), roundUp(m, tile), batch};
         long[] local = {tile, tile, 1};
-        run(o.dtype, "matmul", global, local, as(a, o.dtype), as(b, o.dtype), o, m, k, n, (long) m * k,
-                (long) k * n, (long) m * n);
+        Operand x = operand(a, o.dtype, batch, m, k);
+        Operand y = operand(b, o.dtype, batch, k, n);
+        run(o.dtype, "matmul", global, local, x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(),
+                (long) m * n, x.offset(), x.row(), x.col(), y.offset(), y.row(), y.col());
+    }
+
+    /** A matrix operand read in place: element (i, j) of batch b at offset + b*batch + i*row + j*col. */
+    private record Operand(ClStorage storage, long offset, long batch, long row, long col) {
+    }
+
+    /**
+     * A matmul operand. A pending view (a transpose, slice or permutation recorded by
+     * {@link #copy}) is read through its strides instead of being copied first.
+     */
+    private Operand operand(Storage s, DType type, int batch, int rows, int cols) {
+        ClStorage c = cl(s);
+        if (c.pending instanceof Fused.Src v && v.storage().dtype == type && v.storage() != c) {
+            int[] dims = v.dims();
+            long[] st = v.strides();
+            int r = dims.length;
+            if (r >= 2 && dims[r - 2] == rows && dims[r - 1] == cols) {
+                // leading dimensions must form one evenly strided batch axis
+                long count = 1;
+                long batchStride = (long) rows * cols;
+                boolean even = true;
+                for (int d = r - 3; d >= 0; d--) {
+                    if (dims[d] == 1) {
+                        continue;
+                    }
+                    if (count == 1) {
+                        batchStride = st[d];
+                    } else if (st[d] != batchStride * count) {
+                        even = false;
+                    }
+                    count *= dims[d];
+                }
+                if (even && count == batch) {
+                    ready(v.storage());
+                    return new Operand(v.storage(), v.offset(), batch == 1 ? 0 : batchStride,
+                            rows == 1 ? 0 : st[r - 2], cols == 1 ? 0 : st[r - 1]);
+                }
+            }
+        }
+        ClStorage dense = as(c, type);
+        return new Operand(dense, 0, (long) rows * cols, cols, 1);
     }
 
     private static long roundUp(long v, int multiple) {
