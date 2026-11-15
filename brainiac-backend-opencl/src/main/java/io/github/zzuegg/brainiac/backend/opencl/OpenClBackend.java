@@ -249,9 +249,12 @@ public final class OpenClBackend implements Backend {
         Integer mb = Integer.getInteger("brainiac.opencl.memory");
         budget = mb != null ? (long) mb << 20 : memory / 10 * 8;
         context = lib.createContext(device);
-        queue = lib.createQueue(context, device);
+        queue = lib.createQueue(context, device, profiling);
         cl = lib;
         program(DType.FLOAT32);
+        if (profiling) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> System.err.print(profile()), "opencl-profile"));
+        }
     }
 
     /**
@@ -383,7 +386,14 @@ public final class OpenClBackend implements Backend {
                 cl.setArg(k, i, value);
             }
         }
-        cl.run(queue, k, global, local);
+        MemorySegment event = cl.run(queue, k, global, local, profiling);
+        if (profiling) {
+            launched.add(new Launch(kernel, event));
+            if (launched.size() >= 4_096) {
+                cl.finish(queue);
+                settled();
+            }
+        }
     }
 
     private void run(DType type, String kernel, long n, Object... args) {
@@ -506,51 +516,84 @@ public final class OpenClBackend implements Backend {
         }
     }
 
-    /**
-     * Host copies of uploads still in flight. Uploads do not block (a blocking write would
-     * also wait for every kernel queued before it), so their host memory is kept until the
-     * queue is known to be done: after the next blocking read, or a finish.
-     */
-    private final List<Arena> inFlight = new ArrayList<>();
-    private long inFlightBytes;
+    /** Whether kernels are timed on the device ({@code -Dbrainiac.opencl.profile=true}). */
+    private final boolean profiling = Boolean.getBoolean("brainiac.opencl.profile");
+    private final List<Launch> launched = new ArrayList<>();
+    private final Map<String, long[]> kernelTimes = new HashMap<>();
 
-    private void writeAsync(ClStorage s, Arena arena, MemorySegment host) {
-        cl.write(queue, s.mem, 0, host, false);
-        inFlight.add(arena);
-        inFlightBytes += host.byteSize();
-        if (inFlightBytes > 256L << 20) {
+    private record Launch(String kernel, MemorySegment event) {
+    }
+
+    /** Collects the timings of finished kernels; call only when the queue is idle. */
+    private void settled() {
+        for (Launch l : launched) {
+            long[] t = kernelTimes.computeIfAbsent(l.kernel(), k -> new long[2]);
+            t[0]++;
+            t[1] += cl.elapsedNanos(l.event());
+            cl.releaseEvent(l.event());
+        }
+        launched.clear();
+    }
+
+    /**
+     * Device time per kernel since start, slowest first. Kernels are only timed when the JVM
+     * runs with {@code -Dbrainiac.opencl.profile=true}; the report is then also printed at exit.
+     *
+     * @return one line per kernel: total milliseconds, launches and average microseconds
+     */
+    public synchronized String profile() {
+        if (!profiling) {
+            return "profiling is off (run with -Dbrainiac.opencl.profile=true)";
+        }
+        if (cl != null) {
             cl.finish(queue);
             settled();
         }
+        long total = 0;
+        for (long[] t : kernelTimes.values()) {
+            total += t[1];
+        }
+        StringBuilder out = new StringBuilder(String.format(Locale.ROOT, "OpenCL kernel time %.1f ms%n", total / 1e6));
+        List<Map.Entry<String, long[]>> rows = new ArrayList<>(kernelTimes.entrySet());
+        rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
+        for (Map.Entry<String, long[]> e : rows) {
+            long[] t = e.getValue();
+            out.append(String.format(Locale.ROOT, "  %-28s %9.1f ms %8d x %8.1f us%n", e.getKey(), t[1] / 1e6, t[0],
+                    t[1] / 1e3 / t[0]));
+        }
+        return out.toString();
     }
 
-    /** Frees the host copies of finished uploads; call only when the queue is idle. */
-    private void settled() {
-        for (Arena a : inFlight) {
-            a.close();
-        }
-        inFlight.clear();
-        inFlightBytes = 0;
-    }
-
-    @Override
-    public synchronized Storage upload(float[] data) {
-        ClStorage s = raw(data.length, DType.FLOAT32);
-        if (data.length > 0) {
-            Arena arena = Arena.ofShared();
-            writeAsync(s, arena, arena.allocateFrom(JAVA_FLOAT, data));
-        }
+    /**
+     * A new device buffer holding a copy of {@code host}. The copy is made while the buffer is
+     * created, so it neither waits for queued kernels nor keeps the host memory alive.
+     */
+    private ClStorage uploaded(MemorySegment host, long size, DType dtype) {
+        program(dtype);
+        long bytes = host.byteSize();
+        MemorySegment mem = createBuffer(CL.MEM_READ_WRITE | CL.MEM_COPY_HOST_PTR, bytes, host);
+        allocated.addAndGet(bytes);
+        ClStorage s = new ClStorage(this, mem, size, dtype);
+        CLEANER.register(s, new Release(cl, mem, bytes, allocated, pool, budget / 4));
         return s;
     }
 
     @Override
-    public synchronized Storage upload(double[] data, DType dtype) {
-        ClStorage s = raw(data.length, dtype);
+    public synchronized Storage upload(float[] data) {
         if (data.length == 0) {
-            return s;
+            return raw(0, DType.FLOAT32);
         }
-        Arena arena = Arena.ofShared();
-        {
+        try (Arena arena = Arena.ofConfined()) {
+            return uploaded(arena.allocateFrom(JAVA_FLOAT, data), data.length, DType.FLOAT32);
+        }
+    }
+
+    @Override
+    public synchronized Storage upload(double[] data, DType dtype) {
+        if (data.length == 0) {
+            return raw(0, dtype);
+        }
+        try (Arena arena = Arena.ofConfined()) {
             MemorySegment host = switch (dtype) {
                 case FLOAT64 -> arena.allocateFrom(JAVA_DOUBLE, data);
                 case FLOAT32 -> {
@@ -569,9 +612,8 @@ public final class OpenClBackend implements Backend {
                     yield arena.allocateFrom(JAVA_SHORT, h);
                 }
             };
-            writeAsync(s, arena, host);
+            return uploaded(host, data.length, dtype);
         }
-        return s;
     }
 
     @Override
