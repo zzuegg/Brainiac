@@ -171,40 +171,49 @@ __kernel void copy_strided(__global const RAW* x, long inOffset, __global RAW* z
     z[iz] = x[ia];
 }
 
-// One partial result per (output, chunk); op 0/1 sum, 2 max, 3 min.
-__kernel void reduce_partial(int op, __global const T* x, __global ACC* part, long outer, long len, long inner,
-                             long chunks, long chunkLen) {
-    long g = get_global_id(0);
-    if (g >= outer * inner * chunks) return;
-    long r = g / chunks;
-    long c = g % chunks;
-    long o = r / inner;
-    long j = r % inner;
-    long from = c * chunkLen;
-    long to = min(len, from + chunkLen);
-    ACC acc = op == 2 ? (ACC) -INFINITY : op == 3 ? (ACC) INFINITY : (ACC) 0;
-    long base = o * len * inner + j;
-    for (long i = from; i < to; i++) {
-        ACC v = LOAD(x, base + i * inner);
-        if (op == 2) acc = isnan(v) || isnan(acc) ? v + acc : fmax(acc, v);
-        else if (op == 3) acc = isnan(v) || isnan(acc) ? v + acc : fmin(acc, v);
-        else acc += v;
-    }
-    part[g] = acc;
+// Reductions; op 0 sum, 1 mean, 2 max, 3 min. Generated (fused) reductions use the same order.
+ACC reduce_combine(int op, ACC a, ACC b) {
+    if (op == 2) return isnan(a) || isnan(b) ? a + b : fmax(a, b);
+    if (op == 3) return isnan(a) || isnan(b) ? a + b : fmin(a, b);
+    return a + b;
 }
 
-__kernel void reduce_final(int op, __global const ACC* part, __global T* y, long outer, long len, long inner,
-                           long chunks) {
+ACC reduce_init(int op) {
+    return op == 2 ? (ACC) -INFINITY : op == 3 ? (ACC) INFINITY : (ACC) 0;
+}
+
+// One work item per output, looping over its row.
+__kernel void reduce_rows(int op, __global const T* x, __global T* y, long n, long len, long inner) {
     long r = get_global_id(0);
-    if (r >= outer * inner) return;
-    ACC acc = part[r * chunks];
-    for (long c = 1; c < chunks; c++) {
-        ACC v = part[r * chunks + c];
-        if (op == 2) acc = isnan(v) || isnan(acc) ? v + acc : fmax(acc, v);
-        else if (op == 3) acc = isnan(v) || isnan(acc) ? v + acc : fmin(acc, v);
-        else acc += v;
+    if (r >= n) return;
+    long base = (r / inner) * len * inner + r % inner;
+    ACC acc = reduce_init(op);
+    for (long t = 0; t < len; t++) {
+        acc = reduce_combine(op, acc, LOAD(x, base + t * inner));
     }
     STORE(y, r, op == 1 ? acc / (ACC) len : acc);
+}
+
+// One work-group of RG items per output, for long rows.
+__kernel void reduce_group(int op, __global const T* x, __global T* y, long n, long len, long inner) {
+    __local ACC part[RG];
+    long r = get_group_id(0);
+    int lid = get_local_id(0);
+    long base = (r / inner) * len * inner + r % inner;
+    ACC acc = reduce_init(op);
+    for (long t = lid; t < len; t += RG) {
+        acc = reduce_combine(op, acc, LOAD(x, base + t * inner));
+    }
+    part[lid] = acc;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int s = RG / 2; s > 0; s >>= 1) {
+        if (lid < s) part[lid] = reduce_combine(op, part[lid], part[lid + s]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (lid == 0) {
+        ACC total = part[0];
+        STORE(y, r, op == 1 ? total / (ACC) len : total);
+    }
 }
 
 __kernel void argmax(__global const T* x, __global float* y, long outer, long len, long inner) {

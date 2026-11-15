@@ -325,7 +325,7 @@ public final class OpenClBackend implements Backend {
         MemorySegment program = build(source);
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
-                "binary_strided", "copy_strided", "reduce_partial", "reduce_final", "argmax", "matmul", "im2col",
+                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float")) {
             kernels.put(name, cl.createKernel(program, name));
         }
@@ -335,7 +335,9 @@ public final class OpenClBackend implements Backend {
     }
 
     private String prelude(DType type) {
-        String common = "#define TS " + tile + "\n";
+        // No contraction into fused multiply-adds anywhere, so generated kernels and the
+        // precompiled ones round every step alike.
+        String common = "#pragma OPENCL FP_CONTRACT OFF\n#define TS " + tile + "\n#define RG " + reduceGroup + "\n";
         return common + switch (type) {
             case FLOAT32 -> """
                     #define T float
@@ -599,8 +601,7 @@ public final class OpenClBackend implements Backend {
         if (compiled == null) {
             if (helpers == null) {
                 String all = kernelSource();
-                // no contraction into fused multiply-adds: each step rounds as the separate kernels do
-                helpers = "#pragma OPENCL FP_CONTRACT OFF\n" + all.substring(0, all.indexOf("__kernel"));
+                helpers = all.substring(0, all.indexOf("__kernel"));
             }
             String source = prelude(type) + helpers + kernelSource;
             Callable<MemorySegment> build = () -> {
@@ -1166,12 +1167,17 @@ public final class OpenClBackend implements Backend {
             return;
         }
         ClStorage src = as(x, o.dtype);
-        long chunks = rows >= 1024 || length <= 256 ? 1 : Math.min(Math.ceilDiv(length, 256), Math.max(1, 65536 / rows));
-        long chunkLen = Math.ceilDiv(length, chunks);
-        // partial results in the accumulator type, from the buffer pool
-        ClStorage part = raw(rows * chunks, o.dtype == DType.FLOAT64 ? DType.FLOAT64 : DType.FLOAT32);
-        run(o.dtype, "reduce_partial", rows * chunks, op.ordinal(), src, part, outer, length, inner, chunks, chunkLen);
-        run(o.dtype, "reduce_final", rows, op.ordinal(), part, o, outer, length, inner, chunks);
+        if (grouped(rows, length)) {
+            run(o.dtype, "reduce_group", new long[] {rows * reduceGroup}, new long[] {reduceGroup}, op.ordinal(), src,
+                    o, rows, length, inner);
+        } else {
+            run(o.dtype, "reduce_rows", rows, op.ordinal(), src, o, rows, length, inner);
+        }
+    }
+
+    /** Whether a reduction shares each output across a work-group (long rows, few outputs). */
+    private boolean grouped(long rows, long length) {
+        return rows < 1024 && length > 256 && reduceGroup > 1;
     }
 
     /**
@@ -1181,13 +1187,14 @@ public final class OpenClBackend implements Backend {
     private boolean fusedReduce(ReduceOp op, ClStorage x, long outer, long length, long inner, ClStorage o) {
         Fused.Expr input = Fused.whole(x);
         long rows = outer * inner;
-        int group = rows >= 1024 || length <= 256 ? 1 : reduceGroup;
+        int group = grouped(rows, length) ? reduceGroup : 1;
         Fused.Kernel k = Fused.generateReduce(input, op.ordinal(), group);
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             return false;
         }
         MemorySegment kernel = fusedKernel(o.dtype, k.source());
         if (kernel == null) {
+            // the precompiled reduction sums in the same order, so results do not change
             eagerFallbacks++;
             return false;
         }
