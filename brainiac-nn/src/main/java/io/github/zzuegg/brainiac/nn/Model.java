@@ -6,13 +6,21 @@ import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.SplittableRandom;
 import java.util.function.Function;
 
 /**
- * A neural network: layers applied one after another to batches of feature rows.
+ * A neural network that turns batches of feature rows into outputs. Build a straight
+ * stack of layers with {@link #sequential()}, or wire any graph of layers with
+ * {@link #graph(Node, Node)}.
  *
  * <pre>{@code
  * Model model = Model.sequential()
@@ -29,12 +37,33 @@ public final class Model {
 
     private final int inputSize;
     private final int outputSize;
+    private final List<Step> steps;
     private final List<Layer> layers;
+    private final boolean chain;
 
-    private Model(int inputSize, int outputSize, List<Layer> layers) {
+    /**
+     * One computation: a layer, a sum or a concatenation of earlier values. Value 0 is the
+     * model input, step {@code i} produces value {@code i + 1}.
+     */
+    private record Step(Node.Kind kind, int[] inputs, Layer layer) {
+    }
+
+    private Model(int inputSize, int outputSize, List<Step> steps) {
         this.inputSize = inputSize;
         this.outputSize = outputSize;
-        this.layers = List.copyOf(layers);
+        this.steps = List.copyOf(steps);
+        Set<Layer> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<Layer> distinct = new ArrayList<>();
+        boolean isChain = true;
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            isChain &= step.kind == Node.Kind.LAYER && step.inputs[0] == i;
+            if (step.layer != null && seen.add(step.layer)) {
+                distinct.add(step.layer);
+            }
+        }
+        this.layers = List.copyOf(distinct);
+        this.chain = isChain;
     }
 
     /**
@@ -44,6 +73,18 @@ public final class Model {
      */
     public static Builder sequential() {
         return new Builder();
+    }
+
+    /**
+     * Starts building a model from a graph of {@link Node}s, for networks with skip
+     * connections, shared layers or parallel branches.
+     *
+     * @param input the node created with {@link Node#input(int)}
+     * @param output the node whose values the model returns
+     * @return a new builder
+     */
+    public static GraphBuilder graph(Node input, Node output) {
+        return new GraphBuilder(input, output);
     }
 
     /**
@@ -65,11 +106,25 @@ public final class Model {
      * @return the output, shape {@code [batch, outputSize]}
      */
     public Var forward(Var input, boolean training) {
-        Var x = input;
-        for (Layer layer : layers) {
-            x = layer.forward(x, training);
+        Var[] values = new Var[steps.size() + 1];
+        values[0] = input;
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            int[] in = step.inputs;
+            values[i + 1] = switch (step.kind) {
+                case LAYER -> step.layer.forward(values[in[0]], training);
+                case ADD -> values[in[0]].add(values[in[1]]);
+                case CONCAT -> {
+                    Var[] parts = new Var[in.length];
+                    for (int k = 0; k < in.length; k++) {
+                        parts[k] = values[in[k]];
+                    }
+                    yield Var.concat(1, parts);
+                }
+                case INPUT -> throw new IllegalStateException("input inside the graph");
+            };
         }
-        return x;
+        return values[steps.size()];
     }
 
     /**
@@ -200,12 +255,30 @@ public final class Model {
     public String summary() {
         StringBuilder sb = new StringBuilder();
         sb.append("Input(").append(inputSize).append(")\n");
-        for (Layer layer : layers) {
-            long n = 0;
-            for (Var p : layer.parameters()) {
-                n += p.value().size();
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            if (!chain) {
+                sb.append('#').append(i + 1).append(' ');
             }
-            sb.append(layer).append(n > 0 ? "  params: " + n : "").append('\n');
+            sb.append(switch (step.kind) {
+                case LAYER -> step.layer.toString();
+                case ADD -> "Add";
+                case CONCAT -> "Concat";
+                case INPUT -> "Input";
+            });
+            if (!chain) {
+                sb.append(" <- ");
+                for (int k = 0; k < step.inputs.length; k++) {
+                    sb.append(k > 0 ? ", " : "").append(step.inputs[k] == 0 ? "input" : "#" + step.inputs[k]);
+                }
+            }
+            long n = 0;
+            if (step.layer != null) {
+                for (Var p : step.layer.parameters()) {
+                    n += p.value().size();
+                }
+            }
+            sb.append(n > 0 ? "  params: " + n : "").append('\n');
         }
         sb.append("Total params: ").append(parameterCount());
         return sb.toString();
@@ -371,11 +444,11 @@ public final class Model {
                 throw new IllegalStateException("a model needs at least one layer");
             }
             SplittableRandom random = seed == null ? new SplittableRandom() : new SplittableRandom(seed);
-            List<Layer> layers = new ArrayList<>();
+            List<Step> steps = new ArrayList<>();
             for (var factory : pending) {
-                layers.add(factory.apply(random));
+                steps.add(new Step(Node.Kind.LAYER, new int[] {steps.size()}, factory.apply(random)));
             }
-            Model model = new Model(inputSize, width, layers);
+            Model model = new Model(inputSize, width, steps);
             if (device != null) {
                 model.to(device);
             }
@@ -387,6 +460,95 @@ public final class Model {
                 throw new IllegalStateException("call input(features) before adding layers");
             }
             return width;
+        }
+    }
+
+    /** Builds a {@link Model} from a graph of {@link Node}s; see {@link Model#graph(Node, Node)}. */
+    public static final class GraphBuilder {
+
+        private final Node input;
+        private final Node output;
+        private Long seed;
+        private Device device;
+
+        private GraphBuilder(Node input, Node output) {
+            this.input = Objects.requireNonNull(input, "input");
+            this.output = Objects.requireNonNull(output, "output");
+            if (input.kind() != Node.Kind.INPUT) {
+                throw new IllegalArgumentException("the first argument must be created with Node.input(features)");
+            }
+        }
+
+        /**
+         * Sets the seed for weight initialization and dropout, for reproducible runs.
+         *
+         * @param seed the seed
+         * @return this builder
+         */
+        public GraphBuilder seed(long seed) {
+            this.seed = seed;
+            return this;
+        }
+
+        /**
+         * Sets the device the weights live on; defaults to {@link Device#getDefault()}.
+         *
+         * @param device the device
+         * @return this builder
+         */
+        public GraphBuilder device(Device device) {
+            this.device = Objects.requireNonNull(device, "device");
+            return this;
+        }
+
+        /**
+         * Creates the model with fresh weights. Every call gives a new, independent model,
+         * except for layer instances passed to {@link Node#layer(Layer)}, which are shared.
+         *
+         * @return the model
+         */
+        public Model build() {
+            if (output == input) {
+                throw new IllegalStateException("a model needs at least one layer");
+            }
+            // collect the nodes the output depends on, then order them by creation, which
+            // is always a valid evaluation order since nodes only refer to older nodes
+            List<Node> nodes = new ArrayList<>();
+            Set<Node> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+            List<Node> stack = new ArrayList<>(List.of(output));
+            while (!stack.isEmpty()) {
+                Node n = stack.removeLast();
+                if (!seen.add(n)) {
+                    continue;
+                }
+                if (n.kind() == Node.Kind.INPUT && n != input) {
+                    throw new IllegalArgumentException("the output depends on " + n + ", which is not the model input");
+                }
+                nodes.add(n);
+                stack.addAll(n.inputs());
+            }
+            if (!seen.contains(input)) {
+                throw new IllegalArgumentException("the output does not depend on the input");
+            }
+            nodes.sort(Comparator.comparingLong(Node::id));
+            SplittableRandom random = seed == null ? new SplittableRandom() : new SplittableRandom(seed);
+            Map<Node, Integer> index = new HashMap<>();
+            index.put(input, 0);
+            List<Step> steps = new ArrayList<>();
+            for (Node n : nodes) {
+                if (n == input) {
+                    continue;
+                }
+                int[] in = n.inputs().stream().mapToInt(index::get).toArray();
+                Layer layer = n.kind() == Node.Kind.LAYER ? n.createLayer(random) : null;
+                steps.add(new Step(n.kind(), in, layer));
+                index.put(n, steps.size());
+            }
+            Model model = new Model(input.width(), output.width(), steps);
+            if (device != null) {
+                model.to(device);
+            }
+            return model;
         }
     }
 }

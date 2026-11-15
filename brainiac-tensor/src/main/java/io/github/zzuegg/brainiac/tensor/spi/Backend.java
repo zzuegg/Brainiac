@@ -134,5 +134,28 @@ public interface Backend {
      * @param shape the shape of the view
      * @param out the contiguous output
      */
-    void copy(Storage in, long[] strides, int[] shape, Storage out);
+    default void copy(Storage in, long[] strides, int[] shape, Storage out) {
+        long[] outStrides = new long[shape.length];
+        long step = 1;
+        for (int i = shape.length - 1; i >= 0; i--) {
+            outStrides[i] = step;
+            step *= shape[i];
+        }
+        copy(in, 0, strides, shape, out, 0, outStrides);
+    }
+
+    /**
+     * Copies between two strided views: {@code out[outOffset + idx . outStrides] =
+     * in[inOffset + idx . inStrides]} for every index of {@code shape}. Used for slices
+     * and concatenation. The views never overlap.
+     *
+     * @param in the input
+     * @param inOffset where the input view starts
+     * @param inStrides the input strides, one per axis of {@code shape}
+     * @param shape the shape of both views
+     * @param out the output, which is written in place
+     * @param outOffset where the output view starts
+     * @param outStrides the output strides, one per axis of {@code shape}
+     */
+    void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out, long outOffset, long[] outStrides);
 }

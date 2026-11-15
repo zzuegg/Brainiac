@@ -396,6 +396,71 @@ public final class Tensor {
         return t.reshape(target);
     }
 
+    /**
+     * Returns the part of this tensor from {@code start} (inclusive) to {@code end}
+     * (exclusive) along one axis, copying the values. The slice must not be empty.
+     *
+     * @param axis the axis; negative counts from the end
+     * @param start the first index to keep
+     * @param end one past the last index to keep
+     * @return the slice
+     */
+    public Tensor slice(int axis, int start, int end) {
+        int a = axis(axis);
+        int length = shape.dim(a);
+        if (start < 0 || end > length || start >= end) {
+            throw new IllegalArgumentException("slice [" + start + ", " + end + ") out of range for axis " + a
+                    + " of " + shape);
+        }
+        int[] dims = shape.toArray();
+        dims[a] = end - start;
+        Shape outShape = Shape.of(dims);
+        long[] strides = shape.strides();
+        Storage out = backend().allocate(outShape.size());
+        backend().copy(storage, start * strides[a], strides, dims, out, 0, outShape.strides());
+        return new Tensor(outShape, device, out);
+    }
+
+    /**
+     * Joins tensors along one axis. All other dimensions must match, and all tensors must
+     * be on the same device.
+     *
+     * @param axis the axis to join along; negative counts from the end
+     * @param parts the tensors, at least one
+     * @return the joined tensor
+     */
+    public static Tensor concat(int axis, Tensor... parts) {
+        if (parts.length == 0) {
+            throw new IllegalArgumentException("concat needs at least one tensor");
+        }
+        Tensor first = parts[0];
+        int a = first.axis(axis);
+        int[] dims = first.shape.toArray();
+        int total = 0;
+        for (Tensor t : parts) {
+            first.sameDevice(t);
+            int[] d = t.shape.toArray();
+            boolean compatible = d.length == dims.length;
+            for (int i = 0; compatible && i < d.length; i++) {
+                compatible = i == a || d[i] == dims[i];
+            }
+            if (!compatible) {
+                throw new IllegalArgumentException("cannot concat " + t.shape + " with " + first.shape + " along axis " + a);
+            }
+            total += d[a];
+        }
+        dims[a] = total;
+        Shape outShape = Shape.of(dims);
+        long[] outStrides = outShape.strides();
+        Storage out = first.backend().allocate(outShape.size());
+        long offset = 0;
+        for (Tensor t : parts) {
+            first.backend().copy(t.storage, 0, t.shape.strides(), t.shape.toArray(), out, offset, outStrides);
+            offset += t.shape.dim(a) * outStrides[a];
+        }
+        return new Tensor(outShape, first.device, out);
+    }
+
     private Tensor strided(long[] strides, Shape outShape) {
         Storage out = backend().allocate(outShape.size());
         backend().copy(storage, strides, outShape.toArray(), out);
