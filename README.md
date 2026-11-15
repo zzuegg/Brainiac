@@ -110,6 +110,11 @@ Node output = block.concat(hidden).dense(3, Activation.SOFTMAX);
 Model model = Model.graph(input, output).seed(42).build();
 ```
 
+Built-in activations: `IDENTITY`, `RELU`, `RELU6`, `leakyRelu(slope)`, `elu(alpha)`, `SELU`,
+`GELU`, `GELU_TANH`, `SILU`, `MISH`, `SOFTPLUS`, `SOFTSIGN`, `SIGMOID`, `HARD_SIGMOID`,
+`HARD_SWISH`, `TANH`, `HARD_TANH`, `softmax(axis)`/`SOFTMAX`, `logSoftmax(axis)`/`LOG_SOFTMAX`,
+and the learnable `prelu()` and `swish()`. Each one picks a suitable weight init.
+
 Custom and learnable activations (autograd derives the gradient):
 
 ```java

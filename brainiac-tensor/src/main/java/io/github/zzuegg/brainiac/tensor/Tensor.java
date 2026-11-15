@@ -621,6 +621,31 @@ public final class Tensor {
         return binary(BinaryOp.EQUAL, other);
     }
 
+    /**
+     * Keeps values where {@code keep} is non-zero and sets the rest to {@code 0}, even
+     * infinite or NaN ones (multiplying by a 0/1 mask would give NaN there).
+     *
+     * @param keep the mask; broadcasts
+     * @return the masked values
+     */
+    public Tensor mask(Tensor keep) {
+        return binary(BinaryOp.MASK, keep);
+    }
+
+    /**
+     * Picks values from {@code ifTrue} where {@code condition} is non-zero and from
+     * {@code ifFalse} elsewhere. Values that are not picked never leak into the result,
+     * even if infinite or NaN.
+     *
+     * @param condition the condition, usually from {@link #greater(Tensor)}; broadcasts
+     * @param ifTrue values where the condition holds
+     * @param ifFalse values elsewhere
+     * @return the picked values, in the broadcast shape
+     */
+    public static Tensor where(Tensor condition, Tensor ifTrue, Tensor ifFalse) {
+        return ifTrue.mask(condition).add(ifFalse.mask(condition.equalTo(condition.constant(0f))));
+    }
+
     /** @return {@code -this} */
     public Tensor neg() {
         return unary(UnaryOp.NEG);
@@ -674,6 +699,16 @@ public final class Tensor {
     /** @return {@code -1}, {@code 0} or {@code 1} for each value */
     public Tensor sign() {
         return unary(UnaryOp.SIGN);
+    }
+
+    /** @return the Gauss error function of each value */
+    public Tensor erf() {
+        return unary(UnaryOp.ERF);
+    }
+
+    /** @return {@code log(1 + e^x)} for each value, without overflow */
+    public Tensor softplus() {
+        return unary(UnaryOp.SOFTPLUS);
     }
 
     private Tensor unary(UnaryOp op) {
