@@ -45,12 +45,13 @@ final class Registry {
         layer("dropout", Dropout.class, new LayerCodec<>() {
             @Override
             public Config write(Dropout d) {
-                return Config.builder().put("rate", d.rate()).build();
+                return Config.builder().put("rate", d.rate()).put("channelwise", d.channelwise()).build();
             }
 
             @Override
             public Dropout read(Config c) {
-                return new Dropout(c.getFloat("rate"), new SplittableRandom());
+                return new Dropout(c.getFloat("rate"), new SplittableRandom(),
+                        c.has("channelwise") && c.getBoolean("channelwise"));
             }
         });
         layer("batchnorm", BatchNorm.class, new LayerCodec<>() {
@@ -68,6 +69,17 @@ final class Registry {
                 return new BatchNorm(c.getInt("features"), c.getFloat("momentum"), c.getFloat("epsilon"));
             }
         });
+        simple("conv", Conv.class, Conv::write, Conv::read);
+        simple("pool", Pool.class, Pool::write, Pool::read);
+        simple("global_pool", GlobalPool.class, GlobalPool::write, GlobalPool::read);
+        simple("adaptive_pool", AdaptivePool.class, AdaptivePool::write, AdaptivePool::read);
+        simple("pad", Pad.class, Pad::write, Pad::read);
+        simple("reshape", Reshape.class, Reshape::write, Reshape::read);
+        simple("permute", Permute.class, Permute::write, Permute::read);
+        simple("resize", Resize.class, Resize::write, Resize::read);
+        simple("pixel_shuffle", PixelShuffle.class, PixelShuffle::write, PixelShuffle::read);
+        simple("layer_norm", LayerNorm.class, LayerNorm::write, LayerNorm::read);
+        simple("group_norm", GroupNorm.class, GroupNorm::write, GroupNorm::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
                 Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
@@ -86,6 +98,21 @@ final class Registry {
     }
 
     private Registry() {
+    }
+
+    static <L extends Layer> void simple(String name, Class<L> type, java.util.function.Function<L, Config> write,
+            Function<Config, L> read) {
+        layer(name, type, new LayerCodec<>() {
+            @Override
+            public Config write(L layer) {
+                return write.apply(layer);
+            }
+
+            @Override
+            public L read(Config config) {
+                return read.apply(config);
+            }
+        });
     }
 
     static <L extends Layer> void layer(String name, Class<L> type, LayerCodec<L> codec) {

@@ -1,5 +1,7 @@
 package io.github.zzuegg.brainiac.nn;
 
+import io.github.zzuegg.brainiac.tensor.Shape;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -27,7 +29,7 @@ import java.util.function.Function;
  */
 public final class Node {
 
-    enum Kind { INPUT, LAYER, ADD, CONCAT }
+    enum Kind { INPUT, LAYER, ADD, CONCAT, MULTIPLY, MERGE }
 
     private static final AtomicLong IDS = new AtomicLong();
 
@@ -35,27 +37,47 @@ public final class Node {
     private final Kind kind;
     private final List<Node> inputs;
     private final Function<SplittableRandom, Layer> factory;
-    private final int width;
+    private final Shape shape;
 
-    private Node(Kind kind, List<Node> inputs, Function<SplittableRandom, Layer> factory, int width) {
+    private Node(Kind kind, List<Node> inputs, Function<SplittableRandom, Layer> factory, Shape shape) {
         this.id = IDS.incrementAndGet();
         this.kind = kind;
         this.inputs = List.copyOf(inputs);
         this.factory = factory;
-        this.width = width;
+        this.shape = shape;
     }
 
     /**
-     * Creates the input of a network.
+     * Creates the input of a network. One number is a row of features; more describe
+     * images ({@code input(3, 32, 32)}, channels first) or sequences
+     * ({@code input(steps, features)}).
      *
-     * @param features the number of input features
+     * @param dims the shape of one input sample
      * @return the input node
      */
-    public static Node input(int features) {
-        if (features < 1) {
-            throw new IllegalArgumentException("input needs at least 1 feature, got " + features);
+    public static Node input(int... dims) {
+        if (dims.length == 0) {
+            throw new IllegalArgumentException("input needs at least one dimension");
         }
-        return new Node(Kind.INPUT, List.of(), null, features);
+        for (int d : dims) {
+            if (d < 1) {
+                throw new IllegalArgumentException("input needs at least 1 feature, got " + d);
+            }
+        }
+        return new Node(Kind.INPUT, List.of(), null, Shape.of(dims));
+    }
+
+    /**
+     * Adds a layer described by a spec; every built-in layer and option is available
+     * this way.
+     *
+     * @param spec the layer spec
+     * @return the layer's output
+     */
+    public Node add(LayerSpec spec) {
+        Objects.requireNonNull(spec, "spec");
+        Shape in = shape;
+        return new Node(Kind.LAYER, List.of(this), random -> spec.create(in, random), spec.outputShape(in));
     }
 
     /**
@@ -80,7 +102,8 @@ public final class Node {
     }
 
     /**
-     * Adds a fully connected layer.
+     * Adds a fully connected layer. On inputs with several dimensions it works on the
+     * last one, like a time-distributed layer.
      *
      * @param units the number of outputs
      * @param activation the activation
@@ -90,11 +113,7 @@ public final class Node {
     public Node dense(int units, Activation activation, Init init) {
         Objects.requireNonNull(activation, "activation");
         Objects.requireNonNull(init, "init");
-        if (units < 1) {
-            throw new IllegalArgumentException("units must be at least 1, got " + units);
-        }
-        int in = width;
-        return new Node(Kind.LAYER, List.of(this), random -> new Dense(in, units, activation, init, random), units);
+        return add(Dense.spec(units, activation, init));
     }
 
     /**
@@ -104,32 +123,32 @@ public final class Node {
      * @return the layer's output
      */
     public Node dropout(float rate) {
-        if (!(rate >= 0 && rate < 1)) {
-            throw new IllegalArgumentException("dropout rate must be in [0, 1), got " + rate);
-        }
-        return new Node(Kind.LAYER, List.of(this), random -> new Dropout(rate, random.split()), width);
+        Dropout.check(rate);
+        return new Node(Kind.LAYER, List.of(this), random -> new Dropout(rate, random.split()), shape);
     }
 
     /**
-     * Adds batch normalization; see {@link BatchNorm}.
+     * Adds batch normalization over the first sample dimension (features, or channels of
+     * images); see {@link BatchNorm}.
      *
      * @return the layer's output
      */
     public Node batchNorm() {
-        int in = width;
-        return new Node(Kind.LAYER, List.of(this), random -> new BatchNorm(in), width);
+        int in = shape.dim(0);
+        return new Node(Kind.LAYER, List.of(this), random -> new BatchNorm(in), shape);
     }
 
     /**
-     * Applies an activation function.
+     * Applies an activation function. Learnable activations get one parameter set per
+     * value of the last dimension.
      *
      * @param activation the activation
      * @return the activated values
      */
     public Node activation(Activation activation) {
         Objects.requireNonNull(activation, "activation");
-        int in = width;
-        return new Node(Kind.LAYER, List.of(this), random -> activation.bind(in), width);
+        int in = shape.dim(-1);
+        return new Node(Kind.LAYER, List.of(this), random -> activation.bind(in), shape);
     }
 
     /**
@@ -141,28 +160,210 @@ public final class Node {
      */
     public Node layer(Layer layer) {
         Objects.requireNonNull(layer, "layer");
-        return new Node(Kind.LAYER, List.of(this), random -> layer, layer.outputSize(width));
+        return new Node(Kind.LAYER, List.of(this), random -> layer, layer.outputShape(shape));
+    }
+
+    /**
+     * Adds a 1-d convolution over {@code [channels, length]}, without padding.
+     * Use {@code add(Conv.of(...))} for every other option.
+     *
+     * @param filters the number of output channels
+     * @param kernel the kernel length
+     * @param activation the activation
+     * @return the layer's output
+     */
+    public Node conv1d(int filters, int kernel, Activation activation) {
+        return add(Conv.of(filters, kernel).activation(activation));
+    }
+
+    /**
+     * Adds a 2-d convolution over {@code [channels, height, width]} with a square
+     * kernel, without padding. Use {@code add(Conv.of(...))} for stride, padding,
+     * dilation, groups and more.
+     *
+     * @param filters the number of output channels
+     * @param kernel the kernel size
+     * @param activation the activation
+     * @return the layer's output
+     */
+    public Node conv2d(int filters, int kernel, Activation activation) {
+        return add(Conv.of(filters, kernel, kernel).activation(activation));
+    }
+
+    /**
+     * Adds a 3-d convolution over {@code [channels, depth, height, width]} with a cubic
+     * kernel, without padding.
+     *
+     * @param filters the number of output channels
+     * @param kernel the kernel size
+     * @param activation the activation
+     * @return the layer's output
+     */
+    public Node conv3d(int filters, int kernel, Activation activation) {
+        return add(Conv.of(filters, kernel, kernel, kernel).activation(activation));
+    }
+
+    /**
+     * Adds a depthwise separable convolution: a depthwise convolution (one filter per
+     * channel) followed by a 1x1 convolution that mixes channels; far cheaper than a
+     * full convolution. Uses SAME padding.
+     *
+     * @param filters the number of output channels
+     * @param activation the activation after the pointwise step
+     * @param kernel the kernel size per spatial dimension
+     * @return the layer's output
+     */
+    public Node separableConv(int filters, Activation activation, int... kernel) {
+        int[] ones = new int[kernel.length];
+        java.util.Arrays.fill(ones, 1);
+        return add(Conv.depthwise(kernel).padding(Padding.SAME).bias(false))
+                .add(Conv.of(filters, ones).activation(activation));
+    }
+
+    /**
+     * Adds max pooling with the stride equal to the window; the number of sizes sets
+     * the spatial dimensions. Use {@code add(Pool.max(...))} for every option.
+     *
+     * @param kernel the window size per spatial dimension
+     * @return the layer's output
+     */
+    public Node maxPool(int... kernel) {
+        return add(Pool.max(kernel));
+    }
+
+    /**
+     * Adds average pooling with the stride equal to the window.
+     *
+     * @param kernel the window size per spatial dimension
+     * @return the layer's output
+     */
+    public Node avgPool(int... kernel) {
+        return add(Pool.avg(kernel));
+    }
+
+    /**
+     * Averages each channel over all positions: {@code [channels, ...] -> [channels]}.
+     *
+     * @return the layer's output
+     */
+    public Node globalAvgPool() {
+        return layer(GlobalPool.avg());
+    }
+
+    /**
+     * Takes the maximum of each channel over all positions.
+     *
+     * @return the layer's output
+     */
+    public Node globalMaxPool() {
+        return layer(GlobalPool.max());
+    }
+
+    /**
+     * Flattens each sample into one row of features, for example before dense layers.
+     *
+     * @return the layer's output
+     */
+    public Node flatten() {
+        return layer(Reshape.flatten());
+    }
+
+    /**
+     * Changes the shape of each sample; one dimension may be {@code -1}.
+     *
+     * @param dims the new shape of one sample
+     * @return the layer's output
+     */
+    public Node reshape(int... dims) {
+        return layer(new Reshape(dims));
+    }
+
+    /**
+     * Adds layer normalization over the last dimension; see {@link LayerNorm}.
+     *
+     * @return the layer's output
+     */
+    public Node layerNorm() {
+        return layer(LayerNorm.of(shape.dim(-1)));
+    }
+
+    /**
+     * Adds group normalization over the channels (the first sample dimension); see
+     * {@link GroupNorm}.
+     *
+     * @param groups the number of groups
+     * @return the layer's output
+     */
+    public Node groupNorm(int groups) {
+        return layer(new GroupNorm(groups, shape.dim(0), 1e-5f, true));
+    }
+
+    /**
+     * Upsamples the spatial dimensions by repeating cells. Use {@code layer(Resize...)}
+     * for linear or cubic interpolation.
+     *
+     * @param factor the scale factor
+     * @return the layer's output
+     */
+    public Node upsample(int factor) {
+        return layer(Resize.scale(factor));
+    }
+
+    /**
+     * Adds spatial dropout: drops whole channels while training.
+     *
+     * @param rate the share of channels to drop, in [0, 1)
+     * @return the layer's output
+     */
+    public Node spatialDropout(float rate) {
+        return add(new LayerSpec() {
+            @Override
+            public io.github.zzuegg.brainiac.tensor.Shape outputShape(io.github.zzuegg.brainiac.tensor.Shape in) {
+                Dropout.check(rate);
+                return in;
+            }
+
+            @Override
+            public Layer create(io.github.zzuegg.brainiac.tensor.Shape in, java.util.SplittableRandom random) {
+                return new Dropout(rate, random.split(), true);
+            }
+        });
     }
 
     /**
      * Adds this node and another element-wise, as in a residual (skip) connection.
      *
-     * @param other a node of the same width
+     * @param other a node of the same shape
      * @return the sum
      */
     public Node add(Node other) {
         Objects.requireNonNull(other, "other");
-        if (other.width != width) {
-            throw new IllegalArgumentException("cannot add widths " + width + " and " + other.width);
+        if (!other.shape.equals(shape)) {
+            throw new IllegalArgumentException("cannot add shapes " + shape + " and " + other.shape);
         }
-        return new Node(Kind.ADD, List.of(this, other), null, width);
+        return new Node(Kind.ADD, List.of(this, other), null, shape);
     }
 
     /**
-     * Joins the features of this node and others side by side.
+     * Multiplies this node and another element-wise, as in gating.
+     *
+     * @param other a node of the same shape
+     * @return the product
+     */
+    public Node multiply(Node other) {
+        Objects.requireNonNull(other, "other");
+        if (!other.shape.equals(shape)) {
+            throw new IllegalArgumentException("cannot multiply shapes " + shape + " and " + other.shape);
+        }
+        return new Node(Kind.MULTIPLY, List.of(this, other), null, shape);
+    }
+
+    /**
+     * Joins this node and others along the first sample dimension: features side by
+     * side, or the channels of images.
      *
      * @param others the nodes to append, at least one
-     * @return the joined features, as wide as all parts together
+     * @return the joined values
      */
     public Node concat(Node... others) {
         if (others.length == 0) {
@@ -170,17 +371,50 @@ public final class Node {
         }
         List<Node> parts = new ArrayList<>();
         parts.add(this);
-        int total = width;
+        int[] dims = shape.toArray();
         for (Node n : others) {
             parts.add(Objects.requireNonNull(n, "node"));
-            total += n.width;
+            int[] d = n.shape.toArray();
+            boolean ok = d.length == dims.length;
+            for (int i = 1; ok && i < d.length; i++) {
+                ok = d[i] == dims[i];
+            }
+            if (!ok) {
+                throw new IllegalArgumentException("cannot concat shapes " + shape + " and " + n.shape
+                        + ": all but the first dimension must match");
+            }
+            dims[0] += d[0];
         }
-        return new Node(Kind.CONCAT, parts, null, total);
+        return new Node(Kind.CONCAT, parts, null, Shape.of(dims));
     }
 
-    /** @return the number of features this node produces */
+    /**
+     * Feeds this node and others into a layer that takes several inputs, such as
+     * cross-attention.
+     *
+     * @param spec the layer spec
+     * @param others the other inputs, after this one
+     * @return the layer's output
+     */
+    public Node merge(MultiInputLayer.Spec spec, Node... others) {
+        Objects.requireNonNull(spec, "spec");
+        List<Node> parts = new ArrayList<>();
+        parts.add(this);
+        for (Node n : others) {
+            parts.add(Objects.requireNonNull(n, "node"));
+        }
+        List<Shape> shapes = parts.stream().map(Node::shape).toList();
+        return new Node(Kind.MERGE, parts, random -> spec.create(shapes, random), spec.outputShape(shapes));
+    }
+
+    /** @return the number of values per sample this node produces */
     public int width() {
-        return width;
+        return Math.toIntExact(shape.size());
+    }
+
+    /** @return the shape of one sample this node produces */
+    public Shape shape() {
+        return shape;
     }
 
     long id() {
@@ -202,10 +436,11 @@ public final class Node {
     @Override
     public String toString() {
         return switch (kind) {
-            case INPUT -> "Input(" + width + ")";
-            case ADD -> "Add(" + width + ")";
-            case CONCAT -> "Concat(" + width + ")";
-            case LAYER -> "Node(" + width + ")";
+            case INPUT -> "Input" + shape;
+            case ADD -> "Add" + shape;
+            case MULTIPLY -> "Multiply" + shape;
+            case CONCAT -> "Concat" + shape;
+            case LAYER, MERGE -> "Node" + shape;
         };
     }
 }

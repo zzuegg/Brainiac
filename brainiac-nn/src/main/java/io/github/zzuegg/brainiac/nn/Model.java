@@ -43,8 +43,8 @@ import java.util.function.Function;
  */
 public final class Model {
 
-    private final int inputSize;
-    private final int outputSize;
+    private final Shape inputShape;
+    private final Shape outputShape;
     private final List<Step> steps;
     private final List<Layer> layers;
     private final boolean chain;
@@ -56,9 +56,9 @@ public final class Model {
     record Step(Node.Kind kind, int[] inputs, Layer layer) {
     }
 
-    private Model(int inputSize, int outputSize, List<Step> steps) {
-        this.inputSize = inputSize;
-        this.outputSize = outputSize;
+    private Model(Shape inputShape, Shape outputShape, List<Step> steps) {
+        this.inputShape = inputShape;
+        this.outputShape = outputShape;
         this.steps = List.copyOf(steps);
         Set<Layer> seen = Collections.newSetFromMap(new IdentityHashMap<>());
         List<Layer> distinct = new ArrayList<>();
@@ -74,8 +74,8 @@ public final class Model {
         this.chain = isChain;
     }
 
-    static Model fromSteps(int inputSize, int outputSize, List<Step> steps) {
-        return new Model(inputSize, outputSize, steps);
+    static Model fromSteps(Shape inputShape, Shape outputShape, List<Step> steps) {
+        return new Model(inputShape, outputShape, steps);
     }
 
     List<Step> steps() {
@@ -154,7 +154,7 @@ public final class Model {
      * Starts building a model from a graph of {@link Node}s, for networks with skip
      * connections, shared layers or parallel branches.
      *
-     * @param input the node created with {@link Node#input(int)}
+     * @param input the node created with {@link Node#input(int...)}
      * @param output the node whose values the model returns
      * @return a new builder
      */
@@ -176,13 +176,14 @@ public final class Model {
     /**
      * Runs the network on a batch, recording the computation so gradients can flow back.
      *
-     * @param input a batch, shape {@code [batch, inputSize]}
+     * @param input a batch, shape {@code [batch, inputShape...]}; flat rows
+     *     {@code [batch, inputSize]} are reshaped to the input shape
      * @param training {@code true} while training (enables dropout and similar layers)
-     * @return the output, shape {@code [batch, outputSize]}
+     * @return the output, shape {@code [batch, outputShape...]}
      */
     public Var forward(Var input, boolean training) {
         Var[] values = new Var[steps.size() + 1];
-        values[0] = input;
+        values[0] = shaped(input);
         for (int i = 0; i < steps.size(); i++) {
             Step step = steps.get(i);
             int[] in = step.inputs;
@@ -196,16 +197,35 @@ public final class Model {
                     }
                     yield Var.concat(1, parts);
                 }
+                case MULTIPLY -> values[in[0]].mul(values[in[1]]);
+                case MERGE -> {
+                    Var[] parts = new Var[in.length];
+                    for (int k = 0; k < in.length; k++) {
+                        parts[k] = values[in[k]];
+                    }
+                    yield ((MultiInputLayer) step.layer).forward(List.of(parts), training);
+                }
                 case INPUT -> throw new IllegalStateException("input inside the graph");
             };
         }
         return values[steps.size()];
     }
 
+    private Var shaped(Var input) {
+        Shape s = input.shape();
+        if (inputShape.rank() > 1 && s.rank() == 2 && s.dim(1) == inputSize()) {
+            int[] dims = new int[inputShape.rank() + 1];
+            dims[0] = s.dim(0);
+            System.arraycopy(inputShape.toArray(), 0, dims, 1, inputShape.rank());
+            return input.reshape(dims);
+        }
+        return input;
+    }
+
     /**
      * Runs the network on a batch.
      *
-     * @param batch shape {@code [batch, inputSize]}
+     * @param batch shape {@code [batch, inputShape...]} or flat {@code [batch, inputSize]}
      * @return the outputs, shape {@code [batch, outputSize]}
      */
     public Tensor predict(Tensor batch) {
@@ -219,10 +239,10 @@ public final class Model {
      * @return the outputs
      */
     public float[] predict(float... features) {
-        if (features.length != inputSize) {
-            throw new IllegalArgumentException("model expects " + inputSize + " features, got " + features.length);
+        if (features.length != inputSize()) {
+            throw new IllegalArgumentException("model expects " + inputSize() + " features, got " + features.length);
         }
-        return predict(Tensor.of(Shape.of(1, inputSize), features, device())).toArray();
+        return predict(Tensor.of(Shape.of(1, inputSize()), features, device())).toArray();
     }
 
     /**
@@ -233,6 +253,7 @@ public final class Model {
      */
     public float[][] predict(float[][] samples) {
         float[] flat = predict(Tensor.of(samples)).toArray();
+        int outputSize = outputSize();
         float[][] out = new float[samples.length][outputSize];
         for (int i = 0; i < samples.length; i++) {
             System.arraycopy(flat, i * outputSize, out[i], 0, outputSize);
@@ -320,14 +341,24 @@ public final class Model {
         return params.isEmpty() ? Device.getDefault() : params.get(0).value().device();
     }
 
-    /** @return the number of input features */
+    /** @return the number of input values per sample */
     public int inputSize() {
-        return inputSize;
+        return Math.toIntExact(inputShape.size());
     }
 
     /** @return the number of output values per sample */
     public int outputSize() {
-        return outputSize;
+        return Math.toIntExact(outputShape.size());
+    }
+
+    /** @return the shape of one input sample, such as {@code [1, 28, 28]} for grey images */
+    public Shape inputShape() {
+        return inputShape;
+    }
+
+    /** @return the shape of one output sample */
+    public Shape outputShape() {
+        return outputShape;
     }
 
     /** @return the layers, in order */
@@ -342,7 +373,8 @@ public final class Model {
      */
     public String summary() {
         StringBuilder sb = new StringBuilder();
-        sb.append("Input(").append(inputSize).append(")\n");
+        sb.append("Input(").append(String.join(", ", java.util.Arrays.stream(inputShape.toArray())
+                .mapToObj(Integer::toString).toList())).append(")\n");
         for (int i = 0; i < steps.size(); i++) {
             Step step = steps.get(i);
             if (!chain) {
@@ -352,6 +384,8 @@ public final class Model {
                 case LAYER -> step.layer.toString();
                 case ADD -> "Add";
                 case CONCAT -> "Concat";
+                case MULTIPLY -> "Multiply";
+                case MERGE -> step.layer.toString();
                 case INPUT -> "Input";
             });
             if (!chain) {
@@ -380,8 +414,8 @@ public final class Model {
     /** Builds a {@link Model} layer by layer. */
     public static final class Builder {
 
-        private int inputSize = -1;
-        private int width = -1;
+        private Shape inputShape;
+        private Shape shape;
         private Long seed;
         private Device device;
         private final List<Function<SplittableRandom, Layer>> pending = new ArrayList<>();
@@ -390,21 +424,49 @@ public final class Model {
         }
 
         /**
-         * Sets the number of input features. Must come first.
+         * Sets the shape of one input sample. Must come first. One number is a row of
+         * features; more describe images ({@code input(3, 32, 32)}: channels first) or
+         * sequences ({@code input(steps, features)}).
          *
-         * @param features the input width
+         * @param dims the input dimensions
          * @return this builder
          */
-        public Builder input(int features) {
-            if (inputSize != -1) {
+        public Builder input(int... dims) {
+            if (inputShape != null) {
                 throw new IllegalStateException("input(...) was already set");
             }
-            if (features < 1) {
-                throw new IllegalArgumentException("input needs at least 1 feature, got " + features);
+            if (dims.length == 0) {
+                throw new IllegalArgumentException("input needs at least one dimension");
             }
-            inputSize = features;
-            width = features;
+            for (int d : dims) {
+                if (d < 1) {
+                    throw new IllegalArgumentException("input needs at least 1 feature, got " + d);
+                }
+            }
+            inputShape = Shape.of(dims);
+            shape = inputShape;
             return this;
+        }
+
+        /**
+         * Adds a layer described by a spec, which knows its output shape for the current
+         * input shape. All built-in layers are available this way, with every option.
+         *
+         * @param spec the layer spec, such as {@code Conv.of(32, 3, 3).stride(2)}
+         * @return this builder
+         */
+        public Builder add(LayerSpec spec) {
+            Objects.requireNonNull(spec, "spec");
+            Shape in = current();
+            Shape out = spec.outputShape(in);
+            pending.add(random -> spec.create(in, random));
+            shape = out;
+            return this;
+        }
+
+        /** @return the shape of one sample after the layers added so far */
+        public Shape shape() {
+            return current();
         }
 
         /**
@@ -439,12 +501,9 @@ public final class Model {
          * @return this builder
          */
         public Builder dense(int units, Activation activation, Init init) {
-            int in = currentWidth();
             Objects.requireNonNull(activation, "activation");
             Objects.requireNonNull(init, "init");
-            pending.add(random -> new Dense(in, units, activation, init, random));
-            width = units;
-            return this;
+            return add(Dense.spec(units, activation, init));
         }
 
         /**
@@ -456,7 +515,8 @@ public final class Model {
          * @return this builder
          */
         public Builder dropout(float rate) {
-            currentWidth();
+            current();
+            Dropout.check(rate);
             pending.add(random -> new Dropout(rate, random.split()));
             return this;
         }
@@ -470,7 +530,7 @@ public final class Model {
          * @return this builder
          */
         public Builder batchNorm() {
-            int in = currentWidth();
+            int in = current().dim(0);
             pending.add(random -> new BatchNorm(in));
             return this;
         }
@@ -484,7 +544,7 @@ public final class Model {
          */
         public Builder activation(Activation activation) {
             Objects.requireNonNull(activation, "activation");
-            int in = currentWidth();
+            int in = current().dim(-1);
             pending.add(random -> activation.bind(in));
             return this;
         }
@@ -497,10 +557,177 @@ public final class Model {
          */
         public Builder layer(Layer layer) {
             Objects.requireNonNull(layer, "layer");
-            int in = currentWidth();
+            Shape in = current();
             pending.add(random -> layer);
-            width = layer.outputSize(in);
+            shape = layer.outputShape(in);
             return this;
+        }
+
+        /**
+         * Adds a 1-d convolution over {@code [channels, length]}, without padding.
+         * Use {@code add(Conv.of(...))} for every other option.
+         *
+         * @param filters the number of output channels
+         * @param kernel the kernel length
+         * @param activation the activation
+         * @return this builder
+         */
+        public Builder conv1d(int filters, int kernel, Activation activation) {
+            return add(Conv.of(filters, kernel).activation(activation));
+        }
+
+        /**
+         * Adds a 2-d convolution over {@code [channels, height, width]} with a square
+         * kernel, without padding. Use {@code add(Conv.of(...))} for stride, padding,
+         * dilation, groups and more.
+         *
+         * @param filters the number of output channels
+         * @param kernel the kernel size
+         * @param activation the activation
+         * @return this builder
+         */
+        public Builder conv2d(int filters, int kernel, Activation activation) {
+            return add(Conv.of(filters, kernel, kernel).activation(activation));
+        }
+
+        /**
+         * Adds a 3-d convolution over {@code [channels, depth, height, width]} with a cubic
+         * kernel, without padding.
+         *
+         * @param filters the number of output channels
+         * @param kernel the kernel size
+         * @param activation the activation
+         * @return this builder
+         */
+        public Builder conv3d(int filters, int kernel, Activation activation) {
+            return add(Conv.of(filters, kernel, kernel, kernel).activation(activation));
+        }
+
+        /**
+         * Adds a depthwise separable convolution: a depthwise convolution (one filter per
+         * channel) followed by a 1x1 convolution that mixes channels; far cheaper than a
+         * full convolution. Uses SAME padding.
+         *
+         * @param filters the number of output channels
+         * @param activation the activation after the pointwise step
+         * @param kernel the kernel size per spatial dimension
+         * @return this builder
+         */
+        public Builder separableConv(int filters, Activation activation, int... kernel) {
+            int[] ones = new int[kernel.length];
+            java.util.Arrays.fill(ones, 1);
+            return add(Conv.depthwise(kernel).padding(Padding.SAME).bias(false))
+                    .add(Conv.of(filters, ones).activation(activation));
+        }
+
+        /**
+         * Adds max pooling with the stride equal to the window; the number of sizes sets
+         * the spatial dimensions. Use {@code add(Pool.max(...))} for every option.
+         *
+         * @param kernel the window size per spatial dimension
+         * @return this builder
+         */
+        public Builder maxPool(int... kernel) {
+            return add(Pool.max(kernel));
+        }
+
+        /**
+         * Adds average pooling with the stride equal to the window.
+         *
+         * @param kernel the window size per spatial dimension
+         * @return this builder
+         */
+        public Builder avgPool(int... kernel) {
+            return add(Pool.avg(kernel));
+        }
+
+        /**
+         * Averages each channel over all positions: {@code [channels, ...] -> [channels]}.
+         *
+         * @return this builder
+         */
+        public Builder globalAvgPool() {
+            return layer(GlobalPool.avg());
+        }
+
+        /**
+         * Takes the maximum of each channel over all positions.
+         *
+         * @return this builder
+         */
+        public Builder globalMaxPool() {
+            return layer(GlobalPool.max());
+        }
+
+        /**
+         * Flattens each sample into one row of features, for example before dense layers.
+         *
+         * @return this builder
+         */
+        public Builder flatten() {
+            return layer(Reshape.flatten());
+        }
+
+        /**
+         * Changes the shape of each sample; one dimension may be {@code -1}.
+         *
+         * @param dims the new shape of one sample
+         * @return this builder
+         */
+        public Builder reshape(int... dims) {
+            return layer(new Reshape(dims));
+        }
+
+        /**
+         * Adds layer normalization over the last dimension; see {@link LayerNorm}.
+         *
+         * @return this builder
+         */
+        public Builder layerNorm() {
+            return layer(LayerNorm.of(current().dim(-1)));
+        }
+
+        /**
+         * Adds group normalization over the channels (the first sample dimension); see
+         * {@link GroupNorm}.
+         *
+         * @param groups the number of groups
+         * @return this builder
+         */
+        public Builder groupNorm(int groups) {
+            return layer(new GroupNorm(groups, current().dim(0), 1e-5f, true));
+        }
+
+        /**
+         * Upsamples the spatial dimensions by repeating cells. Use {@code layer(Resize...)}
+         * for linear or cubic interpolation.
+         *
+         * @param factor the scale factor
+         * @return this builder
+         */
+        public Builder upsample(int factor) {
+            return layer(Resize.scale(factor));
+        }
+
+        /**
+         * Adds spatial dropout: drops whole channels while training.
+         *
+         * @param rate the share of channels to drop, in [0, 1)
+         * @return this builder
+         */
+        public Builder spatialDropout(float rate) {
+            return add(new LayerSpec() {
+                @Override
+                public io.github.zzuegg.brainiac.tensor.Shape outputShape(io.github.zzuegg.brainiac.tensor.Shape in) {
+                    Dropout.check(rate);
+                    return in;
+                }
+
+                @Override
+                public Layer create(io.github.zzuegg.brainiac.tensor.Shape in, java.util.SplittableRandom random) {
+                    return new Dropout(rate, random.split(), true);
+                }
+            });
         }
 
         /**
@@ -540,18 +767,18 @@ public final class Model {
             for (var factory : pending) {
                 steps.add(new Step(Node.Kind.LAYER, new int[] {steps.size()}, factory.apply(random)));
             }
-            Model model = new Model(inputSize, width, steps);
+            Model model = new Model(inputShape, shape, steps);
             if (device != null) {
                 model.to(device);
             }
             return model;
         }
 
-        private int currentWidth() {
-            if (inputSize == -1) {
+        private Shape current() {
+            if (inputShape == null) {
                 throw new IllegalStateException("call input(features) before adding layers");
             }
-            return width;
+            return shape;
         }
     }
 
@@ -632,11 +859,11 @@ public final class Model {
                     continue;
                 }
                 int[] in = n.inputs().stream().mapToInt(index::get).toArray();
-                Layer layer = n.kind() == Node.Kind.LAYER ? n.createLayer(random) : null;
+                Layer layer = n.kind() == Node.Kind.LAYER || n.kind() == Node.Kind.MERGE ? n.createLayer(random) : null;
                 steps.add(new Step(n.kind(), in, layer));
                 index.put(n, steps.size());
             }
-            Model model = new Model(input.width(), output.width(), steps);
+            Model model = new Model(input.shape(), output.shape(), steps);
             if (device != null) {
                 model.to(device);
             }

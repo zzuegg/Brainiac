@@ -61,6 +61,37 @@ public final class Dense implements Layer {
         this.bias = Var.param(bias);
     }
 
+    /**
+     * Describes a dense layer whose input width is taken from the last dimension of its
+     * input. On inputs with more dimensions, such as sequences {@code [steps, features]},
+     * the same weights apply at every position.
+     *
+     * @param units the number of outputs
+     * @param activation the activation
+     * @param init the weight initializer
+     * @return the spec
+     */
+    public static LayerSpec spec(int units, Activation activation, Init init) {
+        if (units < 1) {
+            throw new IllegalArgumentException("units must be at least 1, got " + units);
+        }
+        Objects.requireNonNull(activation, "activation");
+        Objects.requireNonNull(init, "init");
+        return new LayerSpec() {
+            @Override
+            public Shape outputShape(Shape input) {
+                int[] dims = input.toArray();
+                dims[dims.length - 1] = units;
+                return Shape.of(dims);
+            }
+
+            @Override
+            public Layer create(Shape input, java.util.SplittableRandom random) {
+                return new Dense(input.dim(-1), units, activation, init, random);
+            }
+        };
+    }
+
     @Override
     public Var forward(Var input) {
         return forward(input, false);
@@ -69,7 +100,7 @@ public final class Dense implements Layer {
     @Override
     public Var forward(Var input, boolean training) {
         Shape s = input.shape();
-        if (s.rank() != 2 || s.dim(1) != inputSize) {
+        if (s.rank() < 2 || s.dim(-1) != inputSize) {
             throw new IllegalArgumentException(
                     "Dense(" + units + ") expects input [*, " + inputSize + "], got " + s);
         }

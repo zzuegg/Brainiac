@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,6 +90,33 @@ public final class Dataset {
      */
     public static CsvLoader csv(Path file) {
         return new CsvLoader(file);
+    }
+
+    /**
+     * Loads an image dataset in the IDX format of MNIST and Fashion-MNIST (plain or
+     * gzipped). Pixels are scaled to {@code [0, 1]} and flattened, so use a model with
+     * {@code input(1, 28, 28)}; labels become one-hot rows.
+     *
+     * @param images the image file, such as {@code train-images-idx3-ubyte.gz}
+     * @param labels the label file, such as {@code train-labels-idx1-ubyte.gz}
+     * @return the dataset
+     * @throws IOException if a file cannot be read or is not in IDX format
+     */
+    public static Dataset idx(Path images, Path labels) throws IOException {
+        return IdxLoader.load(images, labels, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Loads at most {@code limit} samples of an IDX dataset; see {@link #idx(Path, Path)}.
+     *
+     * @param images the image file
+     * @param labels the label file
+     * @param limit the most samples to read
+     * @return the dataset
+     * @throws IOException if a file cannot be read or is not in IDX format
+     */
+    public static Dataset idx(Path images, Path labels, int limit) throws IOException {
+        return IdxLoader.load(images, labels, limit);
     }
 
     static Dataset create(float[] features, float[] targets, int size, int featureCount, int targetCount, List<String> classes) {

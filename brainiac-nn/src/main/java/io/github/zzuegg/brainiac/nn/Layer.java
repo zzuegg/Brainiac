@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.Shape;
 
 import java.util.List;
 
@@ -63,6 +64,20 @@ public interface Layer {
      */
     default int outputSize(int inputSize) {
         return inputSize;
+    }
+
+    /**
+     * Returns the shape of one output sample for the shape of one input sample. The
+     * default treats the last dimension as the features: it keeps the other dimensions and
+     * maps the last one with {@link #outputSize(int)}.
+     *
+     * @param inputShape the shape of one input sample, without the batch dimension
+     * @return the shape of one output sample
+     */
+    default Shape outputShape(Shape inputShape) {
+        int[] dims = inputShape.toArray();
+        dims[dims.length - 1] = outputSize(dims[dims.length - 1]);
+        return Shape.of(dims);
     }
 
     /**

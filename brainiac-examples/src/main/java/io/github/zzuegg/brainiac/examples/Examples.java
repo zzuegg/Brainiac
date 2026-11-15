@@ -19,11 +19,19 @@ public final class Examples {
             case "xor" -> XorExample.main(new String[0]);
             case "spiral" -> SpiralExample.main(new String[0]);
             case "iris" -> IrisExample.main(new String[0]);
+            case "mnist" -> {
+                try {
+                    MnistExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+                } catch (java.io.IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            }
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
                       xor     learn XOR with a tiny network
                       spiral  classify three spiral arms
-                      iris    classify iris flowers from CSV""");
+                      iris    classify iris flowers from CSV
+                      mnist   recognize handwritten digits with a CNN (downloads MNIST)""");
         }
     }
 }
