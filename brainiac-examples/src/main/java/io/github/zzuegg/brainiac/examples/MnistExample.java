@@ -171,12 +171,6 @@ public final class MnistExample {
     }
 
     /**
-     * Runs the example.
-     *
-     * @param args optional data directory, epochs and a limit on training samples
-     * @throws IOException if the data cannot be downloaded or read
-     */
-    /**
      * Downloads if needed and loads MNIST-format data.
      *
      * @param dir the directory with (or for) the four files
@@ -196,6 +190,12 @@ public final class MnistExample {
         return MIRROR;
     }
 
+    /**
+     * Runs the example.
+     *
+     * @param args optional data directory, epochs and a limit on training samples
+     * @throws IOException if the data cannot be downloaded or read
+     */
     public static void main(String[] args) throws IOException {
         Path dir = args.length > 0 ? Path.of(args[0]) : DATA_DIR;
         int epochs = args.length > 1 ? Integer.parseInt(args[1]) : 3;
