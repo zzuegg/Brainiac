@@ -22,6 +22,10 @@ public interface Init {
     Init HE = (shape, fanIn, fanOut, random) ->
             Tensor.normal(shape, 0, (float) Math.sqrt(2.0 / fanIn), random);
 
+    /** LeCun normal: {@code N(0, sqrt(1 / fanIn))}. Good for SELU. */
+    Init LECUN = (shape, fanIn, fanOut, random) ->
+            Tensor.normal(shape, 0, (float) Math.sqrt(1.0 / fanIn), random);
+
     /** All zeros. */
     Init ZEROS = (shape, fanIn, fanOut, random) -> Tensor.zeros(shape);
 

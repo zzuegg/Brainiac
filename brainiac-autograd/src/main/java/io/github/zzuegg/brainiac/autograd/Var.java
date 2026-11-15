@@ -444,6 +444,124 @@ public final class Var {
         return unary(x.relu(), g -> new Tensor[] {g.mul(x.step())});
     }
 
+    /** @return the Gauss error function of each value */
+    public Var erf() {
+        Tensor x = value;
+        // d/dx erf(x) = 2 / sqrt(pi) * e^(-x^2)
+        return unary(x.erf(), g -> new Tensor[] {g.mul(x.square().neg().exp().mul((float) (2 / Math.sqrt(Math.PI))))});
+    }
+
+    /** @return {@code log(1 + e^x)} for each value, computed without overflow */
+    public Var softplus() {
+        Tensor x = value;
+        return unary(x.softplus(), g -> new Tensor[] {g.mul(x.sigmoid())});
+    }
+
+    /**
+     * Returns the element-wise maximum with broadcasting. Where both are equal, the
+     * gradient goes to {@code other}.
+     *
+     * @param other the other value
+     * @return {@code max(this, other)}
+     */
+    public Var maximum(Var other) {
+        Tensor a = value;
+        Tensor b = other.value;
+        Shape sa = shape();
+        Shape sb = other.shape();
+        return binary(other, a.maximum(b), g -> {
+            Tensor pick = a.greater(b);
+            return new Tensor[] {g.mask(pick).sumTo(sa), g.mask(pick.neg().add(1)).sumTo(sb)};
+        });
+    }
+
+    /**
+     * Returns the element-wise minimum with broadcasting. Where both are equal, the
+     * gradient goes to {@code other}.
+     *
+     * @param other the other value
+     * @return {@code min(this, other)}
+     */
+    public Var minimum(Var other) {
+        Tensor a = value;
+        Tensor b = other.value;
+        Shape sa = shape();
+        Shape sb = other.shape();
+        return binary(other, a.minimum(b), g -> {
+            Tensor pick = b.greater(a);
+            return new Tensor[] {g.mask(pick).sumTo(sa), g.mask(pick.neg().add(1)).sumTo(sb)};
+        });
+    }
+
+    /**
+     * @param c the lower bound
+     * @return {@code max(this, c)}; the gradient is 0 where the bound applies
+     */
+    public Var maximum(float c) {
+        Tensor x = value;
+        Tensor bound = Tensor.full(Shape.of(), c, x.device());
+        return unary(x.maximum(bound), g -> new Tensor[] {g.mask(x.greater(bound))});
+    }
+
+    /**
+     * @param c the upper bound
+     * @return {@code min(this, c)}; the gradient is 0 where the bound applies
+     */
+    public Var minimum(float c) {
+        Tensor x = value;
+        Tensor bound = Tensor.full(Shape.of(), c, x.device());
+        return unary(x.minimum(bound), g -> new Tensor[] {g.mask(bound.greater(x))});
+    }
+
+    /**
+     * Limits every value to {@code [low, high]}.
+     *
+     * @param low the lower bound
+     * @param high the upper bound
+     * @return the clamped values; the gradient is 0 where a bound applies
+     */
+    public Var clamp(float low, float high) {
+        if (!(low <= high)) {
+            throw new IllegalArgumentException("clamp needs low <= high, got " + low + " and " + high);
+        }
+        return maximum(low).minimum(high);
+    }
+
+    /**
+     * Picks values from {@code ifTrue} where {@code condition} is non-zero and from
+     * {@code ifFalse} elsewhere, like {@code condition ? ifTrue : ifFalse} per element.
+     * Values that are not picked never leak into the result, even if infinite or NaN,
+     * and get a gradient of exactly 0. The condition itself gets no gradient.
+     *
+     * <p>As in other autograd libraries, a branch that overflows can still produce NaN
+     * gradients upstream ({@code 0 * infinity}), so keep both branches finite:
+     *
+     * <pre>{@code
+     * // ELU: exp of min(x, 0) so the unused branch cannot overflow
+     * Var elu = Var.where(x.greater(0), x, x.minimum(0).exp().sub(1));
+     * }</pre>
+     *
+     * @param condition the condition; broadcasts
+     * @param ifTrue values where the condition holds
+     * @param ifFalse values elsewhere
+     * @return the picked values
+     */
+    public static Var where(Tensor condition, Var ifTrue, Var ifFalse) {
+        Shape sa = ifTrue.shape();
+        Shape sb = ifFalse.shape();
+        Tensor otherwise = condition.equalTo(Tensor.full(Shape.of(), 0f, condition.device()));
+        return op(Tensor.where(condition, ifTrue.value, ifFalse.value), new Var[] {ifTrue, ifFalse},
+                g -> new Tensor[] {g.mask(condition).sumTo(sa), g.mask(otherwise).sumTo(sb)});
+    }
+
+    /**
+     * @param other the value to compare with
+     * @return a constant {@code 1} where {@code this > other}, else {@code 0}; no gradient
+     */
+    public Tensor greater(float other) {
+        return value.greater(Tensor.full(Shape.of(), other, value.device()));
+    }
+
     // ---------------------------------------------------------------- linear algebra and shape
 
     /**

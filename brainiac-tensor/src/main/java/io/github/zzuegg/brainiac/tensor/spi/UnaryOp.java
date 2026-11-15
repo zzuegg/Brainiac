@@ -23,5 +23,9 @@ public enum UnaryOp {
     /** {@code 1} if {@code x > 0}, else {@code 0}; the derivative of ReLU */
     STEP,
     /** {@code -1}, {@code 0} or {@code 1} */
-    SIGN
+    SIGN,
+    /** the Gauss error function */
+    ERF,
+    /** {@code log(1 + e^x)}, computed without overflow */
+    SOFTPLUS
 }

@@ -19,5 +19,7 @@ public enum BinaryOp {
     /** {@code 1} if {@code a > b}, else {@code 0} */
     GREATER,
     /** {@code 1} if {@code a == b}, else {@code 0} */
-    EQUAL
+    EQUAL,
+    /** {@code a} where {@code b} is non-zero, else {@code 0} (even if {@code a} is infinite or NaN) */
+    MASK
 }

@@ -55,11 +55,54 @@ public interface Activation extends Layer {
      * Turns each row into probabilities that sum to 1; for picking one of several
      * classes. Computed stably by subtracting the row maximum first.
      */
-    Activation SOFTMAX = named("softmax", x -> {
-        Var shifted = x.sub(x.max(-1, true).detach());
-        Var e = shifted.exp();
-        return e.div(e.sum(-1, true));
+    Activation SOFTMAX = softmax(-1);
+
+    /**
+     * The logarithm of {@link #SOFTMAX}, computed stably; pair it with a negative
+     * log-likelihood loss.
+     */
+    Activation LOG_SOFTMAX = logSoftmax(-1);
+
+    /** SiLU, {@code x * sigmoid(x)}: Swish with a fixed {@code beta = 1}. */
+    Activation SILU = named("silu", Init.HE, x -> x.mul(x.sigmoid()));
+
+    /** GELU, {@code x * Phi(x)} with the exact normal CDF {@code Phi}; common in transformers. */
+    Activation GELU = named("gelu", Init.HE,
+            x -> x.mul(x.mul((float) (1 / Math.sqrt(2))).erf().add(1)).mul(0.5f));
+
+    /** GELU with the faster tanh approximation of the normal CDF. */
+    Activation GELU_TANH = named("gelu_tanh", Init.HE, x -> {
+        Var inner = x.add(x.pow(3).mul(0.044715f)).mul((float) Math.sqrt(2 / Math.PI));
+        return x.mul(inner.tanh().add(1)).mul(0.5f);
     });
+
+    /** Softplus, {@code log(1 + e^x)}: a smooth ReLU. */
+    Activation SOFTPLUS = named("softplus", Init.HE, Var::softplus);
+
+    /** Mish, {@code x * tanh(softplus(x))}. */
+    Activation MISH = named("mish", Init.HE, x -> x.mul(x.softplus().tanh()));
+
+    /**
+     * SELU: a scaled {@link #elu(float) ELU} that keeps activations normalized; use it with
+     * {@link Init#LECUN}, its preferred init.
+     */
+    Activation SELU = named("selu", Config.EMPTY, Init.LECUN,
+            x -> eluOf(x, 1.6732632423543772f).mul(1.0507009873554805f));
+
+    /** {@code min(max(0, x), 6)}. */
+    Activation RELU6 = named("relu6", Init.HE, x -> x.clamp(0, 6));
+
+    /** {@code clamp(x, -1, 1)}: a cheap tanh. */
+    Activation HARD_TANH = named("hard_tanh", x -> x.clamp(-1, 1));
+
+    /** {@code clamp(x / 6 + 1/2, 0, 1)}: a cheap sigmoid. */
+    Activation HARD_SIGMOID = named("hard_sigmoid", x -> x.div(6).add(0.5f).clamp(0, 1));
+
+    /** {@code x * hardSigmoid(x)}: a cheap Swish. */
+    Activation HARD_SWISH = named("hard_swish", Init.HE, x -> x.mul(x.div(6).add(0.5f).clamp(0, 1)));
+
+    /** Softsign, {@code x / (1 + |x|)}. */
+    Activation SOFTSIGN = named("softsign", x -> x.div(x.abs().add(1)));
 
     /**
      * Returns the activation to use in a layer with {@code width} units. Activations
@@ -158,6 +201,117 @@ public interface Activation extends Layer {
                 return name;
             }
         };
+    }
+
+    /**
+     * Creates an activation with settings, so that saving a model keeps them. Register a
+     * factory under the same name with {@link #register(String, Function)} to load it.
+     *
+     * @param name the name shown in model summaries and stored in files
+     * @param config the settings, returned by {@link #config()}
+     * @param init the initialization dense layers use with it by default
+     * @param f the function
+     * @return the activation
+     */
+    static Activation named(String name, Config config, Init init, UnaryOperator<Var> f) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(init, "init");
+        Objects.requireNonNull(f, "f");
+        return new Activation() {
+            @Override
+            public Var forward(Var input) {
+                return f.apply(input);
+            }
+
+            @Override
+            public Init preferredInit() {
+                return init;
+            }
+
+            @Override
+            public Config config() {
+                return config;
+            }
+
+            @Override
+            public String toString() {
+                return name;
+            }
+        };
+    }
+
+    /**
+     * Softmax over any axis.
+     *
+     * @param axis the axis whose values sum to 1; negative counts from the end
+     * @return the activation
+     */
+    static Activation softmax(int axis) {
+        return named("softmax", axis == -1 ? Config.EMPTY : Config.builder().put("axis", axis).build(), Init.XAVIER,
+                x -> {
+                    Var e = x.sub(x.max(axis, true).detach()).exp();
+                    return e.div(e.sum(axis, true));
+                });
+    }
+
+    /**
+     * Log-softmax over any axis.
+     *
+     * @param axis the axis to normalize; negative counts from the end
+     * @return the activation
+     */
+    static Activation logSoftmax(int axis) {
+        return named("log_softmax", axis == -1 ? Config.EMPTY : Config.builder().put("axis", axis).build(),
+                Init.XAVIER, x -> {
+                    Var shifted = x.sub(x.max(axis, true).detach());
+                    return shifted.sub(shifted.exp().sum(axis, true).log());
+                });
+    }
+
+    /**
+     * Leaky ReLU with the usual slope of 0.01 for negative inputs.
+     *
+     * @return the activation
+     */
+    static Activation leakyRelu() {
+        return leakyRelu(0.01f);
+    }
+
+    /**
+     * Leaky ReLU: {@code x} for positive inputs, {@code slope * x} otherwise. For a
+     * learnable slope use {@link #prelu()}.
+     *
+     * @param slope the slope for negative inputs
+     * @return the activation
+     */
+    static Activation leakyRelu(float slope) {
+        return named("leaky_relu", Config.builder().put("slope", slope).build(), Init.HE,
+                x -> x.relu().sub(x.neg().relu().mul(slope)));
+    }
+
+    /**
+     * ELU with {@code alpha = 1}.
+     *
+     * @return the activation
+     */
+    static Activation elu() {
+        return elu(1);
+    }
+
+    /**
+     * ELU: {@code x} for positive inputs, {@code alpha * (e^x - 1)} otherwise.
+     *
+     * @param alpha the value negative inputs approach
+     * @return the activation
+     */
+    static Activation elu(float alpha) {
+        return named("elu", Config.builder().put("alpha", alpha).build(), Init.HE, x -> eluOf(x, alpha));
+    }
+
+    private static Var eluOf(Var x, float alpha) {
+        // exp of min(x, 0), so large positive inputs cannot overflow into the unused branch
+        return Var.where(x.greater(0), x, x.minimum(0).exp().sub(1).mul(alpha));
     }
 
     /**
