@@ -110,6 +110,21 @@ public final class BatchNorm implements Layer {
         return runningVariance.value();
     }
 
+    /** @return the number of features */
+    public int features() {
+        return features;
+    }
+
+    /** @return how much each training batch moves the running averages */
+    public float momentum() {
+        return momentum;
+    }
+
+    /** @return the value added to the variance */
+    public float epsilon() {
+        return epsilon;
+    }
+
     @Override
     public String toString() {
         return "BatchNorm(" + features + ")";

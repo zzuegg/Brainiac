@@ -6,8 +6,9 @@ Brainiac aims to cover everything from a tiny fully connected network to a full 
 suite behind a small, easy public API. Every calculation goes through a pluggable
 `Backend`, so the same model can later run on the GPU.
 
-> Status: milestone 1 complete: tensors, autograd, dense networks, training and data
-> loading, with XOR, spiral and Iris examples.
+> Status: milestone 2 complete: on top of tensors, autograd, dense networks, training
+> and data loading, there are dropout, batch norm, L2, learning-rate schedules, graph
+> models with skip connections, and saving and loading models.
 
 ## Requirements
 
@@ -78,6 +79,41 @@ Trainer.of(model)
         .validation(split.test())
         .earlyStopping(30)
         .fit(split.train());
+```
+
+Regularization and learning-rate schedules:
+
+```java
+Model model = Model.sequential()
+        .input(4)
+        .dense(64).batchNorm().activation(Activation.RELU)
+        .dropout(0.2f)
+        .dense(3, Activation.SOFTMAX)
+        .build();
+
+Trainer.of(model)
+        .optimizer(Optimizer.adam(0.01f))
+        .l2(1e-4f)
+        .schedule(LearningRateSchedule.warmup(5, LearningRateSchedule.cosine(100, 1e-4f)))
+        .epochs(100)
+        .fit(data);
+```
+
+Graphs with skip connections and branches:
+
+```java
+Node input = Node.input(4);
+Node hidden = input.dense(32, Activation.RELU);
+Node block = hidden.dense(32, Activation.RELU).dense(32).add(hidden).activation(Activation.RELU);
+Node output = block.concat(hidden).dense(3, Activation.SOFTMAX);
+Model model = Model.graph(input, output).seed(42).build();
+```
+
+Saving and loading:
+
+```java
+model.save(Path.of("iris.brainiac"));
+Model restored = Model.load(Path.of("iris.brainiac"));
 ```
 
 Tensors and gradients directly:
