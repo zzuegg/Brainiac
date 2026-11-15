@@ -940,11 +940,11 @@ public final class OpenClBackend implements Backend {
     private long hostLaunchNanos;
     /**
      * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}; 0 leaves
-     * submission to the driver). By default (-1) it adapts: right after the host waited for
-     * the device every launch is flushed so the device starts at once, then the interval
-     * doubles up to 64 while the host keeps queueing, so long streams are submitted in batches.
+     * submission to the driver; -1 adapts: every launch right after the host waited for the
+     * device, then doubling up to 64 while the host keeps queueing). The default of 4 trained
+     * fastest on AMD's driver.
      */
-    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", -1);
+    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 4);
     private int flushInterval = Math.max(1, flushEvery);
     private int sinceFlush;
 
