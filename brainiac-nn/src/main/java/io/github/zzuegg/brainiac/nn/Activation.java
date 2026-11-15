@@ -34,6 +34,10 @@ import java.util.function.UnaryOperator;
  *         (x, p) -> x.tanh().mul(p.get(0)));
  * }</pre>
  *
+ * <p>To hand-write the gradient instead, for speed or for a function autograd cannot
+ * express, wrap an {@link io.github.zzuegg.brainiac.autograd.Op}:
+ * {@code Activation.named("cube", x -> Var.apply(CUBE_OP, x))}.
+ *
  * <p>To load saved models that use a custom activation, {@linkplain #register(Activation)
  * register} it first.
  */
