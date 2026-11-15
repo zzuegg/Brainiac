@@ -244,6 +244,42 @@ public final class Var {
         return op(out, new Var[] {this, other}, backward);
     }
 
+    /**
+     * Applies a custom operation with a hand-written gradient.
+     *
+     * @param op the operation
+     * @param inputs its inputs
+     * @return the result, recorded so gradients flow through {@link Op#backward}
+     */
+    public static Var apply(Op op, Var... inputs) {
+        Objects.requireNonNull(op, "op");
+        Tensor[] values = new Tensor[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            values[i] = Objects.requireNonNull(inputs[i], "input " + i).value;
+        }
+        Tensor out = Objects.requireNonNull(op.forward(values.clone()), () -> op.name() + " returned null");
+        return op(out, inputs.clone(), g -> {
+            if (!g.shape().equals(out.shape())) {
+                throw new IllegalStateException(op.name() + ": gradient shape " + g.shape()
+                        + " does not match output " + out.shape());
+            }
+            Tensor[] grads = op.backward(g, out, values.clone());
+            if (grads == null || grads.length != values.length) {
+                throw new IllegalStateException(op.name() + ".backward must return " + values.length
+                        + " gradients, got " + (grads == null ? "null" : grads.length));
+            }
+            for (int i = 0; i < grads.length; i++) {
+                if (grads[i] == null) {
+                    grads[i] = Tensor.zeros(values[i].shape(), values[i].device());
+                } else if (!grads[i].shape().equals(values[i].shape())) {
+                    throw new IllegalStateException(op.name() + ": gradient " + i + " has shape " + grads[i].shape()
+                            + ", input " + i + " has shape " + values[i].shape());
+                }
+            }
+            return grads;
+        });
+    }
+
     // ---------------------------------------------------------------- arithmetic
 
     /**

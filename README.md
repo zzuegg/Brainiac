@@ -132,6 +132,20 @@ Model model = Model.sequential()
         .build();
 ```
 
+A custom operation with a hand-written gradient (for speed, functions autograd cannot
+express, or tricks like straight-through estimators), checked numerically:
+
+```java
+Op cube = new Op() {
+    public Tensor forward(Tensor... in) { return in[0].mul(in[0]).mul(in[0]); }
+    public Tensor[] backward(Tensor grad, Tensor out, Tensor... in) {
+        return new Tensor[] {grad.mul(in[0].square()).mul(3)};
+    }
+};
+assert GradCheck.check(cube, x).passed();
+Activation cubeActivation = Activation.named("cube", v -> Var.apply(cube, v));
+```
+
 Saving and loading:
 
 ```java

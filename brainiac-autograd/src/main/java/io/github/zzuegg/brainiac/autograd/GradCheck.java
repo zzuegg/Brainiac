@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.SplittableRandom;
 import java.util.function.Function;
 
 /**
@@ -113,6 +114,34 @@ public final class GradCheck {
             }
         }
         return new Result(worst <= tolerance, worst, worstInput, worstElement, worstAnalytic, worstNumeric);
+    }
+
+    /**
+     * Checks a custom operation's {@link Op#backward} against finite differences, with
+     * the default step and tolerance. The output is weighted with fixed random values
+     * before summing, so every output element contributes a different amount.
+     *
+     * @param op the operation
+     * @param inputs the input values at which to check
+     * @return the result
+     */
+    public static Result check(Op op, Tensor... inputs) {
+        return check(op, DEFAULT_STEP, DEFAULT_TOLERANCE, inputs);
+    }
+
+    /**
+     * Checks a custom operation's gradient.
+     *
+     * @param op the operation
+     * @param step the finite-difference step {@code h}
+     * @param tolerance the allowed error
+     * @param inputs the input values at which to check
+     * @return the result
+     */
+    public static Result check(Op op, float step, float tolerance, Tensor... inputs) {
+        Tensor out = op.forward(inputs.clone());
+        Tensor weights = Tensor.uniform(out.shape(), 0.5f, 1.5f, new SplittableRandom(42)).to(out.device());
+        return check(v -> Var.apply(op, v.toArray(Var[]::new)).mul(weights).sum(), List.of(inputs), step, tolerance);
     }
 
     private static double evaluate(Function<List<Var>, Var> f, List<Tensor> inputs, int index, Tensor x, float[] values) {
