@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.tensor.spi;
 
 import io.github.zzuegg.brainiac.tensor.ConvGeometry;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 
 /**
@@ -181,6 +182,84 @@ public interface Backend {
      * @param outStrides the output strides, one per axis of {@code shape}
      */
     void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out, long outOffset, long[] outStrides);
+    // ---------------------------------------------------------------- number formats
+    //
+    // Every operation receives storages that carry their DType. Outputs are allocated by
+    // the caller with the type the result should have; a backend computes in at least the
+    // precision of its inputs and rounds into the output's type. The defaults support only
+    // FLOAT32.
+
+    /**
+     * Returns whether this backend can store and compute with a number format.
+     *
+     * @param dtype the type
+     * @return {@code true} if storages of that type can be allocated
+     */
+    default boolean supports(DType dtype) {
+        return dtype == DType.FLOAT32;
+    }
+
+    /**
+     * Allocates zero-filled storage of a type.
+     *
+     * @param size the number of values
+     * @param dtype the type
+     * @return the new storage
+     */
+    default Storage allocate(long size, DType dtype) {
+        if (dtype == DType.FLOAT32) {
+            return allocate(size);
+        }
+        throw unsupported(dtype + " tensors");
+    }
+
+    /**
+     * Copies values into new storage of a type, rounding them to its precision.
+     *
+     * @param data the values; not retained
+     * @param dtype the type
+     * @return the new storage
+     */
+    default Storage upload(double[] data, DType dtype) {
+        if (dtype != DType.FLOAT32) {
+            throw unsupported(dtype + " tensors");
+        }
+        float[] f = new float[data.length];
+        for (int i = 0; i < f.length; i++) {
+            f[i] = (float) data[i];
+        }
+        return upload(f);
+    }
+
+    /**
+     * Copies storage contents to the Java heap without losing precision.
+     *
+     * @param src the storage to read
+     * @return a new array with all values
+     */
+    default double[] downloadDouble(Storage src) {
+        float[] f = download(src);
+        double[] d = new double[f.length];
+        for (int i = 0; i < f.length; i++) {
+            d[i] = f[i];
+        }
+        return d;
+    }
+
+    /**
+     * Converts values to the type of {@code out}, which has the same size.
+     *
+     * @param in the source
+     * @param out the destination
+     */
+    default void convert(Storage in, Storage out) {
+        if (in.dtype() != DType.FLOAT32 || out.dtype() != DType.FLOAT32) {
+            throw unsupported("converting " + in.dtype() + " to " + out.dtype());
+        }
+        long[] one = {1};
+        copy(in, 0, one, new int[] {Math.toIntExact(in.size())}, out, 0, one);
+    }
+
     // ---------------------------------------------------------------- optional operations
     //
     // The operations below have default implementations that throw, so a new backend can
