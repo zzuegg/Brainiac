@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.examples;
 
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Conv;
+import io.github.zzuegg.brainiac.nn.Embedding;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.nn.Padding;
 import io.github.zzuegg.brainiac.nn.Recurrent;
@@ -91,6 +92,7 @@ public final class BenchmarkExample {
             case "shapes" -> MnistExample.model(16, 3);
             case "waves" -> SequenceExample.forecaster();
             case "reversal" -> SequenceExample.reverser();
+            case "sentiment" -> SentimentExample.transformer();
             case "spiral" -> SpiralExample.model(3);
             case "xor" -> XorExample.model();
             default -> dense(task, 1);
@@ -134,7 +136,7 @@ public final class BenchmarkExample {
 
     private static Model recurrent(Task task, Recurrent.Spec layer, boolean wholeSequence) {
         Shape in = sequenceInput(task);
-        Model.Builder b = Model.sequential().input(in.toArray()).add(layer);
+        Model.Builder b = sequenceStart(task).add(layer);
         if (task.outputShape().rank() == 2 && task.outputShape().dim(0) == in.dim(0)) {
             b.dense(task.outputShape().dim(1));     // one output per step
         } else {
@@ -146,7 +148,7 @@ public final class BenchmarkExample {
 
     private static Model transformer(Task task) {
         Shape in = sequenceInput(task);
-        Model.Builder b = Model.sequential().input(in.toArray())
+        Model.Builder b = sequenceStart(task)
                 .dense(32)
                 .positionalEncoding()
                 .add(TransformerBlock.of(4).ffnSize(64))
@@ -159,8 +161,21 @@ public final class BenchmarkExample {
         return head(b, task).seed(42).build();
     }
 
+    /** Token tasks: their number of word ids. Their sequence models start with an embedding. */
+    private static final java.util.Map<String, Integer> VOCABULARIES =
+            java.util.Map.of("sentiment", SentimentExample.VOCABULARY);
+
+    private static Model.Builder sequenceStart(Task task) {
+        Model.Builder b = Model.sequential().input(task.inputShape().toArray());
+        Integer vocabulary = VOCABULARIES.get(task.name());
+        return vocabulary != null ? b.add(Embedding.of(vocabulary, 32).paddingIndex(0)) : b;
+    }
+
     private static Shape sequenceInput(Task task) {
         Shape in = task.inputShape();
+        if (VOCABULARIES.containsKey(task.name())) {
+            return Shape.of(in.dim(0), 32);         // token ids, embedded into 32 values each
+        }
         if (in.rank() == 2) {
             return in;
         }

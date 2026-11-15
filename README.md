@@ -242,6 +242,43 @@ Run the examples:
 ./gradlew :brainiac-examples:run --args="mnist data/mnist 3"   # directory, epochs
 ```
 
+## Words: embeddings
+
+`Embedding` turns whole-number token ids `[steps]` into learned vectors
+`[steps, dimension]`. Only the rows of ids in a batch get gradient.
+
+```java
+Embedding.of(5000, 64)
+    .paddingIndex(0)                  // id 0 is padding: always zero, never trained
+    .maxNorm(3)                       // rescale longer looked-up vectors
+    .scaleBySqrtDimension(true)       // as transformer inputs usually are
+    .init(Init.XAVIER);               // default N(0, 1)
+Embedding.pretrained(gloveVectors).frozen();   // [vocabulary, dimension]; kept fixed, still saved
+builder.embedding(5000, 64);                   // shorthand on Model.Builder and Node
+embedding.nearest(tokenId, 5);                 // most similar tokens (cosine), to inspect what was learned
+```
+
+Sentences of different lengths are padded to one length. `PaddingMask` turns the ids into a
+1/0 mask, and masked layers take it as an extra input so padding is ignored:
+
+```java
+Node ids = Node.input(12);
+Node mask = ids.layer(new PaddingMask(0));
+Node out = ids.add(Embedding.of(vocabulary, 32).paddingIndex(0))
+        .positionalEncoding()
+        .merge(TransformerBlock.of(4).keyMask(true), mask)      // attention skips padded steps
+        .merge(MaskedPool.of(SequencePool.Kind.MEAN), mask)      // MEAN, SUM, MAX, FIRST, LAST of real steps
+        .dense(2, Activation.SOFTMAX);
+Model model = Model.graph(ids, out).build();
+```
+
+`MultiHeadAttention.of(h).keyMask(true)` works the same way.
+`./gradlew :brainiac-examples:run --args=sentiment` learns word vectors from scratch to read
+made-up reviews such as "it is great but the plot is dull". A bag of words (the mean of the
+vectors, ignoring order) gets about 87%, and a bi-LSTM and a masked transformer get 100%,
+because they read "not" and "but" in order. It then prints each word's nearest neighbours:
+"good" lands next to "wonderful, excellent, fun", and "awful" next to "boring, dull, bad, poor".
+
 ## Benchmarks: test any model
 
 `Benchmark` trains and tests any model on a fixed task, with the same data, split and
@@ -257,6 +294,7 @@ ready to use:
 | `shapes` | `[1, 16, 16]` | `[3]` | synthetic bars and crosses |
 | `waves` | `[24, 1]` | `[1]` | forecast the next value of a noisy wave |
 | `reversal` | `[8, 6]` | `[8, 6]` | reverse a sequence of digits |
+| `sentiment` | `[12]` | `[2]` | made-up reviews as word ids, with "not" and "but" |
 | `spiral` | `[2]` | `[3]` | three interleaved spiral arms |
 | `iris` | `[4]` | `[3]` | iris species from flower measurements |
 | `xor` | `[2]` | `[1]` | exclusive or |
