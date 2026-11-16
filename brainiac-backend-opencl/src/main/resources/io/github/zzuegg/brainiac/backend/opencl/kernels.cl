@@ -253,29 +253,45 @@ __kernel void argmax(__global const T* x, __global float* y, long outer, long le
 __kernel void matmul(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
                      long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol,
                      long bOff, long bRow, long bCol) {
+    // each work item computes WPT outputs of a column, RTS rows apart, so a value loaded from
+    // the B tile serves WPT products; every output still sums k in order
     int col = get_global_id(0);
-    int row = get_global_id(1);
     long batch = get_global_id(2);
     int lc = get_local_id(0);
     int lr = get_local_id(1);
+    int row0 = get_group_id(1) * TS + lr;
     __local ACC tileA[TS][TS];
     __local ACC tileB[TS][TS];
     long aBase = aOff + batch * strideA;
     long bBase = bOff + batch * strideB;
-    ACC acc = (ACC) 0;
+    ACC acc[WPT];
+    for (int w = 0; w < WPT; w++) {
+        acc[w] = (ACC) 0;
+    }
     for (int t = 0; t < k; t += TS) {
         int ac = t + lc;
-        int br = t + lr;
-        tileA[lr][lc] = row < m && ac < k ? LOAD(a, aBase + (long) row * aRow + (long) ac * aCol) : (ACC) 0;
-        tileB[lr][lc] = br < k && col < n ? LOAD(b, bBase + (long) br * bRow + (long) col * bCol) : (ACC) 0;
+        for (int w = 0; w < WPT; w++) {
+            int row = row0 + w * RTS;
+            int br = t + lr + w * RTS;
+            tileA[lr + w * RTS][lc] = row < m && ac < k ? LOAD(a, aBase + (long) row * aRow + (long) ac * aCol)
+                    : (ACC) 0;
+            tileB[lr + w * RTS][lc] = br < k && col < n ? LOAD(b, bBase + (long) br * bRow + (long) col * bCol)
+                    : (ACC) 0;
+        }
         barrier(CLK_LOCAL_MEM_FENCE);
         for (int i = 0; i < TS; i++) {
-            acc += tileA[lr][i] * tileB[i][lc];
+            ACC bv = tileB[i][lc];
+            for (int w = 0; w < WPT; w++) {
+                acc[w] += tileA[lr + w * RTS][i] * bv;
+            }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
     }
-    if (row < m && col < n) {
-        STORE(z, batch * strideZ + (long) row * n + col, acc);
+    for (int w = 0; w < WPT; w++) {
+        int row = row0 + w * RTS;
+        if (row < m && col < n) {
+            STORE(z, batch * strideZ + (long) row * n + col, acc[w]);
+        }
     }
 }
 

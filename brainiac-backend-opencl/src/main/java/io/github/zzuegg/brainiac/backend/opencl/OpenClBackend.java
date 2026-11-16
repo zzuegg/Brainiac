@@ -462,7 +462,8 @@ public final class OpenClBackend implements Backend {
     private String prelude(DType type) {
         // No contraction into fused multiply-adds anywhere, so generated kernels and the
         // precompiled ones round every step alike.
-        String common = "#pragma OPENCL FP_CONTRACT OFF\n#define TS " + tile + "\n#define RG " + reduceGroup + "\n";
+        String common = "#pragma OPENCL FP_CONTRACT OFF\n#define TS " + tile + "\n#define WPT " + (tile / 4)
+                + "\n#define RTS 4\n#define RG " + reduceGroup + "\n";
         return common + switch (type) {
             case FLOAT32 -> """
                     #define T float
@@ -721,8 +722,17 @@ public final class OpenClBackend implements Backend {
             w.pending = null;
             w.pendingNodes = 0;
         }
-        launch("fused_matmul", kernel, mm.global(), mm.local(), matmulArgs(s, mm, k, pa != null, pb != null));
+        launch("fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
+                matmulArgs(s, mm, k, pa != null, pb != null));
         return true;
+    }
+
+    /**
+     * The work size of a generated matmul, whose work items compute one output each: with
+     * prologues and epilogues, several per item cost more registers than they save.
+     */
+    private long[] oneOutputEach(long[] global) {
+        return new long[] {global[0], global[1] * (tile / 4), global[2]};
     }
 
     /** The arguments of a kernel from {@link Fused#generateMatMul}. */
@@ -1946,8 +1956,9 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
         ClStorage o = cl(out);
-        long[] global = {roundUp(n, tile), roundUp(m, tile), batch};
-        long[] local = {tile, tile, 1};
+        // a work item computes tile / 4 rows of a column
+        long[] global = {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
+        long[] local = {tile, 4, 1};
         Operand x = operand(a, o.dtype, batch, m, k);
         Operand y = operand(b, o.dtype, batch, k, n);
         Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
@@ -1983,7 +1994,8 @@ public final class OpenClBackend implements Backend {
             if (kernel != null) {
                 s.pending = null;
                 s.pendingNodes = 0;
-                launch("fused_matmul", kernel, mm.global(), mm.local(), matmulArgs(s, mm, k, pa != null, pb != null));
+                launch("fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
+                matmulArgs(s, mm, k, pa != null, pb != null));
                 return;
             }
             eagerFallbacks++;   // compiling: the operands are computed into their buffers first
