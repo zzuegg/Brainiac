@@ -249,6 +249,21 @@ public final class Tensor {
     }
 
     /**
+     * Creates a tensor of values uniform in {@code [0, 1)} on a device, computed from the seed
+     * and each element's index ({@link io.github.zzuegg.brainiac.tensor.spi.CounterRandom}):
+     * the same values on every device, and on a GPU they are generated there (inside the kernel
+     * that uses them), not on the CPU and uploaded. Meant for masks such as dropout's.
+     *
+     * @param shape the shape
+     * @param seed the seed; a new one for every new mask
+     * @param device where the tensor lives
+     * @return the tensor
+     */
+    public static Tensor random(Shape shape, long seed, Device device) {
+        return new Tensor(shape, device, device.backend().random(checkedSize(shape), seed));
+    }
+
+    /**
      * Creates a tensor of values drawn uniformly from {@code [low, high)} on the default
      * device. Values are generated on the CPU, so a seeded generator gives the same values
      * on every device.

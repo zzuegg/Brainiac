@@ -67,7 +67,7 @@ public final class Dropout implements Layer {
             dims[1] = maskShape.dim(1);
             maskShape = Shape.of(dims);
         }
-        Tensor keep = Tensor.uniform(maskShape, 0, 1, random).to(input.value().device())
+        Tensor keep = Tensor.random(maskShape, random.nextLong(), input.value().device())
                 .greater(Tensor.full(Shape.of(), rate, input.value().device()));
         return input.mul(keep.div(1 - rate));
     }

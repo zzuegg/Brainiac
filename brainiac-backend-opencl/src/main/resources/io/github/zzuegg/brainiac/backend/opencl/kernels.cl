@@ -112,6 +112,21 @@ ACC binary_op(int op, ACC a, ACC b) {
     }
 }
 
+// Element i of a counter-based random sequence, uniform in [0, 1): CounterRandom.uniform in Java.
+float random_at(long seed, long i) {
+    ulong z = (ulong) seed + ((ulong) i + 1UL) * 0x9E3779B97F4A7C15UL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+    z ^= z >> 31;
+    return (float) (z >> 40) * 0x1.0p-24f;
+}
+
+__kernel void random(__global float* out, long seed, long n) {
+    long i = get_global_id(0);
+    if (i >= n) return;
+    out[i] = random_at(seed, i);
+}
+
 __kernel void fill(__global T* out, float v, long n) {
     long i = get_global_id(0);
     if (i < n) STORE(out, i, (ACC) v);

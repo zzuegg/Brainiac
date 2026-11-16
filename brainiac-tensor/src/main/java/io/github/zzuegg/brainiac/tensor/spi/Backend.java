@@ -70,6 +70,23 @@ public interface Backend {
     float[] download(Storage src);
 
     /**
+     * New float32 storage of {@code size} values uniform in {@code [0, 1)}: element {@code i} is
+     * {@link CounterRandom#uniform(long, long) CounterRandom.uniform(seed, i)}, so every backend
+     * gives the same values. A backend may compute them on the device, or only where they are used.
+     *
+     * @param size the number of values
+     * @param seed the seed
+     * @return the new storage
+     */
+    default Storage random(long size, long seed) {
+        float[] v = new float[Math.toIntExact(size)];
+        for (int i = 0; i < v.length; i++) {
+            v[i] = CounterRandom.uniform(seed, i);
+        }
+        return upload(v);
+    }
+
+    /**
      * Sets every value of {@code dst} to {@code value}.
      *
      * @param dst the storage to fill

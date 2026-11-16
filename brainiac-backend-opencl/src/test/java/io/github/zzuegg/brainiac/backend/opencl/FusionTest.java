@@ -242,6 +242,21 @@ class FusionTest {
     }
 
     @Test
+    void randomMasksAreTheSameOnEveryDevice() {
+        Shape shape = Shape.of(37, 29);
+        float[] cpu = Tensor.random(shape, 1234L, Device.cpu()).toArray();
+        float[] stored = Tensor.random(shape, 1234L, gpu).toArray();
+        assertArrayEquals(cpu, stored);
+        Tensor x = random(90, 37, 29);
+        java.util.function.Function<Tensor, Tensor> dropout = t -> t.mul(Tensor.random(shape, 99L, t.device())
+                .greater(Tensor.full(Shape.of(), 0.3f, t.device())).div(0.7f));
+        assertArrayEquals(dropout.apply(x).toArray(), dropout.apply(x.to(gpu)).toArray(), 1e-6f);
+        for (float v : cpu) {
+            assertTrue(v >= 0 && v < 1);
+        }
+    }
+
+    @Test
     void argmaxWithOtherReductionsMatchesTheCpu() {
         float[] values = new float[40 * 9];
         SplittableRandom r = new SplittableRandom(80);

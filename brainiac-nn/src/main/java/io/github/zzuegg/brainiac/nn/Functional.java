@@ -622,7 +622,7 @@ public final class Functional {
         }
         Var weights = Activation.SOFTMAX.forward(scores);
         if (dropout > 0 && random != null) {
-            Tensor keep = Tensor.uniform(weights.shape(), 0, 1, random).to(weights.value().device())
+            Tensor keep = Tensor.random(weights.shape(), random.nextLong(), weights.value().device())
                     .greater(Tensor.full(Shape.of(), dropout, weights.value().device()));
             weights = weights.mul(keep.div(1 - dropout));
         }
