@@ -48,7 +48,7 @@ final class ClStorage implements Storage {
     /** The device buffer, created (or taken from the pool) on first use. */
     MemorySegment mem() {
         if (buffer.mem == null) {
-            buffer.mem = owner.buffer(Math.max(1, size) * dtype.bytes());
+            buffer.mem = owner.buffer(OpenClBackend.bucket(size * dtype.bytes()));
         }
         return buffer.mem;
     }

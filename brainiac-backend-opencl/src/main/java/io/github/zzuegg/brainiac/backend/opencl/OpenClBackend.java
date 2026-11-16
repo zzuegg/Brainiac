@@ -406,6 +406,9 @@ public final class OpenClBackend implements Backend {
         generation++;
     }
 
+    /** The arguments each kernel was last launched with: buffer addresses and values. */
+    private final Map<Long, Object[]> kernelArgs = new HashMap<>();
+
     private void launch(String name, MemorySegment k, long[] global, long[] local, Object... args) {
         for (long g : global) {
             if (g == 0) {
@@ -415,11 +418,30 @@ public final class OpenClBackend implements Backend {
         for (Object a : args) {
             if (a instanceof ClStorage s) {
                 ready(s);
+                s.mem();   // created (or taken from the pool) outside the timed enqueue
             }
         }
         long hostStart = profiling ? System.nanoTime() : 0;
-        try (Arena arena = Arena.ofConfined()) {
+        // a kernel keeps its arguments between launches: set only those that changed
+        Object[] last = kernelArgs.computeIfAbsent(k.address(), a -> new Object[args.length]);
+        if (last.length < args.length) {
+            last = Arrays.copyOf(last, args.length);
+            kernelArgs.put(k.address(), last);
+        }
+        Arena arena = null;
+        try {
             for (int i = 0; i < args.length; i++) {
+                Object key = switch (args[i]) {
+                    case ClStorage s -> s.mem().address();
+                    case Temp t -> t.mem().address();
+                    default -> args[i];
+                };
+                if (key.equals(last[i])) {
+                    continue;
+                }
+                if (arena == null) {
+                    arena = Arena.ofConfined();
+                }
                 MemorySegment value = switch (args[i]) {
                     case ClStorage s -> handle(arena, s.mem());
                     case Temp t -> handle(arena, t.mem());
@@ -428,7 +450,13 @@ public final class OpenClBackend implements Backend {
                     case Float v -> arena.allocateFrom(JAVA_FLOAT, v);
                     default -> throw new IllegalArgumentException("unsupported kernel argument " + args[i]);
                 };
+                last[i] = null;   // unknown if setting it fails
                 cl.setArg(k, i, value);
+                last[i] = key;
+            }
+        } finally {
+            if (arena != null) {
+                arena.close();
             }
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
@@ -662,8 +690,20 @@ public final class OpenClBackend implements Backend {
         Fused.Kernel k = many.kernel();
         MemorySegment kernel = fusedKernel(type, k.source());
         if (kernel == null) {
+            // still compiling: compute what the kernel would write step by step, without
+            // generating kernels for the parts, so the same chains are pending afterwards
             eagerFallbacks++;
-            return false;
+            List<ClStorage> writes = new ArrayList<>(k.outputs());
+            writes.add(many.first());
+            for (ClStorage w : writes) {
+                if (w.pending != null) {
+                    Fused.Expr e = w.pending;
+                    eager(e, w, false);
+                    w.pending = null;
+                    w.pendingNodes = 0;
+                }
+            }
+            return true;
         }
         many.first().pending = null;
         many.first().pendingNodes = 0;
@@ -917,11 +957,23 @@ public final class OpenClBackend implements Backend {
     private long bytesCreated;
     private long createdSinceCollect;
     private int collections;
+    private long collectNanos;
+
+    /**
+     * The size a buffer of {@code bytes} is created with: rounded up to one of eight steps per
+     * power of two, so tensors of nearby sizes (another batch size, another layer) share
+     * pooled buffers, wasting at most an eighth.
+     */
+    static long bucket(long bytes) {
+        long b = Math.max(256, bytes);
+        long step = Long.highestOneBit(b) >> 3;
+        return (b + step - 1) / step * step;
+    }
 
     private ClStorage raw(long size, DType dtype) {
         program(dtype);
         ClStorage s = new ClStorage(this, new ClStorage.Buffer(), size, dtype);
-        CLEANER.register(s, new Release(cl, s.buffer, Math.max(1, size) * dtype.bytes(), allocated, pool,
+        CLEANER.register(s, new Release(cl, s.buffer, bucket(size * dtype.bytes()), allocated, pool,
                 budget / 4));
         return s;
     }
@@ -941,7 +993,9 @@ public final class OpenClBackend implements Backend {
                 // than filling the device with new buffers.
                 createdSinceCollect = 0;
                 collections++;
+                long gcStart = System.nanoTime();
                 System.gc();
+                collectNanos += System.nanoTime() - gcStart;
             }
         } else {
             buffersReused++;
@@ -1116,9 +1170,9 @@ public final class OpenClBackend implements Backend {
             out.append(String.format(Locale.ROOT, "  host: %.1f ms enqueuing (%.1f us each), %.1f ms generating code%n",
                     hostLaunchNanos / 1e6, hostLaunchNanos / 1e3 / launches, hostGenerateNanos / 1e6));
         }
-        out.append(String.format(Locale.ROOT, "  buffers: %d created (%d MB), %d reused from the pool (%d MB pooled, %d MB allocated; %d collections)%n",
+        out.append(String.format(Locale.ROOT, "  buffers: %d created (%d MB), %d reused from the pool (%d MB pooled, %d MB allocated; %d collections, %.1f ms)%n",
                 buffersCreated, bytesCreated >> 20, buffersReused, pool.bytes() >> 20, allocated.get() >> 20,
-                collections));
+                collections, collectNanos / 1e6));
         List<Map.Entry<String, long[]>> rows = new ArrayList<>(kernelTimes.entrySet());
         rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
         for (Map.Entry<String, long[]> e : rows) {
@@ -1141,7 +1195,8 @@ public final class OpenClBackend implements Backend {
         ClStorage.Buffer buffer = new ClStorage.Buffer();
         buffer.mem = mem;
         ClStorage s = new ClStorage(this, buffer, size, dtype);
-        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, budget / 4));
+        // pooled only when the pool's sizes can use it
+        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, bytes == bucket(bytes) ? budget / 4 : 0));
         return s;
     }
 
