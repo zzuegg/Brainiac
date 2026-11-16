@@ -455,6 +455,8 @@ the backend records chains of them and generates one OpenCL C kernel per chain w
 values are needed (by a matmul, a reduction or a download); a reduction also computes its
 input chain on the fly (long rows are split across a work-group). A chain on a matrix
 product (bias, activation, optimizer arithmetic) becomes the matmul kernel's epilogue.
+An optimizer step runs as one kernel for all parameters, writing the new values and the
+optimizer state together (`Tensor.evaluate` asks for this from any code).
 Transposes, slices and
 other strided copies are not copied either: they are read in place by the chain or matmul
 that uses them. This works for any model, without per-layer kernels, and the

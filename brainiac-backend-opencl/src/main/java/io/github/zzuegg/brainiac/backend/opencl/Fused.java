@@ -245,6 +245,58 @@ final class Fused {
     }
 
     /**
+     * Generates one kernel computing several pending storages, each over its own index range
+     * of a single launch: index {@code gi} in {@code [0, n)} falls into the range of one of
+     * them. The first is written to {@code out}; inputs in {@code keep} that a chain computes
+     * at its own index are written to their buffers too, so they need no range of their own.
+     * Arguments after {@code out, n} are {@link Kernel#args}; {@link Kernel#outputs} lists every
+     * storage the kernel writes besides the first.
+     */
+    static Many generateMany(List<ClStorage> roots, java.util.Set<ClStorage> keep) {
+        Gen g = new Gen();
+        g.keep = keep;
+        StringBuilder src = new StringBuilder();
+        String start = null;
+        long end = 0;
+        boolean first = true;
+        for (ClStorage r : roots) {
+            if (g.outputs.contains(r) || r == g.first) {
+                continue;   // already written by an earlier range
+            }
+            if (first) {
+                g.first = r;
+            }
+            end += r.size;
+            String bound = g.arg(end);
+            String idx = "i" + g.next++;
+            g.body.append(first ? "    if (gi < " : "    else if (gi < ").append(bound).append(") {\n");
+            g.body.append("    long ").append(idx).append(" = gi").append(start == null ? "" : " - " + start)
+                    .append(";\n");
+            g.root = idx;
+            String v = g.eval(r.pending, idx);
+            String o = "out";
+            if (!first) {
+                o = "w" + g.outputs.size();
+                g.outputs.add(r);
+                g.params.append(", __global T* ").append(o);
+                g.args.add(r);
+                g.argBytes += 8;
+            }
+            g.body.append("    STORE(").append(o).append(", ").append(idx).append(", ").append(v).append(");\n    }\n");
+            start = bound;
+            first = false;
+        }
+        src.append("__kernel void fused(__global T* out, long n").append(g.params)
+                .append(") {\n    long gi = get_global_id(0);\n    if (gi >= n) return;\n")
+                .append(g.body).append("}\n");
+        return new Many(new Kernel(src.toString(), g.args, g.argBytes, g.outputs), g.first, end);
+    }
+
+    /** A kernel from {@link #generateMany}: the storage written to {@code out}, and the work size. */
+    record Many(Kernel kernel, ClStorage first, long total) {
+    }
+
+    /**
      * Generates a kernel reducing {@code input} along one axis: per output, {@code len} values
      * {@code inner} apart. Operation codes are {@code ReduceOp} ordinals (sum, mean, max, min).
      * With {@code group > 1} a work-group of that many items shares each output (for long
@@ -299,6 +351,10 @@ final class Fused {
         final List<ClStorage> outputs = new ArrayList<>();
         /** The index of the result, or null when the kernel writes nothing but its result. */
         String root;
+        /** The only pending inputs written at {@link #root}; null for all of them. */
+        java.util.Set<ClStorage> keep;
+        /** The storage written to {@code out}, when it can also appear as an input. */
+        ClStorage first;
         /** A matrix product computed by the kernel itself, as {@code acc}. */
         ClStorage base;
         /** Values already computed in this kernel, by storage and index variable. */
@@ -340,7 +396,7 @@ final class Fused {
             String v;
             if (st.pending != null) {
                 v = eval(st.pending, at);
-                if (at.equals(root)) {
+                if (at.equals(root) && (keep == null || keep.contains(st)) && !outputs.contains(st) && st != first) {
                     // every element of the input is computed here exactly once: keep it
                     String w = "w" + outputs.size();
                     outputs.add(st);

@@ -14,6 +14,8 @@ import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.SplittableRandom;
 import java.util.function.UnaryOperator;
@@ -140,6 +142,48 @@ class FusionTest {
             }
         }
         assertTrue(Float.isFinite(first[0]));
+    }
+
+    /** An optimizer-like step over parameters of many sizes: new values and the state they use. */
+    private static List<Tensor> step(List<Tensor> params, List<Tensor> grads, Device device) {
+        List<Tensor> out = new ArrayList<>();
+        for (int i = 0; i < params.size(); i++) {
+            Tensor g = grads.get(i).to(device);
+            Tensor m = g.mul(0.1f);
+            Tensor v = g.square().mul(0.001f);
+            Tensor p = params.get(i).to(device).sub(m.div(v.sqrt().add(1e-8f)).mul(0.01f));
+            out.add(p);
+            out.add(m);
+            out.add(v);
+            if (i % 3 == 0) {
+                out.add(m.transpose().add(1f));   // read through a view: needs its own range
+            }
+        }
+        return out;
+    }
+
+    @Test
+    void evaluatingTogetherMatchesOneByOne() {
+        List<Tensor> params = new ArrayList<>();
+        List<Tensor> grads = new ArrayList<>();
+        for (int i = 0; i < 40; i++) {   // more than one kernel's arguments allow
+            params.add(random(100 + i, 1 + i % 7, 3 + 5 * i));
+            grads.add(random(200 + i, 1 + i % 7, 3 + 5 * i));
+        }
+        List<Tensor> cpu = step(params, grads, Device.cpu());
+        for (int run = 0; run < 3; run++) {
+            List<Tensor> separate = step(params, grads, gpu);
+            List<Tensor> together = step(params, grads, gpu);
+            Tensor.evaluate(together);
+            for (int i = 0; i < cpu.size(); i++) {
+                float[] e = cpu.get(i).toArray();
+                assertArrayEquals(separate.get(i).toArray(), together.get(i).toArray(), "tensor " + i);
+                float[] a = together.get(i).toArray();
+                for (int j = 0; j < e.length; j++) {
+                    assertEquals(e[j], a[j], 1e-5 * Math.max(1, Math.abs(e[j])), "tensor " + i + ", element " + j);
+                }
+            }
+        }
     }
 
     /** Runs a chain ending in reductions through the backend directly. */

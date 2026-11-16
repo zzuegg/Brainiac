@@ -200,6 +200,17 @@ public interface Backend {
     }
 
     /**
+     * Says that the values of these storages are about to be needed. A backend that records
+     * operations instead of running them (such as the OpenCL backend's fused kernels) can
+     * compute them all together, for example in one kernel; others ignore it, which is the
+     * default.
+     *
+     * @param storages storages of this backend
+     */
+    default void evaluate(java.util.List<Storage> storages) {
+    }
+
+    /**
      * Allocates storage whose contents are undefined, for results that an operation
      * overwrites completely. Backends where clearing costs a device command (such as a GPU)
      * skip it; the default clears anyway.

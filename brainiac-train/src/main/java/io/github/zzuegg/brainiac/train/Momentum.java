@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.train;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,7 @@ final class Momentum implements Optimizer {
 
     @Override
     public void step(List<Var> parameters) {
+        List<Tensor> updated = new ArrayList<>(2 * parameters.size());
         for (Var p : parameters) {
             Tensor g = p.grad();
             if (g == null) {
@@ -36,10 +38,13 @@ final class Momentum implements Optimizer {
                 Tensor v = velocity.get(p);
                 update = v == null ? g : v.mul(momentum).add(g);
                 velocity.put(p, update);
+                updated.add(update);
             }
             p.assign(p.value().sub(update.mul(learningRate)));
             p.zeroGrad();
+            updated.add(p.value());
         }
+        Tensor.evaluate(updated);   // on a GPU, the whole step as one kernel
     }
 
     @Override

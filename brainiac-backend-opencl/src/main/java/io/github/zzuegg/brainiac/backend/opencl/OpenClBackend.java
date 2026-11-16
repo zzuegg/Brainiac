@@ -32,12 +32,16 @@ import java.util.HexFormat;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -607,6 +611,73 @@ public final class OpenClBackend implements Backend {
             args[i + 2] = k.args().get(i);
         }
         launch("fused", kernel, new long[] {s.size}, null, args);
+    }
+
+    @Override
+    public synchronized void evaluate(List<Storage> storages) {
+        if (!fusion) {
+            return;
+        }
+        Set<ClStorage> keep = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Storage st : storages) {
+            ClStorage s = cl(st);
+            if (s.pending instanceof Fused.MatMul) {
+                runMatMul(s);
+            } else if (s.pending != null) {
+                for (ClStorage p : Fused.matmuls(s.pending).keySet()) {
+                    ready(p);
+                }
+                keep.add(s);
+            }
+        }
+        Map<DType, List<ClStorage>> byType = new EnumMap<>(DType.class);
+        for (ClStorage s : keep) {
+            byType.computeIfAbsent(s.dtype, t -> new ArrayList<>()).add(s);
+        }
+        for (Map.Entry<DType, List<ClStorage>> e : byType.entrySet()) {
+            List<ClStorage> todo = e.getValue();
+            // the largest chains first: the values they compute on the way need no range of their own
+            todo.sort(Comparator.comparingInt((ClStorage s) -> -s.pendingNodes));
+            while (!todo.isEmpty()) {
+                int count = todo.size();
+                Fused.Many k = Fused.generateMany(todo, keep);
+                while (k.kernel().argBytes() > Fused.MAX_ARG_BYTES && count > 1) {
+                    count = (count + 1) / 2;
+                    k = Fused.generateMany(todo.subList(0, count), keep);
+                }
+                List<ClStorage> group = List.copyOf(todo.subList(0, count));
+                if (k.kernel().argBytes() > Fused.MAX_ARG_BYTES || !evaluate(e.getKey(), k)) {
+                    for (ClStorage s : group) {
+                        ready(s);
+                    }
+                }
+                todo.removeIf(s -> s.pending == null);
+            }
+        }
+    }
+
+    /** Runs a kernel from {@link Fused#generateMany}; false while it is still compiling. */
+    private boolean evaluate(DType type, Fused.Many many) {
+        Fused.Kernel k = many.kernel();
+        MemorySegment kernel = fusedKernel(type, k.source());
+        if (kernel == null) {
+            eagerFallbacks++;
+            return false;
+        }
+        many.first().pending = null;
+        many.first().pendingNodes = 0;
+        for (ClStorage w : k.outputs()) {
+            w.pending = null;
+            w.pendingNodes = 0;
+        }
+        Object[] args = new Object[k.args().size() + 2];
+        args[0] = many.first();
+        args[1] = many.total();
+        for (int i = 0; i < k.args().size(); i++) {
+            args[i + 2] = k.args().get(i);
+        }
+        launch("fused_many", kernel, new long[] {many.total()}, null, args);
+        return true;
     }
 
     /**
