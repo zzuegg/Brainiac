@@ -330,7 +330,7 @@ class FusionTest {
     }
 
     @Test
-    void aSwitchingLayerMatchesTheCpuAndBlendsInOneKernel() throws ReflectiveOperationException {
+    void aSwitchingLayerMatchesTheCpuAndBlendsInOneKernel() throws ReflectiveOperationException, InterruptedException {
         for (boolean hard : new boolean[] {false, true}) {
             List<float[]> expected = switching(Device.cpu(), hard);
             List<float[]> actual = switching(gpu, hard);
@@ -358,9 +358,16 @@ class FusionTest {
         OpenClBackend backend = (OpenClBackend) backendOf.invoke(gpu);
         java.lang.reflect.Field launches = OpenClBackend.class.getDeclaredField("launchIndex");
         launches.setAccessible(true);
-        long before = launches.getLong(backend);
-        layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(x)).value().toArray();
-        long used = launches.getLong(backend) - before;
+        // a kernel not compiled yet runs as separate precompiled steps meanwhile: wait for it
+        long used = Long.MAX_VALUE;
+        for (int attempt = 0; attempt < 100 && used > 3; attempt++) {
+            long before = launches.getLong(backend);
+            layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(x)).value().toArray();
+            used = launches.getLong(backend) - before;
+            if (used > 3) {
+                Thread.sleep(100);
+            }
+        }
         assertTrue(used <= 3, "forward took " + used + " launches");
     }
 
