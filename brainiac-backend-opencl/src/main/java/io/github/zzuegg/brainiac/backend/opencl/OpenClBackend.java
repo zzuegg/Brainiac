@@ -722,8 +722,17 @@ public final class OpenClBackend implements Backend {
             w.pending = null;
             w.pendingNodes = 0;
         }
-        launch("fused_matmul", kernel, mm.global(), mm.local(), matmulArgs(s, mm, k, pa != null, pb != null));
+        launch("fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
+                matmulArgs(s, mm, k, pa != null, pb != null));
         return true;
+    }
+
+    /**
+     * The work size of a generated matmul, whose work items compute one output each: with
+     * prologues and epilogues, several per item cost more registers than they save.
+     */
+    private long[] oneOutputEach(long[] global) {
+        return new long[] {global[0], global[1] * (tile / 4), global[2]};
     }
 
     /** The arguments of a kernel from {@link Fused#generateMatMul}. */
@@ -1985,7 +1994,8 @@ public final class OpenClBackend implements Backend {
             if (kernel != null) {
                 s.pending = null;
                 s.pendingNodes = 0;
-                launch("fused_matmul", kernel, mm.global(), mm.local(), matmulArgs(s, mm, k, pa != null, pb != null));
+                launch("fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
+                matmulArgs(s, mm, k, pa != null, pb != null));
                 return;
             }
             eagerFallbacks++;   // compiling: the operands are computed into their buffers first

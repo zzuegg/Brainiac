@@ -207,43 +207,31 @@ final class Fused {
                 + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
                 + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol" + g.params + ") {\n"
                 + "    int col = get_global_id(0);\n"
+                + "    int row = get_global_id(1);\n"
                 + "    long batch = get_global_id(2);\n"
                 + "    int lc = get_local_id(0);\n"
                 + "    int lr = get_local_id(1);\n"
-                + "    int row0 = get_group_id(1) * TS + lr;\n"
                 + "    __local ACC tileA[TS][TS];\n"
                 + "    __local ACC tileB[TS][TS];\n"
                 + "    long aBase = aOff + batch * strideA;\n"
                 + "    long bBase = bOff + batch * strideB;\n"
-                + "    ACC accs[WPT];\n"
-                + "    for (int w = 0; w < WPT; w++) {\n"
-                + "        accs[w] = (ACC) 0;\n"
-                + "    }\n"
+                + "    ACC acc = (ACC) 0;\n"
                 + "    for (int t = 0; t < K; t += TS) {\n"
                 + "        int ac = t + lc;\n"
-                + "        for (int w = 0; w < WPT; w++) {\n"
-                + "        int row = row0 + w * RTS;\n"
-                + "        int br = t + lr + w * RTS;\n"
-                + loadA.replace("TILE", "tileA[lr + w * RTS][lc]")
-                + loadB.replace("TILE", "tileB[lr + w * RTS][lc]")
-                + "        }\n"
+                + "        int br = t + lr;\n"
+                + loadA.replace("TILE", "tileA[lr][lc]")
+                + loadB.replace("TILE", "tileB[lr][lc]")
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "        for (int q = 0; q < TS; q++) {\n"
-                + "            ACC bv = tileB[q][lc];\n"
-                + "            for (int w = 0; w < WPT; w++) {\n"
-                + "                accs[w] += tileA[lr + w * RTS][q] * bv;\n"
-                + "            }\n"
+                + "            acc += tileA[lr][q] * tileB[q][lc];\n"
                 + "        }\n"
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "    }\n"
-                + "    for (int w = 0; w < WPT; w++) {\n"
-                + "    int row = row0 + w * RTS;\n"
                 + "    if (row < M && col < N) {\n"
-                + "    ACC acc = accs[w];\n"
                 + "    long i = batch * strideZ + (long) row * N + col;\n"
                 + (v == null ? "    STORE(out, i, acc);\n"
                         : "    STORE(mz, i, acc);\n" + g.body + "    STORE(out, i, " + v + ");\n")
-                + "    }\n    }\n}\n";
+                + "    }\n}\n";
         return new Kernel(src, g.args, g.argBytes, g.outputs);
     }
 
