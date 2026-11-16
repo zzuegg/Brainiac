@@ -457,6 +457,9 @@ input chain on the fly (long rows are split across a work-group). A chain on a m
 product (bias, activation, optimizer arithmetic) becomes the matmul kernel's epilogue.
 An optimizer step runs as one kernel for all parameters, writing the new values and the
 optimizer state together (`Tensor.evaluate` asks for this from any code).
+Filled tensors and scalar operands are kernel arguments, so a value that changes every step
+neither needs a buffer nor a new kernel, and a result gets a device buffer only when it is
+actually stored (most values in a chain never are).
 Transposes, slices and
 other strided copies are not copied either: they are read in place by the chain or matmul
 that uses them. This works for any model, without per-layer kernels, and the

@@ -307,6 +307,9 @@ public final class Var {
                         + " gradients, got " + (grads == null ? "null" : grads.length));
             }
             for (int i = 0; i < grads.length; i++) {
+                if (grads[i] == null && !inputs[i].requiresGrad) {
+                    continue;   // never read
+                }
                 if (grads[i] == null) {
                     grads[i] = Tensor.zeros(values[i].shape(), values[i].dtype(), values[i].device());
                 } else if (!grads[i].shape().equals(values[i].shape())) {

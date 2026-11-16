@@ -186,6 +186,19 @@ class FusionTest {
         }
     }
 
+    @Test
+    void changingScalarsAndFilledTensorsMatchTheCpu() {
+        // scalars that change every step (like a bias correction) are kernel arguments
+        for (int step = 1; step <= 5; step++) {
+            float c = 1 - (float) Math.pow(0.9, step);
+            same(DType.FLOAT32, x -> x.div(c).add(Tensor.full(Shape.of(3, 4), c, x.device())).mul(x),
+                    random(30 + step, 3, 4));
+        }
+        same(DType.FLOAT64, x -> Tensor.zeros(Shape.of(2, 3), DType.FLOAT64, x.device()).add(x).sum(0),
+                random(40, 2, 3));
+        same(DType.FLOAT32, x -> Tensor.full(Shape.of(5), 2.5f, x.device()).sum(), random(41, 1));
+    }
+
     /** Runs a chain ending in reductions through the backend directly. */
     private static float[][] chain(OpenClBackend b) {
         SplittableRandom r = new SplittableRandom(15);

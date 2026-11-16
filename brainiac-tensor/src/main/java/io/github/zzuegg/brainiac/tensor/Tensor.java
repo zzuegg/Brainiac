@@ -1029,7 +1029,7 @@ public final class Tensor {
             throw new IllegalArgumentException("col2im expects columns " + geometry.columnShape() + ", got " + shape);
         }
         Shape outShape = geometry.imageShape();
-        Storage out = backend().allocate(outShape.size(), dtype());
+        Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().col2im(storage, geometry, out);
         return new Tensor(outShape, device, out);
     }
