@@ -401,7 +401,7 @@ public final class Benchmark {
                     ? String.format("%.2f%% acc", 100 * r.accuracy())
                     : String.format("%.4f MAE", r.meanAbsoluteError());
             sb.append(String.format(row, r.task(), r.model(), String.format("%,d", r.parameters()), r.epochs(),
-                    String.format("%.1f", r.trainSeconds()), String.format("%.4f", tidy(r.test().loss())), score));
+                    String.format("%.2f", r.trainSeconds()), String.format("%.4f", tidy(r.test().loss())), score));
         }
         return sb.toString();
     }

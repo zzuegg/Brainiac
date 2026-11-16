@@ -540,9 +540,15 @@ public final class OpenClBackend implements Backend {
         for (Object a : args) {
             if (a instanceof ClStorage s) {
                 ready(s);
+            }
+        }
+        long created = buffersCreated;
+        for (Object a : args) {
+            if (a instanceof ClStorage s) {
                 s.mem();   // created (or taken from the pool) outside the timed enqueue
             }
         }
+        boolean fresh = buffersCreated != created;
         long hostStart = profiling ? System.nanoTime() : 0;
         // a kernel keeps its arguments between launches: set only those that changed
         Object[] last = kernelArgs.computeIfAbsent(k.address(), a -> new Object[args.length]);
@@ -594,7 +600,7 @@ public final class OpenClBackend implements Backend {
         }
         if (profiling) {
             hostLaunchNanos += System.nanoTime() - hostStart;
-            launched.add(new Launch(name, event));
+            launched.add(new Launch(name, event, fresh));
             if (launched.size() >= 4_096) {
                 cl.finish(queue);
                 settled();
@@ -1404,13 +1410,18 @@ public final class OpenClBackend implements Backend {
     }
     private long hostGenerateNanos;
 
-    private record Launch(String kernel, MemorySegment event) {
+    /** A timed launch; {@code fresh} when one of its buffers was created for it. */
+    private record Launch(String kernel, MemorySegment event, boolean fresh) {
     }
+
+    /** Device idle (with work queued) before launches with a new buffer, and their count. */
+    private long freshIdle;
+    private long freshLaunches;
 
     /** Collects the timings of finished kernels; call only when the queue is idle. */
     private void settled() {
         for (Launch l : launched) {
-            long[] t = kernelTimes.computeIfAbsent(l.kernel(), k -> new long[2]);
+            long[] t = kernelTimes.computeIfAbsent(l.kernel(), k -> new long[3]);
             long[] ts = cl.timestamps(l.event());
             t[0]++;
             t[1] += ts[3] - ts[2];
@@ -1420,6 +1431,13 @@ public final class OpenClBackend implements Backend {
                 long queued = Math.max(lastEnd, Math.min(ts[0], ts[2]));
                 hostIdle += queued - lastEnd;
                 deviceIdle += ts[2] - queued;
+                t[2] += ts[2] - queued;
+                if (l.fresh()) {
+                    freshIdle += ts[2] - queued;
+                }
+            }
+            if (l.fresh()) {
+                freshLaunches++;
             }
             if (firstStart == 0) {
                 firstStart = ts[2];
@@ -1467,6 +1485,10 @@ public final class OpenClBackend implements Backend {
                             + " %.1f ms waiting for the host; queued-to-start %.1f us avg%n",
                     launches, (lastEnd - firstStart) / 1e6, deviceIdle / 1e6, hostIdle / 1e6,
                     queuedToStart / 1e3 / launches));
+            out.append(String.format(Locale.ROOT,
+                    "  driver idle before the %d launches using a newly created buffer: %.1f ms; before the other %d:"
+                            + " %.1f ms%n", freshLaunches, freshIdle / 1e6, launches - freshLaunches,
+                    (deviceIdle - freshIdle) / 1e6));
             out.append(String.format(Locale.ROOT, "  host: %.1f ms enqueuing (%.1f us each), %.1f ms generating code%n",
                     hostLaunchNanos / 1e6, hostLaunchNanos / 1e3 / launches, hostGenerateNanos / 1e6));
         }
@@ -1480,8 +1502,8 @@ public final class OpenClBackend implements Backend {
         rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
         for (Map.Entry<String, long[]> e : rows) {
             long[] t = e.getValue();
-            out.append(String.format(Locale.ROOT, "  %-28s %9.1f ms %8d x %8.1f us%n", e.getKey(), t[1] / 1e6, t[0],
-                    t[1] / 1e3 / t[0]));
+            out.append(String.format(Locale.ROOT, "  %-28s %9.1f ms %8d x %8.1f us, driver idle before %.1f us%n",
+                    e.getKey(), t[1] / 1e6, t[0], t[1] / 1e3 / t[0], t[2] / 1e3 / t[0]));
         }
         return out.toString();
     }
