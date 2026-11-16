@@ -425,30 +425,39 @@ public final class Benchmark {
         }
     }
 
+    private static final int INFERENCE_PASSES = 5;
+
     private static Report test(Task task, String name, Model model, double trainSeconds, TrainingResult history) {
         Evaluation evaluation = Trainer.of(model).loss(task.loss()).metric(task.metric()).evaluate(task.test());
         boolean classify = task.kind() == Kind.CLASSIFICATION;
         int last = task.outputShape().dim(task.outputShape().rank() - 1);
         int classes = task.classes();
         int[][] confusion = classify ? new int[classes][classes] : null;
-        long samples = 0;
-        long start = System.nanoTime();
-        for (Batch batch : task.test().batches(256, model.device())) {
-            float[] predicted = model.predict(batch.features()).toArray();
-            samples += batch.size();
-            if (!classify) {
-                continue;
+        // Inference speed is the median of several passes: a single short pass is easily
+        // skewed by clock ramp-up or a garbage collection.
+        double[] rates = new double[INFERENCE_PASSES];
+        for (int pass = 0; pass < rates.length; pass++) {
+            long samples = 0;
+            long start = System.nanoTime();
+            for (Batch batch : task.test().batches(256, model.device())) {
+                float[] predicted = model.predict(batch.features()).toArray();
+                samples += batch.size();
+                if (!classify || pass > 0) {
+                    continue;
+                }
+                float[] actual = batch.targets().toArray();
+                for (int row = 0; row < predicted.length / last; row++) {
+                    int a = choice(actual, row, last);
+                    int p = choice(predicted, row, last);
+                    confusion[a][p]++;
+                }
             }
-            float[] actual = batch.targets().toArray();
-            for (int row = 0; row < predicted.length / last; row++) {
-                int a = choice(actual, row, last);
-                int p = choice(predicted, row, last);
-                confusion[a][p]++;
-            }
+            rates[pass] = samples / Math.max((System.nanoTime() - start) / 1e9, 1e-9);
         }
-        double inferSeconds = Math.max((System.nanoTime() - start) / 1e9, 1e-9);
+        java.util.Arrays.sort(rates);
+        double samplesPerSecond = rates[rates.length / 2];
         return new Report(task.name(), task.kind(), name, model.parameterCount(), trainSeconds,
-                samples / inferSeconds, evaluation, history, confusion, task.classNames());
+                samplesPerSecond, evaluation, history, confusion, task.classNames());
     }
 
     private static int choice(float[] values, int row, int width) {

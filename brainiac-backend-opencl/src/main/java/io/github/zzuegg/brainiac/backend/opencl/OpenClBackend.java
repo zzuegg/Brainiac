@@ -428,10 +428,13 @@ public final class OpenClBackend implements Backend {
             }
         }
         MemorySegment event = cl.run(queue, k, global, local, profiling);
-        if (flushEvery > 0 && ++sinceFlush >= flushEvery) {
+        if (flushEvery != 0 && ++sinceFlush >= flushInterval) {
             // some drivers hold commands back until a flush, leaving the device idle meanwhile
             cl.flush(queue);
             sinceFlush = 0;
+            if (flushEvery < 0) {
+                flushInterval = Math.min(flushInterval * 2, 64);
+            }
         }
         if (profiling) {
             hostLaunchNanos += System.nanoTime() - hostStart;
@@ -469,7 +472,7 @@ public final class OpenClBackend implements Backend {
      * is computed before anything builds on it, so chains end at the same points in every
      * training step and their generated kernels repeat instead of growing.
      */
-    private long generation;
+    private long generation;   // also advanced when the host waits for the device
     private int fusedCompiled;
     private long fusedCompileNanos;
 
@@ -490,7 +493,9 @@ public final class OpenClBackend implements Backend {
     private void defer(ClStorage out, Fused.Expr e) {
         program(out.dtype);
         for (Fused.Src in : Fused.sources(e)) {
+            // a recorded product is a single step, so carrying it over cannot grow a chain
             if ((!in.direct() || !storeIntermediates) && in.storage().pending != null
+                    && !(in.direct() && in.storage().pending instanceof Fused.MatMul)
                     && in.storage().pendingGeneration != generation) {
                 ready(in.storage());
             }
@@ -509,12 +514,67 @@ public final class OpenClBackend implements Backend {
 
     /** Computes a pending storage, so that its buffer holds its values. */
     private void ready(ClStorage s) {
-        if (s.pending != null) {
+        if (s.pending instanceof Fused.MatMul) {
+            runMatMul(s);
+        } else if (s.pending != null) {
             materialize(s);
         }
     }
 
+    /** Runs a precompiled kernel with explicit work sizes, without starting a new generation. */
+    private void quietRun(DType type, String kernel, long[] global, long[] local, Object... args) {
+        launch(kernel, program(type).kernels().get(kernel), global, local, args);
+    }
+
+    /**
+     * Turns {@code s} (a chain on exactly one matrix product, read element for element) into
+     * one matmul kernel with the chain as epilogue; false if the chain does not fit or its
+     * kernel is still compiling, leaving everything as it was.
+     */
+    private boolean epilogue(ClStorage s, ClStorage base) {
+        Fused.MatMul mm = (Fused.MatMul) base.pending;
+        if (base.size != s.size) {
+            return false;
+        }
+        Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates);
+        if (k.argBytes() > Fused.MAX_ARG_BYTES) {
+            return false;
+        }
+        MemorySegment kernel = fusedKernel(s.dtype, k.source());
+        if (kernel == null) {
+            eagerFallbacks++;
+            return false;
+        }
+        s.pending = null;
+        s.pendingNodes = 0;
+        base.pending = null;
+        base.pendingNodes = 0;
+        for (ClStorage w : k.outputs()) {
+            w.pending = null;
+            w.pendingNodes = 0;
+        }
+        Object[] args = new Object[2 + mm.args().length + k.args().size()];
+        args[0] = s;
+        args[1] = s.size;
+        System.arraycopy(mm.args(), 0, args, 2, mm.args().length);
+        for (int i = 0; i < k.args().size(); i++) {
+            args[2 + mm.args().length + i] = k.args().get(i);
+        }
+        launch("fused_matmul", kernel, mm.global(), mm.local(), args);
+        return true;
+    }
+
     private void materialize(ClStorage s) {
+        Map<ClStorage, Boolean> products = Fused.matmuls(s.pending);
+        if (products.size() == 1) {
+            Map.Entry<ClStorage, Boolean> only = products.entrySet().iterator().next();
+            if (only.getValue() && epilogue(s, only.getKey())) {
+                return;
+            }
+        }
+        for (ClStorage p : products.keySet()) {
+            ready(p);
+        }
         long genStart = profiling ? System.nanoTime() : 0;
         Fused.Kernel k = Fused.generate(s.pending, storeIntermediates);
         if (profiling) {
@@ -664,6 +724,7 @@ public final class OpenClBackend implements Backend {
         DType t = out.dtype;
         long n = out.size;
         switch (e) {
+            case Fused.MatMul mm -> throw new IllegalStateException("a matrix product inside a chain");
             case Fused.Src src -> {
                 ClStorage from = computed(src.storage(), atRoot && src.direct());
                 quietCopy(from, src.offset(), src.strides(), src.dims(), out);
@@ -713,6 +774,9 @@ public final class OpenClBackend implements Backend {
      * stays pending, so later chains are recorded exactly as with compiled kernels.
      */
     private ClStorage computed(ClStorage s, boolean keep) {
+        if (s.pending instanceof Fused.MatMul) {
+            runMatMul(s);
+        }
         if (s.pending == null) {
             return s;
         }
@@ -875,11 +939,22 @@ public final class OpenClBackend implements Backend {
     private long lastEnd;
     private long hostLaunchNanos;
     /**
-     * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}, 0 leaves
-     * submission to the driver).
+     * Launches between explicit flushes ({@code -Dbrainiac.opencl.flushEvery}; 0 leaves
+     * submission to the driver; -1 adapts: every launch right after the host waited for the
+     * device, then doubling up to 64 while the host keeps queueing). The default of 4 trained
+     * fastest on AMD's driver.
      */
-    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 1);
+    private final int flushEvery = Integer.getInteger("brainiac.opencl.flushEvery", 4);
+    private int flushInterval = Math.max(1, flushEvery);
     private int sinceFlush;
+
+    /** Called after the host waited for the device: the next launches start it again quickly. */
+    private void synced() {
+        if (flushEvery < 0) {
+            flushInterval = 1;
+            sinceFlush = 0;
+        }
+    }
     private long hostGenerateNanos;
 
     private record Launch(String kernel, MemorySegment event) {
@@ -1011,7 +1086,10 @@ public final class OpenClBackend implements Backend {
                 MemorySegment host = arena.allocate(JAVA_FLOAT, Math.max(1, s.size));
                 if (s.size > 0) {
                     cl.read(queue, s.mem, 0, host.asSlice(0, s.bytes()));
-                    settled();     // a blocking read on the in-order queue means all earlier work is done
+                    // a blocking read on the in-order queue means all earlier work is done
+                    settled();
+                    synced();
+                    generation++;
                 }
                 return host.asSlice(0, s.bytes()).toArray(JAVA_FLOAT);
             }
@@ -1036,6 +1114,8 @@ public final class OpenClBackend implements Backend {
             MemorySegment host = arena.allocate(s.bytes(), 8);
             cl.read(queue, s.mem, 0, host);
             settled();
+            synced();
+            generation++;
             switch (s.dtype) {
                 case FLOAT64 -> MemorySegment.copy(host, JAVA_DOUBLE, 0, out, 0, out.length);
                 case FLOAT32 -> {
@@ -1236,6 +1316,9 @@ public final class OpenClBackend implements Backend {
      */
     private boolean fusedReduce(ReduceOp op, ClStorage x, long outer, long length, long inner, ClStorage o) {
         Fused.Expr input = Fused.whole(x);
+        for (ClStorage p : Fused.matmuls(input).keySet()) {
+            ready(p);
+        }
         long rows = outer * inner;
         int group = grouped(rows, length) ? reduceGroup : 1;
         Fused.Kernel k = Fused.generateReduce(input, op.ordinal(), group);
@@ -1277,8 +1360,27 @@ public final class OpenClBackend implements Backend {
         long[] local = {tile, tile, 1};
         Operand x = operand(a, o.dtype, batch, m, k);
         Operand y = operand(b, o.dtype, batch, k, n);
-        run(o.dtype, "matmul", global, local, x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(),
-                (long) m * n, x.offset(), x.row(), x.col(), y.offset(), y.row(), y.col());
+        Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
+                x.row(), x.col(), y.offset(), y.row(), y.col()};
+        if (fusable(o, x.storage(), y.storage()) && (long) m * n * batch > 0) {
+            // recorded: an element-wise chain on the product can become the kernel's epilogue
+            ready(x.storage());
+            ready(y.storage());
+            // not a chain boundary: the chain that uses the product becomes its epilogue
+            o.pending = new Fused.MatMul(args, global, local);
+            o.pendingNodes = 1;
+            o.pendingGeneration = generation;
+            return;
+        }
+        run(o.dtype, "matmul", global, local, args);
+    }
+
+    /** Runs a recorded matrix product with the precompiled kernel. */
+    private void runMatMul(ClStorage s) {
+        Fused.MatMul mm = (Fused.MatMul) s.pending;
+        s.pending = null;
+        s.pendingNodes = 0;
+        quietRun(s.dtype, "matmul", mm.global(), mm.local(), mm.args());
     }
 
     /** A matrix operand read in place: element (i, j) of batch b at offset + b*batch + i*row + j*col. */
