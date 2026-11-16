@@ -53,15 +53,16 @@ final class Population implements Layer {
      * hard mode, so every design stacks into one run.
      */
     private final List<List<Activation>> switching = new ArrayList<>();
-    /** Per switching region: per union entry, 0 where a candidate may pick it, else -1e4; [P,1,1]. */
-    private final List<List<Var>> barred = new ArrayList<>();
+    /** Per switching region: 0 where a candidate may pick an activation, else -1e4; [K,P,1,1]. */
+    private final List<Var> barred = new ArrayList<>();
     /** Per switching region: 1 for candidates in hard mode, [P,1,1]; null when none is. */
     private final Var[] hardMask;
     private final Var[] softMask;
     private final Var[] controls;
     private final Var[] controlBias;
-    private final List<List<Var>> switchScale = new ArrayList<>();
-    private final List<List<Var>> switchOffset = new ArrayList<>();
+    /** Per switching region: the scales u and offsets e of all activations, [K,P,1,N]. */
+    private final List<Var> switchScale = new ArrayList<>();
+    private final List<Var> switchOffset = new ArrayList<>();
     private final Var[] switchMasks;
     private final Var headWeight;
     private final Var headBias;
@@ -120,16 +121,14 @@ final class Population implements Layer {
             }
             all.sort(java.util.Comparator.comparing(Activation::toString));
             switching.set(r, List.copyOf(all));
-            List<Var> bars = new ArrayList<>();
-            for (Activation a : all) {
-                float[] v = new float[count];
+            float[] bars = new float[all.size() * count];
+            for (int k = 0; k < all.size(); k++) {
                 for (int c = 0; c < count; c++) {
                     Brain.Switching sw = genomes.get(c).regions().get(r).switching();
-                    v[c] = sw != null && sw.candidates().contains(a) ? 0 : -1e4f;
+                    bars[k * count + c] = sw != null && sw.candidates().contains(all.get(k)) ? 0 : -1e4f;
                 }
-                bars.add(Var.of(Tensor.of(Shape.of(count, 1, 1), v)));
             }
-            barred.set(r, bars);
+            barred.set(r, Var.of(Tensor.of(Shape.of(all.size(), count, 1, 1), bars)));
             float[] hard = new float[count];
             float[] soft = new float[count];
             for (int c = 0; c < count; c++) {
@@ -243,14 +242,14 @@ final class Population implements Layer {
                 }
             }
             controlBias[r] = Var.param(Tensor.of(Shape.of(count, 1, n), cb));
-            List<Var> us = new ArrayList<>();
-            List<Var> es = new ArrayList<>();
+            float[] us = new float[kk * count * n];
+            float[] es = new float[kk * count * n];
             for (int k = 0; k < kk; k++) {
-                us.add(Var.param(Tensor.of(Shape.of(count, 1, n), u[k])));
-                es.add(Var.param(Tensor.of(Shape.of(count, 1, n), e[k])));
+                System.arraycopy(u[k], 0, us, k * count * n, count * n);
+                System.arraycopy(e[k], 0, es, k * count * n, count * n);
             }
-            switchScale.set(r, us);
-            switchOffset.set(r, es);
+            switchScale.set(r, Var.param(Tensor.of(Shape.of(kk, count, 1, n), us)));
+            switchOffset.set(r, Var.param(Tensor.of(Shape.of(kk, count, 1, n), es)));
             switchMasks[r] = Var.of(Tensor.of(Shape.of(count, 1, n), on));
         }
 
@@ -434,44 +433,38 @@ final class Population implements Layer {
     private Var switchingOutput(int i, Var pre, Var control, boolean training) {
         List<Activation> acts = switching.get(i);
         int k = acts.size();
-        Var[] logits = new Var[k];
-        Var max = null;
-        for (int a = 0; a < k; a++) {
-            logits[a] = control.mul(switchScale.get(i).get(a).mul(scale)).add(switchOffset.get(i).get(a).mul(scale))
-                    .add(barred.get(i).get(a));
-            max = max == null ? logits[a] : max.maximum(logits[a]);
+        Shape one = pre.shape();
+        int[] lead = new int[one.rank() + 1];   // [1, P, B, N]
+        lead[0] = 1;
+        for (int d = 0; d < one.rank(); d++) {
+            lead[d + 1] = one.dim(d);
         }
+        // all candidates along a new first axis: one chain instead of one per candidate
+        Var logits = control.reshape(lead).mul(switchScale.get(i).mul(scale)).add(switchOffset.get(i).mul(scale))
+                .add(barred.get(i));                                              // [K, P, B, N]
+        Var[] fs = new Var[k];
+        for (int a = 0; a < k; a++) {
+            fs[a] = acts.get(a).forward(pre, training).reshape(lead);
+        }
+        Var f = Var.concat(0, fs);
         boolean anyHard = hardMask[i] != null;
         boolean anySoft = !anyHard || softMask[i] != null;
-        Var soft = null;
-        Var total = null;
-        Var hard = null;
-        Tensor taken = null;
-        for (int a = 0; a < k; a++) {
-            Var f = acts.get(a).forward(pre, training);
-            if (anySoft) {
-                Var w = logits[a].sub(max).exp();
-                soft = soft == null ? f.mul(w) : soft.add(f.mul(w));
-                total = total == null ? w : total.add(w);
-            }
+        Var weights = null;
+        if (anySoft) {
+            weights = Activation.softmax(0).forward(logits);
             if (anyHard) {
-                // the first candidate at the maximum wins, as in SwitchingDense
-                Tensor pick = logits[a].value().greater(max.value().sub(Tensor.full(Shape.of(), 1e-6f,
-                        max.value().device())));
-                if (taken != null) {
-                    pick = pick.mul(taken.neg().add(Tensor.full(Shape.of(), 1f, pick.device())));
-                }
-                hard = hard == null ? f.mul(pick) : hard.add(f.mul(pick));
-                taken = taken == null ? pick : taken.add(pick);
+                weights = weights.mul(softMask[i]);
             }
         }
-        if (!anyHard) {
-            return soft.div(total);
+        if (anyHard) {
+            // the first candidate at the maximum wins, as in SwitchingDense
+            Tensor index = logits.value().argmax(0).reshape(lead);
+            Tensor ks = Tensor.arange(k).reshape(k, 1, 1, 1).to(index.dtype()).to(index.device());
+            Var pick = Var.of(index.equalTo(ks).to(f.value().dtype()));
+            pick = anySoft ? pick.mul(hardMask[i]) : pick;
+            weights = weights == null ? pick : weights.add(pick);
         }
-        if (!anySoft) {
-            return hard;
-        }
-        return soft.div(total).mul(softMask[i]).add(hard.mul(hardMask[i]));
+        return f.mul(weights).sum(0, false);
     }
 
     @Override
@@ -491,8 +484,8 @@ final class Population implements Layer {
         for (int r = 0; r < regions.size(); r++) {
             if (switching.get(r) != null) {
                 p.add(controlBias[r]);
-                p.addAll(switchScale.get(r));
-                p.addAll(switchOffset.get(r));
+                p.add(switchScale.get(r));
+                p.add(switchOffset.get(r));
             }
         }
         p.add(headWeight);
@@ -510,9 +503,9 @@ final class Population implements Layer {
                 b.add(m);
             }
         }
-        for (List<Var> bars : barred) {
+        for (Var bars : barred) {
             if (bars != null) {
-                b.addAll(bars);
+                b.add(bars);
             }
         }
         for (Var[] vs : new Var[][] {hardMask, softMask}) {
@@ -653,15 +646,15 @@ final class Population implements Layer {
             own[2] = new float[kk * n];
             for (int k = 0; k < kk; k++) {
                 int at = switching.get(r).indexOf(mine.get(k));
-                System.arraycopy(slice(switchScale.get(r).get(at), c, n, s), 0, own[1], k * n, n);
-                System.arraycopy(slice(switchOffset.get(r).get(at), c, n, s), 0, own[2], k * n, n);
+                System.arraycopy(slice(switchScale.get(r), at * count + c, n, s), 0, own[1], k * n, n);
+                System.arraycopy(slice(switchOffset.get(r), at * count + c, n, s), 0, own[2], k * n, n);
             }
             Weights.readSwitching(region, from, control, mask, own, n, ctl, sw);
         }
         return Weights.fromHead(g, conn, bias, hw, hb, ctl, sw);
     }
 
-    /** Candidate {@code c}'s {@code n} values of a {@code [count, 1, n]} parameter, times {@code s}. */
+    /** Row {@code c} ({@code n} values) of a {@code [count, 1, n]} or {@code [k, count, 1, n]} parameter, times {@code s}. */
     private static float[] slice(Var v, int c, int n, float s) {
         float[] all = v.value().to(DType.FLOAT32).toArray();
         float[] out = new float[n];
