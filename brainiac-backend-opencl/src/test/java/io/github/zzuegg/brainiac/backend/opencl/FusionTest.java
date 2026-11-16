@@ -212,6 +212,35 @@ class FusionTest {
         assertArrayEquals(expected, z.toArray());
     }
 
+    @Test
+    void reductionsOfTheSameShapeRunTogether() {
+        for (int[] dims : new int[][] {{6, 300}, {700, 5}, {3, 2000}}) {
+            Tensor input = random(60 + dims[0], dims);
+            java.util.function.Function<Tensor, List<Tensor>> f = x -> {
+                Tensor y = x.mul(1.5f).sub(0.2f);
+                Tensor s = y.sum(1);
+                return List.of(s, y.mul(x).sum(1), x.max(1, false), y.square().mean(1), x.min(0, false),
+                        y.sub(s.reshape(dims[0], 1)).sum(1));   // depends on another reduction
+            };
+            List<Tensor> cpu = f.apply(input);
+            List<Tensor> separate = f.apply(input.to(gpu));
+            List<float[]> separateValues = new ArrayList<>();
+            for (Tensor t : separate) {
+                separateValues.add(t.toArray());   // read one at a time, before anything is evaluated
+            }
+            List<Tensor> together = f.apply(input.to(gpu));
+            Tensor.evaluate(together);
+            for (int i = 0; i < cpu.size(); i++) {
+                float[] e = cpu.get(i).toArray();
+                float[] a = together.get(i).toArray();
+                assertArrayEquals(separateValues.get(i), a, "result " + i);
+                for (int j = 0; j < e.length; j++) {
+                    assertEquals(e[j], a[j], 1e-4 * Math.max(1, Math.abs(e[j])), "result " + i + ", element " + j);
+                }
+            }
+        }
+    }
+
     /** Runs a chain ending in reductions through the backend directly. */
     private static float[][] chain(OpenClBackend b) {
         SplittableRandom r = new SplittableRandom(15);

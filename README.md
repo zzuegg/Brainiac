@@ -453,7 +453,8 @@ are cached on the device, so training does not create device memory on every ope
 Element-wise operations are fused: instead of one kernel per add, multiply or activation,
 the backend records chains of them and generates one OpenCL C kernel per chain when the
 values are needed (by a matmul, a reduction or a download); a reduction also computes its
-input chain on the fly (long rows are split across a work-group). A chain on a matrix
+input chain on the fly (long rows are split across a work-group), and reductions of the same
+shape that are needed at the same time (such as a layer's gradient sums) run as one kernel. A chain on a matrix
 product (bias, activation, optimizer arithmetic) becomes the matmul kernel's epilogue.
 An optimizer step runs as one kernel for all parameters, writing the new values and the
 optimizer state together (`Tensor.evaluate` asks for this from any code).
