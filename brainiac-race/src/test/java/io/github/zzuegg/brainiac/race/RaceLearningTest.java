@@ -34,10 +34,11 @@ class RaceLearningTest {
 
     @Test
     void selfPlayPpoLearnsToDrive() {
-        RaceConfig config = new RaceConfig().cars(4).raceSteps(600);
+        // a quick check: fixed sensors only, so there are just two actions to learn
+        RaceConfig config = new RaceConfig().cars(4).raceSteps(600).wallProbes(0);
         Race race = new Race(config);
         int obs = config.observationSize();
-        Ppo ppo = Ppo.of(Nets.mlp(obs, 2, 1, 64, 64), Nets.mlp(obs, 1, 2, 64, 64), race.actionSpace())
+        Ppo ppo = Ppo.of(Nets.mlp(obs, config.actionSize(), 1, 64, 64), Nets.mlp(obs, 1, 2, 64, 64), race.actionSpace())
                 .rolloutSteps(256).minibatchSize(256).epochs(5).initialLogStd(-0.5f).seed(1);
         double before = distance(ppo, config);
         ppo.fit(race, 100_000, RlListener.NONE);

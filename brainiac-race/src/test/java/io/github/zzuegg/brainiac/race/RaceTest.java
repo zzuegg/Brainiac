@@ -188,7 +188,7 @@ class RaceTest {
     @Test
     void passingACarIsRewarded() {
         RaceConfig c = new RaceConfig().cars(2).track("serpent").randomStart(false).shuffleGrid(false)
-                .overtakeBonus(1).collisionPenalty(0).progressReward(0);
+                .overtakeBonus(1).collisionPenalty(0).progressReward(0).positionReward(0);
         Race race = new Race(c);
         race.reset(new SplittableRandom(1));
         race.place(0, 30, -20, 100);
@@ -215,8 +215,9 @@ class RaceTest {
         race.place(2, 350, 0, 100);
         float[] o = race.observe(0);
         assertEquals(c.observationSize(), o.length);
-        assertEquals(Race.OWN + c.rays() + c.probes().length + 2 * Race.PER_CAR, o.length);
-        int k = Race.OWN + c.rays() + c.probes().length;
+        assertEquals(Race.OWN + c.rays() + c.probes().length + 2 * c.wallProbes() * Race.PER_PROBE
+                + 2 * Race.PER_CAR, o.length);
+        int k = Race.OWN + c.rays() + c.probes().length + 2 * c.wallProbes() * Race.PER_PROBE;
         assertEquals(1, o[k], "the nearest car is seen");
         assertEquals(60 / c.senseRadius(), o[k + 1], 0.02, "60 ahead");
         assertEquals(0, o[k + 2], 0.02, "straight ahead");
@@ -226,9 +227,40 @@ class RaceTest {
         assertEquals(200 / c.senseRadius(), o[k + 9], 0.05);
         assertEquals(100 / c.speedScale(), o[Race.OWN - 8], 0.01, "own forward speed");
 
-        Race blind = new Race(open(3).nearestCars(0).rays(3).probes(100));
+        Race blind = new Race(open(3).nearestCars(0).rays(3).probes(100).wallProbes(0));
         assertEquals(Race.OWN + 3 + 1, blind.observationSpace().size());
         assertEquals(Race.OWN + 3 + 1, blind.reset(new SplittableRandom(1))[0].length);
+    }
+
+    @Test
+    void steerableSensorsLookAtTheWallWhereTheCarAsks() {
+        RaceConfig c = open(1).wallProbes(2).probeRange(20, 420).probeRate(1e6);
+        Race race = new Race(c, dragStrip());
+        race.reset(new SplittableRandom(1));
+        race.place(0, 150, 0, 0);
+        assertEquals(6, race.actionSpace().size());
+        // left sensors at 20 and 420 ahead, right ones at 220 (0 is the middle of the range)
+        race.step(new float[][] {{0, 0, -1, 1, 0, 0}});
+        float[] o = race.observe(0);
+        int k = Race.OWN + c.rays() + c.probes().length;
+        double half = 40;
+        assertEquals(20.0 / 420, o[k], 0.01, "first left sensor 20 ahead");
+        assertEquals(-half / 420, o[k + 1], 0.01, "on the left wall");
+        assertEquals(-1, o[k + 2], 1e-5);
+        assertEquals(1, o[k + 3], 0.01, "second left sensor 420 ahead");
+        assertEquals(1, o[k + 5], 1e-5);
+        assertEquals(220.0 / 420, o[k + 6], 0.01, "right sensors 220 ahead");
+        assertEquals(half / 420, o[k + 7], 0.01, "on the right wall");
+        double[][] points = race.probePoints(0);
+        assertEquals(4, points.length);
+
+        // sensors glide towards the requested distance
+        Race slow = new Race(open(1).wallProbes(1).probeRange(0, 600).probeRate(300), dragStrip());
+        slow.reset(new SplittableRandom(1));
+        float before = slow.observe(0)[k + 2];
+        slow.step(new float[][] {{0, 0, 1, 1}});
+        float after = slow.observe(0)[k + 2];
+        assertEquals(300 * slow.config().dt() / 600 * 2, after - before, 1e-4, "moves 10 units per step");
     }
 
     @Test

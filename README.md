@@ -354,9 +354,15 @@ policy that drives every car: self-play with shared weights.
   across the road, heading to the road, slipstream; 9 wall rays; the road's direction
   80, 180 and 320 ahead; and for the 5 nearest cars their position, velocity, heading
   and yaw rate relative to this car.
-- **Actions**: steer and pedal (throttle above 0, brake below), each -1..1.
-- **Rewards**: progress along the track, a bonus for passing a car and a penalty for
-  being passed, penalties for crashes and for hitting other cars.
+- **Steerable wall sensors**: 5 on the left wall and 5 on the right. Each reports where
+  the wall is at a distance ahead that the car picks itself, from 20 to 500, so it can look
+  far down a straight and close into a bend. That adds 30 observations (90 in total).
+- **Actions**: steer and pedal (throttle above 0, brake below), plus one value per wall
+  sensor for how far ahead it looks; each -1..1.
+- **Rewards**: winning is the goal. The final standing earns +10 for the winner down to
+  -10 for last (and optionally every step, `positionReward`). Passing a car earns 1 and
+  being passed costs 1, a crash costs 5, and hitting another car costs both cars in
+  proportion to the impact speed. Progress along the track earns a little.
 
 Everything is set on `RaceConfig`: number of cars, track (`kidney`, `oval`,
 `serpent`, or your own `Track.of(...)`), road width, engine, brakes, steering,
@@ -367,7 +373,7 @@ how many cars are seen and how far.
 ```java
 RaceConfig config = new RaceConfig().cars(12).track("serpent").rearGrip(520).nearestCars(4);
 Race race = new Race(config);
-Ppo ppo = Ppo.of(Nets.mlp(config.observationSize(), 2, 1, 64, 64),
+Ppo ppo = Ppo.of(Nets.mlp(config.observationSize(), config.actionSize(), 1, 64, 64),
         Nets.mlp(config.observationSize(), 1, 2, 64, 64), race.actionSpace()).initialLogStd(-0.5f);
 RaceWindow.open(race, "training", false);          // optional: watch while it trains
 ppo.fit(race, 3_000_000, RlListener.NONE);
@@ -387,7 +393,13 @@ In the window, `r` switches between real time and full speed, space pauses, and 
 click picks the car whose rays and neighbours are drawn. Training at full speed shows the
 cars exploring; switch to real time to watch them drive.
 
-`race train` with the defaults (8 cars on the kidney track, 3 million steps) takes about
+Training keeps the best policy in `race.model`: after every round the new policy races the
+best one so far (the bots at first), 4 cars each, and replaces it only if it finishes
+ahead. `--hidden 256,256` trains a bigger network, `--opponents past` races half the cars
+against the best policy so far instead of copies of itself.
+
+The numbers below are from the first version (fixed sensors, progress-heavy rewards).
+`race train` with those settings (8 cars on the kidney track, 3 million steps) takes about
 5 minutes on a 4-core CPU. In a 60-second race with every car driven by the trained
 policy, the cars average 17,600 units each (about 6.6 laps, close to top speed in the
 straights) with 8 crashes between them, against 12,100 and 33 crashes for the

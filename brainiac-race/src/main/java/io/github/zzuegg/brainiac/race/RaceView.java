@@ -34,10 +34,12 @@ public record RaceView(int race, int step, double time, List<CarView> cars) {
      * @param rays wall distances along the rays
      * @param steerInput the steering asked for, -1..1
      * @param pedal the pedal asked for, -1 (brake) .. 1 (throttle)
+     * @param probes the wall points the steerable sensors look at, {@code {x, y}} each,
+     *     left sensors first
      */
     public record CarView(int id, double x, double y, double heading, double steer, double speed, boolean crashed,
                           boolean ghost, double draft, boolean sliding, double distance, int lap, int position,
                           int collisions, int overtakes, int crashes, double[] rays, double steerInput,
-                          double pedal) {
+                          double pedal, double[][] probes) {
     }
 }

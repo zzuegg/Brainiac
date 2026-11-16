@@ -44,9 +44,11 @@ public final class RaceConfig {
     double ghostTime = 1.5;
     double stallTime = 3;
     double progressReward = 0.01;
-    double crashPenalty = 2;
+    double crashPenalty = 5;
     double collisionPenalty = 0.01;
-    double overtakeBonus = 0.5;
+    double overtakeBonus = 1;
+    double positionReward = 0;
+    double finishReward = 10;
     int rays = 9;
     double raySpread = 75;
     double rayLength = 220;
@@ -54,6 +56,10 @@ public final class RaceConfig {
     int nearestCars = 5;
     double senseRadius = 260;
     double speedScale = 400;
+    int wallProbes = 5;
+    double probeMin = 20;
+    double probeMax = 500;
+    double probeRate = 600;
 
     /** A config with the default settings. */
     public RaceConfig() {
@@ -94,6 +100,8 @@ public final class RaceConfig {
         c.crashPenalty = crashPenalty;
         c.collisionPenalty = collisionPenalty;
         c.overtakeBonus = overtakeBonus;
+        c.positionReward = positionReward;
+        c.finishReward = finishReward;
         c.rays = rays;
         c.raySpread = raySpread;
         c.rayLength = rayLength;
@@ -101,6 +109,10 @@ public final class RaceConfig {
         c.nearestCars = nearestCars;
         c.senseRadius = senseRadius;
         c.speedScale = speedScale;
+        c.wallProbes = wallProbes;
+        c.probeMin = probeMin;
+        c.probeMax = probeMax;
+        c.probeRate = probeRate;
         return c;
     }
 
@@ -499,7 +511,7 @@ public final class RaceConfig {
     }
 
     /**
-     * Sets penalty for leaving the track or stalling; default 2.
+     * Sets penalty for leaving the track or stalling; default 5.
      *
      * @param crashPenalty the value
      * @return this config
@@ -527,7 +539,7 @@ public final class RaceConfig {
     }
 
     /**
-     * Sets reward for passing a car, and penalty for being passed; default 0.5.
+     * Sets reward for passing a car, and penalty for being passed; default 1.
      *
      * @param overtakeBonus the value
      * @return this config
@@ -830,9 +842,123 @@ public final class RaceConfig {
         return speedScale;
     }
 
+    /**
+     * Sets the reward per step for the place in the race: the leader gets this much, last
+     * place the same amount taken away, the places between in proportion; default 0 (off).
+     *
+     * @param positionReward the value
+     * @return this config
+     */
+    public RaceConfig positionReward(double positionReward) {
+        if (!(positionReward >= 0)) {
+            throw new IllegalArgumentException("positionReward must not be negative, got " + positionReward);
+        }
+        this.positionReward = positionReward;
+        return this;
+    }
+
+    /**
+     * Sets the reward for the final standing when a race ends: the winner gets this much,
+     * last place the same amount taken away, the places between in proportion; default 10.
+     *
+     * @param finishReward the value
+     * @return this config
+     */
+    public RaceConfig finishReward(double finishReward) {
+        if (!(finishReward >= 0)) {
+            throw new IllegalArgumentException("finishReward must not be negative, got " + finishReward);
+        }
+        this.finishReward = finishReward;
+        return this;
+    }
+
+    /** @return the reward per step for the place in the race (leader +, last -) */
+    public double positionReward() {
+        return positionReward;
+    }
+
+    /** @return the reward for the final standing (winner +, last -) */
+    public double finishReward() {
+        return finishReward;
+    }
+
+    /**
+     * Sets how many steerable sensors each car has on each wall; default 5 (5 on the left,
+     * 5 on the right). Each looks at the wall at a distance ahead along the track that the
+     * car itself chooses with an extra action, so a car can look far ahead on a straight
+     * and close in a bend. 0 turns them off.
+     *
+     * @param wallProbes sensors per side
+     * @return this config
+     */
+    public RaceConfig wallProbes(int wallProbes) {
+        if (wallProbes < 0) {
+            throw new IllegalArgumentException("wallProbes must not be negative, got " + wallProbes);
+        }
+        this.wallProbes = wallProbes;
+        return this;
+    }
+
+    /**
+     * Sets the range of distances ahead the steerable wall sensors can look; default 20 to
+     * 500.
+     *
+     * @param min the nearest
+     * @param max the farthest
+     * @return this config
+     */
+    public RaceConfig probeRange(double min, double max) {
+        if (!(min >= 0 && max > min)) {
+            throw new IllegalArgumentException("need 0 <= min < max, got " + min + ".." + max);
+        }
+        this.probeMin = min;
+        this.probeMax = max;
+        return this;
+    }
+
+    /**
+     * Sets how fast a steerable sensor moves towards the distance the car asks for, units
+     * per second; default 600.
+     *
+     * @param probeRate the speed
+     * @return this config
+     */
+    public RaceConfig probeRate(double probeRate) {
+        if (!(probeRate > 0)) {
+            throw new IllegalArgumentException("probeRate must be positive, got " + probeRate);
+        }
+        this.probeRate = probeRate;
+        return this;
+    }
+
+    /** @return steerable wall sensors per side */
+    public int wallProbes() {
+        return wallProbes;
+    }
+
+    /** @return the nearest distance a steerable sensor can look ahead */
+    public double probeMin() {
+        return probeMin;
+    }
+
+    /** @return the farthest distance a steerable sensor can look ahead */
+    public double probeMax() {
+        return probeMax;
+    }
+
+    /** @return how fast a steerable sensor moves, units per second */
+    public double probeRate() {
+        return probeRate;
+    }
+
+    /** @return the number of values in each car's action */
+    public int actionSize() {
+        return 2 + 2 * wallProbes;
+    }
+
     /** @return the number of values each car observes */
     public int observationSize() {
-        return Race.OWN + rays + probes.length + nearestCars * Race.PER_CAR;
+        return Race.OWN + rays + probes.length + 2 * wallProbes * Race.PER_PROBE + nearestCars * Race.PER_CAR;
     }
 
     @Override

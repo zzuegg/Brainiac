@@ -194,6 +194,16 @@ public final class RaceRenderer {
                 g.fill(new java.awt.geom.Ellipse2D.Double(ex - 2.5, ey - 2.5, 5, 5));
             }
         }
+        // the steerable wall sensors: where each looks, joined like a corridor ahead
+        double[][] probes = car.probes();
+        int side = probes.length / 2;
+        for (int p = 0; p < probes.length; p++) {
+            double[] w = probes[p];
+            g.setColor(p < side ? new Color(120, 255, 160, 90) : new Color(255, 130, 200, 90));
+            g.draw(new Line2D.Double(car.x(), car.y(), w[0], w[1]));
+            g.setColor(p < side ? new Color(120, 255, 160) : new Color(255, 130, 200));
+            g.fill(new java.awt.geom.Ellipse2D.Double(w[0] - 3.5, w[1] - 3.5, 7, 7));
+        }
         // the cars this car sees, nearest first, with their velocity
         List<RaceView.CarView> others = new ArrayList<>();
         for (RaceView.CarView o : view.cars()) {

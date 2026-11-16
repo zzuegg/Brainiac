@@ -42,10 +42,15 @@ final class Car {
     int overtakes;
     int crashes;
     final double[] rays;
+    /** Steerable wall sensors: left ones first, then right; current and requested distance ahead. */
+    final double[] probe;
+    final double[] probeTarget;
 
-    Car(int id, int rays) {
+    Car(int id, int rays, int probes) {
         this.id = id;
         this.rays = new double[rays];
+        this.probe = new double[probes];
+        this.probeTarget = new double[probes];
     }
 
     double forwardSpeed() {

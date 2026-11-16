@@ -29,8 +29,11 @@ import java.util.SplittableRandom;
  * by the impact speed. A car that leaves the road, stalls or turns back crashes: its
  * episode ends and it respawns on the centre line, as a ghost for a moment.
  *
- * <p><b>Actions:</b> {@code {steer, pedal}}, each in -1..1; steer +1 turns right, pedal
- * above 0 is throttle and below 0 is brake.
+ * <p><b>Actions:</b> {@code {steer, pedal, sensor...}}, each in -1..1; steer +1 turns
+ * right, pedal above 0 is throttle and below 0 is brake. Then one value per steerable
+ * wall sensor ({@link RaceConfig#wallProbes(int)} per side, left first) sets how far ahead
+ * it looks, from {@link RaceConfig#probeMin()} (-1) to {@link RaceConfig#probeMax()} (+1);
+ * the sensor glides there at {@link RaceConfig#probeRate()}.
  *
  * <p><b>Observations</b> ({@link RaceConfig#observationSize()} values, all in the car's own
  * frame and scaled to about -1..1):
@@ -39,6 +42,9 @@ import java.util.SplittableRandom;
  *       position across the road, heading relative to the road (sin, cos), slipstream;</li>
  *   <li>one wall distance per ray, fanned out ahead;</li>
  *   <li>the road's direction at each probe distance ahead, relative to the car's heading;</li>
+ *   <li>for each steerable wall sensor ({@value #PER_PROBE} values): where the wall is at
+ *       the distance it looks ahead, ahead of and to the right of the car, and that
+ *       distance;</li>
  *   <li>for each of the nearest cars ({@value #PER_CAR} values each, nearest first; zeros
  *       when fewer are in range): seen flag, position ahead and to the right, velocity
  *       relative to this car ahead and to the right, its heading relative to this car
@@ -55,6 +61,8 @@ public final class Race implements VectorEnvironment {
     public static final int OWN = 8;
     /** Observed values per nearby car. */
     public static final int PER_CAR = 8;
+    /** Observed values per steerable wall sensor. */
+    public static final int PER_PROBE = 3;
 
     private final RaceConfig config;
     private final Track track;
@@ -88,7 +96,8 @@ public final class Race implements VectorEnvironment {
         int n = this.config.cars;
         cars = new Car[n];
         for (int i = 0; i < n; i++) {
-            cars[i] = new Car(i, this.config.rays);
+            cars[i] = new Car(i, this.config.rays, 2 * this.config.wallProbes);
+            resetProbes(cars[i]);
         }
         obsSize = this.config.observationSize();
         rayAngles = new double[this.config.rays];
@@ -135,7 +144,7 @@ public final class Race implements VectorEnvironment {
 
     @Override
     public Space actionSpace() {
-        return Space.box(2, -1, 1);
+        return Space.box(config.actionSize(), -1, 1);
     }
 
     @Override
@@ -171,6 +180,7 @@ public final class Race implements VectorEnvironment {
         if (actions.length != cars.length) {
             throw new IllegalArgumentException("expected " + cars.length + " actions, got " + actions.length);
         }
+        double probeStep = config.probeRate * config.dt;
         if (raceOver) {
             newRace();
         }
@@ -182,6 +192,15 @@ public final class Race implements VectorEnvironment {
             }
             car.steerInput = Math.clamp(actions[i][0], -1, 1);
             car.pedal = Math.clamp(actions[i][1], -1, 1);
+            // the rest of the action points the steerable wall sensors; a shorter action
+            // (such as the bot's) leaves them where they are
+            for (int k = 0; k < car.probe.length; k++) {
+                if (actions[i].length > 2 + k) {
+                    double f = (Math.clamp(actions[i][2 + k], -1, 1) + 1) / 2;
+                    car.probeTarget[k] = config.probeMin + f * (config.probeMax - config.probeMin);
+                }
+                car.probe[k] += Math.clamp(car.probeTarget[k] - car.probe[k], -probeStep, probeStep);
+            }
             car.impact = 0;
             reward[i] = 0;
             crashedNow[i] = false;
@@ -235,6 +254,19 @@ public final class Race implements VectorEnvironment {
             }
         }
         boolean over = steps >= c.raceSteps;
+        if (cars.length > 1 && (c.positionReward > 0 || over && c.finishReward > 0)) {
+            // the place in the race: +1 for the leader down to -1 for last
+            int[] rank = ranks();
+            for (int i = 0; i < cars.length; i++) {
+                double place = (cars.length + 1 - 2.0 * rank[i]) / (cars.length - 1);
+                if (cars[i].status == Car.Status.ACTIVE) {
+                    reward[i] += c.positionReward * place;
+                }
+                if (over) {
+                    reward[i] += c.finishReward * place;
+                }
+            }
+        }
         Environment.Step[] out = new Environment.Step[cars.length];
         for (int i = 0; i < cars.length; i++) {
             if (crashedNow[i]) {
@@ -283,6 +315,7 @@ public final class Race implements VectorEnvironment {
             car.best = car.distance;
             car.ghost = 0;
             car.fresh = true;
+            resetProbes(car);
             car.collisions = 0;
             car.overtakes = 0;
             car.crashes = 0;
@@ -320,6 +353,38 @@ public final class Race implements VectorEnvironment {
     /** @return the car's current slipstream drag reduction, for tests */
     double draft(int index) {
         return cars[index].draft;
+    }
+
+    /** The wall point a steerable sensor looks at: left sensors first, then right. */
+    private double[] probePoint(Car car, int p) {
+        int i = car.index + (int) Math.round(car.probe[p] / track.segment());
+        return p < car.probe.length / 2 ? track.left(i) : track.right(i);
+    }
+
+    /** Spreads a car's steerable sensors evenly over their range. */
+    private void resetProbes(Car car) {
+        int side = car.probe.length / 2;
+        for (int p = 0; p < car.probe.length; p++) {
+            int k = p % Math.max(1, side);
+            double f = side <= 1 ? 0.5 : k / (double) (side - 1);
+            car.probe[p] = config.probeMin + f * (config.probeMax - config.probeMin);
+            car.probeTarget[p] = car.probe[p];
+        }
+    }
+
+    /**
+     * Where one car's steerable wall sensors look.
+     *
+     * @param index the car
+     * @return one {@code {x, y}} wall point per sensor, left sensors first
+     */
+    public double[][] probePoints(int index) {
+        Car car = cars[index];
+        double[][] out = new double[car.probe.length][];
+        for (int p = 0; p < out.length; p++) {
+            out[p] = probePoint(car, p);
+        }
+        return out;
     }
 
     private void placeAt(Car car, double along, double side, double speed) {
@@ -571,6 +636,16 @@ public final class Race implements VectorEnvironment {
             int i = car.index + (int) Math.round(p / track.segment());
             o[k++] = (float) Math.clamp(Track.wrap(track.heading(i) - car.heading) / (Math.PI / 2), -1, 1);
         }
+        // steerable wall sensors: where the wall is at the chosen distance ahead, in the
+        // car's frame, and the distance itself
+        for (int p = 0; p < car.probe.length; p++) {
+            double[] w = probePoint(car, p);
+            double dx = w[0] - car.x;
+            double dy = w[1] - car.y;
+            o[k++] = (float) Math.clamp((dx * hx + dy * hy) / c.probeMax, -2, 2);
+            o[k++] = (float) Math.clamp((-dx * hy + dy * hx) / c.probeMax, -2, 2);
+            o[k++] = (float) ((car.probe[p] - c.probeMin) / (c.probeMax - c.probeMin) * 2 - 1);
+        }
         // the nearest cars, nearest first
         if (c.nearestCars > 0) {
             Integer[] others = new Integer[cars.length];
@@ -712,7 +787,7 @@ public final class Race implements VectorEnvironment {
             list.add(new RaceView.CarView(car.id, car.x, car.y, car.heading, car.steer, car.forwardSpeed(),
                     car.status == Car.Status.CRASHED, car.ghost > 0, car.draft, car.sliding, car.distance,
                     (int) Math.floor(car.distance / track.length()) + 1, rank[car.id], car.collisions,
-                    car.overtakes, car.crashes, car.rays.clone(), car.steerInput, car.pedal));
+                    car.overtakes, car.crashes, car.rays.clone(), car.steerInput, car.pedal, probePoints(car.id)));
         }
         RaceView v = new RaceView(races, steps, steps * config.dt, List.copyOf(list));
         view = v;
