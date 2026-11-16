@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.rl.Agent;
 import io.github.zzuegg.brainiac.rl.CartPole;
 import io.github.zzuegg.brainiac.rl.Dqn;
 import io.github.zzuegg.brainiac.rl.GridWorld;
+import io.github.zzuegg.brainiac.rl.Lander;
 import io.github.zzuegg.brainiac.rl.Learner;
 import io.github.zzuegg.brainiac.rl.Nets;
 import io.github.zzuegg.brainiac.rl.Pendulum;
@@ -17,6 +18,7 @@ import io.github.zzuegg.brainiac.rl.Space;
 import io.github.zzuegg.brainiac.rl.Tabular;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Supplier;
 
 /**
@@ -29,10 +31,13 @@ import java.util.function.Supplier;
  *       acting at random (500 is the most an episode can score).</li>
  *   <li>Pendulum: PPO with a Gaussian policy learns continuous torques to swing a
  *       pendulum up and hold it.</li>
+ *   <li>Lander: PPO learns to fire a main engine and two thrusters to land on a pad, a
+ *       harder task where an average of 200 counts as solved.</li>
  * </ol>
  *
- * <p>{@code ./gradlew :brainiac-examples:run --args=rl} (about two minutes on a laptop),
- * or {@code --args="rl quick"} for shorter training.
+ * <p>{@code ./gradlew :brainiac-examples:run --args=rl} (several minutes on a laptop),
+ * {@code --args="rl quick"} for shorter training, or {@code --args="rl lander"} for the
+ * lander alone.
  */
 public final class RlExample {
 
@@ -45,10 +50,15 @@ public final class RlExample {
      * @param args {@code quick} for a shorter run
      */
     public static void main(String[] args) {
+        if (args.length > 0 && args[0].equals("lander")) {
+            lander(args.length > 1 ? Double.parseDouble(args[1]) : 1);
+            return;
+        }
         double scale = args.length > 0 && args[0].equals("quick") ? 0.4 : 1;
         cliff();
         cartPole(scale);
         pendulum(scale);
+        lander(scale);
     }
 
     private static void cliff() {
@@ -117,6 +127,37 @@ public final class RlExample {
         List<String> frames = Rl.watch(ppo, env, 3, 200);
         System.out.println(frames.get(0));
         System.out.println(frames.get(100));
+        System.out.println(frames.get(frames.size() - 1));
+    }
+
+    /**
+     * Trains PPO on the lander and shows a landing.
+     *
+     * @param scale the share of the full 1,000,000 training steps
+     */
+    public static void lander(double scale) {
+        System.out.println("== Lander (200 is solved; the classic lunar lander's PPO baselines reach 200-250) ==");
+        Lander env = new Lander();
+        System.out.printf(Locale.ROOT, "random: %.0f%n", Rl.evaluate(Agent.random(env.actionSpace(), 1), env, 20, 7));
+        Ppo ppo = Ppo.of(Nets.mlp(8, 4, 1, 64, 64), Nets.mlp(8, 1, 2, 64, 64), env.actionSpace())
+                .rolloutSteps(1024).minibatchSize(256).epochs(4).discount(0.999f).gaeLambda(0.98f)
+                .entropyBonus(0.01f).learningRate(3e-4f).seed(1);
+        long start = System.nanoTime();
+        long steps = Math.round(1_000_000 * scale);
+        long[] next = {steps / 10};
+        ppo.fit(Lander::new, 8, steps, (episode, result) -> {
+            if (episode.totalSteps() >= next[0]) {
+                next[0] += steps / 10;
+                System.out.printf(Locale.ROOT, "  %,9d steps  %5.0f s  last 50 episodes %6.0f%n",
+                        episode.totalSteps(), (System.nanoTime() - start) / 1e9, result.meanReturn(50));
+            }
+        });
+        System.out.printf(Locale.ROOT, "after %.0f s of PPO: %.0f over 100 episodes%n",
+                (System.nanoTime() - start) / 1e9, Rl.evaluate(ppo, new Lander(), 100, 7));
+        List<String> frames = Rl.watch(ppo, new Lander(), 3, 1000);
+        for (int i = 0; i < frames.size(); i += Math.max(1, frames.size() / 12)) {
+            System.out.println(frames.get(i));
+        }
         System.out.println(frames.get(frames.size() - 1));
     }
 }
