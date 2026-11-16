@@ -1,9 +1,11 @@
 package io.github.zzuegg.brainiac.evolve;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Benchmark;
 import io.github.zzuegg.brainiac.train.Benchmark.Task;
 import io.github.zzuegg.brainiac.train.Evaluation;
@@ -126,6 +128,10 @@ public final class Evolution {
     private Device device;
     private Consumer<Trainer> trainerSettings = t -> { };
     private Consumer<Generation> listener = g -> { };
+    private boolean inheritWeights;
+    private boolean batched;
+    private int stackedRuns;
+    private volatile RuntimeException firstFailure;
 
     private Evolution(Task task) {
         this.task = Objects.requireNonNull(task, "task");
@@ -389,6 +395,38 @@ public final class Evolution {
     }
 
     /**
+     * Lets children start from what their parents learned (Lamarckian inheritance): every
+     * connection, bias and output weight a child shares with a parent (same neuron ids)
+     * starts at the parent's trained value, the rest start random. A child of crossover
+     * takes the fitter parent's value where both have one. Off by default.
+     *
+     * @param on whether children inherit trained weights
+     * @return this
+     */
+    public Evolution inheritWeights(boolean on) {
+        this.inheritWeights = on;
+        return this;
+    }
+
+    /**
+     * Trains each generation's candidates stacked into one model instead of one by one:
+     * candidates with the same regions, outputs, ticks and kind of optimizer share every
+     * kernel launch, each in its own slice of a population axis. On a GPU this replaces
+     * many small launches with a few large ones. Each candidate still trains as it would
+     * alone (same starting weights, batches and element-wise optimizer, its own learning
+     * rate); only trainer settings that look at all weights at once, such as gradient-norm
+     * clipping, now see the whole population. Needs a task with flat outputs and no front
+     * end; otherwise candidates are trained one by one. Off by default.
+     *
+     * @param on whether to train candidates together
+     * @return this
+     */
+    public Evolution batched(boolean on) {
+        this.batched = on;
+        return this;
+    }
+
+    /**
      * @param listener called after every generation, e.g. to print progress
      * @return this
      */
@@ -444,21 +482,38 @@ public final class Evolution {
         };
     }
 
-    private Fitness.Score train(Genome genome, Dataset train, Dataset valid, long seed) {
-        Model model = build(genome, seed);
+    /** A design to train, with the weights it starts from. */
+    private record Candidate(Genome genome, Weights start) {
+    }
+
+    /** How a candidate did, and its trained weights when children inherit them. */
+    private record Trained(Fitness.Score score, Weights weights) {
+    }
+
+    private boolean higherIsBetter() {
+        return task.kind() == Benchmark.Kind.CLASSIFICATION;
+    }
+
+    private Fitness.Score score(Genome genome, double metric, double loss, double seconds) {
+        return new Fitness.Score(metric, higherIsBetter(), loss,
+                genome.effectiveParameters(Math.toIntExact(task.outputShape().size())), genome.connections(), seconds);
+    }
+
+    private Trained train(Candidate c, Dataset train, Dataset valid, long seed) {
+        Model model = build(c.genome(), seed);
+        c.start().applyTo(c.genome(), model);
         Trainer t = Trainer.of(model).loss(task.loss()).metric(task.metric()).seed(seed);
         task.defaults().accept(t);
         if (epochs > 0) {
             t.epochs(epochs);
         }
-        settings(genome).accept(t);
+        settings(c.genome()).accept(t);
         long start = System.nanoTime();
         t.fit(train);
         double seconds = (System.nanoTime() - start) / 1e9;
         Evaluation e = t.evaluate(valid);
-        boolean higher = task.kind() == Benchmark.Kind.CLASSIFICATION;
-        return new Fitness.Score(e.get(task.metric()), higher, e.loss(),
-                genome.effectiveParameters(Math.toIntExact(task.outputShape().size())), genome.connections(), seconds);
+        return new Trained(score(c.genome(), e.get(task.metric()), e.loss(), seconds),
+                inheritWeights ? Weights.of(c.genome(), model) : Weights.NONE);
     }
 
     /** Higher fitness first; among equals, the smaller design. */
@@ -537,9 +592,10 @@ public final class Evolution {
         long rescoreSeed = trainSeed + 1;
 
         Map<Genome, Individual> seen = new HashMap<>();
+        Map<Genome, Weights> learned = new HashMap<>();
         Genome start = scaled(template, random);
-        List<Genome> candidates = new ArrayList<>();
-        candidates.add(start);
+        List<Candidate> candidates = new ArrayList<>();
+        candidates.add(new Candidate(start, Weights.NONE));
         int attempts = 0;
         while (candidates.size() < population && attempts++ < population * 50) {
             Genome g = start;
@@ -547,26 +603,39 @@ public final class Evolution {
             for (int i = 0; i < rounds; i++) {
                 g = mutate(g, random);
             }
-            if (g.isViable() && !candidates.contains(g)) {
-                candidates.add(g);
+            Genome made = g;
+            if (g.isViable() && candidates.stream().noneMatch(c -> c.genome().equals(made))) {
+                candidates.add(new Candidate(g, Weights.NONE));
             }
         }
 
         List<Generation> history = new ArrayList<>();
         List<Individual> ranked = List.of();
-        ExecutorService pool = threads > 1 ? Executors.newFixedThreadPool(threads) : null;
+        ExecutorService pool = threads > 1 && !batched ? Executors.newFixedThreadPool(threads) : null;
         try {
             for (int gen = 0; gen < generations; gen++) {
                 long t0 = System.nanoTime();
-                List<Genome> fresh = candidates.stream().filter(g -> !seen.containsKey(g)).distinct().toList();
-                List<Fitness.Score> scores = evaluate(fresh, train, valid, trainSeed, pool);
-                for (int i = 0; i < fresh.size(); i++) {
-                    Fitness.Score s = scores.get(i);
-                    seen.put(fresh.get(i), new Individual(fresh.get(i), fit(s), s, 1));
+                List<Candidate> fresh = new ArrayList<>();
+                for (Candidate c : candidates) {
+                    if (!seen.containsKey(c.genome())
+                            && fresh.stream().noneMatch(f -> f.genome().equals(c.genome()))) {
+                        fresh.add(c);
+                    }
                 }
+                List<Trained> results = evaluate(fresh, train, valid, trainSeed, pool);
+                for (int i = 0; i < fresh.size(); i++) {
+                    Genome g = fresh.get(i).genome();
+                    Fitness.Score s = results.get(i).score();
+                    seen.put(g, new Individual(g, fit(s), s, 1));
+                    if (inheritWeights) {
+                        learned.put(g, results.get(i).weights());
+                    }
+                }
+                Map<Genome, Weights> starts = new HashMap<>();
+                candidates.forEach(c -> starts.putIfAbsent(c.genome(), c.start()));
                 List<Individual> pop = new ArrayList<>();
-                for (Genome g : candidates) {
-                    pop.add(seen.get(g));
+                for (Candidate c : candidates) {
+                    pop.add(seen.get(c.genome()));
                 }
                 // second opinion for the best that have only been trained once, until the
                 // top few have all had one: a lucky first score cannot stay on top
@@ -578,18 +647,23 @@ public final class Evolution {
                     if (top.isEmpty()) {
                         break;
                     }
-                    List<Fitness.Score> again = evaluate(top.stream().map(Individual::genome).toList(), train,
-                            valid, rescoreSeed, pool);
+                    List<Candidate> again = top.stream()
+                            .map(i -> new Candidate(i.genome(), starts.getOrDefault(i.genome(), Weights.NONE)))
+                            .toList();
+                    List<Trained> second = evaluate(again, train, valid, rescoreSeed, pool);
                     for (int i = 0; i < top.size(); i++) {
                         Individual old = top.get(i);
-                        seen.put(old.genome(), new Individual(old.genome(), (old.fitness() + fit(again.get(i))) / 2,
-                                old.score(), 2));
+                        seen.put(old.genome(), new Individual(old.genome(),
+                                (old.fitness() + fit(second.get(i).score())) / 2, old.score(), 2));
                     }
                     retrained += top.size();
                     pop.replaceAll(i -> seen.get(i.genome()));
                     pop.sort(RANK);
                 }
                 ranked = List.copyOf(pop);
+                if (inheritWeights) {
+                    learned.keySet().retainAll(ranked.stream().map(Individual::genome).toList());
+                }
                 double mean = ranked.stream().mapToDouble(Individual::fitness)
                         .filter(Double::isFinite).average().orElse(Double.NaN);
                 Generation record = new Generation(gen, ranked.getFirst(), mean, fresh.size() + retrained,
@@ -599,7 +673,7 @@ public final class Evolution {
                 if (gen == generations - 1) {
                     break;
                 }
-                candidates = breed(ranked, random);
+                candidates = breed(ranked, learned, random);
             }
         } finally {
             if (pool != null) {
@@ -609,50 +683,58 @@ public final class Evolution {
         return new Result(List.copyOf(history), ranked, template);
     }
 
-    private List<Genome> breed(List<Individual> ranked, SplittableRandom random) {
-        List<Genome> next = new ArrayList<>();
+    private List<Candidate> breed(List<Individual> ranked, Map<Genome, Weights> learned, SplittableRandom random) {
+        List<Candidate> next = new ArrayList<>();
         for (Individual i : ranked) {
             if (next.size() >= elites) {
                 break;
             }
-            if (!next.contains(i.genome())) {
-                next.add(i.genome());
+            if (next.stream().noneMatch(c -> c.genome().equals(i.genome()))) {
+                next.add(new Candidate(i.genome(), Weights.NONE));   // already scored, not retrained
             }
         }
         int attempts = 0;
         while (next.size() < population && attempts++ < population * 50) {
             Individual a = pick(ranked, random);
             Genome child;
+            Weights start = learned.getOrDefault(a.genome(), Weights.NONE);
             if (random.nextDouble() < crossoverRate) {
                 Individual b = pick(ranked, random);
-                child = a.fitness() >= b.fitness() ? crossover.cross(a.genome(), b.genome(), random)
-                        : crossover.cross(b.genome(), a.genome(), random);
+                Individual fitter = a.fitness() >= b.fitness() ? a : b;
+                Individual other = fitter == a ? b : a;
+                child = crossover.cross(fitter.genome(), other.genome(), random);
+                start = learned.getOrDefault(fitter.genome(), Weights.NONE)
+                        .orElse(learned.getOrDefault(other.genome(), Weights.NONE));
             } else {
                 child = a.genome();
             }
             child = mutate(child, random);
-            if (child.isViable() && !next.contains(child)) {
-                next.add(child);
+            Genome made = child;
+            if (child.isViable() && next.stream().noneMatch(c -> c.genome().equals(made))) {
+                next.add(new Candidate(child, start));
             }
         }
         return next;
     }
 
-    private List<Fitness.Score> evaluate(List<Genome> genomes, Dataset train, Dataset valid, long seed,
-                                         ExecutorService pool) {
-        List<Fitness.Score> out = new ArrayList<>();
+    private List<Trained> evaluate(List<Candidate> candidates, Dataset train, Dataset valid, long seed,
+                                   ExecutorService pool) {
+        if (batched && frontEnd == null && task.outputShape().rank() == 1) {
+            return evaluateBatched(candidates, train, valid, seed);
+        }
+        List<Trained> out = new ArrayList<>();
         if (pool == null) {
-            for (Genome g : genomes) {
-                out.add(safely(g, train, valid, seed));
+            for (Candidate c : candidates) {
+                out.add(safely(c, train, valid, seed));
             }
             return out;
         }
-        List<Future<Fitness.Score>> futures = new ArrayList<>();
-        for (Genome g : genomes) {
-            futures.add(pool.submit(() -> safely(g, train, valid, seed)));
+        List<Future<Trained>> futures = new ArrayList<>();
+        for (Candidate c : candidates) {
+            futures.add(pool.submit(() -> safely(c, train, valid, seed)));
         }
         try {
-            for (Future<Fitness.Score> f : futures) {
+            for (Future<Trained> f : futures) {
                 out.add(f.get());
             }
         } catch (InterruptedException e) {
@@ -664,15 +746,130 @@ public final class Evolution {
         return out;
     }
 
-    private Fitness.Score safely(Genome g, Dataset train, Dataset valid, long seed) {
+    private Trained safely(Candidate c, Dataset train, Dataset valid, long seed) {
         try {
-            return train(g, train, valid, seed);
+            return train(c, train, valid, seed);
         } catch (RuntimeException e) {
-            // a design that cannot be built or trained is simply unfit
-            return new Fitness.Score(Double.NaN, task.kind() == Benchmark.Kind.CLASSIFICATION, Double.NaN,
-                    g.effectiveParameters(Math.toIntExact(task.outputShape().size())), g.connections(), 0);
+            // a design that cannot be built or trained is simply unfit, but say why once:
+            // a failure in every candidate is a bug, not bad luck
+            if (firstFailure == null) {
+                firstFailure = e;
+                System.err.println("training a candidate failed, it counts as unfit: " + e);
+            }
+            return new Trained(score(c.genome(), Double.NaN, Double.NaN, 0), Weights.NONE);
         }
     }
+
+    /** The optimizer a design trains with: its own kind, or the task's ("task"). */
+    private static String optimizerKind(Genome g) {
+        if (Double.isNaN(g.learningRate()) && g.optimizer() == null) {
+            return "task";
+        }
+        return g.optimizer() == null ? "adam" : g.optimizer();
+    }
+
+    private static double rate(Genome g) {
+        return Double.isNaN(g.learningRate()) ? 0.01 : g.learningRate();
+    }
+
+    /**
+     * Trains candidates that can share a model (same regions, outputs, ticks and kind of
+     * optimizer) stacked into one {@link Population}, group by group.
+     */
+    private List<Trained> evaluateBatched(List<Candidate> candidates, Dataset train, Dataset valid, long seed) {
+        Map<List<Object>, List<Integer>> groups = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < candidates.size(); i++) {
+            Genome g = candidates.get(i).genome();
+            List<Object> key = List.of(g.regions().stream().map(Genome.Region::name).toList(), g.outputs(),
+                    g.ticks(), optimizerKind(g));
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
+        }
+        Trained[] out = new Trained[candidates.size()];
+        for (List<Integer> group : groups.values()) {
+            List<Candidate> members = group.stream().map(candidates::get).toList();
+            List<Trained> results;
+            try {
+                results = trainStacked(members, train, valid, seed);
+                stackedRuns++;
+            } catch (RuntimeException e) {
+                if (firstFailure == null) {
+                    firstFailure = e;
+                    System.err.println("training candidates stacked failed, training them one by one: " + e);
+                }
+                results = members.stream().map(c -> safely(c, train, valid, seed)).toList();
+            }
+            for (int k = 0; k < group.size(); k++) {
+                out[group.get(k)] = results.get(k);
+            }
+        }
+        return List.of(out);
+    }
+
+    /** @return the first error that made a candidate unfit, or null if none failed */
+    public RuntimeException firstFailure() {
+        return firstFailure;
+    }
+
+    /** @return how many groups were trained stacked so far, for tests */
+    int stackedRuns() {
+        return stackedRuns;
+    }
+
+    private List<Trained> trainStacked(List<Candidate> members, Dataset train, Dataset valid, long seed) {
+        List<Genome> genomes = members.stream().map(Candidate::genome).toList();
+        List<Model> models = new ArrayList<>();
+        for (Candidate c : members) {
+            Model m = build(c.genome(), seed);
+            c.start().applyTo(c.genome(), m);
+            models.add(m);
+        }
+        String kind = optimizerKind(genomes.getFirst());
+        double base = kind.equals("task") ? 1 : rate(genomes.getFirst());
+        float[] scales = new float[members.size()];
+        for (int c = 0; c < scales.length; c++) {
+            double ratio = kind.equals("task") ? 1 : rate(genomes.get(c)) / base;
+            scales[c] = (float) (kind.equals("adam") || kind.equals("task") ? ratio : Math.sqrt(ratio));
+        }
+        Population pop = new Population(genomes, models, scales, head());
+        Model.Builder b = Model.sequential().input(task.inputShape().toArray());
+        if (task.inputShape().rank() != 1) {
+            b.flatten();
+        }
+        Model model = b.layer(pop).build();
+        Trainer t = Trainer.of(model).loss(pop.loss(task.loss())).seed(seed);
+        task.defaults().accept(t);
+        if (epochs > 0) {
+            t.epochs(epochs);
+        }
+        if (!kind.equals("task")) {
+            float lr = (float) base;
+            t.optimizer(switch (kind) {
+                case "sgd" -> Optimizer.sgd(lr);
+                case "momentum" -> Optimizer.momentum(lr, 0.9f);
+                default -> Optimizer.adam(lr);
+            });
+        }
+        if (device != null) {
+            t.device(device);
+        }
+        trainerSettings.accept(t);
+        long start = System.nanoTime();
+        t.fit(pop.tile(train));
+        double seconds = (System.nanoTime() - start) / 1e9 / members.size();
+        Tensor predicted = model.predict(valid.features()).to(io.github.zzuegg.brainiac.tensor.Device.cpu());
+        Tensor targets = valid.targets().to(io.github.zzuegg.brainiac.tensor.Device.cpu());
+        int outputs = pop.outputs();
+        List<Trained> results = new ArrayList<>();
+        for (int c = 0; c < members.size(); c++) {
+            Tensor mine = predicted.slice(1, c * outputs, (c + 1) * outputs);
+            double metric = task.metric().compute(mine, targets);
+            double loss = task.loss().compute(Var.of(mine), targets).value().item();
+            results.add(new Trained(score(genomes.get(c), metric, loss, seconds),
+                    inheritWeights ? pop.weights(c) : Weights.NONE));
+        }
+        return results;
+    }
+
 
     // ---------------------------------------------------------------- comparing
 

@@ -471,6 +471,9 @@ public final class Brain implements Layer {
     public List<Var> buffers() {
         List<Var> b = new ArrayList<>(Arrays.asList(masks));
         b.addAll(Arrays.asList(neuronMasks));
+        for (RegionSpec r : regionSpecs) {
+            b.addAll(r.activation().buffers());   // such as the masks of per-unit activations
+        }
         return b;
     }
 

@@ -23,11 +23,20 @@ final class PerUnitActivation implements Activation {
 
     private final Activation[] distinct;
     private final int[] choice;
-    private Tensor[] masks;
+    /** One 0/1 mask per distinct activation; buffers, so they move with the model. */
+    private final Var[] masks;
 
     private PerUnitActivation(Activation[] distinct, int[] choice) {
         this.distinct = distinct;
         this.choice = choice;
+        this.masks = new Var[distinct.length];
+        for (int k = 0; k < distinct.length; k++) {
+            float[] v = new float[choice.length];
+            for (int u = 0; u < choice.length; u++) {
+                v[u] = choice[u] == k ? 1 : 0;
+            }
+            masks[k] = Var.of(Tensor.of(Shape.of(1, choice.length), v));
+        }
     }
 
     static Activation of(Activation... perUnit) {
@@ -98,28 +107,23 @@ final class PerUnitActivation implements Activation {
         if (s.dim(s.rank() - 1) != choice.length) {
             throw new IllegalArgumentException(this + " has " + choice.length + " units, got input " + s);
         }
-        Tensor[] m = masks(input.value().device(), input.value().dtype());
+        Device device = input.value().device();
+        DType dtype = input.value().dtype();
         Var out = null;
         for (int k = 0; k < distinct.length; k++) {
-            Var term = distinct[k].forward(input, training).mul(m[k]);
+            Tensor m = masks[k].value();
+            if (!m.device().equals(device) || m.dtype() != dtype) {
+                m = m.to(dtype).to(device);   // a model that was not moved as a whole
+            }
+            Var term = distinct[k].forward(input, training).mul(m);
             out = out == null ? term : out.add(term);
         }
         return out;
     }
 
-    private synchronized Tensor[] masks(Device device, DType dtype) {
-        if (masks == null || !masks[0].device().equals(device) || masks[0].dtype() != dtype) {
-            Tensor[] t = new Tensor[distinct.length];
-            for (int k = 0; k < distinct.length; k++) {
-                float[] v = new float[choice.length];
-                for (int u = 0; u < choice.length; u++) {
-                    v[u] = choice[u] == k ? 1 : 0;
-                }
-                t[k] = Tensor.of(Shape.of(1, choice.length), v).to(dtype).to(device);
-            }
-            masks = t;
-        }
-        return masks;
+    @Override
+    public List<Var> buffers() {
+        return List.of(masks);
     }
 
     @Override

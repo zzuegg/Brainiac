@@ -33,7 +33,10 @@ import java.util.function.Supplier;
  * {@link Mutations#names()}), {@code --epochs E} (training budget per candidate),
  * {@code --scale S} (start from this fraction of the template's neurons),
  * {@code --size-penalty P} (fitness lost per thousand parameters), {@code --threads T},
- * {@code --seed S}, {@code --device cpu|gpu|best}.
+ * {@code --seed S}, {@code --device cpu|gpu|best}, {@code --batched} (train each generation
+ * stacked into one model, see {@link Evolution#batched}), {@code --inherit} (children start
+ * from their parents' trained weights, see {@link Evolution#inheritWeights}), {@code --search-only}
+ * (skip the final comparison).
  */
 public final class EvolveExample {
 
@@ -92,7 +95,8 @@ public final class EvolveExample {
     public static void main(String[] args) {
         if (args.length == 0) {
             System.out.println("Usage: evolve <task> [--population N] [--generations G] [--mutate a,b,c]"
-                    + " [--epochs E] [--scale S] [--size-penalty P] [--threads T] [--seed S] [--device cpu|gpu]\n"
+                    + " [--epochs E] [--scale S] [--size-penalty P] [--threads T] [--seed S] [--device cpu|gpu]"
+                    + " [--batched] [--inherit] [--search-only]\n"
                     + "  tasks: xor, iris, spiral, shapes, ...   mutations: " + String.join(",", Mutations.names()));
             return;
         }
@@ -106,6 +110,9 @@ public final class EvolveExample {
         int threads = 1;
         long seed = 1;
         Device device = null;
+        boolean batched = false;
+        boolean inherit = false;
+        boolean compare = true;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--population" -> population = Integer.parseInt(args[++i]);
@@ -116,6 +123,9 @@ public final class EvolveExample {
                 case "--size-penalty" -> sizePenalty = Double.parseDouble(args[++i]);
                 case "--threads" -> threads = Integer.parseInt(args[++i]);
                 case "--seed" -> seed = Long.parseLong(args[++i]);
+                case "--batched" -> batched = true;
+                case "--inherit" -> inherit = true;
+                case "--search-only" -> compare = false;
                 case "--device" -> device = switch (args[++i]) {
                     case "cpu" -> Device.cpu();
                     case "gpu" -> Device.gpu();
@@ -140,19 +150,25 @@ public final class EvolveExample {
                 .sizePenalty(sizePenalty / 1000)
                 .threads(threads)
                 .seed(seed)
+                .batched(batched)
+                .inheritWeights(inherit)
                 .onGeneration(g -> System.out.println(g));
         if (device != null) {
             evolution.device(device);
         }
         System.out.printf("Evolving %s: population %d, %d generations, %d epochs per candidate, start at %.0f%%"
-                        + " of the template's neurons, mutating %s%n", task.name(), population, generations, epochs,
-                100 * scale, mutate);
+                        + " of the template's neurons, mutating %s%s%s%n", task.name(), population, generations, epochs,
+                100 * scale, mutate, batched ? ", whole population per model" : "",
+                inherit ? ", children inherit weights" : "");
         long t0 = System.nanoTime();
         Evolution.Result result = evolution.run();
         double searchSeconds = (System.nanoTime() - t0) / 1e9;
         Genome best = result.best().genome();
         System.out.printf("%nSearch took %.1f s. Best design:%n%s", searchSeconds, best.describe());
 
+        if (!compare) {
+            return;
+        }
         System.out.println("\nTrained with the task's own settings and tested on the test data:");
         Benchmark.Report hand = evolution.benchmark(start.handBuilt(), "hand-built");
         Benchmark.Report evolved = evolution.benchmark(best, "evolved");

@@ -147,6 +147,48 @@ class EvolutionTest {
     }
 
     @Test
+    void batchedAndInheritingRunsAreReproducibleAndLearn() {
+        for (boolean batched : new boolean[] {false, true}) {
+            Evolution.Result r1 = withOptions(batched, true);
+            Evolution.Result r2 = withOptions(batched, true);
+            for (int i = 0; i < r1.history().size(); i++) {
+                assertEquals(r1.history().get(i).best().genome(), r2.history().get(i).best().genome());
+                assertEquals(r1.history().get(i).best().fitness(), r2.history().get(i).best().fitness(), 0);
+            }
+            assertTrue(r1.best().score().metric() > 0.8, "batched " + batched + ": " + r1.best().score().metric());
+        }
+    }
+
+    @Test
+    void batchedScoresMatchOneByOne() {
+        Evolution.Result alone = withOptions(false, false);
+        Evolution.Result together = withOptions(true, false);
+        // same designs, same starting weights and batches: the first generation scores agree
+        assertEquals(alone.history().getFirst().best().score().metric(),
+                together.history().getFirst().best().score().metric(), 0.02);
+    }
+
+    @Test
+    void batchedRunsReallyStack() {
+        Evolution e = setup(true, false);
+        e.run();
+        assertTrue(e.stackedRuns() > 0);
+    }
+
+    private static Evolution.Result withOptions(boolean batched, boolean inherit) {
+        return setup(batched, inherit).run();
+    }
+
+    private static Evolution setup(boolean batched, boolean inherit) {
+        return Evolution.of(task())
+                .template(Genome.dense(2, Activation.RELU, 6))
+                .mutations("connections,neurons,activations,learning-rate")
+                .population(6).generations(3).rescore(1)
+                .batched(batched).inheritWeights(inherit)
+                .seed(5);
+    }
+
+    @Test
     void rejectsBadSetups() {
         assertThrows(IllegalStateException.class, () -> Evolution.of(task()).run());
         assertThrows(IllegalArgumentException.class, () -> Evolution.of(task()).mutations("telepathy"));
