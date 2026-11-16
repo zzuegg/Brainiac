@@ -28,23 +28,33 @@ final class Momentum implements Optimizer {
     @Override
     public void step(List<Var> parameters) {
         List<Tensor> updated = new ArrayList<>(2 * parameters.size());
-        for (Var p : parameters) {
-            Tensor g = p.grad();
-            if (g == null) {
-                continue;
+        List<Tensor> used = new ArrayList<>(2 * parameters.size());
+        List<Tensor> created = Tensor.created(() -> {
+            for (Var p : parameters) {
+                Tensor g = p.grad();
+                if (g == null) {
+                    continue;
+                }
+                used.add(g);
+                Tensor update = g;
+                if (momentum > 0) {
+                    Tensor v = velocity.get(p);
+                    if (v != null) {
+                        used.add(v);
+                    }
+                    update = v == null ? g : v.mul(momentum).add(g);
+                    velocity.put(p, update);
+                    updated.add(update);
+                }
+                p.assign(p.value().sub(update.mul(learningRate)));
+                p.zeroGrad();
+                updated.add(p.value());
             }
-            Tensor update = g;
-            if (momentum > 0) {
-                Tensor v = velocity.get(p);
-                update = v == null ? g : v.mul(momentum).add(g);
-                velocity.put(p, update);
-                updated.add(update);
-            }
-            p.assign(p.value().sub(update.mul(learningRate)));
-            p.zeroGrad();
-            updated.add(p.value());
-        }
+        });
         Tensor.evaluate(updated);   // on a GPU, the whole step as one kernel
+        // the gradients, old velocities and values on the way: only this optimizer saw them
+        used.addAll(created);
+        Tensor.release(used, updated);
     }
 
     @Override

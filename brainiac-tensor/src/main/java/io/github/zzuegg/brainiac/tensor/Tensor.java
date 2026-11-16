@@ -37,10 +37,38 @@ public final class Tensor {
     private final Device device;
     private final Storage storage;
 
+    /** The tensors created on this thread while {@link #created} runs, innermost call last. */
+    private static final ThreadLocal<java.util.ArrayList<Tensor>> CREATED = new ThreadLocal<>();
+
     private Tensor(Shape shape, Device device, Storage storage) {
         this.shape = shape;
         this.device = device;
         this.storage = storage;
+        java.util.ArrayList<Tensor> created = CREATED.get();
+        if (created != null) {
+            created.add(this);
+        }
+    }
+
+    /**
+     * Runs {@code action} and returns every tensor it created on this thread, so that the
+     * caller can {@link #release(java.util.Collection, java.util.Collection) release} the
+     * ones it no longer needs. Tensors created by a nested call are returned by that call
+     * only.
+     *
+     * @param action the computation
+     * @return the tensors created, in order
+     */
+    public static java.util.List<Tensor> created(Runnable action) {
+        java.util.ArrayList<Tensor> outer = CREATED.get();
+        java.util.ArrayList<Tensor> list = new java.util.ArrayList<>();
+        CREATED.set(list);
+        try {
+            action.run();
+        } finally {
+            CREATED.set(outer);
+        }
+        return list;
     }
 
     // ---------------------------------------------------------------- creation
@@ -434,6 +462,26 @@ public final class Tensor {
      */
     public void release() {
         backend().release(storage);
+    }
+
+    /**
+     * Releases every tensor in {@code dead} (see {@link #release()}) except those sharing
+     * memory with a tensor in {@code keep}, such as a view of a value that is still used.
+     * Whatever still reads a released value must be computed first (see {@link #evaluate}).
+     *
+     * @param dead tensors whose values will not be used again
+     * @param keep tensors that stay in use
+     */
+    public static void release(java.util.Collection<Tensor> dead, java.util.Collection<Tensor> keep) {
+        Map<Storage, Boolean> skip = new java.util.IdentityHashMap<>();
+        for (Tensor t : keep) {
+            skip.put(t.storage, Boolean.TRUE);
+        }
+        for (Tensor t : dead) {
+            if (skip.put(t.storage, Boolean.TRUE) == null) {
+                t.backend().release(t.storage);
+            }
+        }
     }
 
     /**

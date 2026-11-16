@@ -42,33 +42,37 @@ final class Adam implements Optimizer {
             }
         }
         Tensor.evaluate(grads);   // the gradients' last steps together, rather than one by one
-        for (Var p : parameters) {
-            Tensor g = p.grad();
-            if (g == null) {
-                continue;
+        List<Tensor> created = Tensor.created(() -> {
+            for (Var p : parameters) {
+                Tensor g = p.grad();
+                if (g == null) {
+                    continue;
+                }
+                Tensor mPrev = m.get(p);
+                Tensor vPrev = v.get(p);
+                Tensor mNew = (mPrev == null ? g.mul(1 - beta1) : mPrev.mul(beta1).add(g.mul(1 - beta1)));
+                Tensor vNew = (vPrev == null ? g.square().mul(1 - beta2) : vPrev.mul(beta2).add(g.square().mul(1 - beta2)));
+                m.put(p, mNew);
+                v.put(p, vNew);
+                if (mPrev != null) {
+                    previous.add(mPrev);
+                    previous.add(vPrev);
+                }
+                Tensor mHat = mNew.div(correction1);
+                Tensor vHat = vNew.div(correction2);
+                p.assign(p.value().sub(mHat.div(vHat.sqrt().add(epsilon)).mul(learningRate)));
+                p.zeroGrad();
+                updated.add(p.value());
+                updated.add(mNew);
+                updated.add(vNew);
             }
-            Tensor mPrev = m.get(p);
-            Tensor vPrev = v.get(p);
-            Tensor mNew = (mPrev == null ? g.mul(1 - beta1) : mPrev.mul(beta1).add(g.mul(1 - beta1)));
-            Tensor vNew = (vPrev == null ? g.square().mul(1 - beta2) : vPrev.mul(beta2).add(g.square().mul(1 - beta2)));
-            m.put(p, mNew);
-            v.put(p, vNew);
-            if (mPrev != null) {
-                previous.add(mPrev);
-                previous.add(vPrev);
-            }
-            Tensor mHat = mNew.div(correction1);
-            Tensor vHat = vNew.div(correction2);
-            p.assign(p.value().sub(mHat.div(vHat.sqrt().add(epsilon)).mul(learningRate)));
-            p.zeroGrad();
-            updated.add(p.value());
-            updated.add(mNew);
-            updated.add(vNew);
-        }
+        });
         Tensor.evaluate(updated);   // on a GPU, the whole step as one kernel
-        for (Tensor old : previous) {
-            old.release();   // only this optimizer ever saw its state: the memory is free now
-        }
+        // Only this optimizer saw its old state, the gradients it used and the values on the
+        // way: their memory is free now.
+        previous.addAll(created);
+        previous.addAll(grads);
+        Tensor.release(previous, updated);
     }
 
     @Override

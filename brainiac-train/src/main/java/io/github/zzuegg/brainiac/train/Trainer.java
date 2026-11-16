@@ -387,7 +387,10 @@ public final class Trainer {
     }
 
     /**
-     * Trains the model.
+     * Trains the model. After each step, the memory of the values computed on the way and of
+     * the parameter values it replaced is reused at once (see {@link Var#release}), so
+     * layers and listeners must not keep tensors computed during a step, or a parameter
+     * value, past that step.
      *
      * @param data the training data
      * @return the history and outcome
@@ -432,24 +435,33 @@ public final class Trainer {
                         p.assign(p.value().to(mixedType));
                     }
                 }
-                Var out = model.forward(Var.of(batch.features()), true);
-                Tensor targets = shaped(batch.targets(), out);
-                Var l = loss.compute(out, targets);
-                if (l2 > 0) {
-                    Var penalty = l2Penalty(params);
-                    if (penalty != null) {
-                        l = l.add(penalty.mul(l2));
+                Var[] forward = new Var[2];
+                // what the forward pass computes, such as dropout masks, is only used this step
+                List<Tensor> forwardWork = Tensor.created(() -> {
+                    forward[0] = model.forward(Var.of(batch.features()), true);
+                    forward[1] = loss.compute(forward[0], shaped(batch.targets(), forward[0]));
+                    if (l2 > 0) {
+                        Var penalty = l2Penalty(params);
+                        if (penalty != null) {
+                            forward[1] = forward[1].add(penalty.mul(l2));
+                        }
                     }
-                }
+                });
+                Var out = forward[0];
+                Var l = forward[1];
+                Tensor targets = shaped(batch.targets(), out);
                 int first = batchValues.size();
                 batchValues.add(l.value());
-                for (Metric m : metrics) {
-                    batchValues.add(m.value(out.value(), targets));
-                }
+                List<Tensor> metricWork = Tensor.created(() -> {
+                    for (Metric m : metrics) {
+                        batchValues.add(m.value(out.value(), targets));
+                    }
+                });
                 Tensor.evaluate(batchValues.subList(first, batchValues.size()));
+                releaseWork(metricWork, batchValues.subList(first, batchValues.size()), batch, targets);
                 batchSizes.add(batch.size());
                 if (masters != null) {
-                    l.mul(lossScale).backward();
+                    l.backward(Tensor.full(l.shape(), lossScale, l.dtype(), l.value().device()));
                     if (!unscale(params, masters)) {
                         continue;
                     }
@@ -457,7 +469,30 @@ public final class Trainer {
                     l.backward();
                 }
                 clip(params);
+                List<Tensor> replaced = new ArrayList<>(params.size());
+                if (masters == null) {   // (mixed precision keeps the masters itself)
+                    for (Var p : params) {
+                        replaced.add(p.value());
+                    }
+                }
                 optimizer.step(params);
+                // The step's intermediate values and the parameter values it replaced: their
+                // memory is reused at once rather than after a garbage collection.
+                List<Tensor> kept = new ArrayList<>(batchValues.subList(first, batchValues.size()));
+                l.release(kept.toArray(Tensor[]::new));
+                for (Var p : params) {
+                    kept.add(p.value());
+                }
+                for (Var b : model.buffers()) {
+                    kept.add(b.value());
+                }
+                if (bestWeights != null) {
+                    kept.addAll(bestWeights);   // restored if later epochs are worse
+                }
+                kept.add(batch.features());
+                kept.add(batch.targets());
+                replaced.addAll(forwardWork);
+                Tensor.release(replaced, kept);
                 stepsDone++;
                 if (!listeners.isEmpty()) {
                     float batchLoss = l.value().item();
@@ -476,6 +511,10 @@ public final class Trainer {
                     metricSums.merge(metrics.get(i).name(), (double) batchValues.get(b * perBatch + 1 + i).item() * size,
                             Double::sum);
                 }
+            }
+            Tensor.release(batchValues, List.of());
+            if (shuffle) {
+                release(batches);   // this epoch's own copies of the data
             }
             Map<String, Float> trainMetrics = new LinkedHashMap<>();
             metricSums.forEach((k, v) -> trainMetrics.put(k, (float) (v / data.size())));
@@ -516,6 +555,24 @@ public final class Trainer {
         return new TrainingResult(List.copyOf(history), bestEpoch, stoppedEarly);
     }
 
+    /** Releases the values computed on the way to a batch's metrics. */
+    private static void releaseWork(List<Tensor> work, List<Tensor> results, Batch batch, Tensor targets) {
+        List<Tensor> kept = new ArrayList<>(results);
+        kept.add(batch.features());
+        kept.add(batch.targets());
+        kept.add(targets);
+        Tensor.release(work, kept);
+    }
+
+    private static void release(List<Batch> batches) {
+        List<Tensor> values = new ArrayList<>(2 * batches.size());
+        for (Batch b : batches) {
+            values.add(b.features());
+            values.add(b.targets());
+        }
+        Tensor.release(values, List.of());
+    }
+
     /**
      * Computes the loss and the configured metrics on a dataset without training.
      *
@@ -527,15 +584,22 @@ public final class Trainer {
         Device device = model.device();
         List<Tensor> values = new ArrayList<>();
         List<Integer> sizes = new ArrayList<>();
-        for (Batch batch : data.batches(Math.max(batchSize, 256), device)) {
+        List<Batch> batches = data.batches(Math.max(batchSize, 256), device);
+        for (Batch batch : batches) {
             Var out = model.forward(Var.of(batch.features()));
             Tensor targets = shaped(batch.targets(), out);
             int first = values.size();
-            values.add(loss.compute(out, targets).value());
-            for (Metric m : metrics) {
-                values.add(m.value(out.value(), targets));
-            }
+            Var l = loss.compute(out, targets);
+            values.add(l.value());
+            List<Tensor> metricWork = Tensor.created(() -> {
+                for (Metric m : metrics) {
+                    values.add(m.value(out.value(), targets));
+                }
+            });
             Tensor.evaluate(values.subList(first, values.size()));   // no waiting between batches
+            List<Tensor> batchResults = values.subList(first, values.size());
+            l.release(batchResults.toArray(Tensor[]::new));   // the values on the way
+            releaseWork(metricWork, batchResults, batch, targets);
             sizes.add(batch.size());
         }
         double lossSum = 0;
@@ -548,6 +612,8 @@ public final class Trainer {
                         Double::sum);
             }
         }
+        Tensor.release(values, List.of());
+        release(batches);
         Map<String, Float> result = new LinkedHashMap<>();
         sums.forEach((k, v) -> result.put(k, (float) (v / data.size())));
         return new Evaluation((float) (lossSum / data.size()), Collections.unmodifiableMap(result));

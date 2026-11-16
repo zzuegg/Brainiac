@@ -224,6 +224,37 @@ class FusionTest {
         assertArrayEquals(expected, z.toArray());
     }
 
+    /** Five gradient steps, releasing each step's graph, as a trainer does. */
+    private static float[] trainReleasing(Device device) {
+        io.github.zzuegg.brainiac.autograd.Var w =
+                io.github.zzuegg.brainiac.autograd.Var.param(random(70, 16, 8).to(device));
+        Tensor x = random(71, 32, 16).to(device);
+        for (int step = 0; step < 5; step++) {
+            io.github.zzuegg.brainiac.autograd.Var input = io.github.zzuegg.brainiac.autograd.Var.of(x);
+            // a view of the parameter, a constant computed this step and a matmul
+            io.github.zzuegg.brainiac.autograd.Var shift = io.github.zzuegg.brainiac.autograd.Var.of(x.mul(0.5f));
+            io.github.zzuegg.brainiac.autograd.Var loss = input.add(shift)
+                    .matmul(w.reshape(8, 16).reshape(16, 8)).tanh().square().sum();
+            loss.backward();
+            Tensor old = w.value();
+            w.assign(w.value().sub(w.grad().mul(0.01f)));
+            w.zeroGrad();
+            Tensor.evaluate(List.of(w.value()));
+            loss.release();
+            Tensor.release(List.of(old), List.of(w.value()));
+        }
+        return w.value().toArray();
+    }
+
+    @Test
+    void releasingAStepsGraphKeepsParametersAndConstants() {
+        float[] expected = trainReleasing(Device.cpu());
+        float[] actual = trainReleasing(gpu);
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual[i], 1e-4);
+        }
+    }
+
     @Test
     void reductionsOfTheSameShapeRunTogether() {
         for (int[] dims : new int[][] {{6, 300}, {700, 5}, {3, 2000}}) {

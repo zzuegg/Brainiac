@@ -50,6 +50,10 @@ public final class Var {
     private final Var[] inputs;
     private final Backward backward;
     private Tensor grad;
+    /** Gradients computed by {@link #backward(Tensor)} from this value, for {@link #release()}. */
+    private List<Tensor> backwardValues;
+    /** The parameters' gradients {@link #backward(Tensor)} computed: never released here. */
+    private List<Tensor> backwardGrads;
 
     private Var(Tensor value, boolean requiresGrad, Var[] inputs, Backward backward) {
         this.value = Objects.requireNonNull(value, "value");
@@ -213,27 +217,93 @@ public final class Var {
         if (!seed.shape().equals(shape())) {
             throw new IllegalArgumentException("seed shape " + seed.shape() + " does not match " + shape());
         }
-        Map<Var, Tensor> grads = new IdentityHashMap<>();
-        grads.put(this, seed);
+        List<Tensor> created = Tensor.created(() -> {
+            Map<Var, Tensor> grads = new IdentityHashMap<>();
+            grads.put(this, seed);
+            for (Var node : topologicalOrder()) {
+                Tensor g = grads.remove(node);
+                if (g == null) {
+                    continue;
+                }
+                // a gradient always has its value's number format
+                g = g.to(node.value.dtype());
+                if (node.backward == null) {
+                    node.grad = node.grad == null ? g : node.grad.add(g).to(node.value.dtype());
+                    continue;
+                }
+                Tensor[] inputGrads = node.backward.apply(g);
+                for (int i = 0; i < node.inputs.length; i++) {
+                    Var in = node.inputs[i];
+                    if (in.requiresGrad) {
+                        grads.merge(in, inputGrads[i].to(in.value.dtype()), Tensor::add);
+                    }
+                }
+            }
+        });
+        if (backwardValues == null) {
+            backwardValues = new ArrayList<>(created.size());
+            backwardGrads = new ArrayList<>();
+        }
+        backwardValues.addAll(created);   // gradients and what they were computed with
         for (Var node : topologicalOrder()) {
-            Tensor g = grads.remove(node);
-            if (g == null) {
-                continue;
+            if (node.backward == null && node.grad != null) {
+                backwardGrads.add(node.grad);   // an optimizer may keep them, such as for momentum
             }
-            // a gradient always has its value's number format
-            g = g.to(node.value.dtype());
-            if (node.backward == null) {
-                node.grad = node.grad == null ? g : node.grad.add(g).to(node.value.dtype());
-                continue;
+        }
+    }
+
+    /**
+     * Frees the device memory of every value computed on the way to this one and of the
+     * values {@link #backward()} computed from it on the way to the parameters' gradients,
+     * rather than waiting for the garbage collector. Parameters, constants, their
+     * gradients, this value itself and {@code keep} stay. Use it once a training step is done: the intermediate values must not be used
+     * afterwards, and anything not yet computed from them (see {@link Tensor#evaluate})
+     * must be computed first.
+     *
+     * @param keep further values that stay in use, such as metrics computed from an
+     *     intermediate value
+     */
+    public void release(Tensor... keep) {
+        List<Tensor> dead = new ArrayList<>(backwardValues == null ? List.of() : backwardValues);
+        List<Tensor> kept = new ArrayList<>(List.of(keep));
+        kept.add(value);
+        if (backwardGrads != null) {
+            kept.addAll(backwardGrads);
+        }
+        Map<Var, Boolean> visited = new IdentityHashMap<>();
+        Deque<Var> stack = new ArrayDeque<>();
+        stack.push(this);
+        visited.put(this, Boolean.TRUE);
+        while (!stack.isEmpty()) {
+            Var node = stack.pop();
+            if (node.inputs.length == 0) {
+                kept.add(node.value);
+                if (node.grad != null) {
+                    kept.add(node.grad);
+                }
+            } else if (node != this) {
+                dead.add(node.value);
             }
-            Tensor[] inputGrads = node.backward.apply(g);
-            for (int i = 0; i < node.inputs.length; i++) {
-                Var in = node.inputs[i];
-                if (in.requiresGrad) {
-                    grads.merge(in, inputGrads[i].to(in.value.dtype()), Tensor::add);
+            for (Var in : node.inputs) {
+                if (visited.put(in, Boolean.TRUE) == null) {
+                    stack.push(in);
                 }
             }
         }
+        backwardValues = null;
+        backwardGrads = null;
+        // Gradients and kept values may still be computed from the intermediate ones.
+        // (Values of parameters and constants never are: only values that need no
+        // gradient are computed into constants.)
+        List<Tensor> computed = new ArrayList<>(List.of(keep));
+        computed.add(value);
+        for (Var node : visited.keySet()) {
+            if (node.backward == null && node.grad != null) {
+                computed.add(node.grad);
+            }
+        }
+        Tensor.evaluate(computed);
+        Tensor.release(dead, kept);
     }
 
     /** Returns this node and its ancestors that need gradients, outputs before inputs. */
@@ -271,7 +341,8 @@ public final class Var {
                 return new Var(out, true, inputs, backward);
             }
         }
-        return of(out);
+        // a constant, but computed in this step: its inputs say so to release()
+        return new Var(out, false, inputs, null);
     }
 
     private Var unary(Tensor out, Backward backward) {
