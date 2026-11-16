@@ -1136,6 +1136,7 @@ public final class OpenClBackend implements Backend {
     private final Map<String, long[]> kernelTimes = new HashMap<>();
     private long queuedToStart;
     private long deviceIdle;
+    private long hostIdle;
     private long firstStart;
     private long lastEnd;
     private long hostLaunchNanos;
@@ -1170,7 +1171,10 @@ public final class OpenClBackend implements Backend {
             t[1] += ts[3] - ts[2];
             queuedToStart += ts[2] - ts[0];
             if (lastEnd != 0 && ts[2] > lastEnd) {
-                deviceIdle += ts[2] - lastEnd;
+                // idle until the kernel was queued is the host's time; after, the driver's
+                long queued = Math.max(lastEnd, Math.min(ts[0], ts[2]));
+                hostIdle += queued - lastEnd;
+                deviceIdle += ts[2] - queued;
             }
             if (firstStart == 0) {
                 firstStart = ts[2];
@@ -1214,8 +1218,10 @@ public final class OpenClBackend implements Backend {
         }
         if (launches > 0) {
             out.append(String.format(Locale.ROOT,
-                    "  %d launches; device span %.1f ms, idle between kernels %.1f ms; queued-to-start %.1f us avg%n",
-                    launches, (lastEnd - firstStart) / 1e6, deviceIdle / 1e6, queuedToStart / 1e3 / launches));
+                    "  %d launches; device span %.1f ms, idle between kernels %.1f ms with work queued (driver) and"
+                            + " %.1f ms waiting for the host; queued-to-start %.1f us avg%n",
+                    launches, (lastEnd - firstStart) / 1e6, deviceIdle / 1e6, hostIdle / 1e6,
+                    queuedToStart / 1e3 / launches));
             out.append(String.format(Locale.ROOT, "  host: %.1f ms enqueuing (%.1f us each), %.1f ms generating code%n",
                     hostLaunchNanos / 1e6, hostLaunchNanos / 1e3 / launches, hostGenerateNanos / 1e6));
         }
