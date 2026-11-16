@@ -2406,11 +2406,19 @@ public final class OpenClBackend implements Backend {
     /** The largest head size the attention kernels keep in registers ({@code ATT_D}). */
     private static final int ATTENTION_SIZE = 64;
 
+    /**
+     * Whether the fused attention kernels are used ({@code -Dbrainiac.opencl.fusedAttention=true}).
+     * Off by default: one work item per query or key row keeps a whole head in registers,
+     * and the matmul path is faster on the device measured so far.
+     */
+    private static final boolean FUSED_ATTENTION = Boolean.getBoolean("brainiac.opencl.fusedAttention");
+
     @Override
     public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
             Storage out, Storage lse) {
-        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
-            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        if (!FUSED_ATTENTION || shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention (off, or heads larger than " + ATTENTION_SIZE
+                    + ")");
         }
         ClStorage o = cl(out);
         long rows = (long) shape[0] * shape[1] * shape[3];
@@ -2421,8 +2429,9 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
             Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
-        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
-            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        if (!FUSED_ATTENTION || shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention (off, or heads larger than " + ATTENTION_SIZE
+                    + ")");
         }
         ClStorage gq = cl(dq);
         DType type = gq.dtype;

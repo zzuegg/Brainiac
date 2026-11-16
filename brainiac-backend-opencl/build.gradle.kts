@@ -18,6 +18,7 @@ tasks.test {
         "-Dbrainiac.opencl.devices=all",
         // big tiles for every product of at least 64 x 64, so small test shapes cover them
         "-Dbrainiac.opencl.bigTileGroups=1",
+        "-Dbrainiac.opencl.fusedAttention=true",
     )
 }
 
