@@ -33,6 +33,8 @@ final class CL {
     static final int DEVICE_MAX_CLOCK_FREQUENCY = 0x100C;
     static final int DEVICE_HOST_UNIFIED_MEMORY = 0x1035;
     static final int DEVICE_GLOBAL_MEM_SIZE = 0x101F;
+    static final int DEVICE_MEM_BASE_ADDR_ALIGN = 0x1019;
+    static final int BUFFER_CREATE_TYPE_REGION = 0x1220;
     static final int DEVICE_NAME = 0x102B;
     static final int DEVICE_EXTENSIONS = 0x1030;
     static final int PLATFORM_NAME = 0x0902;
@@ -74,6 +76,7 @@ final class CL {
     private final MethodHandle createCommandQueue;
     private final MethodHandle createBuffer;
     private final MethodHandle releaseMemObject;
+    private final MethodHandle createSubBuffer;
     private final MethodHandle enqueueWriteBuffer;
     private final MethodHandle enqueueReadBuffer;
     private final MethodHandle enqueueCopyBuffer;
@@ -104,6 +107,8 @@ final class CL {
                 ADDRESS);
         createBuffer = handle(linker, lib, "clCreateBuffer", ADDRESS, ADDRESS, JAVA_LONG, JAVA_LONG, ADDRESS, ADDRESS);
         releaseMemObject = handle(linker, lib, "clReleaseMemObject", JAVA_INT, ADDRESS);
+        createSubBuffer = handle(linker, lib, "clCreateSubBuffer", ADDRESS, ADDRESS, JAVA_LONG, JAVA_INT, ADDRESS,
+                ADDRESS);
         enqueueWriteBuffer = handle(linker, lib, "clEnqueueWriteBuffer", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT,
                 JAVA_LONG, JAVA_LONG, ADDRESS, JAVA_INT, ADDRESS, ADDRESS);
         enqueueReadBuffer = handle(linker, lib, "clEnqueueReadBuffer", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT,
@@ -298,6 +303,26 @@ final class CL {
             }
             check(code, "clCreateBuffer of " + bytes + " bytes");
             return mem;
+        } catch (Throwable t) {
+            throw rethrow(t);
+        }
+    }
+
+    /**
+     * Creates a buffer for {@code bytes} bytes of {@code parent} from {@code origin}, sharing its
+     * memory.
+     *
+     * @return the buffer, or {@code null} if the driver refuses
+     */
+    MemorySegment createSubBuffer(MemorySegment parent, long flags, long origin, long bytes) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment err = arena.allocate(JAVA_INT);
+            MemorySegment region = arena.allocate(16);
+            region.set(JAVA_LONG, 0, origin);
+            region.set(JAVA_LONG, 8, bytes);
+            MemorySegment mem = (MemorySegment) createSubBuffer.invokeExact(parent, flags,
+                    BUFFER_CREATE_TYPE_REGION, region, err);
+            return err.get(JAVA_INT, 0) == SUCCESS ? mem : null;
         } catch (Throwable t) {
             throw rethrow(t);
         }

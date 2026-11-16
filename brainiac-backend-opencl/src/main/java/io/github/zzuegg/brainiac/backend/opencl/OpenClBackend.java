@@ -100,6 +100,8 @@ public final class OpenClBackend implements Backend {
     private long budget;
     private final AtomicLong allocated = new AtomicLong();
     private final Pool pool = new Pool();
+    private Slabs slabs = new Slabs(256);
+    private boolean subBuffers;
     private final Map<MetaKey, MemorySegment> metas = new LinkedHashMap<>(64, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<MetaKey, MemorySegment> eldest) {
@@ -152,18 +154,81 @@ public final class OpenClBackend implements Backend {
             return bytes.get();
         }
 
-        /** Releases every pooled buffer; returns the bytes freed. */
-        long drain(CL cl) {
+        /** Releases every pooled buffer; returns the device bytes freed. */
+        long drain(CL cl, Slabs slabs) {
             long freed = 0;
             for (Map.Entry<Long, java.util.concurrent.ConcurrentLinkedQueue<MemorySegment>> e : free.entrySet()) {
                 MemorySegment m;
                 while ((m = e.getValue().poll()) != null) {
-                    cl.release(m);
-                    freed += e.getKey();
+                    freed += slabs.free(cl, m, e.getKey());
                     bytes.addAndGet(-e.getKey());
                 }
             }
             return freed;
+        }
+    }
+
+    /**
+     * Small buffers carved out of large ones. Creating a buffer costs tens of microseconds on
+     * some drivers, a sub-buffer of an existing one much less; whether it is used is measured
+     * per device ({@code -Dbrainiac.opencl.subBuffers=true|false} decides instead). A large
+     * buffer is freed once every buffer carved from it is.
+     */
+    static final class Slabs {
+        static final long SIZE = 32L << 20;
+        private record Slab(MemorySegment mem, int[] live) {
+        }
+        private final Map<Long, Slab> owner = new HashMap<>();
+        private final long align;
+        private Slab current;
+        private long used;
+        long created;
+
+        Slabs(long align) {
+            this.align = align;
+        }
+
+        /** A buffer of {@code bytes} from the current large buffer, or null to create one on its own. */
+        synchronized MemorySegment carve(CL cl, long bytes, java.util.function.Supplier<MemorySegment> newSlab) {
+            if (bytes > SIZE / 8) {
+                return null;
+            }
+            long at = (used + align - 1) / align * align;
+            if (current == null || at + bytes > SIZE) {
+                MemorySegment mem = newSlab.get();
+                if (mem == null) {
+                    return null;
+                }
+                Slab old = current;
+                current = new Slab(mem, new int[1]);
+                created++;
+                if (old != null && old.live[0] == 0) {
+                    cl.release(old.mem);
+                }
+                at = 0;
+            }
+            MemorySegment sub = cl.createSubBuffer(current.mem, CL.MEM_READ_WRITE, at, bytes);
+            if (sub == null) {
+                return null;
+            }
+            used = at + bytes;
+            current.live[0]++;
+            owner.put(sub.address(), current);
+            return sub;
+        }
+
+        /** Releases a buffer of {@code bytes}; returns the device bytes this frees. */
+        synchronized long free(CL cl, MemorySegment mem, long bytes) {
+            cl.release(mem);
+            Slab slab = owner.remove(mem.address());
+            if (slab == null) {
+                return bytes;
+            }
+            if (--slab.live[0] == 0 && slab != current) {
+                cl.release(slab.mem);
+                return SIZE;
+            }
+            return 0;
         }
     }
     private final Map<DType, Program> programs = new EnumMap<>(DType.class);
@@ -280,6 +345,9 @@ public final class OpenClBackend implements Backend {
         context = lib.createContext(device);
         queue = lib.createQueue(context, device, profiling);
         cl = lib;
+        slabs = new Slabs(Math.max(256, (lib.deviceLong(device, CL.DEVICE_MEM_BASE_ADDR_ALIGN) & 0xFFFFFFFFL) / 8));
+        String sub = System.getProperty("brainiac.opencl.subBuffers");
+        subBuffers = sub != null ? Boolean.parseBoolean(sub) : subBuffersFaster();
         program(DType.FLOAT32);
         if (compiler != null) {
             // kernels still compiling at exit (asked for late, such as by the last evaluation)
@@ -300,6 +368,42 @@ public final class OpenClBackend implements Backend {
                 }
             }, "opencl-profile"));
         }
+    }
+
+    /** Whether carving buffers out of a large one is clearly quicker than creating them, timed once. */
+    private boolean subBuffersFaster() {
+        int n = 16;
+        long bytes = 64L << 10;
+        MemorySegment[] made = new MemorySegment[n];
+        long start = System.nanoTime();
+        for (int i = 0; i < n; i++) {
+            made[i] = cl.createBuffer(context, CL.MEM_READ_WRITE, bytes, MemorySegment.NULL);
+        }
+        long plain = System.nanoTime() - start;
+        for (MemorySegment m : made) {
+            if (m != null) {
+                cl.release(m);
+            }
+        }
+        MemorySegment parent = cl.createBuffer(context, CL.MEM_READ_WRITE, n * bytes, MemorySegment.NULL);
+        if (parent == null) {
+            return false;
+        }
+        start = System.nanoTime();
+        for (int i = 0; i < n; i++) {
+            made[i] = cl.createSubBuffer(parent, CL.MEM_READ_WRITE, i * bytes, bytes);
+        }
+        long carved = System.nanoTime() - start;
+        boolean ok = true;
+        for (MemorySegment m : made) {
+            if (m == null) {
+                ok = false;
+            } else {
+                cl.release(m);
+            }
+        }
+        cl.release(parent);
+        return ok && carved * 2 < plain;
     }
 
     /**
@@ -1084,6 +1188,7 @@ public final class OpenClBackend implements Backend {
 
     /** Allocates without clearing. */
     private long buffersCreated;
+    private long bufferNanos;
     private long buffersReused;
     private long bytesCreated;
     private long createdSinceCollect;
@@ -1105,7 +1210,7 @@ public final class OpenClBackend implements Backend {
         program(dtype);
         ClStorage s = new ClStorage(this, new ClStorage.Buffer(), size, dtype);
         CLEANER.register(s, new Release(cl, s.buffer, bucket(size * dtype.bytes()), allocated, pool,
-                budget / 4));
+                budget / 4, slabs));
         return s;
     }
 
@@ -1122,8 +1227,7 @@ public final class OpenClBackend implements Backend {
         if (bytes == bucket(bytes) && pool.bytes() + bytes <= budget / 4) {
             pool.put(bytes, mem);   // reuse is safe: the queue runs in order
         } else {
-            allocated.addAndGet(-bytes);
-            cl.release(mem);
+            allocated.addAndGet(-slabs.free(cl, mem, bytes));
         }
     }
 
@@ -1131,9 +1235,18 @@ public final class OpenClBackend implements Backend {
     MemorySegment buffer(long bytes) {
         MemorySegment mem = pool.take(bytes);
         if (mem == null) {
-            mem = createBuffer(CL.MEM_READ_WRITE, bytes, MemorySegment.NULL);
-            allocated.addAndGet(bytes);
+            long createStart = System.nanoTime();
+            mem = subBuffers ? slabs.carve(cl, bytes, () -> {
+                MemorySegment m = createBuffer(CL.MEM_READ_WRITE, Slabs.SIZE, MemorySegment.NULL);
+                allocated.addAndGet(Slabs.SIZE);
+                return m;
+            }) : null;
+            if (mem == null) {
+                mem = createBuffer(CL.MEM_READ_WRITE, bytes, MemorySegment.NULL);
+                allocated.addAndGet(bytes);
+            }
             buffersCreated++;
+            bufferNanos += System.nanoTime() - createStart;
             bytesCreated += bytes;
             createdSinceCollect += bytes;
             if (createdSinceCollect > Math.min(128L << 20, budget / 16)) {
@@ -1157,7 +1270,7 @@ public final class OpenClBackend implements Backend {
      * pool is full. Holds no reference to the storage.
      */
     private record Release(CL cl, ClStorage.Buffer buffer, long bytes, AtomicLong allocated, Pool pool,
-            long poolLimit) implements Runnable {
+            long poolLimit, Slabs slabs) implements Runnable {
         @Override
         public void run() {
             MemorySegment mem = buffer.mem;
@@ -1167,8 +1280,7 @@ public final class OpenClBackend implements Backend {
             if (pool.bytes() + bytes <= poolLimit) {
                 pool.put(bytes, mem);
             } else {
-                allocated.addAndGet(-bytes);
-                cl.release(mem);
+                allocated.addAndGet(-slabs.free(cl, mem, bytes));
             }
         }
     }
@@ -1186,7 +1298,7 @@ public final class OpenClBackend implements Backend {
                 }
             }
             // Pooled buffers and unreachable tensors still hold device memory.
-            allocated.addAndGet(-pool.drain(cl));
+            allocated.addAndGet(-pool.drain(cl, slabs));
             if (allocated.get() + bytes <= budget) {
                 continue;
             }
@@ -1328,9 +1440,12 @@ public final class OpenClBackend implements Backend {
             out.append(String.format(Locale.ROOT, "  host: %.1f ms enqueuing (%.1f us each), %.1f ms generating code%n",
                     hostLaunchNanos / 1e6, hostLaunchNanos / 1e3 / launches, hostGenerateNanos / 1e6));
         }
-        out.append(String.format(Locale.ROOT, "  buffers: %d created (%d MB), %d reused from the pool (%d MB pooled, %d MB allocated; %d collections, %.1f ms)%n",
-                buffersCreated, bytesCreated >> 20, buffersReused, pool.bytes() >> 20, allocated.get() >> 20,
-                collections, collectNanos / 1e6));
+        out.append(String.format(Locale.ROOT, "  buffers: %d created (%d MB) in %.1f ms, %d reused from the pool (%d MB pooled, %d MB allocated; %d collections, %.1f ms)%n",
+                buffersCreated, bytesCreated >> 20, bufferNanos / 1e6, buffersReused, pool.bytes() >> 20,
+                allocated.get() >> 20, collections, collectNanos / 1e6));
+        out.append(String.format(Locale.ROOT, "  %s%n", subBuffers
+                ? "small buffers carved from " + slabs.created + " large ones (sub-buffers are quicker to create here)"
+                : "buffers created one by one (sub-buffers are not quicker here)"));
         List<Map.Entry<String, long[]>> rows = new ArrayList<>(kernelTimes.entrySet());
         rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
         for (Map.Entry<String, long[]> e : rows) {
@@ -1355,7 +1470,8 @@ public final class OpenClBackend implements Backend {
         buffer.mem = mem;
         ClStorage s = new ClStorage(this, buffer, size, dtype);
         // pooled only when the pool's sizes can use it
-        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, bytes == bucket(bytes) ? budget / 4 : 0));
+        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, bytes == bucket(bytes) ? budget / 4 : 0,
+                slabs));
         return s;
     }
 
