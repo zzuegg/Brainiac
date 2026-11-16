@@ -505,9 +505,8 @@ final class Fused {
         if (group <= 1) {
             src.append("    long r = get_global_id(0);\n    if (r >= n) return;\n");
         } else {
-            for (int k = 0; k < count; k++) {
-                src.append("    __local ACC part").append(k).append("[").append(group).append("];\n");
-            }
+            // one buffer, reused output after output: local memory does not grow with their count
+            src.append("    __local ACC part[").append(group).append("];\n");
             src.append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n");
         }
         src.append("    long base = (r / inner) * len * inner + r % inner;\n");
@@ -535,19 +534,15 @@ final class Fused {
                     .append(bodies[stage]).append(accumulate).append("    }\n");
             if (group > 1) {
                 for (int k = from; k < to; k++) {
-                    src.append("    part").append(k).append("[lid] = acc").append(k).append(";\n");
-                }
-                src.append("    barrier(CLK_LOCAL_MEM_FENCE);\n")
-                        .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
-                        .append("        if (lid < s) {\n");
-                for (int k = from; k < to; k++) {
-                    src.append("            part").append(k).append("[lid] = ")
-                            .append(combine(outputs.get(k), "part" + k + "[lid]", "part" + k + "[lid + s]"))
-                            .append(";\n");
-                }
-                src.append("        }\n        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n");
-                for (int k = from; k < to; k++) {
-                    src.append("    acc").append(k).append(" = part").append(k).append("[0];\n");
+                    src.append("    part[lid] = acc").append(k).append(";\n")
+                            .append("    barrier(CLK_LOCAL_MEM_FENCE);\n")
+                            .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
+                            .append("        if (lid < s) {\n")
+                            .append("            part[lid] = ")
+                            .append(combine(outputs.get(k), "part[lid]", "part[lid + s]")).append(";\n")
+                            .append("        }\n        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n")
+                            .append("    acc").append(k).append(" = part[0];\n")
+                            .append("    barrier(CLK_LOCAL_MEM_FENCE);\n");
                 }
             }
             if (stage == 0 && stages == 2) {
