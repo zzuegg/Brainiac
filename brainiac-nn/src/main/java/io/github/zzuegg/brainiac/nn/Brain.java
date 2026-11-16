@@ -471,7 +471,107 @@ public final class Brain implements Layer {
     public List<Var> buffers() {
         List<Var> b = new ArrayList<>(Arrays.asList(masks));
         b.addAll(Arrays.asList(neuronMasks));
+        for (RegionSpec r : regionSpecs) {
+            b.addAll(r.activation().buffers());   // such as the masks of per-unit activations
+        }
         return b;
+    }
+
+    // ---------------------------------------------------------------- explicit wiring
+
+    /**
+     * Which connections of a projection exist, row by row: entry {@code a * targetSize + b}
+     * is the connection from source neuron {@code a} to target neuron {@code b}.
+     *
+     * @param projection the projection's index, in the order they were connected
+     * @return one flag per possible connection
+     */
+    public boolean[] connectionMask(int projection) {
+        float[] m = masks[projection].value().to(DType.FLOAT32).toArray();
+        boolean[] out = new boolean[m.length];
+        for (int k = 0; k < m.length; k++) {
+            out[k] = m[k] != 0;
+        }
+        return out;
+    }
+
+    /**
+     * Replaces a projection's connections with exactly the given ones, such as a wiring
+     * found by an evolutionary search. New weights are random, scaled like the starting
+     * wiring; connections that are off get weight 0.
+     *
+     * @param projection the projection's index, in the order they were connected
+     * @param mask one flag per possible connection, row by row, as in {@link #connectionMask}
+     * @param random the random source for the new weights
+     */
+    public void setConnections(int projection, boolean[] mask, SplittableRandom random) {
+        int size = sourceSize(projection) * regionSpecs.get(target[projection]).capacity();
+        if (mask.length != size) {
+            throw new IllegalArgumentException("projection " + projection + " has " + size
+                    + " possible connections, got a mask of " + mask.length);
+        }
+        float scale = initScale(projection);
+        float[] w = new float[size];
+        float[] m = new float[size];
+        for (int k = 0; k < size; k++) {
+            if (mask[k]) {
+                m[k] = 1;
+                w[k] = (float) (random.nextGaussian() * scale);
+            }
+        }
+        set(weights[projection], w);
+        set(masks[projection], m);
+    }
+
+    /**
+     * A projection's weights, row by row as in {@link #connectionMask}.
+     *
+     * @param projection the projection's index
+     * @return a copy of the weights
+     */
+    public float[] weightValues(int projection) {
+        return weights[projection].value().to(DType.FLOAT32).toArray();
+    }
+
+    /**
+     * Overwrites a projection's weights; entries whose connection is off are kept at 0.
+     *
+     * @param projection the projection's index
+     * @param values the weights, row by row as in {@link #connectionMask}
+     */
+    public void setWeightValues(int projection, float[] values) {
+        float[] m = masks[projection].value().to(DType.FLOAT32).toArray();
+        if (values.length != m.length) {
+            throw new IllegalArgumentException("projection " + projection + " has " + m.length
+                    + " weights, got " + values.length);
+        }
+        float[] w = values.clone();
+        for (int k = 0; k < w.length; k++) {
+            if (m[k] == 0) {
+                w[k] = 0;
+            }
+        }
+        set(weights[projection], w);
+    }
+
+    /**
+     * A region's biases, one per neuron of its capacity.
+     *
+     * @param region the region's name
+     * @return a copy of the biases
+     */
+    public float[] biasValues(String region) {
+        return biases[regionIndex(region)].value().to(DType.FLOAT32).toArray();
+    }
+
+    /**
+     * Overwrites a region's biases.
+     *
+     * @param region the region's name
+     * @param values one bias per neuron of its capacity
+     */
+    public void setBiasValues(String region, float[] values) {
+        set(biases[regionIndex(region)], values);
     }
 
     // ---------------------------------------------------------------- plasticity

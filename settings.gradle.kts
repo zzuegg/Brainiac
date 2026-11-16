@@ -20,6 +20,7 @@ include(
     "brainiac-train",
     "brainiac-data",
     "brainiac-rl",
+    "brainiac-evolve",
     "brainiac",
     "brainiac-examples",
     "brainiac-benchmarks",

@@ -131,6 +131,7 @@ final class Registry {
         activation("elu", c -> Activation.elu(c.getFloat("alpha")));
         activation("split", SplitActivation.factory());
         activation("mix", MixedActivation.factory());
+        activation("per_unit", PerUnitActivation.factory());
         activation("prelu", c -> Activation.prelu());
         activation("swish", c -> Activation.swish());
     }
