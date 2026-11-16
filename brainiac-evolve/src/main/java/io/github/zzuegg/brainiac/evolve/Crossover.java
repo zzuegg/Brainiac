@@ -34,6 +34,12 @@ public interface Crossover {
                 }
             }
         }
+        for (Genome.Region r : other.regions()) {
+            Genome.Draft.RegionDraft mine = child.region(r.name());
+            if (mine != null && r.switching() != null && random.nextBoolean()) {
+                mine.switching = r.switching();
+            }
+        }
         for (Genome.Projection p : other.projections()) {
             Genome.Draft.ProjectionDraft mine = child.projection(p.from(), p.to());
             if (mine == null) {

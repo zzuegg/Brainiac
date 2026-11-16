@@ -7,7 +7,9 @@ import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,18 +23,74 @@ import java.util.Map;
 public final class Weights {
 
     /** No weights: every child starts from scratch. */
-    public static final Weights NONE = new Weights(Map.of(), Map.of(), Map.of(), null);
+    public static final Weights NONE = new Weights(Map.of(), Map.of(), Map.of(), null, Map.of(), Map.of());
 
     private final Map<Long, Float> connections;
     private final Map<Integer, Float> biases;
     private final Map<Long, Float> head;
     private final float[] headBias;
+    /** Control weights of switching neurons, by connection. */
+    private final Map<Long, Float> controls;
+    /** Per switching neuron: "id/b" its control bias, "id/u/act" and "id/e/act" per candidate. */
+    private final Map<String, Float> switching;
 
-    Weights(Map<Long, Float> connections, Map<Integer, Float> biases, Map<Long, Float> head, float[] headBias) {
+    Weights(Map<Long, Float> connections, Map<Integer, Float> biases, Map<Long, Float> head, float[] headBias,
+            Map<Long, Float> controls, Map<String, Float> switching) {
         this.connections = connections;
         this.biases = biases;
         this.head = head;
         this.headBias = headBias;
+        this.controls = controls;
+        this.switching = switching;
+    }
+
+    /** The key of a switching neuron's control bias. */
+    static String biasKey(int id) {
+        return id + "/b";
+    }
+
+    /** The key of a switching neuron's scale ({@code u}) or offset ({@code e}) for a candidate. */
+    static String candidateKey(int id, char which, io.github.zzuegg.brainiac.nn.Activation a) {
+        return id + "/" + which + "/" + a;
+    }
+
+    /**
+     * Reads a switching region's control weights and own parameters into the maps.
+     *
+     * @param region the region
+     * @param from per incoming projection, the ids of its sources
+     * @param control per incoming projection, its control weights, row by row with
+     *     {@code width} entries per row
+     * @param mask per incoming projection, its connections, laid out like {@code control}
+     * @param own the control bias, scales and offsets, as {@link Brain#switchingValues}
+     *     gives them, with {@code width} entries per neuron row
+     * @param width the row length
+     * @param controls where control weights go, by connection
+     * @param switching where the own parameters go, by {@link #biasKey} and {@link #candidateKey}
+     */
+    static void readSwitching(Genome.Region region, List<int[]> from, List<float[]> control, List<boolean[]> mask,
+                              float[][] own, int width, Map<Long, Float> controls, Map<String, Float> switching) {
+        List<Genome.Neuron> ns = region.neurons();
+        for (int p = 0; p < from.size(); p++) {
+            int[] src = from.get(p);
+            for (int a = 0; a < src.length; a++) {
+                for (int b = 0; b < ns.size(); b++) {
+                    int k = a * width + b;
+                    if (mask.get(p)[k]) {
+                        controls.put(Genome.key(src[a], ns.get(b).id()), control.get(p)[k]);
+                    }
+                }
+            }
+        }
+        List<io.github.zzuegg.brainiac.nn.Activation> cs = region.switching().candidates();
+        for (int b = 0; b < ns.size(); b++) {
+            int id = ns.get(b).id();
+            switching.put(biasKey(id), own[0][b]);
+            for (int k = 0; k < cs.size(); k++) {
+                switching.put(candidateKey(id, 'u', cs.get(k)), own[1][k * width + b]);
+                switching.put(candidateKey(id, 'e', cs.get(k)), own[2][k * width + b]);
+            }
+        }
     }
 
     /** @return the number of stored connection weights */
@@ -42,7 +100,7 @@ public final class Weights {
 
     /** @return whether nothing is stored */
     public boolean isEmpty() {
-        return connections.isEmpty() && biases.isEmpty() && head.isEmpty();
+        return connections.isEmpty() && biases.isEmpty() && head.isEmpty() && controls.isEmpty();
     }
 
     /**
@@ -65,7 +123,11 @@ public final class Weights {
         b.putAll(biases);
         Map<Long, Float> h = new HashMap<>(other.head);
         h.putAll(head);
-        return new Weights(c, b, h, headBias != null ? headBias : other.headBias);
+        Map<Long, Float> ctl = new HashMap<>(other.controls);
+        ctl.putAll(controls);
+        Map<String, Float> sw = new HashMap<>(other.switching);
+        sw.putAll(switching);
+        return new Weights(c, b, h, headBias != null ? headBias : other.headBias, ctl, sw);
     }
 
     private static Dense head(Model model) {
@@ -112,11 +174,35 @@ public final class Weights {
                 b.put(r.neurons().get(i).id(), v[i]);
             }
         }
+        Map<Long, Float> ctl = new HashMap<>();
+        Map<String, Float> sw = new HashMap<>();
+        for (Genome.Region r : genome.regions()) {
+            if (r.switching() == null) {
+                continue;
+            }
+            List<int[]> from = new ArrayList<>();
+            List<float[]> control = new ArrayList<>();
+            List<boolean[]> mask = new ArrayList<>();
+            int k = 0;
+            for (Genome.Projection p : genome.projections()) {
+                if (p.size() == 0) {
+                    continue;
+                }
+                if (p.to().equals(r.name())) {
+                    from.add(ids(genome, p.from()));
+                    control.add(brain.controlValues(k));
+                    mask.add(brain.connectionMask(k));
+                }
+                k++;
+            }
+            readSwitching(r, from, control, mask, brain.switchingValues(r.name()), r.neurons().size(), ctl, sw);
+        }
         Dense dense = head(model);
-        return fromHead(genome, c, b, values(dense.parameters().get(0)), values(dense.parameters().get(1)));
+        return fromHead(genome, c, b, values(dense.parameters().get(0)), values(dense.parameters().get(1)), ctl, sw);
     }
 
-    static Weights fromHead(Genome genome, Map<Long, Float> c, Map<Integer, Float> b, float[] hw, float[] hb) {
+    static Weights fromHead(Genome genome, Map<Long, Float> c, Map<Integer, Float> b, float[] hw, float[] hb,
+                            Map<Long, Float> controls, Map<String, Float> switching) {
         int outputs = hb.length;
         Map<Long, Float> h = new HashMap<>();
         int row = 0;
@@ -128,7 +214,7 @@ public final class Weights {
                 row++;
             }
         }
-        return new Weights(c, b, h, hb);
+        return new Weights(c, b, h, hb, controls, switching);
     }
 
     /**
@@ -165,7 +251,38 @@ public final class Weights {
                 }
             }
             brain.setWeightValues(j, w);
+            if (genome.region(p.to()).switching() != null) {
+                float[] cv = brain.controlValues(j);
+                for (int a = 0; a < from.length; a++) {
+                    for (int b = 0; b < to.length; b++) {
+                        int k = a * to.length + b;
+                        Float v = mask[k] ? controls.get(Genome.key(from[a], to[b])) : null;
+                        if (v != null) {
+                            cv[k] = v;
+                            copied++;
+                        }
+                    }
+                }
+                brain.setControlValues(j, cv);
+            }
             j++;
+        }
+        for (Genome.Region r : genome.regions()) {
+            if (r.switching() == null) {
+                continue;
+            }
+            float[][] own = brain.switchingValues(r.name());
+            int width = r.neurons().size();
+            List<io.github.zzuegg.brainiac.nn.Activation> cs = r.switching().candidates();
+            for (int b = 0; b < width; b++) {
+                int id = r.neurons().get(b).id();
+                copied += copy(switching.get(biasKey(id)), own[0], b);
+                for (int k = 0; k < cs.size(); k++) {
+                    copied += copy(switching.get(candidateKey(id, 'u', cs.get(k))), own[1], k * width + b);
+                    copied += copy(switching.get(candidateKey(id, 'e', cs.get(k))), own[2], k * width + b);
+                }
+            }
+            brain.setSwitchingValues(r.name(), own);
         }
         for (Genome.Region r : genome.regions()) {
             float[] v = brain.biasValues(r.name());
@@ -201,6 +318,14 @@ public final class Weights {
             set(bias, headBias);
         }
         return copied;
+    }
+
+    private static int copy(Float value, float[] into, int at) {
+        if (value == null) {
+            return 0;
+        }
+        into[at] = value;
+        return 1;
     }
 
     private static void set(Var v, float[] values) {
