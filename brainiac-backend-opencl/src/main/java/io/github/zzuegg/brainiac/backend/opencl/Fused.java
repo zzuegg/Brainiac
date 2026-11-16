@@ -143,7 +143,7 @@ final class Fused {
      * whether every read of it is element for element at the chain's own index.
      */
     static Map<ClStorage, Boolean> matmuls(Expr e) {
-        Map<ClStorage, Boolean> out = new IdentityHashMap<>();
+        Map<ClStorage, Boolean> out = new java.util.LinkedHashMap<>();   // identity, in reading order
         matmuls(e, true, out);
         return out;
     }

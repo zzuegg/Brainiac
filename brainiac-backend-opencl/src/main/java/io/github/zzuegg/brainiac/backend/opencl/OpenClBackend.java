@@ -32,11 +32,9 @@ import java.util.HexFormat;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -735,7 +733,9 @@ public final class OpenClBackend implements Backend {
         if (!fusion) {
             return;
         }
-        Set<ClStorage> keep = Collections.newSetFromMap(new IdentityHashMap<>());
+        // in request order (storages compare by identity): the generated source, and so the
+        // compiled-kernel cache, must not depend on hash order
+        Set<ClStorage> keep = new java.util.LinkedHashSet<>();
         for (Storage st : storages) {
             ClStorage s = cl(st);
             if (s.pending instanceof Fused.MatMul) {
