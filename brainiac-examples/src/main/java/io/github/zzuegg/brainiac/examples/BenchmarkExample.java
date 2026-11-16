@@ -94,6 +94,7 @@ public final class BenchmarkExample {
         return switch (task.name()) {
             case "mnist", "fashion" -> MnistExample.model(28, 10);
             case "cifar10" -> CifarExample.resnet(3, 32, 10, 3);
+            case "shakespeare" -> LanguageExample.model(task.outputShape().dim(1), task.inputShape().dim(0), 128, 4, 4);
             case "shapes" -> MnistExample.model(16, 3);
             case "waves" -> SequenceExample.forecaster();
             case "reversal" -> SequenceExample.reverser();
@@ -215,7 +216,8 @@ public final class BenchmarkExample {
      * @param args a task name, {@code offline} or {@code all}; then model names or files;
      *        then {@code --epochs N}, {@code --limit N} (training samples), {@code --train},
      *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best},
-     *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16}
+     *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
+     *        {@code --precisions f32,bf16,f16} (one run per precision, to compare)
      */
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -231,6 +233,7 @@ public final class BenchmarkExample {
         Device device = Device.getDefault();
         DType dtype = DType.FLOAT32;
         DType mixed = null;
+        List<DType> precisions = null;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--device" -> device = switch (args[++i]) {
@@ -241,6 +244,13 @@ public final class BenchmarkExample {
                 };
                 case "--dtype" -> dtype = dtype(args[++i]);
                 case "--mixed" -> mixed = dtype(args[++i]);
+                case "--precisions" -> {
+                    precisions = new ArrayList<>();
+                    for (String p : args[++i].split(",")) {
+                        DType type = dtype(p);
+                        precisions.add(type == DType.FLOAT32 ? null : type);
+                    }
+                }
                 case "--epochs" -> epochs = Integer.parseInt(args[++i]);
                 case "--limit" -> limit = Integer.parseInt(args[++i]);
                 case "--train" -> trainLoaded = true;
@@ -257,40 +267,70 @@ public final class BenchmarkExample {
             case "offline" -> Tasks.offline();
             default -> List.of(Tasks.get(args[0]));
         };
-        Options options = new Options(epochs, !quiet, device, dtype, mixed);
+        if (precisions == null) {
+            precisions = new ArrayList<>();
+            precisions.add(mixed);
+        }
+        boolean comparing = precisions.size() > 1;
         System.out.println("device " + device + (dtype != DType.FLOAT32 ? ", " + dtype : "")
-                + (mixed != null ? ", mixed precision " + mixed : ""));
+                + (comparing ? ", comparing " + precisions.stream()
+                        .map(BenchmarkExample::precisionName).toList()
+                        : mixed != null ? ", mixed precision " + mixed : ""));
         List<Report> reports = new ArrayList<>();
         for (Task task : tasks) {
             Task t = limit == Integer.MAX_VALUE ? task : task.limit(limit, Integer.MAX_VALUE);
             System.out.printf("%n== %s: %s (%,d train, %,d test)%n", t.name(), t.description(), t.train().size(),
                     t.test().size());
             for (String name : models) {
-                Report r;
-                Path file = Path.of(name);
-                if (Files.isRegularFile(file)) {
-                    Model model = options.prepare(load(file));
-                    r = trainLoaded ? Benchmark.run(t, file.getFileName().toString(), model, options.settings())
-                            : Benchmark.evaluate(t, file.getFileName().toString(), model);
-                } else {
-                    Model model;
-                    try {
-                        model = options.prepare(model(name, t));
-                    } catch (IllegalArgumentException e) {
-                        System.out.println("skipping " + name + ": " + e.getMessage());
-                        continue;
+                for (DType precision : precisions) {
+                    String label = !comparing ? name
+                            : name + " " + precisionName(precision);
+                    Report r = runOne(t, name, label, new Options(epochs, !quiet, device, dtype, precision),
+                            trainLoaded);
+                    if (r != null) {
+                        if (confusion) {
+                            System.out.print(r.confusionTable());
+                        }
+                        reports.add(r);
                     }
-                    r = Benchmark.run(t, name, model, options.settings());
                 }
-                System.out.print(r);
-                if (confusion) {
-                    System.out.print(r.confusionTable());
-                }
-                reports.add(r);
             }
         }
         System.out.println();
         System.out.print(Benchmark.table(reports));
+    }
+
+    /** Trains (or loads) and tests one model; null if the named model does not fit the task. */
+    private static Report runOne(Task t, String name, String label, Options options, boolean trainLoaded) {
+        Report r;
+        Model model;
+        Path file = Path.of(name);
+        if (Files.isRegularFile(file)) {
+            model = options.prepare(load(file));
+            String fileLabel = file.getFileName() + label.substring(name.length());
+            r = trainLoaded ? Benchmark.run(t, fileLabel, model, options.settings())
+                    : Benchmark.evaluate(t, fileLabel, model);
+        } else {
+            try {
+                model = options.prepare(model(name, t));
+            } catch (IllegalArgumentException e) {
+                System.out.println("skipping " + name + ": " + e.getMessage());
+                return null;
+            }
+            r = Benchmark.run(t, label, model, options.settings());
+        }
+        System.out.print(r);
+        if (t.name().equals("shakespeare")) {
+            String vocabulary;
+            try {
+                vocabulary = LanguageExample.vocabulary(LanguageExample.load(LanguageExample.DATA_FILE));
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            System.out.println("sample:\n" + LanguageExample.generate(model, vocabulary, "ROMEO:\n", 400, 0.8f, 1)
+                    + "\n");
+        }
+        return r;
     }
 
     /** How models are placed and trained, from the command line. */
@@ -313,6 +353,12 @@ public final class BenchmarkExample {
                 }
             };
         }
+    }
+
+    /** @return f32 for plain training, else the mixed-precision type, such as bf16-mixed */
+    private static String precisionName(DType mixed) {
+        return mixed == null ? "f32" : (mixed == DType.BFLOAT16 ? "bf16" : mixed == DType.FLOAT16 ? "f16"
+                : mixed.name().toLowerCase()) + "-mixed";
     }
 
     private static DType dtype(String name) {
@@ -345,6 +391,8 @@ public final class BenchmarkExample {
                   --quiet       no per-epoch progress
                   --device D    cpu, gpu (OpenCL) or best
                   --dtype T     run the model in f64, f16 or bf16 instead of f32
-                  --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights""".formatted(Tasks.NAMES, MODELS));
+                  --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
+                  --precisions L  train each model once per precision, e.g. f32,bf16,f16
+                                (f16 and bf16 mean mixed precision), to compare them""".formatted(Tasks.NAMES, MODELS));
     }
 }

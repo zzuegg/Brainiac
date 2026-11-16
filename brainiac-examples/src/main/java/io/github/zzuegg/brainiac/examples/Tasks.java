@@ -23,6 +23,8 @@ import java.util.List;
  *   <tr><th>task</th><th>input</th><th>output</th><th>what</th></tr>
  *   <tr><td>mnist</td><td>[1, 28, 28]</td><td>[10]</td><td>handwritten digits (downloads 11 MB)</td></tr>
  *   <tr><td>cifar10</td><td>[3, 32, 32]</td><td>[10]</td><td>CIFAR-10 colour photos (downloads 160 MB)</td></tr>
+ *   <tr><td>shakespeare</td><td>[64]</td><td>[64, 65]</td><td>next character of Shakespeare's plays
+ *       (downloads 1 MB)</td></tr>
  *   <tr><td>fashion</td><td>[1, 28, 28]</td><td>[10]</td><td>Fashion-MNIST clothing photos (downloads 30 MB)</td></tr>
  *   <tr><td>shapes</td><td>[1, 16, 16]</td><td>[3]</td><td>synthetic bars and crosses</td></tr>
  *   <tr><td>waves</td><td>[24, 1]</td><td>[1]</td><td>forecast the next value of a noisy wave</td></tr>
@@ -40,7 +42,7 @@ public final class Tasks {
 
     /** The task names, in the order {@link #all()} returns them. */
     public static final List<String> NAMES =
-            List.of("mnist", "fashion", "cifar10", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
+            List.of("mnist", "fashion", "cifar10", "shakespeare", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
 
     /** Where Fashion-MNIST is downloaded to, relative to the working directory. */
     public static final Path FASHION_DIR = Path.of("data", "fashion-mnist");
@@ -64,6 +66,7 @@ public final class Tasks {
             case "mnist" -> mnist();
             case "fashion" -> fashionMnist();
             case "cifar10" -> cifar10();
+            case "shakespeare" -> shakespeare();
             case "shapes" -> shapes();
             case "waves" -> waves();
             case "reversal" -> reversal();
@@ -85,7 +88,7 @@ public final class Tasks {
     }
 
     /**
-     * Returns every task, downloading MNIST, Fashion-MNIST and CIFAR-10 if needed.
+     * Returns every task, downloading MNIST, Fashion-MNIST, CIFAR-10 and Shakespeare if needed.
      *
      * @return the tasks
      */
@@ -168,6 +171,37 @@ public final class Tasks {
                 .withDefaults(t -> t.optimizer(Optimizer.momentum(0.1f, 0.9f)).l2(2.5e-4f).batchSize(128)
                         .epochs(30).schedule(LearningRateSchedule.cosine(30, 0.001f))
                         .augment(Augmentation.cropAndFlip(3, 32, 32, 4)));
+    }
+
+    /**
+     * Character-level language modelling on Shakespeare's plays from
+     * {@link LanguageExample#DATA_FILE}: predict every next character of 64-character
+     * windows. The loss is in nats per character; by default 10 epochs of Adam.
+     *
+     * @return the task
+     */
+    public static Task shakespeare() {
+        return shakespeare(LanguageExample.DATA_FILE);
+    }
+
+    /**
+     * Character-level language modelling on Shakespeare's plays.
+     *
+     * @param file the text file, or where to download it
+     * @return the task
+     */
+    public static Task shakespeare(Path file) {
+        String text;
+        try {
+            text = LanguageExample.load(file);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return LanguageExample.task("shakespeare", text, LanguageExample.CONTEXT)
+                .describedAs("next character of Shakespeare's plays; loss in nats per character "
+                        + "(char-level nanoGPT is known to reach about 1.47, letter frequencies alone 3.3)")
+                .withDefaults(t -> t.optimizer(Optimizer.adam(0.002f)).clipGradientNorm(1).batchSize(64)
+                        .epochs(10).schedule(LearningRateSchedule.cosine(10, 0.0001f)));
     }
 
     private static Task images(String name, Path dir, String mirror) {
