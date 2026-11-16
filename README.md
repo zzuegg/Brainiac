@@ -35,6 +35,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
+| `brainiac-race` | Multi-car racing environment with tyre grip, slipstream and collisions, and a window to watch it |
 | `brainiac` | Facade: depend on this one module to get the whole API |
 | `brainiac-examples` | Runnable examples |
 | `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
@@ -332,6 +333,78 @@ they can be saved, moved to the GPU, or built from any layers. `ReplayBuffer` an
 - On the cliff walk, Q-learning takes the edge (-12) and SARSA the safer path (-16).
 - On cart-pole, REINFORCE and A2C reach the maximum of 500, PPO about 490 and DQN about 440. A random agent gets 23.
 - On the pendulum, PPO goes from -1786 to about -186, holding it within about 6 degrees of upright.
+
+## Racing: cars learn to overtake
+
+`brainiac-race` puts several cars on one track. `Race` is a `VectorEnvironment` (one
+entry per car, all stepped at once), so `Ppo.fit(race, steps, listener)` trains one
+policy that drives every car: self-play with shared weights.
+
+- **Physics**: each car is a bicycle model with a front and a rear axle. An axle's
+  sideways grip grows with its slip angle, peaks, and drops once it slides. The driven
+  rear axle shares its grip between accelerating and cornering, so braking late
+  understeers and too much throttle in a bend oversteers, drifts or spins.
+- **Slipstream**: air drag sets the top speed; close behind another car, in its path,
+  up to half the drag goes away, so the car behind gains and can pull out and pass.
+- **Collisions**: cars are two circles each and bounce off each other with
+  restitution and spin. Both cars are penalised by the impact speed. Leaving the road,
+  stalling or turning back is a crash: that car's episode ends and it respawns as a
+  ghost for a moment.
+- **Observations** (60 by default): own speed, drift, yaw rate, wheel angle, place
+  across the road, heading to the road, slipstream; 9 wall rays; the road's direction
+  80, 180 and 320 ahead; and for the 5 nearest cars their position, velocity, heading
+  and yaw rate relative to this car.
+- **Steerable wall sensors**: 5 on the left wall and 5 on the right. Each reports where
+  the wall is at a distance ahead that the car picks itself, from 20 to 500, so it can look
+  far down a straight and close into a bend. That adds 30 observations (90 in total).
+- **Actions**: steer and pedal (throttle above 0, brake below), plus one value per wall
+  sensor for how far ahead it looks; each -1..1.
+- **Rewards**: winning is the goal. The final standing earns +10 for the winner down to
+  -10 for last (and optionally every step, `positionReward`). Passing a car earns 1 and
+  being passed costs 1, a crash costs 5, and hitting another car costs both cars in
+  proportion to the impact speed. Progress along the track earns a little.
+
+Everything is set on `RaceConfig`: number of cars, track (`kidney`, `oval`,
+`serpent`, or your own `Track.of(...)`), road width, engine, brakes, steering,
+front and rear grip, slip angle, drag, slipstream length, width and strength,
+collisions and restitution, reward weights, ray count and spread, probe distances,
+how many cars are seen and how far.
+
+```java
+RaceConfig config = new RaceConfig().cars(12).track("serpent").rearGrip(520).nearestCars(4);
+Race race = new Race(config);
+Ppo ppo = Ppo.of(Nets.mlp(config.observationSize(), config.actionSize(), 1, 64, 64),
+        Nets.mlp(config.observationSize(), 1, 2, 64, 64), race.actionSpace()).initialLogStd(-0.5f);
+RaceWindow.open(race, "training", false);          // optional: watch while it trains
+ppo.fit(race, 3_000_000, RlListener.NONE);
+race.withOpponents(1, Driver.bot());               // or: one learner against hand-written bots
+```
+
+On a desktop:
+
+```
+./gradlew :brainiac-examples:run --args="race train"                 # opens a window, saves race.model
+./gradlew :brainiac-examples:run --args="race watch"                 # watch race.model drive in real time
+./gradlew :brainiac-examples:run --args="race watch --bots --cars 12 --track serpent"
+./gradlew :brainiac-examples:run --args="race train --cars 12 --set rearGrip=500 --set draftStrength=0.6"
+```
+
+In the window, `r` switches between real time and full speed, space pauses, and tab or a
+click picks the car whose rays and neighbours are drawn. Training at full speed shows the
+cars exploring; switch to real time to watch them drive.
+
+Training keeps the best policy in `race.model`: after every round the new policy races the
+best one so far (the bots at first), 4 cars each, and replaces it only if it finishes
+ahead. `--hidden 256,256` trains a bigger network, `--opponents past` races half the cars
+against the best policy so far instead of copies of itself.
+
+The numbers below are from the first version (fixed sensors, progress-heavy rewards).
+`race train` with those settings (8 cars on the kidney track, 3 million steps) takes about
+5 minutes on a 4-core CPU. In a 60-second race with every car driven by the trained
+policy, the cars average 17,600 units each (about 6.6 laps, close to top speed in the
+straights) with 8 crashes between them, against 12,100 and 33 crashes for the
+hand-written bots, which know the whole track. The PPO cars learn to run nose to tail in
+each other's slipstream and pass 50 to 150 times per race.
 
 ## A growing brain
 
