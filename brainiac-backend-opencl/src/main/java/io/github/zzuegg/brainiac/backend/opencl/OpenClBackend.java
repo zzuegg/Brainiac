@@ -1365,14 +1365,8 @@ public final class OpenClBackend implements Backend {
     private int flushInterval = Math.max(1, flushEvery);
     private int sinceFlush;
 
-    /** Host copies of uploads not yet known to be on the device. */
-    private final List<MemorySegment> uploading = new ArrayList<>();
-    private long uploadingBytes;
-
     /** Called after the host waited for the device: the next launches start it again quickly. */
     private void synced() {
-        uploading.clear();
-        uploadingBytes = 0;
         if (flushEvery < 0) {
             flushInterval = 1;
             sinceFlush = 0;
@@ -1468,25 +1462,16 @@ public final class OpenClBackend implements Backend {
      */
     private ClStorage uploaded(MemorySegment host, long size, DType dtype) {
         program(dtype);
-        long bytes = bucket(host.byteSize());
-        // a pooled or carved buffer, written without waiting: the copy stays alive until the
-        // host next waits for the device (creating a buffer from host memory costs much more on
-        // some drivers)
-        MemorySegment mem = buffer(bytes);
-        MemorySegment copy = Arena.ofAuto().allocate(host.byteSize(), 16);
-        copy.copyFrom(host);
-        cl.write(queue, mem, 0, copy, false);
-        uploading.add(copy);
-        uploadingBytes += copy.byteSize();
-        if (uploadingBytes > 64L << 20) {
-            cl.finish(queue);
-            synced();
-        }
+        long bytes = host.byteSize();
+        MemorySegment mem = createBuffer(CL.MEM_READ_WRITE | CL.MEM_COPY_HOST_PTR, bytes, host);
+        allocated.addAndGet(bytes);
         ClStorage.Buffer buffer = new ClStorage.Buffer();
         buffer.bytes = bytes;
         buffer.mem = mem;
         ClStorage s = new ClStorage(this, buffer, size, dtype);
-        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, budget / 4, slabs));
+        // pooled only when the pool's sizes can use it
+        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, bytes == bucket(bytes) ? budget / 4 : 0,
+                slabs));
         return s;
     }
 
@@ -2220,7 +2205,6 @@ public final class OpenClBackend implements Backend {
         if (cl != null) {
             cl.finish(queue);
             settled();
-            synced();
         }
     }
 }
