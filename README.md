@@ -454,7 +454,9 @@ Element-wise operations are fused: instead of one kernel per add, multiply or ac
 the backend records chains of them and generates one OpenCL C kernel per chain when the
 values are needed (by a matmul, a reduction or a download); a reduction also computes its
 input chain on the fly (long rows are split across a work-group), and reductions of the same
-shape that are needed at the same time (such as a layer's gradient sums) run as one kernel. A chain on a matrix
+shape that are needed at the same time (such as a layer's gradient sums) run as one kernel. A reduction that reads
+another of the same rows (a variance reading its mean, a softmax sum reading its maximum) runs as a second
+pass of that kernel. A chain on a matrix
 product (bias, activation, optimizer arithmetic) becomes the matmul kernel's epilogue.
 Convolution and pooling windows are never unrolled into memory: the matmul computes each window
 value as it loads it (forward and for the weight gradient), and a pooling reduction as it reduces;

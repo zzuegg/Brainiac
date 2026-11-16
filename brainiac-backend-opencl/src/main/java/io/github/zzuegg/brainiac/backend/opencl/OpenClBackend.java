@@ -32,9 +32,11 @@ import java.util.HexFormat;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -279,6 +281,18 @@ public final class OpenClBackend implements Backend {
         queue = lib.createQueue(context, device, profiling);
         cl = lib;
         program(DType.FLOAT32);
+        if (compiler != null) {
+            // kernels still compiling at exit (asked for late, such as by the last evaluation)
+            // finish, so they are in the cache next time instead of compiling again every run
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                compiler.shutdown();
+                try {
+                    compiler.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "opencl-compile-finish"));
+        }
         if (profiling) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 if (!kernelTimes.isEmpty() || !launched.isEmpty()) {
@@ -1636,6 +1650,25 @@ public final class OpenClBackend implements Backend {
         }
     }
 
+    /**
+     * Whether reduction {@code o} can run in the second pass of a kernel whose first pass
+     * computes {@code deps}: all of the same shape, needing no other reductions, and read only
+     * at the output each element is reduced into.
+     */
+    private boolean staged(ClStorage o, Fused.Reduce r, List<ClStorage> deps, Set<ClStorage> targets) {
+        if (r.op() == ReduceOp.ARGMAX.ordinal() && grouped(r.outer() * r.inner(), r.length())) {
+            return false;
+        }
+        for (ClStorage d : deps) {
+            if (!(d.pending instanceof Fused.Reduce q) || d.dtype != o.dtype || q.outer() != r.outer()
+                    || q.length() != r.length() || q.inner() != r.inner()
+                    || !Fused.reduces(Fused.whole(q.x())).isEmpty()) {
+                return false;
+            }
+        }
+        return Fused.readsOwnRow(Fused.whole(r.x()), targets, r.length(), r.inner());
+    }
+
     /** Whether a reduction shares each output across a work-group (long rows, few outputs). */
     private boolean grouped(long rows, long length) {
         return rows < 1024 && length > 256 && reduceGroup > 1;
@@ -1659,12 +1692,20 @@ public final class OpenClBackend implements Backend {
      */
     private void runReduces(ClStorage s) {
         Fused.Reduce r = (Fused.Reduce) s.pending;
-        readyReduces(Fused.whole(r.x()));
-        if (s.pending != r) {
-            return;   // ran with another group meanwhile
+        List<ClStorage> deps = Fused.reduces(Fused.whole(r.x()));
+        // reductions of the same rows that this one reads (a mean before a variance) run in a
+        // first pass of the same kernel
+        boolean dependent = !deps.isEmpty() && staged(s, r, deps, Set.copyOf(deps));
+        if (!dependent) {
+            readyReduces(Fused.whole(r.x()));
+            if (s.pending != r) {
+                return;   // ran with another group meanwhile
+            }
         }
-        List<ClStorage> group = new ArrayList<>();
-        group.add(s);
+        List<ClStorage> first = new ArrayList<>();
+        List<ClStorage> second = new ArrayList<>();
+        (dependent ? second : first).add(s);
+        List<ClStorage> later = new ArrayList<>();
         for (java.util.Iterator<java.lang.ref.WeakReference<ClStorage>> it = pendingReduces.iterator(); it.hasNext();) {
             ClStorage o = it.next().get();
             if (o == null || !(o.pending instanceof Fused.Reduce q)) {
@@ -1672,22 +1713,76 @@ public final class OpenClBackend implements Backend {
                 continue;
             }
             if (o != s && o.dtype == s.dtype && q.outer() == r.outer() && q.length() == r.length()
-                    && q.inner() == r.inner() && Fused.reduces(Fused.whole(q.x())).isEmpty()) {
-                group.add(o);
+                    && q.inner() == r.inner()) {
+                if (Fused.reduces(Fused.whole(q.x())).isEmpty()) {
+                    first.add(o);
+                } else {
+                    later.add(o);   // a second pass, if it reads only reductions of the first
+                }
             }
         }
-        for (ClStorage o : group) {
-            for (ClStorage p : Fused.matmuls(Fused.whole(((Fused.Reduce) o.pending).x())).keySet()) {
-                ready(p);
+        {
+            Set<ClStorage> known = Collections.newSetFromMap(new IdentityHashMap<>());
+            known.addAll(first);
+            for (ClStorage o : later) {
+                Fused.Reduce q = (Fused.Reduce) o.pending;
+                List<ClStorage> needs = Fused.reduces(Fused.whole(q.x()));
+                if (known.containsAll(needs) && staged(o, q, needs, known)) {
+                    second.add(o);
+                }
             }
+        }
+        List<ClStorage> all = new ArrayList<>(first);
+        all.addAll(second);
+        for (ClStorage o : all) {
+            if (o.pending instanceof Fused.Reduce q) {
+                for (ClStorage p : Fused.matmuls(Fused.whole(q.x())).keySet()) {
+                    ready(p);
+                }
+            }
+        }
+        if (!(s.pending instanceof Fused.Reduce) || s.pending != r) {
+            return;   // ran meanwhile, with a product's operand
+        }
+        first.removeIf(o -> !(o.pending instanceof Fused.Reduce));
+        second.removeIf(o -> !(o.pending instanceof Fused.Reduce));
+        boolean staged = !second.isEmpty();
+        if (dependent && !first.containsAll(deps)) {
+            for (ClStorage d : deps) {
+                ready(d);
+            }
+            if (s.pending == r) {
+                runReduces(s);
+            }
+            return;
         }
         long rows = r.outer() * r.inner();
         int size = grouped(rows, r.length()) ? reduceGroup : 1;
-        Fused.Kernel k = Fused.generateReduce(group, size);
-        while (k.argBytes() > Fused.MAX_ARG_BYTES && group.size() > 1) {
-            group = new ArrayList<>(group.subList(0, (group.size() + 1) / 2));
-            k = Fused.generateReduce(group, size);
+        Fused.Kernel k = null;
+        if (staged) {
+            k = Fused.generateReduce(first, second, size);
+            if (k.argBytes() > Fused.MAX_ARG_BYTES && !dependent) {
+                staged = false;   // too large for one kernel: the first pass on its own
+            } else if (k.argBytes() > Fused.MAX_ARG_BYTES) {
+                for (ClStorage d : deps) {
+                    ready(d);
+                }
+                if (s.pending == r) {
+                    runReduces(s);
+                }
+                return;
+            }
         }
+        if (!staged) {
+            second.clear();
+            k = Fused.generateReduce(first, List.of(), size);
+            while (k.argBytes() > Fused.MAX_ARG_BYTES && first.size() > 1) {
+                first = new ArrayList<>(first.subList(0, (first.size() + 1) / 2));
+                k = Fused.generateReduce(first, List.of(), size);
+            }
+        }
+        List<ClStorage> group = new ArrayList<>(first);
+        group.addAll(second);
         MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());
         if (kernel == null) {
             // compiling (or too large): the precompiled kernels sum in the same order
@@ -1711,7 +1806,7 @@ public final class OpenClBackend implements Backend {
             o.pendingNodes = 0;
         }
         Object[] args = new Object[k.args().size() + 4];
-        args[0] = s;
+        args[0] = group.get(0);
         args[1] = rows;
         args[2] = r.length();
         args[3] = r.inner();

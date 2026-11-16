@@ -220,7 +220,10 @@ class FusionTest {
                 Tensor y = x.mul(1.5f).sub(0.2f);
                 Tensor s = y.sum(1);
                 return List.of(s, y.mul(x).sum(1), x.max(1, false), y.square().mean(1), x.min(0, false),
-                        y.sub(s.reshape(dims[0], 1)).sum(1));   // depends on another reduction
+                        y.sub(s.reshape(dims[0], 1)).sum(1),   // depends on another reduction
+                        // a variance over columns: reads its mean at its own output, in one kernel
+                        x.sub(x.mean(0).reshape(1, dims[1])).square().mean(0),
+                        x.sub(x.mean(0).reshape(1, dims[1])).mul(y).sum(0));
             };
             List<Tensor> cpu = f.apply(input);
             List<Tensor> separate = f.apply(input.to(gpu));
