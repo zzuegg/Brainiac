@@ -301,7 +301,21 @@ public final class Ppo implements Learner {
 
     @Override
     public RlResult fit(Environment env, long steps, RlListener listener) {
-        return run(List.of(env), steps, listener);
+        return run(VectorEnvironment.of(List.of(env)), steps, listener);
+    }
+
+    /**
+     * Trains one policy on every entry of a vector environment. For a shared world with
+     * several actors, such as cars on one track, this is self-play: every actor is driven
+     * by the same policy and all of their experience trains it.
+     *
+     * @param envs the entries, stepped together
+     * @param steps the total environment steps, over all entries
+     * @param listener told about every finished episode
+     * @return every finished episode
+     */
+    public RlResult fit(VectorEnvironment envs, long steps, RlListener listener) {
+        return run(envs, steps, listener);
     }
 
     /**
@@ -319,7 +333,7 @@ public final class Ppo implements Learner {
         for (int i = 0; i < positive(count, "count"); i++) {
             envs.add(factory.get());
         }
-        return run(envs, steps, listener);
+        return run(VectorEnvironment.of(envs), steps, listener);
     }
 
     private List<Var> parameters() {
@@ -331,20 +345,17 @@ public final class Ppo implements Learner {
         return p;
     }
 
-    private RlResult run(List<Environment> envs, long steps, RlListener listener) {
+    private RlResult run(VectorEnvironment envs, long steps, RlListener listener) {
         if (optimizer == null) {
             optimizer = Optimizer.adam(learningRate);
         }
         float startRate = optimizer.learningRate();
-        int e = envs.size();
-        int obsSize = envs.get(0).observationSpace().size();
+        int e = envs.count();
+        int obsSize = envs.observationSpace().size();
         int actSize = head.actionSize();
         Device device = policy.device();
         Tracker tracker = new Tracker(listener);
-        float[][] obs = new float[e][];
-        for (int i = 0; i < e; i++) {
-            obs[i] = envs.get(i).reset(random.split());
-        }
+        float[][] obs = envs.reset(random.split());
         int n = rolloutSteps * e;
         float[] bObs = new float[n * obsSize];
         float[] bAct = new float[n * actSize];
@@ -370,21 +381,26 @@ public final class Ppo implements Learner {
                 }
                 float[] logp = head.logProb(out, Nets.rows(actions, actSize, device)).value()
                         .to(DType.FLOAT32).toArray();
+                float[][] envActions = new float[e][];
+                for (int i = 0; i < e; i++) {
+                    envActions[i] = head.toEnvironment(actions[i]);
+                }
+                Environment.Step[] stepped = envs.step(envActions);
                 for (int i = 0; i < e; i++) {
                     int k = t * e + i;
                     System.arraycopy(obs[i], 0, bObs, k * obsSize, obsSize);
                     System.arraycopy(actions[i], 0, bAct, k * actSize, actSize);
                     bLogp[k] = logp[i];
                     bVal[k] = values[i];
-                    Environment.Step s = envs.get(i).step(head.toEnvironment(actions[i]));
+                    Environment.Step s = stepped[i];
                     float r = s.reward();
                     if (s.truncated() && !s.terminated()) {
                         r += gamma * Nets.row(value, s.observation())[0];
                     }
                     bRew[k] = r;
                     bDone[k] = s.done() ? 1 : 0;
-                    tracker.step(s);
-                    obs[i] = s.done() ? envs.get(i).reset(random.split()) : s.observation();
+                    tracker.step(i, s);
+                    obs[i] = s.done() ? envs.reset(i, random.split()) : s.observation();
                 }
             }
             float[] last = value.forward(Var.of(Nets.rows(obs, obsSize, device)), false).value()

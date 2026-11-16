@@ -1,29 +1,40 @@
 package io.github.zzuegg.brainiac.rl;
 
-/** Counts steps and rewards and reports finished episodes. */
+/** Counts steps and episodes during training and tells the listener about each episode. */
 final class Tracker {
 
     final RlResult result = new RlResult();
     private final RlListener listener;
     private long steps;
-    private int episodeSteps;
-    private double episodeReward;
+    private int[] episodeSteps = new int[1];
+    private double[] episodeReward = new double[1];
 
     Tracker(RlListener listener) {
         this.listener = listener == null ? RlListener.NONE : listener;
     }
 
-    /** Records one step; returns whether the episode ended. */
     boolean step(Environment.Step s) {
+        return step(0, s);
+    }
+
+    /**
+     * Records a step of one of several environments run side by side; each keeps its own
+     * episode length and return.
+     */
+    boolean step(int env, Environment.Step s) {
+        if (env >= episodeSteps.length) {
+            episodeSteps = java.util.Arrays.copyOf(episodeSteps, env + 1);
+            episodeReward = java.util.Arrays.copyOf(episodeReward, env + 1);
+        }
         steps++;
-        episodeSteps++;
-        episodeReward += s.reward();
+        episodeSteps[env]++;
+        episodeReward[env] += s.reward();
         result.steps(steps);
         if (s.done()) {
-            Episode e = new Episode(result.episodes().size() + 1, episodeSteps, episodeReward, steps);
+            Episode e = new Episode(result.episodes().size() + 1, episodeSteps[env], episodeReward[env], steps);
             result.add(e);
-            episodeSteps = 0;
-            episodeReward = 0;
+            episodeSteps[env] = 0;
+            episodeReward[env] = 0;
             listener.onEpisode(e, result);
             return true;
         }
