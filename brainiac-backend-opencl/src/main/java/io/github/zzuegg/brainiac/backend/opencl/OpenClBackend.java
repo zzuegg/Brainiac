@@ -347,7 +347,10 @@ public final class OpenClBackend implements Backend {
         cl = lib;
         slabs = new Slabs(Math.max(256, (lib.deviceLong(device, CL.DEVICE_MEM_BASE_ADDR_ALIGN) & 0xFFFFFFFFL) / 8));
         String sub = System.getProperty("brainiac.opencl.subBuffers");
-        subBuffers = sub != null ? Boolean.parseBoolean(sub) : subBuffersFaster();
+        // a CPU device (PoCL) has no allocation cost to save, and its sub-buffers were seen to
+        // abort a test run ("buf->parent == NULL") when the timing happened to pick them
+        boolean cpuDevice = (lib.deviceLong(device, CL.DEVICE_TYPE) & CL.DEVICE_TYPE_CPU) != 0;
+        subBuffers = sub != null ? Boolean.parseBoolean(sub) : !cpuDevice && subBuffersFaster();
         program(DType.FLOAT32);
         if (compiler != null) {
             // kernels still compiling at exit (asked for late, such as by the last evaluation)
@@ -551,7 +554,9 @@ public final class OpenClBackend implements Backend {
         boolean fresh = buffersCreated != created;
         launchIndex++;
         long hostStart = profiling ? System.nanoTime() : 0;
-        // a kernel keeps its arguments between launches: set only those that changed
+        // a kernel keeps its arguments between launches: set only those that changed. Buffers
+        // compare by their handle object, not its address: a released handle's address can come
+        // back for a new buffer, which the driver must then be told about
         Object[] last = kernelArgs.computeIfAbsent(k.address(), a -> new Object[args.length]);
         if (last.length < args.length) {
             last = Arrays.copyOf(last, args.length);
@@ -561,12 +566,12 @@ public final class OpenClBackend implements Backend {
         try {
             for (int i = 0; i < args.length; i++) {
                 Object key = switch (args[i]) {
-                    case ClStorage s -> s.mem().address();
-                    case Temp t -> t.mem().address();
-                    case MemorySegment m -> m.address();
+                    case ClStorage s -> s.mem();
+                    case Temp t -> t.mem();
+                    case MemorySegment m -> m;
                     default -> args[i];
                 };
-                if (key.equals(last[i])) {
+                if (key instanceof MemorySegment ? key == last[i] : key.equals(last[i])) {
                     continue;
                 }
                 if (arena == null) {
