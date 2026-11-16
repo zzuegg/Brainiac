@@ -434,14 +434,17 @@ Two switches change how candidates train:
   exactly as it would alone (same start, batches and element-wise optimizer, its own
   learning rate folded into its weights). On the CPU OpenCL driver a spiral generation
   needs 2,265 kernel launches instead of 9,464, with identical scores; it is meant for
-  GPUs, where launches dominate for small networks.
+  GPUs, where launches dominate for small networks, and is **on by default when training
+  on a GPU** (`--one-by-one` turns it off).
 - `inheritWeights(true)` (`--inherit`) starts every child from its parents' trained
   weights wherever it shares a connection, neuron or output with them (matched by neuron
   id); only new parts start random.
 
 Per-neuron activations are computed as `sum_k f_k(x) * mask_k`, element-wise only, so the
 OpenCL backend fuses them: forward and backward each take one kernel launch, the same as a
-single shared activation, even with all seven default activations mixed.
+single shared activation, even with all seven default activations mixed. On a GPU every
+mixed region computes all seven, used or not, so candidates that differ only in their mix
+of activations share one generated kernel instead of compiling new ones every generation.
 
 ```
 ./gradlew :brainiac-examples:run --args="evolve spiral --threads 4"

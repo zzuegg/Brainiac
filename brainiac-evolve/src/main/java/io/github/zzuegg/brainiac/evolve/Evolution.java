@@ -129,7 +129,8 @@ public final class Evolution {
     private Consumer<Trainer> trainerSettings = t -> { };
     private Consumer<Generation> listener = g -> { };
     private boolean inheritWeights;
-    private boolean batched;
+    /** null: on for a GPU, off for the CPU */
+    private Boolean batched;
     private int stackedRuns;
     private volatile RuntimeException firstFailure;
 
@@ -349,7 +350,9 @@ public final class Evolution {
 
     /**
      * @param count the best new candidates of each generation trained again with a second
-     *     seed, their fitness averaged; default 3, 0 turns it off
+     *     seed, their fitness averaged; default 3, 0 turns it off. When training
+     *     {@link #batched(boolean) stacked}, every new candidate gets the second run, since
+     *     that costs one stacked run instead of one per round.
      * @return this
      */
     public Evolution rescore(int count) {
@@ -416,7 +419,9 @@ public final class Evolution {
      * alone (same starting weights, batches and element-wise optimizer, its own learning
      * rate); only trainer settings that look at all weights at once, such as gradient-norm
      * clipping, now see the whole population. Needs a task with flat outputs and no front
-     * end; otherwise candidates are trained one by one. Off by default.
+     * end; otherwise candidates are trained one by one. By default on when training on a
+     * GPU, where one by one is mostly launch overhead for small candidates, and off on the
+     * CPU, where it gains little and {@link #threads} can train candidates in parallel.
      *
      * @param on whether to train candidates together
      * @return this
@@ -424,6 +429,16 @@ public final class Evolution {
     public Evolution batched(boolean on) {
         this.batched = on;
         return this;
+    }
+
+    /** @return whether candidates are trained stacked, see {@link #batched(boolean)} */
+    public boolean batched() {
+        return batched != null ? batched : onGpu();
+    }
+
+    private boolean onGpu() {
+        Device d = device != null ? device : Device.getDefault();
+        return d.kind() == Device.Kind.GPU;
     }
 
     /**
@@ -467,8 +482,7 @@ public final class Evolution {
      * where nothing is compiled, only the activations in use.
      */
     private List<Activation> palette() {
-        Device d = device != null ? device : Device.getDefault();
-        return d.kind() == Device.Kind.GPU ? Mutations.DEFAULT_ACTIVATIONS : List.of();
+        return onGpu() ? Mutations.DEFAULT_ACTIVATIONS : List.of();
     }
 
     /**
@@ -624,7 +638,7 @@ public final class Evolution {
 
         List<Generation> history = new ArrayList<>();
         List<Individual> ranked = List.of();
-        ExecutorService pool = threads > 1 && !batched ? Executors.newFixedThreadPool(threads) : null;
+        ExecutorService pool = threads > 1 && !batched() ? Executors.newFixedThreadPool(threads) : null;
         try {
             for (int gen = 0; gen < generations; gen++) {
                 long t0 = System.nanoTime();
@@ -654,8 +668,11 @@ public final class Evolution {
                 // top few have all had one: a lucky first score cannot stay on top
                 pop.sort(RANK);
                 int retrained = 0;
+                // stacked, a second opinion for everyone costs one more run, while checking a
+                // few at a time costs a run per round: give it to everyone at once
+                int checked = rescore > 0 && batched() ? pop.size() : rescore;
                 while (true) {
-                    List<Individual> top = pop.stream().map(i -> seen.get(i.genome())).distinct().limit(rescore)
+                    List<Individual> top = pop.stream().map(i -> seen.get(i.genome())).distinct().limit(checked)
                             .filter(i -> i.evaluations() == 1).toList();
                     if (top.isEmpty()) {
                         break;
@@ -732,7 +749,7 @@ public final class Evolution {
 
     private List<Trained> evaluate(List<Candidate> candidates, Dataset train, Dataset valid, long seed,
                                    ExecutorService pool) {
-        if (batched && frontEnd == null && task.outputShape().rank() == 1) {
+        if (batched() && frontEnd == null && task.outputShape().rank() == 1) {
             return evaluateBatched(candidates, train, valid, seed);
         }
         List<Trained> out = new ArrayList<>();
