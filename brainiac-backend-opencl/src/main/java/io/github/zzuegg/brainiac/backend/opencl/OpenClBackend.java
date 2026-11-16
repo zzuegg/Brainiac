@@ -583,7 +583,8 @@ public final class OpenClBackend implements Backend {
         }
         Fused.Expr pa = prologue(mm.a());
         Fused.Expr pb = prologue(mm.b());
-        Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates, pa, pb);
+        Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates, pa, layout(mm, pa, true), pb,
+                layout(mm, pb, false));
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             return false;
         }
@@ -630,6 +631,35 @@ public final class OpenClBackend implements Backend {
             unused = createBuffer(CL.MEM_READ_WRITE, 256, MemorySegment.NULL);
         }
         return unused;
+    }
+
+    /**
+     * How a matmul reads an operand that is an unrolled image: 1 when its rows and columns are
+     * the image's, 2 when transposed, 0 otherwise (or when it is not one).
+     */
+    private static int layout(Fused.MatMul mm, Fused.Expr e, boolean first) {
+        if (!(e instanceof Fused.Im2col c) || mm.global()[2] != 1) {
+            return 0;
+        }
+        Object[] a = mm.args();
+        int base = first ? 9 : 12;
+        long width = (long) c.channels() * c.ks();
+        long offset = (Long) a[base];
+        long row = (Long) a[base + 1];
+        long col = (Long) a[base + 2];
+        if (offset != 0) {
+            return 0;
+        }
+        // rows of the operand: M for the first, K for the second
+        int rows = first ? (Integer) a[3] : (Integer) a[4];
+        int cols = first ? (Integer) a[4] : (Integer) a[5];
+        if ((row == width || rows == 1) && (col == 1 || cols == 1) && cols == width) {
+            return 1;
+        }
+        if ((row == 1 || rows == 1) && (col == width || cols == 1) && rows == width) {
+            return 2;
+        }
+        return 0;
     }
 
     /** Whether a matmul operand is left pending for the matmul kernel to compute as it loads it. */
@@ -1716,7 +1746,7 @@ public final class OpenClBackend implements Backend {
         Fused.Expr pa = prologue(mm.a());
         Fused.Expr pb = prologue(mm.b());
         if (pa != null || pb != null) {
-            Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, pb);
+            Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, layout(mm, pa, true), pb, layout(mm, pb, false));
             MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());
             if (kernel != null) {
                 s.pending = null;

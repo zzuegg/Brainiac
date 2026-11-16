@@ -171,16 +171,20 @@ final class Fused {
      * buffer and the chain's value to the result. With {@code root} null the product is only
      * stored to the result. A non-null {@code a} or {@code b} is the pending value of that
      * operand, computed where the kernel loads it instead of read from its buffer (an unrolled
-     * image, so the unrolled copy is never stored). Arguments after {@code out, total} are the
+     * image, so the unrolled copy is never stored). Its layout is 1 when the operand's rows and
+     * columns are the image's, 2 when transposed, 0 otherwise (read by linear index). Arguments after {@code out, total} are the
      * matmul's, then {@link Kernel#args}.
      */
-    static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, Expr b) {
+    static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
+            int bLayout) {
         Gen g = new Gen();
         g.root = store ? "i" : null;
         g.base = base;
         g.argBytes += 8 * 3 + 4 * 3 + 8 * 9;
-        String loadA = g.load(a, "ma", "row < M && ac < K", "aBase + (long) row * aRow + (long) ac * aCol");
-        String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol");
+        String loadA = g.load(a, "ma", "row < M && ac < K", "aBase + (long) row * aRow + (long) ac * aCol",
+                aLayout == 1 ? "row" : aLayout == 2 ? "ac" : null, aLayout == 1 ? "ac" : "row");
+        String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol",
+                bLayout == 1 ? "br" : bLayout == 2 ? "col" : null, bLayout == 1 ? "col" : "br");
         String v = root == null ? null : g.eval(root, "i");
         String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
                 + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
@@ -555,24 +559,11 @@ final class Fused {
                 case MatMul m -> throw new IllegalStateException("a matrix product inside a chain");
                 case Reduce r -> throw new IllegalStateException("a reduction inside a chain");
                 case Im2col c -> {
-                    String table = buffer(c.table());
                     String width = arg((long) c.channels() * c.ks());
-                    String positions = arg(c.positions());
-                    String ks = arg(c.ks());
                     String row = "q" + next++;
-                    String col = "q" + next++;
-                    String cell = "q" + next++;
-                    String at = "q" + next++;
-                    body.append("    long ").append(row).append(" = ").append(idx).append(" / ").append(width)
-                            .append(";\n    long ").append(col).append(" = ").append(idx).append(" % ").append(width)
-                            .append(";\n    int ").append(cell).append(" = ").append(table).append("[(").append(row)
-                            .append(" % ").append(positions).append(") * ").append(ks).append(" + ").append(col)
-                            .append(" % ").append(ks).append("];\n    long ").append(at).append(" = ((").append(row)
-                            .append(" / ").append(positions).append(") * ").append(arg(c.channels())).append(" + ")
-                            .append(col).append(" / ").append(ks).append(") * ").append(arg(c.img()))
-                            .append(" + max(").append(cell).append(", 0);\n");
-                    String v = read(c.x().storage(), at);
-                    yield let(cell + " < 0 ? " + literal(c.pad()) + " : " + v);
+                    body.append("    int ").append(row).append(" = (int) (").append(idx).append(" / ").append(width)
+                            .append(");\n");
+                    yield window(c, row, "(int) (" + idx + " % " + width + ")");
                 }
                 case Const c -> {
                     // one argument and one value per distinct number in the kernel
@@ -684,18 +675,52 @@ final class Fused {
          * or {@code value} computed at the element's index (within the tile loop, so nothing it
          * computes is visible to the epilogue).
          */
-        String load(Expr value, String buffer, String inside, String index) {
+        String load(Expr value, String buffer, String inside, String index, String row, String col) {
             if (value == null) {
                 return "        TILE = " + inside + " ? LOAD(" + buffer + ", " + index + ") : (ACC) 0;\n";
             }
             int mark = body.length();
             String at = "p" + next++;
-            String v = eval(value, at);
+            // an unrolled image read in its own row and column order needs no index arithmetic
+            String v = row != null && value instanceof Im2col c ? window(c, row, col) : eval(value, at);
             String computed = body.substring(mark);
             body.setLength(mark);
             values.clear();   // values computed inside the loop are out of scope after it
             return "        TILE = (ACC) 0;\n        if (" + inside + ") {\n    long " + at + " = " + index + ";\n"
                     + computed + "        TILE = " + v + ";\n        }\n";
+        }
+
+        /**
+         * The value of an unrolled image at row {@code row} and column {@code col} (int
+         * expressions: rows, columns and image indices fit an int, and int division is
+         * much cheaper than long on most devices).
+         */
+        String window(Im2col c, String row, String col) {
+            String table = buffer(c.table());
+            String positions = intArg(c.positions());
+            String ks = intArg(c.ks());
+            String r = "q" + next++;
+            String k = "q" + next++;
+            String cell = "q" + next++;
+            String at = "q" + next++;
+            body.append("    int ").append(r).append(" = ").append(row).append(";\n")
+                    .append("    int ").append(k).append(" = ").append(col).append(";\n")
+                    .append("    int ").append(cell).append(" = ").append(table).append("[(").append(r).append(" % ")
+                    .append(positions).append(") * ").append(ks).append(" + ").append(k).append(" % ").append(ks)
+                    .append("];\n")
+                    .append("    int ").append(at).append(" = (").append(r).append(" / ").append(positions)
+                    .append(" * ").append(intArg(c.channels())).append(" + ").append(k).append(" / ").append(ks)
+                    .append(") * ").append(intArg(c.img())).append(" + max(").append(cell).append(", 0);\n");
+            String v = read(c.x().storage(), at);
+            return let(cell + " < 0 ? " + literal(c.pad()) + " : " + v);
+        }
+
+        private String intArg(int value) {
+            String a = "a" + args.size();
+            params.append(", int ").append(a);
+            args.add(value);
+            argBytes += 8;
+            return a;
         }
 
         /** A device table of ints, one argument per distinct table. */
