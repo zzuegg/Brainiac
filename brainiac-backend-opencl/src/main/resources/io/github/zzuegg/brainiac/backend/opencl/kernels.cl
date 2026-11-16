@@ -249,14 +249,19 @@ __kernel void argmax(__global const T* x, __global float* y, long outer, long le
 
 // z[b] = a[b] x b[b] for [m, k] x [k, n] matrices; strides in elements between batch entries.
 // a(i, j) is a[aOff + batch * strideA + i * aRow + j * aCol], b likewise, so transposed or
-// sliced operands are read in place.
+// sliced operands are read in place. With splits > 1, the third dimension also splits k into
+// pieces of chunk (a multiple of TS) summed separately: entry s of batch b is written to
+// z[(b * splits + s) * strideZ ...], and the pieces are added up afterwards.
 __kernel void matmul(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
                      long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol,
-                     long bOff, long bRow, long bCol) {
+                     long bOff, long bRow, long bCol, int splits, int chunk) {
     // each work item computes WPT outputs of a column, RTS rows apart, so a value loaded from
     // the B tile serves WPT products; every output still sums k in order
     int col = get_global_id(0);
-    long batch = get_global_id(2);
+    long piece = get_global_id(2);
+    long batch = piece / splits;
+    int from = (int) (piece % splits) * chunk;
+    int to = min(k, from + chunk);
     int lc = get_local_id(0);
     int lr = get_local_id(1);
     int row0 = get_group_id(1) * TS + lr;
@@ -268,7 +273,7 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
     for (int w = 0; w < WPT; w++) {
         acc[w] = (ACC) 0;
     }
-    for (int t = 0; t < k; t += TS) {
+    for (int t = from; t < to; t += TS) {
         int ac = t + lc;
         for (int w = 0; w < WPT; w++) {
             int row = row0 + w * RTS;
@@ -290,7 +295,7 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
     for (int w = 0; w < WPT; w++) {
         int row = row0 + w * RTS;
         if (row < m && col < n) {
-            STORE(z, batch * strideZ + (long) row * n + col, acc[w]);
+            STORE(z, piece * strideZ + (long) row * n + col, acc[w]);
         }
     }
 }

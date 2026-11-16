@@ -132,6 +132,12 @@ class OpenClBackendTest {
         Tensor a = random(3, 67, 131);
         Tensor b = random(4, 131, 45);
         same(DType.FLOAT32, "odd matmul", t -> t.matmul(b.to(t.device())), a);
+        // few outputs and a long k: summed in pieces
+        Tensor wide = random(6, 9, 8200);
+        Tensor tall = random(7, 8200, 21);
+        same(DType.FLOAT32, "split matmul", t -> t.matmul(tall.to(t.device())), wide);
+        same(DType.FLOAT32, "split batched matmul", t -> t.reshape(1, 9, 8200).expand(Shape.of(2, 9, 8200)).add(0)
+                .matmul(tall.to(t.device()).reshape(1, 8200, 21).expand(Shape.of(2, 8200, 21)).mul(2)), wide);
         Tensor big = random(5, 300_000);
         same(DType.FLOAT32, "long sum", t -> t.sum().reshape(1).mul(1e-3f), big);
         same(DType.FLOAT32, "long max", Tensor::max, big);

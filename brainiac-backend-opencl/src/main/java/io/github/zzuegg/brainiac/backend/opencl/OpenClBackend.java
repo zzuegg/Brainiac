@@ -1962,7 +1962,7 @@ public final class OpenClBackend implements Backend {
         Operand x = operand(a, o.dtype, batch, m, k);
         Operand y = operand(b, o.dtype, batch, k, n);
         Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
-                x.row(), x.col(), y.offset(), y.row(), y.col()};
+                x.row(), x.col(), y.offset(), y.row(), y.col(), 1, k};
         if (fusable(o, x.storage(), y.storage()) && (long) m * n * batch > 0) {
             // recorded: an element-wise chain on the product can become the kernel's epilogue,
             // and an unrolled image operand is computed as the kernel loads it
@@ -1980,7 +1980,66 @@ public final class OpenClBackend implements Backend {
             o.pendingGeneration = generation;
             return;
         }
-        run(o.dtype, "matmul", global, local, args);
+        if (global[0] * global[1] * global[2] == 0) {
+            return;
+        }
+        launchMatMul(o, "matmul", program(o.dtype).kernels().get("matmul"), global, local, args, 0);
+        generation++;
+    }
+
+    /**
+     * In how many pieces a product with few outputs and a long k is summed: pieces run on
+     * work-groups of their own, as one tile of outputs summing all of k keeps most of the
+     * device idle. 1 when not worth it (or for narrow types, whose partial sums would round).
+     */
+    private int splits(DType type, long groups, int k) {
+        if (type != DType.FLOAT32 && type != DType.FLOAT64) {
+            return 1;
+        }
+        long wanted = Math.min(SPLIT_GROUPS / Math.max(1, groups), k / ((long) tile * SPLIT_TILES));
+        return (int) Math.max(1, wanted);
+    }
+
+    /** Work-groups that keep a device busy when splitting a product's sums. */
+    private static final long SPLIT_GROUPS = 128;
+    /** The fewest k tiles a piece of a split product sums. */
+    private static final int SPLIT_TILES = 16;
+
+    /**
+     * Launches a matrix product with its arguments ({@code args[first]} being its a operand, as
+     * in {@link Fused.MatMul#args}), summing a long k in pieces into a scratch buffer that one
+     * reduction then adds up in order, when the product has too few outputs to fill the device.
+     */
+    private void launchMatMul(ClStorage out, String name, MemorySegment kernel, long[] global, long[] local,
+            Object[] args, int first) {
+        int m = (Integer) args[first + 3];
+        int k = (Integer) args[first + 4];
+        int n = (Integer) args[first + 5];
+        long batch = global[2];
+        long groups = global[0] / local[0] * (global[1] / local[1]) * batch;
+        int splits = splits(out.dtype, groups, k);
+        int chunk = (k + splits - 1) / splits;
+        chunk = (chunk + tile - 1) / tile * tile;
+        splits = (k + chunk - 1) / chunk;
+        if (splits <= 1) {
+            launch(name, kernel, global, local, args);
+            return;
+        }
+        long count = (long) m * n;
+        ClStorage parts = raw(batch * splits * count, out.dtype);
+        Object[] split = args.clone();
+        split[first + 2] = parts;
+        split[first + 8] = count;
+        split[first + 15] = splits;
+        split[first + 16] = chunk;
+        if (first > 0) {
+            split[0] = parts;   // a generated kernel's output
+            split[1] = parts.size;
+        }
+        launch(name, kernel, new long[] {global[0], global[1], batch * splits}, local, split);
+        quietRun(out.dtype, "reduce_rows", new long[] {batch * count}, null, ReduceOp.SUM.ordinal(), parts, out,
+                batch * count, (long) splits, count);
+        release(parts);
     }
 
     /** Runs a recorded matrix product with the precompiled kernel. */
@@ -1994,15 +2053,15 @@ public final class OpenClBackend implements Backend {
             if (kernel != null) {
                 s.pending = null;
                 s.pendingNodes = 0;
-                launch("fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
-                matmulArgs(s, mm, k, pa != null, pb != null));
+                launchMatMul(s, "fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
+                        matmulArgs(s, mm, k, pa != null, pb != null), 2);
                 return;
             }
             eagerFallbacks++;   // compiling: the operands are computed into their buffers first
         }
         s.pending = null;
         s.pendingNodes = 0;
-        quietRun(s.dtype, "matmul", mm.global(), mm.local(), mm.args());
+        launchMatMul(s, "matmul", program(s.dtype).kernels().get("matmul"), mm.global(), mm.local(), mm.args(), 0);
     }
 
     /** A matrix operand read in place: element (i, j) of batch b at offset + b*batch + i*row + j*col. */
