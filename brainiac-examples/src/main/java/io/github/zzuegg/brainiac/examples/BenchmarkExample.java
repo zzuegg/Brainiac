@@ -93,7 +93,8 @@ public final class BenchmarkExample {
      * @return an untrained model
      */
     public static Model defaultModel(Task task) {
-        return switch (task.name()) {
+        // every tokenizer of shakespeare gets the same model, sized to its vocabulary
+        return switch (task.name().startsWith("shakespeare/") ? "shakespeare" : task.name()) {
             case "mnist", "fashion" -> MnistExample.model(28, 10);
             case "cifar10" -> CifarExample.resnet(3, 32, 10, 3);
             case "shakespeare" -> LanguageExample.model(task.outputShape().dim(1), task.inputShape().dim(0), 128, 4, 4);
@@ -236,7 +237,8 @@ public final class BenchmarkExample {
      *        then {@code --epochs N}, {@code --limit N} (training samples), {@code --train},
      *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best},
      *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
-     *        {@code --precisions f32,bf16,f16} (one run per precision, to compare)
+     *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
+     *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer)
      */
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -253,6 +255,7 @@ public final class BenchmarkExample {
         DType dtype = DType.FLOAT32;
         DType mixed = null;
         List<DType> precisions = null;
+        List<String> tokenizers = null;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--device" -> device = switch (args[++i]) {
@@ -270,6 +273,7 @@ public final class BenchmarkExample {
                         precisions.add(type == DType.FLOAT32 ? null : type);
                     }
                 }
+                case "--tokenizers", "--tokenizer" -> tokenizers = List.of(args[++i].split(","));
                 case "--epochs" -> epochs = Integer.parseInt(args[++i]);
                 case "--limit" -> limit = Integer.parseInt(args[++i]);
                 case "--train" -> trainLoaded = true;
@@ -284,6 +288,8 @@ public final class BenchmarkExample {
         List<Task> tasks = switch (args[0]) {
             case "all" -> Tasks.all();
             case "offline" -> Tasks.offline();
+            case "shakespeare" -> tokenizers == null ? List.of(Tasks.shakespeare())
+                    : tokenizers.stream().map(Tasks::shakespeare).toList();
             default -> List.of(Tasks.get(args[0]));
         };
         if (precisions == null) {
@@ -339,15 +345,17 @@ public final class BenchmarkExample {
             r = Benchmark.run(t, label, model, options.settings());
         }
         System.out.print(r);
-        if (t.name().equals("shakespeare")) {
-            String vocabulary;
+        if (t.name().startsWith("shakespeare")) {
+            String spec = t.name().contains("/") ? t.name().substring(t.name().indexOf('/') + 1) : "char";
+            io.github.zzuegg.brainiac.data.Tokenizer tokenizer;
             try {
-                vocabulary = LanguageExample.vocabulary(LanguageExample.load(LanguageExample.DATA_FILE));
+                tokenizer = LanguageExample.tokenizer(spec, LanguageExample.load(LanguageExample.DATA_FILE));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
-            System.out.println("sample:\n" + LanguageExample.generate(model, vocabulary, "ROMEO:\n", 400, 0.8f, 1)
-                    + "\n");
+            System.out.println("sample:\n" + LanguageExample.generate(model, tokenizer, "ROMEO:\n",
+                    (int) Math.ceil(400 / tokenizer.charactersPerToken("ROMEO:\nWhat light through yonder window "
+                            + "breaks? It is the east, and Juliet is the sun.")), 0.8f, 1) + "\n");
         }
         return r;
     }
@@ -412,6 +420,8 @@ public final class BenchmarkExample {
                   --dtype T     run the model in f64, f16 or bf16 instead of f32
                   --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
                   --precisions L  train each model once per precision, e.g. f32,bf16,f16
-                                (f16 and bf16 mean mixed precision), to compare them""".formatted(Tasks.NAMES, MODELS));
+                                (f16 and bf16 mean mixed precision), to compare them
+                  --tokenizers L  for shakespeare, one run per tokenizer, e.g.
+                                char,byte,word:2048,bpe:1024,wordpiece:1024,unigram:1024""".formatted(Tasks.NAMES, MODELS));
     }
 }

@@ -280,6 +280,37 @@ vectors, ignoring order) gets about 87%, and a bi-LSTM and a masked transformer 
 because they read "not" and "but" in order. It then prints each word's nearest neighbours:
 "good" lands next to "wonderful, excellent, fun", and "awful" next to "boring, dull, bad, poor".
 
+## Text: tokenizers and generation
+
+A `Tokenizer` turns text into token ids and back. It is a table learned once by counting,
+not a network. Every kind except `char` starts from the 256 bytes, so no text is unknown:
+
+```java
+Tokenizer t = Tokenizer.train("bpe:1024", text);   // char, byte, word:N, bpe:N, wordpiece:N, unigram:N
+int[] ids = t.encode("What light through yonder window breaks?");
+// [What][ light][ through][ y][onder][ wind][ow][ break][s][?] with bpe:2048 on Shakespeare
+String back = t.decode(ids);
+t.save(path);  Tokenizer.load(path);
+```
+
+For many classes, such as a vocabulary of tokens, targets can be class ids `[steps]`
+instead of one-hot rows `[steps, classes]`: cross-entropy and accuracy accept both, and
+the one-hot rows are never stored.
+
+`KvCache` generates with a causal transformer one token at a time. Each attention layer
+keeps the keys and values of earlier tokens, so a new token is one step through the
+network instead of a pass over the whole window; past the window, the oldest are dropped:
+
+```java
+KvCache cache = KvCache.of(model);
+Tensor p = cache.append(tokenizer.encode("ROMEO:\n"));   // next-token probabilities
+p = cache.append(nextToken);
+```
+
+`bench shakespeare --tokenizers char,bpe:1024,unigram:1024` trains the same small GPT on
+Shakespeare with each tokenizer and reports the loss in nats per character, so they
+compare fairly (char-level nanoGPT reaches about 1.47).
+
 ## Reinforcement learning
 
 `brainiac-rl` has environments to act in and agents that learn from rewards.

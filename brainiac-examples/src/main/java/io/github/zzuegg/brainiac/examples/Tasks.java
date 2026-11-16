@@ -57,11 +57,14 @@ public final class Tasks {
     /**
      * Returns a task by name.
      *
-     * @param name one of {@link #NAMES}
+     * @param name one of {@link #NAMES}; {@code shakespeare/bpe:1024} picks a tokenizer
      * @return the task
      * @throws IllegalArgumentException for an unknown name
      */
     public static Task get(String name) {
+        if (name.startsWith("shakespeare/")) {
+            return shakespeare(name.substring("shakespeare/".length()));
+        }
         return switch (name) {
             case "mnist" -> mnist();
             case "fashion" -> fashionMnist();
@@ -181,7 +184,20 @@ public final class Tasks {
      * @return the task
      */
     public static Task shakespeare() {
-        return shakespeare(LanguageExample.DATA_FILE);
+        return shakespeare(LanguageExample.DATA_FILE, "char");
+    }
+
+    /**
+     * Language modelling on Shakespeare's plays with a tokenizer: predict every next token of
+     * 64-token windows. The loss is still in nats per character.
+     *
+     * @param tokenizer as for {@link io.github.zzuegg.brainiac.data.Tokenizer#train}, such as
+     *     {@code char}, {@code bpe:1024} or {@code unigram:1024}
+     * @return the task, named {@code shakespeare} for characters and
+     *     {@code shakespeare/<tokenizer>} otherwise
+     */
+    public static Task shakespeare(String tokenizer) {
+        return shakespeare(LanguageExample.DATA_FILE, tokenizer);
     }
 
     /**
@@ -191,14 +207,28 @@ public final class Tasks {
      * @return the task
      */
     public static Task shakespeare(Path file) {
+        return shakespeare(file, "char");
+    }
+
+    /**
+     * Language modelling on Shakespeare's plays with a tokenizer.
+     *
+     * @param file the text file, or where to download it
+     * @param tokenizer as for {@link io.github.zzuegg.brainiac.data.Tokenizer#train}
+     * @return the task
+     */
+    public static Task shakespeare(Path file, String tokenizer) {
         String text;
         try {
             text = LanguageExample.load(file);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        return LanguageExample.task("shakespeare", text, LanguageExample.CONTEXT)
-                .describedAs("next character of Shakespeare's plays; loss in nats per character "
+        boolean chars = tokenizer.equals("char");
+        String what = chars ? "character" : "token (" + tokenizer + ")";
+        return LanguageExample.task(chars ? "shakespeare" : "shakespeare/" + tokenizer, text,
+                        LanguageExample.CONTEXT, tokenizer)
+                .describedAs("next " + what + " of Shakespeare's plays; loss in nats per character "
                         + "(char-level nanoGPT is known to reach about 1.47, letter frequencies alone 3.3)")
                 .withDefaults(t -> t.optimizer(Optimizer.adam(0.002f)).clipGradientNorm(1).batchSize(64)
                         .epochs(10).schedule(LearningRateSchedule.cosine(10, 0.0001f)));

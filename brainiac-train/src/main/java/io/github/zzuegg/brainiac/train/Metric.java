@@ -8,7 +8,7 @@ public interface Metric {
 
     /**
      * Share of correct predictions. With several outputs the largest output must match the
-     * one-hot target; with one output, values above 0.5 count as 1.
+     * one-hot target (or the class id, for targets given as ids); with one output, values above 0.5 count as 1.
      */
     Metric ACCURACY = new Metric() {
         @Override
@@ -27,6 +27,9 @@ public interface Metric {
             if (prediction.shape().dim(-1) == 1) {
                 Tensor half = Tensor.full(Shape.of(), 0.5f, prediction.device());
                 correct = prediction.greater(half).equalTo(target.greater(half));
+            } else if (io.github.zzuegg.brainiac.nn.Loss.classIds(prediction.shape(), target.shape())) {
+                Tensor best = prediction.argmax(-1);
+                correct = best.equalTo(target.reshape(best.shape().toArray()));
             } else {
                 correct = prediction.argmax(-1).equalTo(target.argmax(-1));
             }

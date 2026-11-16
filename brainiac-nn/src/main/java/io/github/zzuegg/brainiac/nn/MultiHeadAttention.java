@@ -396,6 +396,80 @@ public final class MultiHeadAttention implements MultiInputLayer {
         return bo != null ? y.add(bo) : y;
     }
 
+    /**
+     * The keys and values of the steps self-attention has seen so far, so that each new
+     * step attends to them without computing them again. Made by {@link KvCache}.
+     */
+    static final class Cache {
+
+        private final int window;
+        private Tensor keys;
+        private Tensor values;
+        private int position;
+
+        /** @param window the most steps kept; older ones are dropped */
+        Cache(int window) {
+            this.window = window;
+        }
+
+        void reset() {
+            keys = null;
+            values = null;
+            position = 0;
+        }
+    }
+
+    /**
+     * Self-attention for new steps only, given the cached earlier ones: the result for the
+     * new steps equals the last rows of {@link #forward} over the whole sequence (with
+     * rotary positions, also once the window slides). No gradients.
+     *
+     * @param input the new steps, {@code [batch, steps, features]}
+     * @param cache the earlier steps; updated
+     * @return the output for the new steps
+     */
+    Var step(Var input, Cache cache) {
+        Settings s = settings;
+        if (s.keyMask() || s.queryFeatures() != s.kvFeatures()) {
+            throw new IllegalStateException(this + ": only self-attention without a key mask can be cached");
+        }
+        int n = input.shape().dim(0);
+        int tq = input.shape().dim(1);
+        Var q = project(input, wq, bq, s.heads(), s.headSize());
+        Var k = project(input, wk, bk, s.kvHeads(), s.headSize());
+        Var v = project(input, wv, bv, s.kvHeads(), s.valueSize());
+        if (s.rotaryBase() > 0) {
+            q = Functional.rotary(q, s.rotaryBase(), cache.position);
+            k = Functional.rotary(k, s.rotaryBase(), cache.position);
+        }
+        if (cache.keys != null) {
+            k = Var.concat(2, Var.of(cache.keys), k);
+            v = Var.concat(2, Var.of(cache.values), v);
+        }
+        int tk = k.shape().dim(2);
+        if (tk > cache.window) {
+            k = k.slice(2, tk - cache.window, tk);
+            v = v.slice(2, tk - cache.window, tk);
+            tk = cache.window;
+        }
+        Device device = input.value().device();
+        Tensor bias = null;
+        if (s.causal() && tq > 1) {
+            bias = Functional.causalMask(tq, tk, device);
+        }
+        if (s.alibi()) {
+            Tensor a = Functional.alibi(s.heads(), tq, tk, device);
+            bias = bias == null ? a : a.add(bias);
+        }
+        float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
+        Var out = Functional.attention(q, k, v, bias, scale, 0, null);
+        cache.keys = k.value();
+        cache.values = v.value();
+        cache.position += tq;
+        Var y = out.permute(0, 2, 1, 3).reshape(n, tq, s.heads() * s.valueSize()).matmul(wo);
+        return bo != null ? y.add(bo) : y;
+    }
+
     @Override
     public Var forward(Var input) {
         return forward(List.of(input), false);

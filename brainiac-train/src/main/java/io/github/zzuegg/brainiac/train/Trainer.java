@@ -653,7 +653,9 @@ public final class Trainer {
     }
 
     private void checkSizes(Dataset data) {
-        if (data.featureCount() != model.inputSize() || data.targetCount() != model.outputSize()) {
+        int classes = model.outputShape().dim(-1);
+        boolean ids = classes > 1 && (long) data.targetCount() * classes == model.outputSize();
+        if (data.featureCount() != model.inputSize() || (data.targetCount() != model.outputSize() && !ids)) {
             throw new IllegalArgumentException("model maps " + model.inputSize() + " inputs to " + model.outputSize()
                     + " outputs, but the data has " + data.featureCount() + " features and "
                     + data.targetCount() + " targets");

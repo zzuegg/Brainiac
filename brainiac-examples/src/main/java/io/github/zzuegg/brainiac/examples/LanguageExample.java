@@ -1,8 +1,10 @@
 package io.github.zzuegg.brainiac.examples;
 
 import io.github.zzuegg.brainiac.data.Dataset;
+import io.github.zzuegg.brainiac.data.Tokenizer;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Embedding;
+import io.github.zzuegg.brainiac.nn.KvCache;
 import io.github.zzuegg.brainiac.nn.LayerNorm;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
@@ -20,20 +22,27 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.SplittableRandom;
-import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * A character-level language model: a small GPT-style transformer that reads Shakespeare
- * one character at a time, learns to predict the next character, and then writes new text.
- * The text is "Tiny Shakespeare" (about 1.1 MB of the plays, public domain), downloaded on
- * first use into {@link #DATA_FILE}. The first 90% is for training and the rest for testing.
+ * A language model: a small GPT-style transformer that reads Shakespeare one token at a
+ * time, learns to predict the next token, and then writes new text. Tokens come from a
+ * {@link Tokenizer}: single characters by default, or word pieces ({@code bpe:1024} and
+ * others), which let the same window see three or four times as much text. The text is
+ * "Tiny Shakespeare" (about 1.1 MB of the plays, public domain), downloaded on first use
+ * into {@link #DATA_FILE}. The first 90% is for training (and for learning the tokenizer)
+ * and the rest for testing.
  *
- * <p>The loss is reported per character, in nats, so it compares directly with published
- * numbers: a character-level nanoGPT (10.7M parameters, 6 layers of 384) reaches about
- * 1.47 on the test part; a model that only knows how often each letter occurs gets 3.3.
+ * <p>Whatever the tokenizer, the loss is reported per character, in nats, so tokenizers
+ * compare fairly and with published numbers: a character-level nanoGPT (10.7M parameters,
+ * 6 layers of 384) reaches about 1.47 on the test part; a model that only knows how often
+ * each letter occurs gets 3.3.
  *
- * <p>{@code ./gradlew :brainiac-examples:run --args="bench shakespeare --device gpu"}
+ * <p>{@code ./gradlew :brainiac-examples:run --args="bench shakespeare --device gpu --tokenizers char,bpe:1024"}
  */
 public final class LanguageExample {
 
@@ -78,75 +87,72 @@ public final class LanguageExample {
      * @return the vocabulary
      */
     public static String vocabulary(String text) {
-        TreeSet<Character> chars = new TreeSet<>();
-        for (int i = 0; i < text.length(); i++) {
-            chars.add(text.charAt(i));
-        }
-        StringBuilder b = new StringBuilder(chars.size());
-        chars.forEach(b::append);
-        return b.toString();
+        return io.github.zzuegg.brainiac.data.CharacterTokenizer.train(text).characters();
     }
 
     /**
-     * Cuts a text into windows of {@code length} characters. The features are the
-     * characters' ids; the targets are the one-hot ids of the character after each one, so
-     * every position is a prediction.
+     * Cuts token ids into windows of {@code length}. The features are the ids; the targets
+     * are the id of the token after each one, so every position is a prediction.
      *
-     * @param text the text
-     * @param vocabulary the characters, as from {@link #vocabulary}
+     * @param ids the text as token ids
      * @param length the window length
      * @param stride how far each window starts after the previous one
-     * @return features {@code [length]} and targets {@code [length, vocabulary]}
-     * @throws IllegalArgumentException if the text has a character missing from the vocabulary
-     *     or is too short for one window
+     * @return features {@code [length]} and targets {@code [length]}, both token ids
+     * @throws IllegalArgumentException if there are too few ids for one window
      */
-    public static Dataset windows(String text, String vocabulary, int length, int stride) {
+    public static Dataset windows(int[] ids, int length, int stride) {
         if (length < 1 || stride < 1) {
             throw new IllegalArgumentException("length and stride must be at least 1");
         }
-        int count = text.length() <= length ? 0 : (text.length() - length - 1) / stride + 1;
+        int count = ids.length <= length ? 0 : (ids.length - length - 1) / stride + 1;
         if (count == 0) {
-            throw new IllegalArgumentException("a text of " + text.length() + " characters is too short for a window of "
-                    + length + " plus the next character");
+            throw new IllegalArgumentException(ids.length + " tokens are too few for a window of " + length
+                    + " plus the next token");
         }
-        int[] ids = ids(text, vocabulary);
-        int v = vocabulary.length();
         float[] features = new float[count * length];
-        float[] targets = new float[count * length * v];
+        float[] targets = new float[count * length];
         for (int w = 0; w < count; w++) {
             int start = w * stride;
             for (int t = 0; t < length; t++) {
                 features[w * length + t] = ids[start + t];
-                targets[(w * length + t) * v + ids[start + t + 1]] = 1;
+                targets[w * length + t] = ids[start + t + 1];
             }
         }
-        return Dataset.ofRows(features, length, targets, length * v);
-    }
-
-    private static int[] ids(String text, String vocabulary) {
-        int[] ids = new int[text.length()];
-        for (int i = 0; i < ids.length; i++) {
-            ids[i] = vocabulary.indexOf(text.charAt(i));
-            if (ids[i] < 0) {
-                throw new IllegalArgumentException("character '" + text.charAt(i) + "' at " + i
-                        + " is not in the vocabulary");
-            }
-        }
-        return ids;
+        return Dataset.ofRows(features, length, targets, length);
     }
 
     /**
-     * Cross-entropy per character, in nats: the mean over windows and positions.
+     * Cross-entropy per character, in nats: the loss per token times the tokens per character.
      *
      * @param length the window length
+     * @param charactersPerToken how much text a token covers on average; 1 for characters
      * @return the loss
      */
-    public static Loss perCharacter(int length) {
-        return (p, t) -> Loss.CROSS_ENTROPY.compute(p, t).mul(1f / length);
+    public static Loss perCharacter(int length, double charactersPerToken) {
+        float scale = (float) (1 / (length * charactersPerToken));
+        return (p, t) -> Loss.CROSS_ENTROPY.compute(p, t).mul(scale);
+    }
+
+    private static final Map<String, Tokenizer> TOKENIZERS = new ConcurrentHashMap<>();
+
+    /**
+     * The tokenizer a spec gives on the training part of a text: built once and kept.
+     *
+     * @param spec as for {@link Tokenizer#train}, such as {@code char} or {@code bpe:1024}
+     * @param text the whole text; the tokenizer learns from the first 90%
+     * @return the tokenizer
+     */
+    public static Tokenizer tokenizer(String spec, String text) {
+        String key = spec + "@" + text.length() + "/" + text.hashCode();
+        return TOKENIZERS.computeIfAbsent(key, k -> Tokenizer.train(spec, text.substring(0, cut(text))));
+    }
+
+    private static int cut(String text) {
+        return (int) (text.length() * 0.9);
     }
 
     /**
-     * The language modelling task on a text.
+     * The character-level language modelling task on a text.
      *
      * @param name the task name
      * @param text the whole text; the first 90% trains, the rest tests
@@ -154,24 +160,44 @@ public final class LanguageExample {
      * @return the task, with training defaults
      */
     public static Task task(String name, String text, int length) {
-        String vocabulary = vocabulary(text);
-        int cut = (int) (text.length() * 0.9);
-        Dataset train = windows(text.substring(0, cut), vocabulary, length, length);
-        Dataset test = windows(text.substring(cut), vocabulary, length, length);
-        java.util.List<String> names = vocabulary.chars().mapToObj(LanguageExample::printable).toList();
-        return Task.classification(name, train, test, Shape.of(length), Shape.of(length, vocabulary.length()))
-                .withLoss(perCharacter(length))
+        return task(name, text, length, "char");
+    }
+
+    /**
+     * The language modelling task on a text, with tokens from a tokenizer.
+     *
+     * @param name the task name
+     * @param text the whole text; the first 90% trains (the model and the tokenizer), the
+     *     rest tests
+     * @param length the window length, in tokens
+     * @param tokenizerSpec as for {@link Tokenizer#train}, such as {@code char} or
+     *     {@code bpe:1024}
+     * @return the task; the targets are token ids
+     */
+    public static Task task(String name, String text, int length, String tokenizerSpec) {
+        Tokenizer tokenizer = tokenizer(tokenizerSpec, text);
+        int cut = cut(text);
+        String testText = text.substring(cut);
+        int[] testIds = tokenizer.encode(testText);
+        Dataset train = windows(tokenizer.encode(text.substring(0, cut)), length, length);
+        Dataset test = windows(testIds, length, length);
+        double charsPerToken = (double) testText.length() / testIds.length;
+        List<String> names = new ArrayList<>(tokenizer.size());
+        for (int id = 0; id < tokenizer.size(); id++) {
+            names.add(printable(tokenizer.decode(id)));
+        }
+        return Task.classification(name, train, test, Shape.of(length), Shape.of(length, tokenizer.size()))
+                .withLoss(perCharacter(length, charsPerToken))
                 .withClassNames(names);
     }
 
-    /** A character as a readable class name: {@code \n} for a line break, {@code ' '} for a space. */
-    private static String printable(int c) {
-        return switch (c) {
-            case '\n' -> "\\n";
-            case '\t' -> "\\t";
-            case ' ' -> "' '";
-            default -> String.valueOf((char) c);
-        };
+    /** A token as a readable class name: {@code \n} for a line break, {@code ' '} for a space. */
+    private static String printable(String token) {
+        if (token.equals(" ")) {
+            return "' '";
+        }
+        String s = token.replace("\n", "\\n").replace("\t", "\\t");
+        return s.startsWith(" ") || s.endsWith(" ") ? "'" + s + "'" : s;
     }
 
     /**
@@ -199,12 +225,12 @@ public final class LanguageExample {
     }
 
     /**
-     * Writes text with a trained model, one character at a time: each next character is
-     * drawn from the model's prediction, sharpened or flattened by the temperature.
+     * Writes text with a trained character model; see
+     * {@link #generate(Model, Tokenizer, String, int, float, long)}.
      *
-     * @param model a model from {@link #model}, trained
+     * @param model a model from {@link #model}, trained on characters
      * @param vocabulary the characters
-     * @param prompt the text to continue; at least one character, all in the vocabulary
+     * @param prompt the text to continue; at least one character
      * @param count how many characters to add
      * @param temperature below 1 picks likely characters more often, above 1 less often
      * @param seed the random seed
@@ -212,39 +238,62 @@ public final class LanguageExample {
      */
     public static String generate(Model model, String vocabulary, String prompt, int count, float temperature,
                                   long seed) {
-        if (prompt.isEmpty()) {
-            throw new IllegalArgumentException("the prompt needs at least one character");
+        return generate(model, new io.github.zzuegg.brainiac.data.CharacterTokenizer(vocabulary), prompt, count,
+                temperature, seed);
+    }
+
+    /**
+     * Writes text with a trained model, one token at a time: each next token is drawn from
+     * the model's prediction, sharpened or flattened by the temperature.
+     *
+     * @param model a model from {@link #model}, trained
+     * @param tokenizer the tokenizer it was trained with
+     * @param prompt the text to continue; at least one token
+     * @param count how many tokens to add
+     * @param temperature below 1 picks likely tokens more often, above 1 less often
+     * @param seed the random seed
+     * @return the prompt followed by the new text
+     */
+    public static String generate(Model model, Tokenizer tokenizer, String prompt, int count, float temperature,
+                                  long seed) {
+        int[] start = tokenizer.encode(prompt);
+        if (start.length == 0) {
+            throw new IllegalArgumentException("the prompt needs at least one token");
         }
         int length = model.inputShape().dim(0);
-        int v = vocabulary.length();
+        int v = model.outputShape().dim(-1);
         SplittableRandom random = new SplittableRandom(seed);
-        StringBuilder text = new StringBuilder(prompt);
-        float[] window = new float[length];
+        int[] ids = java.util.Arrays.copyOf(start, start.length + count);
+        int size = start.length;
         double[] weights = new double[v];
+        // keys and values of earlier tokens are kept, so each new token is one cheap step
+        KvCache cache = KvCache.of(model);
+        Tensor out = cache.append(java.util.Arrays.copyOfRange(start, Math.max(0, size - length), size));
         for (int n = 0; n < count; n++) {
-            int start = Math.max(0, text.length() - length);
-            int used = text.length() - start;
-            for (int i = 0; i < length; i++) {
-                // causal attention: positions after the last real character do not matter
-                window[i] = i < used ? vocabulary.indexOf(text.charAt(start + i)) : 0;
-            }
-            Tensor out = model.predict(Tensor.of(Shape.of(1, length), window, model.device()));
             float[] p = out.toArray();
             out.release();
-            int row = (used - 1) * v;
-            double total = 0;
-            for (int c = 0; c < v; c++) {
-                weights[c] = Math.pow(Math.max(p[row + c], 1e-12), 1.0 / temperature);
-                total += weights[c];
+            ids[size] = sample(p, 0, v, temperature, random, weights);
+            if (n + 1 < count) {
+                out = cache.append(ids[size]);
             }
-            double pick = random.nextDouble() * total;
-            int c = 0;
-            while (c < v - 1 && (pick -= weights[c]) > 0) {
-                c++;
-            }
-            text.append(vocabulary.charAt(c));
+            size++;
         }
-        return text.toString();
+        return prompt + tokenizer.decode(java.util.Arrays.copyOfRange(ids, start.length, size));
+    }
+
+    /** Draws a class from probabilities {@code p[offset .. offset + v)} at a temperature. */
+    static int sample(float[] p, int offset, int v, float temperature, SplittableRandom random, double[] weights) {
+        double total = 0;
+        for (int c = 0; c < v; c++) {
+            weights[c] = Math.pow(Math.max(p[offset + c], 1e-12), 1.0 / temperature);
+            total += weights[c];
+        }
+        double pick = random.nextDouble() * total;
+        int c = 0;
+        while (c < v - 1 && (pick -= weights[c]) > 0) {
+            c++;
+        }
+        return c;
     }
 
     /**
@@ -259,6 +308,6 @@ public final class LanguageExample {
         System.out.println(model.summary());
         System.out.print(Benchmark.run(task, "transformer", model, t -> t.listener(
                 io.github.zzuegg.brainiac.train.Progress.every(1))));
-        System.out.println(generate(model, vocabulary(load(DATA_FILE)), "ROMEO:\n", 500, 0.8f, 1));
+        System.out.println(generate(model, tokenizer("char", load(DATA_FILE)), "ROMEO:\n", 500, 0.8f, 1));
     }
 }

@@ -22,13 +22,25 @@ class LanguageExampleTest {
     }
 
     @Test
-    void windowsPredictEveryNextCharacter() {
-        Dataset d = LanguageExample.windows("abcab", "abc", 2, 1);
+    void windowsPredictEveryNextToken() {
+        Dataset d = LanguageExample.windows(new int[] {0, 1, 2, 0, 1}, 2, 1);
         assertEquals(3, d.size());
         assertArrayEquals(new float[] {1, 2}, d.featuresOf(1));
-        assertArrayEquals(new float[] {0, 0, 1, 1, 0, 0}, d.targetsOf(1));   // "bc" -> "ca"
-        assertThrows(IllegalArgumentException.class, () -> LanguageExample.windows("ab", "ab", 2, 1));
-        assertThrows(IllegalArgumentException.class, () -> LanguageExample.windows("abd", "ab", 1, 1));
+        assertArrayEquals(new float[] {2, 0}, d.targetsOf(1));   // "bc" -> "ca", as token ids
+        assertThrows(IllegalArgumentException.class, () -> LanguageExample.windows(new int[] {0, 1}, 2, 1));
+    }
+
+    @Test
+    void wordPiecesLearnToContinueTextToo() {
+        String text = "the cat sat on the mat. ".repeat(150);
+        Task task = LanguageExample.task("cat", text, 8, "bpe:300")
+                .withDefaults(t -> t.optimizer(Optimizer.adam(0.01f)).clipGradientNorm(1).batchSize(16).epochs(30));
+        Model model = LanguageExample.model(task.outputShape().dim(1), 8, 32, 2, 4);
+        Benchmark.Report report = Benchmark.run(task, "transformer", model, t -> { });
+        assertTrue(report.test().loss() < 0.3f, "test loss per character " + report.test().loss());
+        String written = LanguageExample.generate(model, LanguageExample.tokenizer("bpe:300", text), "the cat", 6,
+                0.1f, 7);
+        assertTrue(written.startsWith("the cat sat on the mat."), written);
     }
 
     @Test
