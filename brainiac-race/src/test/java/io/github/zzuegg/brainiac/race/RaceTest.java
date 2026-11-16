@@ -207,7 +207,7 @@ class RaceTest {
 
     @Test
     void observationsShowTheNearestCarsInTheCarsOwnFrame() {
-        RaceConfig c = open(3).nearestCars(2);
+        RaceConfig c = open(3).nearestCars(2).memory(1);
         Race race = new Race(c, dragStrip());
         race.reset(new SplittableRandom(1));
         race.place(0, 150, 0, 100);
@@ -227,14 +227,14 @@ class RaceTest {
         assertEquals(200 / c.senseRadius(), o[k + 9], 0.05);
         assertEquals(100 / c.speedScale(), o[Race.OWN - 8], 0.01, "own forward speed");
 
-        Race blind = new Race(open(3).nearestCars(0).rays(3).probes(100).wallProbes(0));
+        Race blind = new Race(open(3).nearestCars(0).rays(3).probes(100).wallProbes(0).memory(1));
         assertEquals(Race.OWN + 3 + 1, blind.observationSpace().size());
         assertEquals(Race.OWN + 3 + 1, blind.reset(new SplittableRandom(1))[0].length);
     }
 
     @Test
     void steerableSensorsLookAtTheWallWhereTheCarAsks() {
-        RaceConfig c = open(1).wallProbes(2).probeRange(20, 420).probeRate(1e6);
+        RaceConfig c = open(1).wallProbes(2).probeRange(20, 420).probeRate(1e6).memory(1);
         Race race = new Race(c, dragStrip());
         race.reset(new SplittableRandom(1));
         race.place(0, 150, 0, 0);
@@ -255,12 +255,30 @@ class RaceTest {
         assertEquals(4, points.length);
 
         // sensors glide towards the requested distance
-        Race slow = new Race(open(1).wallProbes(1).probeRange(0, 600).probeRate(300), dragStrip());
+        Race slow = new Race(open(1).wallProbes(1).probeRange(0, 600).probeRate(300).memory(1), dragStrip());
         slow.reset(new SplittableRandom(1));
         float before = slow.observe(0)[k + 2];
         slow.step(new float[][] {{0, 0, 1, 1}});
         float after = slow.observe(0)[k + 2];
         assertEquals(300 * slow.config().dt() / 600 * 2, after - before, 1e-4, "moves 10 units per step");
+    }
+
+    @Test
+    void eachObservationHoldsTheLatestFramesNewestFirst() {
+        RaceConfig c = open(1).memory(3);
+        Race race = new Race(c);
+        int f = c.frameSize();
+        float[] first = race.reset(new SplittableRandom(1))[0];
+        assertEquals(3 * f, first.length);
+        assertEquals(first[0], first[f], "a fresh car remembers only its first frame");
+        float[] second = race.step(new float[][] {{0, 1}})[0].observation();
+        float[] third = race.step(new float[][] {{0, 1}})[0].observation();
+        for (int k = 0; k < f; k++) {
+            assertEquals(second[k], third[f + k], "the previous frame moves back one place");
+            assertEquals(first[k], third[2 * f + k]);
+        }
+        assertTrue(third[0] > second[0] && second[0] > first[0], "speeding up, newest first");
+        assertEquals(third[0], race.observe(0)[0]);
     }
 
     @Test

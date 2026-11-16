@@ -35,7 +35,7 @@ import java.util.SplittableRandom;
  *
  * <pre>
  * race train [--cars 8] [--track kidney] [--steps 3000000] [--save race.model]
- *            [--opponents self|bots|past] [--discount 0.99] [--hidden 64,64] [--no-window] [--set name=value ...]
+ *            [--opponents self|bots|past] [--discount 0.99] [--hidden 64,64] [--round steps] [--no-window] [--set name=value ...]
  * race watch [--model race.model | --bots] [--cars 8] [--track kidney] [--set name=value ...]
  * race picture [--model race.model | --bots] [--frames 300] [--out race.png]
  * </pre>
@@ -109,7 +109,7 @@ public final class RaceExample {
         Driver champion = Driver.bot();
         int champions = 0;
         long start = System.nanoTime();
-        long chunk = Math.max(20_000, o.steps / 20);
+        long chunk = o.round > 0 ? o.round : Math.max(20_000, o.steps / 20);
         long done = 0;
         System.out.printf("%9s %7s %13s %13s %13s %8s %10s %11s%n", "steps", "time s", "train return",
                 "place vs best", "greedy dist*", "crashes", "overtakes", "collisions");
@@ -283,6 +283,7 @@ public final class RaceExample {
         long seed = 1;
         float discount = 0.99f;
         int[] hidden = {64, 64};
+        long round;
         int frames = 300;
         String out = "race.png";
         final List<String> sets = new ArrayList<>();
@@ -304,6 +305,7 @@ public final class RaceExample {
                     case "--bots" -> o.bots = true;
                     case "--seed" -> o.seed = Long.parseLong(args[++i]);
                     case "--discount" -> o.discount = Float.parseFloat(args[++i]);
+                    case "--round" -> o.round = Long.parseLong(args[++i].replace("_", ""));
                     case "--hidden" -> o.hidden = java.util.Arrays.stream(args[++i].split(","))
                             .mapToInt(Integer::parseInt).toArray();
                     case "--frames" -> o.frames = Integer.parseInt(args[++i]);

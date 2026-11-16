@@ -34,8 +34,8 @@ class RaceLearningTest {
 
     @Test
     void selfPlayPpoLearnsToDrive() {
-        // a quick check: fixed sensors only, so there are just two actions to learn
-        RaceConfig config = new RaceConfig().cars(4).raceSteps(600).wallProbes(0);
+        // a quick check: fixed sensors and no memory, so there is little to learn
+        RaceConfig config = new RaceConfig().cars(4).raceSteps(600).wallProbes(0).memory(1);
         Race race = new Race(config);
         int obs = config.observationSize();
         Ppo ppo = Ppo.of(Nets.mlp(obs, config.actionSize(), 1, 64, 64), Nets.mlp(obs, 1, 2, 64, 64), race.actionSpace())

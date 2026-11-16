@@ -35,8 +35,8 @@ import java.util.SplittableRandom;
  * it looks, from {@link RaceConfig#probeMin()} (-1) to {@link RaceConfig#probeMax()} (+1);
  * the sensor glides there at {@link RaceConfig#probeRate()}.
  *
- * <p><b>Observations</b> ({@link RaceConfig#observationSize()} values, all in the car's own
- * frame and scaled to about -1..1):
+ * <p><b>Observations</b> ({@link RaceConfig#frameSize()} values per frame, all in the
+ * car's own frame of reference and scaled to about -1..1):
  * <ol>
  *   <li>own state ({@value #OWN}): forward speed, sideways speed, yaw rate, wheel angle,
  *       position across the road, heading relative to the road (sin, cos), slipstream;</li>
@@ -50,6 +50,10 @@ import java.util.SplittableRandom;
  *       relative to this car ahead and to the right, its heading relative to this car
  *       (sin, cos) and its yaw rate.</li>
  * </ol>
+ *
+ * <p><b>Memory.</b> Each observation holds the car's latest {@link RaceConfig#memory(int)}
+ * frames of the values above, newest first, so a network without memory of its own can
+ * still see how things change.
  *
  * <p><b>Episodes.</b> A race lasts {@link RaceConfig#raceSteps(int)} steps; then every
  * car's episode is cut off (truncated) and the next {@link #reset(int, SplittableRandom)}
@@ -68,6 +72,9 @@ public final class Race implements VectorEnvironment {
     private final Track track;
     private final Car[] cars;
     private final int obsSize;
+    private final int frameSize;
+    /** Each car's latest frames, newest first. */
+    private final float[][][] history;
     private final double[] rayAngles;
     private final double[][] lastGap;
     private final double[] reward;
@@ -100,6 +107,8 @@ public final class Race implements VectorEnvironment {
             resetProbes(cars[i]);
         }
         obsSize = this.config.observationSize();
+        frameSize = this.config.frameSize();
+        history = new float[n][this.config.memory][];
         rayAngles = new double[this.config.rays];
         for (int k = 0; k < rayAngles.length; k++) {
             double f = rayAngles.length == 1 ? 0 : -1 + 2.0 * k / (rayAngles.length - 1);
@@ -253,6 +262,9 @@ public final class Race implements VectorEnvironment {
                 sense(car);
             }
         }
+        for (int i = 0; i < cars.length; i++) {
+            remember(i, false);
+        }
         boolean over = steps >= c.raceSteps;
         if (cars.length > 1 && (c.positionReward > 0 || over && c.finishReward > 0)) {
             // the place in the race: +1 for the leader down to -1 for last
@@ -327,6 +339,9 @@ public final class Race implements VectorEnvironment {
             sense(car);
         }
         for (int i = 0; i < cars.length; i++) {
+            history[i][0] = null;
+        }
+        for (int i = 0; i < cars.length; i++) {
             for (int j = 0; j < cars.length; j++) {
                 lastGap[i][j] = cars[i].distance - cars[j].distance;
             }
@@ -343,6 +358,7 @@ public final class Race implements VectorEnvironment {
         car.best = along;
         car.ghost = 0;
         sense(car);
+        history[index][0] = null;
         for (int j = 0; j < cars.length; j++) {
             lastGap[index][j] = car.distance - cars[j].distance;
             lastGap[j][index] = -lastGap[index][j];
@@ -413,6 +429,7 @@ public final class Race implements VectorEnvironment {
         locate(car);
         car.distance = car.best;
         sense(car);
+        history[car.id][0] = null;
         for (int j = 0; j < cars.length; j++) {
             lastGap[car.id][j] = car.distance - cars[j].distance;
             lastGap[j][car.id] = -lastGap[car.id][j];
@@ -613,9 +630,42 @@ public final class Race implements VectorEnvironment {
      * @return its observation
      */
     public float[] observe(int index) {
+        float[] now = frame(index);
+        if (config.memory == 1) {
+            return now;
+        }
+        float[][] h = history[index];
+        if (h[0] == null) {
+            remember(index, true);
+        }
+        float[] o = new float[obsSize];
+        System.arraycopy(now, 0, o, 0, frameSize);
+        for (int k = 1; k < h.length; k++) {
+            System.arraycopy(h[k], 0, o, k * frameSize, frameSize);
+        }
+        return o;
+    }
+
+    /** Records a car's current frame as its newest memory, or fills its memory with it. */
+    private void remember(int index, boolean fill) {
+        if (config.memory == 1) {
+            return;
+        }
+        float[][] h = history[index];
+        float[] now = frame(index);
+        if (fill || h[0] == null) {
+            java.util.Arrays.fill(h, now);
+            return;
+        }
+        System.arraycopy(h, 0, h, 1, h.length - 1);
+        h[0] = now;
+    }
+
+    /** What one car sees right now, without its memory. */
+    private float[] frame(int index) {
         RaceConfig c = config;
         Car car = cars[index];
-        float[] o = new float[obsSize];
+        float[] o = new float[frameSize];
         double hx = Math.cos(car.heading);
         double hy = Math.sin(car.heading);
         double vs = c.speedScale;

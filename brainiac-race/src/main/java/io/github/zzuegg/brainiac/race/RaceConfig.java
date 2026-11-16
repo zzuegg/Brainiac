@@ -57,6 +57,7 @@ public final class RaceConfig {
     double senseRadius = 260;
     double speedScale = 400;
     int wallProbes = 5;
+    int memory = 4;
     double probeMin = 20;
     double probeMax = 500;
     double probeRate = 600;
@@ -110,6 +111,7 @@ public final class RaceConfig {
         c.senseRadius = senseRadius;
         c.speedScale = speedScale;
         c.wallProbes = wallProbes;
+        c.memory = memory;
         c.probeMin = probeMin;
         c.probeMax = probeMax;
         c.probeRate = probeRate;
@@ -956,15 +958,41 @@ public final class RaceConfig {
         return 2 + 2 * wallProbes;
     }
 
-    /** @return the number of values each car observes */
-    public int observationSize() {
+    /**
+     * Sets how many of its latest observations each car sees at once, newest first; default
+     * 4. This is a short-term memory: with several frames a plain network can tell how
+     * fast things change, such as how quickly a bend tightens or a rival closes in.
+     *
+     * @param memory frames per observation, at least 1
+     * @return this config
+     */
+    public RaceConfig memory(int memory) {
+        if (memory < 1) {
+            throw new IllegalArgumentException("memory must be at least 1, got " + memory);
+        }
+        this.memory = memory;
+        return this;
+    }
+
+    /** @return how many of its latest observations each car sees at once */
+    public int memory() {
+        return memory;
+    }
+
+    /** @return the number of values in one frame of a car's observation */
+    public int frameSize() {
         return Race.OWN + rays + probes.length + 2 * wallProbes * Race.PER_PROBE + nearestCars * Race.PER_CAR;
+    }
+
+    /** @return the number of values each car observes: {@link #frameSize()} times {@link #memory()} */
+    public int observationSize() {
+        return frameSize() * memory;
     }
 
     @Override
     public String toString() {
         return cars + " cars on " + track + ", grip " + frontGrip + "/" + rearGrip + ", draft " + draftStrength
-                + ", collisions " + collisions + ", observations " + observationSize()
+                + ", collisions " + collisions + ", observations " + observationSize() + " (" + memory + " frames)"
                 + " (probes " + Arrays.toString(probes) + ")";
     }
 }
