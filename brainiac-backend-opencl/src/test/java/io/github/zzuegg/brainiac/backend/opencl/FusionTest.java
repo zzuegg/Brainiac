@@ -241,6 +241,47 @@ class FusionTest {
         }
     }
 
+    /** A small network of convolutions and poolings with its gradients, on one device. */
+    private static List<float[]> convolutions(Device device) {
+        io.github.zzuegg.brainiac.autograd.Var x = io.github.zzuegg.brainiac.autograd.Var.param(
+                random(70, 3, 4, 9, 8).to(device));
+        io.github.zzuegg.brainiac.autograd.Var w1 = io.github.zzuegg.brainiac.autograd.Var.param(
+                random(71, 6, 4, 3, 3).to(device));
+        io.github.zzuegg.brainiac.autograd.Var b1 = io.github.zzuegg.brainiac.autograd.Var.param(
+                random(72, 6).to(device));
+        io.github.zzuegg.brainiac.autograd.Var w2 = io.github.zzuegg.brainiac.autograd.Var.param(
+                random(73, 4, 3, 2, 2).to(device));
+        io.github.zzuegg.brainiac.autograd.Var y = io.github.zzuegg.brainiac.nn.Functional.conv(x, w1, b1,
+                new int[] {1, 1}, new int[] {1, 1}, new int[] {1, 1}, new int[] {1, 1}, 1).relu();
+        io.github.zzuegg.brainiac.autograd.Var pooled = io.github.zzuegg.brainiac.nn.Functional.pool(y,
+                io.github.zzuegg.brainiac.nn.Functional.PoolKind.MAX, new int[] {2, 2}, new int[] {2, 2},
+                new int[] {0, 0}, new int[] {0, 0}, new int[] {1, 1}, false, false, 0);
+        io.github.zzuegg.brainiac.autograd.Var z = io.github.zzuegg.brainiac.nn.Functional.conv(pooled, w2, null,
+                new int[] {2, 1}, new int[] {0, 1}, new int[] {1, 0}, new int[] {1, 1}, 2);
+        io.github.zzuegg.brainiac.autograd.Var avg = io.github.zzuegg.brainiac.nn.Functional.pool(z,
+                io.github.zzuegg.brainiac.nn.Functional.PoolKind.AVG, new int[] {2, 2}, new int[] {1, 1},
+                new int[] {1, 0}, new int[] {0, 1}, new int[] {1, 1}, false, true, 0);
+        avg.square().mean().backward();
+        return List.of(y.value().toArray(), z.value().toArray(), avg.value().toArray(), x.grad().toArray(),
+                w1.grad().toArray(), b1.grad().toArray(), w2.grad().toArray());
+    }
+
+    @Test
+    void convolutionWindowsComputedInKernelsMatchTheCpu() {
+        List<float[]> cpu = convolutions(Device.cpu());
+        List<float[]> first = convolutions(gpu);
+        List<float[]> second = convolutions(gpu);   // with the kernels compiled
+        for (int i = 0; i < cpu.size(); i++) {
+            assertArrayEquals(first.get(i), second.get(i), "result " + i + " differs between runs");
+            float[] e = cpu.get(i);
+            float[] a = second.get(i);
+            assertEquals(e.length, a.length);
+            for (int j = 0; j < e.length; j++) {
+                assertEquals(e[j], a[j], 1e-4 * Math.max(1, Math.abs(e[j])), "result " + i + ", element " + j);
+            }
+        }
+    }
+
     /** Runs a chain ending in reductions through the backend directly. */
     private static float[][] chain(OpenClBackend b) {
         SplittableRandom r = new SplittableRandom(15);
