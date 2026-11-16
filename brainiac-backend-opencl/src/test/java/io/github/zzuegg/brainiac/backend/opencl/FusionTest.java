@@ -241,6 +241,27 @@ class FusionTest {
         }
     }
 
+    @Test
+    void argmaxWithOtherReductionsMatchesTheCpu() {
+        float[] values = new float[40 * 9];
+        SplittableRandom r = new SplittableRandom(80);
+        for (int i = 0; i < values.length; i++) {
+            values[i] = r.nextInt(4);   // many ties: the first largest wins
+        }
+        values[9] = Float.NaN;   // NaN is never the largest
+        Tensor input = Tensor.of(Shape.of(40, 9), values);
+        java.util.function.Function<Tensor, List<Tensor>> f = x -> {
+            Tensor y = x.mul(2f).sub(1f);
+            return List.of(y.argmax(1), y.max(1, false), y.argmax(0));
+        };
+        List<Tensor> cpu = f.apply(input);
+        List<Tensor> dev = f.apply(input.to(gpu));
+        Tensor.evaluate(dev);
+        for (int i = 0; i < cpu.size(); i++) {
+            assertArrayEquals(cpu.get(i).toArray(), dev.get(i).toArray(), "result " + i);
+        }
+    }
+
     /** A small network of convolutions and poolings with its gradients, on one device. */
     private static List<float[]> convolutions(Device device) {
         io.github.zzuegg.brainiac.autograd.Var x = io.github.zzuegg.brainiac.autograd.Var.param(
