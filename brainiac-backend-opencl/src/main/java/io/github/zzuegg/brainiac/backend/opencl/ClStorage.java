@@ -15,6 +15,8 @@ final class ClStorage implements Storage {
     /** The device buffer, or null until it is needed; shared with the cleaner action. */
     static final class Buffer {
         volatile MemorySegment mem;
+        /** The size {@link #mem} was created with. */
+        long bytes;
     }
 
     final OpenClBackend owner;
@@ -27,6 +29,8 @@ final class ClStorage implements Storage {
     int pendingNodes;
     /** The backend's sync generation when {@link #pending} was recorded. */
     long pendingGeneration;
+    /** Whether its buffer went back to the pool through {@link OpenClBackend#release}. */
+    boolean released;
 
     ClStorage(OpenClBackend owner, Buffer buffer, long size, DType dtype) {
         this.owner = owner;
@@ -48,7 +52,11 @@ final class ClStorage implements Storage {
     /** The device buffer, created (or taken from the pool) on first use. */
     MemorySegment mem() {
         if (buffer.mem == null) {
-            buffer.mem = owner.buffer(OpenClBackend.bucket(size * dtype.bytes()));
+            if (released) {
+                throw new IllegalStateException("a released tensor was used");
+            }
+            buffer.bytes = OpenClBackend.bucket(size * dtype.bytes());
+            buffer.mem = owner.buffer(buffer.bytes);
         }
         return buffer.mem;
     }

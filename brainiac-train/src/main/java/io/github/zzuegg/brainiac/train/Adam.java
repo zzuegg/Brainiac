@@ -34,6 +34,7 @@ final class Adam implements Optimizer {
         float correction1 = 1 - (float) Math.pow(beta1, t);
         float correction2 = 1 - (float) Math.pow(beta2, t);
         List<Tensor> updated = new ArrayList<>(3 * parameters.size());
+        List<Tensor> previous = new ArrayList<>(2 * parameters.size());
         for (Var p : parameters) {
             Tensor g = p.grad();
             if (g == null) {
@@ -45,6 +46,10 @@ final class Adam implements Optimizer {
             Tensor vNew = (vPrev == null ? g.square().mul(1 - beta2) : vPrev.mul(beta2).add(g.square().mul(1 - beta2)));
             m.put(p, mNew);
             v.put(p, vNew);
+            if (mPrev != null) {
+                previous.add(mPrev);
+                previous.add(vPrev);
+            }
             Tensor mHat = mNew.div(correction1);
             Tensor vHat = vNew.div(correction2);
             p.assign(p.value().sub(mHat.div(vHat.sqrt().add(epsilon)).mul(learningRate)));
@@ -54,6 +59,9 @@ final class Adam implements Optimizer {
             updated.add(vNew);
         }
         Tensor.evaluate(updated);   // on a GPU, the whole step as one kernel
+        for (Tensor old : previous) {
+            old.release();   // only this optimizer ever saw its state: the memory is free now
+        }
     }
 
     @Override
