@@ -365,6 +365,162 @@ __kernel void matmul_big(__global const T* a, __global const T* b, __global T* z
     }
 }
 
+// Attention in one pass per query row, without storing the [queries, keys] weights: the
+// softmax is computed online (running maximum and sum), as in FlashAttention. q is
+// [batch, heads, tq, dk], k [batch, kvHeads, tk, dk], v [batch, kvHeads, tk, dv]; heads
+// share key/value heads in groups. Causal: query i sees keys up to i + tk - tq. lse keeps
+// each row's log-sum-exp of the scaled scores for the backward pass. dk, dv <= ATT_D.
+#define ATT_D 64
+__kernel void attention(__global const T* q, __global const T* k, __global const T* v, __global T* out,
+                        __global T* lse, int heads, int kvHeads, int tq, int tk, int dk, int dv, float scale,
+                        int causal, long total) {
+    long g = get_global_id(0);
+    if (g >= total) return;
+    int i = (int) (g % tq);
+    long bh = g / tq;
+    int h = (int) (bh % heads);
+    long b = bh / heads;
+    long kv = b * kvHeads + h / (heads / kvHeads);
+    __global const T* kb = k;
+    long kOff = kv * tk * dk;
+    long vOff = kv * tk * dv;
+    ACC qv[ATT_D];
+    ACC acc[ATT_D];
+    for (int d = 0; d < dk; d++) {
+        qv[d] = LOAD(q, g * dk + d);
+    }
+    for (int d = 0; d < dv; d++) {
+        acc[d] = (ACC) 0;
+    }
+    int last = causal ? min(tk - 1, i + tk - tq) : tk - 1;
+    ACC m = -INFINITY;
+    ACC l = (ACC) 0;
+    for (int j = 0; j <= last; j++) {
+        ACC s = (ACC) 0;
+        for (int d = 0; d < dk; d++) {
+            s += qv[d] * LOAD(kb, kOff + (long) j * dk + d);
+        }
+        s *= scale;
+        ACC mn = fmax(m, s);
+        ACC corr = exp(m - mn);
+        ACC p = exp(s - mn);
+        l = l * corr + p;
+        for (int d = 0; d < dv; d++) {
+            acc[d] = acc[d] * corr + p * LOAD(v, vOff + (long) j * dv + d);
+        }
+        m = mn;
+    }
+    for (int d = 0; d < dv; d++) {
+        STORE(out, g * dv + d, acc[d] / l);
+    }
+    STORE(lse, g, m + log(l));
+}
+
+// Gradient of attention for the queries, one query row per item, recomputing each weight
+// from lse: dq = scale * sum_j p_j (dO . v_j - D) k_j with D = dO . out. Also stores D.
+__kernel void attention_dq(__global const T* q, __global const T* k, __global const T* v, __global const T* out,
+                           __global const T* lse, __global const T* dout, __global T* dq, __global T* dsum,
+                           int heads, int kvHeads, int tq, int tk, int dk, int dv, float scale, int causal,
+                           long total) {
+    long g = get_global_id(0);
+    if (g >= total) return;
+    int i = (int) (g % tq);
+    long bh = g / tq;
+    int h = (int) (bh % heads);
+    long b = bh / heads;
+    long kv = b * kvHeads + h / (heads / kvHeads);
+    long kOff = kv * tk * dk;
+    long vOff = kv * tk * dv;
+    ACC qv[ATT_D];
+    ACC dov[ATT_D];
+    ACC acc[ATT_D];
+    for (int d = 0; d < dk; d++) {
+        qv[d] = LOAD(q, g * dk + d);
+        acc[d] = (ACC) 0;
+    }
+    ACC dd = (ACC) 0;
+    for (int d = 0; d < dv; d++) {
+        dov[d] = LOAD(dout, g * dv + d);
+        dd += dov[d] * LOAD(out, g * dv + d);
+    }
+    ACC row = LOAD(lse, g);
+    int last = causal ? min(tk - 1, i + tk - tq) : tk - 1;
+    for (int j = 0; j <= last; j++) {
+        ACC s = (ACC) 0;
+        for (int d = 0; d < dk; d++) {
+            s += qv[d] * LOAD(k, kOff + (long) j * dk + d);
+        }
+        ACC p = exp(s * scale - row);
+        ACC dp = (ACC) 0;
+        for (int d = 0; d < dv; d++) {
+            dp += dov[d] * LOAD(v, vOff + (long) j * dv + d);
+        }
+        ACC ds = p * (dp - dd) * scale;
+        for (int d = 0; d < dk; d++) {
+            acc[d] += ds * LOAD(k, kOff + (long) j * dk + d);
+        }
+    }
+    for (int d = 0; d < dk; d++) {
+        STORE(dq, g * dk + d, acc[d]);
+    }
+    STORE(dsum, g, dd);
+}
+
+// Gradient of attention for the keys and values, one key row per item, summing over the
+// queries of every head that shares it: dv_j = sum p dO, dk_j = scale * sum p (dO . v_j - D) q.
+__kernel void attention_dkv(__global const T* q, __global const T* k, __global const T* v,
+                            __global const T* lse, __global const T* dout, __global const T* dsum,
+                            __global T* dk_, __global T* dv_, int heads, int kvHeads, int tq, int tk, int dk,
+                            int dv, float scale, int causal, long total) {
+    long g = get_global_id(0);
+    if (g >= total) return;
+    int j = (int) (g % tk);
+    long bkv = g / tk;
+    int kh = (int) (bkv % kvHeads);
+    long b = bkv / kvHeads;
+    int group = heads / kvHeads;
+    ACC kv_[ATT_D];
+    ACC vv[ATT_D];
+    ACC gk[ATT_D];
+    ACC gv[ATT_D];
+    for (int d = 0; d < dk; d++) {
+        kv_[d] = LOAD(k, g * dk + d);
+        gk[d] = (ACC) 0;
+    }
+    for (int d = 0; d < dv; d++) {
+        vv[d] = LOAD(v, g * dv + d);
+        gv[d] = (ACC) 0;
+    }
+    int first = causal ? max(0, j - (tk - tq)) : 0;
+    for (int hh = 0; hh < group; hh++) {
+        long qh = b * heads + kh * group + hh;
+        for (int i = first; i < tq; i++) {
+            long r = qh * tq + i;
+            ACC s = (ACC) 0;
+            for (int d = 0; d < dk; d++) {
+                s += LOAD(q, r * dk + d) * kv_[d];
+            }
+            ACC p = exp(s * scale - LOAD(lse, r));
+            ACC dp = (ACC) 0;
+            for (int d = 0; d < dv; d++) {
+                ACC o = LOAD(dout, r * dv + d);
+                gv[d] += p * o;
+                dp += o * vv[d];
+            }
+            ACC ds = p * (dp - LOAD(dsum, r)) * scale;
+            for (int d = 0; d < dk; d++) {
+                gk[d] += ds * LOAD(q, r * dk + d);
+            }
+        }
+    }
+    for (int d = 0; d < dk; d++) {
+        STORE(dk_, g * dk + d, gk[d]);
+    }
+    for (int d = 0; d < dv; d++) {
+        STORE(dv_, g * dv + d, gv[d]);
+    }
+}
+
 // table[p * ks + k]: the image cell of kernel cell k at window position p, or -1 for padding
 __kernel void im2col(__global const T* x, __global const int* table, __global T* z, int channels, int positions,
                      int ks, int img, float pad, long total) {

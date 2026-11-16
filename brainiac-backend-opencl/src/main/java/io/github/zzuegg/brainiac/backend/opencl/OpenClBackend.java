@@ -454,7 +454,8 @@ public final class OpenClBackend implements Backend {
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "im2col",
-                "col2im", "gather", "scatter_add", "to_float", "from_float", "random")) {
+                "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
+                "attention_dkv")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -2391,6 +2392,44 @@ public final class OpenClBackend implements Backend {
         long total = outer * count * inner;
         run(o.dtype, "gather", total, as(in, o.dtype), idx, o, length, inner, count, total);
         release(idx);
+    }
+
+    /** The largest head size the attention kernels keep in registers ({@code ATT_D}). */
+    private static final int ATTENTION_SIZE = 64;
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage out, Storage lse) {
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        }
+        ClStorage o = cl(out);
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        run(o.dtype, "attention", rows, as(q, o.dtype), as(k, o.dtype), as(v, o.dtype), o, cl(lse), shape[1],
+                shape[2], shape[3], shape[4], shape[5], shape[6], scale, causal ? 1 : 0, rows);
+    }
+
+    @Override
+    public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
+            Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        }
+        ClStorage gq = cl(dq);
+        DType type = gq.dtype;
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        long keys = (long) shape[0] * shape[2] * shape[4];
+        ClStorage dsum = raw(rows, type);
+        ClStorage qs = as(q, type);
+        ClStorage ks = as(k, type);
+        ClStorage vs = as(v, type);
+        ClStorage ls = as(lse, type);
+        ClStorage gs = as(grad, type);
+        run(type, "attention_dq", rows, qs, ks, vs, as(out, type), ls, gs, gq, dsum, shape[1], shape[2], shape[3],
+                shape[4], shape[5], shape[6], scale, causal ? 1 : 0, rows);
+        run(type, "attention_dkv", keys, qs, ks, vs, ls, gs, dsum, cl(dk), cl(dv), shape[1], shape[2], shape[3],
+                shape[4], shape[5], shape[6], scale, causal ? 1 : 0, keys);
+        release(dsum);
     }
 
     @Override

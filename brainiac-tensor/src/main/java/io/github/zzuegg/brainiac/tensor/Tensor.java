@@ -1115,6 +1115,75 @@ public final class Tensor {
     }
 
     /**
+     * Scaled dot-product attention in one pass, without storing the {@code [tq, tk]}
+     * weights: {@code softmax(scale * q k^T) v}, optionally causal (query {@code i} sees keys
+     * up to {@code i + tk - tq}). Groups of query heads may share key/value heads.
+     *
+     * @param q queries {@code [batch, heads, tq, dk]}
+     * @param k keys {@code [batch, kvHeads, tk, dk]}
+     * @param v values {@code [batch, kvHeads, tk, dv]}
+     * @param scale the score scale, usually {@code 1 / sqrt(dk)}
+     * @param causal whether each query ignores later keys
+     * @return the output {@code [batch, heads, tq, dv]} and each row's log-sum-exp
+     *     {@code [batch, heads, tq]}, which {@link #attentionBackward} needs
+     * @throws UnsupportedOperationException if the backend has no fused attention
+     */
+    public static Tensor[] attention(Tensor q, Tensor k, Tensor v, float scale, boolean causal) {
+        int[] d = attentionShape(q, k, v);
+        Backend backend = q.backend();
+        Storage out = backend.allocateUninitialized((long) d[0] * d[1] * d[3] * d[6], q.dtype());
+        Storage lse = backend.allocateUninitialized((long) d[0] * d[1] * d[3], q.dtype());
+        backend.attention(q.storage, k.storage, v.storage, d, scale, causal, out, lse);
+        return new Tensor[] {new Tensor(Shape.of(d[0], d[1], d[3], d[6]), q.device, out),
+                new Tensor(Shape.of(d[0], d[1], d[3]), q.device, lse)};
+    }
+
+    /**
+     * The gradients of {@link #attention}.
+     *
+     * @param q the queries
+     * @param k the keys
+     * @param v the values
+     * @param out the output of {@link #attention}
+     * @param lse the log-sum-exp from {@link #attention}
+     * @param grad the gradient of the output
+     * @param scale the score scale
+     * @param causal whether it was causal
+     * @return the gradients of {@code q}, {@code k} and {@code v}
+     */
+    public static Tensor[] attentionBackward(Tensor q, Tensor k, Tensor v, Tensor out, Tensor lse, Tensor grad,
+            float scale, boolean causal) {
+        int[] d = attentionShape(q, k, v);
+        Backend backend = q.backend();
+        Storage dq = backend.allocateUninitialized(q.shape.size(), q.dtype());
+        Storage dk = backend.allocateUninitialized(k.shape.size(), q.dtype());
+        Storage dv = backend.allocateUninitialized(v.shape.size(), q.dtype());
+        backend.attentionBackward(q.storage, k.storage, v.storage, out.storage, lse.storage,
+                grad.to(q.dtype()).storage, d, scale, causal, dq, dk, dv);
+        return new Tensor[] {new Tensor(q.shape, q.device, dq), new Tensor(k.shape, q.device, dk),
+                new Tensor(v.shape, q.device, dv)};
+    }
+
+    private static int[] attentionShape(Tensor q, Tensor k, Tensor v) {
+        if (q.shape.rank() != 4 || k.shape.rank() != 4 || v.shape.rank() != 4) {
+            throw new IllegalArgumentException("attention takes [batch, heads, steps, size] arrays, got " + q.shape
+                    + ", " + k.shape + ", " + v.shape);
+        }
+        q.sameDevice(k);
+        q.sameDevice(v);
+        int batch = q.shape.dim(0);
+        int heads = q.shape.dim(1);
+        int kvHeads = k.shape.dim(1);
+        if (k.shape.dim(0) != batch || v.shape.dim(0) != batch || v.shape.dim(1) != kvHeads
+                || heads % kvHeads != 0 || k.shape.dim(3) != q.shape.dim(3) || v.shape.dim(2) != k.shape.dim(2)
+                || k.dtype() != q.dtype() || v.dtype() != q.dtype()) {
+            throw new IllegalArgumentException("attention needs matching queries " + q.shape + ", keys " + k.shape
+                    + " and values " + v.shape + " of one type");
+        }
+        return new int[] {batch, heads, kvHeads, q.shape.dim(2), k.shape.dim(2), q.shape.dim(3), v.shape.dim(3)};
+    }
+
+    /**
      * Picks entries along an axis by index, like a table lookup. The axis is replaced by
      * the dimensions of {@code indices}: a weight table {@code [vocab, dim]} gathered on
      * axis 0 with ids {@code [batch, time]} gives {@code [batch, time, dim]}.

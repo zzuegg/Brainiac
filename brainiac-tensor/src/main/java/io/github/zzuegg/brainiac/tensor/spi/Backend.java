@@ -394,6 +394,48 @@ public interface Backend {
         throw unsupported("scatterAdd");
     }
 
+    /**
+     * Scaled dot-product attention in one pass, without storing the weights:
+     * {@code out = softmax(scale * q k^T [+ causal mask]) v}, with each row's log-sum-exp of
+     * the scaled scores in {@code lse} for {@link #attentionBackward}. Query head {@code h}
+     * uses key/value head {@code h / (heads / kvHeads)}. Causal: query {@code i} sees keys
+     * up to {@code i + tk - tq}. All arrays are contiguous.
+     *
+     * @param q {@code [batch, heads, tq, dk]}
+     * @param k {@code [batch, kvHeads, tk, dk]}
+     * @param v {@code [batch, kvHeads, tk, dv]}
+     * @param shape {@code batch, heads, kvHeads, tq, tk, dk, dv}
+     * @param scale the score scale
+     * @param causal whether to mask later keys
+     * @param out {@code [batch, heads, tq, dv]}
+     * @param lse {@code [batch, heads, tq]}
+     */
+    default void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal, Storage out,
+            Storage lse) {
+        throw unsupported("fused attention");
+    }
+
+    /**
+     * The gradients of {@link #attention}, recomputing the weights from {@code lse}.
+     *
+     * @param q the queries
+     * @param k the keys
+     * @param v the values
+     * @param out the forward output
+     * @param lse the forward log-sum-exp
+     * @param grad the gradient of the output
+     * @param shape as for {@link #attention}
+     * @param scale the score scale
+     * @param causal whether later keys were masked
+     * @param dq the gradient of the queries, overwritten
+     * @param dk the gradient of the keys, overwritten
+     * @param dv the gradient of the values, overwritten
+     */
+    default void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse, Storage grad,
+            int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        throw unsupported("fused attention");
+    }
+
     private UnsupportedOperationException unsupported(String what) {
         return new UnsupportedOperationException("the " + name() + " backend does not support " + what);
     }

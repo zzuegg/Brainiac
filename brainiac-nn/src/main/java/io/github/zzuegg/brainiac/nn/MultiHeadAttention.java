@@ -377,6 +377,10 @@ public final class MultiHeadAttention implements MultiInputLayer {
             q = Functional.rotary(q, s.rotaryBase(), tk - tq);
             k = Functional.rotary(k, s.rotaryBase(), 0);
         }
+        float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
+        if (!s.alibi() && !s.keyMask() && (!training || s.dropout() == 0)) {
+            return output(Functional.attention(q, k, v, s.causal(), scale), n, tq);
+        }
         Device device = query.value().device();
         Tensor bias = null;
         if (s.causal()) {
@@ -390,9 +394,12 @@ public final class MultiHeadAttention implements MultiInputLayer {
             Tensor m = Functional.keyMask(inputs.get(data).value().reshape(n, tk));
             bias = bias == null ? m : m.add(bias);
         }
-        float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
-        Var out = Functional.attention(q, k, v, bias, scale, training ? s.dropout() : 0, random);
-        Var y = out.permute(0, 2, 1, 3).reshape(n, tq, s.heads() * s.valueSize()).matmul(wo);
+        return output(Functional.attention(q, k, v, bias, scale, training ? s.dropout() : 0, random), n, tq);
+    }
+
+    /** Joins the heads of {@code out} {@code [batch, heads, steps, dv]} and projects them. */
+    private Var output(Var out, int n, int tq) {
+        Var y = out.permute(0, 2, 1, 3).reshape(n, tq, settings.heads() * settings.valueSize()).matmul(wo);
         return bo != null ? y.add(bo) : y;
     }
 
@@ -536,7 +543,9 @@ public final class MultiHeadAttention implements MultiInputLayer {
         float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
         boolean track = cache.strategy instanceof KvCache.Strategy.HeavyHitters;
         Tensor[] weights = track ? new Tensor[1] : null;
-        Var out = Functional.attention(qr, kr, v, bias, scale, 0, null, weights);
+        Var out = track || s.alibi()
+                ? Functional.attention(qr, kr, v, bias, scale, 0, null, weights)
+                : Functional.attention(qr, kr, v, s.causal() && tq > 1, scale);
         if (track) {
             // the attention each key received, summed over batch, heads and queries
             float[] w = weights[0].sum(0, false).sum(0, false).sum(0, false).toArray();

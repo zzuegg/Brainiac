@@ -356,6 +356,34 @@ public final class CpuBackend implements Backend {
                 (from, to) -> WindowKernels.scatterAdd(x, out0, len, in0, idx, z, from, to));
     }
 
+    @Override
+    public void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal, Storage out,
+            Storage lse) {
+        CpuStorage o = cpu(out);
+        CpuStorage l = cpu(lse);
+        double[] z = o.target();
+        double[] e = l.target();
+        AttentionKernels.forward(cpu(q).read(), cpu(k).read(), cpu(v).read(), shape, scale, causal, z, e);
+        o.write(z);
+        l.write(e);
+    }
+
+    @Override
+    public void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse, Storage grad,
+            int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        CpuStorage gq = cpu(dq);
+        CpuStorage gk = cpu(dk);
+        CpuStorage gv = cpu(dv);
+        double[] zq = gq.target();
+        double[] zk = gk.target();
+        double[] zv = gv.target();
+        AttentionKernels.backward(cpu(q).read(), cpu(k).read(), cpu(v).read(), cpu(out).read(), cpu(lse).read(),
+                cpu(grad).read(), shape, scale, causal, zq, zk, zv);
+        gq.write(zq);
+        gk.write(zk);
+        gv.write(zv);
+    }
+
     private static int[] indices(Storage storage, int count, int length) {
         CpuStorage s = cpu(storage);
         float[] values = s.data != null ? s.data : s.readFloat();
