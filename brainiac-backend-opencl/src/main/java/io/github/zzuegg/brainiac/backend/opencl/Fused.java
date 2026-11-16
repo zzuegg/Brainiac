@@ -827,21 +827,33 @@ final class Fused {
 
         private String index(Src s, String idx) {
             String j = "j" + next++;
-            String off = arg(s.offset());
-            body.append("    long ").append(j).append(" = ").append(off).append(";\n");
             List<Integer> kept = new ArrayList<>();
             for (int d = 0; d < s.dims().length; d++) {
                 if (s.dims()[d] != 1) {
                     kept.add(d);
                 }
             }
+            // 32-bit arithmetic when every index and position fits: a 64-bit division costs
+            // several times as many instructions on GPUs
+            boolean small = fitsInt(s);
+            String off = small ? intArg((int) s.offset()) : arg(s.offset());
+            body.append(small ? "    int " : "    long ").append(j).append(" = ").append(off).append(";\n");
             if (!kept.isEmpty()) {
                 String r = "r" + next++;
-                body.append("    long ").append(r).append(" = ").append(idx).append(";\n");
+                body.append(small ? "    uint " : "    long ").append(r).append(" = ")
+                        .append(small ? "(uint) (" + idx + ")" : idx).append(";\n");
                 for (int k = kept.size() - 1; k >= 0; k--) {
                     int d = kept.get(k);
-                    String dim = arg(s.dims()[d]);
-                    String stride = arg(s.strides()[d]);
+                    String dim = small ? uintArg(s.dims()[d]) : arg(s.dims()[d]);
+                    String stride = small ? intArg((int) s.strides()[d]) : arg(s.strides()[d]);
+                    if (small) {
+                        body.append("    ").append(j).append(" += (int) (").append(r).append(" % ").append(dim)
+                                .append(") * ").append(stride).append(";\n");
+                        if (k > 0) {
+                            body.append("    ").append(r).append(" /= ").append(dim).append(";\n");
+                        }
+                        continue;
+                    }
                     body.append("    ").append(j).append(" += (").append(r).append(" % ").append(dim)
                             .append(") * ").append(stride).append(";\n");
                     if (k > 0) {
@@ -895,6 +907,33 @@ final class Fused {
                     .append(") * ").append(intArg(c.img())).append(" + max(").append(cell).append(", 0);\n");
             String v = read(c.x().storage(), at);
             return let(cell + " < 0 ? " + literal(c.pad()) + " : " + v);
+        }
+
+        /** Whether every position of a view, and every index into it, fits in an int. */
+        private static boolean fitsInt(Src s) {
+            long count = 1;
+            long high = s.offset();
+            for (int d = 0; d < s.dims().length; d++) {
+                long size = s.dims()[d];
+                long stride = s.strides()[d];
+                if (size <= 0 || stride < 0) {
+                    return false;
+                }
+                count = Math.multiplyHigh(count, size) != 0 ? Long.MAX_VALUE : count * size;
+                high += (size - 1) * stride;
+                if (count > Integer.MAX_VALUE || high > Integer.MAX_VALUE || high < 0) {
+                    return false;
+                }
+            }
+            return s.offset() >= 0;
+        }
+
+        private String uintArg(int value) {
+            String a = "a" + args.size();
+            params.append(", uint ").append(a);
+            args.add(value);
+            argBytes += 8;
+            return a;
         }
 
         private String intArg(int value) {
