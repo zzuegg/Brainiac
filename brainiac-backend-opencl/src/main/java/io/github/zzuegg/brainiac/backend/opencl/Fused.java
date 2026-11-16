@@ -223,6 +223,18 @@ final class Fused {
      */
     static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
             int bLayout) {
+        return generateMatMul(root, base, store, a, aLayout, b, bLayout, false);
+    }
+
+    /**
+     * As above; with {@code big}, in the tiling of the precompiled {@code matmul_big}: 16 x 16
+     * work items each computing 4 x 4 outputs of a 64 x 64 tile.
+     */
+    static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
+            int bLayout, boolean big) {
+        if (big) {
+            return generateBigMatMul(root, base, store, a, aLayout, b, bLayout);
+        }
         Gen g = new Gen();
         g.root = store ? "i" : null;
         g.base = base;
@@ -265,6 +277,83 @@ final class Fused {
                 + (v == null ? "    STORE(out, i, acc);\n"
                         : "    STORE(mz, i, acc);\n" + g.body + "    STORE(out, i, " + v + ");\n")
                 + "    }\n}\n";
+        return new Kernel(src, g.args, g.argBytes, g.outputs);
+    }
+
+    private static Kernel generateBigMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
+            int bLayout) {
+        Gen g = new Gen();
+        g.root = store ? "i" : null;
+        g.base = base;
+        g.argBytes += 8 * 3 + 4 * 3 + 8 * 9 + 4 * 2;
+        String loadA = g.load(a, "ma", "row < M && ac < K", "aBase + (long) row * aRow + (long) ac * aCol",
+                aLayout == 1 ? "row" : aLayout == 2 ? "ac" : null, aLayout == 1 ? "ac" : "row");
+        String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol",
+                bLayout == 1 ? "br" : bLayout == 2 ? "col" : null, bLayout == 1 ? "col" : "br");
+        String v = root == null ? null : g.eval(root, "i");
+        String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
+                + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
+                + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol, int splits, int chunk"
+                + g.params + ") {\n"
+                + "    int lc = get_local_id(0);\n"
+                + "    int lr = get_local_id(1);\n"
+                + "    int tid = lr * 16 + lc;\n"
+                + "    int colBase = get_group_id(0) * 64;\n"
+                + "    int rowBase = get_group_id(1) * 64;\n"
+                + "    long piece = get_global_id(2);\n"
+                + "    long batch = piece / splits;\n"
+                + "    int from = (int) (piece % splits) * chunk;\n"
+                + "    int to = min(K, from + chunk);\n"
+                + "    __local ACC tileA[16][65];\n"
+                + "    __local ACC tileB[16][64];\n"
+                + "    long aBase = aOff + batch * strideA;\n"
+                + "    long bBase = bOff + batch * strideB;\n"
+                + "    ACC accs[4][4];\n"
+                + "    for (int wm = 0; wm < 4; wm++) {\n"
+                + "        for (int wn = 0; wn < 4; wn++) {\n"
+                + "            accs[wm][wn] = (ACC) 0;\n"
+                + "        }\n"
+                + "    }\n"
+                + "    for (int t = from; t < to; t += 16) {\n"
+                + "        for (int l = 0; l < 4; l++) {\n"
+                + "            int idx = l * 256 + tid;\n"
+                + "            {\n"
+                + "            int row = rowBase + (idx >> 4);\n"
+                + "            int ac = t + (idx & 15);\n"
+                + loadA.replace("TILE", "tileA[idx & 15][idx >> 4]")
+                + "            }\n"
+                + "            {\n"
+                + "            int br = t + (idx >> 6);\n"
+                + "            int col = colBase + (idx & 63);\n"
+                + loadB.replace("TILE", "tileB[idx >> 6][idx & 63]")
+                + "            }\n"
+                + "        }\n"
+                + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
+                + "        for (int q = 0; q < 16; q++) {\n"
+                + "            ACC ra[4];\n"
+                + "            ACC rb[4];\n"
+                + "            for (int w = 0; w < 4; w++) {\n"
+                + "                ra[w] = tileA[q][lr + w * 16];\n"
+                + "                rb[w] = tileB[q][lc + w * 16];\n"
+                + "            }\n"
+                + "            for (int wm = 0; wm < 4; wm++) {\n"
+                + "                for (int wn = 0; wn < 4; wn++) {\n"
+                + "                    accs[wm][wn] += ra[wm] * rb[wn];\n"
+                + "                }\n"
+                + "            }\n"
+                + "        }\n"
+                + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
+                + "    }\n"
+                + "    for (int wm = 0; wm < 4; wm++) {\n"
+                + "    for (int wn = 0; wn < 4; wn++) {\n"
+                + "    int row = rowBase + lr + wm * 16;\n"
+                + "    int col = colBase + lc + wn * 16;\n"
+                + "    if (row < M && col < N) {\n"
+                + "    ACC acc = accs[wm][wn];\n"
+                + "    long i = piece * strideZ + (long) row * N + col;\n"
+                + (v == null ? "    STORE(out, i, acc);\n"
+                        : "    STORE(mz, i, acc);\n" + g.body + "    STORE(out, i, " + v + ");\n")
+                + "    }\n    }\n    }\n}\n";
         return new Kernel(src, g.args, g.argBytes, g.outputs);
     }
 

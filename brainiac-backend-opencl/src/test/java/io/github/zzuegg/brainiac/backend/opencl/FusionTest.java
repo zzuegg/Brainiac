@@ -122,6 +122,16 @@ class FusionTest {
     }
 
     @Test
+    void bigTileMatmulsFuseTheirEpiloguesAndOperands() {
+        Tensor w = random(29, 70, 130);
+        Tensor bias = random(30, 130);
+        same(DType.FLOAT32, x -> x.matmul(w.to(x.device())).add(bias.to(x.device())).relu().mul(2f),
+                random(31, 100, 70));
+        same(DType.FLOAT32, x -> x.relu().add(0.5f).matmul(w.to(x.device()).tanh()).sigmoid(), random(32, 100, 70));
+        same(DType.FLOAT32, x -> x.matmul(x.transpose()).exp().sum(1), random(33, 2, 80, 33));
+    }
+
+    @Test
     void matmulOperandsComputedAsTheKernelLoadsThemMatchTheCpu() {
         Tensor w = random(25, 7, 5);
         // element-wise chains as operands, directly and through transposes and permutations

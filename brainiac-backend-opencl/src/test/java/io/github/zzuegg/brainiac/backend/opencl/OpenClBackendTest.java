@@ -138,6 +138,15 @@ class OpenClBackendTest {
         same(DType.FLOAT32, "split matmul", t -> t.matmul(tall.to(t.device())), wide);
         same(DType.FLOAT32, "split batched matmul", t -> t.reshape(1, 9, 8200).expand(Shape.of(2, 9, 8200)).add(0)
                 .matmul(tall.to(t.device()).reshape(1, 8200, 21).expand(Shape.of(2, 8200, 21)).mul(2)), wide);
+        // 64 x 64 tiles: ragged edges, batches, transposed operands read in place, long k split
+        Tensor m1 = random(8, 130, 70);
+        Tensor m2 = random(9, 70, 200);
+        same(DType.FLOAT32, "big-tile matmul", t -> t.matmul(m2.to(t.device())), m1);
+        same(DType.FLOAT32, "big-tile transposed", t -> t.transpose().matmul(t), m1);
+        same(DType.FLOAT32, "big-tile batched", t -> t.reshape(2, 65, 70).matmul(m2.to(t.device())
+                .reshape(1, 70, 200).expand(Shape.of(2, 70, 200)).add(0)), m1);
+        Tensor longK = random(10, 64, 9000);
+        same(DType.FLOAT32, "big-tile split", t -> t.matmul(t.transpose()), longK);
         Tensor big = random(5, 300_000);
         same(DType.FLOAT32, "long sum", t -> t.sum().reshape(1).mul(1e-3f), big);
         same(DType.FLOAT32, "long max", Tensor::max, big);
