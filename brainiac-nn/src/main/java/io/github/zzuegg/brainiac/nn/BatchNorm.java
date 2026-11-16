@@ -97,6 +97,7 @@ public final class BatchNorm implements Layer {
             Tensor unbiased = variance.value().mul(n / (float) (n - 1));
             runningMean.assign(runningMean.value().mul(1 - momentum).add(mean.value().mul(momentum)));
             runningVariance.assign(runningVariance.value().mul(1 - momentum).add(unbiased.mul(momentum)));
+            Tensor.evaluate(java.util.List.of(runningMean.value(), runningVariance.value()));   // one kernel on a GPU
         } else {
             Tensor scale = runningVariance.value().add(epsilon).sqrt();
             normalized = input.sub(runningMean.value()).div(scale);

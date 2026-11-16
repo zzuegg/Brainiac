@@ -287,6 +287,7 @@ final class Fused {
             int bytes = g.argBytes;
             int outputs = g.outputs.size();
             int buffers = g.bufferOrder.size();
+            int constants = g.constantOrder.size();
             if (first) {
                 g.first = r;
             }
@@ -314,6 +315,9 @@ final class Fused {
                 g.outputs.subList(outputs, g.outputs.size()).clear();
                 while (g.bufferOrder.size() > buffers) {
                     g.buffers.remove(g.bufferOrder.removeLast());
+                }
+                while (g.constantOrder.size() > constants) {
+                    g.constants.remove(g.constantOrder.removeLast());
                 }
                 break;
             }
@@ -387,6 +391,10 @@ final class Fused {
         final StringBuilder body = new StringBuilder();
         final List<Object> args = new ArrayList<>();
         final Map<ClStorage, String> buffers = new IdentityHashMap<>();
+        /** The argument holding each constant, by its bits. */
+        final Map<Integer, String> constants = new java.util.HashMap<>();
+        /** The keys of {@link #constants} in the order they were added. */
+        final List<Integer> constantOrder = new ArrayList<>();
         /** The keys of {@link #buffers} in the order they were added. */
         final List<ClStorage> bufferOrder = new ArrayList<>();
         /** Pending inputs computed at the result's own index, written to their buffers too. */
@@ -409,11 +417,18 @@ final class Fused {
                 case Src s -> source(s, idx);
                 case MatMul m -> throw new IllegalStateException("a matrix product inside a chain");
                 case Const c -> {
-                    String a = "c" + args.size();
-                    params.append(", float ").append(a);
-                    args.add(c.value());
-                    argBytes += 8;
-                    yield let("(ACC) " + a);
+                    // one argument and one value per distinct number in the kernel
+                    int bits = Float.floatToRawIntBits(c.value());
+                    String a = constants.get(bits);
+                    if (a == null) {
+                        a = "c" + args.size();
+                        params.append(", float ").append(a);
+                        args.add(c.value());
+                        argBytes += 8;
+                        constants.put(bits, a);
+                        constantOrder.add(bits);
+                    }
+                    yield "((ACC) " + a + ")";
                 }
                 case Un u -> let("unary_op(" + u.op() + ", " + eval(u.x(), idx) + ")");
                 case Act a -> let("activation_op(" + a.op() + ", " + literal(a.param()) + ", "
@@ -432,6 +447,9 @@ final class Fused {
         }
 
         private String source(Src s, String idx) {
+            if (s.storage().pending instanceof Const c && s.storage() != base) {
+                return eval(c, idx);   // the same everywhere: no index to compute
+            }
             String at = s.direct() ? idx : index(s, idx);
             ClStorage st = s.storage();
             if (st == base) {
