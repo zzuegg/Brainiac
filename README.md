@@ -426,6 +426,19 @@ choices...)`, ...), and `Mutation.named(...)` adds your own:
 Fitness is the task's metric on the validation data (accuracy, or minus the mean absolute
 error), optionally minus a size or time penalty (`Fitness`); ties go to the smaller design.
 
+Two switches change how candidates train:
+
+- `batched(true)` (`--batched`) trains a generation as **one stacked model**: every weight
+  gets a population axis, each projection is one batched matrix product for all
+  candidates, and missing neurons and connections are masked. Each candidate still trains
+  exactly as it would alone (same start, batches and element-wise optimizer, its own
+  learning rate folded into its weights). On the CPU OpenCL driver a spiral generation
+  needs 2,265 kernel launches instead of 9,464, with identical scores; it is meant for
+  GPUs, where launches dominate for small networks.
+- `inheritWeights(true)` (`--inherit`) starts every child from its parents' trained
+  weights wherever it shares a connection, neuron or output with them (matched by neuron
+  id); only new parts start random.
+
 Per-neuron activations are computed as `sum_k f_k(x) * mask_k`, element-wise only, so the
 OpenCL backend fuses them: forward and backward each take one kernel launch, the same as a
 single shared activation, even with all seven default activations mixed.
