@@ -267,7 +267,7 @@ public final class LanguageExample {
         int size = start.length;
         double[] weights = new double[v];
         // keys and values of earlier tokens are kept, so each new token is one cheap step
-        KvCache cache = KvCache.of(model);
+        KvCache cache = KvCache.of(decoder(model, 1));
         Tensor out = cache.append(java.util.Arrays.copyOfRange(start, Math.max(0, size - length), size));
         for (int n = 0; n < count; n++) {
             float[] p = out.toArray();
@@ -279,6 +279,26 @@ public final class LanguageExample {
             size++;
         }
         return prompt + tokenizer.decode(java.util.Arrays.copyOfRange(ids, start.length, size));
+    }
+
+    /**
+     * Below this many streams written at once, a model on a GPU generates through a CPU
+     * copy: each token is a few hundred small launches, which the CPU runs faster (on an
+     * RX 9070 XT, 1 stream: CPU 2,309 tokens/s vs GPU 539; 8: 4,163 vs 1,941; 32: 4,311 vs
+     * 13,661). {@code -Dbrainiac.generate.gpuStreams=n} changes it; 1 keeps the GPU always.
+     */
+    static final int GPU_STREAMS = Integer.getInteger("brainiac.generate.gpuStreams", 16);
+
+    /** The model to decode {@code streams} streams with: a CPU copy when that is faster. */
+    static Model decoder(Model model, int streams) {
+        if (streams >= GPU_STREAMS || model.device().kind() == Device.Kind.CPU) {
+            return model;
+        }
+        try {
+            return model.copy(Device.cpu());
+        } catch (IllegalStateException e) {
+            return model;   // custom layers that cannot be copied: stay where it is
+        }
     }
 
     /**
@@ -312,7 +332,7 @@ public final class LanguageExample {
             first[b] = java.util.Arrays.copyOfRange(start, Math.max(0, start.length - length), start.length);
         }
         double[] weights = new double[v];
-        KvCache cache = KvCache.of(model);
+        KvCache cache = KvCache.of(decoder(model, streams));
         Tensor out = cache.append(first);
         int[][] next = new int[streams][1];
         for (int n = 0; n < count; n++) {
