@@ -686,15 +686,63 @@ public final class OpenClBackend implements Backend {
         out.pendingGeneration = generation;
     }
 
+    /** The storages being computed by {@link #ready} calls on the stack. */
+    private final Set<ClStorage> readying = Collections.newSetFromMap(new IdentityHashMap<>());
+
     /** Computes a pending storage, so that its buffer holds its values. */
     private void ready(ClStorage s) {
-        if (s.pending instanceof Fused.MatMul) {
-            runMatMul(s);
-        } else if (s.pending instanceof Fused.Reduce) {
-            runReduces(s);
-        } else if (s.pending != null) {
-            materialize(s);
+        if (s.pending == null) {
+            return;
         }
+        readying.add(s);
+        try {
+            if (s.pending instanceof Fused.MatMul) {
+                runMatMul(s);
+            } else if (s.pending instanceof Fused.Reduce) {
+                runReduces(s);
+            } else {
+                materialize(s);
+            }
+        } finally {
+            readying.remove(s);
+        }
+    }
+
+    /**
+     * Whether another pending reduction {@code s} can run with {@code current}: not if it needs
+     * a product or reduction being computed further up the stack (which waits on this one), nor
+     * if it reads a released storage (it is then garbage that nothing will read). Reading
+     * {@code current} itself is fine: it then runs in a second pass of the same kernel.
+     */
+    private boolean canJoin(ClStorage s, ClStorage current) {
+        Set<ClStorage> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        java.util.ArrayDeque<ClStorage> todo = new java.util.ArrayDeque<>();
+        todo.push(s);
+        while (!todo.isEmpty()) {
+            ClStorage c = todo.pop();
+            if (c.released) {
+                return false;
+            }
+            if (c.pending == null || !seen.add(c)) {
+                continue;
+            }
+            if (c != s && c != current && readying.contains(c)
+                    && (c.pending instanceof Fused.MatMul || c.pending instanceof Fused.Reduce)) {
+                return false;
+            }
+            switch (c.pending) {
+                case Fused.MatMul m -> {
+                    for (Object arg : m.args()) {
+                        if (arg instanceof ClStorage operand && operand != c) {
+                            todo.push(operand);
+                        }
+                    }
+                }
+                case Fused.Reduce r -> todo.push(r.x());
+                default -> todo.addAll(Fused.inputs(c.pending));
+            }
+        }
+        return true;
     }
 
     /** Runs a precompiled kernel with explicit work sizes, without starting a new generation. */
@@ -839,6 +887,9 @@ public final class OpenClBackend implements Backend {
 
     private void materialize(ClStorage s) {
         readyReduces(s.pending);
+        if (s.pending == null) {
+            return;   // computed meanwhile, as a value a reduction's kernel stored on the way
+        }
         Map<ClStorage, Boolean> products = Fused.matmuls(s.pending);
         if (products.size() == 1) {
             Map.Entry<ClStorage, Boolean> only = products.entrySet().iterator().next();
@@ -848,6 +899,9 @@ public final class OpenClBackend implements Backend {
         }
         for (ClStorage p : products.keySet()) {
             ready(p);
+        }
+        if (s.pending == null) {
+            return;
         }
         long genStart = profiling ? System.nanoTime() : 0;
         Fused.Kernel k = Fused.generate(s.pending, storeIntermediates);
@@ -1893,7 +1947,7 @@ public final class OpenClBackend implements Backend {
                 continue;
             }
             if (o != s && o.dtype == s.dtype && q.outer() == r.outer() && q.length() == r.length()
-                    && q.inner() == r.inner()) {
+                    && q.inner() == r.inner() && canJoin(o, s)) {
                 if (Fused.reduces(Fused.whole(q.x())).isEmpty()) {
                     first.add(o);
                 } else {
@@ -2106,6 +2160,9 @@ public final class OpenClBackend implements Backend {
         Fused.MatMul mm = (Fused.MatMul) s.pending;
         Fused.Expr pa = prologue(mm.a());
         Fused.Expr pb = prologue(mm.b());
+        if (s.pending != mm) {
+            return;   // computed meanwhile
+        }
         if (pa != null || pb != null) {
             Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, layout(mm, pa, true), pb, layout(mm, pb, false));
             MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());

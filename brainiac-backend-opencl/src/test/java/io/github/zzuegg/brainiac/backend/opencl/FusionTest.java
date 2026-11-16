@@ -255,6 +255,61 @@ class FusionTest {
         }
     }
 
+    /**
+     * Three plain gradient steps of a small transformer, releasing each step's graph, the
+     * replaced weights and the masks as the trainer does; returns the last loss and weights.
+     */
+    private static float[] trainTransformer(Device device) {
+        io.github.zzuegg.brainiac.nn.Model model = io.github.zzuegg.brainiac.nn.Model.sequential().input(8, 12)
+                .dense(16).positionalEncoding()
+                .add(io.github.zzuegg.brainiac.nn.TransformerBlock.of(4).ffnSize(32))
+                .add(io.github.zzuegg.brainiac.nn.TransformerBlock.of(4).ffnSize(32))
+                .dense(4).seed(7).build().to(device);
+        List<io.github.zzuegg.brainiac.autograd.Var> params = model.parameters();
+        Tensor x = random(80, 6, 8, 12).to(device);
+        Tensor target = random(81, 6, 8, 4).to(device);
+        float last = 0;
+        for (int step = 0; step < 3; step++) {
+            io.github.zzuegg.brainiac.autograd.Var[] loss = new io.github.zzuegg.brainiac.autograd.Var[1];
+            List<Tensor> work = Tensor.created(() -> loss[0] = model
+                    .forward(io.github.zzuegg.brainiac.autograd.Var.of(x), true).sub(target).square().mean());
+            loss[0].backward();
+            List<Tensor> old = new ArrayList<>();
+            List<Tensor> kept = new ArrayList<>(List.of(loss[0].value(), x, target));
+            for (io.github.zzuegg.brainiac.autograd.Var p : params) {
+                old.add(p.value());
+                p.assign(p.value().sub(p.grad().mul(0.05f)));
+                p.zeroGrad();
+                kept.add(p.value());
+            }
+            Tensor.evaluate(kept);
+            last = loss[0].value().item();
+            loss[0].release();
+            old.addAll(work);
+            Tensor.release(old, kept);
+        }
+        List<Float> out = new ArrayList<>(List.of(last));
+        for (float v : params.get(0).value().toArray()) {
+            out.add(v);
+        }
+        float[] result = new float[out.size()];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = out.get(i);
+        }
+        return result;
+    }
+
+    @Test
+    void aTransformerTrainsLikeOnTheCpuWhileReleasingEachStep() {
+        // deep pending graphs (attention around reductions) once recursed without end, and
+        // released values once included the shared scalar constants
+        float[] expected = trainTransformer(Device.cpu());
+        float[] actual = trainTransformer(gpu);
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual[i], 1e-3, "value " + i);
+        }
+    }
+
     @Test
     void reductionsOfTheSameShapeRunTogether() {
         for (int[] dims : new int[][] {{6, 300}, {700, 5}, {3, 2000}}) {
