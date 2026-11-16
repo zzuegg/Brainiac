@@ -54,7 +54,10 @@ public final class Ppo implements Learner {
     private float maxGradNorm = 0.5f;
     private float targetKl;
     private float adaptiveKl;
+    private static final int ADAPTIVE_WARMUP = 5;
     private double rateScale = 1;
+    private double smoothedKl = -1;
+    private int adaptiveUpdates;
     private boolean normalize = true;
     private SplittableRandom random = new SplittableRandom(0);
     private final Map<String, Double> diagnostics = new LinkedHashMap<>();
@@ -214,10 +217,11 @@ public final class Ppo implements Learner {
     }
 
     /**
-     * Adapts the learning rate to how far each update moves the policy: after an update
-     * whose approximate KL divergence is above twice the target, the rate drops by a
-     * factor of 1.5; below half the target, it rises by 1.5 (to at most 10 times, and at
-     * least a hundredth of, the set rate). The factor carries over between calls to
+     * Adapts the learning rate to how far each update moves the policy. The approximate KL
+     * divergence is smoothed over updates; after the first five updates, while it is above
+     * twice the target the rate drops by a factor of 1.25 per update, and while it is below
+     * half the target it rises by 1.25 (to at most 10 times, and at least a tenth of, the
+     * set rate). The factor carries over between calls to
      * {@code fit} and combines with {@link #annealLearningRate(boolean)}.
      *
      * @param kl the target KL per update, for example 0.01; 0 turns adaptation off
@@ -574,11 +578,16 @@ public final class Ppo implements Learner {
         diagnostics.put("epochs", (double) epochsRun);
         diagnostics.put("learningRate", (double) optimizer.learningRate());
         if (adaptiveKl > 0 && batches > 0) {
+            // smooth the KL over updates and leave the first few alone: an untrained policy's
+            // first updates move it far, which says little about the rate later on
             double meanKl = kl / batches;
-            if (meanKl > 2 * adaptiveKl) {
-                rateScale = Math.max(0.01, rateScale / 1.5);
-            } else if (meanKl < adaptiveKl / 2) {
-                rateScale = Math.min(10, rateScale * 1.5);
+            smoothedKl = smoothedKl < 0 ? meanKl : 0.7 * smoothedKl + 0.3 * meanKl;
+            if (++adaptiveUpdates > ADAPTIVE_WARMUP) {
+                if (smoothedKl > 2 * adaptiveKl) {
+                    rateScale = Math.max(0.1, rateScale / 1.25);
+                } else if (smoothedKl < adaptiveKl / 2) {
+                    rateScale = Math.min(10, rateScale * 1.25);
+                }
             }
         }
     }

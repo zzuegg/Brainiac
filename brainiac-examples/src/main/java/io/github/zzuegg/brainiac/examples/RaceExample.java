@@ -318,10 +318,19 @@ public final class RaceExample {
         String out = "race.png";
         final List<String> sets = new ArrayList<>();
 
+        private static final java.util.Set<String> FLAGS = java.util.Set.of("--no-window", "--bots", "--anneal");
+
         static Options parse(String[] args) {
             Options o = new Options();
             for (int i = 0; i < args.length; i++) {
                 String a = args[i];
+                if (a.startsWith("--") && !FLAGS.contains(a) && (i + 1 >= args.length || args[i + 1].startsWith("--"))) {
+                    throw new IllegalArgumentException(a + " needs a value" + switch (a) {
+                        case "--adaptive-lr", "--target-kl" -> ", a target KL such as 0.01";
+                        case "--lr" -> ", such as 3e-4";
+                        default -> "";
+                    });
+                }
                 switch (a) {
                     case "--cars" -> o.cars = Integer.parseInt(args[++i]);
                     case "--track" -> o.track = args[++i];
