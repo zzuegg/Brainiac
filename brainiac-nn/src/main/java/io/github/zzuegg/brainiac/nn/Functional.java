@@ -635,6 +635,12 @@ public final class Functional {
      */
     public static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
             java.util.random.RandomGenerator random) {
+        return attention(q, k, v, bias, scale, dropout, random, null);
+    }
+
+    /** As above; {@code weights[0]}, when given, receives the attention weights {@code [batch, heads, queries, keys]}. */
+    static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
+            java.util.random.RandomGenerator random, Tensor[] weightsOut) {
         int heads = q.shape().dim(1);
         int kvHeads = k.shape().dim(1);
         if (heads % kvHeads != 0 || v.shape().dim(1) != kvHeads) {
@@ -650,6 +656,9 @@ public final class Functional {
             scores = scores.add(bias);
         }
         Var weights = Activation.SOFTMAX.forward(scores);
+        if (weightsOut != null) {
+            weightsOut[0] = weights.value();
+        }
         if (dropout > 0 && random != null) {
             Tensor keep = Tensor.random(weights.shape(), random.nextLong(), weights.value().device())
                     .greater(Tensor.full(Shape.of(), dropout, weights.value().device()));

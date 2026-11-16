@@ -238,7 +238,9 @@ public final class BenchmarkExample {
      *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best},
      *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
      *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
-     *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer)
+     *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
+     *        {@code --cache none,restart,sliding,sinks:4,h2o:32,restart/bf16} (for shakespeare:
+     *        compare KV cache strategies on long text)
      */
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -257,6 +259,10 @@ public final class BenchmarkExample {
         List<DType> precisions = null;
         List<String> tokenizers = null;
         for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--cache")) {
+                cacheStrategies = List.of(args[++i].split(","));
+                continue;
+            }
             switch (args[i]) {
                 case "--device" -> device = switch (args[++i]) {
                     case "cpu" -> Device.cpu();
@@ -325,6 +331,27 @@ public final class BenchmarkExample {
         System.out.print(Benchmark.table(reports));
     }
 
+    /** KV cache strategies to compare after a language model is trained ({@code --cache}). */
+    private static List<String> cacheStrategies = List.of();
+
+    /** Reads 2,000 test tokens through each cache strategy, for loss on long text and speed. */
+    private static void compareCaches(Model model, io.github.zzuegg.brainiac.data.Tokenizer tokenizer, String text) {
+        if (cacheStrategies.isEmpty()) {
+            return;
+        }
+        String test = text.substring((int) (text.length() * 0.9));
+        System.out.println("reading 2,000 test tokens one at a time (window " + model.inputShape().dim(0) + "):");
+        System.out.printf("  %-18s %12s %10s%n", "cache", "loss/char", "tokens/s");
+        for (String spec : cacheStrategies) {
+            String[] parts = spec.split("/");
+            io.github.zzuegg.brainiac.nn.KvCache.Strategy strategy = parts[0].equals("none") ? null
+                    : io.github.zzuegg.brainiac.nn.KvCache.Strategy.parse(parts[0]);
+            DType storage = parts.length > 1 ? dtype(parts[1]) : null;
+            double[] r = LanguageExample.streamLoss(strategy, storage, model, tokenizer, test, 2000);
+            System.out.printf("  %-18s %12.4f %10.0f%n", spec, r[0], r[1]);
+        }
+    }
+
     /** Trains (or loads) and tests one model; null if the named model does not fit the task. */
     private static Report runOne(Task t, String name, String label, Options options, boolean trainLoaded) {
         Report r;
@@ -348,14 +375,17 @@ public final class BenchmarkExample {
         if (t.name().startsWith("shakespeare")) {
             String spec = t.name().contains("/") ? t.name().substring(t.name().indexOf('/') + 1) : "char";
             io.github.zzuegg.brainiac.data.Tokenizer tokenizer;
+            String text;
             try {
-                tokenizer = LanguageExample.tokenizer(spec, LanguageExample.load(LanguageExample.DATA_FILE));
+                text = LanguageExample.load(LanguageExample.DATA_FILE);
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
+            tokenizer = LanguageExample.tokenizer(spec, text);
             System.out.println("sample:\n" + LanguageExample.generate(model, tokenizer, "ROMEO:\n",
                     (int) Math.ceil(400 / tokenizer.charactersPerToken("ROMEO:\nWhat light through yonder window "
                             + "breaks? It is the east, and Juliet is the sun.")), 0.8f, 1) + "\n");
+            compareCaches(model, tokenizer, text);
         }
         return r;
     }
@@ -422,6 +452,9 @@ public final class BenchmarkExample {
                   --precisions L  train each model once per precision, e.g. f32,bf16,f16
                                 (f16 and bf16 mean mixed precision), to compare them
                   --tokenizers L  for shakespeare, one run per tokenizer, e.g.
-                                char,byte,word:2048,bpe:1024,wordpiece:1024,unigram:1024""".formatted(Tasks.NAMES, MODELS));
+                                char,byte,word:2048,bpe:1024,wordpiece:1024,unigram:1024
+                  --cache L     for shakespeare, read 2,000 test tokens through each KV cache
+                                strategy: none (recompute), restart, sliding, sinks:4, h2o:32;
+                                add /bf16 or /f16 to store keys and values narrower""".formatted(Tasks.NAMES, MODELS));
     }
 }

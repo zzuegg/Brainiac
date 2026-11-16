@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Generating with cached keys and values gives what a full pass over the window gives. */
 class KvCacheTest {
@@ -74,6 +75,53 @@ class KvCacheTest {
         cache.reset();
         assertArrayEquals(row(full(model, new int[] {9, 2, 6, 5}), 3),
                 cache.append(3, 1, 4, 1, 5, 9, 2, 6, 5).toArray(), 1e-5f);
+    }
+
+    @Test
+    void slidingAndSinksKeepWhatTheyPromise() {
+        // with one block, the keys of old tokens depend on nothing further back, so the cache
+        // equals a fresh pass over exactly the tokens it kept
+        Model model = lm(4, 1, TransformerBlock.of(2).causal(true).rotary(10000));
+        int[] ids = {3, 1, 4, 1, 5, 9, 2, 6};
+        KvCache sliding = KvCache.of(model, KvCache.Strategy.sliding());
+        KvCache sinks = KvCache.of(model, KvCache.Strategy.sinks(1));
+        float[] a = null;
+        float[] b = null;
+        for (int id : ids) {
+            a = sliding.append(id).toArray();
+            b = sinks.append(id).toArray();
+        }
+        assertEquals(4, sliding.size());
+        assertArrayEquals(row(full(model, new int[] {5, 9, 2, 6}), 3), a, 1e-5f);
+        assertArrayEquals(row(full(model, new int[] {3, 9, 2, 6}), 3), b, 1e-5f);
+        // a long prompt in one call gives the same as token by token
+        KvCache once = KvCache.of(model, KvCache.Strategy.sinks(1));
+        assertArrayEquals(b, once.append(ids).toArray(), 1e-5f);
+    }
+
+    @Test
+    void heavyHittersKeepTheWindowFullAndTheRecentTokens() {
+        Model model = lm(6, 2, TransformerBlock.of(2).causal(true).rotary(10000));
+        KvCache cache = KvCache.of(model, KvCache.Strategy.heavyHitters(3));
+        KvCache bf16 = KvCache.of(model, 6, KvCache.Strategy.restart(), io.github.zzuegg.brainiac.tensor.DType.BFLOAT16);
+        KvCache f32 = KvCache.of(model);
+        for (int i = 0; i < 20; i++) {
+            float[] p = cache.append(i % V).toArray();
+            assertEquals(1, sum(p), 1e-4f);
+            assertTrue(cache.size() <= 6);
+            assertArrayEquals(f32.append(i % V).toArray(), bf16.append(i % V).toArray(), 2e-2f);
+        }
+        assertEquals(6, cache.size());
+        assertEquals(KvCache.Strategy.heavyHitters(3), KvCache.Strategy.parse("h2o:3"));
+        assertEquals(KvCache.Strategy.sinks(4), KvCache.Strategy.parse("sinks"));
+    }
+
+    private static float sum(float[] p) {
+        float s = 0;
+        for (float x : p) {
+            s += x;
+        }
+        return s;
     }
 
     @Test

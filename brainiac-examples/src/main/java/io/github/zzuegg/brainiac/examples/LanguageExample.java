@@ -281,6 +281,55 @@ public final class LanguageExample {
         return prompt + tokenizer.decode(java.util.Arrays.copyOfRange(ids, start.length, size));
     }
 
+    /**
+     * How well a model predicts a long text when read one token at a time through a cache,
+     * and how fast: the way to compare {@link KvCache.Strategy strategies}, since they only
+     * differ once the text is longer than the window.
+     *
+     * @param strategy what a full cache drops, or {@code null} to recompute the last
+     *     window for every token, as without a cache
+     * @param storage the type the cache keeps keys and values in, or {@code null}
+     * @param model a trained model from {@link #model}
+     * @param tokenizer its tokenizer
+     * @param text the text to read; its first token is the start
+     * @param tokens the most tokens to predict
+     * @return the loss in nats per character and the tokens read per second
+     */
+    public static double[] streamLoss(KvCache.Strategy strategy, io.github.zzuegg.brainiac.tensor.DType storage,
+                                      Model model, Tokenizer tokenizer, String text, int tokens) {
+        int[] ids = tokenizer.encode(text);
+        int count = Math.min(tokens, ids.length - 1);
+        int length = model.inputShape().dim(0);
+        KvCache cache = strategy == null ? null : KvCache.of(model, length, strategy, storage);
+        float[] window = new float[length];
+        double nats = 0;
+        long start = System.nanoTime();
+        for (int t = 0; t < count; t++) {
+            float[] p;
+            if (cache != null) {
+                Tensor out = cache.append(ids[t]);
+                p = out.toArray();
+                out.release();
+            } else {
+                int from = Math.max(0, t + 1 - length);
+                int used = t + 1 - from;
+                java.util.Arrays.fill(window, 0);
+                for (int i = 0; i < used; i++) {
+                    window[i] = ids[from + i];
+                }
+                Tensor out = model.predict(Tensor.of(Shape.of(1, length), window, model.device()));
+                float[] all = out.toArray();
+                out.release();
+                int v = all.length / length;
+                p = java.util.Arrays.copyOfRange(all, (used - 1) * v, used * v);
+            }
+            nats -= Math.log(Math.max(p[ids[t + 1]], 1e-12));
+        }
+        double seconds = (System.nanoTime() - start) / 1e9;
+        int chars = tokenizer.decode(java.util.Arrays.copyOfRange(ids, 1, count + 1)).length();
+        return new double[] {nats / chars, count / seconds};
+    }
+
     /** Draws a class from probabilities {@code p[offset .. offset + v)} at a temperature. */
     static int sample(float[] p, int offset, int v, float temperature, SplittableRandom random, double[] weights) {
         double total = 0;
