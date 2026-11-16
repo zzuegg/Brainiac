@@ -462,7 +462,8 @@ public final class OpenClBackend implements Backend {
     private String prelude(DType type) {
         // No contraction into fused multiply-adds anywhere, so generated kernels and the
         // precompiled ones round every step alike.
-        String common = "#pragma OPENCL FP_CONTRACT OFF\n#define TS " + tile + "\n#define RG " + reduceGroup + "\n";
+        String common = "#pragma OPENCL FP_CONTRACT OFF\n#define TS " + tile + "\n#define WPT " + (tile / 4)
+                + "\n#define RTS 4\n#define RG " + reduceGroup + "\n";
         return common + switch (type) {
             case FLOAT32 -> """
                     #define T float
@@ -1946,8 +1947,9 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
         ClStorage o = cl(out);
-        long[] global = {roundUp(n, tile), roundUp(m, tile), batch};
-        long[] local = {tile, tile, 1};
+        // a work item computes tile / 4 rows of a column
+        long[] global = {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
+        long[] local = {tile, 4, 1};
         Operand x = operand(a, o.dtype, batch, m, k);
         Operand y = operand(b, o.dtype, batch, k, n);
         Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
