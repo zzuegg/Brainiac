@@ -267,22 +267,31 @@ final class Fused {
      * Arguments after {@code out, n} are {@link Kernel#args}; {@link Kernel#outputs} lists every
      * storage the kernel writes besides the first.
      */
-    static Many generateMany(List<ClStorage> roots, java.util.Set<ClStorage> keep) {
+    static Many generateMany(List<ClStorage> roots, java.util.Set<ClStorage> keep, int maxArgBytes) {
         Gen g = new Gen();
         g.keep = keep;
         StringBuilder src = new StringBuilder();
         String start = null;
         long end = 0;
         boolean first = true;
+        int used = 0;
         for (ClStorage r : roots) {
             if (g.outputs.contains(r) || r == g.first) {
+                used++;
                 continue;   // already written by an earlier range
             }
+            // where to go back to if this range does not fit the arguments
+            int params = g.params.length();
+            int body = g.body.length();
+            int args = g.args.size();
+            int bytes = g.argBytes;
+            int outputs = g.outputs.size();
+            int buffers = g.bufferOrder.size();
             if (first) {
                 g.first = r;
             }
-            end += r.size;
-            String bound = g.arg(end);
+            long rangeEnd = end + r.size;
+            String bound = g.arg(rangeEnd);
             String idx = "i" + g.next++;
             g.body.append(first ? "    if (gi < " : "    else if (gi < ").append(bound).append(") {\n");
             g.body.append("    long ").append(idx).append(" = gi").append(start == null ? "" : " - " + start)
@@ -297,18 +306,34 @@ final class Fused {
                 g.args.add(r);
                 g.argBytes += 8;
             }
+            if (!first && g.argBytes > maxArgBytes) {
+                g.params.setLength(params);
+                g.body.setLength(body);
+                g.args.subList(args, g.args.size()).clear();
+                g.argBytes = bytes;
+                g.outputs.subList(outputs, g.outputs.size()).clear();
+                while (g.bufferOrder.size() > buffers) {
+                    g.buffers.remove(g.bufferOrder.removeLast());
+                }
+                break;
+            }
             g.body.append("    STORE(").append(o).append(", ").append(idx).append(", ").append(v).append(");\n    }\n");
+            end = rangeEnd;
             start = bound;
             first = false;
+            used++;
         }
         src.append("__kernel void fused(__global T* out, long n").append(g.params)
                 .append(") {\n    long gi = get_global_id(0);\n    if (gi >= n) return;\n")
                 .append(g.body).append("}\n");
-        return new Many(new Kernel(src.toString(), g.args, g.argBytes, g.outputs), g.first, end);
+        return new Many(new Kernel(src.toString(), g.args, g.argBytes, g.outputs), g.first, end, used);
     }
 
-    /** A kernel from {@link #generateMany}: the storage written to {@code out}, and the work size. */
-    record Many(Kernel kernel, ClStorage first, long total) {
+    /**
+     * A kernel from {@link #generateMany}: the storage written to {@code out}, the work size,
+     * and how many of the given roots it covers (the rest did not fit its arguments).
+     */
+    record Many(Kernel kernel, ClStorage first, long total, int used) {
     }
 
     /**
@@ -362,6 +387,8 @@ final class Fused {
         final StringBuilder body = new StringBuilder();
         final List<Object> args = new ArrayList<>();
         final Map<ClStorage, String> buffers = new IdentityHashMap<>();
+        /** The keys of {@link #buffers} in the order they were added. */
+        final List<ClStorage> bufferOrder = new ArrayList<>();
         /** Pending inputs computed at the result's own index, written to their buffers too. */
         final List<ClStorage> outputs = new ArrayList<>();
         /** The index of the result, or null when the kernel writes nothing but its result. */
@@ -432,6 +459,7 @@ final class Fused {
                 if (b == null) {
                     b = "b" + buffers.size();
                     buffers.put(st, b);
+                    bufferOrder.add(st);
                     params.append(", __global const T* ").append(b);
                     args.add(st);
                     argBytes += 8;

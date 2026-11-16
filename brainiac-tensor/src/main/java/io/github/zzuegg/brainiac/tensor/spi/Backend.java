@@ -211,6 +211,15 @@ public interface Backend {
     }
 
     /**
+     * Says that a storage will not be read again, so its memory can be reused now rather than
+     * when it is garbage collected. Only a hint; the default ignores it.
+     *
+     * @param storage a storage of this backend that nothing reads afterwards
+     */
+    default void release(Storage storage) {
+    }
+
+    /**
      * Allocates storage whose contents are undefined, for results that an operation
      * overwrites completely. Backends where clearing costs a device command (such as a GPU)
      * skip it; the default clears anyway.

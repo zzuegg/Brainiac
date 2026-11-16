@@ -506,6 +506,7 @@ public final class OpenClBackend implements Backend {
      */
     private long generation;   // also advanced when the host waits for the device
     private int fusedCompiled;
+    private int fusedFailed;
     private long fusedCompileNanos;
 
     /** Whether an element-wise result can be recorded instead of computed now. */
@@ -668,13 +669,8 @@ public final class OpenClBackend implements Backend {
             // the largest chains first: the values they compute on the way need no range of their own
             todo.sort(Comparator.comparingInt((ClStorage s) -> -s.pendingNodes));
             while (!todo.isEmpty()) {
-                int count = todo.size();
-                Fused.Many k = Fused.generateMany(todo, keep);
-                while (k.kernel().argBytes() > Fused.MAX_ARG_BYTES && count > 1) {
-                    count = (count + 1) / 2;
-                    k = Fused.generateMany(todo.subList(0, count), keep);
-                }
-                List<ClStorage> group = List.copyOf(todo.subList(0, count));
+                Fused.Many k = Fused.generateMany(todo, keep, Fused.MAX_ARG_BYTES);
+                List<ClStorage> group = List.copyOf(todo.subList(0, k.used()));
                 if (k.kernel().argBytes() > Fused.MAX_ARG_BYTES || !evaluate(e.getKey(), k)) {
                     for (ClStorage s : group) {
                         ready(s);
@@ -784,7 +780,10 @@ public final class OpenClBackend implements Backend {
         }
     }
 
-    /** The compiled kernel for a generated source, or null while it is compiling in the background. */
+    /**
+     * The compiled kernel for a generated source, or null while it is compiling in the
+     * background or when the driver could not compile it.
+     */
     private MemorySegment fusedKernel(DType type, String kernelSource) {
         String key = type + "\n" + kernelSource;
         Future<MemorySegment> compiled = fusedKernels.get(key);
@@ -796,8 +795,23 @@ public final class OpenClBackend implements Backend {
             String source = prelude(type) + helpers + kernelSource;
             Callable<MemorySegment> build = () -> {
                 long start = System.nanoTime();
-                MemorySegment program = build(source);
-                MemorySegment kernel = cl.createKernel(program, "fused");
+                MemorySegment kernel;
+                try {
+                    kernel = cl.createKernel(build(source), "fused");
+                } catch (RuntimeException first) {
+                    try {
+                        kernel = cl.createKernel(build(source), "fused");   // some drivers fail transiently
+                    } catch (RuntimeException again) {
+                        // the steps keep running one by one, so a driver bug costs speed, not the run
+                        synchronized (fusedKernels) {
+                            if (fusedFailed++ == 0) {
+                                System.err.println("brainiac: the OpenCL driver failed to compile a generated "
+                                        + "kernel; running its steps separately: " + again.getMessage());
+                            }
+                        }
+                        return null;
+                    }
+                }
                 synchronized (fusedKernels) {
                     fusedCompiled++;
                     fusedCompileNanos += System.nanoTime() - start;
@@ -976,6 +990,24 @@ public final class OpenClBackend implements Backend {
         CLEANER.register(s, new Release(cl, s.buffer, bucket(size * dtype.bytes()), allocated, pool,
                 budget / 4));
         return s;
+    }
+
+    @Override
+    public synchronized void release(Storage storage) {
+        ClStorage s = cl(storage);
+        MemorySegment mem = s.buffer.mem;
+        if (s.pending != null || mem == null || s.released) {
+            return;   // pending results may still be inlined elsewhere: left to the collector
+        }
+        s.released = true;
+        s.buffer.mem = null;   // the cleaner then has nothing to do
+        long bytes = s.buffer.bytes;
+        if (bytes == bucket(bytes) && pool.bytes() + bytes <= budget / 4) {
+            pool.put(bytes, mem);   // reuse is safe: the queue runs in order
+        } else {
+            allocated.addAndGet(-bytes);
+            cl.release(mem);
+        }
     }
 
     /** A device buffer for a storage being written for the first time, from the pool if one fits. */
@@ -1159,6 +1191,9 @@ public final class OpenClBackend implements Backend {
                     "  %d fused kernels generated, compiled in %.1f ms; %d chains run unfused while compiling%n",
                     fusedCompiled, fusedCompileNanos / 1e6, eagerFallbacks));
         }
+        if (fusedFailed > 0) {
+            out.append(String.format(Locale.ROOT, "  %d generated kernels failed to compile%n", fusedFailed));
+        }
         long launches = 0;
         for (long[] t : kernelTimes.values()) {
             launches += t[0];
@@ -1193,6 +1228,7 @@ public final class OpenClBackend implements Backend {
         MemorySegment mem = createBuffer(CL.MEM_READ_WRITE | CL.MEM_COPY_HOST_PTR, bytes, host);
         allocated.addAndGet(bytes);
         ClStorage.Buffer buffer = new ClStorage.Buffer();
+        buffer.bytes = bytes;
         buffer.mem = mem;
         ClStorage s = new ClStorage(this, buffer, size, dtype);
         // pooled only when the pool's sizes can use it

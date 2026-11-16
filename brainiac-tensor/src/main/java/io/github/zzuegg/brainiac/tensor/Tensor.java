@@ -412,6 +412,16 @@ public final class Tensor {
     }
 
     /**
+     * Says that this tensor's values will not be used again, so a device can reuse its memory
+     * at once instead of when the tensor is garbage collected. The tensor, its views (such as
+     * reshapes) and results computed from it but not yet computed (see {@link #evaluate})
+     * must not be used afterwards; a GPU backend reports such a use as an error.
+     */
+    public void release() {
+        backend().release(storage);
+    }
+
+    /**
      * Copies all values to a new Java array in row-major order.
      *
      * @return the values

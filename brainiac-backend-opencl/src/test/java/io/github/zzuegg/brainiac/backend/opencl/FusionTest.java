@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.backend.opencl;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -197,6 +198,18 @@ class FusionTest {
         same(DType.FLOAT64, x -> Tensor.zeros(Shape.of(2, 3), DType.FLOAT64, x.device()).add(x).sum(0),
                 random(40, 2, 3));
         same(DType.FLOAT32, x -> Tensor.full(Shape.of(5), 2.5f, x.device()).sum(), random(41, 1));
+    }
+
+    @Test
+    void releasedBuffersAreReusedAndTheirTensorsRefused() {
+        Tensor x = random(50, 1000).to(gpu);
+        Tensor y = x.mul(2f);
+        Tensor.evaluate(List.of(y));
+        float[] expected = y.toArray();
+        y.release();
+        assertThrows(IllegalStateException.class, y::toArray);
+        Tensor z = x.mul(2f);   // takes the released buffer
+        assertArrayEquals(expected, z.toArray());
     }
 
     /** Runs a chain ending in reductions through the backend directly. */
