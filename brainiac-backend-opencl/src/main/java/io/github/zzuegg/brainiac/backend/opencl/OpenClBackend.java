@@ -335,7 +335,7 @@ public final class OpenClBackend implements Backend {
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "im2col",
-                "col2im", "gather", "scatter_add", "to_float", "from_float")) {
+                "col2im", "gather", "scatter_add", "to_float", "from_float", "random")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -537,6 +537,7 @@ public final class OpenClBackend implements Backend {
             if ((!in.direct() || !storeIntermediates) && in.storage().pending != null
                     && !(in.direct() && in.storage().pending instanceof Fused.MatMul)
                     && !(in.storage().pending instanceof Fused.Const)   // nothing to grow
+                    && !(in.storage().pending instanceof Fused.Random)
                     // an unrolled image is computed where a matmul loads it, never stored
                     && !(in.storage().pending instanceof Fused.Im2col && in.storage().pendingNodes <= 8)
                     && in.storage().pendingGeneration != generation) {
@@ -948,6 +949,7 @@ public final class OpenClBackend implements Backend {
         switch (e) {
             case Fused.MatMul mm -> throw new IllegalStateException("a matrix product inside a chain");
             case Fused.Reduce r -> throw new IllegalStateException("a reduction inside a chain");
+            case Fused.Random x -> quiet(t, "random", n, out, x.seed(), n);
             case Fused.Col2im c -> quiet(t, "col2im", n, computed(c.cols().storage(), false), new Temp(c.offsets()),
                     new Temp(c.entries()), out, c.channels(), c.positions(), c.ks(), c.img(), n);
             case Fused.Im2col c -> quiet(t, "im2col", n, computed(c.x().storage(), false), new Temp(c.table()), out,
@@ -1487,6 +1489,18 @@ public final class OpenClBackend implements Backend {
     }
 
     // ---------------------------------------------------------------- element-wise
+
+    @Override
+    public synchronized Storage random(long size, long seed) {
+        ClStorage o = raw(size, DType.FLOAT32);
+        if (fusable(o)) {
+            // recorded: generated inside the kernel that uses the values, never stored
+            defer(o, new Fused.Random(seed));
+        } else if (size > 0) {
+            run(DType.FLOAT32, "random", size, o, seed, size);
+        }
+        return o;
+    }
 
     @Override
     public synchronized void unary(UnaryOp op, Storage in, Storage out) {

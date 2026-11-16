@@ -303,7 +303,7 @@ public final class TransformerBlock implements MultiInputLayer {
         if (!training || rate == 0) {
             return x;
         }
-        Tensor keep = Tensor.uniform(x.shape(), 0, 1, random).to(x.value().device())
+        Tensor keep = Tensor.random(x.shape(), random.nextLong(), x.value().device())
                 .greater(Tensor.full(Shape.of(), rate, x.value().device()));
         return x.mul(keep.div(1 - rate));
     }

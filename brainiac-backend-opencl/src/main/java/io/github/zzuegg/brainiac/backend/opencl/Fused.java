@@ -32,7 +32,7 @@ final class Fused {
     }
 
     /** A value per element of an index space; evaluated at one linear index. */
-    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce, Im2col, Col2im {
+    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce, Im2col, Col2im, Random {
     }
 
     /**
@@ -97,6 +97,10 @@ final class Fused {
             Object owner, int channels, int positions, int ks, int img) implements Expr {
     }
 
+    /** Uniform values in {@code [0, 1)} from a seed and the element index (CounterRandom). */
+    record Random(long seed) implements Expr {
+    }
+
     /** A source reading all of {@code s} in order, as an index space of its own size. */
     static Src whole(ClStorage s) {
         return new Src(s, 0, new int[] {Math.toIntExact(s.size)}, new long[] {1}, true);
@@ -123,6 +127,7 @@ final class Fused {
             case Src s -> 1 + (s.storage().pending != null ? s.storage().pendingNodes : 0);
             case MatMul m -> 1;
             case Const c -> 1;
+            case Random x -> 1;
             case Reduce r -> 1;
             case Im2col c -> 1 + nodes(c.x());
             case Col2im c -> 1 + nodes(c.cols());
@@ -157,6 +162,8 @@ final class Fused {
             case MatMul m -> {
             }
             case Const c -> {
+            }
+            case Random x -> {
             }
             case Reduce r -> {
             }
@@ -240,6 +247,7 @@ final class Fused {
             case MatMul m -> false;
             case Reduce r -> false;
             case Const c -> false;
+            case Random x -> false;
             case Im2col c -> scatters(c.x());
             case Un u -> scatters(u.x());
             case Act x -> scatters(x.x());
@@ -258,6 +266,7 @@ final class Fused {
             case MatMul m -> false;
             case Reduce r -> false;
             case Const c -> false;
+            case Random x -> false;
             case Un u -> unrolls(u.x());
             case Act x -> unrolls(x.x());
             case ActBack x -> unrolls(x.x()) || unrolls(x.grad());
@@ -278,6 +287,8 @@ final class Fused {
             case MatMul m -> {
             }
             case Const c -> {
+            }
+            case Random x -> {
             }
             case Reduce r -> {
             }
@@ -309,6 +320,8 @@ final class Fused {
             case MatMul m -> {
             }
             case Const c -> {
+            }
+            case Random x -> {
             }
             case Reduce r -> {
             }
@@ -554,6 +567,8 @@ final class Fused {
             }
             case Const c -> {
             }
+            case Random x -> {
+            }
             case Reduce r -> {
             }
             case Im2col c -> reduces(c.x(), out, seen);
@@ -611,6 +626,7 @@ final class Fused {
                             .append(");\n");
                     yield window(c, row, "(int) (" + idx + " % " + width + ")");
                 }
+                case Random x -> let("(ACC) random_at(" + arg(x.seed()) + ", " + idx + ")");
                 case Col2im c -> {
                     String offsets = buffer(c.offsets());
                     String entries = buffer(c.entries());
