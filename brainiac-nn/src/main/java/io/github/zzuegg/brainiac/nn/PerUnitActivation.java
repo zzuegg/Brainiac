@@ -8,6 +8,8 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
@@ -39,28 +41,42 @@ final class PerUnitActivation implements Activation {
         }
     }
 
-    static Activation of(Activation... perUnit) {
+    static Activation of(Collection<Activation> palette, Activation... perUnit) {
         if (perUnit.length == 0) {
             throw new IllegalArgumentException("perUnit needs at least one unit");
         }
-        List<Activation> distinct = new ArrayList<>();
-        int[] choice = new int[perUnit.length];
-        for (int u = 0; u < perUnit.length; u++) {
-            Activation a = Objects.requireNonNull(perUnit[u], "activation");
-            if (a.boundWidth() >= 0 || a.bind(1) != a || !a.parameters().isEmpty()) {
-                throw new IllegalArgumentException("perUnit takes activations without parameters, got " + a);
+        List<Activation> used = new ArrayList<>();
+        for (Activation a : perUnit) {
+            check(a);
+            if (!used.contains(a)) {
+                used.add(a);
             }
-            int k = distinct.indexOf(a);
-            if (k < 0) {
-                k = distinct.size();
+        }
+        if (used.size() == 1) {
+            return used.get(0);
+        }
+        List<Activation> distinct = new ArrayList<>(used);
+        for (Activation a : palette) {
+            check(a);
+            if (!distinct.contains(a)) {
                 distinct.add(a);
             }
-            choice[u] = k;
         }
-        if (distinct.size() == 1) {
-            return distinct.get(0);
+        // a fixed order, not the order of first use, so the same mix of activations always
+        // gives the same generated kernel and a GPU backend compiles it only once
+        distinct.sort(Comparator.comparing(Activation::toString));
+        int[] choice = new int[perUnit.length];
+        for (int u = 0; u < perUnit.length; u++) {
+            choice[u] = distinct.indexOf(perUnit[u]);
         }
         return new PerUnitActivation(distinct.toArray(Activation[]::new), choice);
+    }
+
+    private static void check(Activation a) {
+        Objects.requireNonNull(a, "activation");
+        if (a.boundWidth() >= 0 || a.bind(1) != a || !a.parameters().isEmpty()) {
+            throw new IllegalArgumentException("perUnit takes activations without parameters, got " + a);
+        }
     }
 
     static Function<Config, Activation> factory() {
@@ -74,7 +90,7 @@ final class PerUnitActivation implements Activation {
             for (int u = 0; u < choice.length; u++) {
                 perUnit[u] = distinct[choice[u]];
             }
-            return of(perUnit);
+            return of(List.of(distinct), perUnit);
         };
     }
 
@@ -174,7 +190,9 @@ final class PerUnitActivation implements Activation {
             for (int c : choice) {
                 n += c == k ? 1 : 0;
             }
-            sb.append(k > 0 ? ", " : "").append(n).append(' ').append(distinct[k]);
+            if (n > 0) {   // a palette entry no unit uses is left out
+                sb.append(sb.length() > 8 ? ", " : "").append(n).append(' ').append(distinct[k]);
+            }
         }
         return sb.append(')').toString();
     }

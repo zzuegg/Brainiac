@@ -60,8 +60,10 @@ final class Population implements Layer {
      *     the starting weights to train from
      * @param scales each candidate's learning rate factor {@code s}
      * @param head the output activation
+     * @param palette activations every mixed region computes, as in {@link Genome#brainSpec(java.util.Collection)}
      */
-    Population(List<Genome> genomes, List<Model> models, float[] scales, Activation head) {
+    Population(List<Genome> genomes, List<Model> models, float[] scales, Activation head,
+            java.util.Collection<Activation> palette) {
         this.genomes = List.copyOf(genomes);
         this.count = genomes.size();
         Genome first = genomes.getFirst();
@@ -146,6 +148,17 @@ final class Population implements Layer {
                 }
             }
             biases[r] = Var.param(Tensor.of(Shape.of(count, 1, n), b));
+            if (distinct.size() > 1) {
+                // the palette in a fixed order, as in Genome.brainSpec, so every generation
+                // runs the same generated kernels
+                for (Activation a : palette) {
+                    if (!am.containsKey(a)) {
+                        distinct.add(a);
+                        am.put(a, new float[count * n]);
+                    }
+                }
+                distinct.sort(java.util.Comparator.comparing(Activation::toString));
+            }
             activations.add(distinct);
             List<Var> ms = new ArrayList<>();
             for (Activation a : distinct) {

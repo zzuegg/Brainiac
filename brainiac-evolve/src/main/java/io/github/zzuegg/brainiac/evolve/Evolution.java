@@ -455,7 +455,20 @@ public final class Evolution {
      * @return the model
      */
     public Model build(Genome genome, long seed) {
-        return genome.build(task.inputShape(), frontEnd, Math.toIntExact(task.outputShape().size()), head(), seed);
+        return genome.build(task.inputShape(), frontEnd, Math.toIntExact(task.outputShape().size()), head(), seed,
+                palette());
+    }
+
+    /**
+     * The activations every region mixing them computes, used or not: on a GPU all of
+     * {@link Mutations#DEFAULT_ACTIVATIONS}, so candidates differing only in their mix of
+     * activations run the same generated kernels instead of compiling new ones every
+     * generation (each compile costs far more than the extra element-wise work). On the CPU,
+     * where nothing is compiled, only the activations in use.
+     */
+    private List<Activation> palette() {
+        Device d = device != null ? device : Device.getDefault();
+        return d.kind() == Device.Kind.GPU ? Mutations.DEFAULT_ACTIVATIONS : List.of();
     }
 
     /**
@@ -830,7 +843,7 @@ public final class Evolution {
             double ratio = kind.equals("task") ? 1 : rate(genomes.get(c)) / base;
             scales[c] = (float) (kind.equals("adam") || kind.equals("task") ? ratio : Math.sqrt(ratio));
         }
-        Population pop = new Population(genomes, models, scales, head());
+        Population pop = new Population(genomes, models, scales, head(), palette());
         Model.Builder b = Model.sequential().input(task.inputShape().toArray());
         if (task.inputShape().rank() != 1) {
             b.flatten();

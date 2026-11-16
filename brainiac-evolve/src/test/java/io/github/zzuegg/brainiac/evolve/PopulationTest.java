@@ -62,7 +62,8 @@ class PopulationTest {
     void stackedForwardMatchesEachModel() {
         List<Genome> genomes = designs();
         List<Model> models = build(genomes);
-        Population pop = new Population(genomes, models, new float[] {1, 0.5f, 2}, Activation.SOFTMAX);
+        Population pop = new Population(genomes, models, new float[] {1, 0.5f, 2}, Activation.SOFTMAX,
+                Mutations.DEFAULT_ACTIVATIONS);   // unused palette entries change nothing
         Model stacked = Model.sequential().input(3).layer(pop).build();
         Tensor x = data(7, 1).features();
         float[] all = stacked.predict(x).toArray();
@@ -94,7 +95,7 @@ class PopulationTest {
         for (int c = 0; c < 3; c++) {
             scales[c] = rates[c] / rates[0];
         }
-        Population pop = new Population(genomes, build(genomes), scales, Activation.SOFTMAX);
+        Population pop = new Population(genomes, build(genomes), scales, Activation.SOFTMAX, List.of());
         Model stacked = Model.sequential().input(3).layer(pop).build();
         Trainer.of(stacked).loss(pop.loss(Loss.CROSS_ENTROPY)).optimizer(Optimizer.adam(rates[0])).batchSize(16)
                 .epochs(3).seed(9).fit(pop.tile(train));

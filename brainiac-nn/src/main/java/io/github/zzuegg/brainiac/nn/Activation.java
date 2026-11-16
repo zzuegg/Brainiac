@@ -373,7 +373,22 @@ public interface Activation extends Layer {
      * @return the activation; the activation itself if all units share one
      */
     static Activation perUnit(Activation... perUnit) {
-        return PerUnitActivation.of(Objects.requireNonNull(perUnit, "perUnit"));
+        return PerUnitActivation.of(List.of(), Objects.requireNonNull(perUnit, "perUnit"));
+    }
+
+    /**
+     * Like {@link #perUnit(Activation...)}, but every activation of {@code palette} is
+     * computed even when no unit uses it. Many models drawing their units from the same
+     * palette then run the same computation, so a backend that generates kernels (the OpenCL
+     * one) compiles one for all of them instead of one per mix of activations.
+     *
+     * @param palette activations to compute even if unused
+     * @param perUnit one activation per unit, without learnable parameters
+     * @return the activation; the activation itself if all units share one
+     */
+    static Activation perUnit(java.util.Collection<Activation> palette, Activation... perUnit) {
+        return PerUnitActivation.of(Objects.requireNonNull(palette, "palette"),
+                Objects.requireNonNull(perUnit, "perUnit"));
     }
 
     /**

@@ -39,7 +39,9 @@ class PerUnitActivationTest {
             };
             assertEquals(expected, y[i], 1e-6, "element " + i);
         }
-        assertEquals("perUnit(2 tanh, 1 relu, 1 sigmoid)", a.toString());
+        assertEquals("perUnit(1 relu, 1 sigmoid, 2 tanh)", a.toString());   // a fixed order, not first use
+        assertEquals("perUnit(1 relu, 1 sigmoid, 2 tanh)",
+                Activation.perUnit(Activation.SIGMOID, Activation.TANH, Activation.RELU, Activation.TANH).toString());
         assertThrows(IllegalArgumentException.class, () -> a.forward(Var.of(Tensor.zeros(Shape.of(2, 3)))));
     }
 
@@ -57,10 +59,27 @@ class PerUnitActivationTest {
     }
 
     @Test
+    void aPaletteGivesEveryMixTheSameComputation() {
+        List<Activation> palette = List.of(Activation.RELU, Activation.TANH, Activation.SIGMOID, Activation.SILU);
+        Activation a = Activation.perUnit(palette, Activation.TANH, Activation.RELU, Activation.TANH, Activation.RELU);
+        Activation b = Activation.perUnit(palette, Activation.SILU, Activation.SIGMOID, Activation.SILU,
+                Activation.SILU);
+        // the same activations in the same order: only the masks differ
+        assertEquals(a.config().getInt("count"), b.config().getInt("count"));
+        for (int i = 0; i < 4; i++) {
+            assertEquals(a.config().getActivation("a" + i), b.config().getActivation("a" + i));
+        }
+        assertEquals("perUnit(2 relu, 2 tanh)", a.toString());
+        Activation plain = Activation.perUnit(Activation.TANH, Activation.RELU, Activation.TANH, Activation.RELU);
+        assertArrayEquals(plain.forward(Var.of(X)).value().toArray(), a.forward(Var.of(X)).value().toArray(), 1e-6f);
+        assertSame(Activation.TANH, Activation.perUnit(palette, Activation.TANH, Activation.TANH));
+    }
+
+    @Test
     void savesAndLoads() throws IOException {
         Model m = Model.sequential().input(4)
-                .dense(5, Activation.perUnit(Activation.RELU, Activation.TANH, Activation.GELU, Activation.TANH,
-                        Activation.IDENTITY))
+                .dense(5, Activation.perUnit(List.of(Activation.SIGMOID), Activation.RELU, Activation.TANH,
+                        Activation.GELU, Activation.TANH, Activation.IDENTITY))
                 .dense(2).seed(3).build();
         SplittableRandom r = new SplittableRandom(4);
         for (Var p : m.parameters()) {

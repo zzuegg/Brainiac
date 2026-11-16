@@ -334,10 +334,23 @@ public final class Genome {
      * @return the brain's design
      */
     public Brain.Spec brainSpec() {
+        return brainSpec(List.of());
+    }
+
+    /**
+     * Like {@link #brainSpec()}, but regions mixing activations also compute every activation
+     * of {@code palette}, used or not (see {@link Activation#perUnit(java.util.Collection,
+     * Activation...)}). On a GPU, designs that differ only in their mix of activations then
+     * share one generated kernel instead of compiling one each.
+     *
+     * @param palette activations to compute in every mixed region
+     * @return the brain's design
+     */
+    public Brain.Spec brainSpec(java.util.Collection<Activation> palette) {
         Brain.Builder b = Brain.builder();
         for (Region r : regions) {
             Activation[] perUnit = r.neurons().stream().map(Neuron::activation).toArray(Activation[]::new);
-            b.region(r.name(), perUnit.length).activation(Activation.perUnit(perUnit));
+            b.region(r.name(), perUnit.length).activation(Activation.perUnit(palette, perUnit));
         }
         for (Projection p : projections) {
             if (p.size() == 0) {
@@ -407,6 +420,23 @@ public final class Genome {
      * @return the model
      */
     public Model build(Shape inputShape, Consumer<Model.Builder> frontEnd, int outputs, Activation head, long seed) {
+        return build(inputShape, frontEnd, outputs, head, seed, List.of());
+    }
+
+    /**
+     * Like {@link #build(Shape, Consumer, int, Activation, long)}, with a palette of
+     * activations every mixed region computes (see {@link #brainSpec(java.util.Collection)}).
+     *
+     * @param inputShape the shape of one sample
+     * @param frontEnd fixed layers before the brain, or null
+     * @param outputs the size of the output layer
+     * @param head the output layer's activation
+     * @param seed the seed for the starting weights
+     * @param palette activations to compute in every mixed region
+     * @return the model
+     */
+    public Model build(Shape inputShape, Consumer<Model.Builder> frontEnd, int outputs, Activation head, long seed,
+            java.util.Collection<Activation> palette) {
         Model.Builder b = Model.sequential().input(inputShape.toArray());
         if (frontEnd != null) {
             frontEnd.accept(b);
@@ -418,7 +448,7 @@ public final class Genome {
             throw new IllegalArgumentException("the genome has " + inputs + " inputs, but the brain would get "
                     + b.shape().dim(0));
         }
-        Model model = b.add(brainSpec()).dense(outputs, head).seed(seed).build();
+        Model model = b.add(brainSpec(palette)).dense(outputs, head).seed(seed).build();
         wire(brainOf(model), new SplittableRandom(seed ^ 0x5DEECE66DL));
         return model;
     }
