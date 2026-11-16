@@ -349,8 +349,18 @@ class FusionTest {
         b.matmul(z, x, 40, 300, 40, p);   // x read as 300 x 40: shapes only need to agree in size
         Storage q = b.allocateUninitialized(40 * 40, DType.FLOAT32);
         b.activation(ActivationOp.TANH, 0, p, q);
+        // few outputs and a long k: summed in pieces, whether or not a chain follows
+        float[] ls = new float[8 * 4096];
+        for (int i = 0; i < ls.length; i++) {
+            ls[i] = (float) r.nextDouble(-1, 1);
+        }
+        Storage l = b.upload(ls);
+        Storage lp = b.allocateUninitialized(8 * 8, DType.FLOAT32);
+        b.matmul(l, l, 8, 4096, 8, lp);
+        Storage lq = b.allocateUninitialized(8 * 8, DType.FLOAT32);
+        b.activation(ActivationOp.TANH, 0, lp, lq);
         return new float[][] {b.download(rows), b.download(cols), b.download(all), b.download(z), b.download(q),
-                b.download(p)};
+                b.download(p), b.download(lq)};
     }
 
     @Test

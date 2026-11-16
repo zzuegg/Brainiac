@@ -699,7 +699,8 @@ public final class OpenClBackend implements Backend {
      */
     private boolean epilogue(ClStorage s, ClStorage base) {
         Fused.MatMul mm = (Fused.MatMul) base.pending;
-        if (base.size != s.size) {
+        if (base.size != s.size || splits(base.dtype, mm.global(), mm.local(), (Integer) mm.args()[4]) > 1) {
+            // summed in pieces without fusion too: an epilogue would add up in another order
             return false;
         }
         Fused.Expr pa = prologue(mm.a());
@@ -1992,16 +1993,19 @@ public final class OpenClBackend implements Backend {
      * work-groups of their own, as one tile of outputs summing all of k keeps most of the
      * device idle. 1 when not worth it (or for narrow types, whose partial sums would round).
      */
-    private int splits(DType type, long groups, int k) {
+    private int splits(DType type, long[] global, long[] local, int k) {
         if (type != DType.FLOAT32 && type != DType.FLOAT64) {
             return 1;
         }
+        long groups = global[0] / local[0] * (global[1] / local[1]) * global[2];
         long wanted = Math.min(SPLIT_GROUPS / Math.max(1, groups), k / ((long) tile * SPLIT_TILES));
-        return (int) Math.max(1, wanted);
+        return wanted < SPLIT_MIN ? 1 : (int) wanted;
     }
 
     /** Work-groups that keep a device busy when splitting a product's sums. */
     private static final long SPLIT_GROUPS = 128;
+    /** The fewest pieces worth the extra launch that adds them up. */
+    private static final int SPLIT_MIN = 4;
     /** The fewest k tiles a piece of a split product sums. */
     private static final int SPLIT_TILES = 16;
 
@@ -2016,8 +2020,7 @@ public final class OpenClBackend implements Backend {
         int k = (Integer) args[first + 4];
         int n = (Integer) args[first + 5];
         long batch = global[2];
-        long groups = global[0] / local[0] * (global[1] / local[1]) * batch;
-        int splits = splits(out.dtype, groups, k);
+        int splits = splits(out.dtype, global, local, k);
         int chunk = (k + splits - 1) / splits;
         chunk = (chunk + tile - 1) / tile * tile;
         splits = (k + chunk - 1) / chunk;
