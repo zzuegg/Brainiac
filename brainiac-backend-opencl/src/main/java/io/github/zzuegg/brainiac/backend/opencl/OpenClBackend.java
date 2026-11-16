@@ -549,6 +549,7 @@ public final class OpenClBackend implements Backend {
             }
         }
         boolean fresh = buffersCreated != created;
+        launchIndex++;
         long hostStart = profiling ? System.nanoTime() : 0;
         // a kernel keeps its arguments between launches: set only those that changed
         Object[] last = kernelArgs.computeIfAbsent(k.address(), a -> new Object[args.length]);
@@ -1228,6 +1229,11 @@ public final class OpenClBackend implements Backend {
     private long buffersReused;
     private long bytesCreated;
     private long createdSinceCollect;
+    /** Launches so far, and buffers created before launch 1,000, before 4,000 and after. */
+    private long launchIndex;
+    private final long[] createdByPhase = new long[3];
+    /** The most device memory held by buffers not in the pool. */
+    private long peakInUse;
     private int collections;
     private long collectNanos;
 
@@ -1282,6 +1288,7 @@ public final class OpenClBackend implements Backend {
                 allocated.addAndGet(bytes);
             }
             buffersCreated++;
+            createdByPhase[launchIndex < 1_000 ? 0 : launchIndex < 4_000 ? 1 : 2]++;
             bufferNanos += System.nanoTime() - createStart;
             bytesCreated += bytes;
             createdSinceCollect += bytes;
@@ -1298,6 +1305,7 @@ public final class OpenClBackend implements Backend {
         } else {
             buffersReused++;
         }
+        peakInUse = Math.max(peakInUse, allocated.get() - pool.bytes());
         return mem;
     }
 
@@ -1495,6 +1503,10 @@ public final class OpenClBackend implements Backend {
         out.append(String.format(Locale.ROOT, "  buffers: %d created (%d MB) in %.1f ms, %d reused from the pool (%d MB pooled, %d MB allocated; %d collections, %.1f ms)%n",
                 buffersCreated, bytesCreated >> 20, bufferNanos / 1e6, buffersReused, pool.bytes() >> 20,
                 allocated.get() >> 20, collections, collectNanos / 1e6));
+        out.append(String.format(Locale.ROOT,
+                "  buffers created during launches 1 to 1,000: %d, 1,001 to 4,000: %d, later: %d; at most %d MB"
+                        + " in use outside the pool%n", createdByPhase[0], createdByPhase[1], createdByPhase[2],
+                peakInUse >> 20));
         out.append(String.format(Locale.ROOT, "  %s%n", subBuffers
                 ? "small buffers carved from " + slabs.created + " large ones (sub-buffers are quicker to create here)"
                 : "buffers created one by one (sub-buffers are not quicker here)"));
