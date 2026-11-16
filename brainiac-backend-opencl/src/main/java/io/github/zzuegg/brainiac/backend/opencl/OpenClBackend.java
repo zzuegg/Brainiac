@@ -674,13 +674,13 @@ public final class OpenClBackend implements Backend {
                 ready(in.storage());
             }
         }
-        int n = Fused.nodes(e);
-        if (n > Fused.MAX_NODES) {
+        if (Fused.cost(e) > Fused.MAX_NODES) {
             for (ClStorage in : Fused.inputs(e)) {
                 ready(in);
             }
-            n = Fused.nodes(e);
         }
+        // the count with repeats, for the heuristics; a chain that reuses its values grows it fast
+        int n = Math.min(Fused.nodes(e), 1 << 20);
         out.pending = e;
         out.pendingNodes = n;
         out.pendingGeneration = generation;

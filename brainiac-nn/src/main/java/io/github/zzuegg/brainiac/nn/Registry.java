@@ -42,6 +42,35 @@ final class Registry {
                         Tensor.zeros(Shape.of(inputs, units)), Tensor.zeros(Shape.of(units)));
             }
         });
+        layer("switching_dense", SwitchingDense.class, new LayerCodec<>() {
+            @Override
+            public Config write(SwitchingDense d) {
+                Config.Builder b = Config.builder()
+                        .put("inputs", d.inputSize())
+                        .put("units", d.units())
+                        .put("hard", d.hard())
+                        .put("count", d.candidates().size());
+                for (int i = 0; i < d.candidates().size(); i++) {
+                    b.put("a" + i, d.candidates().get(i));
+                }
+                return b.build();
+            }
+
+            @Override
+            public SwitchingDense read(Config c) {
+                int inputs = c.getInt("inputs");
+                int units = c.getInt("units");
+                Activation[] candidates = new Activation[c.getInt("count")];
+                for (int i = 0; i < candidates.length; i++) {
+                    candidates[i] = c.getActivation("a" + i);
+                }
+                Shape w = Shape.of(inputs, units);
+                Shape kw = Shape.of(candidates.length, units);
+                return new SwitchingDense(inputs, units, candidates, c.getBoolean("hard"), Tensor.zeros(w),
+                        Tensor.zeros(Shape.of(units)), Tensor.zeros(w), Tensor.zeros(Shape.of(units)),
+                        Tensor.zeros(kw), Tensor.zeros(kw));
+            }
+        });
         layer("dropout", Dropout.class, new LayerCodec<>() {
             @Override
             public Config write(Dropout d) {

@@ -7,6 +7,7 @@ import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.nn.Padding;
 import io.github.zzuegg.brainiac.nn.Recurrent;
 import io.github.zzuegg.brainiac.nn.SequencePool;
+import io.github.zzuegg.brainiac.nn.SwitchingDense;
 import io.github.zzuegg.brainiac.nn.TransformerBlock;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -46,7 +47,7 @@ public final class BenchmarkExample {
 
     /** Built-in model names; not every model fits every task. */
     public static final List<String> MODELS =
-            List.of("default", "linear", "mlp", "cnn", "lenet", "resnet", "bilstm", "gru", "transformer");
+            List.of("default", "linear", "mlp", "switching", "cnn", "lenet", "resnet", "bilstm", "gru", "transformer");
 
     /**
      * Builds a named model for a task.
@@ -63,6 +64,7 @@ public final class BenchmarkExample {
             case "default" -> defaultModel(task);
             case "linear" -> dense(task, 0);
             case "mlp" -> dense(task, 2);
+            case "switching" -> switching(task, 2);
             case "cnn" -> {
                 requireImages(name, task);
                 yield cnn(in, out);
@@ -117,6 +119,23 @@ public final class BenchmarkExample {
         int width = task.inputShape().size() <= 8 ? 32 : 128;
         for (int i = 0; i < hidden; i++) {
             b.dense(width, Activation.RELU);
+        }
+        return head(b.dense(Math.toIntExact(task.outputShape().size())), task).seed(42).build();
+    }
+
+    /**
+     * Like {@link #dense}, but in every hidden layer each unit's inputs choose its activation
+     * among relu, tanh, gelu and sigmoid ({@link SwitchingDense}).
+     *
+     * @param task the task
+     * @param hidden the number of hidden layers
+     * @return an untrained model
+     */
+    public static Model switching(Task task, int hidden) {
+        Model.Builder b = Model.sequential().input(task.inputShape().toArray()).flatten();
+        int width = task.inputShape().size() <= 8 ? 32 : 128;
+        for (int i = 0; i < hidden; i++) {
+            b.add(SwitchingDense.of(width, Activation.RELU, Activation.TANH, Activation.GELU, Activation.SIGMOID));
         }
         return head(b.dense(Math.toIntExact(task.outputShape().size())), task).seed(42).build();
     }

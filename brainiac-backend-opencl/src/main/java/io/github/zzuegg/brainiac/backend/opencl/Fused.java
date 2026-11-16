@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.backend.opencl;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -135,6 +136,34 @@ final class Fused {
             case Act a -> 1 + nodes(a.x());
             case ActBack a -> 1 + nodes(a.x()) + nodes(a.grad());
             case Bin b -> 1 + nodes(b.a()) + nodes(b.b());
+        };
+    }
+
+    /**
+     * The size of the kernel an expression becomes: its operations and the loads of its
+     * stored inputs. A pending input is inlined, and counts once however often it is read,
+     * as the kernel computes it once per index (such as the logits of a softmax over a few
+     * candidates, each read by the maximum, the exponential and the sum). {@link #nodes}
+     * counts every read, which the scheduling heuristics are tuned to.
+     */
+    static int cost(Expr e) {
+        return cost(e, Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private static int cost(Expr e, java.util.Set<ClStorage> seen) {
+        return switch (e) {
+            case Src s -> s.storage().pending == null ? 1
+                    : seen.add(s.storage()) ? cost(s.storage().pending, seen) : 0;
+            case MatMul m -> 1;
+            case Const c -> 1;
+            case Random x -> 1;
+            case Reduce r -> 1;
+            case Im2col c -> 1 + cost(c.x(), seen);
+            case Col2im c -> 1 + cost(c.cols(), seen);
+            case Un u -> 1 + cost(u.x(), seen);
+            case Act a -> 1 + cost(a.x(), seen);
+            case ActBack a -> 1 + cost(a.x(), seen) + cost(a.grad(), seen);
+            case Bin b -> 1 + cost(b.a(), seen) + cost(b.b(), seen);
         };
     }
 

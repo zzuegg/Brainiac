@@ -310,6 +310,60 @@ class FusionTest {
         }
     }
 
+    /** Output and every parameter's gradient of a switching layer, for one batch. */
+    private static List<float[]> switching(Device device, boolean hard) {
+        io.github.zzuegg.brainiac.nn.Layer layer = io.github.zzuegg.brainiac.nn.SwitchingDense
+                .of(24, io.github.zzuegg.brainiac.nn.Activation.RELU, io.github.zzuegg.brainiac.nn.Activation.TANH,
+                        io.github.zzuegg.brainiac.nn.Activation.GELU, io.github.zzuegg.brainiac.nn.Activation.SIGMOID)
+                .hard(hard).create(Shape.of(10), new SplittableRandom(9));
+        for (io.github.zzuegg.brainiac.autograd.Var p : layer.parameters()) {
+            p.assign(p.value().to(device));
+        }
+        io.github.zzuegg.brainiac.autograd.Var y = layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(
+                random(90, 16, 10).to(device)));
+        y.mul(random(91, 16, 24).to(device)).sum().backward();
+        List<float[]> out = new ArrayList<>(List.of(y.value().toArray()));
+        for (io.github.zzuegg.brainiac.autograd.Var p : layer.parameters()) {
+            out.add(p.grad() == null ? new float[0] : p.grad().toArray());
+        }
+        return out;
+    }
+
+    @Test
+    void aSwitchingLayerMatchesTheCpuAndBlendsInOneKernel() throws ReflectiveOperationException {
+        for (boolean hard : new boolean[] {false, true}) {
+            List<float[]> expected = switching(Device.cpu(), hard);
+            List<float[]> actual = switching(gpu, hard);
+            for (int i = 0; i < expected.size(); i++) {
+                assertEquals(expected.get(i).length, actual.get(i).length, "result " + i);
+                for (int j = 0; j < expected.get(i).length; j++) {
+                    float e = expected.get(i)[j];
+                    assertEquals(e, actual.get(i)[j], 1e-4 * Math.max(1, Math.abs(e)), "result " + i + ", " + j);
+                }
+            }
+        }
+        // the forward pass: the two matrix products, then the blend of all four candidates at once
+        io.github.zzuegg.brainiac.nn.Layer layer = io.github.zzuegg.brainiac.nn.SwitchingDense
+                .of(32, io.github.zzuegg.brainiac.nn.Activation.RELU, io.github.zzuegg.brainiac.nn.Activation.TANH,
+                        io.github.zzuegg.brainiac.nn.Activation.GELU, io.github.zzuegg.brainiac.nn.Activation.SIGMOID)
+                .create(Shape.of(16), new SplittableRandom(10));
+        for (io.github.zzuegg.brainiac.autograd.Var p : layer.parameters()) {
+            p.assign(p.value().to(gpu));
+        }
+        Tensor x = random(92, 64, 16).to(gpu);
+        Tensor.evaluate(layer.parameters().stream().map(io.github.zzuegg.brainiac.autograd.Var::value).toList());
+        x.toArray();
+        java.lang.reflect.Method backendOf = Device.class.getDeclaredMethod("backend");
+        backendOf.setAccessible(true);
+        OpenClBackend backend = (OpenClBackend) backendOf.invoke(gpu);
+        java.lang.reflect.Field launches = OpenClBackend.class.getDeclaredField("launchIndex");
+        launches.setAccessible(true);
+        long before = launches.getLong(backend);
+        layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(x)).value().toArray();
+        long used = launches.getLong(backend) - before;
+        assertTrue(used <= 3, "forward took " + used + " launches");
+    }
+
     @Test
     void reductionsOfTheSameShapeRunTogether() {
         for (int[] dims : new int[][] {{6, 300}, {700, 5}, {3, 2000}}) {
