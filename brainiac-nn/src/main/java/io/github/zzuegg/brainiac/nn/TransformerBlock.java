@@ -336,6 +336,18 @@ public final class TransformerBlock implements MultiInputLayer {
         return sublayer(x, norm2, this::ffn, training);
     }
 
+    /**
+     * The block for new steps only, attending to the cached earlier ones; see
+     * {@link KvCache}.
+     */
+    Var step(Var x, MultiHeadAttention.Cache cache) {
+        if (crossAttention != null || settings.keyMask()) {
+            throw new IllegalStateException(this + ": blocks with cross-attention or a padding mask cannot be cached");
+        }
+        x = sublayer(x, norm1, h -> selfAttention.step(h, cache), false);
+        return sublayer(x, norm2, this::ffn, false);
+    }
+
     @Override
     public Var forward(Var input) {
         return forward(List.of(input), false);

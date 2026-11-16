@@ -28,3 +28,8 @@ jobs:
 
       - name: Build and test
         run: ./gradlew build -Porg.gradle.java.installations.fromEnv=JAVA_HOME_27_X64
+
+      # A crash in native code (such as the OpenCL driver) leaves a JVM error report.
+      - name: Show JVM crash reports
+        if: failure()
+        run: find . -name 'hs_err_pid*.log' -exec sh -c 'echo "== $1"; head -n 150 "$1"' _ {} \;

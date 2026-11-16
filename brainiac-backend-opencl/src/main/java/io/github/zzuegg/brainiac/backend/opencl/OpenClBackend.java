@@ -453,8 +453,9 @@ public final class OpenClBackend implements Backend {
         MemorySegment program = build(source);
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
-                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "im2col",
-                "col2im", "gather", "scatter_add", "to_float", "from_float", "random")) {
+                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "im2col",
+                "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
+                "attention_dkv")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -679,13 +680,13 @@ public final class OpenClBackend implements Backend {
                 ready(in.storage());
             }
         }
-        int n = Fused.nodes(e);
-        if (n > Fused.MAX_NODES) {
+        if (Fused.cost(e) > Fused.MAX_NODES) {
             for (ClStorage in : Fused.inputs(e)) {
                 ready(in);
             }
-            n = Fused.nodes(e);
         }
+        // the count with repeats, for the heuristics; a chain that reuses its values grows it fast
+        int n = Math.min(Fused.nodes(e), 1 << 20);
         out.pending = e;
         out.pendingNodes = n;
         out.pendingGeneration = generation;
@@ -769,7 +770,7 @@ public final class OpenClBackend implements Backend {
         Fused.Expr pa = prologue(mm.a());
         Fused.Expr pb = prologue(mm.b());
         Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates, pa, layout(mm, pa, true), pb,
-                layout(mm, pb, false));
+                layout(mm, pb, false), big(mm));
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             return false;
         }
@@ -786,8 +787,7 @@ public final class OpenClBackend implements Backend {
             w.pending = null;
             w.pendingNodes = 0;
         }
-        launch("fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
-                matmulArgs(s, mm, k, pa != null, pb != null));
+        launch("fused_matmul", kernel, fusedGlobal(mm), fusedLocal(mm), matmulArgs(s, mm, k, pa != null, pb != null));
         return true;
     }
 
@@ -2069,12 +2069,15 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
         ClStorage o = cl(out);
-        // a work item computes tile / 4 rows of a column
-        long[] global = {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
-        long[] local = {tile, 4, 1};
+        boolean big = bigTiles(batch, m, n);
+        // a work item computes tile / 4 rows of a column, or 4 x 4 outputs of a 64 x 64 tile
+        long[] global = big ? new long[] {roundUp(n, BIG) / 4, roundUp(m, BIG) / 4, batch}
+                : new long[] {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
+        long[] local = big ? new long[] {16, 16, 1} : new long[] {tile, 4, 1};
         // a work-group per tile of outputs loads each operand value once
-        long readsA = Math.ceilDiv(n, tile);
-        long readsB = Math.ceilDiv(m, tile);
+        int span = big ? BIG : tile;
+        long readsA = Math.ceilDiv(n, span);
+        long readsB = Math.ceilDiv(m, span);
         Operand x = operand(a, o.dtype, batch, m, k, readsA);
         Operand y = operand(b, o.dtype, batch, k, n, readsB);
         Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
@@ -2099,8 +2102,46 @@ public final class OpenClBackend implements Backend {
         if (global[0] * global[1] * global[2] == 0) {
             return;
         }
-        launchMatMul(o, "matmul", program(o.dtype).kernels().get("matmul"), global, local, args, 0);
+        String name = big ? "matmul_big" : "matmul";
+        launchMatMul(o, name, program(o.dtype).kernels().get(name), global, local, args, 0);
         generation++;
+    }
+
+    /** The output tile of {@code matmul_big}: 64 x 64, by 16 x 16 work items of 4 x 4 outputs. */
+    private static final int BIG = 64;
+    /** {@code -Dbrainiac.opencl.bigTiles=false} keeps every product on the 16 x 16 tiles. */
+    private static final boolean BIG_TILES = !"false".equalsIgnoreCase(System.getProperty("brainiac.opencl.bigTiles"));
+
+    /**
+     * The fewest 64 x 64 tiles a product needs to use them: with fewer, too few work-groups
+     * keep the device busy, and the 16 x 16 tiles are faster (on an RX 9070 XT, 4096^2 is
+     * 49% and 2048^2 15% faster on the big tiles, 1024^2 18% slower).
+     * {@code -Dbrainiac.opencl.bigTileGroups=n} changes it.
+     */
+    private static final long BIG_GROUPS = Long.getLong("brainiac.opencl.bigTileGroups", 1024);
+
+    /**
+     * Whether a product uses 64 x 64 output tiles: each value a work item loads from local
+     * memory then serves 4 products instead of 1. Needs work-groups of 256 and enough
+     * outputs that the larger tiles are not mostly empty, and enough tiles to fill the device.
+     */
+    private boolean bigTiles(int batch, int m, int n) {
+        return BIG_TILES && tile == 16 && m >= BIG && n >= BIG
+                && (long) Math.ceilDiv(m, BIG) * Math.ceilDiv(n, BIG) * batch >= BIG_GROUPS;
+    }
+
+    /** Whether a recorded product was laid out for {@code matmul_big}. */
+    private static boolean big(Fused.MatMul mm) {
+        return mm.local()[1] == 16;
+    }
+
+    /** The work size of a generated matmul (one output per item, or 4 x 4 on big tiles). */
+    private long[] fusedGlobal(Fused.MatMul mm) {
+        return big(mm) ? mm.global() : oneOutputEach(mm.global());
+    }
+
+    private long[] fusedLocal(Fused.MatMul mm) {
+        return big(mm) ? mm.local() : new long[] {tile, tile, 1};
     }
 
     /**
@@ -2169,12 +2210,13 @@ public final class OpenClBackend implements Backend {
             return;   // computed meanwhile
         }
         if (pa != null || pb != null) {
-            Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, layout(mm, pa, true), pb, layout(mm, pb, false));
+            Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, layout(mm, pa, true), pb, layout(mm, pb, false),
+                    big(mm));
             MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());
             if (kernel != null) {
                 s.pending = null;
                 s.pendingNodes = 0;
-                launchMatMul(s, "fused_matmul", kernel, oneOutputEach(mm.global()), new long[] {tile, tile, 1},
+                launchMatMul(s, "fused_matmul", kernel, fusedGlobal(mm), fusedLocal(mm),
                         matmulArgs(s, mm, k, pa != null, pb != null), 2);
                 return;
             }
@@ -2182,7 +2224,8 @@ public final class OpenClBackend implements Backend {
         }
         s.pending = null;
         s.pendingNodes = 0;
-        launchMatMul(s, "matmul", program(s.dtype).kernels().get("matmul"), mm.global(), mm.local(), mm.args(), 0);
+        String name = big(mm) ? "matmul_big" : "matmul";
+        launchMatMul(s, name, program(s.dtype).kernels().get(name), mm.global(), mm.local(), mm.args(), 0);
     }
 
     /** A matrix operand read in place: element (i, j) of batch b at offset + b*batch + i*row + j*col. */
@@ -2358,6 +2401,61 @@ public final class OpenClBackend implements Backend {
         long total = outer * count * inner;
         run(o.dtype, "gather", total, as(in, o.dtype), idx, o, length, inner, count, total);
         release(idx);
+    }
+
+    /** The largest head size the attention kernels keep in registers ({@code ATT_D}). */
+    private static final int ATTENTION_SIZE = 64;
+
+    /**
+     * When the fused attention kernels are used: {@code -Dbrainiac.opencl.fusedAttention=true}
+     * always, {@code false} never, and by default without gradients only. On an RX 9070 XT
+     * the forward kernel made Shakespeare inference 51% faster, but training slower: the
+     * backward kernels' one work item per query or key row loses to the matmul path.
+     */
+    private static final String FUSED_ATTENTION = System.getProperty("brainiac.opencl.fusedAttention", "inference");
+
+    @Override
+    public boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return shape[5] <= ATTENTION_SIZE && shape[6] <= ATTENTION_SIZE && switch (FUSED_ATTENTION) {
+            case "true" -> true;
+            case "false" -> false;
+            default -> !backward;
+        };
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage out, Storage lse) {
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        }
+        ClStorage o = cl(out);
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        run(o.dtype, "attention", rows, as(q, o.dtype), as(k, o.dtype), as(v, o.dtype), o, cl(lse), shape[1],
+                shape[2], shape[3], shape[4], shape[5], shape[6], scale, causal ? 1 : 0, rows);
+    }
+
+    @Override
+    public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
+            Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        }
+        ClStorage gq = cl(dq);
+        DType type = gq.dtype;
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        long keys = (long) shape[0] * shape[2] * shape[4];
+        ClStorage dsum = raw(rows, type);
+        ClStorage qs = as(q, type);
+        ClStorage ks = as(k, type);
+        ClStorage vs = as(v, type);
+        ClStorage ls = as(lse, type);
+        ClStorage gs = as(grad, type);
+        run(type, "attention_dq", rows, qs, ks, vs, as(out, type), ls, gs, gq, dsum, shape[1], shape[2], shape[3],
+                shape[4], shape[5], shape[6], scale, causal ? 1 : 0, rows);
+        run(type, "attention_dkv", keys, qs, ks, vs, ls, gs, dsum, cl(dk), cl(dv), shape[1], shape[2], shape[3],
+                shape[4], shape[5], shape[6], scale, causal ? 1 : 0, keys);
+        release(dsum);
     }
 
     @Override

@@ -377,6 +377,10 @@ public final class MultiHeadAttention implements MultiInputLayer {
             q = Functional.rotary(q, s.rotaryBase(), tk - tq);
             k = Functional.rotary(k, s.rotaryBase(), 0);
         }
+        float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
+        if (!s.alibi() && !s.keyMask() && (!training || s.dropout() == 0)) {
+            return output(Functional.attention(q, k, v, s.causal(), scale), n, tq);
+        }
         Device device = query.value().device();
         Tensor bias = null;
         if (s.causal()) {
@@ -390,8 +394,168 @@ public final class MultiHeadAttention implements MultiInputLayer {
             Tensor m = Functional.keyMask(inputs.get(data).value().reshape(n, tk));
             bias = bias == null ? m : m.add(bias);
         }
+        return output(Functional.attention(q, k, v, bias, scale, training ? s.dropout() : 0, random), n, tq);
+    }
+
+    /** Joins the heads of {@code out} {@code [batch, heads, steps, dv]} and projects them. */
+    private Var output(Var out, int n, int tq) {
+        Var y = out.permute(0, 2, 1, 3).reshape(n, tq, settings.heads() * settings.valueSize()).matmul(wo);
+        return bo != null ? y.add(bo) : y;
+    }
+
+    /**
+     * The keys and values of the steps self-attention has seen so far, so that each new
+     * step attends to them without computing them again. Made by {@link KvCache}. Keys are
+     * kept before their rotary rotation, which is applied by position within the cache, so
+     * a cache that drops steps from the middle still has contiguous positions.
+     */
+    static final class Cache {
+
+        private final int window;
+        private final KvCache.Strategy strategy;
+        private final io.github.zzuegg.brainiac.tensor.DType storage;
+        private Tensor keys;
+        private Tensor values;
+        /** For heavy hitters: the attention each cached step has received so far. */
+        private float[] received = new float[0];
+
+        Cache(int window, KvCache.Strategy strategy, io.github.zzuegg.brainiac.tensor.DType storage) {
+            this.window = window;
+            this.strategy = strategy;
+            this.storage = storage;
+        }
+
+        void reset() {
+            keys = null;
+            values = null;
+            received = new float[0];
+        }
+
+        int size() {
+            return keys == null ? 0 : keys.shape().dim(2);
+        }
+
+        /** The cached steps to keep when {@code total} steps are held and {@code fresh} are new. */
+        int[] keep(int total, int fresh) {
+            int drop = total - window;
+            int[] kept = new int[window];
+            switch (strategy) {
+                case KvCache.Strategy.Sinks s -> {
+                    int sinks = Math.min(s.count(), window - fresh);
+                    for (int i = 0; i < sinks; i++) {
+                        kept[i] = i;
+                    }
+                    for (int i = sinks; i < window; i++) {
+                        kept[i] = i + drop;
+                    }
+                }
+                case KvCache.Strategy.HeavyHitters h -> {
+                    // the most recent steps stay; among the older ones, those that received
+                    // the least attention go
+                    int recent = Math.max(fresh, Math.min(window - 1, h.recent()));
+                    int older = total - recent;
+                    Integer[] order = new Integer[older];
+                    for (int i = 0; i < older; i++) {
+                        order[i] = i;
+                    }
+                    float[] r = received;
+                    // least attention first; ties drop the older step
+                    java.util.Arrays.sort(order, (x, y) -> Float.compare(r[x], r[y]));
+                    boolean[] gone = new boolean[total];
+                    for (int i = 0; i < drop; i++) {
+                        gone[order[i]] = true;
+                    }
+                    int n = 0;
+                    for (int i = 0; i < total; i++) {
+                        if (!gone[i]) {
+                            kept[n++] = i;
+                        }
+                    }
+                }
+                default -> {
+                    for (int i = 0; i < window; i++) {
+                        kept[i] = i + drop;
+                    }
+                }
+            }
+            return kept;
+        }
+    }
+
+    /**
+     * Self-attention for new steps only, given the cached earlier ones: with all steps
+     * still in the cache, the result for the new steps equals the last rows of
+     * {@link #forward} over the whole sequence. No gradients.
+     *
+     * @param input the new steps, {@code [batch, steps, features]}
+     * @param cache the earlier steps; updated
+     * @return the output for the new steps
+     */
+    Var step(Var input, Cache cache) {
+        Settings s = settings;
+        if (s.keyMask() || s.queryFeatures() != s.kvFeatures()) {
+            throw new IllegalStateException(this + ": only self-attention without a key mask can be cached");
+        }
+        int n = input.shape().dim(0);
+        int tq = input.shape().dim(1);
+        io.github.zzuegg.brainiac.tensor.DType type = input.value().dtype();
+        Var q = project(input, wq, bq, s.heads(), s.headSize());
+        Var k = project(input, wk, bk, s.kvHeads(), s.headSize());
+        Var v = project(input, wv, bv, s.kvHeads(), s.valueSize());
+        float[] received = cache.received;
+        if (cache.keys != null) {
+            k = Var.concat(2, Var.of(cache.keys.to(type)), k);
+            v = Var.concat(2, Var.of(cache.values.to(type)), v);
+            received = java.util.Arrays.copyOf(received, received.length + tq);
+        } else {
+            received = new float[tq];
+        }
+        int tk = k.shape().dim(2);
+        if (tk > cache.window) {
+            int[] kept = cache.keep(tk, tq);
+            float[] ids = new float[kept.length];
+            float[] r = new float[kept.length];
+            for (int i = 0; i < kept.length; i++) {
+                ids[i] = kept[i];
+                r[i] = received[kept[i]];
+            }
+            Tensor index = Tensor.of(Shape.of(kept.length), ids, input.value().device());
+            k = k.gather(2, index);
+            v = v.gather(2, index);
+            received = r;
+            tk = kept.length;
+        }
+        Var qr = q;
+        Var kr = k;
+        if (s.rotaryBase() > 0) {
+            qr = Functional.rotary(q, s.rotaryBase(), tk - tq);
+            kr = Functional.rotary(k, s.rotaryBase(), 0);
+        }
+        Device device = input.value().device();
+        Tensor bias = null;
+        if (s.causal() && tq > 1) {
+            bias = Functional.causalMask(tq, tk, device);
+        }
+        if (s.alibi()) {
+            Tensor a = Functional.alibi(s.heads(), tq, tk, device);
+            bias = bias == null ? a : a.add(bias);
+        }
         float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
-        Var out = Functional.attention(q, k, v, bias, scale, training ? s.dropout() : 0, random);
+        boolean track = cache.strategy instanceof KvCache.Strategy.HeavyHitters;
+        Tensor[] weights = track ? new Tensor[1] : null;
+        Var out = track || s.alibi()
+                ? Functional.attention(qr, kr, v, bias, scale, 0, null, weights)
+                : Functional.attention(qr, kr, v, s.causal() && tq > 1, scale);
+        if (track) {
+            // the attention each key received, summed over batch, heads and queries
+            float[] w = weights[0].sum(0, false).sum(0, false).sum(0, false).toArray();
+            for (int i = 0; i < tk; i++) {
+                received[i] += w[i];
+            }
+        }
+        cache.keys = cache.storage != null ? k.value().to(cache.storage) : k.value();
+        cache.values = cache.storage != null ? v.value().to(cache.storage) : v.value();
+        cache.received = received;
         Var y = out.permute(0, 2, 1, 3).reshape(n, tq, s.heads() * s.valueSize()).matmul(wo);
         return bo != null ? y.add(bo) : y;
     }

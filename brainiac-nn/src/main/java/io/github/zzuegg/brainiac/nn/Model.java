@@ -392,6 +392,17 @@ public final class Model {
         return outputShape;
     }
 
+    /** Whether every step is a layer applied to the previous step's output. */
+    boolean isChain() {
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            if (step.kind != Node.Kind.LAYER || step.inputs.length != 1 || step.inputs[0] != i) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** @return the layers, in order */
     public List<Layer> layers() {
         return layers;

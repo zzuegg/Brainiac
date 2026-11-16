@@ -79,7 +79,9 @@ public final class Benchmark {
             description = description == null ? "" : description;
             defaults = defaults == null ? t -> { } : defaults;
             for (Dataset d : List.of(train, test)) {
-                if (d.featureCount() != inputShape.size() || d.targetCount() != outputShape.size()) {
+                boolean ids = kind == Kind.CLASSIFICATION && outputShape.dim(-1) > 1
+                        && (long) d.targetCount() * outputShape.dim(-1) == outputShape.size();
+                if (d.featureCount() != inputShape.size() || (d.targetCount() != outputShape.size() && !ids)) {
                     throw new IllegalArgumentException("task " + name + ": data has " + d.featureCount()
                             + " features and " + d.targetCount() + " targets, but the shapes are "
                             + inputShape + " and " + outputShape);
@@ -298,7 +300,7 @@ public final class Benchmark {
             if (kind == Kind.CLASSIFICATION) {
                 sb.append(String.format("  test accuracy %.2f%%, loss %.4f%n", 100 * accuracy(), test.loss()));
                 float[] perClass = perClassAccuracy();
-                if (perClass.length > 2) {
+                if (perClass.length > 2 && perClass.length <= 128) {   // not for thousands of tokens
                     sb.append("  per class:");
                     for (int c = 0; c < perClass.length; c++) {
                         sb.append(String.format(" %s %.1f%%", className(c), 100 * perClass[c]));
@@ -457,7 +459,7 @@ public final class Benchmark {
                 }
                 float[] actual = batch.targets().toArray();
                 for (int row = 0; row < predicted.length / last; row++) {
-                    int a = choice(actual, row, last);
+                    int a = actual.length == predicted.length ? choice(actual, row, last) : (int) actual[row];
                     int p = choice(predicted, row, last);
                     confusion[a][p]++;
                 }

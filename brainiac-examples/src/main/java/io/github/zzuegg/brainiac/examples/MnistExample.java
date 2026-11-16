@@ -54,8 +54,20 @@ public final class MnistExample {
      * @return an untrained model
      */
     public static Model model(int size, int classes) {
+        return model(1, size, classes);
+    }
+
+    /**
+     * Builds the network for square images.
+     *
+     * @param channels the input channels
+     * @param size the image width and height
+     * @param classes the number of classes
+     * @return an untrained model
+     */
+    public static Model model(int channels, int size, int classes) {
         return Model.sequential()
-                .input(1, size, size)
+                .input(channels, size, size)
                 .add(Conv.of(16, 3, 3).padding(Padding.SAME).bias(false))
                 .batchNorm()
                 .activation(Activation.RELU)

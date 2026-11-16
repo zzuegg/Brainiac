@@ -67,6 +67,27 @@ public final class Dataset {
     }
 
     /**
+     * Creates a dataset from row-major arrays, without copying them: large datasets (such as
+     * images) then need no second copy while loading.
+     *
+     * @param features {@code size * featureCount} values, one row per sample
+     * @param featureCount the features per sample
+     * @param targets {@code size * targetCount} values, one row per sample
+     * @param targetCount the targets per sample
+     * @return the dataset, which reads the arrays; they must not change afterwards
+     */
+    public static Dataset ofRows(float[] features, int featureCount, float[] targets, int targetCount) {
+        if (featureCount < 1 || targetCount < 1 || features.length % featureCount != 0
+                || targets.length % targetCount != 0
+                || features.length / featureCount != targets.length / targetCount || features.length == 0) {
+            throw new IllegalArgumentException(features.length + " feature values in rows of " + featureCount
+                    + " do not match " + targets.length + " target values in rows of " + targetCount);
+        }
+        return new Dataset(features, targets, features.length / featureCount, featureCount, targetCount,
+                List.of());
+    }
+
+    /**
      * Creates a dataset from two matrices with one row per sample.
      *
      * @param features shape {@code [samples, featureCount]}
@@ -300,9 +321,24 @@ public final class Dataset {
      * @return the batches
      */
     public List<Batch> batches(int batchSize, Device device) {
+        return batches(batchSize, device, null, 0);
+    }
+
+    /**
+     * Cuts the dataset into batches on a device, in order, changing every sample's copy in
+     * its batch at random. The last batch may be smaller.
+     *
+     * @param batchSize the samples per batch
+     * @param device where the batch tensors live
+     * @param augmentation how to change the samples, or null for none
+     * @param seed the seed of the random changes; use a new one every epoch
+     * @return the batches
+     */
+    public List<Batch> batches(int batchSize, Device device, Augmentation augmentation, long seed) {
         if (batchSize < 1) {
             throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
         }
+        SplittableRandom random = new SplittableRandom(seed);
         List<Batch> out = new ArrayList<>();
         for (int from = 0; from < size; from += batchSize) {
             int n = Math.min(batchSize, size - from);
@@ -310,6 +346,11 @@ public final class Dataset {
             float[] t = new float[n * targetCount];
             System.arraycopy(features, from * featureCount, f, 0, f.length);
             System.arraycopy(targets, from * targetCount, t, 0, t.length);
+            if (augmentation != null) {
+                for (int i = 0; i < n; i++) {
+                    augmentation.apply(f, i * featureCount, random);
+                }
+            }
             out.add(new Batch(Tensor.of(Shape.of(n, featureCount), f, device),
                     Tensor.of(Shape.of(n, targetCount), t, device)));
         }

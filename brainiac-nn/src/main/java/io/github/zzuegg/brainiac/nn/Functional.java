@@ -635,6 +635,12 @@ public final class Functional {
      */
     public static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
             java.util.random.RandomGenerator random) {
+        return attention(q, k, v, bias, scale, dropout, random, null);
+    }
+
+    /** As above; {@code weights[0]}, when given, receives the attention weights {@code [batch, heads, queries, keys]}. */
+    static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
+            java.util.random.RandomGenerator random, Tensor[] weightsOut) {
         int heads = q.shape().dim(1);
         int kvHeads = k.shape().dim(1);
         if (heads % kvHeads != 0 || v.shape().dim(1) != kvHeads) {
@@ -650,12 +656,75 @@ public final class Functional {
             scores = scores.add(bias);
         }
         Var weights = Activation.SOFTMAX.forward(scores);
+        if (weightsOut != null) {
+            weightsOut[0] = weights.value();
+        }
         if (dropout > 0 && random != null) {
             Tensor keep = Tensor.random(weights.shape(), random.nextLong(), weights.value().device())
                     .greater(Tensor.full(Shape.of(), dropout, weights.value().device()));
             weights = weights.mul(keep.div(1 - dropout));
         }
         return weights.matmul(v);
+    }
+
+    /** Whether {@link #attention(Var, Var, Var, boolean, float)} may use a backend's fused kernel. */
+    private static final boolean FUSED = !"false".equals(System.getProperty("brainiac.fusedAttention"));
+
+    /**
+     * Scaled dot-product attention without extra biases or dropout, optionally causal (see
+     * {@link #causalMask}). Uses the backend's fused kernel when it has one, which never
+     * builds the {@code [queries, keys]} weights; otherwise the same as
+     * {@link #attention(Var, Var, Var, Tensor, float, float, java.util.random.RandomGenerator)}
+     * with a causal mask. {@code -Dbrainiac.fusedAttention=false} turns the kernel off.
+     *
+     * @param q queries {@code [batch, heads, queries, dk]}
+     * @param k keys {@code [batch, kvHeads, keys, dk]}
+     * @param v values {@code [batch, kvHeads, keys, dv]}
+     * @param causal whether query {@code i} sees only keys up to {@code i + keys - queries}
+     * @param scale the score scale
+     * @return {@code [batch, heads, queries, dv]}
+     */
+    public static Var attention(Var q, Var k, Var v, boolean causal, float scale) {
+        if (FUSED && q.value().dtype() == k.value().dtype() && q.value().dtype() == v.value().dtype()
+                && Tensor.hasAttention(q.value(), k.value(), v.value(),
+                        q.requiresGrad() || k.requiresGrad() || v.requiresGrad())) {
+            try {
+                return Var.apply(new FusedAttention(scale, causal), q, k, v);
+            } catch (UnsupportedOperationException e) {
+                // this backend, type or size has no fused kernel
+            }
+        }
+        Tensor bias = causal ? causalMask(q.shape().dim(2), k.shape().dim(2), q.value().device()) : null;
+        return attention(q, k, v, bias, scale, 0, null);
+    }
+
+    /** The fused kernel; keeps the log-sum-exp of each query's scores for the gradient. */
+    private static final class FusedAttention implements Op {
+        private final float scale;
+        private final boolean causal;
+        private Tensor lse;
+
+        FusedAttention(float scale, boolean causal) {
+            this.scale = scale;
+            this.causal = causal;
+        }
+
+        @Override
+        public Tensor forward(Tensor... in) {
+            Tensor[] r = Tensor.attention(in[0], in[1], in[2], scale, causal);
+            lse = r[1];
+            return r[0];
+        }
+
+        @Override
+        public Tensor[] backward(Tensor grad, Tensor output, Tensor... in) {
+            return Tensor.attentionBackward(in[0], in[1], in[2], output, lse, grad, scale, causal);
+        }
+
+        @Override
+        public String name() {
+            return "attention";
+        }
     }
 
     private static Var repeatHeads(Var x, int times) {

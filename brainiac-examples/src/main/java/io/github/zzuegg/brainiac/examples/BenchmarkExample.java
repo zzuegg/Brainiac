@@ -7,6 +7,7 @@ import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.nn.Padding;
 import io.github.zzuegg.brainiac.nn.Recurrent;
 import io.github.zzuegg.brainiac.nn.SequencePool;
+import io.github.zzuegg.brainiac.nn.SwitchingDense;
 import io.github.zzuegg.brainiac.nn.TransformerBlock;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -46,7 +47,7 @@ public final class BenchmarkExample {
 
     /** Built-in model names; not every model fits every task. */
     public static final List<String> MODELS =
-            List.of("default", "linear", "mlp", "cnn", "lenet", "bilstm", "gru", "transformer");
+            List.of("default", "linear", "mlp", "switching", "switching-small", "mlp-wide", "cnn", "lenet", "resnet", "bilstm", "gru", "transformer");
 
     /**
      * Builds a named model for a task.
@@ -63,9 +64,17 @@ public final class BenchmarkExample {
             case "default" -> defaultModel(task);
             case "linear" -> dense(task, 0);
             case "mlp" -> dense(task, 2);
+            case "switching" -> switching(task, 2);
+            // the same number of parameters as the other kind, to tell size from switching
+            case "switching-small" -> matched(task, true, dense(task, 2).parameterCount());
+            case "mlp-wide" -> matched(task, false, switching(task, 2).parameterCount());
             case "cnn" -> {
                 requireImages(name, task);
                 yield cnn(in, out);
+            }
+            case "resnet" -> {
+                requireImages(name, task);
+                yield CifarExample.resnet(in.dim(0), in.dim(1), Math.toIntExact(out.size()), 3);
             }
             case "lenet" -> {
                 requireImages(name, task);
@@ -87,8 +96,11 @@ public final class BenchmarkExample {
      * @return an untrained model
      */
     public static Model defaultModel(Task task) {
-        return switch (task.name()) {
+        // every tokenizer of shakespeare gets the same model, sized to its vocabulary
+        return switch (task.name().startsWith("shakespeare/") ? "shakespeare" : task.name()) {
             case "mnist", "fashion" -> MnistExample.model(28, 10);
+            case "cifar10" -> CifarExample.resnet(3, 32, 10, 3);
+            case "shakespeare" -> LanguageExample.model(task.outputShape().dim(1), task.inputShape().dim(0), 128, 4, 4);
             case "shapes" -> MnistExample.model(16, 3);
             case "waves" -> SequenceExample.forecaster();
             case "reversal" -> SequenceExample.reverser();
@@ -107,16 +119,58 @@ public final class BenchmarkExample {
      * @return an untrained model
      */
     public static Model dense(Task task, int hidden) {
+        return dense(task, hidden, task.inputShape().size() <= 8 ? 32 : 128);
+    }
+
+    private static Model dense(Task task, int hidden, int width) {
         Model.Builder b = Model.sequential().input(task.inputShape().toArray()).flatten();
-        int width = task.inputShape().size() <= 8 ? 32 : 128;
         for (int i = 0; i < hidden; i++) {
             b.dense(width, Activation.RELU);
         }
         return head(b.dense(Math.toIntExact(task.outputShape().size())), task).seed(42).build();
     }
 
+    /**
+     * Like {@link #dense}, but in every hidden layer each unit's inputs choose its activation
+     * among relu, tanh, gelu and sigmoid ({@link SwitchingDense}).
+     *
+     * @param task the task
+     * @param hidden the number of hidden layers
+     * @return an untrained model
+     */
+    public static Model switching(Task task, int hidden) {
+        return switching(task, hidden, task.inputShape().size() <= 8 ? 32 : 128);
+    }
+
+    private static Model switching(Task task, int hidden, int width) {
+        Model.Builder b = Model.sequential().input(task.inputShape().toArray()).flatten();
+        for (int i = 0; i < hidden; i++) {
+            b.add(SwitchingDense.of(width, Activation.RELU, Activation.TANH, Activation.GELU, Activation.SIGMOID));
+        }
+        return head(b.dense(Math.toIntExact(task.outputShape().size())), task).seed(42).build();
+    }
+
+    /**
+     * A two-hidden-layer switching network or MLP, as wide as fits in a parameter budget:
+     * the widest whose count does not exceed {@code parameters}.
+     */
+    private static Model matched(Task task, boolean switching, long parameters) {
+        Model best = null;
+        for (int width = 1; width <= 4096; width++) {
+            Model m = switching ? switching(task, 2, width) : dense(task, 2, width);
+            if (m.parameterCount() > parameters) {
+                break;
+            }
+            best = m;
+        }
+        if (best == null) {
+            throw new IllegalArgumentException("no width fits " + parameters + " parameters");
+        }
+        return best;
+    }
+
     private static Model cnn(Shape in, Shape out) {
-        return MnistExample.model(in.dim(1), Math.toIntExact(out.size()));
+        return MnistExample.model(in.dim(0), in.dim(1), Math.toIntExact(out.size()));
     }
 
     private static Model lenet(Shape in, Shape out) {
@@ -210,7 +264,11 @@ public final class BenchmarkExample {
      * @param args a task name, {@code offline} or {@code all}; then model names or files;
      *        then {@code --epochs N}, {@code --limit N} (training samples), {@code --train},
      *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best},
-     *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16}
+     *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
+     *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
+     *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
+     *        {@code --cache none,restart,sliding,sinks:4,h2o:32,restart/bf16} (for shakespeare:
+     *        compare KV cache strategies on long text)
      */
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -226,7 +284,13 @@ public final class BenchmarkExample {
         Device device = Device.getDefault();
         DType dtype = DType.FLOAT32;
         DType mixed = null;
+        List<DType> precisions = null;
+        List<String> tokenizers = null;
         for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--cache")) {
+                cacheStrategies = List.of(args[++i].split(","));
+                continue;
+            }
             switch (args[i]) {
                 case "--device" -> device = switch (args[++i]) {
                     case "cpu" -> Device.cpu();
@@ -236,6 +300,14 @@ public final class BenchmarkExample {
                 };
                 case "--dtype" -> dtype = dtype(args[++i]);
                 case "--mixed" -> mixed = dtype(args[++i]);
+                case "--precisions" -> {
+                    precisions = new ArrayList<>();
+                    for (String p : args[++i].split(",")) {
+                        DType type = dtype(p);
+                        precisions.add(type == DType.FLOAT32 ? null : type);
+                    }
+                }
+                case "--tokenizers", "--tokenizer" -> tokenizers = List.of(args[++i].split(","));
                 case "--epochs" -> epochs = Integer.parseInt(args[++i]);
                 case "--limit" -> limit = Integer.parseInt(args[++i]);
                 case "--train" -> trainLoaded = true;
@@ -250,42 +322,100 @@ public final class BenchmarkExample {
         List<Task> tasks = switch (args[0]) {
             case "all" -> Tasks.all();
             case "offline" -> Tasks.offline();
+            case "shakespeare" -> tokenizers == null ? List.of(Tasks.shakespeare())
+                    : tokenizers.stream().map(Tasks::shakespeare).toList();
             default -> List.of(Tasks.get(args[0]));
         };
-        Options options = new Options(epochs, !quiet, device, dtype, mixed);
+        if (precisions == null) {
+            precisions = new ArrayList<>();
+            precisions.add(mixed);
+        }
+        boolean comparing = precisions.size() > 1;
         System.out.println("device " + device + (dtype != DType.FLOAT32 ? ", " + dtype : "")
-                + (mixed != null ? ", mixed precision " + mixed : ""));
+                + (comparing ? ", comparing " + precisions.stream()
+                        .map(BenchmarkExample::precisionName).toList()
+                        : mixed != null ? ", mixed precision " + mixed : ""));
         List<Report> reports = new ArrayList<>();
         for (Task task : tasks) {
             Task t = limit == Integer.MAX_VALUE ? task : task.limit(limit, Integer.MAX_VALUE);
             System.out.printf("%n== %s: %s (%,d train, %,d test)%n", t.name(), t.description(), t.train().size(),
                     t.test().size());
             for (String name : models) {
-                Report r;
-                Path file = Path.of(name);
-                if (Files.isRegularFile(file)) {
-                    Model model = options.prepare(load(file));
-                    r = trainLoaded ? Benchmark.run(t, file.getFileName().toString(), model, options.settings())
-                            : Benchmark.evaluate(t, file.getFileName().toString(), model);
-                } else {
-                    Model model;
-                    try {
-                        model = options.prepare(model(name, t));
-                    } catch (IllegalArgumentException e) {
-                        System.out.println("skipping " + name + ": " + e.getMessage());
-                        continue;
+                for (DType precision : precisions) {
+                    String label = !comparing ? name
+                            : name + " " + precisionName(precision);
+                    Report r = runOne(t, name, label, new Options(epochs, !quiet, device, dtype, precision),
+                            trainLoaded);
+                    if (r != null) {
+                        if (confusion) {
+                            System.out.print(r.confusionTable());
+                        }
+                        reports.add(r);
                     }
-                    r = Benchmark.run(t, name, model, options.settings());
                 }
-                System.out.print(r);
-                if (confusion) {
-                    System.out.print(r.confusionTable());
-                }
-                reports.add(r);
             }
         }
         System.out.println();
         System.out.print(Benchmark.table(reports));
+    }
+
+    /** KV cache strategies to compare after a language model is trained ({@code --cache}). */
+    private static List<String> cacheStrategies = List.of();
+
+    /** Reads 2,000 test tokens through each cache strategy, for loss on long text and speed. */
+    private static void compareCaches(Model model, io.github.zzuegg.brainiac.data.Tokenizer tokenizer, String text) {
+        if (cacheStrategies.isEmpty()) {
+            return;
+        }
+        String test = text.substring((int) (text.length() * 0.9));
+        System.out.println("reading 2,000 test tokens one at a time (window " + model.inputShape().dim(0) + "):");
+        System.out.printf("  %-18s %12s %10s%n", "cache", "loss/char", "tokens/s");
+        for (String spec : cacheStrategies) {
+            String[] parts = spec.split("/");
+            io.github.zzuegg.brainiac.nn.KvCache.Strategy strategy = parts[0].equals("none") ? null
+                    : io.github.zzuegg.brainiac.nn.KvCache.Strategy.parse(parts[0]);
+            DType storage = parts.length > 1 ? dtype(parts[1]) : null;
+            double[] r = LanguageExample.streamLoss(strategy, storage, model, tokenizer, test, 2000);
+            System.out.printf("  %-18s %12.4f %10.0f%n", spec, r[0], r[1]);
+        }
+    }
+
+    /** Trains (or loads) and tests one model; null if the named model does not fit the task. */
+    private static Report runOne(Task t, String name, String label, Options options, boolean trainLoaded) {
+        Report r;
+        Model model;
+        Path file = Path.of(name);
+        if (Files.isRegularFile(file)) {
+            model = options.prepare(load(file));
+            String fileLabel = file.getFileName() + label.substring(name.length());
+            r = trainLoaded ? Benchmark.run(t, fileLabel, model, options.settings())
+                    : Benchmark.evaluate(t, fileLabel, model);
+        } else {
+            try {
+                model = options.prepare(model(name, t));
+            } catch (IllegalArgumentException e) {
+                System.out.println("skipping " + name + ": " + e.getMessage());
+                return null;
+            }
+            r = Benchmark.run(t, label, model, options.settings());
+        }
+        System.out.print(r);
+        if (t.name().startsWith("shakespeare")) {
+            String spec = t.name().contains("/") ? t.name().substring(t.name().indexOf('/') + 1) : "char";
+            io.github.zzuegg.brainiac.data.Tokenizer tokenizer;
+            String text;
+            try {
+                text = LanguageExample.load(LanguageExample.DATA_FILE);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            tokenizer = LanguageExample.tokenizer(spec, text);
+            System.out.println("sample:\n" + LanguageExample.generate(model, tokenizer, "ROMEO:\n",
+                    (int) Math.ceil(400 / tokenizer.charactersPerToken("ROMEO:\nWhat light through yonder window "
+                            + "breaks? It is the east, and Juliet is the sun.")), 0.8f, 1) + "\n");
+            compareCaches(model, tokenizer, text);
+        }
+        return r;
     }
 
     /** How models are placed and trained, from the command line. */
@@ -308,6 +438,12 @@ public final class BenchmarkExample {
                 }
             };
         }
+    }
+
+    /** @return f32 for plain training, else the mixed-precision type, such as bf16-mixed */
+    private static String precisionName(DType mixed) {
+        return mixed == null ? "f32" : (mixed == DType.BFLOAT16 ? "bf16" : mixed == DType.FLOAT16 ? "f16"
+                : mixed.name().toLowerCase()) + "-mixed";
     }
 
     private static DType dtype(String name) {
@@ -340,6 +476,13 @@ public final class BenchmarkExample {
                   --quiet       no per-epoch progress
                   --device D    cpu, gpu (OpenCL) or best
                   --dtype T     run the model in f64, f16 or bf16 instead of f32
-                  --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights""".formatted(Tasks.NAMES, MODELS));
+                  --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
+                  --precisions L  train each model once per precision, e.g. f32,bf16,f16
+                                (f16 and bf16 mean mixed precision), to compare them
+                  --tokenizers L  for shakespeare, one run per tokenizer, e.g.
+                                char,byte,word:2048,bpe:1024,wordpiece:1024,unigram:1024
+                  --cache L     for shakespeare, read 2,000 test tokens through each KV cache
+                                strategy: none (recompute), restart, sliding, sinks:4, h2o:32;
+                                add /bf16 or /f16 to store keys and values narrower""".formatted(Tasks.NAMES, MODELS));
     }
 }

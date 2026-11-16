@@ -1,9 +1,11 @@
 package io.github.zzuegg.brainiac.examples;
 
+import io.github.zzuegg.brainiac.data.Augmentation;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.data.Standardizer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.train.Benchmark.Task;
+import io.github.zzuegg.brainiac.train.LearningRateSchedule;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.io.IOException;
@@ -20,6 +22,9 @@ import java.util.List;
  *   <caption>Tasks</caption>
  *   <tr><th>task</th><th>input</th><th>output</th><th>what</th></tr>
  *   <tr><td>mnist</td><td>[1, 28, 28]</td><td>[10]</td><td>handwritten digits (downloads 11 MB)</td></tr>
+ *   <tr><td>cifar10</td><td>[3, 32, 32]</td><td>[10]</td><td>CIFAR-10 colour photos (downloads 160 MB)</td></tr>
+ *   <tr><td>shakespeare</td><td>[64]</td><td>[64, 65]</td><td>next character of Shakespeare's plays
+ *       (downloads 1 MB)</td></tr>
  *   <tr><td>fashion</td><td>[1, 28, 28]</td><td>[10]</td><td>Fashion-MNIST clothing photos (downloads 30 MB)</td></tr>
  *   <tr><td>shapes</td><td>[1, 16, 16]</td><td>[3]</td><td>synthetic bars and crosses</td></tr>
  *   <tr><td>waves</td><td>[24, 1]</td><td>[1]</td><td>forecast the next value of a noisy wave</td></tr>
@@ -37,7 +42,7 @@ public final class Tasks {
 
     /** The task names, in the order {@link #all()} returns them. */
     public static final List<String> NAMES =
-            List.of("mnist", "fashion", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
+            List.of("mnist", "fashion", "cifar10", "shakespeare", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
 
     /** Where Fashion-MNIST is downloaded to, relative to the working directory. */
     public static final Path FASHION_DIR = Path.of("data", "fashion-mnist");
@@ -52,14 +57,19 @@ public final class Tasks {
     /**
      * Returns a task by name.
      *
-     * @param name one of {@link #NAMES}
+     * @param name one of {@link #NAMES}; {@code shakespeare/bpe:1024} picks a tokenizer
      * @return the task
      * @throws IllegalArgumentException for an unknown name
      */
     public static Task get(String name) {
+        if (name.startsWith("shakespeare/")) {
+            return shakespeare(name.substring("shakespeare/".length()));
+        }
         return switch (name) {
             case "mnist" -> mnist();
             case "fashion" -> fashionMnist();
+            case "cifar10" -> cifar10();
+            case "shakespeare" -> shakespeare();
             case "shapes" -> shapes();
             case "waves" -> waves();
             case "reversal" -> reversal();
@@ -81,7 +91,7 @@ public final class Tasks {
     }
 
     /**
-     * Returns every task, downloading MNIST and Fashion-MNIST if needed.
+     * Returns every task, downloading MNIST, Fashion-MNIST, CIFAR-10 and Shakespeare if needed.
      *
      * @return the tasks
      */
@@ -131,6 +141,97 @@ public final class Tasks {
         return images("fashion", dir, FASHION_MIRROR)
                 .describedAs("clothing photos in 10 classes, 28x28 grey")
                 .withClassNames(CLOTHES);
+    }
+
+    /**
+     * CIFAR-10 colour photos from {@link CifarExample#DATA_DIR}: 50,000 training and 10,000
+     * test photos of 32x32 pixels in ten classes. By default 30 epochs of SGD with momentum,
+     * weight decay and a cosine learning rate, on shifted and mirrored copies of the photos:
+     * the published ResNet-20 recipe, shortened (it trains about 160 epochs to reach 91.7%).
+     *
+     * @return the task
+     */
+    public static Task cifar10() {
+        return cifar10(CifarExample.DATA_DIR);
+    }
+
+    /**
+     * CIFAR-10.
+     *
+     * @param dir the directory with (or for) the archive
+     * @return the task
+     */
+    public static Task cifar10(Path dir) {
+        Dataset.Split split;
+        try {
+            split = CifarExample.load(dir);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return Task.classification("cifar10", split.train(), split.test(), Shape.of(3, 32, 32), Shape.of(10))
+                .describedAs("colour photos in 10 classes, 32x32 (ResNet-20 is known to reach about 91.7%)")
+                .withClassNames(CifarExample.CLASSES)
+                .withDefaults(t -> t.optimizer(Optimizer.momentum(0.1f, 0.9f)).l2(2.5e-4f).batchSize(128)
+                        .epochs(30).schedule(LearningRateSchedule.cosine(30, 0.001f))
+                        .augment(Augmentation.cropAndFlip(3, 32, 32, 4)));
+    }
+
+    /**
+     * Character-level language modelling on Shakespeare's plays from
+     * {@link LanguageExample#DATA_FILE}: predict every next character of 64-character
+     * windows. The loss is in nats per character; by default 10 epochs of Adam.
+     *
+     * @return the task
+     */
+    public static Task shakespeare() {
+        return shakespeare(LanguageExample.DATA_FILE, "char");
+    }
+
+    /**
+     * Language modelling on Shakespeare's plays with a tokenizer: predict every next token of
+     * 64-token windows. The loss is still in nats per character.
+     *
+     * @param tokenizer as for {@link io.github.zzuegg.brainiac.data.Tokenizer#train}, such as
+     *     {@code char}, {@code bpe:1024} or {@code unigram:1024}
+     * @return the task, named {@code shakespeare} for characters and
+     *     {@code shakespeare/<tokenizer>} otherwise
+     */
+    public static Task shakespeare(String tokenizer) {
+        return shakespeare(LanguageExample.DATA_FILE, tokenizer);
+    }
+
+    /**
+     * Character-level language modelling on Shakespeare's plays.
+     *
+     * @param file the text file, or where to download it
+     * @return the task
+     */
+    public static Task shakespeare(Path file) {
+        return shakespeare(file, "char");
+    }
+
+    /**
+     * Language modelling on Shakespeare's plays with a tokenizer.
+     *
+     * @param file the text file, or where to download it
+     * @param tokenizer as for {@link io.github.zzuegg.brainiac.data.Tokenizer#train}
+     * @return the task
+     */
+    public static Task shakespeare(Path file, String tokenizer) {
+        String text;
+        try {
+            text = LanguageExample.load(file);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        boolean chars = tokenizer.equals("char");
+        String what = chars ? "character" : "token (" + tokenizer + ")";
+        return LanguageExample.task(chars ? "shakespeare" : "shakespeare/" + tokenizer, text,
+                        LanguageExample.CONTEXT, tokenizer)
+                .describedAs("next " + what + " of Shakespeare's plays; loss in nats per character "
+                        + "(char-level nanoGPT is known to reach about 1.47, letter frequencies alone 3.3)")
+                .withDefaults(t -> t.optimizer(Optimizer.adam(0.002f)).clipGradientNorm(1).batchSize(64)
+                        .epochs(10).schedule(LearningRateSchedule.cosine(10, 0.0001f)));
     }
 
     private static Task images(String name, Path dir, String mirror) {

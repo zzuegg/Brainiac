@@ -122,6 +122,16 @@ class FusionTest {
     }
 
     @Test
+    void bigTileMatmulsFuseTheirEpiloguesAndOperands() {
+        Tensor w = random(29, 70, 130);
+        Tensor bias = random(30, 130);
+        same(DType.FLOAT32, x -> x.matmul(w.to(x.device())).add(bias.to(x.device())).relu().mul(2f),
+                random(31, 100, 70));
+        same(DType.FLOAT32, x -> x.relu().add(0.5f).matmul(w.to(x.device()).tanh()).sigmoid(), random(32, 100, 70));
+        same(DType.FLOAT32, x -> x.matmul(x.transpose()).exp().sum(1), random(33, 2, 80, 33));
+    }
+
+    @Test
     void matmulOperandsComputedAsTheKernelLoadsThemMatchTheCpu() {
         Tensor w = random(25, 7, 5);
         // element-wise chains as operands, directly and through transposes and permutations
@@ -308,6 +318,67 @@ class FusionTest {
         for (int i = 0; i < expected.length; i++) {
             assertEquals(expected[i], actual[i], 1e-3, "value " + i);
         }
+    }
+
+    /** Output and every parameter's gradient of a switching layer, for one batch. */
+    private static List<float[]> switching(Device device, boolean hard) {
+        io.github.zzuegg.brainiac.nn.Layer layer = io.github.zzuegg.brainiac.nn.SwitchingDense
+                .of(24, io.github.zzuegg.brainiac.nn.Activation.RELU, io.github.zzuegg.brainiac.nn.Activation.TANH,
+                        io.github.zzuegg.brainiac.nn.Activation.GELU, io.github.zzuegg.brainiac.nn.Activation.SIGMOID)
+                .hard(hard).create(Shape.of(10), new SplittableRandom(9));
+        for (io.github.zzuegg.brainiac.autograd.Var p : layer.parameters()) {
+            p.assign(p.value().to(device));
+        }
+        io.github.zzuegg.brainiac.autograd.Var y = layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(
+                random(90, 16, 10).to(device)));
+        y.mul(random(91, 16, 24).to(device)).sum().backward();
+        List<float[]> out = new ArrayList<>(List.of(y.value().toArray()));
+        for (io.github.zzuegg.brainiac.autograd.Var p : layer.parameters()) {
+            out.add(p.grad() == null ? new float[0] : p.grad().toArray());
+        }
+        return out;
+    }
+
+    @Test
+    void aSwitchingLayerMatchesTheCpuAndBlendsInOneKernel() throws ReflectiveOperationException, InterruptedException {
+        for (boolean hard : new boolean[] {false, true}) {
+            List<float[]> expected = switching(Device.cpu(), hard);
+            List<float[]> actual = switching(gpu, hard);
+            for (int i = 0; i < expected.size(); i++) {
+                assertEquals(expected.get(i).length, actual.get(i).length, "result " + i);
+                for (int j = 0; j < expected.get(i).length; j++) {
+                    float e = expected.get(i)[j];
+                    assertEquals(e, actual.get(i)[j], 1e-4 * Math.max(1, Math.abs(e)), "result " + i + ", " + j);
+                }
+            }
+        }
+        // the forward pass: the two matrix products, then the blend of all four candidates at once
+        io.github.zzuegg.brainiac.nn.Layer layer = io.github.zzuegg.brainiac.nn.SwitchingDense
+                .of(32, io.github.zzuegg.brainiac.nn.Activation.RELU, io.github.zzuegg.brainiac.nn.Activation.TANH,
+                        io.github.zzuegg.brainiac.nn.Activation.GELU, io.github.zzuegg.brainiac.nn.Activation.SIGMOID)
+                .create(Shape.of(16), new SplittableRandom(10));
+        for (io.github.zzuegg.brainiac.autograd.Var p : layer.parameters()) {
+            p.assign(p.value().to(gpu));
+        }
+        Tensor x = random(92, 64, 16).to(gpu);
+        Tensor.evaluate(layer.parameters().stream().map(io.github.zzuegg.brainiac.autograd.Var::value).toList());
+        x.toArray();
+        java.lang.reflect.Method backendOf = Device.class.getDeclaredMethod("backend");
+        backendOf.setAccessible(true);
+        OpenClBackend backend = (OpenClBackend) backendOf.invoke(gpu);
+        java.lang.reflect.Field launches = OpenClBackend.class.getDeclaredField("launchIndex");
+        launches.setAccessible(true);
+        // a kernel not compiled yet runs as separate precompiled steps meanwhile: wait for it
+        long used = Long.MAX_VALUE;
+        for (int attempt = 0; attempt < 100 && used > 3; attempt++) {
+            long before = launches.getLong(backend);
+            layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(x)).value().toArray();
+            used = launches.getLong(backend) - before;
+            if (used > 3) {
+                Thread.sleep(100);
+            }
+        }
+        assertTrue(used <= 3, "forward took " + used + " launches");
     }
 
     @Test

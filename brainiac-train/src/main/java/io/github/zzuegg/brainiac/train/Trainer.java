@@ -43,6 +43,7 @@ public final class Trainer {
     private int batchSize = 32;
     private int epochs = 100;
     private boolean shuffle = true;
+    private io.github.zzuegg.brainiac.data.Augmentation augmentation;
     private long seed = 0;
     private Dataset validation;
     private int patience = -1;
@@ -131,6 +132,19 @@ public final class Trainer {
             throw new IllegalArgumentException("epochs must be at least 1, got " + epochs);
         }
         this.epochs = epochs;
+        return this;
+    }
+
+    /**
+     * Changes every training sample at random in every epoch, such as shifting and mirroring
+     * images (see {@link io.github.zzuegg.brainiac.data.Augmentation#cropAndFlip}). Off by
+     * default; validation and test data are never changed.
+     *
+     * @param augmentation the change, or null for none
+     * @return this trainer
+     */
+    public Trainer augment(io.github.zzuegg.brainiac.data.Augmentation augmentation) {
+        this.augmentation = augmentation;
         return this;
     }
 
@@ -406,7 +420,7 @@ public final class Trainer {
         Device device = model.device();
         List<Var> params = model.parameters();
         List<EpochResult> history = new ArrayList<>();
-        List<Batch> fixedBatches = shuffle ? null : data.batches(batchSize, device);
+        List<Batch> fixedBatches = shuffle || augmentation != null ? null : data.batches(batchSize, device);
 
         float bestScore = Float.POSITIVE_INFINITY;
         int bestEpoch = 0;
@@ -421,7 +435,9 @@ public final class Trainer {
             if (schedule != null) {
                 optimizer.learningRate(schedule.rate(epoch, baseLearningRate));
             }
-            List<Batch> batches = shuffle ? data.shuffle(seed + epoch).batches(batchSize, device) : fixedBatches;
+            List<Batch> batches = augmentation != null
+                    ? (shuffle ? data.shuffle(seed + epoch) : data).batches(batchSize, device, augmentation, seed + epoch)
+                    : shuffle ? data.shuffle(seed + epoch).batches(batchSize, device) : fixedBatches;
             // per-batch values stay on the device until the epoch ends, so the host never
             // waits for the device between batches and can queue the next one meanwhile
             List<Tensor> batchValues = new ArrayList<>();
@@ -513,7 +529,7 @@ public final class Trainer {
                 }
             }
             Tensor.release(batchValues, List.of());
-            if (shuffle) {
+            if (shuffle || augmentation != null) {
                 release(batches);   // this epoch's own copies of the data
             }
             Map<String, Float> trainMetrics = new LinkedHashMap<>();
@@ -637,7 +653,9 @@ public final class Trainer {
     }
 
     private void checkSizes(Dataset data) {
-        if (data.featureCount() != model.inputSize() || data.targetCount() != model.outputSize()) {
+        int classes = model.outputShape().dim(-1);
+        boolean ids = classes > 1 && (long) data.targetCount() * classes == model.outputSize();
+        if (data.featureCount() != model.inputSize() || (data.targetCount() != model.outputSize() && !ids)) {
             throw new IllegalArgumentException("model maps " + model.inputSize() + " inputs to " + model.outputSize()
                     + " outputs, but the data has " + data.featureCount() + " features and "
                     + data.targetCount() + " targets");
