@@ -321,7 +321,36 @@ public final class Functional {
      * @return the row maxima
      */
     public static Var windowMax(Var rows) {
-        return Var.apply(WINDOW_MAX, rows);
+        return Var.apply(rows.requiresGrad() ? new WindowMax() : WINDOW_MAX, rows);
+    }
+
+    /**
+     * {@link #WINDOW_MAX} that finds the first largest value along with the maximum: on devices
+     * that defer reductions, both are then computed by one kernel instead of two.
+     */
+    private static final class WindowMax implements Op {
+
+        private Tensor first;
+
+        @Override
+        public Tensor forward(Tensor... in) {
+            first = in[0].argmax(1);
+            return in[0].max(1, false);
+        }
+
+        @Override
+        public Tensor[] backward(Tensor grad, Tensor out, Tensor... in) {
+            Tensor cols = in[0];
+            int rows = cols.shape().dim(0);
+            int k = cols.shape().dim(1);
+            Tensor hot = first.reshape(rows, 1).equalTo(Tensor.arange(k).to(cols.device()).reshape(1, k));
+            return new Tensor[] {hot.mul(grad.reshape(rows, 1))};
+        }
+
+        @Override
+        public String name() {
+            return "max";
+        }
     }
 
     /**
