@@ -16,6 +16,8 @@ tasks.test {
         "--enable-native-access=ALL-UNNAMED",
         "--add-modules", "jdk.incubator.vector",
         "-Dbrainiac.opencl.devices=all",
+        // big tiles for every product of at least 64 x 64, so small test shapes cover them
+        "-Dbrainiac.opencl.bigTileGroups=1",
     )
 }
 

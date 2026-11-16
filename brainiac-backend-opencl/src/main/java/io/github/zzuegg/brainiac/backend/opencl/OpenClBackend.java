@@ -2069,7 +2069,7 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
         ClStorage o = cl(out);
-        boolean big = bigTiles(m, n);
+        boolean big = bigTiles(batch, m, n);
         // a work item computes tile / 4 rows of a column, or 4 x 4 outputs of a 64 x 64 tile
         long[] global = big ? new long[] {roundUp(n, BIG) / 4, roundUp(m, BIG) / 4, batch}
                 : new long[] {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
@@ -2113,12 +2113,21 @@ public final class OpenClBackend implements Backend {
     private static final boolean BIG_TILES = !"false".equalsIgnoreCase(System.getProperty("brainiac.opencl.bigTiles"));
 
     /**
+     * The fewest 64 x 64 tiles a product needs to use them: with fewer, too few work-groups
+     * keep the device busy, and the 16 x 16 tiles are faster (on an RX 9070 XT, 4096^2 is
+     * 49% and 2048^2 15% faster on the big tiles, 1024^2 18% slower).
+     * {@code -Dbrainiac.opencl.bigTileGroups=n} changes it.
+     */
+    private static final long BIG_GROUPS = Long.getLong("brainiac.opencl.bigTileGroups", 1024);
+
+    /**
      * Whether a product uses 64 x 64 output tiles: each value a work item loads from local
      * memory then serves 4 products instead of 1. Needs work-groups of 256 and enough
-     * outputs that the larger tiles are not mostly empty.
+     * outputs that the larger tiles are not mostly empty, and enough tiles to fill the device.
      */
-    private boolean bigTiles(int m, int n) {
-        return BIG_TILES && tile == 16 && m >= BIG && n >= BIG;
+    private boolean bigTiles(int batch, int m, int n) {
+        return BIG_TILES && tile == 16 && m >= BIG && n >= BIG
+                && (long) Math.ceilDiv(m, BIG) * Math.ceilDiv(n, BIG) * batch >= BIG_GROUPS;
     }
 
     /** Whether a recorded product was laid out for {@code matmul_big}. */
