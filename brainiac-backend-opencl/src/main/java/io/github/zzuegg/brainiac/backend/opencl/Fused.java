@@ -443,11 +443,16 @@ final class Fused {
      * Generates one kernel for several reductions with the same shape: per output, {@code len}
      * values {@code inner} apart, read in one pass so that values the inputs share are loaded
      * once. Each keeps the order of a single reduction, so results do not depend on what was
-     * reduced together. The first is written to {@code out}, the others to the buffers listed
-     * first in {@link Kernel#args}. With {@code group > 1} a work-group of that many items
-     * shares each output (for long rows); otherwise one work item loops over its row.
+     * reduced together. The reductions in {@code second} read those in {@code first} (each
+     * at its own output, such as a variance reading its mean), so they run in a second pass
+     * over the same row once the first are known. The first reduction is written to {@code out},
+     * the others to the buffers listed first in {@link Kernel#args}. With {@code group > 1} a
+     * work-group of that many items shares each output (for long rows); otherwise one work
+     * item loops over its row.
      */
-    static Kernel generateReduce(List<ClStorage> outputs, int group) {
+    static Kernel generateReduce(List<ClStorage> first, List<ClStorage> second, int group) {
+        List<ClStorage> outputs = new ArrayList<>(first);
+        outputs.addAll(second);
         Gen g = new Gen();
         g.argBytes += 16;
         int count = outputs.size();
@@ -460,7 +465,19 @@ final class Fused {
         String[] init = new String[count];
         String[] finish = new String[count];
         java.util.Set<Integer> ops = new java.util.TreeSet<>();
+        String[] bodies = new String[2];
         for (int k = 0; k < count; k++) {
+            if (k == first.size()) {
+                // the second pass: values of the first are known per row; nothing computed in
+                // the first loop is in scope
+                bodies[0] = g.body.toString();
+                g.body.setLength(0);
+                g.values.clear();
+                g.stage = new IdentityHashMap<>();
+                for (int f = 0; f < first.size(); f++) {
+                    g.stage.put(first.get(f), "f" + f);
+                }
+            }
             Reduce r = (Reduce) outputs.get(k).pending;
             v[k] = g.eval(whole(r.x()), "x");
             init[k] = r.op() == 2 ? "(ACC) -INFINITY" : r.op() == 3 ? "(ACC) INFINITY" : "(ACC) 0";
@@ -471,6 +488,7 @@ final class Fused {
                 throw new IllegalArgumentException("an argmax is reduced by one work item per output");
             }
         }
+        bodies[second.isEmpty() ? 0 : 1] = g.body.toString();
         StringBuilder src = new StringBuilder();
         for (int op : ops) {
             src.append("ACC combine").append(op).append("(ACC a, ACC b) {\n    return ")
@@ -480,63 +498,129 @@ final class Fused {
         }
         src.append("__kernel void fused(__global T* out, long n, long len, long inner").append(g.params)
                 .append(") {\n");
-        StringBuilder accumulate = new StringBuilder();
-        StringBuilder declare = new StringBuilder();
-        for (int k = 0; k < count; k++) {
-            declare.append("    ACC acc").append(k).append(" = ").append(init[k]).append(";\n");
-            if (((Reduce) outputs.get(k).pending).op() == 4) {
-                // the first largest value, as the precompiled argmax: NaN is never larger
-                declare.append("    long best").append(k).append(" = 0;\n");
-                accumulate.append("    if (t == 0 || ").append(v[k]).append(" > acc").append(k).append(") {\n")
-                        .append("        acc").append(k).append(" = ").append(v[k]).append(";\n        best")
-                        .append(k).append(" = t;\n    }\n");
-                continue;
-            }
-            accumulate.append("    acc").append(k).append(" = ").append(combine(outputs.get(k), "acc" + k, v[k]))
-                    .append(";\n");
-        }
         if (group <= 1) {
-            src.append("    long r = get_global_id(0);\n    if (r >= n) return;\n")
-                    .append("    long base = (r / inner) * len * inner + r % inner;\n")
-                    .append(declare)
-                    .append("    for (long t = 0; t < len; t++) {\n    long x = base + t * inner;\n")
-                    .append(g.body).append(accumulate).append("    }\n");
-            for (int k = 0; k < count; k++) {
-                src.append("    STORE(").append(k == 0 ? "out" : "o" + k).append(", r, ").append(finish[k])
-                        .append(");\n");
-            }
-            src.append("}\n");
+            src.append("    long r = get_global_id(0);\n    if (r >= n) return;\n");
         } else {
             for (int k = 0; k < count; k++) {
                 src.append("    __local ACC part").append(k).append("[").append(group).append("];\n");
             }
-            src.append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n")
-                    .append("    long base = (r / inner) * len * inner + r % inner;\n")
-                    .append(declare)
-                    .append("    for (long t = lid; t < len; t += ").append(group).append(") {\n")
-                    .append("    long x = base + t * inner;\n")
-                    .append(g.body).append(accumulate).append("    }\n");
-            for (int k = 0; k < count; k++) {
-                src.append("    part").append(k).append("[lid] = acc").append(k).append(";\n");
-            }
-            src.append("    barrier(CLK_LOCAL_MEM_FENCE);\n")
-                    .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
-                    .append("        if (lid < s) {\n");
-            for (int k = 0; k < count; k++) {
-                src.append("            part").append(k).append("[lid] = ")
-                        .append(combine(outputs.get(k), "part" + k + "[lid]", "part" + k + "[lid + s]")).append(";\n");
-            }
-            src.append("        }\n        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n    if (lid == 0) {\n");
-            for (int k = 0; k < count; k++) {
-                src.append("        ACC acc").append(k).append(" = part").append(k).append("[0];\n");
-            }
-            for (int k = 0; k < count; k++) {
-                src.append("        STORE(").append(k == 0 ? "out" : "o" + k).append(", r, ").append(finish[k])
-                        .append(");\n");
-            }
-            src.append("    }\n}\n");
+            src.append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n");
         }
+        src.append("    long base = (r / inner) * len * inner + r % inner;\n");
+        int stages = second.isEmpty() ? 1 : 2;
+        for (int stage = 0; stage < stages; stage++) {
+            int from = stage == 0 ? 0 : first.size();
+            int to = stage == 0 && stages == 2 ? first.size() : count;
+            StringBuilder accumulate = new StringBuilder();
+            for (int k = from; k < to; k++) {
+                src.append("    ACC acc").append(k).append(" = ").append(init[k]).append(";\n");
+                if (((Reduce) outputs.get(k).pending).op() == 4) {
+                    // the first largest value, as the precompiled argmax: NaN is never larger
+                    src.append("    long best").append(k).append(" = 0;\n");
+                    accumulate.append("    if (t == 0 || ").append(v[k]).append(" > acc").append(k).append(") {\n")
+                            .append("        acc").append(k).append(" = ").append(v[k]).append(";\n        best")
+                            .append(k).append(" = t;\n    }\n");
+                    continue;
+                }
+                accumulate.append("    acc").append(k).append(" = ")
+                        .append(combine(outputs.get(k), "acc" + k, v[k])).append(";\n");
+            }
+            src.append(group <= 1 ? "    for (long t = 0; t < len; t++) {\n"
+                    : "    for (long t = lid; t < len; t += " + group + ") {\n")
+                    .append("    long x = base + t * inner;\n")
+                    .append(bodies[stage]).append(accumulate).append("    }\n");
+            if (group > 1) {
+                for (int k = from; k < to; k++) {
+                    src.append("    part").append(k).append("[lid] = acc").append(k).append(";\n");
+                }
+                src.append("    barrier(CLK_LOCAL_MEM_FENCE);\n")
+                        .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
+                        .append("        if (lid < s) {\n");
+                for (int k = from; k < to; k++) {
+                    src.append("            part").append(k).append("[lid] = ")
+                            .append(combine(outputs.get(k), "part" + k + "[lid]", "part" + k + "[lid + s]"))
+                            .append(";\n");
+                }
+                src.append("        }\n        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n");
+                for (int k = from; k < to; k++) {
+                    src.append("    acc").append(k).append(" = part").append(k).append("[0];\n");
+                }
+            }
+            if (stage == 0 && stages == 2) {
+                for (int k = from; k < to; k++) {
+                    src.append("    ACC f").append(k).append(" = ").append(finish[k]).append(";\n");
+                }
+            }
+            src.append(group > 1 ? "    if (lid == 0) {\n" : "    {\n");
+            for (int k = from; k < to; k++) {
+                src.append("        STORE(").append(k == 0 ? "out" : "o" + k).append(", r, ")
+                        .append(stage == 0 && stages == 2 ? "f" + k : finish[k]).append(");\n");
+            }
+            src.append("    }\n");
+        }
+        src.append("}\n");
         return new Kernel(src.toString(), g.args, g.argBytes, g.outputs);
+    }
+
+    /**
+     * Whether every read of the reductions {@code targets} in {@code e} is at the output the
+     * reading element is reduced into ({@code len} values {@code inner} apart per output), so a
+     * second pass over the same row can use their values directly.
+     */
+    static boolean readsOwnRow(Expr e, java.util.Set<ClStorage> targets, long len, long inner) {
+        return switch (e) {
+            case Src s -> {
+                ClStorage st = s.storage();
+                if (targets.contains(st)) {
+                    yield s.direct() ? false : ownRow(s, len, inner);
+                }
+                if (st.pending == null || st.pending instanceof MatMul || st.pending instanceof Reduce) {
+                    yield true;
+                }
+                // through a pending input, only element for element (its index is the reader's)
+                yield s.direct() ? readsOwnRow(st.pending, targets, len, inner)
+                        : reduces(st.pending).stream().noneMatch(targets::contains);
+            }
+            case MatMul m -> true;
+            case Reduce r -> true;
+            case Const c -> true;
+            case Random x -> true;
+            case Im2col c -> reduces(c.x()).stream().noneMatch(targets::contains);
+            case Col2im c -> reduces(c.cols()).stream().noneMatch(targets::contains);
+            case Un u -> readsOwnRow(u.x(), targets, len, inner);
+            case Act x -> readsOwnRow(x.x(), targets, len, inner);
+            case ActBack x -> readsOwnRow(x.x(), targets, len, inner) && readsOwnRow(x.grad(), targets, len, inner);
+            case Bin x -> readsOwnRow(x.a(), targets, len, inner) && readsOwnRow(x.b(), targets, len, inner);
+        };
+    }
+
+    /** Whether a source maps element {@code (o * len + t) * inner + i} to {@code o * inner + i}. */
+    private static boolean ownRow(Src s, long len, long inner) {
+        if (s.offset() != 0) {
+            return false;
+        }
+        long p = 1;
+        long row = inner * len;
+        for (int d = s.dims().length - 1; d >= 0; d--) {
+            long size = s.dims()[d];
+            long stride = s.strides()[d];
+            if (size == 1) {
+                continue;
+            }
+            if (p < inner) {
+                if (p * size > inner || stride != p) {
+                    return false;
+                }
+            } else if (p < row) {
+                if (p * size > row || stride != 0) {
+                    return false;
+                }
+            } else if (stride != inner * (p / row)) {
+                return false;
+            }
+            p *= size;
+        }
+        return true;
     }
 
     private static String combine(ClStorage output, String a, String b) {
@@ -607,7 +691,9 @@ final class Fused {
         java.util.Set<ClStorage> keep;
         /** The storage written to {@code out}, when it can also appear as an input. */
         ClStorage first;
-        /** A matrix product computed by the kernel itself, as {@code acc}. */
+        /** Reductions of a first pass, by the variable holding their value for the current row. */
+        Map<ClStorage, String> stage;
+                /** A matrix product computed by the kernel itself, as {@code acc}. */
         ClStorage base;
         /** Values already computed in this kernel, by storage and index variable. */
         final Map<ClStorage, Map<String, String>> values = new IdentityHashMap<>();
@@ -689,6 +775,9 @@ final class Fused {
         }
 
         private String source(Src s, String idx) {
+            if (stage != null && stage.containsKey(s.storage())) {
+                return stage.get(s.storage());   // a reduction of the first pass, at this row
+            }
             if (s.storage().pending instanceof Const c && s.storage() != base) {
                 return eval(c, idx);   // the same everywhere: no index to compute
             }
