@@ -32,7 +32,15 @@ final class Fused {
     }
 
     /** A value per element of an index space; evaluated at one linear index. */
-    sealed interface Expr permits Src, Un, Act, ActBack, Bin, MatMul {
+    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul {
+    }
+
+    /**
+     * The same value everywhere (a filled tensor, such as a scalar operand). It is a kernel
+     * argument rather than part of the source, so a value that changes every step (a
+     * learning rate, a bias correction) neither needs a buffer nor a new kernel.
+     */
+    record Const(float value) implements Expr {
     }
 
     /**
@@ -87,6 +95,7 @@ final class Fused {
         return switch (e) {
             case Src s -> 1 + (s.storage().pending != null ? s.storage().pendingNodes : 0);
             case MatMul m -> 1;
+            case Const c -> 1;
             case Un u -> 1 + nodes(u.x());
             case Act a -> 1 + nodes(a.x());
             case ActBack a -> 1 + nodes(a.x()) + nodes(a.grad());
@@ -116,6 +125,8 @@ final class Fused {
                 }
             }
             case MatMul m -> {
+            }
+            case Const c -> {
             }
             case Un u -> matmuls(u.x(), direct, out);
             case Act a -> matmuls(a.x(), direct, out);
@@ -189,6 +200,8 @@ final class Fused {
             case Src s -> out.add(s);
             case MatMul m -> {
             }
+            case Const c -> {
+            }
             case Un u -> sources(u.x(), out);
             case Act a -> sources(a.x(), out);
             case ActBack a -> {
@@ -213,6 +226,8 @@ final class Fused {
         switch (e) {
             case Src s -> out.add(s.storage());
             case MatMul m -> {
+            }
+            case Const c -> {
             }
             case Un u -> collect(u.x(), out);
             case Act a -> collect(a.x(), out);
@@ -366,6 +381,13 @@ final class Fused {
             return switch (e) {
                 case Src s -> source(s, idx);
                 case MatMul m -> throw new IllegalStateException("a matrix product inside a chain");
+                case Const c -> {
+                    String a = "c" + args.size();
+                    params.append(", float ").append(a);
+                    args.add(c.value());
+                    argBytes += 8;
+                    yield let("(ACC) " + a);
+                }
                 case Un u -> let("unary_op(" + u.op() + ", " + eval(u.x(), idx) + ")");
                 case Act a -> let("activation_op(" + a.op() + ", " + literal(a.param()) + ", "
                         + eval(a.x(), idx) + ")");

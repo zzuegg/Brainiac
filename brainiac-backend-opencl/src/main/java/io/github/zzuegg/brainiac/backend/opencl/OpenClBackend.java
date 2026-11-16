@@ -421,7 +421,7 @@ public final class OpenClBackend implements Backend {
         try (Arena arena = Arena.ofConfined()) {
             for (int i = 0; i < args.length; i++) {
                 MemorySegment value = switch (args[i]) {
-                    case ClStorage s -> handle(arena, s.mem);
+                    case ClStorage s -> handle(arena, s.mem());
                     case Temp t -> handle(arena, t.mem());
                     case Integer v -> arena.allocateFrom(JAVA_INT, v);
                     case Long v -> arena.allocateFrom(JAVA_LONG, v);
@@ -500,6 +500,7 @@ public final class OpenClBackend implements Backend {
             // a recorded product is a single step, so carrying it over cannot grow a chain
             if ((!in.direct() || !storeIntermediates) && in.storage().pending != null
                     && !(in.direct() && in.storage().pending instanceof Fused.MatMul)
+                    && !(in.storage().pending instanceof Fused.Const)   // nothing to grow
                     && in.storage().pendingGeneration != generation) {
                 ready(in.storage());
             }
@@ -796,6 +797,7 @@ public final class OpenClBackend implements Backend {
         long n = out.size;
         switch (e) {
             case Fused.MatMul mm -> throw new IllegalStateException("a matrix product inside a chain");
+            case Fused.Const c -> quiet(t, "fill", n, out, c.value(), n);
             case Fused.Src src -> {
                 ClStorage from = computed(src.storage(), atRoot && src.direct());
                 quietCopy(from, src.offset(), src.strides(), src.dims(), out);
@@ -900,7 +902,7 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized Storage allocate(long size, DType dtype) {
         ClStorage s = raw(size, dtype);
-        run(dtype, "fill", size, s, 0f, size);
+        fill(s, 0f);
         return s;
     }
 
@@ -910,27 +912,55 @@ public final class OpenClBackend implements Backend {
     }
 
     /** Allocates without clearing. */
+    private long buffersCreated;
+    private long buffersReused;
+    private long bytesCreated;
+    private long createdSinceCollect;
+    private int collections;
+
     private ClStorage raw(long size, DType dtype) {
         program(dtype);
-        long bytes = Math.max(1, size) * dtype.bytes();
+        ClStorage s = new ClStorage(this, new ClStorage.Buffer(), size, dtype);
+        CLEANER.register(s, new Release(cl, s.buffer, Math.max(1, size) * dtype.bytes(), allocated, pool,
+                budget / 4));
+        return s;
+    }
+
+    /** A device buffer for a storage being written for the first time, from the pool if one fits. */
+    MemorySegment buffer(long bytes) {
         MemorySegment mem = pool.take(bytes);
         if (mem == null) {
             mem = createBuffer(CL.MEM_READ_WRITE, bytes, MemorySegment.NULL);
             allocated.addAndGet(bytes);
+            buffersCreated++;
+            bytesCreated += bytes;
+            createdSinceCollect += bytes;
+            if (createdSinceCollect > Math.min(128L << 20, budget / 16)) {
+                // Buffers return to the pool only once the JVM collects their tensors, which
+                // can take long when little Java memory is allocated. Ask for it, rather
+                // than filling the device with new buffers.
+                createdSinceCollect = 0;
+                collections++;
+                System.gc();
+            }
+        } else {
+            buffersReused++;
         }
-        ClStorage s = new ClStorage(this, mem, size, dtype);
-        CLEANER.register(s, new Release(cl, mem, bytes, allocated, pool, budget / 4));
-        return s;
+        return mem;
     }
 
     /**
      * Returns a buffer to the pool once its storage is unreachable, or frees it when the
      * pool is full. Holds no reference to the storage.
      */
-    private record Release(CL cl, MemorySegment mem, long bytes, AtomicLong allocated, Pool pool, long poolLimit)
-            implements Runnable {
+    private record Release(CL cl, ClStorage.Buffer buffer, long bytes, AtomicLong allocated, Pool pool,
+            long poolLimit) implements Runnable {
         @Override
         public void run() {
+            MemorySegment mem = buffer.mem;
+            if (mem == null) {
+                return;   // never written: no buffer was created
+            }
             if (pool.bytes() + bytes <= poolLimit) {
                 pool.put(bytes, mem);
             } else {
@@ -1086,6 +1116,9 @@ public final class OpenClBackend implements Backend {
             out.append(String.format(Locale.ROOT, "  host: %.1f ms enqueuing (%.1f us each), %.1f ms generating code%n",
                     hostLaunchNanos / 1e6, hostLaunchNanos / 1e3 / launches, hostGenerateNanos / 1e6));
         }
+        out.append(String.format(Locale.ROOT, "  buffers: %d created (%d MB), %d reused from the pool (%d MB pooled, %d MB allocated; %d collections)%n",
+                buffersCreated, bytesCreated >> 20, buffersReused, pool.bytes() >> 20, allocated.get() >> 20,
+                collections));
         List<Map.Entry<String, long[]>> rows = new ArrayList<>(kernelTimes.entrySet());
         rows.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
         for (Map.Entry<String, long[]> e : rows) {
@@ -1105,8 +1138,10 @@ public final class OpenClBackend implements Backend {
         long bytes = host.byteSize();
         MemorySegment mem = createBuffer(CL.MEM_READ_WRITE | CL.MEM_COPY_HOST_PTR, bytes, host);
         allocated.addAndGet(bytes);
-        ClStorage s = new ClStorage(this, mem, size, dtype);
-        CLEANER.register(s, new Release(cl, mem, bytes, allocated, pool, budget / 4));
+        ClStorage.Buffer buffer = new ClStorage.Buffer();
+        buffer.mem = mem;
+        ClStorage s = new ClStorage(this, buffer, size, dtype);
+        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, budget / 4));
         return s;
     }
 
@@ -1156,7 +1191,7 @@ public final class OpenClBackend implements Backend {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment host = arena.allocate(JAVA_FLOAT, Math.max(1, s.size));
                 if (s.size > 0) {
-                    cl.read(queue, s.mem, 0, host.asSlice(0, s.bytes()));
+                    cl.read(queue, s.mem(), 0, host.asSlice(0, s.bytes()));
                     // a blocking read on the in-order queue means all earlier work is done
                     settled();
                     synced();
@@ -1183,7 +1218,7 @@ public final class OpenClBackend implements Backend {
         }
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment host = arena.allocate(s.bytes(), 8);
-            cl.read(queue, s.mem, 0, host);
+            cl.read(queue, s.mem(), 0, host);
             settled();
             synced();
             generation++;
@@ -1216,7 +1251,7 @@ public final class OpenClBackend implements Backend {
         ready(a);
         if (a.dtype == b.dtype) {
             if (a.size > 0) {
-                cl.copy(queue, a.mem, b.mem, a.bytes());
+                cl.copy(queue, a.mem(), b.mem(), a.bytes());
             }
         } else if (b.dtype == DType.FLOAT32) {
             run(a.dtype, "to_float", a.size, a, b, a.size);
@@ -1243,6 +1278,13 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void fill(Storage dst, float value) {
         ClStorage s = cl(dst);
+        if (fusable(s)) {
+            program(s.dtype);
+            s.pending = new Fused.Const(value);
+            s.pendingNodes = 1;
+            s.pendingGeneration = generation;
+            return;
+        }
         run(s.dtype, "fill", s.size, s, value, s.size);
     }
 
