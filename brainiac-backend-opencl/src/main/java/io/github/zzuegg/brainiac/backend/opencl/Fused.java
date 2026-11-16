@@ -32,7 +32,7 @@ final class Fused {
     }
 
     /** A value per element of an index space; evaluated at one linear index. */
-    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce {
+    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce, Im2col {
     }
 
     /**
@@ -74,9 +74,19 @@ final class Fused {
     /**
      * A matrix product not yet run: the precompiled kernel's arguments after the output and
      * its work sizes. Only ever the value of a storage, never part of a larger expression;
-     * an element-wise chain on it becomes the matmul kernel's epilogue.
+     * an element-wise chain on it becomes the matmul kernel's epilogue. A non-null {@code a}
+     * or {@code b} is an operand left pending (an unrolled image) for the kernel to compute.
      */
-    record MatMul(Object[] args, long[] global, long[] local) implements Expr {
+    record MatMul(Object[] args, long[] global, long[] local, ClStorage a, ClStorage b) implements Expr {
+    }
+
+    /**
+     * Every window of an image unrolled into a row ({@code [batch * positions, channels * ks]}):
+     * the value of {@code x} at the cell {@code table[p * ks + k]} names, or {@code pad} where it
+     * names none (-1). {@code owner} keeps the device table alive while this is pending.
+     */
+    record Im2col(Src x, java.lang.foreign.MemorySegment table, Object owner, int channels, int positions, int ks,
+            int img, float pad) implements Expr {
     }
 
     /** A source reading all of {@code s} in order, as an index space of its own size. */
@@ -106,6 +116,7 @@ final class Fused {
             case MatMul m -> 1;
             case Const c -> 1;
             case Reduce r -> 1;
+            case Im2col c -> 1 + nodes(c.x());
             case Un u -> 1 + nodes(u.x());
             case Act a -> 1 + nodes(a.x());
             case ActBack a -> 1 + nodes(a.x()) + nodes(a.grad());
@@ -140,6 +151,7 @@ final class Fused {
             }
             case Reduce r -> {
             }
+            case Im2col c -> matmuls(c.x(), false, out);
             case Un u -> matmuls(u.x(), direct, out);
             case Act a -> matmuls(a.x(), direct, out);
             case ActBack a -> {
@@ -156,15 +168,20 @@ final class Fused {
     /**
      * Generates a matmul kernel (the precompiled one's tiling and order) that applies
      * {@code root} to each product before storing it: the product is stored to {@code base}'s
-     * buffer and the chain's value to the result. Arguments after {@code out, total} are the
+     * buffer and the chain's value to the result. With {@code root} null the product is only
+     * stored to the result. A non-null {@code a} or {@code b} is the pending value of that
+     * operand, computed where the kernel loads it instead of read from its buffer (an unrolled
+     * image, so the unrolled copy is never stored). Arguments after {@code out, total} are the
      * matmul's, then {@link Kernel#args}.
      */
-    static Kernel generateMatMul(Expr root, ClStorage base, boolean store) {
+    static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, Expr b) {
         Gen g = new Gen();
         g.root = store ? "i" : null;
         g.base = base;
         g.argBytes += 8 * 3 + 4 * 3 + 8 * 9;
-        String v = g.eval(root, "i");
+        String loadA = g.load(a, "ma", "row < M && ac < K", "aBase + (long) row * aRow + (long) ac * aCol");
+        String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol");
+        String v = root == null ? null : g.eval(root, "i");
         String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
                 + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
                 + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol" + g.params + ") {\n"
@@ -181,10 +198,8 @@ final class Fused {
                 + "    for (int t = 0; t < K; t += TS) {\n"
                 + "        int ac = t + lc;\n"
                 + "        int br = t + lr;\n"
-                + "        tileA[lr][lc] = row < M && ac < K ? LOAD(ma, aBase + (long) row * aRow + (long) ac * aCol)"
-                + " : (ACC) 0;\n"
-                + "        tileB[lr][lc] = br < K && col < N ? LOAD(mb, bBase + (long) br * bRow + (long) col * bCol)"
-                + " : (ACC) 0;\n"
+                + loadA.replace("TILE", "tileA[lr][lc]")
+                + loadB.replace("TILE", "tileB[lr][lc]")
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "        for (int q = 0; q < TS; q++) {\n"
                 + "            acc += tileA[lr][q] * tileB[q][lc];\n"
@@ -193,11 +208,26 @@ final class Fused {
                 + "    }\n"
                 + "    if (row < M && col < N) {\n"
                 + "    long i = batch * strideZ + (long) row * N + col;\n"
-                + "    STORE(mz, i, acc);\n"
-                + g.body
-                + "    STORE(out, i, " + v + ");\n"
+                + (v == null ? "    STORE(out, i, acc);\n"
+                        : "    STORE(mz, i, acc);\n" + g.body + "    STORE(out, i, " + v + ");\n")
                 + "    }\n}\n";
         return new Kernel(src, g.args, g.argBytes, g.outputs);
+    }
+
+    /** Whether an expression unrolls an image, looking through pending inputs. */
+    static boolean unrolls(Expr e) {
+        return switch (e) {
+            case Im2col c -> true;
+            case Src s -> s.storage().pending != null && !(s.storage().pending instanceof MatMul)
+                    && !(s.storage().pending instanceof Reduce) && unrolls(s.storage().pending);
+            case MatMul m -> false;
+            case Reduce r -> false;
+            case Const c -> false;
+            case Un u -> unrolls(u.x());
+            case Act x -> unrolls(x.x());
+            case ActBack x -> unrolls(x.x()) || unrolls(x.grad());
+            case Bin x -> unrolls(x.a()) || unrolls(x.b());
+        };
     }
 
     /** The sources of an expression node, not looking into pending inputs. */
@@ -216,6 +246,7 @@ final class Fused {
             }
             case Reduce r -> {
             }
+            case Im2col c -> out.add(c.x());
             case Un u -> sources(u.x(), out);
             case Act a -> sources(a.x(), out);
             case ActBack a -> {
@@ -245,6 +276,7 @@ final class Fused {
             }
             case Reduce r -> {
             }
+            case Im2col c -> out.add(c.x().storage());
             case Un u -> collect(u.x(), out);
             case Act a -> collect(a.x(), out);
             case ActBack a -> {
@@ -335,6 +367,7 @@ final class Fused {
                 while (g.constantOrder.size() > constants) {
                     g.constants.remove(g.constantOrder.removeLast());
                 }
+                g.tables.values().removeIf(t -> Integer.parseInt(t.substring(1)) >= args);
                 break;
             }
             g.body.append("    STORE(").append(o).append(", ").append(idx).append(", ").append(v).append(");\n    }\n");
@@ -474,6 +507,7 @@ final class Fused {
             }
             case Reduce r -> {
             }
+            case Im2col c -> reduces(c.x(), out, seen);
             case Un u -> reduces(u.x(), out, seen);
             case Act a -> reduces(a.x(), out, seen);
             case ActBack a -> {
@@ -494,6 +528,8 @@ final class Fused {
         final Map<ClStorage, String> buffers = new IdentityHashMap<>();
         /** The argument holding each constant, by its bits. */
         final Map<Integer, String> constants = new java.util.HashMap<>();
+        /** The argument holding each device table, by address. */
+        final Map<Long, String> tables = new java.util.HashMap<>();
         /** The keys of {@link #constants} in the order they were added. */
         final List<Integer> constantOrder = new ArrayList<>();
         /** The keys of {@link #buffers} in the order they were added. */
@@ -518,6 +554,26 @@ final class Fused {
                 case Src s -> source(s, idx);
                 case MatMul m -> throw new IllegalStateException("a matrix product inside a chain");
                 case Reduce r -> throw new IllegalStateException("a reduction inside a chain");
+                case Im2col c -> {
+                    String table = buffer(c.table());
+                    String width = arg((long) c.channels() * c.ks());
+                    String positions = arg(c.positions());
+                    String ks = arg(c.ks());
+                    String row = "q" + next++;
+                    String col = "q" + next++;
+                    String cell = "q" + next++;
+                    String at = "q" + next++;
+                    body.append("    long ").append(row).append(" = ").append(idx).append(" / ").append(width)
+                            .append(";\n    long ").append(col).append(" = ").append(idx).append(" % ").append(width)
+                            .append(";\n    int ").append(cell).append(" = ").append(table).append("[(").append(row)
+                            .append(" % ").append(positions).append(") * ").append(ks).append(" + ").append(col)
+                            .append(" % ").append(ks).append("];\n    long ").append(at).append(" = ((").append(row)
+                            .append(" / ").append(positions).append(") * ").append(arg(c.channels())).append(" + ")
+                            .append(col).append(" / ").append(ks).append(") * ").append(arg(c.img()))
+                            .append(" + max(").append(cell).append(", 0);\n");
+                    String v = read(c.x().storage(), at);
+                    yield let(cell + " < 0 ? " + literal(c.pad()) + " : " + v);
+                }
                 case Const c -> {
                     // one argument and one value per distinct number in the kernel
                     int bits = Float.floatToRawIntBits(c.value());
@@ -552,8 +608,14 @@ final class Fused {
             if (s.storage().pending instanceof Const c && s.storage() != base) {
                 return eval(c, idx);   // the same everywhere: no index to compute
             }
-            String at = s.direct() ? idx : index(s, idx);
-            ClStorage st = s.storage();
+            return read(s.storage(), s.direct() ? idx : index(s, idx));
+        }
+
+        /** The value of {@code st} at the index held by {@code at}. */
+        private String read(ClStorage st, String at) {
+            if (st.pending instanceof Const c && st != base) {
+                return eval(c, at);
+            }
             if (st == base) {
                 return "acc";
             }
@@ -615,6 +677,38 @@ final class Fused {
                 }
             }
             return j;
+        }
+
+        /**
+         * The statements loading one matmul tile element into {@code TILE}: from {@code buffer},
+         * or {@code value} computed at the element's index (within the tile loop, so nothing it
+         * computes is visible to the epilogue).
+         */
+        String load(Expr value, String buffer, String inside, String index) {
+            if (value == null) {
+                return "        TILE = " + inside + " ? LOAD(" + buffer + ", " + index + ") : (ACC) 0;\n";
+            }
+            int mark = body.length();
+            String at = "p" + next++;
+            String v = eval(value, at);
+            String computed = body.substring(mark);
+            body.setLength(mark);
+            values.clear();   // values computed inside the loop are out of scope after it
+            return "        TILE = (ACC) 0;\n        if (" + inside + ") {\n    long " + at + " = " + index + ";\n"
+                    + computed + "        TILE = " + v + ";\n        }\n";
+        }
+
+        /** A device table of ints, one argument per distinct table. */
+        private String buffer(java.lang.foreign.MemorySegment table) {
+            String t = tables.get(table.address());
+            if (t == null) {
+                t = "t" + args.size();
+                params.append(", __global const int* ").append(t);
+                args.add(table);
+                argBytes += 8;
+                tables.put(table.address(), t);
+            }
+            return t;
         }
 
         private String arg(long value) {

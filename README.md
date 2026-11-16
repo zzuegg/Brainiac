@@ -456,6 +456,8 @@ values are needed (by a matmul, a reduction or a download); a reduction also com
 input chain on the fly (long rows are split across a work-group), and reductions of the same
 shape that are needed at the same time (such as a layer's gradient sums) run as one kernel. A chain on a matrix
 product (bias, activation, optimizer arithmetic) becomes the matmul kernel's epilogue.
+Convolution and pooling windows are never unrolled into memory: the matmul computes each window
+value as it loads it (forward and for the weight gradient), and a pooling reduction as it reduces.
 An optimizer step runs as one kernel for all parameters, writing the new values and the
 optimizer state together (`Tensor.evaluate` asks for this from any code).
 Filled tensors and scalar operands are kernel arguments, so a value that changes every step

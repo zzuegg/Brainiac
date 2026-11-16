@@ -171,8 +171,7 @@ public final class OpenClBackend implements Backend {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Tables> eldest) {
             if (size() > 32) {
-                eldest.getValue().release(cl);
-                return true;
+                return true;   // freed once no pending unrolled image uses it
             }
             return false;
         }
@@ -183,7 +182,13 @@ public final class OpenClBackend implements Backend {
 
     /** Index tables for one convolution geometry, kept on the device. */
     private record Tables(MemorySegment im2col, MemorySegment col2imOffsets, MemorySegment col2imEntries) {
-        void release(CL cl) {
+    }
+
+    /** Frees a geometry's tables once neither the cache nor a pending expression holds them. */
+    private record TablesRelease(CL cl, MemorySegment im2col, MemorySegment col2imOffsets,
+            MemorySegment col2imEntries) implements Runnable {
+        @Override
+        public void run() {
             cl.release(im2col);
             cl.release(col2imOffsets);
             cl.release(col2imEntries);
@@ -434,6 +439,7 @@ public final class OpenClBackend implements Backend {
                 Object key = switch (args[i]) {
                     case ClStorage s -> s.mem().address();
                     case Temp t -> t.mem().address();
+                    case MemorySegment m -> m.address();
                     default -> args[i];
                 };
                 if (key.equals(last[i])) {
@@ -445,6 +451,7 @@ public final class OpenClBackend implements Backend {
                 MemorySegment value = switch (args[i]) {
                     case ClStorage s -> handle(arena, s.mem());
                     case Temp t -> handle(arena, t.mem());
+                    case MemorySegment m -> handle(arena, m);
                     case Integer v -> arena.allocateFrom(JAVA_INT, v);
                     case Long v -> arena.allocateFrom(JAVA_LONG, v);
                     case Float v -> arena.allocateFrom(JAVA_FLOAT, v);
@@ -530,6 +537,8 @@ public final class OpenClBackend implements Backend {
             if ((!in.direct() || !storeIntermediates) && in.storage().pending != null
                     && !(in.direct() && in.storage().pending instanceof Fused.MatMul)
                     && !(in.storage().pending instanceof Fused.Const)   // nothing to grow
+                    // an unrolled image is computed where a matmul loads it, never stored
+                    && !(in.storage().pending instanceof Fused.Im2col && in.storage().pendingNodes <= 8)
                     && in.storage().pendingGeneration != generation) {
                 ready(in.storage());
             }
@@ -572,7 +581,9 @@ public final class OpenClBackend implements Backend {
         if (base.size != s.size) {
             return false;
         }
-        Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates);
+        Fused.Expr pa = prologue(mm.a());
+        Fused.Expr pb = prologue(mm.b());
+        Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates, pa, pb);
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             return false;
         }
@@ -589,15 +600,54 @@ public final class OpenClBackend implements Backend {
             w.pending = null;
             w.pendingNodes = 0;
         }
+        launch("fused_matmul", kernel, mm.global(), mm.local(), matmulArgs(s, mm, k, pa != null, pb != null));
+        return true;
+    }
+
+    /** The arguments of a kernel from {@link Fused#generateMatMul}. */
+    private Object[] matmulArgs(ClStorage out, Fused.MatMul mm, Fused.Kernel k, boolean computeA, boolean computeB) {
         Object[] args = new Object[2 + mm.args().length + k.args().size()];
-        args[0] = s;
-        args[1] = s.size;
+        args[0] = out;
+        args[1] = out.size;
         System.arraycopy(mm.args(), 0, args, 2, mm.args().length);
+        if (computeA) {
+            args[2] = new Temp(unused());   // computed by the kernel: no buffer needed
+        }
+        if (computeB) {
+            args[3] = new Temp(unused());
+        }
         for (int i = 0; i < k.args().size(); i++) {
             args[2 + mm.args().length + i] = k.args().get(i);
         }
-        launch("fused_matmul", kernel, mm.global(), mm.local(), args);
-        return true;
+        return args;
+    }
+
+    private MemorySegment unused;
+
+    /** A small buffer passed for an operand a generated matmul computes itself. */
+    private MemorySegment unused() {
+        if (unused == null) {
+            unused = createBuffer(CL.MEM_READ_WRITE, 256, MemorySegment.NULL);
+        }
+        return unused;
+    }
+
+    /** Whether a matmul operand is left pending for the matmul kernel to compute as it loads it. */
+    private boolean computedInMatMul(ClStorage s) {
+        return fusion && s.pending != null && !(s.pending instanceof Fused.MatMul)
+                && !(s.pending instanceof Fused.Reduce) && s.pendingNodes <= 16 && Fused.unrolls(s.pending);
+    }
+
+    /** The value a matmul computes for an operand left pending, with what it reads ready; null if computed. */
+    private Fused.Expr prologue(ClStorage s) {
+        if (s == null || s.pending == null || s.pending instanceof Fused.MatMul || s.pending instanceof Fused.Reduce) {
+            return null;
+        }
+        readyReduces(s.pending);
+        for (ClStorage p : Fused.matmuls(s.pending).keySet()) {
+            ready(p);
+        }
+        return s.pending;
     }
 
     private void materialize(ClStorage s) {
@@ -865,6 +915,8 @@ public final class OpenClBackend implements Backend {
         switch (e) {
             case Fused.MatMul mm -> throw new IllegalStateException("a matrix product inside a chain");
             case Fused.Reduce r -> throw new IllegalStateException("a reduction inside a chain");
+            case Fused.Im2col c -> quiet(t, "im2col", n, computed(c.x().storage(), false), new Temp(c.table()), out,
+                    c.channels(), c.positions(), c.ks(), c.img(), c.pad(), n);
             case Fused.Const c -> quiet(t, "fill", n, out, c.value(), n);
             case Fused.Src src -> {
                 ClStorage from = computed(src.storage(), atRoot && src.direct());
@@ -1639,11 +1691,18 @@ public final class OpenClBackend implements Backend {
         Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
                 x.row(), x.col(), y.offset(), y.row(), y.col()};
         if (fusable(o, x.storage(), y.storage()) && (long) m * n * batch > 0) {
-            // recorded: an element-wise chain on the product can become the kernel's epilogue
-            ready(x.storage());
-            ready(y.storage());
+            // recorded: an element-wise chain on the product can become the kernel's epilogue,
+            // and an unrolled image operand is computed as the kernel loads it
+            ClStorage pa = computedInMatMul(x.storage()) ? x.storage() : null;
+            ClStorage pb = computedInMatMul(y.storage()) ? y.storage() : null;
+            if (pa == null) {
+                ready(x.storage());
+            }
+            if (pb == null) {
+                ready(y.storage());
+            }
             // not a chain boundary: the chain that uses the product becomes its epilogue
-            o.pending = new Fused.MatMul(args, global, local);
+            o.pending = new Fused.MatMul(args, global, local, pa, pb);
             o.pendingNodes = 1;
             o.pendingGeneration = generation;
             return;
@@ -1654,6 +1713,19 @@ public final class OpenClBackend implements Backend {
     /** Runs a recorded matrix product with the precompiled kernel. */
     private void runMatMul(ClStorage s) {
         Fused.MatMul mm = (Fused.MatMul) s.pending;
+        Fused.Expr pa = prologue(mm.a());
+        Fused.Expr pb = prologue(mm.b());
+        if (pa != null || pb != null) {
+            Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, pb);
+            MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());
+            if (kernel != null) {
+                s.pending = null;
+                s.pendingNodes = 0;
+                launch("fused_matmul", kernel, mm.global(), mm.local(), matmulArgs(s, mm, k, pa != null, pb != null));
+                return;
+            }
+            eagerFallbacks++;   // compiling: the operands are computed into their buffers first
+        }
         s.pending = null;
         s.pendingNodes = 0;
         quietRun(s.dtype, "matmul", mm.global(), mm.local(), mm.args());
@@ -1690,7 +1762,9 @@ public final class OpenClBackend implements Backend {
                     count *= dims[d];
                 }
                 if (even && count == batch) {
-                    ready(v.storage());
+                    if (!computedInMatMul(v.storage())) {
+                        ready(v.storage());
+                    }
                     return new Operand(v.storage(), v.offset(), batch == 1 ? 0 : batchStride,
                             rows == 1 ? 0 : st[r - 2], cols == 1 ? 0 : st[r - 1]);
                 }
@@ -1712,6 +1786,13 @@ public final class OpenClBackend implements Backend {
         Tables t = tables(geometry);
         int ks = geometry.kernelSize();
         long total = (long) geometry.batch() * geometry.positionCount() * geometry.channels() * ks;
+        ClStorage x = cl(in);
+        if (fusable(o, x) && x.size <= Integer.MAX_VALUE) {
+            // recorded: a matmul computes the windows as it loads them, a pooling as it reduces them
+            defer(o, new Fused.Im2col(new Fused.Src(x, 0, new int[] {(int) x.size}, new long[] {1}, false),
+                    t.im2col(), t, geometry.channels(), geometry.positionCount(), ks, geometry.imageSize(), padValue));
+            return;
+        }
         run(o.dtype, "im2col", total, as(in, o.dtype), new Temp(t.im2col()), o, geometry.channels(),
                 geometry.positionCount(), ks, geometry.imageSize(), padValue, total);
     }
@@ -1752,6 +1833,7 @@ public final class OpenClBackend implements Backend {
             }
         }
         t = new Tables(ints(table).mem(), ints(offsets).mem(), ints(entries).mem());
+        CLEANER.register(t, new TablesRelease(cl, t.im2col(), t.col2imOffsets(), t.col2imEntries()));
         tables.put(key, t);
         return t;
     }
