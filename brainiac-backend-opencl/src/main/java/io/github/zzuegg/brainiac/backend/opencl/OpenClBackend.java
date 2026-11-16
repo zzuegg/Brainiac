@@ -550,6 +550,8 @@ public final class OpenClBackend implements Backend {
     private void ready(ClStorage s) {
         if (s.pending instanceof Fused.MatMul) {
             runMatMul(s);
+        } else if (s.pending instanceof Fused.Reduce) {
+            runReduces(s);
         } else if (s.pending != null) {
             materialize(s);
         }
@@ -599,6 +601,7 @@ public final class OpenClBackend implements Backend {
     }
 
     private void materialize(ClStorage s) {
+        readyReduces(s.pending);
         Map<ClStorage, Boolean> products = Fused.matmuls(s.pending);
         if (products.size() == 1) {
             Map.Entry<ClStorage, Boolean> only = products.entrySet().iterator().next();
@@ -653,7 +656,10 @@ public final class OpenClBackend implements Backend {
             ClStorage s = cl(st);
             if (s.pending instanceof Fused.MatMul) {
                 continue;   // one launch whenever it runs; later, a chain on it can be its epilogue
+            } else if (s.pending instanceof Fused.Reduce) {
+                runReduces(s);   // with the other requested reductions of its shape
             } else if (s.pending != null) {
+                readyReduces(s.pending);
                 Map<ClStorage, Boolean> products = Fused.matmuls(s.pending);
                 if (products.size() == 1) {
                     Map.Entry<ClStorage, Boolean> only = products.entrySet().iterator().next();
@@ -858,6 +864,7 @@ public final class OpenClBackend implements Backend {
         long n = out.size;
         switch (e) {
             case Fused.MatMul mm -> throw new IllegalStateException("a matrix product inside a chain");
+            case Fused.Reduce r -> throw new IllegalStateException("a reduction inside a chain");
             case Fused.Const c -> quiet(t, "fill", n, out, c.value(), n);
             case Fused.Src src -> {
                 ClStorage from = computed(src.storage(), atRoot && src.direct());
@@ -908,8 +915,8 @@ public final class OpenClBackend implements Backend {
      * stays pending, so later chains are recorded exactly as with compiled kernels.
      */
     private ClStorage computed(ClStorage s, boolean keep) {
-        if (s.pending instanceof Fused.MatMul) {
-            runMatMul(s);
+        if (s.pending instanceof Fused.MatMul || s.pending instanceof Fused.Reduce) {
+            ready(s);
         }
         if (s.pending == null) {
             return s;
@@ -1504,7 +1511,13 @@ public final class OpenClBackend implements Backend {
             }
             return;
         }
-        if (fusable(o, x) && fusedReduce(op, x, outer, length, inner, o)) {
+        if (fusable(o, x)) {
+            // recorded: reductions of the same shape needed at the same time run as one kernel
+            program(o.dtype);
+            o.pending = new Fused.Reduce(op.ordinal(), x, outer, length, inner);
+            o.pendingNodes = 1;
+            o.pendingGeneration = generation;
+            pendingReduces.add(new java.lang.ref.WeakReference<>(o));
             return;
         }
         ClStorage src = as(x, o.dtype);
@@ -1521,42 +1534,88 @@ public final class OpenClBackend implements Backend {
         return rows < 1024 && length > 256 && reduceGroup > 1;
     }
 
+    /** Reductions recorded and not yet run. */
+    private final List<java.lang.ref.WeakReference<ClStorage>> pendingReduces = new ArrayList<>();
+
+    /** Runs the pending reductions an expression reads. */
+    private void readyReduces(Fused.Expr e) {
+        for (ClStorage r : Fused.reduces(e)) {
+            ready(r);
+        }
+    }
+
     /**
-     * Reduces in one generated kernel that also computes a pending input on the fly, in the
-     * same order as the precompiled pair of kernels with a single chunk.
+     * Runs the pending reduction of {@code s}, together with the other pending reductions of
+     * the same shape and type whose inputs need nothing else computed first, in one generated
+     * kernel that computes their inputs on the fly. Each sums in the order of the precompiled
+     * kernels, so results do not depend on what ran together.
      */
-    private boolean fusedReduce(ReduceOp op, ClStorage x, long outer, long length, long inner, ClStorage o) {
-        Fused.Expr input = Fused.whole(x);
-        for (ClStorage p : Fused.matmuls(input).keySet()) {
-            ready(p);
+    private void runReduces(ClStorage s) {
+        Fused.Reduce r = (Fused.Reduce) s.pending;
+        readyReduces(Fused.whole(r.x()));
+        if (s.pending != r) {
+            return;   // ran with another group meanwhile
         }
-        long rows = outer * inner;
-        int group = grouped(rows, length) ? reduceGroup : 1;
-        Fused.Kernel k = Fused.generateReduce(input, op.ordinal(), group);
-        if (k.argBytes() > Fused.MAX_ARG_BYTES) {
-            return false;
+        List<ClStorage> group = new ArrayList<>();
+        group.add(s);
+        for (java.util.Iterator<java.lang.ref.WeakReference<ClStorage>> it = pendingReduces.iterator(); it.hasNext();) {
+            ClStorage o = it.next().get();
+            if (o == null || !(o.pending instanceof Fused.Reduce q)) {
+                it.remove();
+                continue;
+            }
+            if (o != s && o.dtype == s.dtype && q.outer() == r.outer() && q.length() == r.length()
+                    && q.inner() == r.inner() && Fused.reduces(Fused.whole(q.x())).isEmpty()) {
+                group.add(o);
+            }
         }
-        MemorySegment kernel = fusedKernel(o.dtype, k.source());
+        for (ClStorage o : group) {
+            for (ClStorage p : Fused.matmuls(Fused.whole(((Fused.Reduce) o.pending).x())).keySet()) {
+                ready(p);
+            }
+        }
+        long rows = r.outer() * r.inner();
+        int size = grouped(rows, r.length()) ? reduceGroup : 1;
+        Fused.Kernel k = Fused.generateReduce(group, size);
+        while (k.argBytes() > Fused.MAX_ARG_BYTES && group.size() > 1) {
+            group = new ArrayList<>(group.subList(0, (group.size() + 1) / 2));
+            k = Fused.generateReduce(group, size);
+        }
+        MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());
         if (kernel == null) {
-            // the precompiled reduction sums in the same order, so results do not change
+            // compiling (or too large): the precompiled kernels sum in the same order
             eagerFallbacks++;
-            return false;
+            Fused.Reduce mine = r;
+            s.pending = null;
+            s.pendingNodes = 0;
+            ClStorage src = as(mine.x(), s.dtype);
+            if (grouped(rows, mine.length())) {
+                run(s.dtype, "reduce_group", new long[] {rows * reduceGroup}, new long[] {reduceGroup}, mine.op(),
+                        src, s, rows, mine.length(), mine.inner());
+            } else {
+                run(s.dtype, "reduce_rows", rows, mine.op(), src, s, rows, mine.length(), mine.inner());
+            }
+            return;
+        }
+        for (ClStorage o : group) {
+            o.pending = null;
+            o.pendingNodes = 0;
         }
         Object[] args = new Object[k.args().size() + 4];
-        args[0] = o;
-        args[1] = outer * inner;
-        args[2] = length;
-        args[3] = inner;
+        args[0] = s;
+        args[1] = rows;
+        args[2] = r.length();
+        args[3] = r.inner();
         for (int i = 0; i < k.args().size(); i++) {
             args[i + 4] = k.args().get(i);
         }
-        if (group > 1) {
-            launch("fused_reduce", kernel, new long[] {rows * group}, new long[] {group}, args);
+        String name = group.size() > 1 ? "fused_reduce_many" : "fused_reduce";
+        if (size > 1) {
+            launch(name, kernel, new long[] {rows * size}, new long[] {size}, args);
         } else {
-            launch("fused_reduce", kernel, new long[] {rows}, null, args);
+            launch(name, kernel, new long[] {rows}, null, args);
         }
         generation++;
-        return true;
     }
 
     @Override

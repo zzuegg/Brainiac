@@ -32,7 +32,16 @@ final class Fused {
     }
 
     /** A value per element of an index space; evaluated at one linear index. */
-    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul {
+    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce {
+    }
+
+    /**
+     * A reduction not yet run: {@code ReduceOp} ordinal {@code op} over {@code x}, per output
+     * {@code length} values {@code inner} apart. Like a matrix product it is only ever the
+     * value of a storage; when one is needed, the pending reductions of the same shape run
+     * together in one kernel.
+     */
+    record Reduce(int op, ClStorage x, long outer, long length, long inner) implements Expr {
     }
 
     /**
@@ -96,6 +105,7 @@ final class Fused {
             case Src s -> 1 + (s.storage().pending != null ? s.storage().pendingNodes : 0);
             case MatMul m -> 1;
             case Const c -> 1;
+            case Reduce r -> 1;
             case Un u -> 1 + nodes(u.x());
             case Act a -> 1 + nodes(a.x());
             case ActBack a -> 1 + nodes(a.x()) + nodes(a.grad());
@@ -127,6 +137,8 @@ final class Fused {
             case MatMul m -> {
             }
             case Const c -> {
+            }
+            case Reduce r -> {
             }
             case Un u -> matmuls(u.x(), direct, out);
             case Act a -> matmuls(a.x(), direct, out);
@@ -202,6 +214,8 @@ final class Fused {
             }
             case Const c -> {
             }
+            case Reduce r -> {
+            }
             case Un u -> sources(u.x(), out);
             case Act a -> sources(a.x(), out);
             case ActBack a -> {
@@ -228,6 +242,8 @@ final class Fused {
             case MatMul m -> {
             }
             case Const c -> {
+            }
+            case Reduce r -> {
             }
             case Un u -> collect(u.x(), out);
             case Act a -> collect(a.x(), out);
@@ -341,49 +357,134 @@ final class Fused {
     }
 
     /**
-     * Generates a kernel reducing {@code input} along one axis: per output, {@code len} values
-     * {@code inner} apart. Operation codes are {@code ReduceOp} ordinals (sum, mean, max, min).
-     * With {@code group > 1} a work-group of that many items shares each output (for long
-     * rows); otherwise one work item loops over its row.
+     * Generates one kernel for several reductions with the same shape: per output, {@code len}
+     * values {@code inner} apart, read in one pass so that values the inputs share are loaded
+     * once. Each keeps the order of a single reduction, so results do not depend on what was
+     * reduced together. The first is written to {@code out}, the others to the buffers listed
+     * first in {@link Kernel#args}. With {@code group > 1} a work-group of that many items
+     * shares each output (for long rows); otherwise one work item loops over its row.
      */
-    static Kernel generateReduce(Expr input, int op, int group) {
+    static Kernel generateReduce(List<ClStorage> outputs, int group) {
         Gen g = new Gen();
         g.argBytes += 16;
-        String v = g.eval(input, "x");
-        String init = op == 2 ? "(ACC) -INFINITY" : op == 3 ? "(ACC) INFINITY" : "(ACC) 0";
-        String finish = op == 1 ? "acc / (ACC) len" : "acc";
+        int count = outputs.size();
+        for (int k = 1; k < count; k++) {
+            g.params.append(", __global T* o").append(k);
+            g.args.add(outputs.get(k));
+            g.argBytes += 8;
+        }
+        String[] v = new String[count];
+        String[] init = new String[count];
+        String[] finish = new String[count];
+        java.util.Set<Integer> ops = new java.util.TreeSet<>();
+        for (int k = 0; k < count; k++) {
+            Reduce r = (Reduce) outputs.get(k).pending;
+            v[k] = g.eval(whole(r.x()), "x");
+            init[k] = r.op() == 2 ? "(ACC) -INFINITY" : r.op() == 3 ? "(ACC) INFINITY" : "(ACC) 0";
+            finish[k] = r.op() == 1 ? "acc" + k + " / (ACC) len" : "acc" + k;
+            ops.add(r.op() == 1 ? 0 : r.op());
+        }
         StringBuilder src = new StringBuilder();
-        src.append("ACC combine_(ACC a, ACC b) {\n    return ")
-                .append(op == 2 ? "isnan(a) || isnan(b) ? a + b : fmax(a, b)"
-                        : op == 3 ? "isnan(a) || isnan(b) ? a + b : fmin(a, b)" : "a + b")
-                .append(";\n}\n");
+        for (int op : ops) {
+            src.append("ACC combine").append(op).append("(ACC a, ACC b) {\n    return ")
+                    .append(op == 2 ? "isnan(a) || isnan(b) ? a + b : fmax(a, b)"
+                            : op == 3 ? "isnan(a) || isnan(b) ? a + b : fmin(a, b)" : "a + b")
+                    .append(";\n}\n");
+        }
         src.append("__kernel void fused(__global T* out, long n, long len, long inner").append(g.params)
                 .append(") {\n");
+        StringBuilder accumulate = new StringBuilder();
+        StringBuilder declare = new StringBuilder();
+        for (int k = 0; k < count; k++) {
+            declare.append("    ACC acc").append(k).append(" = ").append(init[k]).append(";\n");
+            accumulate.append("    acc").append(k).append(" = ").append(combine(outputs.get(k), "acc" + k, v[k]))
+                    .append(";\n");
+        }
         if (group <= 1) {
             src.append("    long r = get_global_id(0);\n    if (r >= n) return;\n")
                     .append("    long base = (r / inner) * len * inner + r % inner;\n")
-                    .append("    ACC acc = ").append(init).append(";\n")
+                    .append(declare)
                     .append("    for (long t = 0; t < len; t++) {\n    long x = base + t * inner;\n")
-                    .append(g.body)
-                    .append("    acc = combine_(acc, ").append(v).append(");\n    }\n")
-                    .append("    STORE(out, r, ").append(finish).append(");\n}\n");
+                    .append(g.body).append(accumulate).append("    }\n");
+            for (int k = 0; k < count; k++) {
+                src.append("    STORE(").append(k == 0 ? "out" : "o" + k).append(", r, ").append(finish[k])
+                        .append(");\n");
+            }
+            src.append("}\n");
         } else {
-            src.append("    __local ACC part[").append(group).append("];\n")
-                    .append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n")
+            for (int k = 0; k < count; k++) {
+                src.append("    __local ACC part").append(k).append("[").append(group).append("];\n");
+            }
+            src.append("    long r = get_group_id(0);\n    int lid = get_local_id(0);\n")
                     .append("    long base = (r / inner) * len * inner + r % inner;\n")
-                    .append("    ACC acc = ").append(init).append(";\n")
+                    .append(declare)
                     .append("    for (long t = lid; t < len; t += ").append(group).append(") {\n")
                     .append("    long x = base + t * inner;\n")
-                    .append(g.body)
-                    .append("    acc = combine_(acc, ").append(v).append(");\n    }\n")
-                    .append("    part[lid] = acc;\n    barrier(CLK_LOCAL_MEM_FENCE);\n")
+                    .append(g.body).append(accumulate).append("    }\n");
+            for (int k = 0; k < count; k++) {
+                src.append("    part").append(k).append("[lid] = acc").append(k).append(";\n");
+            }
+            src.append("    barrier(CLK_LOCAL_MEM_FENCE);\n")
                     .append("    for (int s = ").append(group / 2).append("; s > 0; s >>= 1) {\n")
-                    .append("        if (lid < s) part[lid] = combine_(part[lid], part[lid + s]);\n")
-                    .append("        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n")
-                    .append("    if (lid == 0) {\n        ACC acc = part[0];\n        STORE(out, r, ")
-                    .append(finish).append(");\n    }\n}\n");
+                    .append("        if (lid < s) {\n");
+            for (int k = 0; k < count; k++) {
+                src.append("            part").append(k).append("[lid] = ")
+                        .append(combine(outputs.get(k), "part" + k + "[lid]", "part" + k + "[lid + s]")).append(";\n");
+            }
+            src.append("        }\n        barrier(CLK_LOCAL_MEM_FENCE);\n    }\n    if (lid == 0) {\n");
+            for (int k = 0; k < count; k++) {
+                src.append("        ACC acc").append(k).append(" = part").append(k).append("[0];\n");
+            }
+            for (int k = 0; k < count; k++) {
+                src.append("        STORE(").append(k == 0 ? "out" : "o" + k).append(", r, ").append(finish[k])
+                        .append(");\n");
+            }
+            src.append("    }\n}\n");
         }
         return new Kernel(src.toString(), g.args, g.argBytes, g.outputs);
+    }
+
+    private static String combine(ClStorage output, String a, String b) {
+        int op = ((Reduce) output.pending).op();
+        return "combine" + (op == 1 ? 0 : op) + "(" + a + ", " + b + ")";
+    }
+
+    /** The pending reductions an expression reads, looking through pending inputs. */
+    static List<ClStorage> reduces(Expr e) {
+        List<ClStorage> out = new ArrayList<>();
+        reduces(e, out, java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+        return out;
+    }
+
+    private static void reduces(Expr e, List<ClStorage> out, java.util.Set<ClStorage> seen) {
+        switch (e) {
+            case Src s -> {
+                ClStorage st = s.storage();
+                if (st.pending instanceof Reduce) {
+                    if (seen.add(st)) {
+                        out.add(st);
+                    }
+                } else if (st.pending != null && seen.add(st)) {
+                    reduces(st.pending, out, seen);
+                }
+            }
+            case MatMul m -> {
+            }
+            case Const c -> {
+            }
+            case Reduce r -> {
+            }
+            case Un u -> reduces(u.x(), out, seen);
+            case Act a -> reduces(a.x(), out, seen);
+            case ActBack a -> {
+                reduces(a.x(), out, seen);
+                reduces(a.grad(), out, seen);
+            }
+            case Bin b -> {
+                reduces(b.a(), out, seen);
+                reduces(b.b(), out, seen);
+            }
+        }
     }
 
     private static final class Gen {
@@ -416,6 +517,7 @@ final class Fused {
             return switch (e) {
                 case Src s -> source(s, idx);
                 case MatMul m -> throw new IllegalStateException("a matrix product inside a chain");
+                case Reduce r -> throw new IllegalStateException("a reduction inside a chain");
                 case Const c -> {
                     // one argument and one value per distinct number in the kernel
                     int bits = Float.floatToRawIntBits(c.value());
