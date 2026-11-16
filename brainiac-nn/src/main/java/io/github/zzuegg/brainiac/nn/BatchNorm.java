@@ -94,10 +94,15 @@ public final class BatchNorm implements Layer {
             Var centered = input.sub(mean);
             Var variance = centered.square().mean(0, false);
             normalized = centered.div(variance.add(epsilon).sqrt());
-            Tensor unbiased = variance.value().mul(n / (float) (n - 1));
-            runningMean.assign(runningMean.value().mul(1 - momentum).add(mean.value().mul(momentum)));
-            runningVariance.assign(runningVariance.value().mul(1 - momentum).add(unbiased.mul(momentum)));
-            Tensor.evaluate(java.util.List.of(runningMean.value(), runningVariance.value()));   // one kernel on a GPU
+            List<Tensor> created = new java.util.ArrayList<>(List.of(runningMean.value(), runningVariance.value()));
+            created.addAll(Tensor.created(() -> {
+                Tensor unbiased = variance.value().mul(n / (float) (n - 1));
+                runningMean.assign(runningMean.value().mul(1 - momentum).add(mean.value().mul(momentum)));
+                runningVariance.assign(runningVariance.value().mul(1 - momentum).add(unbiased.mul(momentum)));
+            }));
+            List<Tensor> running = List.of(runningMean.value(), runningVariance.value());
+            Tensor.evaluate(running);   // one kernel on a GPU
+            Tensor.release(created, running);   // the old statistics and the values on the way
         } else {
             Tensor scale = runningVariance.value().add(epsilon).sqrt();
             normalized = input.sub(runningMean.value()).div(scale);
@@ -115,12 +120,18 @@ public final class BatchNorm implements Layer {
         return List.of(runningMean, runningVariance);
     }
 
-    /** @return the running mean per feature, used for predictions */
+    /**
+     * @return the running mean per feature, used for predictions; replaced, and its memory
+     *     reused, by the next training step
+     */
     public Tensor runningMean() {
         return runningMean.value();
     }
 
-    /** @return the running variance per feature, used for predictions */
+    /**
+     * @return the running variance per feature, used for predictions; replaced, and its
+     *     memory reused, by the next training step
+     */
     public Tensor runningVariance() {
         return runningVariance.value();
     }
