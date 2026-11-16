@@ -419,8 +419,10 @@ public final class Trainer {
                 optimizer.learningRate(schedule.rate(epoch, baseLearningRate));
             }
             List<Batch> batches = shuffle ? data.shuffle(seed + epoch).batches(batchSize, device) : fixedBatches;
-            double lossSum = 0;
-            Map<String, Double> metricSums = new LinkedHashMap<>();
+            // per-batch values stay on the device until the epoch ends, so the host never
+            // waits for the device between batches and can queue the next one meanwhile
+            List<Tensor> batchValues = new ArrayList<>();
+            List<Integer> batchSizes = new ArrayList<>();
             for (Batch batch : batches) {
                 List<Tensor> masters = null;
                 if (mixedType != null) {
@@ -439,10 +441,13 @@ public final class Trainer {
                         l = l.add(penalty.mul(l2));
                     }
                 }
-                lossSum += l.value().item() * batch.size();
+                int first = batchValues.size();
+                batchValues.add(l.value());
                 for (Metric m : metrics) {
-                    metricSums.merge(m.name(), (double) m.compute(out.value(), targets) * batch.size(), Double::sum);
+                    batchValues.add(m.value(out.value(), targets));
                 }
+                Tensor.evaluate(batchValues.subList(first, batchValues.size()));
+                batchSizes.add(batch.size());
                 if (masters != null) {
                     l.mul(lossScale).backward();
                     if (!unscale(params, masters)) {
@@ -459,6 +464,17 @@ public final class Trainer {
                     for (TrainingListener listener : listeners) {
                         listener.onBatch(epoch, stepsDone, batchLoss);
                     }
+                }
+            }
+            double lossSum = 0;
+            Map<String, Double> metricSums = new LinkedHashMap<>();
+            int perBatch = 1 + metrics.size();
+            for (int b = 0; b < batchSizes.size(); b++) {
+                int size = batchSizes.get(b);
+                lossSum += batchValues.get(b * perBatch).item() * size;
+                for (int i = 0; i < metrics.size(); i++) {
+                    metricSums.merge(metrics.get(i).name(), (double) batchValues.get(b * perBatch + 1 + i).item() * size,
+                            Double::sum);
                 }
             }
             Map<String, Float> trainMetrics = new LinkedHashMap<>();
@@ -509,14 +525,27 @@ public final class Trainer {
     public Evaluation evaluate(Dataset data) {
         checkSizes(data);
         Device device = model.device();
-        double lossSum = 0;
-        Map<String, Double> sums = new LinkedHashMap<>();
+        List<Tensor> values = new ArrayList<>();
+        List<Integer> sizes = new ArrayList<>();
         for (Batch batch : data.batches(Math.max(batchSize, 256), device)) {
             Var out = model.forward(Var.of(batch.features()));
             Tensor targets = shaped(batch.targets(), out);
-            lossSum += loss.compute(out, targets).value().item() * batch.size();
+            int first = values.size();
+            values.add(loss.compute(out, targets).value());
             for (Metric m : metrics) {
-                sums.merge(m.name(), (double) m.compute(out.value(), targets) * batch.size(), Double::sum);
+                values.add(m.value(out.value(), targets));
+            }
+            Tensor.evaluate(values.subList(first, values.size()));   // no waiting between batches
+            sizes.add(batch.size());
+        }
+        double lossSum = 0;
+        Map<String, Double> sums = new LinkedHashMap<>();
+        int perBatch = 1 + metrics.size();
+        for (int b = 0; b < sizes.size(); b++) {
+            lossSum += values.get(b * perBatch).item() * sizes.get(b);
+            for (int i = 0; i < metrics.size(); i++) {
+                sums.merge(metrics.get(i).name(), (double) values.get(b * perBatch + 1 + i).item() * sizes.get(b),
+                        Double::sum);
             }
         }
         Map<String, Float> result = new LinkedHashMap<>();

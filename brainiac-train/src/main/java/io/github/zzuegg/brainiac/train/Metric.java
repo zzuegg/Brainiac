@@ -18,6 +18,11 @@ public interface Metric {
 
         @Override
         public float compute(Tensor prediction, Tensor target) {
+            return value(prediction, target).item();
+        }
+
+        @Override
+        public Tensor value(Tensor prediction, Tensor target) {
             Tensor correct;
             if (prediction.shape().dim(-1) == 1) {
                 Tensor half = Tensor.full(Shape.of(), 0.5f, prediction.device());
@@ -25,7 +30,7 @@ public interface Metric {
             } else {
                 correct = prediction.argmax(-1).equalTo(target.argmax(-1));
             }
-            return correct.mean().item();
+            return correct.mean();
         }
     };
 
@@ -38,7 +43,12 @@ public interface Metric {
 
         @Override
         public float compute(Tensor prediction, Tensor target) {
-            return prediction.sub(target).abs().mean().item();
+            return value(prediction, target).item();
+        }
+
+        @Override
+        public Tensor value(Tensor prediction, Tensor target) {
+            return prediction.sub(target).abs().mean();
         }
     };
 
@@ -57,4 +67,17 @@ public interface Metric {
      * @return the score
      */
     float compute(Tensor prediction, Tensor target);
+
+    /**
+     * Computes the metric as a single-value tensor on the predictions' device, so a training
+     * loop can sum it without waiting for the device after every batch. The default wraps
+     * {@link #compute}.
+     *
+     * @param prediction the model's output
+     * @param target the expected output
+     * @return the metric, a tensor with one value
+     */
+    default Tensor value(Tensor prediction, Tensor target) {
+        return Tensor.of(compute(prediction, target));
+    }
 }

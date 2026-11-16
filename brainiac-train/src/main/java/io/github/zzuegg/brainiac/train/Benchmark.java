@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -439,8 +440,17 @@ public final class Benchmark {
         for (int pass = 0; pass < rates.length; pass++) {
             long samples = 0;
             long start = System.nanoTime();
-            for (Batch batch : task.test().batches(256, model.device())) {
-                float[] predicted = model.predict(batch.features()).toArray();
+            // every batch is queued before any result is read, so a GPU never waits for the host
+            List<Batch> batches = task.test().batches(256, model.device());
+            List<Tensor> outputs = new ArrayList<>(batches.size());
+            for (Batch batch : batches) {
+                Tensor out = model.predict(batch.features());
+                Tensor.evaluate(List.of(out));
+                outputs.add(out);
+            }
+            for (int b = 0; b < batches.size(); b++) {
+                Batch batch = batches.get(b);
+                float[] predicted = outputs.get(b).toArray();
                 samples += batch.size();
                 if (!classify || pass > 0) {
                     continue;
