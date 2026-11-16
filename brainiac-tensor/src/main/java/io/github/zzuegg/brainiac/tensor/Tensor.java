@@ -247,6 +247,7 @@ public final class Tensor {
                 if (t == null) {
                     t = filled(shape, value, dtype, device);
                     SCALARS.put(key, t);
+                    SHARED.put(t.storage, Boolean.TRUE);
                 }
                 return t;
             }
@@ -263,6 +264,10 @@ public final class Tensor {
             return size() > 1_024;
         }
     };
+
+    /** Storages handed out to many callers (the shared scalars): never released early. */
+    private static final Map<Storage, Boolean> SHARED =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
 
     private static Tensor filled(Shape shape, float value, DType dtype, Device device) {
         Backend backend = device.backend();
@@ -461,7 +466,9 @@ public final class Tensor {
      * must not be used afterwards; a GPU backend reports such a use as an error.
      */
     public void release() {
-        backend().release(storage);
+        if (!SHARED.containsKey(storage)) {
+            backend().release(storage);
+        }
     }
 
     /**
@@ -478,7 +485,7 @@ public final class Tensor {
             skip.put(t.storage, Boolean.TRUE);
         }
         for (Tensor t : dead) {
-            if (skip.put(t.storage, Boolean.TRUE) == null) {
+            if (skip.put(t.storage, Boolean.TRUE) == null && !SHARED.containsKey(t.storage)) {
                 t.backend().release(t.storage);
             }
         }
