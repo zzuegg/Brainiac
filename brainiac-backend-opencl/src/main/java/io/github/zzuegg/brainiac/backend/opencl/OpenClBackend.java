@@ -541,6 +541,9 @@ public final class OpenClBackend implements Backend {
                     && !(in.storage().pending instanceof Fused.Im2col && in.storage().pendingNodes <= 8)
                     && in.storage().pendingGeneration != generation) {
                 ready(in.storage());
+            } else if (!in.direct() && in.storage().pending != null && Fused.scatters(in.storage().pending)) {
+                // read at other indices (a broadcast, a permutation): summed once, not at every read
+                ready(in.storage());
             }
         }
         int n = Fused.nodes(e);
@@ -945,6 +948,8 @@ public final class OpenClBackend implements Backend {
         switch (e) {
             case Fused.MatMul mm -> throw new IllegalStateException("a matrix product inside a chain");
             case Fused.Reduce r -> throw new IllegalStateException("a reduction inside a chain");
+            case Fused.Col2im c -> quiet(t, "col2im", n, computed(c.cols().storage(), false), new Temp(c.offsets()),
+                    new Temp(c.entries()), out, c.channels(), c.positions(), c.ks(), c.img(), n);
             case Fused.Im2col c -> quiet(t, "im2col", n, computed(c.x().storage(), false), new Temp(c.table()), out,
                     c.channels(), c.positions(), c.ks(), c.img(), c.pad(), n);
             case Fused.Const c -> quiet(t, "fill", n, out, c.value(), n);
@@ -1591,7 +1596,7 @@ public final class OpenClBackend implements Backend {
         ClStorage x = cl(in);
         ClStorage o = cl(out);
         long rows = outer * inner;
-        if (op == ReduceOp.ARGMAX) {
+        if (op == ReduceOp.ARGMAX && !(o.dtype == DType.FLOAT32 && !grouped(rows, length) && fusable(o, x))) {
             ClStorage target = o.dtype == DType.FLOAT32 ? o : raw(o.size, DType.FLOAT32);
             run(x.dtype, "argmax", rows, x, target, outer, length, inner);
             if (target != o) {
@@ -1677,7 +1682,9 @@ public final class OpenClBackend implements Backend {
             s.pending = null;
             s.pendingNodes = 0;
             ClStorage src = as(mine.x(), s.dtype);
-            if (grouped(rows, mine.length())) {
+            if (mine.op() == ReduceOp.ARGMAX.ordinal()) {
+                run(s.dtype, "argmax", rows, src, s, mine.outer(), mine.length(), mine.inner());
+            } else if (grouped(rows, mine.length())) {
                 run(s.dtype, "reduce_group", new long[] {rows * reduceGroup}, new long[] {reduceGroup}, mine.op(),
                         src, s, rows, mine.length(), mine.inner());
             } else {
@@ -1832,6 +1839,14 @@ public final class OpenClBackend implements Backend {
         ClStorage o = cl(out);
         Tables t = tables(geometry);
         long total = (long) geometry.batch() * geometry.channels() * geometry.imageSize();
+        ClStorage c = cl(cols);
+        if (fusable(o, c) && c.size <= Integer.MAX_VALUE) {
+            // recorded: computed with the chain that produces the columns and the one that uses the image
+            defer(o, new Fused.Col2im(new Fused.Src(c, 0, new int[] {(int) c.size}, new long[] {1}, false),
+                    t.col2imOffsets(), t.col2imEntries(), t, geometry.channels(), geometry.positionCount(),
+                    geometry.kernelSize(), geometry.imageSize()));
+            return;
+        }
         run(o.dtype, "col2im", total, as(cols, o.dtype), new Temp(t.col2imOffsets()), new Temp(t.col2imEntries()),
                 o, geometry.channels(), geometry.positionCount(), geometry.kernelSize(), geometry.imageSize(), total);
     }

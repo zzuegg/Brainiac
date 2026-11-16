@@ -32,7 +32,7 @@ final class Fused {
     }
 
     /** A value per element of an index space; evaluated at one linear index. */
-    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce, Im2col {
+    sealed interface Expr permits Src, Const, Un, Act, ActBack, Bin, MatMul, Reduce, Im2col, Col2im {
     }
 
     /**
@@ -89,6 +89,14 @@ final class Fused {
             int img, float pad) implements Expr {
     }
 
+    /**
+     * The inverse of {@link Im2col}: per image cell, the sum of the unrolled values that read it,
+     * listed by {@code offsets} and {@code entries} (the {@code p * ks + k} of each).
+     */
+    record Col2im(Src cols, java.lang.foreign.MemorySegment offsets, java.lang.foreign.MemorySegment entries,
+            Object owner, int channels, int positions, int ks, int img) implements Expr {
+    }
+
     /** A source reading all of {@code s} in order, as an index space of its own size. */
     static Src whole(ClStorage s) {
         return new Src(s, 0, new int[] {Math.toIntExact(s.size)}, new long[] {1}, true);
@@ -117,6 +125,7 @@ final class Fused {
             case Const c -> 1;
             case Reduce r -> 1;
             case Im2col c -> 1 + nodes(c.x());
+            case Col2im c -> 1 + nodes(c.cols());
             case Un u -> 1 + nodes(u.x());
             case Act a -> 1 + nodes(a.x());
             case ActBack a -> 1 + nodes(a.x()) + nodes(a.grad());
@@ -152,6 +161,7 @@ final class Fused {
             case Reduce r -> {
             }
             case Im2col c -> matmuls(c.x(), false, out);
+            case Col2im c -> matmuls(c.cols(), false, out);
             case Un u -> matmuls(u.x(), direct, out);
             case Act a -> matmuls(a.x(), direct, out);
             case ActBack a -> {
@@ -218,10 +228,31 @@ final class Fused {
         return new Kernel(src, g.args, g.argBytes, g.outputs);
     }
 
+    /**
+     * Whether an expression sums unrolled values back into an image (a loop per element),
+     * looking through pending inputs: worth computing once rather than at every read.
+     */
+    static boolean scatters(Expr e) {
+        return switch (e) {
+            case Col2im c -> true;
+            case Src s -> s.storage().pending != null && !(s.storage().pending instanceof MatMul)
+                    && !(s.storage().pending instanceof Reduce) && scatters(s.storage().pending);
+            case MatMul m -> false;
+            case Reduce r -> false;
+            case Const c -> false;
+            case Im2col c -> scatters(c.x());
+            case Un u -> scatters(u.x());
+            case Act x -> scatters(x.x());
+            case ActBack x -> scatters(x.x()) || scatters(x.grad());
+            case Bin x -> scatters(x.a()) || scatters(x.b());
+        };
+    }
+
     /** Whether an expression unrolls an image, looking through pending inputs. */
     static boolean unrolls(Expr e) {
         return switch (e) {
             case Im2col c -> true;
+            case Col2im c -> false;
             case Src s -> s.storage().pending != null && !(s.storage().pending instanceof MatMul)
                     && !(s.storage().pending instanceof Reduce) && unrolls(s.storage().pending);
             case MatMul m -> false;
@@ -251,6 +282,7 @@ final class Fused {
             case Reduce r -> {
             }
             case Im2col c -> out.add(c.x());
+            case Col2im c -> out.add(c.cols());
             case Un u -> sources(u.x(), out);
             case Act a -> sources(a.x(), out);
             case ActBack a -> {
@@ -281,6 +313,7 @@ final class Fused {
             case Reduce r -> {
             }
             case Im2col c -> out.add(c.x().storage());
+            case Col2im c -> out.add(c.cols().storage());
             case Un u -> collect(u.x(), out);
             case Act a -> collect(a.x(), out);
             case ActBack a -> {
@@ -418,8 +451,12 @@ final class Fused {
             Reduce r = (Reduce) outputs.get(k).pending;
             v[k] = g.eval(whole(r.x()), "x");
             init[k] = r.op() == 2 ? "(ACC) -INFINITY" : r.op() == 3 ? "(ACC) INFINITY" : "(ACC) 0";
-            finish[k] = r.op() == 1 ? "acc" + k + " / (ACC) len" : "acc" + k;
-            ops.add(r.op() == 1 ? 0 : r.op());
+            finish[k] = r.op() == 1 ? "acc" + k + " / (ACC) len" : r.op() == 4 ? "(ACC) best" + k : "acc" + k;
+            if (r.op() != 4) {
+                ops.add(r.op() == 1 ? 0 : r.op());
+            } else if (group > 1) {
+                throw new IllegalArgumentException("an argmax is reduced by one work item per output");
+            }
         }
         StringBuilder src = new StringBuilder();
         for (int op : ops) {
@@ -434,6 +471,14 @@ final class Fused {
         StringBuilder declare = new StringBuilder();
         for (int k = 0; k < count; k++) {
             declare.append("    ACC acc").append(k).append(" = ").append(init[k]).append(";\n");
+            if (((Reduce) outputs.get(k).pending).op() == 4) {
+                // the first largest value, as the precompiled argmax: NaN is never larger
+                declare.append("    long best").append(k).append(" = 0;\n");
+                accumulate.append("    if (t == 0 || ").append(v[k]).append(" > acc").append(k).append(") {\n")
+                        .append("        acc").append(k).append(" = ").append(v[k]).append(";\n        best")
+                        .append(k).append(" = t;\n    }\n");
+                continue;
+            }
             accumulate.append("    acc").append(k).append(" = ").append(combine(outputs.get(k), "acc" + k, v[k]))
                     .append(";\n");
         }
@@ -512,6 +557,7 @@ final class Fused {
             case Reduce r -> {
             }
             case Im2col c -> reduces(c.x(), out, seen);
+            case Col2im c -> reduces(c.cols(), out, seen);
             case Un u -> reduces(u.x(), out, seen);
             case Act a -> reduces(a.x(), out, seen);
             case ActBack a -> {
@@ -564,6 +610,37 @@ final class Fused {
                     body.append("    int ").append(row).append(" = (int) (").append(idx).append(" / ").append(width)
                             .append(");\n");
                     yield window(c, row, "(int) (" + idx + " % " + width + ")");
+                }
+                case Col2im c -> {
+                    String offsets = buffer(c.offsets());
+                    String entries = buffer(c.entries());
+                    String img = arg(c.img());
+                    String channels = arg(c.channels());
+                    String ks = intArg(c.ks());
+                    String plane = "q" + next++;
+                    String cell = "q" + next++;
+                    String ent = "q" + next++;
+                    String at = "q" + next++;
+                    String sum = "q" + next++;
+                    body.append("    long ").append(plane).append(" = ").append(idx).append(" / ").append(img)
+                            .append(";\n    int ").append(cell).append(" = (int) (").append(idx).append(" % ")
+                            .append(img).append(");\n    ACC ").append(sum).append(" = (ACC) 0;\n    for (int ")
+                            .append(ent).append(" = ").append(offsets).append("[").append(cell).append("]; ").append(ent)
+                            .append(" < ").append(offsets).append("[").append(cell).append(" + 1]; ").append(ent)
+                            .append("++) {\n    long ").append(at).append(" = ((").append(plane).append(" / ")
+                            .append(channels).append(") * ").append(arg(c.positions())).append(" + ").append(entries)
+                            .append("[").append(ent).append("] / ").append(ks).append(") * ").append(channels)
+                            .append(" * ").append(ks).append(" + (").append(plane).append(" % ").append(channels)
+                            .append(") * ").append(ks).append(" + ").append(entries).append("[").append(ent)
+                            .append("] % ").append(ks).append(";\n");
+                    // values computed in the loop are out of scope after it
+                    Map<ClStorage, Map<String, String>> saved = new IdentityHashMap<>();
+                    values.forEach((k, v) -> saved.put(k, new java.util.HashMap<>(v)));
+                    String v = read(c.cols().storage(), at);
+                    values.clear();
+                    values.putAll(saved);
+                    body.append("    ").append(sum).append(" += ").append(v).append(";\n    }\n");
+                    yield sum;
                 }
                 case Const c -> {
                     // one argument and one value per distinct number in the kernel
