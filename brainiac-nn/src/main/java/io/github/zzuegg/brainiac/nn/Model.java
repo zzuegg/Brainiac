@@ -100,6 +100,25 @@ public final class Model {
     }
 
     /**
+     * An independent copy of this model, structure, weights and buffers, on a device: such
+     * as a CPU copy of a GPU model for work too small to keep the GPU busy. Custom layers
+     * and activations must be registered, as for {@link #save(Path)}.
+     *
+     * @param device where the copy's weights go
+     * @return the copy
+     * @throws IllegalStateException if the model has unregistered layers or activations
+     */
+    public Model copy(Device device) {
+        try {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            ModelFile.write(this, bytes);
+            return ModelFile.read(new java.io.ByteArrayInputStream(bytes.toByteArray()), device);
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot copy " + this + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Loads a model saved with {@link #save(Path)} onto the default device.
      *
      * @param path the file

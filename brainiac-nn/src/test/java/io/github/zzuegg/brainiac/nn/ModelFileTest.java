@@ -45,6 +45,17 @@ class ModelFileTest {
     }
 
     @Test
+    void copiesAreIndependent() {
+        Model m = Model.sequential().input(4).dense(8, Activation.RELU).dense(3).seed(1).build();
+        Model copy = m.copy(io.github.zzuegg.brainiac.tensor.Device.cpu());
+        assertEquals(m.summary(), copy.summary());
+        assertArrayEquals(m.predict(X).toArray(), copy.predict(X).toArray());
+        copy.parameters().get(0).assign(copy.parameters().get(0).value().mul(2f));
+        org.junit.jupiter.api.Assertions.assertFalse(java.util.Arrays.equals(m.predict(X).toArray(),
+                copy.predict(X).toArray()));
+    }
+
+    @Test
     void graphModelWithSharedLayerRoundTrips() throws IOException {
         Node in = Node.input(4);
         Dense shared = new Dense(4, 4, Activation.TANH, Init.XAVIER, new SplittableRandom(2));
