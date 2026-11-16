@@ -32,6 +32,7 @@ public final class Examples {
             }
             case "gpu" -> GpuExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "bench" -> BenchmarkExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+            case "evolve" -> EvolveExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
                       xor     learn XOR with a tiny network
@@ -43,7 +44,9 @@ public final class Examples {
                       brain   a growing brain: regions, sparse rewiring, new neurons
                       mnist   recognize handwritten digits with a CNN (downloads MNIST)
                       gpu     list devices, compare CPU and GPU speed
-                      bench   run any model on any task: bench <task> [model...] [--epochs N]""");
+                      bench   run any model on any task: bench <task> [model...] [--epochs N]
+                      evolve  evolve a network design with a genetic algorithm: evolve <task> [--population N]
+                              [--generations G] [--mutate connections,neurons,activations,...]""");
         }
     }
 }

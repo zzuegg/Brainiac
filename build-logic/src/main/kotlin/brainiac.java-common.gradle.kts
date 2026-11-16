@@ -25,6 +25,29 @@ dependencies {
     testRuntimeOnly(libs.findLibrary("junit-platform-launcher").get())
 }
 
+// Preloads the JVM's libjsig on Linux. The LLVM inside PoCL (the CPU OpenCL driver CI uses)
+// installs its own SIGSEGV handler, but the JVM faults on purpose at every safepoint poll:
+// without chaining, about one test run in three died with SIGSEGV and no crash report.
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    doFirst {
+        val test = this as Test
+        val jsig = File(test.javaLauncher.get().metadata.installationPath.asFile, "lib/libjsig.so")
+        if (System.getProperty("os.name").startsWith("Linux") && jsig.isFile
+                && !test.environment.containsKey("LD_PRELOAD")) {
+            test.environment("LD_PRELOAD", jsig.absolutePath)
+        }
+    }
+}
+
+tasks.withType<JavaExec>().configureEach {
+    doFirst {
+        val exec = this as JavaExec
+        val launcher = exec.javaLauncher.orNull
+        val jsig = launcher?.let { File(it.metadata.installationPath.asFile, "lib/libjsig.so") }
+        if (System.getProperty("os.name").startsWith("Linux") && jsig != null && jsig.isFile
+                && !exec.environment.containsKey("LD_PRELOAD")) {
+            exec.environment("LD_PRELOAD", jsig.absolutePath)
+        }
+    }
 }
