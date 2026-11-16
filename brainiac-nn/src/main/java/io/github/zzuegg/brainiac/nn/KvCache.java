@@ -45,7 +45,9 @@ public final class KvCache {
     private final List<MultiHeadAttention.Cache> caches = new ArrayList<>();
     private final int window;
     private final Strategy strategy;
-    private int[] recent = new int[0];
+    private int[][] recent;
+    /** The streams the cache holds, fixed by the first append after a reset; 0 when empty. */
+    private int streams;
     private int length;
 
     /** What a full cache drops; see the class description. */
@@ -219,33 +221,75 @@ public final class KvCache {
      * @return the output for the last token, such as next-token probabilities {@code [vocabulary]}
      */
     public Tensor append(int... ids) {
-        if (ids.length == 0) {
-            throw new IllegalArgumentException("append needs at least one token");
+        Tensor out = append(new int[][] {ids});
+        return out.reshape(out.shape().dim(1));
+    }
+
+    /**
+     * Feeds the same number of tokens to each of several streams at once, such as several
+     * texts generated together: one pass of the model serves all of them, which costs about
+     * as much as one stream on a GPU. The number of streams is fixed until {@link #reset}.
+     * The streams share their cache's eviction (all hold the same positions).
+     *
+     * @param ids per stream, one or more token ids; the same count for every stream
+     * @return the output for the last token of each stream, {@code [streams, vocabulary]}
+     */
+    public Tensor append(int[][] ids) {
+        if (ids.length == 0 || ids[0].length == 0) {
+            throw new IllegalArgumentException("append needs at least one stream and one token");
         }
-        length += ids.length;
+        int count = ids[0].length;
+        for (int[] row : ids) {
+            if (row.length != count) {
+                throw new IllegalArgumentException("every stream needs the same number of tokens");
+            }
+        }
+        if (streams != 0 && ids.length != streams) {
+            throw new IllegalArgumentException("the cache holds " + streams + " streams, got " + ids.length
+                    + "; reset() it first");
+        }
+        if (streams == 0) {
+            streams = ids.length;
+            recent = new int[streams][0];
+        }
+        length += count;
         if (!(strategy instanceof Strategy.Restart)) {
             // a block while it fits, then one at a time, each dropping what the strategy drops
-            int[] feed = ids;
-            int room = Math.max(1, window - size());
-            Tensor out = run(java.util.Arrays.copyOf(feed, Math.min(room, feed.length)));
-            for (int i = Math.min(room, feed.length); i < feed.length; i++) {
-                out = run(new int[] {feed[i]});
+            int room = Math.min(count, Math.max(1, window - size()));
+            Tensor out = run(columns(ids, 0, room));
+            for (int i = room; i < count; i++) {
+                out = run(columns(ids, i, i + 1));
             }
             return out;
         }
-        int[] all = new int[recent.length + ids.length];
-        System.arraycopy(recent, 0, all, 0, recent.length);
-        System.arraycopy(ids, 0, all, recent.length, ids.length);
-        int[] feed = ids;
-        if (all.length > window) {
+        int total = recent[0].length + count;
+        int[][] feed = ids;
+        int from = 0;
+        if (total > window) {
             // start over from the last half window, plus the new tokens
             resetLayers();
-            int keep = Math.min(window, window / 2 + ids.length);
-            feed = java.util.Arrays.copyOfRange(all, all.length - keep, all.length);
-            all = feed;
+            from = total - Math.min(window, window / 2 + count);
+        }
+        int[][] all = new int[streams][];
+        for (int b = 0; b < streams; b++) {
+            int[] r = new int[total];
+            System.arraycopy(recent[b], 0, r, 0, recent[b].length);
+            System.arraycopy(ids[b], 0, r, recent[b].length, count);
+            all[b] = java.util.Arrays.copyOfRange(r, from, total);
+        }
+        if (from > 0) {
+            feed = all;
         }
         recent = all;
         return run(feed);
+    }
+
+    private static int[][] columns(int[][] ids, int from, int to) {
+        int[][] out = new int[ids.length][];
+        for (int b = 0; b < ids.length; b++) {
+            out[b] = java.util.Arrays.copyOfRange(ids[b], from, to);
+        }
+        return out;
     }
 
     /** @return how many tokens the attention layers hold now, at most the window */
@@ -263,12 +307,15 @@ public final class KvCache {
         return strategy;
     }
 
-    private Tensor run(int[] ids) {
-        float[] values = new float[ids.length];
-        for (int i = 0; i < ids.length; i++) {
-            values[i] = ids[i];
+    private Tensor run(int[][] ids) {
+        int steps = ids[0].length;
+        float[] values = new float[ids.length * steps];
+        for (int b = 0; b < ids.length; b++) {
+            for (int i = 0; i < steps; i++) {
+                values[b * steps + i] = ids[b][i];
+            }
         }
-        Var x = Var.of(Tensor.of(Shape.of(1, ids.length), values, model.device())).to(model.dtype());
+        Var x = Var.of(Tensor.of(Shape.of(ids.length, steps), values, model.device())).to(model.dtype());
         for (int i = 0; i < layers.size(); i++) {
             Layer layer = layers.get(i);
             MultiHeadAttention.Cache cache = caches.get(i);
@@ -281,8 +328,7 @@ public final class KvCache {
             }
         }
         int[] dims = x.shape().toArray();
-        int steps = dims[1];
-        return x.value().slice(1, steps - 1, steps).reshape(dims[dims.length - 1]);
+        return x.value().slice(1, steps - 1, steps).reshape(ids.length, dims[dims.length - 1]);
     }
 
     /** @return how many tokens have been fed since the cache was made or reset */
@@ -293,7 +339,8 @@ public final class KvCache {
     /** Forgets every token, to start a new text. */
     public void reset() {
         resetLayers();
-        recent = new int[0];
+        recent = null;
+        streams = 0;
         length = 0;
     }
 

@@ -282,6 +282,58 @@ public final class LanguageExample {
     }
 
     /**
+     * Writes several texts at once from the same prompt, each with its own random draws:
+     * every step runs the model once for all streams, which on a GPU costs about as much
+     * as one stream.
+     *
+     * @param model a model from {@link #model}, trained
+     * @param tokenizer the tokenizer it was trained with
+     * @param prompt the text to continue; at least one token
+     * @param streams how many texts to write
+     * @param count how many tokens to add to each
+     * @param temperature below 1 picks likely tokens more often, above 1 less often
+     * @param seed the random seed; stream {@code s} draws with {@code seed + s}
+     * @return each text, the prompt followed by its new text
+     */
+    public static String[] generate(Model model, Tokenizer tokenizer, String prompt, int streams, int count,
+                                    float temperature, long seed) {
+        int[] start = tokenizer.encode(prompt);
+        if (start.length == 0) {
+            throw new IllegalArgumentException("the prompt needs at least one token");
+        }
+        int length = model.inputShape().dim(0);
+        int v = model.outputShape().dim(-1);
+        SplittableRandom[] random = new SplittableRandom[streams];
+        int[][] ids = new int[streams][];
+        int[][] first = new int[streams][];
+        for (int b = 0; b < streams; b++) {
+            random[b] = new SplittableRandom(seed + b);
+            ids[b] = new int[count];
+            first[b] = java.util.Arrays.copyOfRange(start, Math.max(0, start.length - length), start.length);
+        }
+        double[] weights = new double[v];
+        KvCache cache = KvCache.of(model);
+        Tensor out = cache.append(first);
+        int[][] next = new int[streams][1];
+        for (int n = 0; n < count; n++) {
+            float[] p = out.toArray();
+            out.release();
+            for (int b = 0; b < streams; b++) {
+                ids[b][n] = sample(p, b * v, v, temperature, random[b], weights);
+                next[b][0] = ids[b][n];
+            }
+            if (n + 1 < count) {
+                out = cache.append(next);
+            }
+        }
+        String[] texts = new String[streams];
+        for (int b = 0; b < streams; b++) {
+            texts[b] = prompt + tokenizer.decode(ids[b]);
+        }
+        return texts;
+    }
+
+    /**
      * How well a model predicts a long text when read one token at a time through a cache,
      * and how fast: the way to compare {@link KvCache.Strategy strategies}, since they only
      * differ once the text is longer than the window.
