@@ -336,7 +336,7 @@ public final class OpenClBackend implements Backend {
         fp64 = (" " + lib.deviceString(device, CL.DEVICE_EXTENSIONS) + " ").contains(" cl_khr_fp64 ");
         long maxGroup = lib.deviceLong(device, CL.DEVICE_MAX_WORK_GROUP_SIZE);
         tile = maxGroup >= 256 ? 16 : 8;
-        reduceGroup = (int) Math.min(128, Long.highestOneBit(Math.max(1, maxGroup)));
+        reduceGroup = (int) Math.min(256, Long.highestOneBit(Math.max(1, maxGroup)));
         long memory = lib.deviceLong(device, CL.DEVICE_GLOBAL_MEM_SIZE);
         Integer mb = Integer.getInteger("brainiac.opencl.memory");
         budget = mb != null ? (long) mb << 20 : memory / 10 * 8;
