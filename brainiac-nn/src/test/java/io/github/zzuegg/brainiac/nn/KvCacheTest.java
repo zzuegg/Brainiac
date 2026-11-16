@@ -61,6 +61,33 @@ class KvCacheTest {
     }
 
     @Test
+    void streamsRunTogetherAsTheyWouldAlone() {
+        int[][] ids = {{1, 5, 2, 9, 9, 0, 3, 7, 4, 10, 6, 2}, {4, 4, 8, 1, 0, 2, 2, 5, 9, 3, 1, 7},
+            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0}};
+        for (KvCache.Strategy strategy : new KvCache.Strategy[] {KvCache.Strategy.restart(),
+            KvCache.Strategy.sliding(), KvCache.Strategy.sinks(2)}) {
+            Model model = lm(6, 2, TransformerBlock.of(4).causal(true).kvHeads(2).rotary(10000));
+            KvCache together = KvCache.of(model, strategy);
+            KvCache[] alone = new KvCache[ids.length];
+            for (int b = 0; b < ids.length; b++) {
+                alone[b] = KvCache.of(model, strategy);
+            }
+            for (int t = 0; t < ids[0].length; t += t == 0 ? 3 : 1) {
+                int to = t == 0 ? 3 : t + 1;
+                int[][] step = new int[ids.length][];
+                for (int b = 0; b < ids.length; b++) {
+                    step[b] = java.util.Arrays.copyOfRange(ids[b], t, to);
+                }
+                float[] out = together.append(step).toArray();
+                for (int b = 0; b < ids.length; b++) {
+                    assertArrayEquals(alone[b].append(step[b]).toArray(), row(out, b), 1e-5f,
+                            strategy + ", stream " + b + ", step " + t);
+                }
+            }
+        }
+    }
+
+    @Test
     void aFullWindowStartsOverFromItsLastHalf() {
         Model model = lm(4, 2, TransformerBlock.of(2).causal(true).rotary(10000));
         KvCache cache = KvCache.of(model);

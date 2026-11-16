@@ -268,7 +268,8 @@ public final class BenchmarkExample {
      *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
      *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
      *        {@code --cache none,restart,sliding,sinks:4,h2o:32,restart/bf16} (for shakespeare:
-     *        compare KV cache strategies on long text)
+     *        compare KV cache strategies on long text), {@code --streams 1,8,32} (for
+     *        shakespeare: generation speed with several texts at once)
      */
     public static void main(String[] args) {
         if (args.length == 0) {
@@ -287,6 +288,10 @@ public final class BenchmarkExample {
         List<DType> precisions = null;
         List<String> tokenizers = null;
         for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--streams")) {
+                streamCounts = java.util.Arrays.stream(args[++i].split(",")).mapToInt(Integer::parseInt).toArray();
+                continue;
+            }
             if (args[i].equals("--cache")) {
                 cacheStrategies = List.of(args[++i].split(","));
                 continue;
@@ -380,6 +385,26 @@ public final class BenchmarkExample {
         }
     }
 
+    /** How many texts to generate at once, to compare ({@code --streams}). */
+    private static int[] streamCounts = {};
+
+    /** Generation speed with several streams written together. */
+    private static void compareStreams(Model model, io.github.zzuegg.brainiac.data.Tokenizer tokenizer) {
+        if (streamCounts.length == 0) {
+            return;
+        }
+        int count = 200;
+        System.out.println("generating " + count + " tokens per stream:");
+        System.out.printf("  %8s %10s %14s%n", "streams", "seconds", "tokens/s");
+        for (int streams : streamCounts) {
+            LanguageExample.generate(model, tokenizer, "ROMEO:\n", streams, 8, 0.8f, 1);   // warm up
+            long start = System.nanoTime();
+            LanguageExample.generate(model, tokenizer, "ROMEO:\n", streams, count, 0.8f, 1);
+            double seconds = (System.nanoTime() - start) / 1e9;
+            System.out.printf("  %8d %10.2f %14.0f%n", streams, seconds, streams * count / seconds);
+        }
+    }
+
     /** Trains (or loads) and tests one model; null if the named model does not fit the task. */
     private static Report runOne(Task t, String name, String label, Options options, boolean trainLoaded) {
         Report r;
@@ -414,6 +439,7 @@ public final class BenchmarkExample {
                     (int) Math.ceil(400 / tokenizer.charactersPerToken("ROMEO:\nWhat light through yonder window "
                             + "breaks? It is the east, and Juliet is the sun.")), 0.8f, 1) + "\n");
             compareCaches(model, tokenizer, text);
+            compareStreams(model, tokenizer);
         }
         return r;
     }
@@ -483,6 +509,8 @@ public final class BenchmarkExample {
                                 char,byte,word:2048,bpe:1024,wordpiece:1024,unigram:1024
                   --cache L     for shakespeare, read 2,000 test tokens through each KV cache
                                 strategy: none (recompute), restart, sliding, sinks:4, h2o:32;
-                                add /bf16 or /f16 to store keys and values narrower""".formatted(Tasks.NAMES, MODELS));
+                                add /bf16 or /f16 to store keys and values narrower
+                  --streams L   for shakespeare, generation speed with several texts written
+                                at once, e.g. 1,8,32""".formatted(Tasks.NAMES, MODELS));
     }
 }
