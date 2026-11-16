@@ -1115,6 +1115,20 @@ public final class Tensor {
     }
 
     /**
+     * Whether {@link #attention} is worth using on the backend of {@code q} for these
+     * arrays; where not, it may throw {@link UnsupportedOperationException}.
+     *
+     * @param q the queries
+     * @param k the keys
+     * @param v the values
+     * @param backward whether {@link #attentionBackward} will be needed too
+     * @return whether to call it
+     */
+    public static boolean hasAttention(Tensor q, Tensor k, Tensor v, boolean backward) {
+        return q.backend().hasAttention(attentionShape(q, k, v), q.dtype(), backward);
+    }
+
+    /**
      * Scaled dot-product attention in one pass, without storing the {@code [tq, tk]}
      * weights: {@code softmax(scale * q k^T) v}, optionally causal (query {@code i} sees keys
      * up to {@code i + tk - tq}). Groups of query heads may share key/value heads.

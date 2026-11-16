@@ -2407,18 +2407,27 @@ public final class OpenClBackend implements Backend {
     private static final int ATTENTION_SIZE = 64;
 
     /**
-     * Whether the fused attention kernels are used ({@code -Dbrainiac.opencl.fusedAttention=true}).
-     * Off by default: one work item per query or key row keeps a whole head in registers,
-     * and the matmul path is faster on the device measured so far.
+     * When the fused attention kernels are used: {@code -Dbrainiac.opencl.fusedAttention=true}
+     * always, {@code false} never, and by default without gradients only. On an RX 9070 XT
+     * the forward kernel made Shakespeare inference 51% faster, but training slower: the
+     * backward kernels' one work item per query or key row loses to the matmul path.
      */
-    private static final boolean FUSED_ATTENTION = Boolean.getBoolean("brainiac.opencl.fusedAttention");
+    private static final String FUSED_ATTENTION = System.getProperty("brainiac.opencl.fusedAttention", "inference");
+
+    @Override
+    public boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return shape[5] <= ATTENTION_SIZE && shape[6] <= ATTENTION_SIZE && switch (FUSED_ATTENTION) {
+            case "true" -> true;
+            case "false" -> false;
+            default -> !backward;
+        };
+    }
 
     @Override
     public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
             Storage out, Storage lse) {
-        if (!FUSED_ATTENTION || shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
-            throw new UnsupportedOperationException("fused attention (off, or heads larger than " + ATTENTION_SIZE
-                    + ")");
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
         }
         ClStorage o = cl(out);
         long rows = (long) shape[0] * shape[1] * shape[3];
@@ -2429,9 +2438,8 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
             Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
-        if (!FUSED_ATTENTION || shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
-            throw new UnsupportedOperationException("fused attention (off, or heads larger than " + ATTENTION_SIZE
-                    + ")");
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
         }
         ClStorage gq = cl(dq);
         DType type = gq.dtype;

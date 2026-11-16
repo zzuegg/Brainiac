@@ -357,6 +357,11 @@ public final class CpuBackend implements Backend {
     }
 
     @Override
+    public boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return true;
+    }
+
+    @Override
     public void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal, Storage out,
             Storage lse) {
         CpuStorage o = cpu(out);

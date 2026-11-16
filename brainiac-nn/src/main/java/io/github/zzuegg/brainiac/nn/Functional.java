@@ -685,7 +685,9 @@ public final class Functional {
      * @return {@code [batch, heads, queries, dv]}
      */
     public static Var attention(Var q, Var k, Var v, boolean causal, float scale) {
-        if (FUSED && q.value().dtype() == k.value().dtype() && q.value().dtype() == v.value().dtype()) {
+        if (FUSED && q.value().dtype() == k.value().dtype() && q.value().dtype() == v.value().dtype()
+                && Tensor.hasAttention(q.value(), k.value(), v.value(),
+                        q.requiresGrad() || k.requiresGrad() || v.requiresGrad())) {
             try {
                 return Var.apply(new FusedAttention(scale, causal), q, k, v);
             } catch (UnsupportedOperationException e) {

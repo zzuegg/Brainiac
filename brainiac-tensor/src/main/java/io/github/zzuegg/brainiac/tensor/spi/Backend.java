@@ -395,6 +395,19 @@ public interface Backend {
     }
 
     /**
+     * Whether {@link #attention} (and, when {@code backward}, {@link #attentionBackward}) are
+     * worth using for these sizes; callers take another path when not.
+     *
+     * @param shape {@code batch, heads, kvHeads, tq, tk, dk, dv}
+     * @param type the element type
+     * @param backward whether the gradient will be needed too
+     * @return whether to use the fused kernels
+     */
+    default boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return false;
+    }
+
+    /**
      * Scaled dot-product attention in one pass, without storing the weights:
      * {@code out = softmax(scale * q k^T [+ causal mask]) v}, with each row's log-sum-exp of
      * the scaled scores in {@code lse} for {@link #attentionBackward}. Query head {@code h}
