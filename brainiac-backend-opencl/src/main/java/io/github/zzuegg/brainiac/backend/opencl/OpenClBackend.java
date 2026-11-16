@@ -649,9 +649,12 @@ public final class OpenClBackend implements Backend {
     /** Records {@code e} as the pending value of {@code out}, computing large inputs first. */
     private void defer(ClStorage out, Fused.Expr e) {
         program(out.dtype);
+        // a view (a transpose, a permutation) adds no step of its own, so it cannot grow a chain:
+        // its source is computed where the view is read, such as by a matmul as it loads it
+        boolean view = e instanceof Fused.Src;
         for (Fused.Src in : Fused.sources(e)) {
             // a recorded product is a single step, so carrying it over cannot grow a chain
-            if ((!in.direct() || !storeIntermediates) && in.storage().pending != null
+            if ((!in.direct() || !storeIntermediates) && in.storage().pending != null && !view
                     && !(in.direct() && in.storage().pending instanceof Fused.MatMul)
                     && !(in.storage().pending instanceof Fused.Const)   // nothing to grow
                     && !(in.storage().pending instanceof Fused.Random)
@@ -793,11 +796,27 @@ public final class OpenClBackend implements Backend {
         return 0;
     }
 
-    /** Whether a matmul operand is left pending for the matmul kernel to compute as it loads it. */
-    private boolean computedInMatMul(ClStorage s) {
-        return fusion && s.pending != null && !(s.pending instanceof Fused.MatMul)
-                && !(s.pending instanceof Fused.Reduce) && s.pendingNodes <= 16 && Fused.unrolls(s.pending);
+    /**
+     * Whether a matmul operand is left pending for the matmul kernel to compute as it loads it:
+     * an unrolled image, or an element-wise chain whose recomputation ({@code reads} loads of
+     * each value) costs less than a launch of its own.
+     */
+    private boolean computedInMatMul(ClStorage s, long reads) {
+        if (!fusion || s.pending == null || s.pending instanceof Fused.MatMul || s.pending instanceof Fused.Reduce
+                || s.pendingNodes > Fused.MAX_NODES || Fused.scatters(s.pending)) {
+            return false;
+        }
+        if (Fused.unrolls(s.pending)) {
+            return s.pendingNodes <= 16;
+        }
+        return s.size * s.pendingNodes * reads <= PROLOGUE_WORK;
     }
+
+    /**
+     * Steps a matmul may spend recomputing an operand chain as it loads it: a few million
+     * simple operations take the device about as long as one launch.
+     */
+    private static final long PROLOGUE_WORK = 1L << 23;
 
     /** The value a matmul computes for an operand left pending, with what it reads ready; null if computed. */
     private Fused.Expr prologue(ClStorage s) {
@@ -1960,15 +1979,18 @@ public final class OpenClBackend implements Backend {
         // a work item computes tile / 4 rows of a column
         long[] global = {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
         long[] local = {tile, 4, 1};
-        Operand x = operand(a, o.dtype, batch, m, k);
-        Operand y = operand(b, o.dtype, batch, k, n);
+        // a work-group per tile of outputs loads each operand value once
+        long readsA = Math.ceilDiv(n, tile);
+        long readsB = Math.ceilDiv(m, tile);
+        Operand x = operand(a, o.dtype, batch, m, k, readsA);
+        Operand y = operand(b, o.dtype, batch, k, n, readsB);
         Object[] args = {x.storage(), y.storage(), o, m, k, n, x.batch(), y.batch(), (long) m * n, x.offset(),
                 x.row(), x.col(), y.offset(), y.row(), y.col(), 1, k};
         if (fusable(o, x.storage(), y.storage()) && (long) m * n * batch > 0) {
             // recorded: an element-wise chain on the product can become the kernel's epilogue,
             // and an unrolled image operand is computed as the kernel loads it
-            ClStorage pa = computedInMatMul(x.storage()) ? x.storage() : null;
-            ClStorage pb = computedInMatMul(y.storage()) ? y.storage() : null;
+            ClStorage pa = computedInMatMul(x.storage(), readsA) ? x.storage() : null;
+            ClStorage pb = computedInMatMul(y.storage(), readsB) ? y.storage() : null;
             if (pa == null) {
                 ready(x.storage());
             }
@@ -2075,7 +2097,7 @@ public final class OpenClBackend implements Backend {
      * A matmul operand. A pending view (a transpose, slice or permutation recorded by
      * {@link #copy}) is read through its strides instead of being copied first.
      */
-    private Operand operand(Storage s, DType type, int batch, int rows, int cols) {
+    private Operand operand(Storage s, DType type, int batch, int rows, int cols, long reads) {
         ClStorage c = cl(s);
         if (c.pending instanceof Fused.Src v && v.storage().dtype == type && v.storage() != c) {
             int[] dims = v.dims();
@@ -2098,7 +2120,7 @@ public final class OpenClBackend implements Backend {
                     count *= dims[d];
                 }
                 if (even && count == batch) {
-                    if (!computedInMatMul(v.storage())) {
+                    if (!computedInMatMul(v.storage(), reads)) {
                         ready(v.storage());
                     }
                     return new Operand(v.storage(), v.offset(), batch == 1 ? 0 : batchStride,
