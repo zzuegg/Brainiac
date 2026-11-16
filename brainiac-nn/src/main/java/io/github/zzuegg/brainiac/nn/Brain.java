@@ -65,7 +65,45 @@ public final class Brain implements Layer {
      * @param initial how many are active at the start
      * @param activation the neurons' activation
      */
-    public record RegionSpec(String name, int capacity, int initial, Activation activation) {
+    public record RegionSpec(String name, int capacity, int initial, Activation activation, Switching switching) {
+
+        /**
+         * A region without switching neurons.
+         *
+         * @param name its name
+         * @param capacity the most neurons it can have
+         * @param initial how many are active at the start
+         * @param activation the neurons' activation
+         */
+        public RegionSpec(String name, int capacity, int initial, Activation activation) {
+            this(name, capacity, initial, activation, null);
+        }
+    }
+
+    /**
+     * Lets a region's neurons choose their activation by their input, as in
+     * {@link SwitchingDense}: each neuron gets a second weighted sum of the same inputs over
+     * the same connections, its control value {@code c}, and computes
+     * {@code sum_k softmax_k(c u_k + e_k) f_k(z)} instead of its fixed activation. Which
+     * neurons switch is set with {@link #setSwitchingUnits}; all of them at the start.
+     *
+     * @param candidates the activations to choose between, at least two, without parameters
+     * @param hard whether each neuron uses only its most likely candidate (no gradient then
+     *     reaches the control weights)
+     */
+    public record Switching(List<Activation> candidates, boolean hard) {
+        /** Checks and copies the candidates. */
+        public Switching {
+            candidates = List.copyOf(candidates);
+            if (candidates.size() < 2) {
+                throw new IllegalArgumentException("switching needs at least two activations, got " + candidates);
+            }
+            for (Activation a : candidates) {
+                if (a.boundWidth() >= 0 || a.bind(1) != a || !a.parameters().isEmpty()) {
+                    throw new IllegalArgumentException("switching takes activations without parameters, got " + a);
+                }
+            }
+        }
     }
 
     /**
@@ -114,6 +152,16 @@ public final class Brain implements Layer {
     private final Var[] masks;
     private final int[] source;   // region index, or -1 for the input
     private final int[] target;
+    /** Per projection into a switching region: the control weights, else null. */
+    private final Var[] controls;
+    /** Per switching region (else null): control bias [1, cap], u and e [candidates, cap]. */
+    private final Var[] controlBias;
+    private final Var[] switchScale;
+    private final Var[] switchOffset;
+    /** Per switching region: 1 for neurons that switch, and 1 for those that do not. */
+    private final Var[] switchMasks;
+    private final Var[] fixedMasks;
+    private final boolean[] anyFixed;
     private Var[] probes;
     private double[][] gradientEma;
     private double[][] activity;
@@ -134,6 +182,13 @@ public final class Brain implements Layer {
         masks = new Var[p];
         source = new int[p];
         target = new int[p];
+        controls = new Var[p];
+        controlBias = new Var[r];
+        switchScale = new Var[r];
+        switchOffset = new Var[r];
+        switchMasks = new Var[r];
+        fixedMasks = new Var[r];
+        anyFixed = new boolean[r];
         activity = new double[r][];
         for (int i = 0; i < r; i++) {
             RegionSpec s = regions.get(i);
@@ -142,6 +197,21 @@ public final class Brain implements Layer {
             Arrays.fill(m, 0, s.initial(), 1);
             neuronMasks[i] = Var.of(Tensor.of(Shape.of(1, s.capacity()), m));
             activity[i] = new double[s.capacity()];
+            if (s.switching() != null) {
+                int cap = s.capacity();
+                int k = s.switching().candidates().size();
+                controlBias[i] = Var.param(Tensor.zeros(Shape.of(1, cap)));
+                float[] u = new float[k * cap];
+                for (int c = 0; c < k; c++) {
+                    Arrays.fill(u, c * cap, (c + 1) * cap, -1f + 2f * c / (k - 1));   // as in SwitchingDense
+                }
+                switchScale[i] = Var.param(Tensor.of(Shape.of(k, cap), u));
+                switchOffset[i] = Var.param(Tensor.zeros(Shape.of(k, cap)));
+                float[] all = new float[cap];
+                Arrays.fill(all, 1);
+                switchMasks[i] = Var.of(Tensor.of(Shape.of(1, cap), all));
+                fixedMasks[i] = Var.of(Tensor.zeros(Shape.of(1, cap)));
+            }
         }
         for (int j = 0; j < p; j++) {
             ProjectionSpec s = projections.get(j);
@@ -149,6 +219,9 @@ public final class Brain implements Layer {
             target[j] = regionIndex(s.to());
             weights[j] = Var.param(Tensor.zeros(Shape.of(sourceSize(j), regions.get(target[j]).capacity())));
             masks[j] = Var.of(Tensor.zeros(Shape.of(sourceSize(j), regions.get(target[j]).capacity())));
+            if (regions.get(target[j]).switching() != null) {
+                controls[j] = Var.param(Tensor.zeros(Shape.of(sourceSize(j), regions.get(target[j]).capacity())));
+            }
         }
         if (random != null) {
             for (int j = 0; j < p; j++) {
@@ -220,6 +293,21 @@ public final class Brain implements Layer {
         }
         set(weights[j], w);
         set(masks[j], m);
+        randomControls(j, m, scale, random);
+    }
+
+    /** Gives the existing connections of a projection into a switching region random control weights. */
+    private void randomControls(int j, float[] mask, float scale, SplittableRandom random) {
+        if (controls[j] == null) {
+            return;
+        }
+        float[] v = new float[mask.length];
+        for (int k = 0; k < v.length; k++) {
+            if (mask[k] != 0) {
+                v[k] = (float) (random.nextGaussian() * scale);
+            }
+        }
+        set(controls[j], v);
     }
 
     private static void set(Var v, float[] values) {
@@ -278,7 +366,7 @@ public final class Brain implements Layer {
                 regions.add(r);
                 throw new IllegalArgumentException("initial neurons must be in [0, " + r.capacity() + "]");
             }
-            regions.add(new RegionSpec(r.name(), r.capacity(), n, r.activation()));
+            regions.add(new RegionSpec(r.name(), r.capacity(), n, r.activation(), r.switching()));
             return this;
         }
 
@@ -288,7 +376,20 @@ public final class Brain implements Layer {
          */
         public Builder activation(Activation activation) {
             RegionSpec r = last();
-            regions.add(new RegionSpec(r.name(), r.capacity(), r.initial(), Objects.requireNonNull(activation)));
+            regions.add(new RegionSpec(r.name(), r.capacity(), r.initial(), Objects.requireNonNull(activation),
+                    r.switching()));
+            return this;
+        }
+
+        /**
+         * Lets the last region's neurons choose their activation by their input.
+         *
+         * @param switching the candidates and mode, or null for none
+         * @return this builder
+         */
+        public Builder switching(Switching switching) {
+            RegionSpec r = last();
+            regions.add(new RegionSpec(r.name(), r.capacity(), r.initial(), r.activation(), switching));
             return this;
         }
 
@@ -398,6 +499,7 @@ public final class Brain implements Layer {
             Var[] next = new Var[r];
             for (int i = 0; i < r; i++) {
                 Var pre = null;
+                Var control = null;
                 for (int j = 0; j < weights.length; j++) {
                     if (target[j] != i) {
                         continue;
@@ -412,11 +514,36 @@ public final class Brain implements Layer {
                     }
                     Var term = src.matmul(w);
                     pre = pre == null ? term : pre.add(term);
+                    if (controls[j] != null) {
+                        Var ct = src.matmul(controls[j].mul(masks[j].value()));
+                        control = control == null ? ct : control.add(ct);
+                    }
                 }
                 Var b = biases[i];
                 pre = pre == null ? b.mul(Tensor.full(Shape.of(input.shape().dim(0), 1), 1, b.value().dtype(),
                         b.value().device())) : pre.add(b);
-                next[i] = regionSpecs.get(i).activation().forward(pre).mul(neuronMasks[i].value());
+                RegionSpec spec = regionSpecs.get(i);
+                Var out;
+                if (spec.switching() == null) {
+                    out = spec.activation().forward(pre);
+                } else {
+                    Var cb = controlBias[i];
+                    control = control == null ? cb.mul(Tensor.full(Shape.of(input.shape().dim(0), 1), 1,
+                            cb.value().dtype(), cb.value().device())) : control.add(cb);
+                    int k = spec.switching().candidates().size();
+                    List<Var> u = new ArrayList<>(k);
+                    List<Var> e = new ArrayList<>(k);
+                    for (int c = 0; c < k; c++) {
+                        u.add(switchScale[i].slice(0, c, c + 1));
+                        e.add(switchOffset[i].slice(0, c, c + 1));
+                    }
+                    out = SwitchingDense.mix(pre, control, u, e, spec.switching().candidates(),
+                            spec.switching().hard(), training).mul(switchMasks[i].value());
+                    if (anyFixed[i]) {
+                        out = out.add(spec.activation().forward(pre).mul(fixedMasks[i].value()));
+                    }
+                }
+                next[i] = out.mul(neuronMasks[i].value());
             }
             state = next;
         }
@@ -464,6 +591,13 @@ public final class Brain implements Layer {
     public List<Var> parameters() {
         List<Var> p = new ArrayList<>(Arrays.asList(weights));
         p.addAll(Arrays.asList(biases));
+        for (Var[] vs : new Var[][] {controls, controlBias, switchScale, switchOffset}) {
+            for (Var v : vs) {
+                if (v != null) {
+                    p.add(v);
+                }
+            }
+        }
         return p;
     }
 
@@ -473,6 +607,12 @@ public final class Brain implements Layer {
         b.addAll(Arrays.asList(neuronMasks));
         for (RegionSpec r : regionSpecs) {
             b.addAll(r.activation().buffers());   // such as the masks of per-unit activations
+        }
+        for (int i = 0; i < regionSpecs.size(); i++) {
+            if (switchMasks[i] != null) {
+                b.add(switchMasks[i]);
+                b.add(fixedMasks[i]);
+            }
         }
         return b;
     }
@@ -521,6 +661,7 @@ public final class Brain implements Layer {
         }
         set(weights[projection], w);
         set(masks[projection], m);
+        randomControls(projection, m, scale, random);
     }
 
     /**
@@ -572,6 +713,120 @@ public final class Brain implements Layer {
      */
     public void setBiasValues(String region, float[] values) {
         set(biases[regionIndex(region)], values);
+    }
+
+    // ---------------------------------------------------------------- switching
+
+    private int switchingRegion(String region) {
+        int i = regionIndex(region);
+        if (regionSpecs.get(i).switching() == null) {
+            throw new IllegalArgumentException("region " + region + " has no switching neurons");
+        }
+        return i;
+    }
+
+    private int switchingProjection(int projection) {
+        if (controls[projection] == null) {
+            throw new IllegalArgumentException("projection " + projection + " does not lead to a switching region");
+        }
+        return projection;
+    }
+
+    /**
+     * Sets which neurons of a switching region choose their activation by their input; the
+     * others use the region's {@link RegionSpec#activation()}.
+     *
+     * @param region the region's name
+     * @param units one flag per neuron of its capacity
+     */
+    public void setSwitchingUnits(String region, boolean[] units) {
+        int i = switchingRegion(region);
+        int cap = regionSpecs.get(i).capacity();
+        if (units.length != cap) {
+            throw new IllegalArgumentException("region " + region + " has " + cap + " neurons, got " + units.length);
+        }
+        float[] on = new float[cap];
+        float[] off = new float[cap];
+        boolean fixed = false;
+        for (int u = 0; u < cap; u++) {
+            on[u] = units[u] ? 1 : 0;
+            off[u] = units[u] ? 0 : 1;
+            fixed |= !units[u];
+        }
+        set(switchMasks[i], on);
+        set(fixedMasks[i], off);
+        anyFixed[i] = fixed;
+    }
+
+    /**
+     * @param region a switching region's name
+     * @return one flag per neuron of its capacity: whether it switches
+     */
+    public boolean[] switchingUnits(String region) {
+        float[] m = switchMasks[switchingRegion(region)].value().to(DType.FLOAT32).toArray();
+        boolean[] out = new boolean[m.length];
+        for (int u = 0; u < m.length; u++) {
+            out[u] = m[u] != 0;
+        }
+        return out;
+    }
+
+    /**
+     * A projection's control weights, laid out like {@link #weightValues}.
+     *
+     * @param projection the index of a projection into a switching region
+     * @return a copy of the control weights
+     */
+    public float[] controlValues(int projection) {
+        return controls[switchingProjection(projection)].value().to(DType.FLOAT32).toArray();
+    }
+
+    /**
+     * Overwrites a projection's control weights; entries whose connection is off are kept at 0.
+     *
+     * @param projection the index of a projection into a switching region
+     * @param values the control weights, laid out like {@link #weightValues}
+     */
+    public void setControlValues(int projection, float[] values) {
+        float[] m = masks[switchingProjection(projection)].value().to(DType.FLOAT32).toArray();
+        if (values.length != m.length) {
+            throw new IllegalArgumentException("projection " + projection + " has " + m.length
+                    + " control weights, got " + values.length);
+        }
+        float[] v = values.clone();
+        for (int k = 0; k < v.length; k++) {
+            if (m[k] == 0) {
+                v[k] = 0;
+            }
+        }
+        set(controls[projection], v);
+    }
+
+    /**
+     * A switching region's own switching parameters.
+     *
+     * @param region the region's name
+     * @return copies of the control bias (one per neuron), the scales {@code u} and the
+     *     offsets {@code e} (candidate by candidate, one per neuron each)
+     */
+    public float[][] switchingValues(String region) {
+        int i = switchingRegion(region);
+        return new float[][] {controlBias[i].value().to(DType.FLOAT32).toArray(),
+                switchScale[i].value().to(DType.FLOAT32).toArray(),
+                switchOffset[i].value().to(DType.FLOAT32).toArray()};
+    }
+
+    /**
+     * Overwrites a switching region's own switching parameters.
+     *
+     * @param region the region's name
+     * @param values the control bias, scales and offsets, as {@link #switchingValues} gives them
+     */
+    public void setSwitchingValues(String region, float[][] values) {
+        int i = switchingRegion(region);
+        set(controlBias[i], values[0]);
+        set(switchScale[i], values[1]);
+        set(switchOffset[i], values[2]);
     }
 
     // ---------------------------------------------------------------- plasticity
@@ -911,6 +1166,16 @@ public final class Brain implements Layer {
             RegionSpec r = b.regionSpecs.get(i);
             c.put("region" + i + ".name", r.name()).put("region" + i + ".capacity", r.capacity())
                     .put("region" + i + ".initial", r.initial()).put("region" + i + ".activation", r.activation());
+            if (r.switching() != null) {
+                List<Activation> cs = r.switching().candidates();
+                c.put("region" + i + ".switching", cs.size()).put("region" + i + ".hard", r.switching().hard());
+                for (int k = 0; k < cs.size(); k++) {
+                    c.put("region" + i + ".candidate" + k, cs.get(k));
+                }
+                boolean[] units = b.switchingUnits(r.name());
+                c.put("region" + i + ".fixed", java.util.stream.IntStream.range(0, units.length)
+                        .filter(u -> !units[u]).toArray());
+            }
         }
         for (int j = 0; j < b.projectionSpecs.size(); j++) {
             ProjectionSpec p = b.projectionSpecs.get(j);
@@ -923,15 +1188,34 @@ public final class Brain implements Layer {
     static Brain read(Config c) {
         List<RegionSpec> regions = new ArrayList<>();
         for (int i = 0; i < c.getInt("regions"); i++) {
+            Switching switching = null;
+            if (c.has("region" + i + ".switching")) {
+                List<Activation> cs = new ArrayList<>();
+                for (int k = 0; k < c.getInt("region" + i + ".switching"); k++) {
+                    cs.add(c.getActivation("region" + i + ".candidate" + k));
+                }
+                switching = new Switching(cs, c.getBoolean("region" + i + ".hard"));
+            }
             regions.add(new RegionSpec(c.getString("region" + i + ".name"), c.getInt("region" + i + ".capacity"),
-                    c.getInt("region" + i + ".initial"), c.getActivation("region" + i + ".activation")));
+                    c.getInt("region" + i + ".initial"), c.getActivation("region" + i + ".activation"), switching));
         }
         List<ProjectionSpec> projections = new ArrayList<>();
         for (int j = 0; j < c.getInt("projections"); j++) {
             projections.add(new ProjectionSpec(c.getString("projection" + j + ".from"),
                     c.getString("projection" + j + ".to"), c.getFloat("projection" + j + ".density")));
         }
-        return new Brain(c.getInt("inputs"), regions, projections, List.of(c.getString("outputs").split(",")),
-                c.getInt("ticks"), null);
+        Brain brain = new Brain(c.getInt("inputs"), regions, projections,
+                List.of(c.getString("outputs").split(",")), c.getInt("ticks"), null);
+        for (int i = 0; i < regions.size(); i++) {
+            if (regions.get(i).switching() != null) {
+                boolean[] units = new boolean[regions.get(i).capacity()];
+                Arrays.fill(units, true);
+                for (int u : c.getInts("region" + i + ".fixed")) {
+                    units[u] = false;
+                }
+                brain.setSwitchingUnits(regions.get(i).name(), units);
+            }
+        }
+        return brain;
     }
 }

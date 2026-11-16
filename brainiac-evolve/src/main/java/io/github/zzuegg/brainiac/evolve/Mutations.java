@@ -223,14 +223,89 @@ public final class Mutations {
                 if (scope == Scope.REGION) {
                     if (random.nextDouble() < rate) {
                         Activation a = set[random.nextInt(set.length)];
-                        r.neurons.replaceAll(n -> new Neuron(n.id(), a));
+                        r.neurons.replaceAll(n -> n.withActivation(a));
                     }
                 } else {
                     r.neurons.replaceAll(n -> random.nextDouble() < rate
-                            ? new Neuron(n.id(), set[random.nextInt(set.length)]) : n);
+                            ? n.withActivation(set[random.nextInt(set.length)]) : n);
                 }
             }
         });
+    }
+
+    /**
+     * Turns input-controlled activation on or off for single neurons: a switching neuron
+     * gets control weights on its incoming connections and chooses among its region's
+     * candidates by what its inputs are (see {@link io.github.zzuegg.brainiac.nn.Brain.Switching}).
+     * A region's first switching neuron gives it {@link Genome#DEFAULT_SWITCHING}.
+     *
+     * @param rate the probability per neuron
+     * @return the mutation, named "switching"
+     */
+    public static Mutation switching(double rate) {
+        return Mutation.named("switching", (g, random) -> {
+            for (RegionDraft r : g.regions) {
+                r.neurons.replaceAll(n -> random.nextDouble() < rate ? n.withSwitching(!n.switches()) : n);
+            }
+        });
+    }
+
+    /**
+     * Flips a region's switching between soft (a learned blend of the candidates) and hard
+     * (only the most likely candidate counts).
+     *
+     * @param rate the probability per region with switching neurons
+     * @return the mutation, named "switch-mode"
+     */
+    public static Mutation switchMode(double rate) {
+        return Mutation.named("switch-mode", (g, random) -> {
+            for (RegionDraft r : g.regions) {
+                if (switches(r) && random.nextDouble() < rate) {
+                    var s = settings(r);
+                    r.switching = new io.github.zzuegg.brainiac.nn.Brain.Switching(s.candidates(), !s.hard());
+                }
+            }
+        });
+    }
+
+    /**
+     * Adds a candidate to a region's switching neurons, or removes one (keeping at least two).
+     *
+     * @param rate the probability per region with switching neurons
+     * @param choices the activations that can be added, without learnable parameters
+     * @return the mutation, named "switch-candidates"
+     */
+    public static Mutation switchCandidates(double rate, Activation... choices) {
+        Activation[] set = choices.length == 0 ? DEFAULT_ACTIVATIONS.toArray(Activation[]::new) : choices.clone();
+        return Mutation.named("switch-candidates", (g, random) -> {
+            for (RegionDraft r : g.regions) {
+                if (!switches(r) || random.nextDouble() >= rate) {
+                    continue;
+                }
+                var s = settings(r);
+                List<Activation> cs = new ArrayList<>(s.candidates());
+                boolean add = cs.size() <= 2 || random.nextBoolean();
+                if (add) {
+                    Activation a = set[random.nextInt(set.length)];
+                    if (!cs.contains(a)) {
+                        cs.add(a);
+                    }
+                } else {
+                    cs.remove(random.nextInt(cs.size()));
+                }
+                if (cs.size() >= 2) {
+                    r.switching = new io.github.zzuegg.brainiac.nn.Brain.Switching(cs, s.hard());
+                }
+            }
+        });
+    }
+
+    private static boolean switches(RegionDraft r) {
+        return r.neurons.stream().anyMatch(Neuron::switches);
+    }
+
+    private static io.github.zzuegg.brainiac.nn.Brain.Switching settings(RegionDraft r) {
+        return r.switching != null ? r.switching : Genome.DEFAULT_SWITCHING;
     }
 
     /**
@@ -343,6 +418,9 @@ public final class Mutations {
         DEFAULTS.put("neurons", max -> neurons(0.3, 1, max));
         DEFAULTS.put("activations", max -> activations(0.05, Scope.NEURON));
         DEFAULTS.put("region-activations", max -> activations(0.2, Scope.REGION));
+        DEFAULTS.put("switching", max -> switching(0.05));
+        DEFAULTS.put("switch-mode", max -> switchMode(0.1));
+        DEFAULTS.put("switch-candidates", max -> switchCandidates(0.1));
         DEFAULTS.put("learning-rate", max -> learningRate(0.3, 0.5, 1e-4, 0.3));
         DEFAULTS.put("optimizer", max -> optimizer(0.1));
         DEFAULTS.put("ticks", max -> ticks(0.1, 4));
@@ -356,7 +434,8 @@ public final class Mutations {
 
     /**
      * A built-in mutation with default settings: "connections", "density", "projections",
-     * "neurons", "activations" (per neuron), "region-activations", "learning-rate",
+     * "neurons", "activations" (per neuron), "region-activations", "switching",
+     * "switch-mode", "switch-candidates", "learning-rate",
      * "optimizer", "ticks" or "regions".
      *
      * @param name the name

@@ -42,25 +42,79 @@ public final class Genome {
      * A neuron.
      *
      * @param id its id, unique within the genome and kept by its copies in offspring
-     * @param activation its activation
+     * @param activation its activation, used unless it switches
+     * @param switches whether it chooses its activation by its input, among its region's
+     *     {@link Region#switching() candidates}
      */
-    public record Neuron(int id, Activation activation) {
+    public record Neuron(int id, Activation activation, boolean switches) {
         /** Checks the fields. */
         public Neuron {
             Objects.requireNonNull(activation, "activation");
         }
+
+        /**
+         * A neuron with a fixed activation.
+         *
+         * @param id its id
+         * @param activation its activation
+         */
+        public Neuron(int id, Activation activation) {
+            this(id, activation, false);
+        }
+
+        /**
+         * @param a another activation
+         * @return this neuron with that activation
+         */
+        public Neuron withActivation(Activation a) {
+            return new Neuron(id, a, switches);
+        }
+
+        /**
+         * @param on whether it switches
+         * @return this neuron, switching or not
+         */
+        public Neuron withSwitching(boolean on) {
+            return new Neuron(id, activation, on);
+        }
     }
+
+    /** The candidates a region's switching neurons start with. */
+    public static final Brain.Switching DEFAULT_SWITCHING = new Brain.Switching(
+            List.of(Activation.RELU, Activation.TANH, Activation.SIGMOID, Activation.IDENTITY), false);
 
     /**
      * A region: a group of neurons updated together.
      *
      * @param name its name
      * @param neurons its neurons, in order
+     * @param switching the candidates and mode of its switching neurons; null when none
+     *     switches
      */
-    public record Region(String name, List<Neuron> neurons) {
-        /** Copies the list. */
+    public record Region(String name, List<Neuron> neurons, Brain.Switching switching) {
+        /** Copies the list; drops the switching settings when no neuron switches. */
         public Region {
             neurons = List.copyOf(neurons);
+            if (neurons.stream().noneMatch(Neuron::switches)) {
+                switching = null;
+            } else if (switching == null) {
+                switching = DEFAULT_SWITCHING;
+            }
+        }
+
+        /**
+         * A region without switching neurons.
+         *
+         * @param name its name
+         * @param neurons its neurons
+         */
+        public Region(String name, List<Neuron> neurons) {
+            this(name, neurons, null);
+        }
+
+        /** @return how many of its neurons switch */
+        public int switchingNeurons() {
+            return (int) neurons.stream().filter(Neuron::switches).count();
         }
     }
 
@@ -264,7 +318,27 @@ public final class Genome {
                 fed += r.neurons().size();
             }
         }
-        return connections() + neurons() + (long) fed * outputs + outputs;
+        long switching = 0;   // control weights, bias, scales and offsets of switching neurons
+        for (Region r : regions) {
+            if (r.switching() == null) {
+                continue;
+            }
+            java.util.Set<Integer> ids = new java.util.HashSet<>();
+            for (Neuron n : r.neurons()) {
+                if (n.switches()) {
+                    ids.add(n.id());
+                }
+            }
+            for (Projection p : projections) {
+                if (p.to().equals(r.name())) {
+                    for (long k : p.connections) {
+                        switching += ids.contains(target(k)) ? 1 : 0;
+                    }
+                }
+            }
+            switching += (long) ids.size() * (1 + 2 * r.switching().candidates().size());
+        }
+        return connections() + neurons() + switching + (long) fed * outputs + outputs;
     }
 
     /**
@@ -351,6 +425,9 @@ public final class Genome {
         for (Region r : regions) {
             Activation[] perUnit = r.neurons().stream().map(Neuron::activation).toArray(Activation[]::new);
             b.region(r.name(), perUnit.length).activation(Activation.perUnit(palette, perUnit));
+            if (r.switching() != null) {
+                b.switching(r.switching());
+            }
         }
         for (Projection p : projections) {
             if (p.size() == 0) {
@@ -405,6 +482,15 @@ public final class Genome {
                 }
             }
             brain.setConnections(j++, mask, random);
+        }
+        for (Region r : regions) {
+            if (r.switching() != null) {
+                boolean[] units = new boolean[r.neurons().size()];
+                for (int i = 0; i < units.length; i++) {
+                    units[i] = r.neurons().get(i).switches();
+                }
+                brain.setSwitchingUnits(r.name(), units);
+            }
         }
     }
 
@@ -493,8 +579,14 @@ public final class Genome {
             for (Neuron n : r.neurons()) {
                 acts.merge(n.activation().toString(), 1, Integer::sum);
             }
-            sb.append(String.format("  region %-12s %4d neurons  %s%s%n", r.name(), r.neurons().size(), acts,
-                    outputs.contains(r.name()) ? "  -> output" : ""));
+            String switching = "";
+            if (r.switching() != null) {
+                switching = String.format("  %d switching (%s: %s)", r.switchingNeurons(),
+                        r.switching().hard() ? "hard" : "soft", String.join("/",
+                                r.switching().candidates().stream().map(Activation::toString).toList()));
+            }
+            sb.append(String.format("  region %-12s %4d neurons  %s%s%s%n", r.name(), r.neurons().size(), acts,
+                    switching, outputs.contains(r.name()) ? "  -> output" : ""));
         }
         for (Projection p : projections) {
             long possible = (long) size(p.from()) * size(p.to());
@@ -533,10 +625,16 @@ public final class Genome {
             private final String name;
             /** Its neurons, editable. */
             public final List<Neuron> neurons;
+            /**
+             * The candidates and mode of its switching neurons; null means
+             * {@link Genome#DEFAULT_SWITCHING} once a neuron switches. Editable.
+             */
+            public Brain.Switching switching;
 
-            RegionDraft(String name, List<Neuron> neurons) {
+            RegionDraft(String name, List<Neuron> neurons, Brain.Switching switching) {
                 this.name = name;
                 this.neurons = new ArrayList<>(neurons);
+                this.switching = switching;
             }
 
             /** @return its name */
@@ -600,7 +698,7 @@ public final class Genome {
         Draft(Genome g) {
             this.inputs = g.inputs;
             for (Region r : g.regions) {
-                regions.add(new RegionDraft(r.name(), r.neurons()));
+                regions.add(new RegionDraft(r.name(), r.neurons(), r.switching()));
             }
             for (Projection p : g.projections) {
                 TreeSet<Long> c = new TreeSet<>();
@@ -691,7 +789,7 @@ public final class Genome {
             if (name.equals(INPUT) || region(name) != null) {
                 throw new IllegalArgumentException("region name " + name + " is taken");
             }
-            RegionDraft r = new RegionDraft(name, List.of());
+            RegionDraft r = new RegionDraft(name, List.of(), null);
             for (int i = 0; i < neurons; i++) {
                 r.neurons.add(new Neuron(newId(), activation));
             }
@@ -785,7 +883,7 @@ public final class Genome {
         public Genome freeze() {
             List<Region> rs = new ArrayList<>();
             for (RegionDraft r : regions) {
-                rs.add(new Region(r.name, r.neurons));
+                rs.add(new Region(r.name, r.neurons, r.switching));
                 for (Neuron n : r.neurons) {
                     reserve(n.id());
                 }

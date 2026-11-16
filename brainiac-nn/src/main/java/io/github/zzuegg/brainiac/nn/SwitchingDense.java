@@ -211,16 +211,46 @@ public final class SwitchingDense implements Layer {
         Var z = input.matmul(weight).add(bias);
         Var c = input.matmul(control).add(controlBias);
         int k = candidates.length;
+        List<Var> scales = new ArrayList<>(k);
+        List<Var> offsets = new ArrayList<>(k);
+        for (int i = 0; i < k; i++) {
+            scales.add(scale.slice(0, i, i + 1));
+            offsets.add(offset.slice(0, i, i + 1));
+        }
+        return mix(z, c, scales, offsets, List.of(candidates), hard, training);
+    }
+
+    /**
+     * The switching step on its own, for layers that compute {@code z} and the control value
+     * {@code c} themselves (such as a {@link Brain} region whose neurons switch):
+     * {@code sum_k p_k f_k(z)} with {@code p = softmax_k(c u_k + e_k)}, or in hard mode
+     * {@code f_k(z)} of the most likely candidate alone.
+     *
+     * @param z the weighted sums
+     * @param c the control values, the same shape as {@code z}
+     * @param scales {@code u_k} per candidate, each broadcastable to {@code z}
+     * @param offsets {@code e_k} per candidate, each broadcastable to {@code z}
+     * @param candidates the activations
+     * @param hard whether only the most likely candidate counts
+     * @param training whether this is a training pass
+     * @return the outputs, the shape of {@code z}
+     */
+    public static Var mix(Var z, Var c, List<Var> scales, List<Var> offsets, List<Activation> candidates,
+                          boolean hard, boolean training) {
+        int k = candidates.size();
+        if (k < 2 || scales.size() != k || offsets.size() != k) {
+            throw new IllegalArgumentException("mix needs a scale and an offset for each of at least two candidates");
+        }
         Var[] logits = new Var[k];
         Var max = null;
         for (int i = 0; i < k; i++) {
-            logits[i] = c.mul(scale.slice(0, i, i + 1)).add(offset.slice(0, i, i + 1));
+            logits[i] = c.mul(scales.get(i)).add(offsets.get(i));
             max = max == null ? logits[i] : max.maximum(logits[i]);
         }
         Var weighted = null;
         Var total = null;
         for (int i = 0; i < k; i++) {
-            Var f = candidates[i].forward(z, training);
+            Var f = candidates.get(i).forward(z, training);
             if (hard) {
                 // the first candidate at the maximum wins; earlier winners mask later ties
                 Tensor pick = logits[i].value().greater(max.value().sub(Tensor.full(Shape.of(), 1e-6f,

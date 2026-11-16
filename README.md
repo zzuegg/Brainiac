@@ -451,6 +451,8 @@ choices...)`, ...), and `Mutation.named(...)` adds your own:
 | `neurons` | adds or removes neurons in a region, wiring new ones at the projection's density |
 | `activations` | gives single neurons another activation (`Activation.perUnit`) |
 | `region-activations` | gives a whole region another activation |
+| `switching` | lets single neurons choose their activation by their input, or stops them (`Brain.Switching`) |
+| `switch-mode`, `switch-candidates` | flips a region's switching between soft and hard, or adds or removes a candidate |
 | `learning-rate`, `optimizer`, `ticks` | training and recurrence hyperparameters |
 | `regions` | inserts a new region (a layer, in effect) or removes one |
 
@@ -477,8 +479,20 @@ single shared activation, even with all seven default activations mixed. On a GP
 mixed region computes all seven, used or not, so candidates that differ only in their mix
 of activations share one generated kernel instead of compiling new ones every generation.
 
+A **switching** neuron is the evolvable form of `SwitchingDense`: besides its weighted sum
+`z` it gets control weights on the same incoming connections, a control value
+`c = x V + d`, and computes `sum_k softmax_k(c u_k + e_k) f_k(z)` over its region's
+candidates (relu, tanh, sigmoid and identity to start), so what arrives decides which
+activation it uses. Which neurons switch, soft or hard mode, and the candidate set are all
+genes; control weights are inherited by neuron id and train stacked like the rest. On
+sentiment (a bag-of-words template, population 12, 6 generations) adding the three switching
+genes moved the evolved design from 69.3% to 71.5%, with 9 of its 52 neurons switching;
+the hand-built MLP gets 78.7%, so that task needs a design that reads word order more than
+it needs a new gene.
+
 ```
 ./gradlew :brainiac-examples:run --args="evolve spiral --threads 4"
+./gradlew :brainiac-examples:run --args="evolve sentiment --mutate connections,neurons,activations,switching,switch-mode,switch-candidates"
 ./gradlew :brainiac-examples:run --args="evolve shapes --device gpu"
 ./gradlew :brainiac-examples:run --args="evolve iris --mutate connections,neurons,activations --scale 0.5"
 ```
