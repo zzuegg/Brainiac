@@ -1245,7 +1245,8 @@ public final class OpenClBackend implements Backend {
     private ClStorage raw(long size, DType dtype) {
         program(dtype);
         ClStorage s = new ClStorage(this, new ClStorage.Buffer(), size, dtype);
-        track(s, new Release(cl, s.buffer, bucket(size * dtype.bytes()), allocated, pool, budget / 4, slabs));
+        CLEANER.register(s, new Release(cl, s.buffer, bucket(size * dtype.bytes()), allocated, pool,
+                budget / 4, slabs));
         return s;
     }
 
@@ -1266,41 +1267,8 @@ public final class OpenClBackend implements Backend {
         }
     }
 
-    /** Storages whose buffers return to the pool (or are freed) once they are unreachable. */
-    private final java.lang.ref.ReferenceQueue<ClStorage> unreachable = new java.lang.ref.ReferenceQueue<>();
-    private final Set<Reclaim> tracked = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
-    /** Releases a storage's buffer once the storage is unreachable. */
-    private static final class Reclaim extends java.lang.ref.PhantomReference<ClStorage> {
-        final Release release;
-
-        Reclaim(ClStorage s, java.lang.ref.ReferenceQueue<ClStorage> queue, Release release) {
-            super(s, queue);
-            this.release = release;
-        }
-    }
-
-    private void track(ClStorage s, Release release) {
-        tracked.add(new Reclaim(s, unreachable, release));
-    }
-
-    /**
-     * Returns the buffers of storages found unreachable to the pool, on the allocating thread:
-     * a cleaner thread would do it some time later, while the host, queueing work ahead of the
-     * device, kept creating new buffers.
-     */
-    private void reclaim() {
-        java.lang.ref.Reference<? extends ClStorage> r;
-        while ((r = unreachable.poll()) != null) {
-            Reclaim c = (Reclaim) r;
-            tracked.remove(c);
-            c.release.run();
-        }
-    }
-
     /** A device buffer for a storage being written for the first time, from the pool if one fits. */
     MemorySegment buffer(long bytes) {
-        reclaim();
         MemorySegment mem = pool.take(bytes);
         if (mem == null) {
             long createStart = System.nanoTime();
@@ -1325,18 +1293,6 @@ public final class OpenClBackend implements Backend {
                 collections++;
                 long gcStart = System.nanoTime();
                 System.gc();
-                try {
-                    // found unreachable by the collection: queued shortly after it returns
-                    java.lang.ref.Reference<? extends ClStorage> r = unreachable.remove(20);
-                    if (r != null) {
-                        Reclaim c = (Reclaim) r;
-                        tracked.remove(c);
-                        c.release.run();
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                reclaim();
                 collectNanos += System.nanoTime() - gcStart;
             }
         } else {
@@ -1389,7 +1345,6 @@ public final class OpenClBackend implements Backend {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("interrupted while waiting for device memory", e);
             }
-            reclaim();
         }
     }
 
@@ -1567,7 +1522,8 @@ public final class OpenClBackend implements Backend {
         buffer.mem = mem;
         ClStorage s = new ClStorage(this, buffer, size, dtype);
         // pooled only when the pool's sizes can use it
-        track(s, new Release(cl, buffer, bytes, allocated, pool, bytes == bucket(bytes) ? budget / 4 : 0, slabs));
+        CLEANER.register(s, new Release(cl, buffer, bytes, allocated, pool, bytes == bucket(bytes) ? budget / 4 : 0,
+                slabs));
         return s;
     }
 
