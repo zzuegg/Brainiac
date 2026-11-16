@@ -811,8 +811,7 @@ public final class Evolution {
         for (int i = 0; i < candidates.size(); i++) {
             Genome g = candidates.get(i).genome();
             List<Object> key = List.of(g.regions().stream().map(Genome.Region::name).toList(), g.outputs(),
-                    g.ticks(), optimizerKind(g),
-                    g.regions().stream().map(r -> java.util.Objects.toString(r.switching())).toList());
+                    g.ticks(), optimizerKind(g));
             groups.computeIfAbsent(key, k -> new ArrayList<>()).add(i);
         }
         Trained[] out = new Trained[candidates.size()];

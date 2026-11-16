@@ -46,8 +46,18 @@ final class Population implements Layer {
     private final Var[] biases;
     private final List<List<Activation>> activations = new ArrayList<>();
     private final List<List<Var>> activationMasks = new ArrayList<>();
-    /** Per region with switching neurons (else null): its settings and stacked parameters. */
-    private final Brain.Switching[] switching;
+    /**
+     * Per region where any candidate has switching neurons (else null): the union of all
+     * candidates' activations to switch between, in a fixed order. Candidates differ in
+     * which of them they may pick (the others get a large negative logit) and in soft or
+     * hard mode, so every design stacks into one run.
+     */
+    private final List<List<Activation>> switching = new ArrayList<>();
+    /** Per switching region: per union entry, 0 where a candidate may pick it, else -1e4; [P,1,1]. */
+    private final List<List<Var>> barred = new ArrayList<>();
+    /** Per switching region: 1 for candidates in hard mode, [P,1,1]; null when none is. */
+    private final Var[] hardMask;
+    private final Var[] softMask;
     private final Var[] controls;
     private final Var[] controlBias;
     private final List<List<Var>> switchScale = new ArrayList<>();
@@ -84,15 +94,51 @@ final class Population implements Layer {
                 throw new IllegalArgumentException("stacked designs need the same regions, outputs and ticks");
             }
         }
-        switching = new Brain.Switching[regions.size()];
+        hardMask = new Var[regions.size()];
+        softMask = new Var[regions.size()];
         for (int r = 0; r < regions.size(); r++) {
+            List<Activation> all = new ArrayList<>();
+            boolean anyHard = false;
+            boolean anySoft = false;
             for (Genome g : genomes) {
                 Brain.Switching sw = g.regions().get(r).switching();
-                if (sw != null && switching[r] != null && !sw.equals(switching[r])) {
-                    throw new IllegalArgumentException("stacked designs need the same switching settings per region");
+                if (sw == null) {
+                    continue;
                 }
-                switching[r] = sw != null ? sw : switching[r];
+                for (Activation a : sw.candidates()) {
+                    if (!all.contains(a)) {
+                        all.add(a);
+                    }
+                }
+                anyHard |= sw.hard();
+                anySoft |= !sw.hard();
             }
+            barred.add(null);
+            switching.add(null);
+            if (all.isEmpty()) {
+                continue;
+            }
+            all.sort(java.util.Comparator.comparing(Activation::toString));
+            switching.set(r, List.copyOf(all));
+            List<Var> bars = new ArrayList<>();
+            for (Activation a : all) {
+                float[] v = new float[count];
+                for (int c = 0; c < count; c++) {
+                    Brain.Switching sw = genomes.get(c).regions().get(r).switching();
+                    v[c] = sw != null && sw.candidates().contains(a) ? 0 : -1e4f;
+                }
+                bars.add(Var.of(Tensor.of(Shape.of(count, 1, 1), v)));
+            }
+            barred.set(r, bars);
+            float[] hard = new float[count];
+            float[] soft = new float[count];
+            for (int c = 0; c < count; c++) {
+                Brain.Switching sw = genomes.get(c).regions().get(r).switching();
+                hard[c] = sw != null && sw.hard() ? 1 : 0;
+                soft[c] = 1 - hard[c];
+            }
+            hardMask[r] = anyHard ? Var.of(Tensor.of(Shape.of(count, 1, 1), hard)) : null;
+            softMask[r] = anySoft && anyHard ? Var.of(Tensor.of(Shape.of(count, 1, 1), soft)) : null;
         }
         width = new int[regions.size()];
         for (int r = 0; r < width.length; r++) {
@@ -144,7 +190,7 @@ final class Population implements Layer {
             }
             weights[j] = Var.param(Tensor.of(Shape.of(count, rows, cols), w));
             masks[j] = Var.of(Tensor.of(Shape.of(count, rows, cols), m));
-            if (switching[regions.indexOf(to)] != null) {
+            if (switching.get(regions.indexOf(to)) != null) {
                 float[] v = new float[count * rows * cols];
                 for (int c = 0; c < count; c++) {
                     Genome g = genomes.get(c);
@@ -169,11 +215,11 @@ final class Population implements Layer {
         for (int r = 0; r < regions.size(); r++) {
             switchScale.add(null);
             switchOffset.add(null);
-            if (switching[r] == null) {
+            if (switching.get(r) == null) {
                 continue;
             }
             int n = width[r];
-            int kk = switching[r].candidates().size();
+            int kk = switching.get(r).size();
             float[] cb = new float[count * n];
             float[][] u = new float[kk][count * n];
             float[][] e = new float[kk][count * n];
@@ -185,12 +231,14 @@ final class Population implements Layer {
                 }
                 float[][] own = Genome.brainOf(models.get(c)).switchingValues(region.name());
                 int gn = region.neurons().size();
+                List<Activation> mine = region.switching().candidates();
                 for (int i = 0; i < gn; i++) {
                     on[c * n + i] = region.neurons().get(i).switches() ? 1 : 0;
                     cb[c * n + i] = own[0][i] / s[c];
-                    for (int k = 0; k < kk; k++) {
-                        u[k][c * n + i] = own[1][k * gn + i] / s[c];
-                        e[k][c * n + i] = own[2][k * gn + i] / s[c];
+                    for (int k = 0; k < mine.size(); k++) {
+                        int at = switching.get(r).indexOf(mine.get(k));
+                        u[at][c * n + i] = own[1][k * gn + i] / s[c];
+                        e[at][c * n + i] = own[2][k * gn + i] / s[c];
                     }
                 }
             }
@@ -358,17 +406,10 @@ final class Population implements Layer {
                     Var term = acts.get(k).forward(pre, training).mul(activationMasks.get(i).get(k));
                     out = out == null ? term : out.add(term);
                 }
-                if (switching[i] != null) {
+                if (switching.get(i) != null) {
                     Var cb = controlBias[i].mul(scale);
                     control = control == null ? cb.expand(Shape.of(count, batch, width[i])) : control.add(cb);
-                    List<Var> u = new ArrayList<>();
-                    List<Var> e = new ArrayList<>();
-                    for (int k = 0; k < switching[i].candidates().size(); k++) {
-                        u.add(switchScale.get(i).get(k).mul(scale));
-                        e.add(switchOffset.get(i).get(k).mul(scale));
-                    }
-                    Var sw = io.github.zzuegg.brainiac.nn.SwitchingDense.mix(pre, control, u, e,
-                            switching[i].candidates(), switching[i].hard(), training).mul(switchMasks[i]);
+                    Var sw = switchingOutput(i, pre, control, training).mul(switchMasks[i]);
                     out = out == null ? sw : out.add(sw);
                 }
                 next[i] = out;
@@ -383,6 +424,54 @@ final class Population implements Layer {
         Var y = fed.matmul(headWeight.mul(scale)).add(headBias.mul(scale));
         y = head.forward(y, training);                       // [count, batch, outputs]
         return y.permute(1, 0, 2).reshape(batch, count * outputs);
+    }
+
+    /**
+     * The switching neurons of region {@code i} for all candidates at once: the formula of
+     * {@link io.github.zzuegg.brainiac.nn.SwitchingDense#mix}, with each candidate's barred
+     * activations pushed out of the softmax and its own soft or hard mode.
+     */
+    private Var switchingOutput(int i, Var pre, Var control, boolean training) {
+        List<Activation> acts = switching.get(i);
+        int k = acts.size();
+        Var[] logits = new Var[k];
+        Var max = null;
+        for (int a = 0; a < k; a++) {
+            logits[a] = control.mul(switchScale.get(i).get(a).mul(scale)).add(switchOffset.get(i).get(a).mul(scale))
+                    .add(barred.get(i).get(a));
+            max = max == null ? logits[a] : max.maximum(logits[a]);
+        }
+        boolean anyHard = hardMask[i] != null;
+        boolean anySoft = !anyHard || softMask[i] != null;
+        Var soft = null;
+        Var total = null;
+        Var hard = null;
+        Tensor taken = null;
+        for (int a = 0; a < k; a++) {
+            Var f = acts.get(a).forward(pre, training);
+            if (anySoft) {
+                Var w = logits[a].sub(max).exp();
+                soft = soft == null ? f.mul(w) : soft.add(f.mul(w));
+                total = total == null ? w : total.add(w);
+            }
+            if (anyHard) {
+                // the first candidate at the maximum wins, as in SwitchingDense
+                Tensor pick = logits[a].value().greater(max.value().sub(Tensor.full(Shape.of(), 1e-6f,
+                        max.value().device())));
+                if (taken != null) {
+                    pick = pick.mul(taken.neg().add(Tensor.full(Shape.of(), 1f, pick.device())));
+                }
+                hard = hard == null ? f.mul(pick) : hard.add(f.mul(pick));
+                taken = taken == null ? pick : taken.add(pick);
+            }
+        }
+        if (!anyHard) {
+            return soft.div(total);
+        }
+        if (!anySoft) {
+            return hard;
+        }
+        return soft.div(total).mul(softMask[i]).add(hard.mul(hardMask[i]));
     }
 
     @Override
@@ -400,7 +489,7 @@ final class Population implements Layer {
             }
         }
         for (int r = 0; r < regions.size(); r++) {
-            if (switching[r] != null) {
+            if (switching.get(r) != null) {
                 p.add(controlBias[r]);
                 p.addAll(switchScale.get(r));
                 p.addAll(switchOffset.get(r));
@@ -419,6 +508,18 @@ final class Population implements Layer {
         for (Var m : switchMasks) {
             if (m != null) {
                 b.add(m);
+            }
+        }
+        for (List<Var> bars : barred) {
+            if (bars != null) {
+                b.addAll(bars);
+            }
+        }
+        for (Var[] vs : new Var[][] {hardMask, softMask}) {
+            for (Var v : vs) {
+                if (v != null) {
+                    b.add(v);
+                }
             }
         }
         return b;
@@ -544,14 +645,16 @@ final class Population implements Layer {
                 control.add(cv);
                 mask.add(cm);
             }
-            int kk = switching[r].candidates().size();
+            List<Activation> mine = region.switching().candidates();
+            int kk = mine.size();
             float[][] own = new float[3][];
             own[0] = slice(controlBias[r], c, n, s);
             own[1] = new float[kk * n];
             own[2] = new float[kk * n];
             for (int k = 0; k < kk; k++) {
-                System.arraycopy(slice(switchScale.get(r).get(k), c, n, s), 0, own[1], k * n, n);
-                System.arraycopy(slice(switchOffset.get(r).get(k), c, n, s), 0, own[2], k * n, n);
+                int at = switching.get(r).indexOf(mine.get(k));
+                System.arraycopy(slice(switchScale.get(r).get(at), c, n, s), 0, own[1], k * n, n);
+                System.arraycopy(slice(switchOffset.get(r).get(at), c, n, s), 0, own[2], k * n, n);
             }
             Weights.readSwitching(region, from, control, mask, own, n, ctl, sw);
         }

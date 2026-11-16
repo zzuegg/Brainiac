@@ -42,19 +42,26 @@ class SwitchingGeneTest {
         return Dataset.of(x, y);
     }
 
-    /** Same region order and switching settings; sizes, switching neurons and wiring differ. */
+    /**
+     * Same region order; sizes, wiring, which neurons switch, the candidates and the mode
+     * differ, and they still stack into one model.
+     */
     private static List<Genome> designs() {
         Genome a = Genome.dense(3, Activation.RELU, 6, 5).with(d ->
                 d.region("h2").neurons.replaceAll(n -> n.withSwitching(true)));
         Genome b = a.with(d -> {
             d.removeNeuron(d.region("h1"), 2);
             d.region("h2").neurons.replaceAll(n -> n.withSwitching(n.id() % 2 == 0));
+            d.region("h2").switching = TANH_RELU;   // hard, two candidates
+            d.region("h1").neurons.set(0, d.region("h1").neurons.get(0).withSwitching(true));
             d.connectRandomly("input", "h2", 0.5, new SplittableRandom(3));
         });
         Genome c = a.with(d -> {
             for (int i = 0; i < 3; i++) {
                 d.region("h2").neurons.add(new Genome.Neuron(d.newId(), Activation.GELU, i != 1));
             }
+            d.region("h2").switching = new Brain.Switching(List.of(Activation.SILU, Activation.TANH,
+                    Activation.GELU), false);
             d.projection("h1", "h2").connections.removeIf(k -> Genome.source(k) % 3 == 0);
         });
         return List.of(a, b, c);
