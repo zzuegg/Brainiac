@@ -1,9 +1,11 @@
 package io.github.zzuegg.brainiac.examples;
 
+import io.github.zzuegg.brainiac.data.Augmentation;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.data.Standardizer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.train.Benchmark.Task;
+import io.github.zzuegg.brainiac.train.LearningRateSchedule;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.io.IOException;
@@ -20,6 +22,7 @@ import java.util.List;
  *   <caption>Tasks</caption>
  *   <tr><th>task</th><th>input</th><th>output</th><th>what</th></tr>
  *   <tr><td>mnist</td><td>[1, 28, 28]</td><td>[10]</td><td>handwritten digits (downloads 11 MB)</td></tr>
+ *   <tr><td>cifar10</td><td>[3, 32, 32]</td><td>[10]</td><td>CIFAR-10 colour photos (downloads 160 MB)</td></tr>
  *   <tr><td>fashion</td><td>[1, 28, 28]</td><td>[10]</td><td>Fashion-MNIST clothing photos (downloads 30 MB)</td></tr>
  *   <tr><td>shapes</td><td>[1, 16, 16]</td><td>[3]</td><td>synthetic bars and crosses</td></tr>
  *   <tr><td>waves</td><td>[24, 1]</td><td>[1]</td><td>forecast the next value of a noisy wave</td></tr>
@@ -37,7 +40,7 @@ public final class Tasks {
 
     /** The task names, in the order {@link #all()} returns them. */
     public static final List<String> NAMES =
-            List.of("mnist", "fashion", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
+            List.of("mnist", "fashion", "cifar10", "shapes", "waves", "reversal", "sentiment", "spiral", "iris", "xor");
 
     /** Where Fashion-MNIST is downloaded to, relative to the working directory. */
     public static final Path FASHION_DIR = Path.of("data", "fashion-mnist");
@@ -60,6 +63,7 @@ public final class Tasks {
         return switch (name) {
             case "mnist" -> mnist();
             case "fashion" -> fashionMnist();
+            case "cifar10" -> cifar10();
             case "shapes" -> shapes();
             case "waves" -> waves();
             case "reversal" -> reversal();
@@ -81,7 +85,7 @@ public final class Tasks {
     }
 
     /**
-     * Returns every task, downloading MNIST and Fashion-MNIST if needed.
+     * Returns every task, downloading MNIST, Fashion-MNIST and CIFAR-10 if needed.
      *
      * @return the tasks
      */
@@ -131,6 +135,39 @@ public final class Tasks {
         return images("fashion", dir, FASHION_MIRROR)
                 .describedAs("clothing photos in 10 classes, 28x28 grey")
                 .withClassNames(CLOTHES);
+    }
+
+    /**
+     * CIFAR-10 colour photos from {@link CifarExample#DATA_DIR}: 50,000 training and 10,000
+     * test photos of 32x32 pixels in ten classes. By default 30 epochs of SGD with momentum,
+     * weight decay and a cosine learning rate, on shifted and mirrored copies of the photos:
+     * the published ResNet-20 recipe, shortened (it trains about 160 epochs to reach 91.7%).
+     *
+     * @return the task
+     */
+    public static Task cifar10() {
+        return cifar10(CifarExample.DATA_DIR);
+    }
+
+    /**
+     * CIFAR-10.
+     *
+     * @param dir the directory with (or for) the archive
+     * @return the task
+     */
+    public static Task cifar10(Path dir) {
+        Dataset.Split split;
+        try {
+            split = CifarExample.load(dir);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return Task.classification("cifar10", split.train(), split.test(), Shape.of(3, 32, 32), Shape.of(10))
+                .describedAs("colour photos in 10 classes, 32x32 (ResNet-20 is known to reach about 91.7%)")
+                .withClassNames(CifarExample.CLASSES)
+                .withDefaults(t -> t.optimizer(Optimizer.momentum(0.1f, 0.9f)).l2(2.5e-4f).batchSize(128)
+                        .epochs(30).schedule(LearningRateSchedule.cosine(30, 0.001f))
+                        .augment(Augmentation.cropAndFlip(3, 32, 32, 4)));
     }
 
     private static Task images(String name, Path dir, String mirror) {

@@ -46,7 +46,7 @@ public final class BenchmarkExample {
 
     /** Built-in model names; not every model fits every task. */
     public static final List<String> MODELS =
-            List.of("default", "linear", "mlp", "cnn", "lenet", "bilstm", "gru", "transformer");
+            List.of("default", "linear", "mlp", "cnn", "lenet", "resnet", "bilstm", "gru", "transformer");
 
     /**
      * Builds a named model for a task.
@@ -66,6 +66,10 @@ public final class BenchmarkExample {
             case "cnn" -> {
                 requireImages(name, task);
                 yield cnn(in, out);
+            }
+            case "resnet" -> {
+                requireImages(name, task);
+                yield CifarExample.resnet(in.dim(0), in.dim(1), Math.toIntExact(out.size()), 3);
             }
             case "lenet" -> {
                 requireImages(name, task);
@@ -89,6 +93,7 @@ public final class BenchmarkExample {
     public static Model defaultModel(Task task) {
         return switch (task.name()) {
             case "mnist", "fashion" -> MnistExample.model(28, 10);
+            case "cifar10" -> CifarExample.resnet(3, 32, 10, 3);
             case "shapes" -> MnistExample.model(16, 3);
             case "waves" -> SequenceExample.forecaster();
             case "reversal" -> SequenceExample.reverser();
@@ -116,7 +121,7 @@ public final class BenchmarkExample {
     }
 
     private static Model cnn(Shape in, Shape out) {
-        return MnistExample.model(in.dim(1), Math.toIntExact(out.size()));
+        return MnistExample.model(in.dim(0), in.dim(1), Math.toIntExact(out.size()));
     }
 
     private static Model lenet(Shape in, Shape out) {
