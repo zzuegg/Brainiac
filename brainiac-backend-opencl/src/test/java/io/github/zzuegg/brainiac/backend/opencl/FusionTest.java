@@ -122,6 +122,18 @@ class FusionTest {
     }
 
     @Test
+    void matmulOperandsComputedAsTheKernelLoadsThemMatchTheCpu() {
+        Tensor w = random(25, 7, 5);
+        // element-wise chains as operands, directly and through transposes and permutations
+        same(DType.FLOAT32, x -> x.relu().mul(1.5f).add(0.25f).matmul(w.to(x.device()).tanh()), random(26, 9, 7));
+        same(DType.FLOAT32, x -> x.sigmoid().transpose().matmul(x.exp()), random(27, 9, 7));
+        same(DType.FLOAT32, x -> {
+            Tensor y = x.square().sub(0.5f);
+            return y.permute(0, 2, 1).matmul(y).sum(2).add(y.sum(1, true).matmul(y.abs().permute(0, 2, 1)).sum(2));
+        }, random(28, 3, 6, 4));
+    }
+
+    @Test
     void gradientsOfActivationsFuse() {
         same(DType.FLOAT32, x -> x.mul(2f).activationBackward(ActivationOp.SILU, 0, x.sigmoid()).add(x),
                 random(11, 33));
