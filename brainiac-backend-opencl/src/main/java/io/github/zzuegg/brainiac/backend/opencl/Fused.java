@@ -197,7 +197,7 @@ final class Fused {
         Gen g = new Gen();
         g.root = store ? "i" : null;
         g.base = base;
-        g.argBytes += 8 * 3 + 4 * 3 + 8 * 9;
+        g.argBytes += 8 * 3 + 4 * 3 + 8 * 9 + 4 * 2;
         String loadA = g.load(a, "ma", "row < M && ac < K", "aBase + (long) row * aRow + (long) ac * aCol",
                 aLayout == 1 ? "row" : aLayout == 2 ? "ac" : null, aLayout == 1 ? "ac" : "row");
         String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol",
@@ -205,10 +205,14 @@ final class Fused {
         String v = root == null ? null : g.eval(root, "i");
         String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
                 + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
-                + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol" + g.params + ") {\n"
+                + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol, int splits, int chunk"
+                + g.params + ") {\n"
                 + "    int col = get_global_id(0);\n"
                 + "    int row = get_global_id(1);\n"
-                + "    long batch = get_global_id(2);\n"
+                + "    long piece = get_global_id(2);\n"
+                + "    long batch = piece / splits;\n"
+                + "    int from = (int) (piece % splits) * chunk;\n"
+                + "    int to = min(K, from + chunk);\n"
                 + "    int lc = get_local_id(0);\n"
                 + "    int lr = get_local_id(1);\n"
                 + "    __local ACC tileA[TS][TS];\n"
@@ -216,7 +220,7 @@ final class Fused {
                 + "    long aBase = aOff + batch * strideA;\n"
                 + "    long bBase = bOff + batch * strideB;\n"
                 + "    ACC acc = (ACC) 0;\n"
-                + "    for (int t = 0; t < K; t += TS) {\n"
+                + "    for (int t = from; t < to; t += TS) {\n"
                 + "        int ac = t + lc;\n"
                 + "        int br = t + lr;\n"
                 + loadA.replace("TILE", "tileA[lr][lc]")
@@ -228,7 +232,7 @@ final class Fused {
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "    }\n"
                 + "    if (row < M && col < N) {\n"
-                + "    long i = batch * strideZ + (long) row * N + col;\n"
+                + "    long i = piece * strideZ + (long) row * N + col;\n"
                 + (v == null ? "    STORE(out, i, acc);\n"
                         : "    STORE(mz, i, acc);\n" + g.body + "    STORE(out, i, " + v + ");\n")
                 + "    }\n}\n";
