@@ -361,6 +361,22 @@ public interface Activation extends Layer {
     }
 
     /**
+     * Gives every unit its own fixed activation, for example one chosen per neuron by an
+     * evolutionary search. Units sharing an activation are computed together, so the cost
+     * grows with the number of distinct activations, not with the width.
+     *
+     * <pre>{@code
+     * model.dense(3, Activation.perUnit(Activation.RELU, Activation.TANH, Activation.RELU));
+     * }</pre>
+     *
+     * @param perUnit one activation per unit, without learnable parameters
+     * @return the activation; the activation itself if all units share one
+     */
+    static Activation perUnit(Activation... perUnit) {
+        return PerUnitActivation.of(Objects.requireNonNull(perUnit, "perUnit"));
+    }
+
+    /**
      * A learned blend of several activations: every unit computes
      * {@code sum_k w_k * f_k(x)} with its own weights {@code w = softmax(logits)}, which
      * start equal and are trained with the rest of the model, so the network picks the

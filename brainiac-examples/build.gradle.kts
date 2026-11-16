@@ -5,6 +5,7 @@ plugins {
 dependencies {
     implementation(project(":brainiac"))
     implementation(project(":brainiac-backend-opencl"))
+    implementation(project(":brainiac-evolve"))
 }
 
 application {

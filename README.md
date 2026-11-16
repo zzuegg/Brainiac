@@ -35,6 +35,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
+| `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
 | `brainiac-examples` | Runnable examples |
 | `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
@@ -377,6 +378,76 @@ byGradient, random)`, `addNeurons(region, count, random)` and `removeDeadNeurons
 - **Bars and crosses.** A three-region brain with feedback keeps about 2,500 connections,
   13% of a dense network with the same neurons. It scores 77% against the dense network's
   85%, and against 64% for a dense network with the same number of connections.
+
+## Evolving network designs
+
+`brainiac-evolve` searches for a better design with a genetic algorithm. It starts from a
+design known to work (the template), optionally with fewer neurons, and evolves its
+**genome**: named regions of neurons, each neuron with its own id and activation, joined by
+projections that list exactly which connections exist, plus the learning rate, optimizer
+and ticks. A genome is built into a `Brain` layer between the task's input (or a fixed front
+end such as convolutions) and a fixed output layer.
+
+Every candidate is trained briefly and scored on a validation split of the training data;
+the best few are trained again with a second seed so a lucky score cannot win. Elites are
+kept, parents are picked by tournament, children come from NEAT-style crossover (parents
+lined up by neuron id) and mutation. The same seed gives the same evolution, also with
+several threads.
+
+```java
+Evolution evolution = Evolution.of(Tasks.spiral())
+        .template(Genome.dense(2, Activation.RELU, 64, 64))  // the hand-built 64-64 MLP
+        .neuronScale(0.75)                // start from 3/4 of its hidden neurons
+        .mutations("connections,neurons,activations,learning-rate")
+        .population(16).generations(8)
+        .epochs(40)                       // training budget per candidate
+        .sizePenalty(0.01 / 1000)         // optional: one percent per thousand parameters
+        .threads(4);
+Evolution.Result result = evolution.run();
+System.out.println(result.best().genome().describe());
+Benchmark.Report evolved = evolution.benchmark(result.best().genome(), "evolved");
+```
+
+Which genes change is exactly the set of mutations you enable, each with its own rates and
+bounds (`Mutations.neurons(rate, min, max)`, `Mutations.activations(rate, Scope.NEURON,
+choices...)`, ...), and `Mutation.named(...)` adds your own:
+
+| Mutation | Changes |
+| --- | --- |
+| `connections` | flips single connections on or off |
+| `density` | grows or thins a whole projection |
+| `projections` | adds a feed-forward, feedback or lateral projection, or removes one |
+| `neurons` | adds or removes neurons in a region, wiring new ones at the projection's density |
+| `activations` | gives single neurons another activation (`Activation.perUnit`) |
+| `region-activations` | gives a whole region another activation |
+| `learning-rate`, `optimizer`, `ticks` | training and recurrence hyperparameters |
+| `regions` | inserts a new region (a layer, in effect) or removes one |
+
+Fitness is the task's metric on the validation data (accuracy, or minus the mean absolute
+error), optionally minus a size or time penalty (`Fitness`); ties go to the smaller design.
+
+Per-neuron activations are computed as `sum_k f_k(x) * mask_k`, element-wise only, so the
+OpenCL backend fuses them: forward and backward each take one kernel launch, the same as a
+single shared activation, even with all seven default activations mixed.
+
+```
+./gradlew :brainiac-examples:run --args="evolve spiral --threads 4"
+./gradlew :brainiac-examples:run --args="evolve shapes --device gpu"
+./gradlew :brainiac-examples:run --args="evolve iris --mutate connections,neurons,activations --scale 0.5"
+```
+
+Results with the defaults (population 16, 8 generations, start from 3/4 of the neurons) on
+a 4-core CPU, both models then trained with the task's own settings and tested on the test data:
+
+| Task | Hand-built | Evolved | Parameters in use | Search time |
+| --- | --- | --- | --- | --- |
+| xor | 8 tanh, 100% | 3 tanh neurons, 4 of 6 connections, 100% | 33 → 11 | 3 s |
+| iris | 16 relu, 100% | 10 neurons, 96.7% (one flower) | 131 → 77 | 2 s |
+| spiral | 64-64 relu, 99.0% | 45-44 neurons, mostly relu, 99.3% | 4,547 → 2,190 | 67 s |
+| shapes (population 8, 4 generations) | CNN + 64 relu, 100% | same convs + 48 mixed neurons, 99.4% | 37,875 → 27,393 | 66 s |
+
+With `--mutate connections,neurons,activations` (no learning-rate gene), xor shrinks to 2
+neurons, one tanh and one silu.
 
 ## Benchmarks: test any model
 
