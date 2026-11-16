@@ -1228,8 +1228,6 @@ public final class OpenClBackend implements Backend {
     private long buffersReused;
     private long bytesCreated;
     private long createdSinceCollect;
-    /** Bytes of new buffers after which the JVM is asked to collect; grows to 128 MB. */
-    private long collectAfter = 8L << 20;
     private int collections;
     private long collectNanos;
 
@@ -1287,13 +1285,11 @@ public final class OpenClBackend implements Backend {
             bufferNanos += System.nanoTime() - createStart;
             bytesCreated += bytes;
             createdSinceCollect += bytes;
-            if (createdSinceCollect > collectAfter) {
+            if (createdSinceCollect > Math.min(128L << 20, budget / 16)) {
                 // Buffers return to the pool only once the JVM collects their tensors, which
                 // can take long when little Java memory is allocated. Ask for it, rather
-                // than filling the device with new buffers. Early on, while the pool is still
-                // empty, soon: every buffer created costs the device time on first use too.
+                // than filling the device with new buffers.
                 createdSinceCollect = 0;
-                collectAfter = Math.min(collectAfter * 2, Math.min(128L << 20, budget / 16));
                 collections++;
                 long gcStart = System.nanoTime();
                 System.gc();
