@@ -53,6 +53,8 @@ public final class Ppo implements Learner {
     private float entropy;
     private float maxGradNorm = 0.5f;
     private float targetKl;
+    private float adaptiveKl;
+    private double rateScale = 1;
     private boolean normalize = true;
     private SplittableRandom random = new SplittableRandom(0);
     private final Map<String, Double> diagnostics = new LinkedHashMap<>();
@@ -212,6 +214,32 @@ public final class Ppo implements Learner {
     }
 
     /**
+     * Adapts the learning rate to how far each update moves the policy: after an update
+     * whose approximate KL divergence is above twice the target, the rate drops by a
+     * factor of 1.5; below half the target, it rises by 1.5 (to at most 10 times, and at
+     * least a hundredth of, the set rate). The factor carries over between calls to
+     * {@code fit} and combines with {@link #annealLearningRate(boolean)}.
+     *
+     * @param kl the target KL per update, for example 0.01; 0 turns adaptation off
+     * @return this learner
+     */
+    public Ppo adaptiveLearningRate(float kl) {
+        if (!(kl >= 0)) {
+            throw new IllegalArgumentException("the target KL must not be negative, got " + kl);
+        }
+        this.adaptiveKl = kl;
+        return this;
+    }
+
+    /**
+     * @return the factor the adaptive learning rate currently applies to the set rate (1
+     *     without {@link #adaptiveLearningRate(float)})
+     */
+    public double learningRateScale() {
+        return rateScale;
+    }
+
+    /**
      * @param on whether to scale advantages to mean 0 and standard deviation 1 per
      *     minibatch
      * @return this learner
@@ -364,9 +392,9 @@ public final class Ppo implements Learner {
         float[] bRew = new float[n];
         float[] bDone = new float[n];
         while (tracker.steps() < steps) {
-            if (anneal) {
-                optimizer.learningRate((float) Math.max(1e-8,
-                        startRate * (1 - (double) tracker.steps() / steps)));
+            if (anneal || adaptiveKl > 0) {
+                double annealed = anneal ? 1 - (double) tracker.steps() / steps : 1;
+                optimizer.learningRate((float) Math.max(1e-8, startRate * annealed * rateScale));
             }
             for (int t = 0; t < rolloutSteps; t++) {
                 Tensor x = Nets.rows(obs, obsSize, device);
@@ -421,7 +449,7 @@ public final class Ppo implements Learner {
             }
             update(n, obsSize, actSize, bObs, bAct, bLogp, bVal, adv, ret, device);
         }
-        if (anneal) {
+        if (anneal || adaptiveKl > 0) {
             optimizer.learningRate(startRate);
         }
         return tracker.result;
@@ -545,6 +573,14 @@ public final class Ppo implements Learner {
         diagnostics.put("explainedVariance", varRet == 0 ? 0 : 1 - variance(residual) / varRet);
         diagnostics.put("epochs", (double) epochsRun);
         diagnostics.put("learningRate", (double) optimizer.learningRate());
+        if (adaptiveKl > 0 && batches > 0) {
+            double meanKl = kl / batches;
+            if (meanKl > 2 * adaptiveKl) {
+                rateScale = Math.max(0.01, rateScale / 1.5);
+            } else if (meanKl < adaptiveKl / 2) {
+                rateScale = Math.min(10, rateScale * 1.5);
+            }
+        }
     }
 
     private static double variance(float[] x) {

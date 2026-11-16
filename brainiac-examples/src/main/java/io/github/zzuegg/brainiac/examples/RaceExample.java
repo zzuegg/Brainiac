@@ -35,7 +35,8 @@ import java.util.SplittableRandom;
  *
  * <pre>
  * race train [--cars 8] [--track kidney] [--steps 3000000] [--save race.model]
- *            [--opponents self|bots|past] [--discount 0.99] [--hidden 64,64] [--round steps] [--no-window] [--set name=value ...]
+ *            [--opponents self|bots|past] [--discount 0.99] [--hidden 64,64] [--round steps]
+ *            [--lr 3e-4] [--anneal] [--target-kl K] [--adaptive-lr K] [--plateau rounds] [--no-window] [--set name=value ...]
  * race watch [--model race.model | --bots] [--cars 8] [--track kidney] [--set name=value ...]
  * race picture [--model race.model | --bots] [--frames 300] [--out race.png]
  * </pre>
@@ -48,6 +49,12 @@ import java.util.SplittableRandom;
  * the new policy races the best one (the bots at first), each driving half the cars, and
  * replaces it if it finishes ahead on average. The latest policy is in
  * {@code race.model.last}.
+ *
+ * <p>Learning rate: {@code --lr} sets it, {@code --anneal} lowers it linearly to 0 over
+ * the run, {@code --adaptive-lr K} lowers or raises it when an update moves the policy
+ * much more or less than KL divergence K, {@code --target-kl K} cuts an update short
+ * when it moves too far, and {@code --plateau N} halves it after N rounds without a new
+ * best policy.
  *
  * <p>{@code --set} changes any {@link RaceConfig} setting, for example
  * {@code --set rearGrip=500 --set draftStrength=0.6 --set nearestCars=4}. Use the same
@@ -86,8 +93,9 @@ public final class RaceExample {
         int act = config.actionSize();
         System.out.println("Networks: " + obs + " inputs, hidden " + java.util.Arrays.toString(o.hidden) + ", "
                 + act + " outputs (steer, pedal, " + (act - 2) + " sensor distances)");
+        io.github.zzuegg.brainiac.train.Optimizer optimizer = io.github.zzuegg.brainiac.train.Optimizer.adam(o.lr);
         Ppo ppo = Ppo.of(Nets.mlp(obs, act, 1, o.hidden), Nets.mlp(obs, 1, 2, o.hidden), race.actionSpace())
-                .learningRate(3e-4f).rolloutSteps(256).minibatchSize(256).epochs(5).initialLogStd(-0.5f)
+                .optimizer(optimizer).targetKl(o.targetKl).adaptiveLearningRate(o.adaptiveKl).rolloutSteps(256).minibatchSize(256).epochs(5).initialLogStd(-0.5f)
                 .discount(o.discount).seed(o.seed);
         // opponents: copies of the policy itself (self), the hand-written bots, or the best
         // policy saved so far (past), which then drives every other car
@@ -111,10 +119,20 @@ public final class RaceExample {
         long start = System.nanoTime();
         long chunk = o.round > 0 ? o.round : Math.max(20_000, o.steps / 20);
         long done = 0;
+        double plateau = 1;
+        int sinceBest = 0;
+        System.out.printf(Locale.ROOT, "learning rate %.1e%s%s%s%s%n", o.lr, o.anneal ? ", decaying linearly to 0" : "",
+                o.adaptiveKl > 0 ? ", adapting to KL " + o.adaptiveKl : "",
+                o.targetKl > 0 ? ", epochs stop above KL " + o.targetKl : "",
+                o.plateau > 0 ? ", halved after " + o.plateau + " rounds without a new best" : "");
         System.out.printf("%9s %7s %13s %13s %13s %8s %10s %11s%n", "steps", "time s", "train return",
                 "place vs best", "greedy dist*", "crashes", "overtakes", "collisions");
         while (done < o.steps && (window == null || !window.closed())) {
             long n = Math.min(chunk, o.steps - done);
+            // the base rate for this round: linear decay over the whole run, times the
+            // plateau factor; PPO's KL adaptation scales it further within the round
+            double decay = o.anneal ? 1 - (double) done / o.steps : 1;
+            optimizer.learningRate((float) Math.max(1e-8, o.lr * decay * plateau));
             RlResult r = ppo.fit(env, n, RlListener.NONE);
             done += n;
             ppo.policy().save(last);
@@ -129,10 +147,17 @@ public final class RaceExample {
                 champion = Driver.of(policyAgent(Model.load(save), race.actionSpace()));
                 past.set(champion);
                 champions++;
+                sinceBest = 0;
+            } else if (o.plateau > 0 && ++sinceBest >= o.plateau) {
+                plateau /= 2;
+                sinceBest = 0;
             }
+            double rate = ppo.diagnostics().getOrDefault("learningRate", (double) o.lr);
+            double kl = ppo.diagnostics().getOrDefault("approxKl", 0.0);
             String line = String.format(Locale.ROOT, "%9d %7.0f %13.1f %13.2f %13.0f %8d %10d %11d%s", done,
                     (System.nanoTime() - start) / 1e9, r.meanReturn(100), place, s.distance, s.crashes,
-                    s.overtakes, s.collisions, better ? "  beats the best, saved (#" + champions + ")" : "");
+                    s.overtakes, s.collisions, better ? "  beats the best, saved (#" + champions + ")" : "")
+                    + String.format(Locale.ROOT, "  lr %.1e kl %.4f", rate, kl);
             System.out.println(line);
             if (window != null) {
                 window.status(String.format(Locale.ROOT, "steps %,d   greedy %.0f per car", done, s.distance));
@@ -283,6 +308,11 @@ public final class RaceExample {
         long seed = 1;
         float discount = 0.99f;
         int[] hidden = {64, 64};
+        float lr = 3e-4f;
+        boolean anneal;
+        float targetKl;
+        float adaptiveKl;
+        int plateau;
         long round;
         int frames = 300;
         String out = "race.png";
@@ -306,6 +336,11 @@ public final class RaceExample {
                     case "--seed" -> o.seed = Long.parseLong(args[++i]);
                     case "--discount" -> o.discount = Float.parseFloat(args[++i]);
                     case "--round" -> o.round = Long.parseLong(args[++i].replace("_", ""));
+                    case "--lr" -> o.lr = Float.parseFloat(args[++i]);
+                    case "--anneal" -> o.anneal = true;
+                    case "--target-kl" -> o.targetKl = Float.parseFloat(args[++i]);
+                    case "--adaptive-lr" -> o.adaptiveKl = Float.parseFloat(args[++i]);
+                    case "--plateau" -> o.plateau = Integer.parseInt(args[++i]);
                     case "--hidden" -> o.hidden = java.util.Arrays.stream(args[++i].split(","))
                             .mapToInt(Integer::parseInt).toArray();
                     case "--frames" -> o.frames = Integer.parseInt(args[++i]);

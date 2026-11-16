@@ -50,4 +50,16 @@ class VectorEnvironmentTest {
         }
         assertTrue(r.episodes().stream().anyMatch(e -> e.steps() == 3), "the short one is cut off at 3");
     }
+
+    @Test
+    void theAdaptiveLearningRateFollowsTheKl() {
+        Ppo calm = Ppo.of(Nets.mlp(4, 2, 1, 16), Nets.mlp(4, 1, 2, 16), Space.discrete(2)).rolloutSteps(32)
+                .learningRate(1e-6f).adaptiveLearningRate(0.01f).seed(1);
+        calm.fit(new CartPole(), 32 * 6, RlListener.NONE);
+        assertTrue(calm.learningRateScale() > 1, "tiny steps raise the rate: " + calm.learningRateScale());
+        Ppo wild = Ppo.of(Nets.mlp(4, 2, 1, 16), Nets.mlp(4, 1, 2, 16), Space.discrete(2)).rolloutSteps(32)
+                .learningRate(3e-3f).adaptiveLearningRate(1e-7f).seed(1);
+        wild.fit(new CartPole(), 32 * 6, RlListener.NONE);
+        assertTrue(wild.learningRateScale() < 1, "steps far above the target lower it: " + wild.learningRateScale());
+    }
 }
