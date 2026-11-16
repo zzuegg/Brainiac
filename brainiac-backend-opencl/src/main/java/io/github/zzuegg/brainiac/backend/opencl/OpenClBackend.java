@@ -281,6 +281,18 @@ public final class OpenClBackend implements Backend {
         queue = lib.createQueue(context, device, profiling);
         cl = lib;
         program(DType.FLOAT32);
+        if (compiler != null) {
+            // kernels still compiling at exit (asked for late, such as by the last evaluation)
+            // finish, so they are in the cache next time instead of compiling again every run
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                compiler.shutdown();
+                try {
+                    compiler.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "opencl-compile-finish"));
+        }
         if (profiling) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 if (!kernelTimes.isEmpty() || !launched.isEmpty()) {
