@@ -47,7 +47,7 @@ public final class BenchmarkExample {
 
     /** Built-in model names; not every model fits every task. */
     public static final List<String> MODELS =
-            List.of("default", "linear", "mlp", "switching", "cnn", "lenet", "resnet", "bilstm", "gru", "transformer");
+            List.of("default", "linear", "mlp", "switching", "switching-small", "mlp-wide", "cnn", "lenet", "resnet", "bilstm", "gru", "transformer");
 
     /**
      * Builds a named model for a task.
@@ -65,6 +65,9 @@ public final class BenchmarkExample {
             case "linear" -> dense(task, 0);
             case "mlp" -> dense(task, 2);
             case "switching" -> switching(task, 2);
+            // the same number of parameters as the other kind, to tell size from switching
+            case "switching-small" -> matched(task, true, dense(task, 2).parameterCount());
+            case "mlp-wide" -> matched(task, false, switching(task, 2).parameterCount());
             case "cnn" -> {
                 requireImages(name, task);
                 yield cnn(in, out);
@@ -116,8 +119,11 @@ public final class BenchmarkExample {
      * @return an untrained model
      */
     public static Model dense(Task task, int hidden) {
+        return dense(task, hidden, task.inputShape().size() <= 8 ? 32 : 128);
+    }
+
+    private static Model dense(Task task, int hidden, int width) {
         Model.Builder b = Model.sequential().input(task.inputShape().toArray()).flatten();
-        int width = task.inputShape().size() <= 8 ? 32 : 128;
         for (int i = 0; i < hidden; i++) {
             b.dense(width, Activation.RELU);
         }
@@ -133,12 +139,34 @@ public final class BenchmarkExample {
      * @return an untrained model
      */
     public static Model switching(Task task, int hidden) {
+        return switching(task, hidden, task.inputShape().size() <= 8 ? 32 : 128);
+    }
+
+    private static Model switching(Task task, int hidden, int width) {
         Model.Builder b = Model.sequential().input(task.inputShape().toArray()).flatten();
-        int width = task.inputShape().size() <= 8 ? 32 : 128;
         for (int i = 0; i < hidden; i++) {
             b.add(SwitchingDense.of(width, Activation.RELU, Activation.TANH, Activation.GELU, Activation.SIGMOID));
         }
         return head(b.dense(Math.toIntExact(task.outputShape().size())), task).seed(42).build();
+    }
+
+    /**
+     * A two-hidden-layer switching network or MLP, as wide as fits in a parameter budget:
+     * the widest whose count does not exceed {@code parameters}.
+     */
+    private static Model matched(Task task, boolean switching, long parameters) {
+        Model best = null;
+        for (int width = 1; width <= 4096; width++) {
+            Model m = switching ? switching(task, 2, width) : dense(task, 2, width);
+            if (m.parameterCount() > parameters) {
+                break;
+            }
+            best = m;
+        }
+        if (best == null) {
+            throw new IllegalArgumentException("no width fits " + parameters + " parameters");
+        }
+        return best;
     }
 
     private static Model cnn(Shape in, Shape out) {
