@@ -652,9 +652,16 @@ public final class OpenClBackend implements Backend {
         for (Storage st : storages) {
             ClStorage s = cl(st);
             if (s.pending instanceof Fused.MatMul) {
-                runMatMul(s);
+                continue;   // one launch whenever it runs; later, a chain on it can be its epilogue
             } else if (s.pending != null) {
-                for (ClStorage p : Fused.matmuls(s.pending).keySet()) {
+                Map<ClStorage, Boolean> products = Fused.matmuls(s.pending);
+                if (products.size() == 1) {
+                    Map.Entry<ClStorage, Boolean> only = products.entrySet().iterator().next();
+                    if (only.getValue() && epilogue(s, only.getKey())) {
+                        continue;   // a chain on one product: it becomes that matmul's epilogue
+                    }
+                }
+                for (ClStorage p : products.keySet()) {
                     ready(p);
                 }
                 keep.add(s);

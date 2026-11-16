@@ -35,6 +35,13 @@ final class Adam implements Optimizer {
         float correction2 = 1 - (float) Math.pow(beta2, t);
         List<Tensor> updated = new ArrayList<>(3 * parameters.size());
         List<Tensor> previous = new ArrayList<>(2 * parameters.size());
+        List<Tensor> grads = new ArrayList<>(parameters.size());
+        for (Var p : parameters) {
+            if (p.grad() != null) {
+                grads.add(p.grad());
+            }
+        }
+        Tensor.evaluate(grads);   // the gradients' last steps together, rather than one by one
         for (Var p : parameters) {
             Tensor g = p.grad();
             if (g == null) {
