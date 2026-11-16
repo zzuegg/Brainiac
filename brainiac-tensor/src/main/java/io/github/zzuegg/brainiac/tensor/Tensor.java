@@ -396,6 +396,22 @@ public final class Tensor {
     }
 
     /**
+     * Computes these tensors now, together where the device can. Results are the same
+     * without it: on devices that record operations instead of running them, it lets
+     * related results (such as a parameter and its optimizer state) share one kernel instead
+     * of being computed one by one later.
+     *
+     * @param tensors the tensors, on any devices
+     */
+    public static void evaluate(java.util.List<Tensor> tensors) {
+        Map<Device, java.util.List<Storage>> byDevice = new LinkedHashMap<>();
+        for (Tensor t : tensors) {
+            byDevice.computeIfAbsent(t.device, d -> new java.util.ArrayList<>()).add(t.storage);
+        }
+        byDevice.forEach((d, storages) -> d.backend().evaluate(storages));
+    }
+
+    /**
      * Copies all values to a new Java array in row-major order.
      *
      * @return the values

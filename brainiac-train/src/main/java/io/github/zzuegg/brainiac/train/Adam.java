@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.train;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,7 @@ final class Adam implements Optimizer {
         t++;
         float correction1 = 1 - (float) Math.pow(beta1, t);
         float correction2 = 1 - (float) Math.pow(beta2, t);
+        List<Tensor> updated = new ArrayList<>(3 * parameters.size());
         for (Var p : parameters) {
             Tensor g = p.grad();
             if (g == null) {
@@ -47,7 +49,11 @@ final class Adam implements Optimizer {
             Tensor vHat = vNew.div(correction2);
             p.assign(p.value().sub(mHat.div(vHat.sqrt().add(epsilon)).mul(learningRate)));
             p.zeroGrad();
+            updated.add(p.value());
+            updated.add(mNew);
+            updated.add(vNew);
         }
+        Tensor.evaluate(updated);   // on a GPU, the whole step as one kernel
     }
 
     @Override
