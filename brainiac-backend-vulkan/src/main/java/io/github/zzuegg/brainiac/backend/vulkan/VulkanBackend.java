@@ -165,7 +165,7 @@ public final class VulkanBackend implements Backend {
     /** Compiles generated shaders; null when fusion is off or shaderc could not be loaded. */
     private ShaderCompiler compiler;
     private String fusionUnavailable;
-    /** Pipeline names of generated shaders, by full source. */
+    /** Pipeline names of generated shaders, by generated source (and format). */
     private final Map<String, String> fusedShaders = new HashMap<>();
     /**
      * Counts commands recorded for other operations. A pending result recorded before the
@@ -259,7 +259,7 @@ public final class VulkanBackend implements Backend {
             return;
         }
         Fusion.Kernel k = Fusion.generate(e);
-        String name = fusedPipeline(compiler.source(k.source(), s.dtype));
+        String name = fusedPipeline(k.source(), s.dtype);
         VkContext.Slot[] reads = new VkContext.Slot[k.loads().size()];
         for (int i = 0; i < reads.length; i++) {
             reads[i] = k.loads().get(i).slot();
@@ -277,15 +277,18 @@ public final class VulkanBackend implements Backend {
     }
 
     /** The pipeline of a generated shader, compiled on first use. */
-    private String fusedPipeline(String source) {
-        String name = fusedShaders.get(source);
+    private String fusedPipeline(String body, DType dtype) {
+        // looked up by the generated part only: the shared prelude would make every lookup hash
+        // and compare kilobytes, which costs more than a small dispatch saves
+        String key = dtype == DType.FLOAT64 ? "d" + body : body;
+        String name = fusedShaders.get(key);
         if (name == null) {
             long start = System.nanoTime();
-            byte[] code = compiler.compile(source);
+            byte[] code = compiler.compile(compiler.source(body, dtype));
             name = "fused#" + fusedShaders.size();
             vk.register(name, code);
             compileNanos += System.nanoTime() - start;
-            fusedShaders.put(source, name);
+            fusedShaders.put(key, name);
         }
         return name;
     }
