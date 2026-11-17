@@ -995,8 +995,12 @@ public final class VulkanBackend implements Backend {
     private static final long BIG_TILES = Long.getLong("brainiac.vulkan.bigTileGroups", 128);
     /** Float16 products with at least this many rows use cooperative matrices where the device has them. */
     private static final int COOP_ROWS = Integer.getInteger("brainiac.vulkan.coopRows", 64);
-    /** Products with fewer tiles than this, and a long k, split k into pieces summed afterwards. */
-    private static final long SPLIT_BELOW = 64;
+    /**
+     * Products with fewer tiles than this, and a long k, split k into pieces summed afterwards
+     * ({@code -Dbrainiac.vulkan.splitBelow}). Weight gradients (width x width over a k of batch
+     * times sequence) otherwise run as a few dozen work groups each walking all of k.
+     */
+    private static final long SPLIT_BELOW = Long.getLong("brainiac.vulkan.splitBelow", 256);
 
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
