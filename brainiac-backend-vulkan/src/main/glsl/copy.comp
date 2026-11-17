@@ -1,0 +1,24 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// out[outOff + idx . os] = in[inOff + idx . is] for every index of shape (up to 6 axes)
+layout(push_constant) uniform P {
+    In x; Floats z;
+    uint n; uint rank; uint inOff; uint outOff;
+    uint shape[6]; int is_[6]; int os[6];
+} p;
+void main() {
+    uint i = gid();
+    if (i >= p.n) return;
+    uint rest = i;
+    int ia = int(p.inOff);
+    int iz = int(p.outOff);
+    for (int d = int(p.rank) - 1; d >= 0; d--) {
+        uint idx = rest % p.shape[d];
+        rest /= p.shape[d];
+        ia += int(idx) * p.is_[d];
+        iz += int(idx) * p.os[d];
+    }
+    p.z.v[iz] = p.x.v[ia];
+}

@@ -1,0 +1,15 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// Element i of CounterRandom.uniform(seed, i): SplitMix64's mixing function.
+layout(push_constant) uniform P { Floats out_; int64_t seed; uint n; } p;
+void main() {
+    uint i = gid();
+    if (i >= p.n) return;
+    uint64_t z = uint64_t(p.seed) + (uint64_t(i) + 1ul) * 0x9E3779B97F4A7C15ul;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ul;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBul;
+    z ^= z >> 31;
+    p.out_.v[i] = float(uint(z >> 40)) * (1.0 / 16777216.0);
+}

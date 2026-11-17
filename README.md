@@ -30,6 +30,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-tensor` | Shapes, tensors (float32, float64, float16, bfloat16), tensor math, and the `Backend` SPI |
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
 | `brainiac-backend-opencl` | Optional GPU backend: OpenCL through the Foreign Function and Memory API |
+| `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
@@ -614,6 +615,41 @@ Default 4; `-1` adapts: every launch right after the host waited, then doubling 
 can span other kernels: fewer launches, but slower on some drivers).
 Without an OpenCL GPU the backend reports itself unavailable and its tests are skipped;
 CI runs them on PoCL.
+
+### Vulkan
+
+`brainiac-backend-vulkan` is a second GPU backend, on Vulkan compute shaders called through
+LWJGL (its only dependency; the natives jar for the build platform is picked
+automatically). It needs a Vulkan 1.2 driver with buffer device addresses and 64-bit shader
+integers, which current AMD, NVIDIA and Intel drivers have. Allow LWJGL to call native code
+with `--enable-native-access=org.lwjgl`.
+
+```java
+Device vulkan = Device.available().stream()
+        .filter(d -> d.name().startsWith("vulkan")).findFirst().orElseThrow();
+```
+
+Every operation is one precompiled compute shader (GLSL in `src/main/glsl`, SPIR-V in the
+resources; `./gradlew :brainiac-backend-vulkan:compileShaders` rebuilds them with
+`glslangValidator`). Shaders reach tensors through device addresses passed as push
+constants, so there are no descriptor sets to manage. Commands are recorded into command
+buffers and submitted in batches, with a memory barrier only before a command that touches
+memory an earlier one wrote, so the host waits for the device only when it reads values
+back. Tensors are slots in large device memory blocks, pooled by size. It stores float32
+only and does not fuse operations (yet). System properties: `brainiac.vulkan.devices`
+(`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
+(index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
+validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
+`brainiac.vulkan.statistics` (`true` prints the counts below at exit).
+`VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
+barriers and submits. The examples take `--device vulkan` or `--device opencl` to pick one
+GPU backend when both are present. CI runs the tests on lavapipe.
+
+On an RX 9070 XT (2 epochs of MNIST; OpenCL in brackets): the MLP trains in 1.7 s (3.0 s)
+and infers 600k samples/s (90-117k); the CNN trains in 3.2 s (3.1 s) and infers 130k
+samples/s (158-227k). A 2048 x 2048 matmul reaches 0.9-1.1 TFLOP/s (1.8-1.9). Vulkan wins
+where many small operations dominate; OpenCL's fused kernels win on large matmuls and
+convolutions.
 
 Tensors and models come in four number formats:
 
