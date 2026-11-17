@@ -14,6 +14,10 @@ public final class ForgettingTracker {
 
     private final List<double[]> rows = new ArrayList<>();
 
+    /** Creates an empty tracker. */
+    public ForgettingTracker() {
+    }
+
     /**
      * Records the accuracies on all tasks seen so far after finishing one more.
      *

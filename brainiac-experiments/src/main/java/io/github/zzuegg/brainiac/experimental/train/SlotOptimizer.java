@@ -32,7 +32,7 @@ public abstract class SlotOptimizer implements Optimizer {
      * @param slots the names of the tensors kept per parameter
      */
     protected SlotOptimizer(float learningRate, String... slots) {
-        learningRate(learningRate);
+        this.learningRate = checkedRate(learningRate);
         this.slots = slots.clone();
     }
 
@@ -171,9 +171,13 @@ public abstract class SlotOptimizer implements Optimizer {
 
     @Override
     public void learningRate(float learningRate) {
+        this.learningRate = checkedRate(learningRate);
+    }
+
+    private static float checkedRate(float learningRate) {
         if (!(learningRate > 0)) {
             throw new IllegalArgumentException("learningRate must be positive, got " + learningRate);
         }
-        this.learningRate = learningRate;
+        return learningRate;
     }
 }
