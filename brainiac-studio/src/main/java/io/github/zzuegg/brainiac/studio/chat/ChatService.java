@@ -32,6 +32,7 @@ public final class ChatService {
 
     private final Keys keys;
     private final List<ChatProvider> providers;
+    private java.util.function.Supplier<List<ChatProvider>> hosts = List::of;
     private final Path outputs;
     private final UsageLog usage;
     private final ProviderSettings settings;
@@ -169,7 +170,7 @@ public final class ChatService {
     public Map<String, Object> balances() throws InterruptedException {
         Map<String, Future<List<Map<String, Object>>>> pending = new LinkedHashMap<>();
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (ChatProvider p : providers) {
+            for (ChatProvider p : providers()) {
                 if (p instanceof RemoteProvider r && r.ready()) {
                     pending.put(p.id(), pool.submit(r::balances));
                 }
@@ -297,7 +298,7 @@ public final class ChatService {
     }
 
     private LocalProvider local() {
-        return providers.stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
+        return providers().stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
                 .orElseThrow(() -> new IllegalStateException("no local provider"));
     }
 
@@ -340,6 +341,39 @@ public final class ChatService {
     public VastAi vast() {
         return vast;
     }
+
+    /**
+     * Adds the chat providers of the user's other machines, asked for each time the providers are
+     * listed so hosts added or removed show at once. They come right after this PC.
+     *
+     * @param hosts gives the host providers
+     */
+    public void hosts(java.util.function.Supplier<List<ChatProvider>> hosts) {
+        this.hosts = hosts;
+    }
+
+    private List<ChatProvider> providers() {
+        List<ChatProvider> host = hosts.get();
+        if (host.isEmpty()) {
+            return providers;
+        }
+        List<ChatProvider> all = new ArrayList<>();
+        providers.stream().filter(ChatProvider::local).forEach(all::add);
+        all.addAll(host);
+        providers.stream().filter(p -> !p.local()).forEach(all::add);
+        return all;
+    }
+
+    /**
+     * Returns a provider for the language models in some folders, as a worker serves them.
+     *
+     * @param folders where to look
+     * @return the provider
+     */
+    public static ChatProvider localModels(List<Path> folders) {
+        return new LocalProvider(folders);
+    }
+
 
     /**
      * Returns the Hugging Face Hub client that finds and downloads models into this PC's
@@ -447,12 +481,13 @@ public final class ChatService {
         Map<String, Listing> lists = listAll(refresh);
         List<Object> ps = new ArrayList<>();
         List<Object> models = new ArrayList<>();
-        for (ChatProvider p : providers) {
+        for (ChatProvider p : providers()) {
             Listing l = lists.get(p.id());
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", p.id());
             m.put("name", p.name());
             m.put("local", p.local());
+            m.put("kind", p.local() ? "local" : p instanceof RemoteProvider ? "api" : "host");
             m.put("ready", p.ready());
             if (p instanceof RemoteProvider r) {
                 m.put("keys", r.keyStatus());
@@ -625,12 +660,12 @@ public final class ChatService {
     }
 
     private ChatProvider provider(String id) {
-        return providers.stream().filter(p -> p.id().equals(id)).findFirst()
+        return providers().stream().filter(p -> p.id().equals(id)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("unknown provider: " + id));
     }
 
     private ModelInfo pickAuto(Map<String, Listing> lists, String medium) {
-        for (ChatProvider p : providers) {
+        for (ChatProvider p : providers()) {
             Listing l = lists.get(p.id());
             if (p.ready() && l != null && settings.auto(p.id())) {
                 ModelInfo m = p.preferredFor(medium, l.models().stream().filter(this::shown).toList());
@@ -647,7 +682,7 @@ public final class ChatService {
         long now = System.currentTimeMillis();
         Map<String, Future<Listing>> pending = new LinkedHashMap<>();
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (ChatProvider p : providers) {
+            for (ChatProvider p : providers()) {
                 Listing cached = listings.get(p.id());
                 boolean fresh = cached != null && !p.local() && cached.error() == null
                         && now - cached.at() < REMOTE_LIST_MILLIS;
