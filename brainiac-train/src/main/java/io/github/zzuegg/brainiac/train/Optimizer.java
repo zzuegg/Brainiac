@@ -64,6 +64,17 @@ public interface Optimizer {
     }
 
     /**
+     * Drops all state kept for a parameter that is no longer trained, such as one a
+     * growing layer replaced. A parameter seen again later starts from fresh state. The
+     * trainer calls it when the model's parameters change between steps; optimizers
+     * without state ignore it.
+     *
+     * @param parameter the parameter
+     */
+    default void forget(Var parameter) {
+    }
+
+    /**
      * Returns the current learning rate.
      *
      * @return the learning rate

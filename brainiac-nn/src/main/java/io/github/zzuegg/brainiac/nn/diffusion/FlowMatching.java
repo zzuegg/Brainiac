@@ -66,18 +66,57 @@ public final class FlowMatching {
      * @return the samples
      */
     public static Tensor sample(Denoiser model, Tensor noise, int steps) {
+        return sample(model, noise, steps, Solver.EULER, null);
+    }
+
+    /** How {@link #sample(Denoiser, Tensor, int, Solver, java.util.List)} steps along the velocity. */
+    public enum Solver {
+        /** One model call per step. */
+        EULER,
+        /** Heun's method: two calls per step, second-order accurate, so fewer steps do. */
+        HEUN
+    }
+
+    /**
+     * Follows the velocity from given noise at time 1 to time 0.
+     *
+     * @param model the velocity model
+     * @param noise the start, batch first
+     * @param steps the number of steps
+     * @param solver how to step
+     * @param trajectory if not {@code null}, receives the start and the state after every
+     *     step
+     * @return the samples
+     */
+    public static Tensor sample(Denoiser model, Tensor noise, int steps, Solver solver,
+            java.util.List<Tensor> trajectory) {
         if (steps < 1) {
             throw new IllegalArgumentException("steps must be positive, got " + steps);
         }
-        int batch = noise.shape().dim(0);
         Tensor x = noise;
+        if (trajectory != null) {
+            trajectory.add(x);
+        }
         float dt = 1f / steps;
         for (int i = 0; i < steps; i++) {
-            float[] time = new float[batch];
-            java.util.Arrays.fill(time, 1 - i * dt);
-            Tensor v = model.apply(Var.of(x), Tensor.of(Shape.of(batch), time, x.device())).value();
+            float t = 1 - i * dt;
+            Tensor v = velocity(model, x, t);
+            if (solver == Solver.HEUN) {
+                Tensor guess = x.sub(v.mul(dt));
+                v = v.add(velocity(model, guess, t - dt)).mul(0.5f);
+            }
             x = x.sub(v.mul(dt));
+            if (trajectory != null) {
+                trajectory.add(x);
+            }
         }
         return x;
+    }
+
+    private static Tensor velocity(Denoiser model, Tensor x, float t) {
+        int batch = x.shape().dim(0);
+        float[] time = new float[batch];
+        java.util.Arrays.fill(time, Math.max(0, t));
+        return model.apply(Var.of(x), Tensor.of(Shape.of(batch), time, x.device())).value();
     }
 }

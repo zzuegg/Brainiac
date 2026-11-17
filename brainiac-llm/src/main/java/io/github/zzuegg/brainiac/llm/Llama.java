@@ -110,6 +110,12 @@ public final class Llama implements LanguageModel {
     private final Map<String, Linear> linears;
     /** Whether the embeddings and norms are constants (see {@link #addLora}). */
     private boolean frozen;
+    /** Per block, the joined projections of {@link #fuseProjections()}, or null. */
+    private Fused[] fused;
+
+    /** A block's q, k and v in one product, and gate and up in another; either may be null. */
+    private record Fused(Linear qkv, Linear gateUp) {
+    }
 
     private Llama(LlamaConfig config, Device device, DType dtype, Map<String, Var> named, Map<String, Linear> linears) {
         this.config = config;
@@ -760,9 +766,25 @@ public final class Llama implements LanguageModel {
         for (int l = 0; l < blocks.size(); l++) {
             Block blk = blocks.get(l);
             Var h = rmsNorm(x, blk.attnNorm, cache != null);
-            Var q = blk.q.apply(h).reshape(batch, steps, config.heads(), hd).permute(0, 2, 1, 3);
-            Var k = blk.k.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
-            Var v = blk.v.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
+            Fused f = fused == null ? null : fused[l];
+            Var qOut;
+            Var kOut;
+            Var vOut;
+            if (f != null && f.qkv() != null) {
+                Var all = f.qkv().apply(h);
+                int qs = config.heads() * hd;
+                int ks = config.kvHeads() * hd;
+                qOut = all.slice(-1, 0, qs);
+                kOut = all.slice(-1, qs, qs + ks);
+                vOut = all.slice(-1, qs + ks, qs + 2 * ks);
+            } else {
+                qOut = blk.q.apply(h);
+                kOut = blk.k.apply(h);
+                vOut = blk.v.apply(h);
+            }
+            Var q = qOut.reshape(batch, steps, config.heads(), hd).permute(0, 2, 1, 3);
+            Var k = kOut.reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
+            Var v = vOut.reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
             q = rope.apply(q, positions);
             k = rope.apply(k, positions);
             boolean causal = steps > 1;
@@ -779,8 +801,17 @@ public final class Llama implements LanguageModel {
             x = x.add(blk.o.apply(a));
             h = rmsNorm(x, blk.ffnNorm, cache != null);
             // both products first: the activation and the product then run as one chain
-            Var gate = blk.gate.apply(h);
-            Var up = blk.up.apply(h);
+            Var gate;
+            Var up;
+            if (f != null && f.gateUp() != null) {
+                Var both = f.gateUp().apply(h);
+                int ffn = config.intermediate();
+                gate = both.slice(-1, 0, ffn);
+                up = both.slice(-1, ffn, 2 * ffn);
+            } else {
+                gate = blk.gate.apply(h);
+                up = blk.up.apply(h);
+            }
             Var gated = gate.activation(ActivationOp.SILU, 0).mul(up);
             x = x.add(blk.down.apply(gated));
         }
@@ -892,6 +923,72 @@ public final class Llama implements LanguageModel {
     }
 
     /**
+     * Joins each block's q, k and v projections into one matrix, and its gate and up
+     * projections into another, so that each block runs two products where it ran five: the
+     * same results, faster on a GPU, where small products cost more in overhead than in
+     * arithmetic. The weights then go by the names {@code self_attn.qkv_proj} and
+     * {@code mlp.gate_up_proj} (for {@link #addLora} targets and {@link #namedParameters()}), and
+     * the model can no longer be saved. Projections already packed (GGUF k-quants, {@link
+     * #quantizeWeights}) or with adapters stay as they are.
+     *
+     * @return this model
+     */
+    public Llama fuseProjections() {
+        if (fused == null) {
+            fused = new Fused[blocks.size()];
+        }
+        for (int i = 0; i < blocks.size(); i++) {
+            Block b = blocks.get(i);
+            String p = "model.layers." + i + ".";
+            Fused f = fused[i] == null ? new Fused(null, null) : fused[i];
+            Linear qkv = f.qkv() != null ? f.qkv()
+                    : join(p + "self_attn.", List.of("q_proj", "k_proj", "v_proj"), "qkv_proj",
+                            List.of(b.q, b.k, b.v));
+            Linear gateUp = f.gateUp() != null ? f.gateUp()
+                    : join(p + "mlp.", List.of("gate_proj", "up_proj"), "gate_up_proj", List.of(b.gate, b.up));
+            fused[i] = new Fused(qkv, gateUp);
+        }
+        return this;
+    }
+
+    /** One projection from several with the same input, or null if they cannot be joined. */
+    private Linear join(String prefix, List<String> names, String joined, List<Linear> parts) {
+        boolean biased = parts.getFirst().bias != null;
+        for (Linear l : parts) {
+            if (l.weight == null || l.weight.value().isPacked() || l.loraA != null || (l.bias != null) != biased) {
+                return null;
+            }
+        }
+        Tensor[] w = new Tensor[parts.size()];
+        Tensor[] bias = new Tensor[parts.size()];
+        for (int i = 0; i < w.length; i++) {
+            w[i] = parts.get(i).weight.value();
+            bias[i] = biased ? parts.get(i).bias.value() : null;
+        }
+        Var weight = Var.param(Tensor.concat(1, w));
+        Var b = biased ? Var.param(Tensor.concat(0, bias)) : null;
+        Tensor.evaluate(b == null ? List.of(weight.value()) : List.of(weight.value(), b.value()));
+        for (int i = 0; i < w.length; i++) {
+            w[i].release();
+            if (biased) {
+                bias[i].release();
+            }
+            Linear old = linears.remove(prefix + names.get(i));
+            old.weight = null;
+            named.remove(prefix + names.get(i) + ".weight");
+            named.remove(prefix + names.get(i) + ".bias");
+        }
+        Linear l = new Linear(weight, b);
+        l.frozen = frozen;
+        linears.put(prefix + joined, l);
+        named.put(prefix + joined + ".weight", weight);
+        if (b != null) {
+            named.put(prefix + joined + ".bias", b);
+        }
+        return l;
+    }
+
+    /**
      * Quantizes every projection's weight in place to {@code bits} bits with one scale per
      * {@code group} input rows (see {@link Tensor#quantized}), for inference or QLoRA. The
      * model can then no longer be saved as safetensors, and those weights no longer train.
@@ -925,6 +1022,9 @@ public final class Llama implements LanguageModel {
      * @param dir the directory, created if needed
      */
     public void save(Path dir) {
+        if (fused != null) {
+            throw new IllegalStateException("a model with fused projections cannot be saved");
+        }
         int expected = 2 + 2 * config.layers() + linearNames(config).size()
                 + (config.attentionBias() ? 3 * config.layers() : 0);
         if (named.size() != expected) {

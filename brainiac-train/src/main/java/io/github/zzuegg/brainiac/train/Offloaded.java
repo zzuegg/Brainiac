@@ -59,6 +59,22 @@ final class Offloaded implements Optimizer {
     }
 
     @Override
+    public void resetState(Var parameter, Tensor keep) {
+        Var h = copies.get(parameter);
+        if (h != null) {
+            inner.resetState(h, keep.to(host));
+        }
+    }
+
+    @Override
+    public void forget(Var parameter) {
+        Var h = copies.remove(parameter);
+        if (h != null) {
+            inner.forget(h);
+        }
+    }
+
+    @Override
     public float learningRate() {
         return inner.learningRate();
     }
