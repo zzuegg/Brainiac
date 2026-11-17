@@ -2507,7 +2507,15 @@
     </aside>`;
   }
 
+  // answers saved before the studio split plain-text <think> blocks off: show them as reasoning too
+  function splitThink(m) {
+    if (m.role === "user" || m.thinking || !m.text) return m;
+    const r = /^\s*<think>([\s\S]*?)(?:<\/think>|$)\s*/.exec(m.text);
+    return r ? { ...m, thinking: r[1].trim(), text: m.text.slice(r[0].length) } : m;
+  }
+
   function msgHtml(m, i) {
+    m = splitThink(m);
     if (m.role === "user") {
       return `<div class="msg user" data-i="${i}"><div class="avatar user">${icon("chat")}</div><div style="min-width:0">
         <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div></div></div>`;

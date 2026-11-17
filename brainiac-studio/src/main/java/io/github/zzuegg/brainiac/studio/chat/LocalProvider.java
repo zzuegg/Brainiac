@@ -260,11 +260,13 @@ final class LocalProvider implements ChatProvider {
                 : request.messages().getLast().text();
         Generator.Options options = new Generator.Options(request.maxTokens(),
                 Sampling.temperature(0.7f).withTopP(0.9f), System.nanoTime(), loaded.stops(), List.of());
+        // a template that opens the think block itself (DeepSeek-R1, Qwen3 with thinking on) starts the answer inside it
+        ThinkSplitter split = new ThinkSplitter(listener, prompt.stripTrailing().endsWith("<think>"));
         Generator.Output out;
         try {
             out = loaded.generator().generate(List.of(prompt), options, (row, piece) -> {
                 try {
-                    listener.text(piece);
+                    split.text(piece);
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
@@ -272,6 +274,7 @@ final class LocalProvider implements ChatProvider {
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }
+        split.finish();
         return new ChatResult(out.finish() == Generator.Finish.LENGTH ? "length" : "end",
                 loaded.generator().encode(prompt).length, out.tokens().length);
     }
