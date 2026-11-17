@@ -305,14 +305,6 @@ class VulkanBackendTest {
             Tensor.evaluate(List.of(b, c));
             return b.sub(c).matmul(y.to(type).to(t.device()));
         }, x);
-        // reductions read a pending input's expression where they need it
-        same(type, "sum of a chain, last axis", t -> t.mul(t).add(1).sum(1, true), x);
-        same(type, "mean of a chain, first axis", t -> t.exp().mean(0, true).add(t), x);
-        same(type, "max and min of a chain", t -> t.tanh().max(1, true).sub(t.abs().neg().min(0, true)), x);
-        same(type, "sum of a view's chain", t -> t.transpose().mul(2).sum(1, true), x);
-        same(type, "sum of a chain over long rows", t -> t.reshape(1, 54).expand(Shape.of(300, 54)).sigmoid().mul(0.01f).sum(0, true), x);
-        same(type, "sum of a chain along long rows", t -> t.reshape(54, 1).expand(Shape.of(54, 300)).sigmoid()
-                .mul(0.01f).sum(1, true), x);
         same(type, "constants", t -> Tensor.full(Shape.of(6, 9), 0.25f, type, t.device()).mul(t)
                 .add(Tensor.zeros(Shape.of(9), type, t.device())), x);
         if (type == DType.FLOAT32) {
@@ -374,17 +366,6 @@ class VulkanBackendTest {
             r = r.mul(1.01f).add(x).tanh();
         }
         r.transpose().toArray();
-        assertEquals(1, vk.dispatchCount() - before, vk.statistics());
-    }
-
-    @Test
-    void aReductionOfAChainIsOneDispatch() {
-        VulkanBackend vk = VulkanBackend.loaded().orElseThrow();
-        assumeTrue(vk.status().contains("fusion on"), vk.status());
-        Tensor x = random(25, 64, 64).to(gpu);
-        x.toArray();
-        long before = vk.dispatchCount();
-        x.mul(x).add(1).sum(0, true).toArray();
         assertEquals(1, vk.dispatchCount() - before, vk.statistics());
     }
 

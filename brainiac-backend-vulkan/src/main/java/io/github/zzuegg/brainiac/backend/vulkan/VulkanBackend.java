@@ -927,9 +927,6 @@ public final class VulkanBackend implements Backend {
         if (rows == 0) {
             return;
         }
-        if (op != ReduceOp.ARGMAX && reducePending(op.ordinal(), vs(in), y, rows, length, inner)) {
-            return;
-        }
         eager(vs(in), y);
         VkStorage x = as(vs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
@@ -940,49 +937,6 @@ public final class VulkanBackend implements Backend {
             reduce(op.ordinal(), x, y, rows, length, inner);
         }
         done(x, vs(in));
-    }
-
-    /** Whether reductions read a pending input's expression instead of computing it first. */
-    private static final boolean FUSE_REDUCE = !"false".equalsIgnoreCase(
-            System.getProperty("brainiac.vulkan.fuseReduce"));
-
-    /**
-     * Reduces a pending element-wise input in one generated shader that evaluates its
-     * expression where the reduction reads it and stores the values too, so they are not read
-     * back from memory. Returns false where that does not apply.
-     */
-    private boolean reducePending(int op, VkStorage x, VkStorage y, long rows, long length, long inner) {
-        Fusion.Expr e = x.pending;
-        if (!FUSE_REDUCE || e == null || cheap(e) || x.dtype != y.dtype || length > Integer.MAX_VALUE
-                || inner > Integer.MAX_VALUE || Fusion.reads(e, y)) {
-            return false;
-        }
-        boolean group = rows < 1024 && length > 256;
-        // only where neighbouring invocations read neighbouring values: rows of one work group
-        // (contiguous rows), or one invocation per output across an inner axis
-        if (group ? inner != 1 : inner == 1) {
-            return false;
-        }
-        eager(y);
-        x.pending = null;   // stored by the reduction
-        x.pendingNodes = 0;
-        Fusion.Kernel k = Fusion.generateReduce(e, y.dtype, op, group, (int) length, (int) inner, x);
-        String name = fusedPipeline(k.source(), y.dtype);
-        VkContext.Slot[] reads = new VkContext.Slot[k.loads().size()];
-        for (int i = 0; i < reads.length; i++) {
-            reads[i] = k.loads().get(i).slot();
-        }
-        if (k.inPush()) {
-            ByteBuffer p = vk.push().putLong(y.address()).putInt((int) rows).putInt(0);
-            k.writeMeta(p, Fusion.Kernel.PUSH_TABLE);
-            p.position(Fusion.Kernel.PUSH_TABLE + k.metaBytes());
-        } else {
-            long meta = vk.hostData(k.metaBytes(), k::writeMeta);
-            vk.push().putLong(meta).putLong(y.address()).putInt((int) rows);
-        }
-        vk.dispatch(name, group ? rows : groups(rows), new VkContext.Slot[] {y.slot(), x.slot()}, reads);
-        fusedDispatches++;
-        return true;
     }
 
     private void reduce(int op, VkStorage x, VkStorage y, long rows, long length, long inner) {
