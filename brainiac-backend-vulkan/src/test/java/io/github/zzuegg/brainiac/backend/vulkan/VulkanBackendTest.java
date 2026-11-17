@@ -645,7 +645,9 @@ class VulkanBackendTest {
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {
                 // inputs rounded to 16 bits: errors relative to the largest output
-                float[] actual = x.to(type).to(gpu).matmul(onGpu).toArray();
+                Tensor product = x.to(type).to(gpu).matmul(onGpu);
+                assertEquals(type, product.dtype(), "packed weights multiply in the activations' type");
+                float[] actual = product.toArray();
                 double tolerance = (type == DType.FLOAT64 ? 1e-5 : type == DType.FLOAT16 ? 4e-3 : 3e-2) * scale;
                 for (int i = 0; i < expected.length; i++) {
                     assertEquals(expected[i], actual[i], tolerance, what + ", " + type + " at " + i);
