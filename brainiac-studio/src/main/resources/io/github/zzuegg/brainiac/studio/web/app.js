@@ -3661,7 +3661,9 @@
     stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"] };
   const agentActive = r => r.state === "running" || r.state === "waiting";
   const shortDur = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + " s" : s < 3600 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h"; };
-  const agentTitle = g => { const t = g.split("\n")[0]; return t.length > 90 ? t.slice(0, 87) + "…" : t; };
+  // the goal's first line as plain text: Markdown marks belong in the rendered goal, not in a title
+  const plainMd = t => t.replace(/^#+\s+/, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/(^|\W)\*([^*\s][^*]*)\*/g, "$1$2").replace(/`([^`]+)`/g, "$1");
+  const agentTitle = g => { const t = plainMd(g.split("\n")[0]); return t.length > 90 ? t.slice(0, 87) + "…" : t; };
   const argText = a => { const s = JSON.stringify(a || {}); return s === "{}" ? "" : s; };
 
   function liveAgentCard(r) {
@@ -3732,12 +3734,12 @@
 
   function agentStep(s, i) {
     switch (s.kind) {
-      case "goal": return `<div class="st st-goal"><span class="eyebrow">You</span><div>${md(s.text || "")}</div></div>`;
-      case "say": return `<div class="st st-say">${md(s.text || "")}</div>`;
+      case "goal": return `<div class="st st-goal"><span class="eyebrow">You</span><div class="md-body">${md(s.text || "")}</div></div>`;
+      case "say": return `<div class="st st-say"><div class="md-body">${md(s.text || "")}</div></div>`;
       case "call": return `<div class="st st-call">${icon("plug")}<span>Calls <code>${esc(s.tool)}</code>${argText(s.arguments) ? ` <span class="mono muted">${esc(argText(s.arguments))}</span>` : ""}</span></div>`;
       case "result": return `<details class="st st-result ${s.ok ? "" : "bad"}" data-ag-open="${i}" ${A.open.has(i) ? "open" : ""}><summary>${s.ok ? icon("check") : icon("alert")}<span><code>${esc(s.tool)}</code> ${s.ok ? "answered" : "failed"}</span><span class="mono faint">${fmtCount((s.text || "").length)} chars</span></summary><pre>${esc(s.text || "")}</pre></details>`;
       case "decision": return `<div class="st st-decision">${icon(s.allow ? "check" : "x")}<span>You ${s.allow ? "allowed" : "did not allow"} <code>${esc(s.tool)}</code>${s.note ? `: “${esc(s.note)}”` : ""}</span></div>`;
-      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div>${md(s.text || "")}</div></div>`;
+      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${md(s.text || "")}</div></div>`;
       case "error": return `<div class="flag bad">${icon("alert")}<span>${esc(s.text || "")}</span></div>`;
       default: return "";
     }
