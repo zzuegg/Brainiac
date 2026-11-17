@@ -755,8 +755,6 @@ button.linkchip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
 button.linkchip:hover { filter: brightness(1.15); text-decoration: underline; text-underline-offset: 2px; }
 .keyuse { flex-basis: 100%; font-size: 11.5px; color: var(--muted); padding-left: 16px; }
 .more-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-top: 4px; }
-.sect-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-.prov.hint-card { border-style: dashed; }
 .more { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 0 18px; border: 1px dashed var(--line); border-radius: 12px; padding: 4px 12px; }
 .prov-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; gap: 4px 10px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line-soft); }
 .more > .prov-row:nth-child(-n+1) { border-top: 0; }

@@ -17,9 +17,7 @@ import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.HexFormat;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -124,91 +122,6 @@ public final class WorkerClient {
      */
     public Map<String, Object> info() throws IOException {
         return json(request("worker/info").timeout(Duration.ofSeconds(5)).GET().build());
-    }
-
-    /**
-     * Lists the chat models the worker serves.
-     *
-     * @return the models, with the worker's own provider id
-     * @throws IOException if it cannot be reached or does not accept the token
-     */
-    public List<io.github.zzuegg.brainiac.studio.chat.ModelInfo> models() throws IOException {
-        Map<String, Object> m = json(request("worker/models").timeout(Duration.ofSeconds(5)).GET().build());
-        List<io.github.zzuegg.brainiac.studio.chat.ModelInfo> out = new ArrayList<>();
-        for (Object o : Json.array(m.getOrDefault("models", List.of()))) {
-            Map<String, Object> x = Json.object(o);
-            List<String> media = Json.array(x.getOrDefault("media", List.of("text"))).stream().map(String::valueOf).toList();
-            out.add(new io.github.zzuegg.brainiac.studio.chat.ModelInfo(Json.string(x, "provider", "local"),
-                    Json.string(x, "id", ""), Json.string(x, "name", Json.string(x, "id", "")), media, 0,
-                    Json.string(x, "detail", "")));
-        }
-        return out;
-    }
-
-    /**
-     * Has the worker answer a conversation with one of its models, passing the answer on as it
-     * arrives.
-     *
-     * @param request the conversation; its model is the worker's model id
-     * @param listener receives the answer
-     * @return how it ended
-     * @throws IOException if the worker fails or the listener stops the answer
-     */
-    public io.github.zzuegg.brainiac.studio.chat.ChatResult chat(io.github.zzuegg.brainiac.studio.chat.ChatRequest request,
-            io.github.zzuegg.brainiac.studio.chat.ChatListener listener) throws IOException {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("model", request.model());
-        body.put("system", request.system());
-        body.put("maxTokens", request.maxTokens());
-        body.put("messages", request.messages().stream().map(m -> Map.of("role", m.role(), "text", m.text())).toList());
-        // the answer streams, so only the wait for its first line is limited
-        HttpResponse<InputStream> r = send(request("worker/chat").timeout(Duration.ofMinutes(10))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body))).build(), HttpResponse.BodyHandlers.ofInputStream());
-        if (r.statusCode() >= 400) {
-            String text;
-            try (InputStream in = r.body()) {
-                text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            String msg;
-            try {
-                msg = Json.string(Json.object(Json.parse(text)), "error", "");
-            } catch (RuntimeException e) {
-                msg = "";
-            }
-            throw new IOException(r.statusCode() == 401 ? "the worker did not accept the token"
-                    : msg.isEmpty() ? "the worker answered " + r.statusCode() : msg);
-        }
-        Object[] end = {null, null};
-        try (InputStream in = r.body()) {
-            io.github.zzuegg.brainiac.studio.chat.Sse.read(in, (event, data) -> {
-                Map<String, Object> d = Json.object(Json.parse(data));
-                switch (event) {
-                    case "text" -> listener.text(Json.string(d, "text", ""));
-                    case "thinking" -> listener.thinking(Json.string(d, "text", ""));
-                    case "done" -> {
-                        end[0] = d;
-                        return false;
-                    }
-                    case "error" -> {
-                        end[1] = Json.string(d, "message", "the worker failed");
-                        return false;
-                    }
-                    default -> { }
-                }
-                return true;
-            });
-        }
-        if (end[1] != null) {
-            throw new IOException((String) end[1]);
-        }
-        if (end[0] == null) {
-            throw new IOException("the worker stopped before the answer was done");
-        }
-        @SuppressWarnings("unchecked")
-        Map<String, Object> d = (Map<String, Object>) end[0];
-        return new io.github.zzuegg.brainiac.studio.chat.ChatResult(Json.string(d, "stop", "end"),
-                Json.integer(d, "inputTokens", -1), Json.integer(d, "outputTokens", -1));
     }
 
     /**

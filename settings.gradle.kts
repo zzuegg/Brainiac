@@ -28,5 +28,4 @@ include(
     "brainiac-benchmarks",
     "brainiac-experiments",
     "brainiac-studio",
-    "brainiac-cloud",
 )

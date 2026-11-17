@@ -241,13 +241,12 @@ public final class Studio implements AutoCloseable {
                 }
                 case "--help", "-h" -> {
                     System.out.println("Usage: studio [--port <n>] [--models <folder>]... [--data <folder>]");
-                    System.out.println("       studio --worker [--port <n>] [--listen <address>] [--models <folder>]... [--data <folder>]");
+                    System.out.println("       studio --worker [--port <n>] [--listen <address>] [--data <folder>]");
                     System.out.println("  --port    default " + DEFAULT_PORT + ", 0 = any free port");
                     System.out.println("  --models  where local models are (default ./models and ~/.brainiac/models)");
                     System.out.println("  --data    where keys, conversations, settings and outputs are kept");
                     System.out.println("            (default $" + DATA_VARIABLE + ", else ~/.brainiac/studio)");
-                    System.out.println("  --worker  train runs sent by another studio on this machine, and serve its models (port "
-                            + WorkerServer.DEFAULT_PORT + "; the token comes from $BRAINIAC_WORKER_TOKEN if set)");
+                    System.out.println("  --worker  train runs sent by another studio on this machine (port " + WorkerServer.DEFAULT_PORT + ")");
                     System.out.println("  --listen  the address a worker listens on (default 0.0.0.0, every network)");
                     return;
                 }
@@ -256,18 +255,12 @@ public final class Studio implements AutoCloseable {
         }
         if (worker) {
             Path folder = (data != null ? data : Settings.defaults().data()).toAbsolutePath().resolve("worker");
-            String given = System.getenv("BRAINIAC_WORKER_TOKEN");
-            WorkerServer w = WorkerServer.start(new InetSocketAddress(listen, port < 0 ? WorkerServer.DEFAULT_PORT : port),
-                    folder, folders.isEmpty() ? Settings.defaults().modelFolders() : folders, given);
+            WorkerServer w = WorkerServer.start(new InetSocketAddress(listen, port < 0 ? WorkerServer.DEFAULT_PORT : port), folder);
             Runtime.getRuntime().addShutdownHook(new Thread(w::close));
             System.out.println("Brainiac Studio worker is listening on port " + w.port() + ".");
             System.out.println("On your studio's Train screen, choose Add a host and enter one of these addresses:");
             w.addresses().forEach(a -> System.out.println("  " + a));
-            if (given == null || given.isBlank()) {
-                System.out.println("and this token: " + w.token());
-            } else {
-                System.out.println("and the token in BRAINIAC_WORKER_TOKEN.");
-            }
+            System.out.println("and this token: " + w.token());
             System.out.println("Keeping what it is sent and trains in " + folder + ". Press Ctrl+C to stop.");
             return;
         }
