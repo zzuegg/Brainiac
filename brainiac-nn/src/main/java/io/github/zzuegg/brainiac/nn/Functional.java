@@ -665,6 +665,30 @@ public final class Functional {
     }
 
     /**
+     * The InfoNCE (contrastive) loss of paired embeddings, as in CLIP and SimCLR: row
+     * {@code i} of {@code a} should be most similar to row {@code i} of {@code b} among all
+     * rows of {@code b}, and the other way round. Rows are normalized first, and the other
+     * rows of the batch serve as negatives.
+     *
+     * @param a embeddings {@code [batch, dim]}
+     * @param b their partners {@code [batch, dim]}
+     * @param temperature divides the cosine similarities; CLIP learns it, 0.07 is common
+     * @return the loss averaged over both directions, a scalar
+     */
+    public static Var infoNce(Var a, Var b, float temperature) {
+        if (!a.shape().equals(b.shape()) || a.shape().rank() != 2) {
+            throw new IllegalArgumentException("infoNce needs two [batch, dim] inputs, got " + a.shape() + " and "
+                    + b.shape());
+        }
+        Var na = a.div(a.square().sum(1, true).add(1e-12f).sqrt());
+        Var nb = b.div(b.square().sum(1, true).add(1e-12f).sqrt());
+        Var logits = na.matmul(nb.transpose()).div(temperature);
+        int n = a.shape().dim(0);
+        Tensor ids = Tensor.arange(n).to(a.value().device());
+        return crossEntropy(logits, ids).add(crossEntropy(logits.transpose(), ids)).mul(0.5f);
+    }
+
+    /**
      * Cross-entropy from logits: the mean over rows of {@code logsumexp(logits) - logits[id]},
      * skipping rows whose id is negative (padding, as PyTorch's {@code ignore_index}).
      *

@@ -34,6 +34,118 @@ public interface Loss {
         return pos.add(neg).mean().neg();
     };
 
+    /** Mean absolute error: for numbers, less swayed by outliers than {@link #MSE}. */
+    Loss L1 = (p, t) -> checked(p, t).sub(t).abs().mean();
+
+    /**
+     * Kullback-Leibler divergence {@code KL(target || prediction)} between probability rows,
+     * summed over the last axis and averaged over the rows: for distillation.
+     */
+    Loss KL_DIVERGENCE = (p, t) -> {
+        int rows = Math.toIntExact(checked(p, t).shape().size() / p.shape().dim(-1));
+        Tensor tLogT = t.mul(t.add(Loss.EPSILON).log());
+        return Var.of(tLogT).sub(p.add(Loss.EPSILON).log().mul(t)).sum().mul(1f / rows);
+    };
+
+    /** One minus the cosine similarity of each row with its target, averaged over the rows. */
+    Loss COSINE = (p, t) -> {
+        Var dot = checked(p, t).mul(t).sum(-1, false);
+        Var norm = p.square().sum(-1, false).add(Loss.EPSILON).sqrt().mul(Var.of(t.square().sum(-1, false).add(Loss.EPSILON).sqrt()));
+        return dot.div(norm).neg().add(1).mean();
+    };
+
+    /** Hinge loss for targets of -1 and 1 and raw scores: {@code mean(max(0, 1 - t * p))}, as SVMs and GANs use. */
+    Loss HINGE = (p, t) -> checked(p, t).mul(t).neg().add(1).maximum(0).mean();
+
+    /**
+     * The Huber (smooth L1) loss: squared below {@code delta}, linear above.
+     *
+     * @param delta where the loss turns linear, positive
+     * @return the loss
+     */
+    static Loss huber(float delta) {
+        if (!(delta > 0)) {
+            throw new IllegalArgumentException("delta must be positive: " + delta);
+        }
+        return (p, t) -> {
+            Var d = checked(p, t).sub(t).abs();
+            Var small = d.minimum(delta);   // the quadratic part, capped at delta
+            return small.square().mul(0.5f).add(d.sub(small).mul(delta)).mean();
+        };
+    }
+
+    /**
+     * Cross-entropy from raw scores (logits), with a log-softmax inside for stability: the
+     * loss for classifiers without a softmax layer. Targets are class ids, one per row
+     * (negative ids are skipped, like padding), or full probability rows.
+     *
+     * @param labelSmoothing the share of each target spread evenly over all classes, in
+     *     {@code [0, 1)}; 0 for plain cross-entropy
+     * @return the loss, averaged over the rows that count
+     */
+    static Loss crossEntropyFromLogits(float labelSmoothing) {
+        if (!(labelSmoothing >= 0 && labelSmoothing < 1)) {
+            throw new IllegalArgumentException("label smoothing must be in [0, 1): " + labelSmoothing);
+        }
+        return (p, t) -> {
+            int classes = p.shape().dim(-1);
+            Var logp = Activation.logSoftmax(-1).forward(p);
+            Tensor target;
+            float count;
+            if (classIds(p.shape(), t.shape())) {
+                Tensor valid = t.greater(Tensor.full(io.github.zzuegg.brainiac.tensor.Shape.of(), -0.5f, t.device()))
+                        .to(p.dtype());
+                count = Math.max(1, valid.sum().item());
+                Tensor oneHot = oneHot(t, p.shape()).to(p.dtype());
+                int[] dims = p.shape().toArray();
+                dims[dims.length - 1] = 1;
+                target = oneHot.mul(1 - labelSmoothing).add(labelSmoothing / classes).mul(valid.reshape(dims));
+            } else {
+                count = Math.toIntExact(checked(p, t).shape().size() / classes);
+                target = labelSmoothing == 0 ? t : t.mul(1 - labelSmoothing).add(labelSmoothing / classes);
+            }
+            return logp.mul(target).sum().mul(-1f / count);
+        };
+    }
+
+    /**
+     * Focal loss (Lin et al., 2017) for 0/1 targets and probabilities from a sigmoid: binary
+     * cross-entropy with each example scaled by {@code (1 - p_t)^gamma}, so easy examples
+     * count less; for detection and other imbalanced problems.
+     *
+     * @param gamma the focusing power; 0 is binary cross-entropy
+     * @param alpha the weight of positives, in {@code [0, 1]}, negatives get {@code 1 - alpha};
+     *     0.5 weighs them equally (and halves the loss)
+     * @return the loss
+     */
+    static Loss focal(float gamma, float alpha) {
+        return (p, t) -> {
+            Var pt = checked(p, t).mul(t).add(p.neg().add(1).mul(t.neg().add(1)));   // probability of the truth
+            Tensor weight = t.mul(alpha).add(t.neg().add(1).mul(1 - alpha));
+            Var ce = pt.add(EPSILON).log().neg();
+            return pt.neg().add(1).maximum(0).pow(gamma).mul(ce).mul(weight).mean();
+        };
+    }
+
+    /**
+     * Dice loss for segmentation: one minus the soft Dice coefficient
+     * {@code (2 |p t| + smooth) / (|p| + |t| + smooth)} of each example, averaged.
+     *
+     * @param smooth added to both sides, so empty masks give 0; usually 1
+     * @return the loss
+     */
+    static Loss dice(float smooth) {
+        return (p, t) -> {
+            int batch = checked(p, t).shape().dim(0);
+            int per = Math.toIntExact(p.shape().size() / batch);
+            Var pr = p.reshape(batch, per);
+            Tensor tr = t.reshape(batch, per);
+            Var inter = pr.mul(tr).sum(1, false).mul(2).add(smooth);
+            Var total = pr.sum(1, false).add(Var.of(tr.sum(1, false))).add(smooth);
+            return inter.div(total).neg().add(1).mean();
+        };
+    }
+
     /** Added inside logarithms so a probability of exactly 0 does not give infinity. */
     float EPSILON = 1e-7f;
 
