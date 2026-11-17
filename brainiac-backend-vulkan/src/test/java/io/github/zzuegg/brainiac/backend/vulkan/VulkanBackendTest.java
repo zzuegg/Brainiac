@@ -385,6 +385,29 @@ class VulkanBackendTest {
         }
     }
 
+    /** Embedding gradients of a small vocabulary: long index lists, added up in slices. */
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
+    void scatterAddOfLongIndexListsMatchesTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        for (int[] dims : new int[][] {{4000, 16, 5}, {3000, 130, 65}, {700, 3, 2}, {2, 4000, 7}}) {
+            int count = dims[0];
+            int length = dims[2];
+            float[] idx = new float[count];
+            java.util.Random r = new java.util.Random(count);
+            for (int i = 0; i < count; i++) {
+                idx[i] = i % 3 == 0 ? 0 : r.nextInt(length);   // one frequent target
+            }
+            Tensor indices = Tensor.of(idx);
+            Tensor x = random(count + length, count, dims[1]);
+            same(type, "scatterAdd " + count + "x" + dims[1] + " into " + length,
+                    t -> t.scatterAdd(0, indices.to(t.device()), length), x);
+            Tensor y = random(count * 3L, 2, count, dims[1]);
+            same(type, "scatterAdd middle " + count + "x" + dims[1] + " into " + length,
+                    t -> t.scatterAdd(1, indices.to(t.device()), length), y);
+        }
+    }
+
     @Test
     void manyTemporaryTensorsAreFreed() {
         Tensor t = Tensor.zeros(Shape.of(1 << 18), gpu);

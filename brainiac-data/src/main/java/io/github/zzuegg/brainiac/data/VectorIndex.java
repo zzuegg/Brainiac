@@ -18,7 +18,8 @@ import java.util.SplittableRandom;
  * deduplication or k-NN classification. {@link #flat} compares a query with every vector
  * (one matrix product on the device: exact); {@link #hnsw} builds a hierarchical navigable
  * small-world graph on the host (Malkov and Yashunin, 2018): approximate, but it visits
- * only a small part of a large collection.
+ * only a small part of a large collection. Removed vectors stop showing up in searches; their
+ * ids are not reused. {@link VectorStore} keeps a value with each vector.
  */
 public interface VectorIndex {
 
@@ -58,8 +59,23 @@ public interface VectorIndex {
      */
     List<Hit> search(Tensor query, int k);
 
-    /** @return the number of vectors */
+    /** @return the number of vectors, not counting removed ones */
     int size();
+
+    /**
+     * Removes a vector from later searches. Its id is not reused; a graph index keeps it as a
+     * waypoint, as hnswlib does with deleted elements.
+     *
+     * @param id the vector's id
+     * @return whether it was there to remove
+     */
+    boolean remove(int id);
+
+    /**
+     * @param id a vector's id
+     * @return whether it was added and not removed
+     */
+    boolean contains(int id);
 
     /**
      * An exact index that compares every vector.
@@ -120,6 +136,7 @@ public interface VectorIndex {
         private Tensor all;
         private Tensor squares;
         private int size;
+        private final java.util.BitSet removed = new java.util.BitSet();
 
         Flat(int dim, Metric metric, Device device) {
             this.dim = dim;
@@ -148,7 +165,7 @@ public interface VectorIndex {
         @Override
         public List<Hit> search(Tensor query, int k) {
             checkWidth(query, dim, 1);
-            if (size == 0) {
+            if (size() == 0) {
                 return List.of();
             }
             if (all == null) {
@@ -167,20 +184,36 @@ public interface VectorIndex {
                 }
                 scores = scores.mul(2).sub(squares).sub((float) qq);
             }
-            int kk = Math.min(k, size);
+            int kk = Math.min(k + removed.cardinality(), size);
             Tensor[] top = scores.reshape(1, size).topk(kk);
             float[] s = top[0].toArray();
             float[] ids = top[1].toArray();
-            List<Hit> out = new ArrayList<>(kk);
-            for (int i = 0; i < kk; i++) {
-                out.add(new Hit((int) ids[i], s[i]));
+            List<Hit> out = new ArrayList<>(Math.min(k, kk));
+            for (int i = 0; i < kk && out.size() < k; i++) {
+                if (!removed.get((int) ids[i])) {
+                    out.add(new Hit((int) ids[i], s[i]));
+                }
             }
             return out;
         }
 
         @Override
         public int size() {
-            return size;
+            return size - removed.cardinality();
+        }
+
+        @Override
+        public boolean remove(int id) {
+            if (!contains(id)) {
+                return false;
+            }
+            removed.set(id);
+            return true;
+        }
+
+        @Override
+        public boolean contains(int id) {
+            return id >= 0 && id < size && !removed.get(id);
         }
     }
 
@@ -198,6 +231,7 @@ public interface VectorIndex {
         private final List<List<int[]>> graph = new ArrayList<>();
         private int entry = -1;
         private int top = -1;
+        private final java.util.BitSet removed = new java.util.BitSet();
 
         Hnsw(int dim, Metric metric, int links, int efConstruction, int efSearch, long seed) {
             if (links < 2 || efConstruction < 1 || efSearch < 1) {
@@ -354,13 +388,36 @@ public interface VectorIndex {
             for (int l = top; l > 0; l--) {
                 current = greedy(q, current, l);
             }
-            List<Hit> found = layer(q, List.of(current), Math.max(efSearch, k), 0);
-            return found.subList(0, Math.min(k, found.size()));
+            List<Hit> found = layer(q, List.of(current), Math.max(efSearch, k) + removed.cardinality(), 0);
+            List<Hit> out = new ArrayList<>(k);
+            for (Hit h : found) {
+                if (out.size() == k) {
+                    break;
+                }
+                if (!removed.get(h.id())) {
+                    out.add(h);
+                }
+            }
+            return out;
         }
 
         @Override
         public int size() {
-            return vectors.size();
+            return vectors.size() - removed.cardinality();
+        }
+
+        @Override
+        public boolean remove(int id) {
+            if (!contains(id)) {
+                return false;
+            }
+            removed.set(id);
+            return true;
+        }
+
+        @Override
+        public boolean contains(int id) {
+            return id >= 0 && id < vectors.size() && !removed.get(id);
         }
     }
 }

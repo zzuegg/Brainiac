@@ -742,6 +742,34 @@ public final class Functional {
     }
 
     /**
+     * The reparameterization trick of variational autoencoders (Kingma and Welling, 2014): a
+     * sample {@code mu + exp(logVar / 2) * eps} with {@code eps ~ N(0, 1)}, differentiable in
+     * the mean and the log-variance.
+     *
+     * @param mu the means
+     * @param logVar the log-variances, same shape
+     * @param random draws {@code eps}
+     * @return a sample of that shape
+     */
+    public static Var reparameterize(Var mu, Var logVar, java.util.random.RandomGenerator random) {
+        Tensor eps = Tensor.normal(mu.shape(), 0, 1, random).to(mu.value().device()).to(mu.value().dtype());
+        return mu.add(logVar.mul(0.5f).exp().mul(eps));
+    }
+
+    /**
+     * The KL divergence of {@code N(mu, exp(logVar))} from the standard normal, summed over the
+     * last axis and averaged over the rest: a VAE's regularizer, often weighted ("beta").
+     *
+     * @param mu the means {@code [..., latent]}
+     * @param logVar the log-variances, same shape
+     * @return the divergence, a scalar
+     */
+    public static Var gaussianKl(Var mu, Var logVar) {
+        Var perDim = mu.square().add(logVar.exp()).sub(logVar).sub(1).mul(0.5f);
+        return perDim.sum(-1, false).mean();
+    }
+
+    /**
      * The InfoNCE (contrastive) loss of paired embeddings, as in CLIP and SimCLR: row
      * {@code i} of {@code a} should be most similar to row {@code i} of {@code b} among all
      * rows of {@code b}, and the other way round. Rows are normalized first, and the other
@@ -1413,6 +1441,97 @@ public final class Functional {
         Var x1 = x.slice(-1, 0, half);
         Var x2 = x.slice(-1, half, d);
         return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn)));
+    }
+
+    /**
+     * Two-dimensional rotary embedding for image tokens, as vision transformers and DiT
+     * variants use: the first half of the features rotates with the token's row, the second
+     * half with its column, each as {@link #rotary} does.
+     *
+     * @param x {@code [..., rows * cols, d]}, tokens in row-major order, {@code d} a multiple of 4
+     * @param rows the grid's rows
+     * @param cols the grid's columns
+     * @param base the frequency base, such as 10000
+     * @return the rotated values
+     */
+    public static Var rotary2d(Var x, int rows, int cols, float base) {
+        int tokens = x.shape().dim(-2);
+        int d = x.shape().dim(-1);
+        if (tokens != rows * cols || d % 4 != 0) {
+            throw new IllegalArgumentException("rotary2d needs " + rows * cols + " tokens and features divisible by 4, got "
+                    + x.shape());
+        }
+        int[] r = new int[tokens];
+        int[] c = new int[tokens];
+        for (int t = 0; t < tokens; t++) {
+            r[t] = t / cols;
+            c[t] = t % cols;
+        }
+        return Var.concat(-1, rotaryAt(x.slice(-1, 0, d / 2), r, base), rotaryAt(x.slice(-1, d / 2, d), c, base));
+    }
+
+    /** {@link #rotary} with each step's position given. */
+    private static Var rotaryAt(Var x, int[] positions, float base) {
+        int steps = positions.length;
+        int d = x.shape().dim(-1);
+        int half = d / 2;
+        float[] cos = new float[steps * half];
+        float[] sin = new float[steps * half];
+        for (int t = 0; t < steps; t++) {
+            for (int i = 0; i < half; i++) {
+                double angle = positions[t] * Math.pow(base, -2.0 * i / d);
+                cos[t * half + i] = (float) Math.cos(angle);
+                sin[t * half + i] = (float) Math.sin(angle);
+            }
+        }
+        Device device = x.value().device();
+        Tensor c = Tensor.of(Shape.of(steps, half), cos, device).to(x.value().dtype());
+        Tensor sn = Tensor.of(Shape.of(steps, half), sin, device).to(x.value().dtype());
+        Var x1 = x.slice(-1, 0, half);
+        Var x2 = x.slice(-1, half, d);
+        return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn)));
+    }
+
+    /**
+     * Cuts images into non-overlapping patches, the tokens of a vision transformer or DiT.
+     *
+     * @param images {@code [batch, channels, height, width]}, sides divisible by {@code patch}
+     * @param patch the patch side
+     * @return {@code [batch, (height / patch) * (width / patch), channels * patch * patch]},
+     *     patches in row-major order, each laid out channel, row, column
+     */
+    public static Var patchify(Var images, int patch) {
+        Shape s = images.shape();
+        int b = s.dim(0);
+        int c = s.dim(1);
+        int h = s.dim(2);
+        int w = s.dim(3);
+        if (s.rank() != 4 || h % patch != 0 || w % patch != 0) {
+            throw new IllegalArgumentException("patchify needs [b, c, h, w] with sides divisible by " + patch + ", got "
+                    + s);
+        }
+        int gh = h / patch;
+        int gw = w / patch;
+        return images.reshape(b, c, gh, patch, gw, patch).permute(0, 2, 4, 1, 3, 5)
+                .reshape(b, gh * gw, c * patch * patch);
+    }
+
+    /**
+     * The inverse of {@link #patchify}.
+     *
+     * @param tokens {@code [batch, (height / patch) * (width / patch), channels * patch * patch]}
+     * @param channels the image channels
+     * @param height the image height
+     * @param width the image width
+     * @param patch the patch side
+     * @return {@code [batch, channels, height, width]}
+     */
+    public static Var unpatchify(Var tokens, int channels, int height, int width, int patch) {
+        int b = tokens.shape().dim(0);
+        int gh = height / patch;
+        int gw = width / patch;
+        return tokens.reshape(b, gh, gw, channels, patch, patch).permute(0, 3, 1, 4, 2, 5)
+                .reshape(b, channels, height, width);
     }
 
     /**

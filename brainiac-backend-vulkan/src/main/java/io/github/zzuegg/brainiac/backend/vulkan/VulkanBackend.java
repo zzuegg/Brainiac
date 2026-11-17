@@ -1701,6 +1701,11 @@ public final class VulkanBackend implements Backend {
         done(ind, vs(indices));
     }
 
+    /** Most slices an index list is split into for {@link #scatterAdd} ({@code -Dbrainiac.vulkan.scatterSlices}; 1: none). */
+    private static final int SCATTER_SLICES = Integer.getInteger("brainiac.vulkan.scatterSlices", 32);
+    /** Work groups {@link #scatterAdd} aims for when it splits the index lists. */
+    private static final long SCATTER_GROUPS = 2048;
+
     @Override
     public synchronized void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
             Storage out) {
@@ -1724,9 +1729,24 @@ public final class VulkanBackend implements Backend {
         VkStorage off = uploadInts(offsets);
         VkStorage ent = uploadInts(entries);
         long total = outer * length * inner;
-        vk.push().putLong(s.address()).putLong(off.address()).putLong(ent.address()).putLong(z.address())
-                .putInt(len).putInt((int) inner).putInt(count).putInt((int) total);
-        vk.dispatch(shader("scatter_add", z.dtype), groups(total), z.slot(), s.slot(), off.slot(), ent.slot());
+        // Few targets with many entries each (a small vocabulary) leave most of the device idle
+        // while each invocation adds up a long list: then slices of the lists are added up
+        // side by side and summed afterwards, always in the same order.
+        int most = 0;
+        for (int l = 0; l < len; l++) {
+            most = Math.max(most, offsets[l + 1] - offsets[l]);
+        }
+        int slices = (int) Math.max(1, Math.min(Math.min(SCATTER_SLICES, most / 8),
+                SCATTER_GROUPS / Math.max(1, groups(total))));
+        VkStorage target = slices == 1 ? z : raw(total * slices, z.dtype, null);
+        vk.push().putLong(s.address()).putLong(off.address()).putLong(ent.address()).putLong(target.address())
+                .putInt(len).putInt((int) inner).putInt(count).putInt((int) total).putInt(slices);
+        vk.dispatch(shader("scatter_add", z.dtype), groups(total), slices, target.slot(), s.slot(), off.slot(),
+                ent.slot());
+        if (slices > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, total, slices, total);
+            target.release();
+        }
         done(s, vs(src));
         off.release();
         ent.release();
