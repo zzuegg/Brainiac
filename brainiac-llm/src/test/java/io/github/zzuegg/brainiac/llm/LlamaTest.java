@@ -150,6 +150,23 @@ class LlamaTest {
     }
 
     @Test
+    void loadsAndSavesPeftAdapters(@TempDir Path dir) throws IOException {
+        Map<String, Object> e = expected("qwen2-lora/expected.json");
+        Llama model = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
+        java.util.List<io.github.zzuegg.brainiac.autograd.Var> adapters = model.loadLora(resource("qwen2-lora"));
+        assertEquals(2 * 3 * 2, adapters.size());
+        int[][] ids = {ints(e.get("ids"))};
+        float[] logits = model.forward(ids).value().toArray();
+        assertArrayEquals(rows(e.get("logits")), logits, 1e-4f);
+        model.saveLora(dir);
+        Llama again = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
+        again.loadLora(dir);
+        assertArrayEquals(logits, again.forward(ids).value().toArray(), 1e-5f);
+        again.mergeLora();
+        assertArrayEquals(logits, again.forward(ids).value().toArray(), 1e-4f);
+    }
+
+    @Test
     void readsQuantizedGguf() throws IOException {
         Map<String, Object> e = expected("llama.gguf.expected.json");
         Llama model = Llama.load(resource("llama.gguf"), DEVICE, DType.FLOAT32);

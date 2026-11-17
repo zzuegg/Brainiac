@@ -1612,6 +1612,124 @@ public final class Llama implements LanguageModel {
         return added;
     }
 
+    /** The prefix PEFT puts before a causal language model's module names. */
+    private static final String PEFT_PREFIX = "base_model.model.";
+
+    /**
+     * Loads a LoRA adapter saved by Hugging Face PEFT ({@code adapter_config.json} and
+     * {@code adapter_model.safetensors}), as {@link #addLora} would have made it: the base
+     * weights become constants and the returned adapters can be trained further, merged with
+     * {@link #mergeLora}, or used as they are.
+     *
+     * @param dir the adapter's directory
+     * @return the adapter parameters
+     */
+    public List<Var> loadLora(Path dir) {
+        Map<String, Object> cfg;
+        try {
+            cfg = Json.object(Json.read(dir.resolve("adapter_config.json")));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        if (!"LORA".equals(cfg.get("peft_type"))) {
+            throw new IllegalArgumentException("not a LoRA adapter: peft_type " + cfg.get("peft_type"));
+        }
+        for (String unsupported : List.of("rank_pattern", "alpha_pattern")) {
+            if (cfg.get(unsupported) instanceof Map<?, ?> m && !m.isEmpty()) {
+                throw new IllegalArgumentException(unsupported + " is not supported");
+            }
+        }
+        if (Boolean.TRUE.equals(cfg.get("use_dora"))) {
+            throw new IllegalArgumentException("DoRA adapters are not supported");
+        }
+        int rank = (int) Json.integer(cfg, "r");
+        double alpha = Json.number(cfg, "lora_alpha", rank);
+        float scale = (float) (Boolean.TRUE.equals(cfg.get("use_rslora")) ? alpha / Math.sqrt(rank) : alpha / rank);
+        List<Var> added = new ArrayList<>();
+        try (io.github.zzuegg.brainiac.io.SafeTensors st =
+                io.github.zzuegg.brainiac.io.SafeTensors.open(dir.resolve("adapter_model.safetensors"))) {
+            for (String name : st.names()) {
+                if (!name.endsWith(".lora_A.weight")) {
+                    continue;
+                }
+                String module = name.substring(0, name.length() - ".lora_A.weight".length());
+                if (module.startsWith(PEFT_PREFIX)) {
+                    module = module.substring(PEFT_PREFIX.length());
+                }
+                Linear l = linears.get(module);
+                if (l == null) {
+                    throw new IllegalArgumentException("the adapter changes " + module + ", which this model does not have");
+                }
+                Device d = l.weight.value().device();
+                DType t = l.weight.value().isPacked() ? dtype : l.weight.value().dtype();
+                l.loraA = Var.param(inOut(st.tensor(name, d, t)));
+                l.loraB = Var.param(inOut(st.tensor(name.replace(".lora_A.", ".lora_B."), d, t)));
+                l.loraScale = scale;
+                added.add(l.loraA);
+                added.add(l.loraB);
+            }
+        }
+        if (added.isEmpty()) {
+            throw new IllegalArgumentException(dir + " holds no LoRA weights");
+        }
+        frozen = true;
+        for (Linear l : linears.values()) {
+            l.frozen = true;
+        }
+        return added;
+    }
+
+    /**
+     * Saves the adapters as Hugging Face PEFT does, so PEFT, vLLM and llama.cpp's converter can
+     * load them. Every adapter must share one rank and scale, as those made by one
+     * {@link #addLora} call do.
+     *
+     * @param dir the directory, created if needed
+     */
+    public void saveLora(Path dir) {
+        Map<String, Tensor> tensors = new LinkedHashMap<>();
+        java.util.Set<String> targets = new java.util.TreeSet<>();
+        int rank = -1;
+        float scale = Float.NaN;
+        for (Map.Entry<String, Linear> e : linears.entrySet()) {
+            Linear l = e.getValue();
+            if (l.loraA == null) {
+                continue;
+            }
+            int r = l.loraA.shape().dim(1);
+            if (rank >= 0 && (r != rank || l.loraScale != scale)) {
+                throw new IllegalStateException("adapters of different ranks or scales cannot be saved together");
+            }
+            rank = r;
+            scale = l.loraScale;
+            tensors.put(PEFT_PREFIX + e.getKey() + ".lora_A.weight", l.loraA.value().transpose());
+            tensors.put(PEFT_PREFIX + e.getKey() + ".lora_B.weight", l.loraB.value().transpose());
+            targets.add(e.getKey().substring(e.getKey().lastIndexOf('.') + 1));
+        }
+        if (tensors.isEmpty()) {
+            throw new IllegalStateException("the model has no adapters");
+        }
+        Map<String, Object> cfg = new LinkedHashMap<>();
+        cfg.put("peft_type", "LORA");
+        cfg.put("task_type", "CAUSAL_LM");
+        cfg.put("r", (long) rank);
+        cfg.put("lora_alpha", (double) scale * rank);
+        cfg.put("lora_dropout", 0.0);
+        cfg.put("bias", "none");
+        cfg.put("fan_in_fan_out", false);
+        cfg.put("use_rslora", false);
+        cfg.put("target_modules", List.copyOf(targets));
+        cfg.put("base_model_name_or_path", null);
+        try {
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("adapter_config.json"), Json.write(cfg), StandardCharsets.UTF_8);
+            io.github.zzuegg.brainiac.io.SafeTensors.write(dir.resolve("adapter_model.safetensors"), tensors,
+                    Map.of("format", "pt"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     /** @return a target for {@link #addLora}: every attention and MLP projection, not the output layer */
     public static java.util.function.Predicate<String> attentionAndMlp() {
         return name -> name.contains(".self_attn.") || name.contains(".mlp.");
