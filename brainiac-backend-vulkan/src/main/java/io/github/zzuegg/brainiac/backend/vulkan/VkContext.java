@@ -772,6 +772,17 @@ final class VkContext {
         return peakInUse;
     }
 
+    /** @return bytes in use, after counting slots released since the last allocation */
+    long inUse() {
+        drainReleased();
+        return inUse;
+    }
+
+    void resetPeak() {
+        drainReleased();
+        peakInUse = inUse;
+    }
+
     // ------------------------------------------------------------------ pipelines
 
     private long pipeline(String name) {

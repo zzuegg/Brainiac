@@ -141,6 +141,22 @@ public final class VulkanBackend implements Backend {
                 + vk.deviceList;
     }
 
+    @Override
+    public synchronized Device.Memory memory() {
+        if (vk == null) {
+            return null;
+        }
+        long now = vk.inUse();
+        return new Device.Memory(now, vk.peakInUse(), vk.allocated(), vk.budget);
+    }
+
+    @Override
+    public synchronized void resetPeakMemory() {
+        if (vk != null) {
+            vk.resetPeak();
+        }
+    }
+
     /**
      * Counts of work done so far, for tuning.
      *
@@ -962,13 +978,40 @@ public final class VulkanBackend implements Backend {
         eager(vs(in), y);
         VkStorage x = as(vs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
-            vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
-                    .putInt((int) inner);
-            vk.dispatch(shader("argmax", y.dtype), groups(rows), y.slot(), x.slot());
+            argmax(x, y, rows, length, inner);
         } else {
             reduce(op.ordinal(), x, y, rows, length, inner);
         }
         done(x, vs(in));
+    }
+
+    /**
+     * The index of each row's first largest value. Few long rows (the logits of a sampled
+     * token) go to work groups, split into pieces when there are too few rows to fill the
+     * device; otherwise one invocation per row.
+     */
+    private void argmax(VkStorage x, VkStorage y, long rows, long length, long inner) {
+        if (rows >= 1024 || length <= 256 || x.dtype == DType.FLOAT64 || length >= (1L << 31)) {
+            vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
+                    .putInt((int) inner);
+            vk.dispatch(shader("argmax", y.dtype), groups(rows), y.slot(), x.slot());
+            return;
+        }
+        int pieces = (int) Math.max(1, Math.min(ceil(length, 2048), 256 / rows));
+        if (pieces == 1) {
+            vk.push().putLong(x.address()).putLong(0).putLong(y.address()).putInt((int) rows).putInt((int) length)
+                    .putInt((int) inner).putInt(1).putInt(0);
+            vk.dispatch(shader("argmax_group", y.dtype), rows, y.slot(), x.slot());
+            return;
+        }
+        VkStorage part = raw(rows * pieces * 2, DType.FLOAT32, null);
+        vk.push().putLong(x.address()).putLong(part.address()).putLong(y.address()).putInt((int) rows)
+                .putInt((int) length).putInt((int) inner).putInt(pieces).putInt(0);
+        vk.dispatch(shader("argmax_group", y.dtype), rows * pieces, part.slot(), x.slot());
+        vk.push().putLong(x.address()).putLong(part.address()).putLong(y.address()).putInt((int) rows)
+                .putInt((int) length).putInt((int) inner).putInt(pieces).putInt(1);
+        vk.dispatch(shader("argmax_group", y.dtype), rows, y.slot(), x.slot(), part.slot());
+        part.release();
     }
 
     /** Whether contiguous rows are reduced by 32 invocations each ({@code -Dbrainiac.vulkan.reduceRows=false}: one). */
@@ -1011,6 +1054,23 @@ public final class VulkanBackend implements Backend {
         if ((long) batch * m * n == 0) {
             return;
         }
+        // a transposed or otherwise strided operand still pending is read in place by the tiles
+        boolean tiled = k > 0 && !(m <= VEC_ROWS && batch == 1) && !coop(z.dtype, m);
+        Operand va = tiled ? view(vs(a), batch, m, k, z.dtype) : null;
+        Operand vb = tiled ? view(vs(b), batch, k, n, z.dtype) : null;
+        if (va != null || vb != null) {
+            eager(va != null ? va.values() : vs(a), vb != null ? vb.values() : vs(b), z);
+            VkStorage x = va != null ? va.values() : as(vs(a), z.dtype);
+            VkStorage y = vb != null ? vb.values() : as(vs(b), z.dtype);
+            matmul(va != null ? va : Operand.of(x, m, k), vb != null ? vb : Operand.of(y, k, n), batch, m, k, n, z);
+            if (va == null) {
+                done(x, vs(a));
+            }
+            if (vb == null) {
+                done(y, vs(b));
+            }
+            return;
+        }
         eager(vs(a), vs(b), z);
         if (k == 0) {
             vk.fill(z.slot(), 0, (z.bytes() + 3) & ~3L, 0);
@@ -1023,6 +1083,50 @@ public final class VulkanBackend implements Backend {
         done(y, vs(b));
     }
 
+    /** Whether products read transposed and strided operands in place ({@code -Dbrainiac.vulkan.stridedMatmul=false}: never). */
+    private static final boolean STRIDED_MATMUL =
+            !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.stridedMatmul"));
+
+    /**
+     * How the tiled product reads a matrix operand: from {@code values} at {@code offset}, with
+     * the given strides between matrices of the batch, rows and columns.
+     */
+    private record Operand(VkStorage values, long offset, long batch, long row, long col) {
+
+        /** Stored {@code rows x cols} matrices one after another. */
+        static Operand of(VkStorage values, int rows, int cols) {
+            return new Operand(values, 0, (long) rows * cols, cols, 1);
+        }
+    }
+
+    /** A pending strided read of stored values ({@code [batch,] rows, cols}), as an operand; null if none. */
+    private static Operand view(VkStorage s, int batch, int rows, int cols, DType type) {
+        if (!STRIDED_MATMUL || !(s.pending instanceof Fusion.Src src) || src.direct() || src.storage().dtype != type) {
+            return null;
+        }
+        int[] d = src.dims();
+        int[] st = src.strides();
+        for (int x : st) {
+            if (x < 0) {
+                return null;
+            }
+        }
+        Operand o = null;
+        if (batch == 1 && d.length == 2 && d[0] == rows && d[1] == cols) {
+            o = new Operand(src.storage(), src.offset(), 0, st[0], st[1]);
+        } else if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
+            o = new Operand(src.storage(), src.offset(), st[0], st[1], st[2]);
+        }
+        // the product reads along a contiguous row or column (see matmul.comp)
+        return o != null && (o.col() == 1 || o.row() == 1) ? o : null;
+    }
+
+    /** Whether a float16 product has enough rows for the matrix cores, where the device has them. */
+    private boolean coop(DType type, int m) {
+        return vk.coopMatrix && type == DType.FLOAT16 && m >= COOP_ROWS
+                && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
+    }
+
     /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
     private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
 
@@ -1031,10 +1135,15 @@ public final class VulkanBackend implements Backend {
             matvec(x, y, m, k, n, z);
             return;
         }
+        matmul(new Operand(x, 0, (long) m * k, k, 1), new Operand(y, 0, (long) k * n, n, 1), batch, m, k, n, z);
+    }
+
+    private void matmul(Operand xo, Operand yo, int batch, int m, int k, int n, VkStorage z) {
+        VkStorage x = xo.values();
+        VkStorage y = yo.values();
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
         // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
-        boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
-                && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
+        boolean coop = coop(z.dtype, m);
         int tile = coop ? 128 : big >= BIG_TILES ? 64 : 32;
         long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
         int splits = 1;
@@ -1053,10 +1162,16 @@ public final class VulkanBackend implements Backend {
         for (int first = 0; first < pieces; first += perDispatch) {
             int count = Math.min(perDispatch, pieces - first);
             long firstBatch = first / splits;
-            vk.push().putLong(x.address(firstBatch * m * k)).putLong(y.address(firstBatch * k * n))
-                    .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt(m * k).putInt(k * n)
-                    .putInt((int) mn).putInt(splits).putInt(chunk);
-            vk.dispatch(shader(coop ? "matmul_coop" : tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
+            vk.push().putLong(x.address(xo.offset() + firstBatch * xo.batch()))
+                    .putLong(y.address(yo.offset() + firstBatch * yo.batch()))
+                    .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt((int) xo.batch())
+                    .putInt((int) yo.batch()).putInt((int) mn).putInt(splits).putInt(chunk).putInt((int) xo.row())
+                    .putInt((int) xo.col()).putInt((int) yo.row()).putInt((int) yo.col());
+            // the strided variant only where an operand needs it: its addressing costs the plain case
+            boolean plain = xo.row() == k && xo.col() == 1 && yo.row() == n && yo.col() == 1;
+            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32")
+                    + (plain ? "" : "s" + (xo.col() == 1 ? "" : "a") + (yo.col() == 1 ? "" : "b"));
+            vk.dispatch(shader(name, z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }
         if (splits > 1) {
@@ -1701,6 +1816,11 @@ public final class VulkanBackend implements Backend {
         done(ind, vs(indices));
     }
 
+    /** Most slices an index list is split into for {@link #scatterAdd} ({@code -Dbrainiac.vulkan.scatterSlices}; 1: none). */
+    private static final int SCATTER_SLICES = Integer.getInteger("brainiac.vulkan.scatterSlices", 32);
+    /** Work groups {@link #scatterAdd} aims for when it splits the index lists. */
+    private static final long SCATTER_GROUPS = 2048;
+
     @Override
     public synchronized void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
             Storage out) {
@@ -1724,9 +1844,24 @@ public final class VulkanBackend implements Backend {
         VkStorage off = uploadInts(offsets);
         VkStorage ent = uploadInts(entries);
         long total = outer * length * inner;
-        vk.push().putLong(s.address()).putLong(off.address()).putLong(ent.address()).putLong(z.address())
-                .putInt(len).putInt((int) inner).putInt(count).putInt((int) total);
-        vk.dispatch(shader("scatter_add", z.dtype), groups(total), z.slot(), s.slot(), off.slot(), ent.slot());
+        // Few targets with many entries each (a small vocabulary) leave most of the device idle
+        // while each invocation adds up a long list: then slices of the lists are added up
+        // side by side and summed afterwards, always in the same order.
+        int most = 0;
+        for (int l = 0; l < len; l++) {
+            most = Math.max(most, offsets[l + 1] - offsets[l]);
+        }
+        int slices = (int) Math.max(1, Math.min(Math.min(SCATTER_SLICES, most / 8),
+                SCATTER_GROUPS / Math.max(1, groups(total))));
+        VkStorage target = slices == 1 ? z : raw(total * slices, z.dtype, null);
+        vk.push().putLong(s.address()).putLong(off.address()).putLong(ent.address()).putLong(target.address())
+                .putInt(len).putInt((int) inner).putInt(count).putInt((int) total).putInt(slices);
+        vk.dispatch(shader("scatter_add", z.dtype), groups(total), slices, target.slot(), s.slot(), off.slot(),
+                ent.slot());
+        if (slices > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, total, slices, total);
+            target.release();
+        }
         done(s, vs(src));
         off.release();
         ent.release();

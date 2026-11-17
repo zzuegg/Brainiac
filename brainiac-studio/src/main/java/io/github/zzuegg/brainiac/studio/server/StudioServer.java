@@ -80,6 +80,7 @@ public final class StudioServer implements AutoCloseable {
         server.get("/api/capabilities", ex -> Exchanges.json(ex, 200, Map.of("capabilities", capabilities.toJson())));
         server.get("/api/system", ex -> Exchanges.json(ex, 200, SystemInfo.snapshot()));
         new ChatRoutes(chat).register(server);
+        new BuilderRoutes(chat.folder()).register(server);
         http.start();
         return server;
     }

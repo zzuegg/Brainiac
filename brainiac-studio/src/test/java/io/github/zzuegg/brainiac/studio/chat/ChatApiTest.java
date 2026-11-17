@@ -181,4 +181,26 @@ class ChatApiTest {
         assertTrue(page.contains("<script type=\"application/json\" id=\"studio-state\">{\"chatTabs\":[\"k3x9a\"]}</script>"), page);
         assertTrue(page.contains("<meta name=\"studio-folder\" content=\""), page);
     }
+
+    @Test
+    void theBuilderChecksBuildsAndSavesAModel() throws Exception {
+        Map<String, Object> layers = Json.object(Json.parse(call("GET", "/api/builder/layers", null).body()));
+        assertTrue(Json.array(layers.get("entries")).size() > 20);
+        String graph = "{\"nodes\":[{\"id\":\"in\",\"op\":\"input\",\"shape\":[4]},"
+                + "{\"id\":\"d\",\"op\":\"layer\",\"entry\":\"io.github.zzuegg.brainiac.nn.Dense#spec(int,Activation,Init)\","
+                + "\"args\":[3,\"RELU\",\"HE\"],\"inputs\":[\"in\"]}]}";
+        Map<String, Object> check = Json.object(Json.parse(call("POST", "/api/builder/check", "{\"graph\":" + graph + "}").body()));
+        assertEquals(true, check.get("ok"), check.toString());
+        assertEquals(List.of(3L), check.get("outputShape"));
+        HttpResponse<String> r = call("POST", "/api/builder/build", "{\"name\":\"tiny\",\"graph\":" + graph + "}");
+        assertEquals(200, r.statusCode(), r.body());
+        Map<String, Object> built = Json.object(Json.parse(r.body()));
+        assertEquals(15L, ((Number) built.get("parameters")).longValue());
+        assertTrue(java.nio.file.Files.exists(Path.of((String) built.get("file"))), r.body());
+        List<Object> graphs = Json.array(Json.object(Json.parse(call("GET", "/api/builder/graphs", null).body())).get("graphs"));
+        assertEquals("tiny", Json.object(graphs.getFirst()).get("name"));
+        assertEquals(true, Json.object(graphs.getFirst()).get("built"));
+        assertEquals(400, call("POST", "/api/builder/build", "{\"name\":\"../x\",\"graph\":" + graph + "}").statusCode());
+        assertEquals(400, call("POST", "/api/builder/build", "{\"name\":\"bad\",\"graph\":{\"nodes\":[]}}").statusCode());
+    }
 }
