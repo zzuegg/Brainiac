@@ -97,6 +97,16 @@ public final class LinearProbe {
     }
 
     /**
+     * The class probabilities.
+     *
+     * @param x activations of one sample
+     * @return the probability of each class
+     */
+    public double[] probabilities(float[] x) {
+        return probs(w, b, x);
+    }
+
+    /**
      * Predicts a class.
      *
      * @param x activations of one sample
