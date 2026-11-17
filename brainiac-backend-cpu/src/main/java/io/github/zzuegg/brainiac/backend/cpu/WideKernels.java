@@ -18,7 +18,7 @@ final class WideKernels {
 
     static void unary(UnaryOp op, double[] x, double[] y) {
         long cost = switch (op) {
-            case EXP, LOG, TANH, SIGMOID, ERF, SOFTPLUS, SIN, COS -> 20;
+            case EXP, LOG, TANH, SIGMOID, ERF, SOFTPLUS, SIN, COS, ATAN -> 20;
             default -> 1;
         };
         Parallel.forRange(x.length, cost, (from, to) -> {
@@ -46,6 +46,7 @@ final class WideKernels {
             case ROUND -> Math.rint(v);
             case SIN -> Math.sin(v);
             case COS -> Math.cos(v);
+            case ATAN -> Math.atan(v);
         };
     }
 

@@ -867,6 +867,40 @@ public final class Var {
         return unary(x.cos(), g -> new Tensor[] {g.mul(x.sin()).neg()}, g -> new Var[] {g.mul(sin()).neg()});
     }
 
+    /** @return the arctangent of each value, in radians */
+    public Var atan() {
+        Tensor x = value;
+        // d/dx atan(x) = 1 / (1 + x^2)
+        return unary(x.atan(), g -> new Tensor[] {g.div(x.square().add(1))},
+                g -> new Var[] {g.div(square().add(1))});
+    }
+
+    /**
+     * The angle of the point {@code (x, this)}, as {@link Tensor#atan2}.
+     *
+     * @param x the other coordinate
+     * @return the angles in radians
+     */
+    public Var atan2(Var x) {
+        Tensor a = value;
+        Tensor b = x.value;
+        // d/dy = x / (x^2 + y^2), d/dx = -y / (x^2 + y^2); 0 at the origin
+        return binary(x, a.atan2(b), g -> {
+            Tensor r = radius(a, b);
+            return new Tensor[] {g.mul(b).div(r).sumTo(a.shape()), g.mul(a).div(r).neg().sumTo(b.shape())};
+        }, g -> {
+            Var r = x.square().add(square());
+            Var safe = r.add(Var.of(r.value().equalTo(Tensor.zeros(Shape.of(), r.value().dtype(), r.value().device()))));
+            return new Var[] {g.mul(x).div(safe).sumTo(a.shape()), g.mul(this).div(safe).neg().sumTo(b.shape())};
+        });
+    }
+
+    /** {@code x^2 + y^2}, with 1 where both are 0 (where the gradient is taken as 0). */
+    private static Tensor radius(Tensor y, Tensor x) {
+        Tensor r = x.square().add(y.square());
+        return r.add(r.equalTo(Tensor.zeros(Shape.of(), r.dtype(), r.device())));
+    }
+
     /** @return {@code log(1 + e^x)} for each value, computed without overflow */
     public Var softplus() {
         return activation(ActivationOp.SOFTPLUS, 0);

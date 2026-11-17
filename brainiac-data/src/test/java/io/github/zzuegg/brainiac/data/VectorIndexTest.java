@@ -88,4 +88,18 @@ class VectorIndexTest {
         assertEquals("north", store.search(Tensor.of(new float[] {1, 0.1f}), 1).getFirst().value());
         assertEquals(2, store.size());
     }
+
+    @Test
+    void scoresEveryVectorAsSearchDoes() {
+        VectorIndex flat = VectorIndex.flat(2, VectorIndex.Metric.EUCLIDEAN, Device.cpu());
+        flat.add(Tensor.of(new float[][] {{0, 0}, {1, 0}, {3, 4}}));
+        flat.remove(1);
+        float[] s = flat.scores(Tensor.of(0, 0));
+        org.junit.jupiter.api.Assertions.assertEquals(0, s[0], 1e-6);
+        org.junit.jupiter.api.Assertions.assertTrue(Float.isNaN(s[1]));
+        org.junit.jupiter.api.Assertions.assertEquals(-25, s[2], 1e-5);
+        VectorIndex hnsw = VectorIndex.hnsw(2, VectorIndex.Metric.EUCLIDEAN, 8, 50, 50, 1);
+        hnsw.add(Tensor.of(new float[][] {{0, 0}, {1, 0}, {3, 4}}));
+        org.junit.jupiter.api.Assertions.assertEquals(-1, hnsw.scores(Tensor.of(0, 0))[1], 1e-5);
+    }
 }

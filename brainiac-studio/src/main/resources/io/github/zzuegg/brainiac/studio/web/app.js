@@ -1271,6 +1271,460 @@
     </div>`;
   }
 
+  // ---------- TRAIN (live) ----------
+  // Runs train a model from the builder on built-in data or files in the data folder. The
+  // optimizers, losses, schedules and metrics are found in the installed modules, like layers.
+  const T = {
+    options: null, data: null, models: null, runs: [], active: 0, loaded: false, loading: false,
+    sel: store.get("trainSel", null), form: store.get("trainForm", null), check: null, checkSeq: 0,
+    starting: false, error: null, timer: 0, scale: store.get("trainScale", "linear"), show: "all", hover: null,
+  };
+  const SERIES = 8;
+  const runColor = r => `var(--series-${((parseInt(r.id, 10) || 1) - 1) % SERIES + 1})`;
+  const trainEntries = kind => T.options ? T.options[{ optimizer: "optimizers", loss: "losses", schedule: "schedules", metric: "metrics" }[kind]] : [];
+  const trainEntry = (kind, key) => trainEntries(kind).find(e => e.key === key);
+  const optLabel = e => !e ? "?" : `${e.group === "Optimizer" || e.group === "Loss" || e.group === "Metric" || e.group === "LearningRateSchedule" ? "" : e.group + "."}${e.name === "new" ? e.group : e.name}`;
+  const optSig = e => e && e.params.length ? ` (${e.params.map(p => p.name).join(", ")})` : "";
+  const fmtNum = v => v == null ? "–" : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Math.abs(v) >= 1 ? (+v).toFixed(3) : (+v).toPrecision(3);
+  const stateChip = s => ({ queued: "plain", loading: "c-text", running: "c-text", finished: "c-ok", stopped: "c-warn", failed: "c-bad", interrupted: "c-warn" }[s] || "plain");
+  const stateName = s => ({ queued: "queued", loading: "loading", running: "training", finished: "finished", stopped: "stopped", failed: "failed", interrupted: "interrupted" }[s] || s);
+  const isActive = r => ["queued", "loading", "running"].includes(r.state);
+
+  function trainGuess(p) {
+    const n = p.name.toLowerCase();
+    if (/learningrate|^lr$|rate$/.test(n)) return 0.001;
+    if (/weightdecay|decay/.test(n)) return 0.01;
+    if (/momentum|beta1/.test(n)) return 0.9;
+    if (/beta2/.test(n)) return 0.999;
+    if (/epsilon|eps/.test(n)) return 1e-8;
+    if (/totalepochs|epochs/.test(n)) return T.form?.epochs || 20;
+    if (/minrate/.test(n)) return 0;
+    if (/factor|gamma/.test(n)) return 0.5;
+    if (/every/.test(n)) return 10;
+    if (/delta|smooth/.test(n)) return 1;
+    return guess(p);
+  }
+  const choiceFor = (kind, key) => { const e = trainEntry(kind, key); return e ? { entry: e.key, args: e.params.map(trainGuess) } : null; };
+  function pickKey(kind, ...wanted) {
+    const keys = trainEntries(kind).map(e => e.key);
+    for (const w of wanted) { const k = keys.find(k => k.endsWith(w)); if (k) return k; }
+    return keys[0] || null;
+  }
+  const dataInfo = () => {
+    const d = T.form?.data || {};
+    if (d.kind === "builtin") return (T.data?.builtins || []).find(b => b.name === d.name);
+    return (T.data?.files || []).find(f => f.name === (d.file || d.images || d.folder));
+  };
+  const classesData = () => { const i = dataInfo(); return i ? i.classes === true || Array.isArray(i.classes) || i.kind === "idx" || (i.kind === "csv" && T.form.data.classes !== false) : true; };
+  function defaultsFor(classes) {
+    return {
+      loss: choiceFor("loss", pickKey("loss", classes ? "#CROSS_ENTROPY" : "#MSE")),
+      metrics: [pickKey("metric", classes ? "#ACCURACY" : "#MEAN_ABSOLUTE_ERROR")].filter(Boolean),
+    };
+  }
+  function ensureForm() {
+    if (!T.options || !T.data || !T.models) return;
+    const f = T.form || {};
+    if (!f.model || !T.models.some(m => m.name === f.model)) f.model = T.models.find(m => !m.problem)?.name || null;
+    if (!f.data) f.data = { kind: "builtin", name: "spirals" };
+    if (!f.optimizer || !trainEntry("optimizer", f.optimizer.entry)) f.optimizer = choiceFor("optimizer", pickKey("optimizer", "Optimizer#adamW(float,float)", "Optimizer#adam(float)"));
+    if (f.schedule && !trainEntry("schedule", f.schedule.entry)) f.schedule = null;
+    f.epochs ??= 20; f.batchSize ??= 32; f.validation ??= 0.1; f.patience ??= 0; f.seed ??= 42; f.device ??= "best"; f.clipNorm ??= 0; f.sweep ??= "";
+    T.form = f;
+    if (!f.loss || !trainEntry("loss", f.loss.entry)) Object.assign(f, { loss: defaultsFor(classesData()).loss });
+    if (!f.metrics) f.metrics = defaultsFor(classesData()).metrics;
+  }
+  const saveForm = () => store.set("trainForm", T.form);
+
+  function specOf(f) {
+    const s = { model: f.model, data: f.data, optimizer: f.optimizer, loss: f.loss, metrics: f.metrics, epochs: +f.epochs, batchSize: +f.batchSize,
+      validation: +f.validation, patience: +f.patience, seed: +f.seed, device: f.device };
+    if (f.schedule) s.schedule = f.schedule;
+    if (+f.clipNorm > 0) s.clipNorm = +f.clipNorm;
+    if (f.name) s.name = f.name;
+    return s;
+  }
+
+  async function loadTrain() {
+    if (T.loading) return;
+    T.loading = true;
+    try {
+      const [o, d, m] = await Promise.all([api("/api/train/options"), api("/api/train/data"), api("/api/train/models")]);
+      T.options = o; T.data = d; T.models = m.models || [];
+      ensureForm();
+      T.loaded = true;
+      await pollRuns(true);
+      checkTrain();
+      if (state.view === "train") render();
+    } catch (e) { T.error = String(e.message || e); console.warn("cannot load training", e); if (state.view === "train") render(); }
+    finally { T.loading = false; }
+  }
+
+  async function pollRuns(once) {
+    clearTimeout(T.timer);
+    try {
+      const j = await api("/api/train/runs");
+      const wasActive = T.active;
+      T.runs = j.runs || []; T.active = j.active || 0;
+      if (wasActive && !T.active) api("/api/train/models").then(m => { T.models = m.models || []; if (state.view === "train") renderTrainForm(); });
+      if (!once && state.view === "train") renderTrainLive();
+    } catch (e) { console.warn("cannot read runs", e); }
+    if (state.view === "train" && isLive()) T.timer = setTimeout(() => pollRuns(false), T.active ? 1000 : 5000);
+  }
+
+  let checkTimer = 0;
+  function checkTrain() {
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(async () => {
+      if (!T.form?.model) { T.check = null; renderTrainCheck(); return; }
+      const seq = ++T.checkSeq;
+      try {
+        const r = await postJson("/api/train/check", { spec: specOf(T.form) });
+        if (seq === T.checkSeq) { T.check = r; renderTrainCheck(); }
+      } catch (e) { if (seq === T.checkSeq) { T.check = { ok: false, problem: String(e.message || e) }; renderTrainCheck(); } }
+    }, 250);
+  }
+
+  // ----- the view
+  function liveTrainView() {
+    if (!T.loaded) return `<div class="train live-train"><div class="empty" style="padding:60px"><span class="typing"><i></i><i></i><i></i></span>
+      <div class="muted">${T.error ? esc(T.error) : "Looking for models, data and every optimizer the installed modules offer…"}</div></div></div>`;
+    return `
+    <div class="train live-train">
+      <section class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</section>
+      <div class="train-body">
+        <aside class="launch panel" id="train-form" aria-label="Start a training run">${trainForm()}</aside>
+        <section class="runs-col">
+          <div class="panel" id="train-runs">${trainRunsTable()}</div>
+          <div class="panel chartbox" id="train-chart">${trainChartFrame()}</div>
+        </section>
+        <aside class="run-detail panel" id="train-detail" aria-label="Selected run">${trainDetail()}</aside>
+      </div>
+    </div>`;
+  }
+
+  function trainHosts() {
+    const devs = M.system?.devices || [];
+    const run = T.runs.find(r => r.state === "running" || r.state === "loading");
+    const queued = T.runs.filter(r => r.state === "queued").length;
+    return `<div class="host ${run ? "busy" : "idle"}">
+      <div class="host-head"><span class="dot ${run ? "pulse" : ""}" style="--c:var(--${run ? "accent" : "ok"})"></span><b>This PC</b>
+        <span class="chip ${run ? "c-text" : "c-ok"}">${run ? "training" : "idle"}</span><span class="grow"></span><span class="mono faint">${queued ? queued + " queued" : "one run at a time"}</span></div>
+      ${devs.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${run && run.device === d.name ? fmtCount(run.samplesPerSecond || 0) + "/s" : ""}</span></div>`).join("")}
+      <div class="host-foot"><span class="muted">${run ? `${esc(run.name)} · epoch ${run.epoch + (run.state === "running" ? 1 : 0)} of ${run.epochs}` : "Ready for a run."}</span></div>
+    </div>`;
+  }
+
+  function entrySelect(kind, cur, label, allowNone) {
+    const es = trainEntries(kind);
+    const core = es.filter(e => !e.experimental), exp = es.filter(e => e.experimental);
+    const opt = e => `<option value="${esc(e.key)}" ${cur && cur.entry === e.key ? "selected" : ""}>${esc(optLabel(e) + optSig(e))}</option>`;
+    return `<div class="field"><label for="t-${kind}">${label}</label><select class="input" id="t-${kind}" data-tentry="${kind}">
+      ${allowNone ? `<option value="" ${!cur ? "selected" : ""}>${esc(allowNone)}</option>` : ""}
+      <optgroup label="Core">${core.map(opt).join("")}</optgroup>${exp.length ? `<optgroup label="Experimental">${exp.map(opt).join("")}</optgroup>` : ""}</select></div>`;
+  }
+  function entryParams(kind, cur) {
+    const e = cur && trainEntry(kind, cur.entry);
+    if (!e || !e.params.length) return "";
+    return `<div class="two">${e.params.map((p, i) => fieldFor(p, cur.args?.[i], `${kind}.args.${i}`)).join("")}</div>`;
+  }
+
+  function dataSelect() {
+    const d = T.form.data, files = T.data.files || [];
+    const val = d.kind === "builtin" ? "builtin:" + d.name : "file:" + (d.file || d.images || d.folder);
+    return `<div class="field"><label for="t-data">Data</label><select class="input" id="t-data">
+      <optgroup label="Built in">${T.data.builtins.map(b => `<option value="builtin:${esc(b.name)}" ${val === "builtin:" + b.name ? "selected" : ""}>${esc(b.name)} · ${fmtShape(b.input)} → ${b.targets}</option>`).join("")}</optgroup>
+      ${files.length ? `<optgroup label="In the data folder">${files.map(f => `<option value="file:${esc(f.name)}" ${val === "file:" + f.name ? "selected" : ""}>${esc(f.name)} · ${f.kind === "images" ? "image folder" : f.kind.toUpperCase()}</option>`).join("")}</optgroup>` : ""}
+    </select><span class="faint" style="font-size:12px">${esc(dataInfo()?.what || "")}${files.length ? "" : ` Put CSV files, MNIST IDX files or image folders (one subfolder per class) in <code>${esc(T.data.folder)}</code> to train on them.`}</span></div>
+    ${dataExtras()}`;
+  }
+  function dataExtras() {
+    const d = T.form.data, info = dataInfo();
+    if (d.kind === "csv" && info) {
+      const cols = info.columns || [];
+      return `<div class="two"><div class="field"><label for="t-label">Answer column</label><select class="input" id="t-label" data-tf="data.label">
+        ${cols.map(c => `<option ${c === (d.label || cols[cols.length - 1]) ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
+        <div class="field"><label>&nbsp;</label><label class="check"><input type="checkbox" data-tf="data.classes" ${d.classes !== false ? "checked" : ""}> classes</label>
+        <label class="check"><input type="checkbox" data-tf="data.normalize" ${d.normalize ? "checked" : ""}> standardize</label></div></div>`;
+    }
+    if (d.kind === "images") {
+      return `<div class="two">${[["channels", 3], ["height", 32], ["width", 32]].map(([k, def]) => `<div class="field"><label for="t-img-${k}">${k}</label><input class="input mono" id="t-img-${k}" data-tf="data.${k}" value="${esc(d[k] ?? def)}"></div>`).join("")}</div>`;
+    }
+    if (d.kind === "idx") {
+      return `<div class="field"><label for="t-idx-l">Labels file</label><input class="input mono" id="t-idx-l" data-tf="data.labels" value="${esc(d.labels || "")}"></div>`;
+    }
+    return "";
+  }
+
+  function trainForm() {
+    const f = T.form;
+    if (!T.models.length) return `<div class="col-head" style="padding:0 0 4px"><span class="h3">New run</span></div>
+      <p class="muted" style="margin:0">There is no model to train yet. Draw one in the builder and press <b>Build and save</b>.</p>
+      <button class="btn primary" data-go="builder">${icon("build")}Open the builder</button>`;
+    const m = T.models.find(x => x.name === f.model);
+    const metrics = trainEntries("metric");
+    return `
+      <div class="col-head" style="padding:0 0 4px"><span class="h3">New run</span><span class="grow"></span>${m ? `<span class="chip plain mono">${fmtShape(m.input)} → ${fmtShape(m.output)}</span>` : ""}</div>
+      <div class="field"><label for="t-model">Model</label><select class="input" id="t-model" data-tf="model">
+        ${T.models.map(x => `<option value="${esc(x.name)}" ${x.name === f.model ? "selected" : ""} ${x.problem ? "disabled" : ""}>${esc(x.name)}${x.parameters != null ? " · " + fmtCount(x.parameters) + " params" : ""}</option>`).join("")}</select></div>
+      ${dataSelect()}
+      ${entrySelect("optimizer", f.optimizer, "Optimizer")}${entryParams("optimizer", f.optimizer)}
+      ${entrySelect("loss", f.loss, "Loss")}${entryParams("loss", f.loss)}
+      ${entrySelect("schedule", f.schedule, "Learning rate schedule", "Constant")}${entryParams("schedule", f.schedule)}
+      <div class="two">
+        <div class="field"><label for="t-epochs">Epochs</label><input class="input mono" id="t-epochs" data-tf="epochs" value="${esc(f.epochs)}"></div>
+        <div class="field"><label for="t-batch">Batch</label><input class="input mono" id="t-batch" data-tf="batchSize" value="${esc(f.batchSize)}"></div>
+        <div class="field"><label for="t-val" title="The share of the data held back to check the model on, from 0 to 0.5">Validation share</label><input class="input mono" id="t-val" data-tf="validation" value="${esc(f.validation)}"></div>
+        <div class="field"><label for="t-pat" title="Stop when the validation loss has not improved for this many epochs, and keep the best weights. 0 trains every epoch.">Patience <span class="faint">0 = off</span></label><input class="input mono" id="t-pat" data-tf="patience" value="${esc(f.patience)}"></div>
+        <div class="field"><label for="t-seed">Seed</label><input class="input mono" id="t-seed" data-tf="seed" value="${esc(f.seed)}"></div>
+        <div class="field"><label for="t-clip">Clip gradients <span class="faint">0 = off</span></label><input class="input mono" id="t-clip" data-tf="clipNorm" value="${esc(f.clipNorm)}"></div>
+      </div>
+      ${metrics.length ? `<div class="field"><label>Metrics</label><div class="metric-picks">${metrics.map(e => `<label class="check"><input type="checkbox" data-metric="${esc(e.key)}" ${f.metrics.includes(e.key) ? "checked" : ""}> ${esc(optLabel(e).toLowerCase().replace(/_/g, " "))}</label>`).join("")}</div></div>` : ""}
+      <div class="field"><label for="t-device">Device</label><select class="input" id="t-device" data-tf="device">${T.options.devices.map(d => `<option value="${esc(d.key)}" ${d.key === f.device ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>
+      <div class="field"><label for="t-sweep">Also try learning rates <span class="faint">one run each</span></label><input class="input mono" id="t-sweep" data-tf="sweep" value="${esc(f.sweep)}" placeholder="for example 3e-4, 3e-3"></div>
+      <div id="train-check">${trainCheckLine()}</div>
+      <button class="btn primary" id="train-start" style="height:38px;justify-content:center" ${T.starting || !T.check?.ok ? "disabled" : ""}>${icon("train")}${startLabel()}</button>`;
+  }
+  const sweepRates = () => String(T.form.sweep || "").split(/[\s,;]+/).filter(Boolean).map(Number).filter(v => isFinite(v) && v > 0);
+  const startLabel = () => { const n = 1 + sweepRates().length; return T.starting ? "Starting…" : n > 1 ? `Start ${n} runs` : "Start training"; };
+  function trainCheckLine() {
+    const c = T.check;
+    if (!c) return `<div class="faint" style="font-size:12px">Checking the model against the data…</div>`;
+    if (!c.ok) return `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(c.problem || "The model and the data do not fit together.")}</span></div>`;
+    const busy = T.runs.some(r => r.state === "running" || r.state === "loading");
+    return `<div class="muted" style="font-size:12px">${(c.trainSamples || 0).toLocaleString()} samples to learn from${+T.form.validation > 0 ? `, ${((c.samples || 0) - (c.trainSamples || 0)).toLocaleString()} to check` : ""} · ${(c.stepsPerEpoch || 0).toLocaleString()} steps per epoch${c.classes?.length ? ` · ${c.classes.length} classes` : ""}${busy ? " · queued behind the run training now" : ""}</div>`;
+  }
+  function renderTrainCheck() {
+    const box = $("#train-check"); if (!box) return;
+    box.innerHTML = trainCheckLine();
+    const b = $("#train-start"); if (b) { b.disabled = T.starting || !T.check?.ok; b.innerHTML = icon("train") + startLabel(); }
+  }
+
+  function trainRunsTable() {
+    const runs = T.runs.filter(r => T.show === "all" || (T.show === "active" ? isActive(r) : !isActive(r)));
+    const counts = { running: T.runs.filter(r => r.state === "running" || r.state === "loading").length, queued: T.runs.filter(r => r.state === "queued").length };
+    const seg = (k, l) => `<button data-tshow="${k}" aria-pressed="${T.show === k}">${l}</button>`;
+    const metricOf = r => { const h = r.history?.[r.history.length - 1]; if (!h) return null; const vm = h.validationMetrics || {}, tm = h.metrics || {}; const k = Object.keys(vm)[0] || Object.keys(tm)[0]; return k ? { k, v: vm[k] ?? tm[k], val: k in vm } : null; };
+    return `<div class="col-head"><span class="h3">Runs</span>${counts.running ? `<span class="chip c-text">${counts.running} training</span>` : ""}${counts.queued ? `<span class="chip plain">${counts.queued} queued</span>` : ""}<span class="grow"></span>
+      <div class="seg" role="group" aria-label="Show runs">${seg("all", "All")}${seg("active", "Running")}${seg("ended", "Ended")}</div></div>
+      ${runs.length ? `<div class="tablebox" style="border:0;border-radius:0"><table class="models runs-table">
+        <thead><tr><th>Run</th><th>Progress</th><th>Loss</th><th>Metric</th><th>Speed</th><th></th></tr></thead>
+        <tbody>${runs.map(r => {
+          const pct = r.steps ? Math.min(100, r.step / r.steps * 100) : r.state === "finished" ? 100 : 0;
+          const last = r.history?.[r.history.length - 1], mt = metricOf(r);
+          return `<tr class="${r.id === selectedRun()?.id ? "sel" : ""}" data-run="${esc(r.id)}">
+            <td><div style="display:flex;gap:8px;align-items:center"><span class="dot" style="--c:${runColor(r)}"></span><span class="nm">${esc(r.name)}</span></div>
+              <div class="src"><span class="chip ${stateChip(r.state)}" style="height:18px;font-size:10.5px">${stateName(r.state)}</span> ${esc(r.data || "")}</div></td>
+            <td><div class="prog"><span class="bar"><i style="width:${pct.toFixed(1)}%;background:${runColor(r)}"></i></span><span class="mono tnum">${r.epoch}/${r.epochs}</span></div>
+              <div class="src">${r.state === "running" && r.samplesPerSecond && r.steps ? "done in " + etaOf(r) : r.step ? r.step.toLocaleString() + " steps" : ""}</div></td>
+            <td class="mono tnum">${fmtNum(last ? (last.validationLoss ?? last.loss) : r.loss)}${last?.validationLoss != null ? ` <span class="faint">val</span>` : ""}</td>
+            <td class="mono tnum">${mt ? `${fmtNum(mt.v)} <span class="faint">${esc((mt.val ? "val " : "") + mt.k)}</span>` : "–"}</td>
+            <td class="mono tnum">${r.samplesPerSecond ? fmtCount(r.samplesPerSecond) + "/s" : "–"}</td>
+            <td><div class="row-actions">${isActive(r) ? `<button class="iconbtn" data-tstop="${esc(r.id)}" aria-label="Stop ${esc(r.name)}" title="Stop and keep what it learned">${icon("stop")}</button>`
+              : `<button class="iconbtn" data-tagain="${esc(r.id)}" aria-label="Use the settings of ${esc(r.name)}" title="Use these settings">${icon("retry")}</button><button class="iconbtn" data-tdel="${esc(r.id)}" aria-label="Remove ${esc(r.name)}" title="Remove from the list (the saved model stays)">${icon("trash")}</button>`}</div></td>
+          </tr>`; }).join("")}</tbody></table></div>`
+        : `<div class="muted" style="padding:14px 16px">${T.runs.length ? "No runs here." : "No runs yet. Pick a model and data on the left and start one."}</div>`}`;
+  }
+  function etaOf(r) {
+    const left = (r.steps - r.step) * r.batchSize / r.samplesPerSecond;
+    return left < 60 ? Math.ceil(left) + " s" : left < 3600 ? Math.ceil(left / 60) + " min" : (left / 3600).toFixed(1) + " h";
+  }
+  // ----- the loss chart: one line per run, hover for values
+  const chartRuns = () => T.runs.filter(r => (r.curve || []).length > 1 && (T.show === "all" || (T.show === "active" ? isActive(r) : !isActive(r)))).slice(0, SERIES);
+  function trainChartFrame() {
+    const runs = chartRuns();
+    return `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span class="h3">Training loss</span><span class="faint" style="font-size:12px">per step</span><span class="grow"></span>
+      <div class="legend">${runs.map(r => `<span style="--c:${runColor(r)}"><i></i>${esc(r.name)}</span>`).join("")}</div>
+      <div class="seg" role="group" aria-label="Scale"><button data-tscale="linear" aria-pressed="${T.scale === "linear"}">Linear</button><button data-tscale="log" aria-pressed="${T.scale === "log"}">Log</button></div></div>
+      <div class="loss-chart" id="loss-chart">${runs.length ? "" : `<div class="muted" style="padding:40px 0;text-align:center">The loss of every step shows here once a run starts.</div>`}</div>`;
+  }
+  function drawLossChart() {
+    const box = $("#loss-chart"); if (!box) return;
+    const runs = chartRuns();
+    if (!runs.length) return;
+    const W = Math.max(320, box.clientWidth), H = 240, L = 46, R = 12, Tp = 10, Bt = 26;
+    const log = T.scale === "log";
+    const f = v => log ? Math.log10(Math.max(v, 1e-8)) : v;
+    let maxX = 1, lo = Infinity, hi = -Infinity;
+    for (const r of runs) {
+      const c = r.curve; maxX = Math.max(maxX, c[c.length - 1][0]);
+      const skip = Math.floor(c.length * .02);
+      for (let i = 0; i < c.length; i++) { const v = f(c[i][1]); if (!isFinite(v)) continue; lo = Math.min(lo, v); if (i >= skip) hi = Math.max(hi, v); }
+    }
+    if (!log) lo = Math.min(0, lo);
+    if (!(hi > lo)) hi = lo + 1;
+    const X = s => L + s / maxX * (W - L - R), Y = v => Tp + (1 - (Math.min(f(v), hi) - lo) / (hi - lo)) * (H - Tp - Bt);
+    const ticks = 4, grid = [];
+    for (let i = 0; i <= ticks; i++) {
+      const v = lo + (hi - lo) * i / ticks, y = Tp + (1 - i / ticks) * (H - Tp - Bt), lab = log ? fmtNum(Math.pow(10, v)) : fmtNum(v);
+      grid.push(`<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="var(--line-soft)"/><text x="${L - 8}" y="${y + 4}" text-anchor="end" fill="var(--muted)" font-size="11" font-family="var(--font-mono)">${lab}</text>`);
+    }
+    for (let i = 0; i <= 4; i++) { const s = maxX * i / 4; grid.push(`<text x="${X(s)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === 4 ? "end" : "middle"}" fill="var(--muted)" font-size="11" font-family="var(--font-mono)">${fmtCount(Math.round(s))}</text>`); }
+    const lines = runs.map(r => {
+      const c = r.curve, step = Math.max(1, Math.floor(c.length / (W / 2)));
+      const d = c.filter((_, i) => i % step === 0 || i === c.length - 1).map((p, i) => `${i ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" ");
+      const lp = c[c.length - 1];
+      return `<path d="${d}" fill="none" stroke="${runColor(r)}" stroke-width="2" stroke-linejoin="round"/><circle cx="${X(lp[0]).toFixed(1)}" cy="${Y(lp[1]).toFixed(1)}" r="4" fill="${runColor(r)}" stroke="var(--panel)" stroke-width="2"/>`;
+    }).join("");
+    box.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Loss against step for ${runs.length} run${runs.length === 1 ? "" : "s"}">${grid.join("")}${lines}<line id="lc-x" y1="${Tp}" y2="${H - Bt}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/></svg><div class="chart-tip" id="lc-tip" hidden></div>`;
+    const svg = box.querySelector("svg"), tip = $("#lc-tip"), cross = $("#lc-x");
+    svg.addEventListener("mousemove", e => {
+      const rect = svg.getBoundingClientRect(), px = e.clientX - rect.left;
+      if (px < L || px > W - R) { tip.hidden = true; cross.setAttribute("visibility", "hidden"); return; }
+      const s = (px - L) / (W - L - R) * maxX;
+      const rows = runs.map(r => { let best = null; for (const p of r.curve) { if (!best || Math.abs(p[0] - s) < Math.abs(best[0] - s)) best = p; } return { r, p: best }; })
+        .filter(x => x.p && Math.abs(x.p[0] - s) <= maxX * .03);
+      if (!rows.length) { tip.hidden = true; cross.setAttribute("visibility", "hidden"); return; }
+      cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+      tip.innerHTML = `<div class="faint mono">step ${Math.round(s).toLocaleString()}</div>` + rows.map(x => `<div><span class="dot" style="--c:${runColor(x.r)}"></span>${esc(x.r.name)} <b class="mono">${fmtNum(x.p[1])}</b></div>`).join("");
+      tip.hidden = false;
+      tip.style.left = Math.min(px + 14, W - tip.offsetWidth - 4) + "px"; tip.style.top = "8px";
+    });
+    svg.addEventListener("mouseleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+  }
+
+  const selectedRun = () => T.runs.find(r => r.id === T.sel) || T.runs[0] || null;
+  function trainDetail() {
+    const r = selectedRun();
+    if (!r) return `<div class="col-head" style="padding:0"><span class="h3">Run</span></div><p class="muted" style="margin:0">Details of the selected run show here: its settings, every epoch and where the trained model was saved.</p>`;
+    const s = r.spec || {}, o = trainEntry("optimizer", s.optimizer?.entry), lo = trainEntry("loss", s.loss?.entry), sc = s.schedule && trainEntry("schedule", s.schedule.entry);
+    const last = r.history?.[r.history.length - 1];
+    const args = (e, c) => e && e.params.length ? ` (${e.params.map((p, i) => `${p.name} ${fmtVal(c.args?.[i])}`).join(", ")})` : "";
+    const hist = (r.history || []).slice(-8).reverse();
+    const mkeys = [...new Set(hist.flatMap(h => [...Object.keys(h.validationMetrics || {}).map(k => "val " + k), ...Object.keys(h.metrics || {})]))].slice(0, 2);
+    const mval = (h, k) => k.startsWith("val ") ? h.validationMetrics?.[k.slice(4)] : h.metrics?.[k];
+    return `
+      <div class="col-head" style="padding:0"><span class="dot" style="--c:${runColor(r)}"></span><span class="h3">${esc(r.name)}</span><span class="grow"></span><span class="chip ${stateChip(r.state)}">${stateName(r.state)}</span></div>
+      ${r.error ? `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(r.error)}</span></div>` : ""}
+      ${r.output ? `<div class="flag ok">${icon("check")}<span>Saved as <b>${esc(r.output)}</b> in the models folder${r.state === "stopped" ? ", with what it learned before it was stopped" : ""}${r.stoppedEarly ? `; stopped early, best at epoch ${r.bestEpoch}` : ""}.</span></div>` : ""}
+      <dl class="kv"><dt>Host</dt><dd>${esc(r.host || "This PC")}${r.device ? " · " + esc(r.device) : ""}</dd><dt>Model</dt><dd>${esc(s.model || "?")}</dd><dt>Data</dt><dd>${esc(r.data || "?")}${r.samples ? ` · ${r.samples.toLocaleString()} samples` : ""}</dd>
+        <dt>Optimizer</dt><dd>${esc(optLabel(o) + args(o, s.optimizer || {}))}</dd><dt>Loss</dt><dd>${esc(optLabel(lo) + args(lo, s.loss || {}))}</dd>
+        ${sc ? `<dt>Schedule</dt><dd>${esc(optLabel(sc) + args(sc, s.schedule))}</dd>` : ""}
+        <dt>Epoch</dt><dd>${r.epoch} of ${r.epochs}${r.steps ? ` · step ${r.step.toLocaleString()} of ${r.steps.toLocaleString()}` : ""}</dd>
+        <dt>Batch</dt><dd>${s.batchSize}${r.samplesPerSecond ? ` · ${fmtCount(r.samplesPerSecond)} samples/s` : ""}</dd>
+        ${last?.learningRate != null ? `<dt>Learning rate</dt><dd class="mono">${fmtNum(last.learningRate)}</dd>` : ""}</dl>
+      ${hist.length ? `<div class="eyebrow">Epochs</div><div class="tablebox"><table class="models epochs-table"><thead><tr><th>#</th><th>Loss</th>${hist.some(h => h.validationLoss != null) ? "<th>Val loss</th>" : ""}${mkeys.map(k => `<th>${esc(k)}</th>`).join("")}</tr></thead>
+        <tbody>${hist.map(h => `<tr><td class="mono">${h.epoch}</td><td class="mono tnum">${fmtNum(h.loss)}</td>${hist.some(x => x.validationLoss != null) ? `<td class="mono tnum">${fmtNum(h.validationLoss)}</td>` : ""}${mkeys.map(k => `<td class="mono tnum">${fmtNum(mval(h, k))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : ""}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${isActive(r) ? `<button class="btn" data-tstop="${esc(r.id)}">${icon("stop")}Stop and keep</button>` : `<button class="btn" data-tagain="${esc(r.id)}">${icon("retry")}Use these settings</button><button class="btn ghost" data-tdel="${esc(r.id)}">Remove</button>`}</div>`;
+  }
+
+  // ----- partial updates while runs train, so typing in the form is never interrupted
+  function renderTrainLive() {
+    if (state.view !== "train" || !T.loaded) return;
+    const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
+    set("train-hosts", trainHosts()); set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
+    const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
+    const tip = $("#lc-tip");
+    if (!tip || tip.hidden) { set("train-chart", trainChartFrame()); drawLossChart(); }
+    renderTrainCheck();
+    bindTrainLists();
+  }
+  function renderTrainForm() {
+    const box = $("#train-form"); if (!box) return;
+    const focus = document.activeElement?.id, pos = document.activeElement?.selectionStart;
+    ensureForm();
+    box.innerHTML = trainForm();
+    bindTrainForm();
+    if (focus) { const el = document.getElementById(focus); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch (_) { /* not a text field */ } } }
+  }
+
+  function setPath(obj, path, v) {
+    const ks = path.split("."); let o = obj;
+    for (let i = 0; i < ks.length - 1; i++) { const k = ks[i]; o[k] ??= /^\d+$/.test(ks[i + 1]) ? [] : {}; o = o[k]; }
+    o[ks[ks.length - 1]] = v;
+  }
+  function bindTrainForm() {
+    const box = $("#train-form"); if (!box) return;
+    box.querySelector("[data-go]")?.addEventListener("click", e => go(e.currentTarget.dataset.go));
+    $("#t-data")?.addEventListener("change", e => {
+      const [kind, name] = [e.target.value.slice(0, e.target.value.indexOf(":")), e.target.value.slice(e.target.value.indexOf(":") + 1)];
+      if (kind === "builtin") T.form.data = { kind: "builtin", name };
+      else {
+        const file = T.data.files.find(x => x.name === name);
+        const m = T.models.find(x => x.name === T.form.model), shape = m?.input?.length === 3 ? m.input : [3, 32, 32];
+        T.form.data = file.kind === "csv" ? { kind: "csv", file: name } : file.kind === "idx" ? { kind: "idx", images: name, labels: file.labels || "" }
+          : { kind: "images", folder: name, channels: shape[0], height: shape[1], width: shape[2] };
+      }
+      if (!T.form.lossTouched) Object.assign(T.form, defaultsFor(classesData()));
+      saveForm(); renderTrainForm(); checkTrain();
+    });
+    $$("[data-tentry]", box).forEach(sel => sel.addEventListener("change", () => {
+      const kind = sel.dataset.tentry;
+      T.form[kind] = sel.value ? choiceFor(kind, sel.value) : null;
+      if (kind === "loss") T.form.lossTouched = true;
+      saveForm(); renderTrainForm();
+    }));
+    $$("[data-metric]", box).forEach(c => c.addEventListener("change", () => {
+      const k = c.dataset.metric;
+      T.form.metrics = c.checked ? [...new Set([...T.form.metrics, k])] : T.form.metrics.filter(x => x !== k);
+      saveForm();
+    }));
+    const numeric = new Set(["epochs", "batchSize", "validation", "patience", "seed", "clipNorm", "data.channels", "data.height", "data.width"]);
+    $$("[data-tf]", box).forEach(el => {
+      const ev = el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input";
+      el.addEventListener(ev, () => {
+        const path = el.dataset.tf;
+        let v = el.type === "checkbox" ? el.checked : el.value;
+        if (numeric.has(path)) v = v === "" ? "" : Number(v);
+        setPath(T.form, path, v);
+        if (path === "data.classes" && !T.form.lossTouched) Object.assign(T.form, defaultsFor(classesData()));
+        saveForm();
+        if (path === "sweep") { renderTrainCheck(); return; }
+        if (el.tagName === "SELECT" || el.type === "checkbox") renderTrainForm();
+        checkTrain();
+      });
+    });
+    $$("[data-field]", box).forEach(el => {
+      const ev = el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input";
+      el.addEventListener(ev, () => {
+        const [kind, , i] = el.dataset.field.split(".");
+        const e = trainEntry(kind, T.form[kind]?.entry); if (!e) return;
+        T.form[kind].args[+i] = parseVal(e.params[+i], el.type === "checkbox" ? el.checked : el.value);
+        saveForm();
+      });
+    });
+    $("#train-start")?.addEventListener("click", startTraining);
+  }
+  function bindTrainLists() {
+    $$("[data-tshow]").forEach(b => b.addEventListener("click", () => { T.show = b.dataset.tshow; renderTrainLive(); }));
+    $$("[data-tscale]").forEach(b => b.addEventListener("click", () => { T.scale = b.dataset.tscale; store.set("trainScale", T.scale); renderTrainLive(); }));
+    $$("#train-runs tr[data-run]").forEach(tr => tr.addEventListener("click", e => { if (e.target.closest("button")) return; T.sel = tr.dataset.run; store.set("trainSel", T.sel); renderTrainLive(); }));
+    $$("[data-tstop]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/stop", { id: b.dataset.tstop }).catch(() => {}); pollRuns(false); }));
+    $$("[data-tdel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/delete", { id: b.dataset.tdel }).catch(() => {}); if (T.sel === b.dataset.tdel) T.sel = null; pollRuns(false); }));
+    $$("[data-tagain]").forEach(b => b.addEventListener("click", () => {
+      const r = T.runs.find(x => x.id === b.dataset.tagain); if (!r) return;
+      const s = JSON.parse(JSON.stringify(r.spec));
+      T.form = { ...T.form, ...s, name: "", sweep: "", schedule: s.schedule || null, lossTouched: true };
+      saveForm(); renderTrainForm(); checkTrain();
+      $("#train-form")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }));
+  }
+  async function startTraining() {
+    if (T.starting || !T.check?.ok) return;
+    T.starting = true; renderTrainCheck();
+    const base = specOf(T.form), e = trainEntry("optimizer", base.optimizer.entry);
+    const lrAt = e ? e.params.findIndex(p => /learningrate|^lr$/i.test(p.name)) : -1;
+    const specs = [base, ...(lrAt >= 0 ? sweepRates() : []).map(lr => {
+      const s = JSON.parse(JSON.stringify(base)); s.optimizer.args[lrAt] = lr;
+      s.name = `${base.model} · ${optLabel(e)} · lr ${lr}`; return s;
+    })];
+    if (specs.length > 1 && !base.name) base.name = `${base.model} · ${optLabel(e)} · lr ${base.optimizer.args[lrAt]}`;
+    try {
+      let first = null;
+      for (const s of specs) { const r = await postJson("/api/train/start", { spec: s }); first ??= r.id; }
+      T.sel = first; store.set("trainSel", T.sel);
+      T.check = { ...T.check };   // keep the line, now with the queue in mind
+    } catch (err) {
+      T.check = { ok: false, problem: String(err.message || err) };
+    } finally {
+      T.starting = false; renderTrainCheck(); pollRuns(false);
+    }
+  }
+  function bindLiveTrain() {
+    bindTrainForm(); bindTrainLists(); drawLossChart();
+    if (!T.timer) pollRuns(false);
+  }
+
   // ---------- LIBRARY ----------
   // Before loading, say where a model fits: 16 GB of VRAM with 6.1 GB free in this example.
   function fitCell(m) {
@@ -1401,7 +1855,7 @@
   }
 
   // ---------- render ----------
-  const views = { chat: chatView, agents: agentsView, create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: trainView, library: libraryView, mcp: mcpView };
+  const views = { chat: chatView, agents: agentsView, create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView };
   const crumbs = {
     chat: `Chat <span class="muted">· Voiceover for the builder demo</span>`, agents: `Agents <span class="muted">· 4 running · 2 waiting for you</span>`, create: `Images <span class="muted">· thumb-dit-64</span>`,
     voice: `Voice <span class="muted">· Builder demo voiceover</span>`, builder: `Model builder <span class="muted">· resnet-s</span>`,
@@ -1420,17 +1874,20 @@
     const liveLib = isLive() && state.view === "library";
     const liveMedia = isLive() && (state.view === "create" || state.view === "voice");
     const liveBuilder = isLive() && state.view === "builder";
+    const liveTrain = isLive() && state.view === "train";
     const ready = (L.info?.providers || []).filter(p => p.ready).length;
     $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
       : liveMedia ? (state.view === "create" ? `Images <span class="muted">· ${G.batches.length} batch${G.batches.length === 1 ? "" : "es"} this session</span>` : `Voice <span class="muted">· ${G.takes.length} take${G.takes.length === 1 ? "" : "s"} this session</span>`)
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>`
-      : liveBuilder ? `Model builder <span class="muted">· ${esc(B.graph.name || "Untitled")}</span>` : crumbs[state.view];
+      : liveBuilder ? `Model builder <span class="muted">· ${esc(B.graph.name || "Untitled")}</span>`
+      : liveTrain ? `Training <span class="muted">· ${T.loaded ? `${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}` : "looking…"}</span>` : crumbs[state.view];
     const picked = liveChat ? paneModel(L.active) : "auto";
     const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
     const [c, n] = liveMedia ? [state.view === "create" ? "c-image" : "c-speech", mediaModel ? mediaModel.name : L.info ? "no model yet" : "…"]
       : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"]
-      : liveBuilder ? ["c-train", B.catalog ? `${B.catalog.entries.length} layers found` : "…"] : routes[state.view];
+      : liveBuilder ? ["c-train", B.catalog ? `${B.catalog.entries.length} layers found` : "…"]
+      : liveTrain ? ["c-train", T.options ? `${T.options.optimizers.length} optimizers found` : "…"] : routes[state.view];
     $("#router .chip").className = "chip " + c; $("#router .chip").textContent = n;
     $$(".rail a").forEach(a => { if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     paintAll();
@@ -1440,6 +1897,7 @@
       else if (B.catalog) bindLiveBuilder();
       else if (!builderLoading) { builderLoading = true; loadBuilder().finally(() => { builderLoading = false; }); }
     }
+    if (state.view === "train" && isLive()) { if (T.loaded) bindLiveTrain(); else loadTrain(); }
     if (state.view === "chat") bindChat();
     if (state.view === "library" && isLive()) bindLiveLibrary();
     if (state.view === "create" && isLive()) bindLiveCreate();
@@ -1547,7 +2005,7 @@
 
   // ---------- wiring ----------
   window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; render(); } });
-  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") { if (isLive()) drawLiveEdges(); else fitWorld(); } else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
+  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") { if (isLive()) drawLiveEdges(); else fitWorld(); } else if (state.view === "train" && isLive()) drawLossChart(); else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
   $("#cmdk-open").addEventListener("click", openCmdk);
@@ -2673,7 +3131,7 @@
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
   // screens that show only real data
-  const showsLiveData = () => ["library", "create", "voice", "builder"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
+  const showsLiveData = () => ["library", "create", "voice", "builder", "train"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });

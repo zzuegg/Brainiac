@@ -230,6 +230,17 @@ public final class Tensor {
     }
 
     /**
+     * Creates a tensor of ones.
+     *
+     * @param shape the shape
+     * @param device where it lives
+     * @return the tensor
+     */
+    public static Tensor ones(Shape shape, Device device) {
+        return full(shape, 1f, device);
+    }
+
+    /**
      * Creates a tensor filled with one value, on the default device.
      *
      * @param shape the shape
@@ -1153,6 +1164,48 @@ public final class Tensor {
     /** @return the cosine of each value, in radians */
     public Tensor cos() {
         return unary(UnaryOp.COS);
+    }
+
+    /** @return the arctangent of each value, in radians, from {@code -pi/2} to {@code pi/2} */
+    public Tensor atan() {
+        return unary(UnaryOp.ATAN);
+    }
+
+    /**
+     * The angle of the point {@code (x, this)}, from {@code -pi} to {@code pi}, as
+     * {@link Math#atan2}: with this tensor as {@code y}, broadcast together.
+     *
+     * @param x the other coordinate
+     * @return the angles in radians; {@code (0, 0)} gives 0
+     */
+    public Tensor atan2(Tensor x) {
+        Tensor zero = x.equalTo(Tensor.zeros(Shape.of(), x.dtype(), x.device()));
+        Tensor base = div(x.add(zero)).atan().mul(zero.neg().add(1));
+        // x < 0: half a turn towards y's side (y = 0 counts as positive)
+        Tensor turn = x.neg().step().mul(neg().step().mul(-2).add(1)).mul((float) Math.PI);
+        // x = 0: a quarter turn by y's sign
+        Tensor quarter = zero.mul(sign()).mul((float) (Math.PI / 2));
+        return base.add(turn).add(quarter);
+    }
+
+    /**
+     * Compares element-wise with broadcasting.
+     *
+     * @param other the values to compare with
+     * @return 1 where this value is less than the other's, else 0
+     */
+    public Tensor less(Tensor other) {
+        return other.greater(this);
+    }
+
+    /** @return a copy of this tensor's values in new memory, on the same device */
+    public Tensor copy() {
+        if (rank() == 0) {
+            return reshape(1).copy().reshape(shape);
+        }
+        Tensor out = new Tensor(shape, device, backend().allocateUninitialized(size(), dtype()));
+        out.write(0, 0, this);
+        return out;
     }
 
     /** @return each value rounded to the nearest whole number, ties to even */

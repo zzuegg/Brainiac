@@ -29,6 +29,8 @@
   --cap-train: #ff8297;
   --cap-agent: #e6d27e;
   --cap-video: #6fcfe6;
+  /* chart series, in a fixed order (colour follows the run, never its rank) */
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-5: #d55181; --series-6: #0ca30c; --series-7: #9085e9; --series-8: #e66767;
   --ok: #5fd39a;
   --warn: #f1c25b;
   --bad: #ff6f7d;
@@ -48,6 +50,7 @@
     --line: #dde1ea; --line-soft: #e8ebf1; --fg: #141823; --fg-2: #3a4254; --muted: #667086; --faint: #9aa3b5;
     --accent: #2f62d9; --accent-ink: #ffffff; --accent-soft: rgba(47, 98, 217, .09);
     --cap-text: #2f62d9; --cap-image: #c4621c; --cap-speech: #7a4fe0; --cap-vision: #13906a; --cap-train: #d23b5a; --cap-agent: #9a7a0c; --cap-video: #0d7e96;
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
     --ok: #178a55; --warn: #a87300; --bad: #cf3045;
     --shadow: 0 1px 2px rgba(20,24,35,.06), 0 10px 28px -14px rgba(20,24,35,.22);
     --grid-dot: rgba(60, 72, 100, .14);
@@ -59,6 +62,7 @@
   --line: #dde1ea; --line-soft: #e8ebf1; --fg: #141823; --fg-2: #3a4254; --muted: #667086; --faint: #9aa3b5;
   --accent: #2f62d9; --accent-ink: #ffffff; --accent-soft: rgba(47, 98, 217, .09);
   --cap-text: #2f62d9; --cap-image: #c4621c; --cap-speech: #7a4fe0; --cap-vision: #13906a; --cap-train: #d23b5a; --cap-agent: #9a7a0c; --cap-video: #0d7e96;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
   --ok: #178a55; --warn: #a87300; --bad: #cf3045;
   --shadow: 0 1px 2px rgba(20,24,35,.06), 0 10px 28px -14px rgba(20,24,35,.22);
   --grid-dot: rgba(60, 72, 100, .14);
@@ -960,4 +964,34 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
   .live-builder .canvas-wrap { order: 1; }
   .live-builder .props { order: 2; display: grid; max-height: 42vh; border-left: 0; border-top: 1px solid var(--line-soft); }
   .live-builder .palette { order: 3; display: flex; max-height: 40vh; overflow: auto; border-right: 0; border-top: 1px solid var(--line-soft); }
+}
+
+/* ---------- live training ---------- */
+.live-train .runs-table tbody tr { cursor: pointer; }
+.live-train .runs-table tbody tr.sel { background: var(--accent-soft); }
+.live-train .runs-table .src .chip { vertical-align: middle; }
+.live-train .launch .flag.bad { margin-top: 0; }
+.live-train .launch .two { align-items: end; }
+.live-train .launch .field label .faint { font-weight: 400; }
+.metric-picks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.loss-chart { position: relative; min-height: 240px; }
+.loss-chart svg { display: block; width: 100%; height: 240px; }
+.chart-tip { position: absolute; top: 8px; z-index: 2; min-width: 160px; padding: 8px 10px; border-radius: 10px; font-size: 12px; display: grid; gap: 4px;
+  background: var(--raise); border: 1px solid var(--line); box-shadow: var(--shadow); pointer-events: none; }
+.chart-tip div { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.chart-tip b { margin-left: auto; padding-left: 10px; font-weight: 600; }
+.epochs-table td, .epochs-table th { padding: 5px 10px; font-size: 12px; }
+.live-train .run-detail .flag { margin-top: 0; }
+.live-train .run-detail .flag.ok { background: color-mix(in srgb, var(--ok) 9%, transparent); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.live-train .run-detail .flag.ok > svg { color: var(--ok); }
+@media (max-width: 1500px) {
+  .live-train .train-body { grid-template-columns: 320px minmax(0, 1fr); }
+  .live-train .launch { grid-row: span 2; }
+  .live-train .run-detail { display: grid; grid-column: 2; }
+}
+@media (max-width: 900px) {
+  .live-train .train-body { grid-template-columns: minmax(0, 1fr); }
+  .live-train .launch { grid-row: auto; }
+  .live-train .run-detail { grid-column: auto; }
+  .live-train .runs-table th:nth-child(5), .live-train .runs-table td:nth-child(5) { display: none; }
 }
