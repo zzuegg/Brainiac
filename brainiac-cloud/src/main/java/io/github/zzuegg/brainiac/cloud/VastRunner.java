@@ -191,6 +191,21 @@ public final class VastRunner {
     }
 
     /**
+     * Stops a studio worker on the instance. Ending the local ssh process alone can leave the
+     * worker running there, holding GPU memory.
+     *
+     * @param i the instance
+     * @throws IOException if ssh cannot be started
+     * @throws InterruptedException if interrupted
+     */
+    public void stopWorker(VastInstance i) throws IOException, InterruptedException {
+        Process p = new ProcessBuilder(ssh(i, List.of(), "pkill -f brainiac.studio; true"))
+                .redirectErrorStream(true).start();
+        p.getInputStream().readAllBytes();
+        p.waitFor();
+    }
+
+    /**
      * Copies a process's output to this process's output and, if given, a log file.
      *
      * @param in the output to copy

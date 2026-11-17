@@ -264,6 +264,16 @@ public final class VastCli {
         new SecureRandom().nextBytes(bytes);
         String token = HexFormat.of().formatHex(bytes);
         Process p = runner.startWorker(ready, token, o.localPort, o.jobArgs);
+        // Ctrl+C: stop the worker on the instance too (a kept instance would keep it running)
+        Thread stop = new Thread(() -> {
+            p.destroy();
+            try {
+                runner.stopWorker(ready);
+            } catch (IOException | InterruptedException e) {
+                System.err.println("could not stop the worker on instance " + ready.id() + ": " + e.getMessage());
+            }
+        }, "vast-stop-worker");
+        Runtime.getRuntime().addShutdownHook(stop);
         try (BufferedReader out = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = out.readLine()) != null) {
@@ -278,7 +288,15 @@ public final class VastCli {
                 }
             }
         }
-        return p.waitFor();
+        int code = p.waitFor();
+        try {
+            Runtime.getRuntime().removeShutdownHook(stop);
+        } catch (IllegalStateException e) {
+            // already shutting down: the hook stops the worker
+            return code;
+        }
+        runner.stopWorker(ready);
+        return code;
     }
 
     private static VastOffer pick(VastClient vast, Options o) throws IOException {
