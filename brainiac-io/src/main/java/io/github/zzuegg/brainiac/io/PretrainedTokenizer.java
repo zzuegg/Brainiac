@@ -872,7 +872,9 @@ public final class PretrainedTokenizer implements Tokenizer {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             for (int id : ids) {
                 int type = id >= 0 && id < spm.types.length ? spm.types[id] : SentencePieceModel.NORMAL;
-                if (type == SentencePieceModel.CONTROL) {
+                // a GGUF tokenizer decodes as transformers does, writing control tokens such as
+                // <s> unless asked to skip them; a SentencePiece model file as sentencepiece does
+                if (type == SentencePieceModel.CONTROL && (skipSpecialTokens || !spm.firstOnly)) {
                     continue;
                 }
                 if (type == SentencePieceModel.BYTE) {

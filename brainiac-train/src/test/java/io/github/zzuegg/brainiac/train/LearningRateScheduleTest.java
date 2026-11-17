@@ -41,6 +41,17 @@ class LearningRateScheduleTest {
         assertThrows(IllegalArgumentException.class, () -> LearningRateSchedule.step(0.5f, 0));
     }
 
+    @Test
+    void shiftedWarmupStartsTheNextScheduleFresh() {
+        LearningRateSchedule cosine = LearningRateSchedule.cosine(10, 0f);
+        LearningRateSchedule s = LearningRateSchedule.warmup(3, cosine, true);
+        assertEquals(1f / 3, s.rate(1, 1f), 1e-6f);
+        assertEquals(cosine.rate(1, 1f), s.rate(4, 1f), 1e-6f);
+        assertEquals(cosine.rate(10, 1f), s.rate(13, 1f), 1e-6f);
+        assertEquals(LearningRateSchedule.warmup(3, cosine).rate(5, 1f),
+                LearningRateSchedule.warmup(3, cosine, false).rate(5, 1f), 0f);
+    }
+
     private static void follows(LearningRateSchedule s, double[] torch) {
         for (int i = 0; i < torch.length; i++) {
             assertEquals(torch[i], s.rate(i + 1, 1f), 1e-5, "step " + (i + 1));

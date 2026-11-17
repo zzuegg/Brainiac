@@ -325,10 +325,25 @@ public final class TransformerBlock implements MultiInputLayer {
 
     @Override
     public Var forward(List<Var> inputs, boolean training) {
+        return forward(inputs, null, training);
+    }
+
+    /**
+     * The block with an extra additive bias on its self-attention scores, such as a
+     * block-causal mask or relative-position biases; see
+     * {@link MultiHeadAttention#forward(List, Tensor, boolean)}.
+     *
+     * @param inputs as for {@link #forward(List, boolean)}
+     * @param attentionBias added to the self-attention scores, broadcasting to
+     *     {@code [batch, heads, steps, steps]}, or {@code null}
+     * @param training whether dropout is on
+     * @return the output
+     */
+    public Var forward(List<Var> inputs, Tensor attentionBias, boolean training) {
         Var x = inputs.get(0);
         Var mask = settings.keyMask() ? inputs.get(inputs.size() - 1) : null;
-        x = sublayer(x, norm1, h -> selfAttention.forward(mask != null ? List.of(h, mask) : List.of(h), training),
-                training);
+        x = sublayer(x, norm1, h -> selfAttention.forward(mask != null ? List.of(h, mask) : List.of(h), attentionBias,
+                training), training);
         if (crossAttention != null) {
             Var memory = inputs.get(1);
             x = sublayer(x, norm3, h -> crossAttention.forward(List.of(h, memory), training), training);

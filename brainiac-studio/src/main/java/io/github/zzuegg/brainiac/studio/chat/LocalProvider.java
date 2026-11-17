@@ -235,8 +235,18 @@ final class LocalProvider implements ChatProvider {
             DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
                     : DType.FLOAT32;
             Llama model = Llama.load(path, device, dtype);
+            if (device.kind() == Device.Kind.GPU) {
+                // two products per block instead of five: the same answers, much less GPU overhead
+                try {
+                    model.fuseProjections();
+                } catch (RuntimeException e) {
+                    LOG.log(System.Logger.Level.INFO, "running " + path.getFileName() + " unfused: " + e.getMessage());
+                }
+            }
             PretrainedTokenizer tok = PretrainedTokenizer.load(path);
-            loaded = new Loaded(path, new Generator(model, tok), tok, Generator.stopTokens(path, tok));
+            // a chat sends its whole history each turn; only the new part is read again
+            Generator generator = new Generator(model, tok).cachePrefixes(4);
+            loaded = new Loaded(path, generator, tok, Generator.stopTokens(path, tok));
         }
         List<Map<String, Object>> history = new ArrayList<>();
         if (!request.system().isBlank()) {
@@ -250,11 +260,13 @@ final class LocalProvider implements ChatProvider {
                 : request.messages().getLast().text();
         Generator.Options options = new Generator.Options(request.maxTokens(),
                 Sampling.temperature(0.7f).withTopP(0.9f), System.nanoTime(), loaded.stops(), List.of());
+        // a template that opens the think block itself (DeepSeek-R1, Qwen3 with thinking on) starts the answer inside it
+        ThinkSplitter split = new ThinkSplitter(listener, prompt.stripTrailing().endsWith("<think>"));
         Generator.Output out;
         try {
             out = loaded.generator().generate(List.of(prompt), options, (row, piece) -> {
                 try {
-                    listener.text(piece);
+                    split.text(piece);
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
@@ -262,6 +274,7 @@ final class LocalProvider implements ChatProvider {
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }
+        split.finish();
         return new ChatResult(out.finish() == Generator.Finish.LENGTH ? "length" : "end",
                 loaded.generator().encode(prompt).length, out.tokens().length);
     }

@@ -144,6 +144,35 @@ class SequenceTest {
     }
 
     @Test
+    void customAttentionBiasMasksBlocks() {
+        TransformerBlock causal = (TransformerBlock) TransformerBlock.of(2).causal(true)
+                .create(Shape.of(6, 4), new SplittableRandom(8));
+        TransformerBlock open = (TransformerBlock) TransformerBlock.of(2)
+                .create(Shape.of(6, 4), new SplittableRandom(8));
+        Tensor x = random(51, 2, 6, 4);
+        // a causal mask given as a bias equals the built-in one
+        assertArrayEquals(causal.forward(Var.of(x)).value().toArray(), open.forward(List.of(Var.of(x)),
+                Functional.causalMask(6, 6, x.device()), false).value().toArray(), 1e-5f);
+        // block-causal: steps see their own block of 3 and earlier blocks
+        float[] m = new float[36];
+        for (int q = 0; q < 6; q++) {
+            for (int k = 0; k < 6; k++) {
+                m[q * 6 + k] = k / 3 <= q / 3 ? 0 : -1e9f;
+            }
+        }
+        Tensor blocks = Tensor.of(Shape.of(6, 6), m);
+        float[] changed = x.toArray();
+        changed[4 * 4] += 3;   // step 4, in the second block
+        float[] a = open.forward(List.of(Var.of(x)), blocks, false).value().toArray();
+        float[] b = open.forward(List.of(Var.of(Tensor.of(Shape.of(2, 6, 4), changed))), blocks, false)
+                .value().toArray();
+        for (int i = 0; i < 12; i++) {
+            assertEquals(a[i], b[i], 1e-5f, "the first block saw step 4");
+        }
+        assertTrue(Math.abs(a[12] - b[12]) > 1e-4, "step 3 shares a block with step 4");
+    }
+
+    @Test
     void causalAttentionIgnoresTheFuture() {
         Layer block = TransformerBlock.of(2).causal(true).rotary(10000).gated(true).rmsNorm(true)
                 .create(Shape.of(5, 4), new SplittableRandom(7));

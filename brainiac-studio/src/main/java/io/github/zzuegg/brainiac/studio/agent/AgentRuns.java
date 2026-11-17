@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.studio.agent;
 
 import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.llm.Agent;
+import io.github.zzuegg.brainiac.studio.chat.ChatListener;
 import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
 import io.github.zzuegg.brainiac.studio.chat.ChatResult;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
@@ -42,6 +43,9 @@ public final class AgentRuns {
 
     private static final int TURN_TOKENS = 2048;
     private static final int RESULT_CHARS = 6000;
+
+    /** The most of a turn's reasoning kept as a step. */
+    private static final int THINK_CHARS = 20_000;
     private static final System.Logger LOG = System.getLogger(AgentRuns.class.getName());
 
     private final ChatService chat;
@@ -75,6 +79,8 @@ public final class AgentRuns {
         Map<String, Object> pending;
         CompletableFuture<Decision> decision;
         volatile boolean stopping;
+        /** What the model is thinking in the turn being written, shown live. */
+        final StringBuilder thinking = new StringBuilder();
 
         Run(String id, String goal, String model, String mode, int maxSteps, List<String> allowed, long created) {
             this.id = id;
@@ -133,6 +139,9 @@ public final class AgentRuns {
             }
             if (full) {
                 m.put("steps", List.copyOf(steps));
+                if (!thinking.isEmpty()) {
+                    m.put("thinking", thinking.toString());
+                }
                 m.put("messages", messages.stream().map(x -> Map.of("role", x.role(), "text", x.text())).toList());
             }
             return m;
@@ -370,14 +379,38 @@ public final class AgentRuns {
                 synchronized (r) {
                     history = List.copyOf(r.messages);
                 }
+                synchronized (r) {
+                    r.thinking.setLength(0);
+                }
                 ChatResult result = chat.chat(r.model, system, history, TURN_TOKENS, null,
                         m -> { synchronized (r) { r.by = m.key(); } },
-                        piece -> {
-                            if (r.stopping) {
-                                throw new IOException("stopped");
+                        new ChatListener() {
+                            @Override
+                            public void text(String piece) throws IOException {
+                                if (r.stopping) {
+                                    throw new IOException("stopped");
+                                }
+                                text.append(piece);
                             }
-                            text.append(piece);
+
+                            @Override
+                            public void thinking(String piece) throws IOException {
+                                if (r.stopping) {
+                                    throw new IOException("stopped");
+                                }
+                                synchronized (r) {
+                                    r.thinking.append(piece);
+                                }
+                            }
                         });
+                synchronized (r) {
+                    String thought = r.thinking.toString().strip();
+                    r.thinking.setLength(0);
+                    if (!thought.isEmpty()) {
+                        r.step("think", Map.of("text", thought.length() > THINK_CHARS
+                                ? thought.substring(0, THINK_CHARS) + "\n…" : thought));
+                    }
+                }
                 String turn = turn(text.toString());
                 List<Map<String, Object>> calls = Agent.calls(turn);
                 String said = Agent.content(turn);
@@ -538,6 +571,7 @@ public final class AgentRuns {
         Function<Object, String> s = String::valueOf;
         return switch (s.apply(step.get("kind"))) {
             case "goal" -> "reading the task";
+            case "think" -> "thinking";
             case "say", "answer" -> firstLine(s.apply(step.get("text")));
             case "call" -> "calling " + step.get("tool");
             case "result" -> step.get("tool") + (Boolean.TRUE.equals(step.get("ok")) ? " answered" : " failed");

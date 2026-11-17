@@ -51,6 +51,33 @@ class LinalgTest {
     }
 
     @Test
+    void svdMatchesPyTorchAndReconstructs() {
+        Tensor a = Tensor.of(Shape.of(2, 4, 3), new double[] {-2.31041, -0.37325, -1.06082, 0.99951, -0.88403,
+            -1.27555, -0.62322, -0.86644, 0.23872, 0.73353, -1.32188, 1.31481, -1.4875, -0.71358, 0.52, -0.95289,
+            0.67486, 1.04687, 0.1543, -0.74989, -0.72339, 0.08637, -1.7464, 1.04101}, DType.FLOAT64, Device.cpu());
+        // torch.linalg.svdvals
+        double[] values = {2.89577, 1.89556, 1.80051, 2.34970, 2.00386, 1.07962};
+        for (Tensor m : new Tensor[] {a, a.transpose().add(0f)}) {
+            Tensor[] usv = Linalg.svd(m);
+            int rows = m.shape().dim(1);
+            int cols = m.shape().dim(2);
+            assertEquals(Shape.of(2, rows, 3), usv[0].shape());
+            assertEquals(Shape.of(2, 3), usv[1].shape());
+            assertEquals(Shape.of(2, 3, cols), usv[2].shape());
+            assertArrayEquals(values, usv[1].toDoubleArray(), 1e-5);
+            close(m, usv[0].mul(usv[1].reshape(2, 1, 3)).matmul(usv[2]), 1e-10);
+            Tensor eye = Linalg.identity(3, DType.FLOAT64, a.device()).expand(Shape.of(2, 3, 3)).add(0f);
+            close(eye, usv[0].transpose().matmul(usv[0]), 1e-10);
+            close(eye, usv[2].matmul(usv[2].transpose()), 1e-10);
+        }
+        // rank-deficient: one singular value is zero
+        Tensor low = random(5, 2).matmul(random(2, 4));
+        Tensor[] usv = Linalg.svd(low);
+        assertEquals(0, usv[1].toDoubleArray()[3], 1e-10);
+        close(low, usv[0].mul(usv[1].reshape(1, 4)).matmul(usv[2]), 1e-10);
+    }
+
+    @Test
     void symmetricPowerGivesRoots() {
         Tensor a = spd(1, 5);
         Tensor root = Linalg.symmetricPower(a, 0.5, 0);
