@@ -93,6 +93,11 @@ public final class Weights {
         }
     }
 
+    /** @return the connection weights by connection key; not a copy */
+    Map<Long, Float> connectionValues() {
+        return connections;
+    }
+
     /** @return the number of stored connection weights */
     public int connections() {
         return connections.size();
@@ -128,6 +133,71 @@ public final class Weights {
         Map<String, Float> sw = new HashMap<>(other.switching);
         sw.putAll(switching);
         return new Weights(c, b, h, headBias != null ? headBias : other.headBias, ctl, sw);
+    }
+
+    /** Combines a value both parents have; see {@link #crossover(Weights, Mix)}. */
+    @FunctionalInterface
+    public interface Mix {
+        /**
+         * @param mine this parent's value
+         * @param theirs the other parent's value
+         * @return the child's value
+         */
+        float apply(float mine, float theirs);
+    }
+
+    /**
+     * Combines two parents' weights value by value: where both have one, {@code mix}
+     * decides; where only one has it, the child takes it.
+     *
+     * @param other the other parent's weights
+     * @param mix the combination of shared values
+     * @return the child's weights
+     */
+    public Weights crossover(Weights other, Mix mix) {
+        float[] hb = headBias;
+        if (headBias == null) {
+            hb = other.headBias;
+        } else if (other.headBias != null && other.headBias.length == headBias.length) {
+            hb = new float[headBias.length];
+            for (int i = 0; i < hb.length; i++) {
+                hb[i] = mix.apply(headBias[i], other.headBias[i]);
+            }
+        }
+        return new Weights(merge(connections, other.connections, mix), merge(biases, other.biases, mix),
+                merge(head, other.head, mix), hb, merge(controls, other.controls, mix),
+                merge(switching, other.switching, mix));
+    }
+
+    /**
+     * Uniform crossover: each shared value from either parent with equal chance.
+     *
+     * @param other the other parent's weights
+     * @param random picks the parent per value
+     * @return the child's weights
+     */
+    public Weights crossover(Weights other, java.util.random.RandomGenerator random) {
+        return crossover(other, (a, b) -> random.nextBoolean() ? a : b);
+    }
+
+    /**
+     * Blending: each shared value {@code (1 - t) * mine + t * theirs}.
+     *
+     * @param other the other parent's weights
+     * @param t how far towards the other parent, usually in {@code [0, 1]}
+     * @return the child's weights
+     */
+    public Weights blend(Weights other, float t) {
+        return crossover(other, (a, b) -> (1 - t) * a + t * b);
+    }
+
+    private static <K> Map<K, Float> merge(Map<K, Float> mine, Map<K, Float> theirs, Mix mix) {
+        Map<K, Float> out = new HashMap<>(theirs);
+        for (Map.Entry<K, Float> e : mine.entrySet()) {
+            Float t = theirs.get(e.getKey());
+            out.put(e.getKey(), t == null ? e.getValue() : mix.apply(e.getValue(), t));
+        }
+        return out;
     }
 
     private static Dense head(Model model) {
