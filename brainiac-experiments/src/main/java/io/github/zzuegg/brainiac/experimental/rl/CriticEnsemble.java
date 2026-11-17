@@ -113,6 +113,23 @@ public final class CriticEnsemble {
     }
 
     /**
+     * The summed squared error of every critic against the same targets, with gradients
+     * into the input (for models that train an encoder through the critics).
+     *
+     * @param input {@code [batch, obs + action]}
+     * @param target {@code [batch, 1]}
+     * @return the summed mean squared error
+     */
+    public Var loss(Var input, Tensor target) {
+        Var loss = null;
+        for (Model q : critics) {
+            Var l = q.forward(input, true).sub(target).square().mean();
+            loss = loss == null ? l : loss.add(l);
+        }
+        return loss;
+    }
+
+    /**
      * One regression step of every critic towards the same targets.
      *
      * @param input {@code [batch, obs + action]}
