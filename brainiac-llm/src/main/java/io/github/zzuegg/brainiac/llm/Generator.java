@@ -288,8 +288,12 @@ public final class Generator {
         int active = batch;
         if (options.maxNewTokens() > 0) {
             Tensor logits = model.next(state, first, padded ? pad : null);
+            // plain greedy decoding reads back only the chosen tokens, which the device finds
+            Sampling sampling = options.sampling();
+            boolean onDevice = options.constraint() == null && sampling.temperature() == 0
+                    && sampling.repetitionPenalty() == 1;
             for (int step = 0; active > 0; step++) {
-                float[] all = logits.toArray();
+                float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;
                 int[][] next = new int[batch][1];
                 boolean[][] skip = new boolean[batch][1];
@@ -297,6 +301,14 @@ public final class Generator {
                     Row r = rows[b];
                     if (r.finish != null) {
                         skip[b][0] = true;
+                        continue;
+                    }
+                    if (onDevice) {
+                        next[b][0] = (int) all[b];
+                        if (r.add(next[b][0], stops)) {
+                            active--;
+                            skip[b][0] = true;
+                        }
                         continue;
                     }
                     float[] row = Arrays.copyOfRange(all, b * vocab, (b + 1) * vocab);
@@ -322,6 +334,7 @@ public final class Generator {
                 logits = model.next(state, next, active < batch ? skip : null);
             }
         }
+        state.close();
         List<Output> out = new ArrayList<>(batch);
         for (Row r : rows) {
             out.add(r.finish());
@@ -567,6 +580,8 @@ public final class Generator {
             final SplittableRandom random;
             final java.util.concurrent.CompletableFuture<Output> future = new java.util.concurrent.CompletableFuture<>();
             float[] logits;
+            /** The next token when only it was read back (greedy rows), else -1. */
+            int chosen = -1;
 
             Job(int[] prompt, Options options, Listener listener) {
                 row = new Row(0, prompt, options, listener);
@@ -618,17 +633,20 @@ public final class Generator {
         /**
          * Decodes {@code maxBatch} copies of a prompt together and waits, so the first real
          * burst of requests does not pay for preparing the batch shapes (on the GPU, compiling
-         * them).
+         * them) or for the JVM compiling the decoding loop. Copy {@code i} writes
+         * {@code tokens * (i + 1) / maxBatch} tokens, so the copies finish one after another
+         * and every batch size from {@code maxBatch} down to 1 is decoded. About 64 tokens
+         * warm the loop well; the JVM keeps getting faster over the first few bursts.
          *
          * @param prompt a short prompt
-         * @param tokens the tokens to write for each copy
+         * @param tokens the tokens to write for the longest copy
          * @return this
          */
         public Batcher warmUp(int[] prompt, int tokens) {
             List<java.util.concurrent.CompletableFuture<Output>> all = new ArrayList<>();
-            Options o = Options.greedy(tokens).withStopTokens(Set.of());
             for (int i = 0; i < maxBatch; i++) {
-                all.add(submit(prompt, o, null));
+                int n = Math.max(1, (int) ((long) tokens * (i + 1) / maxBatch));
+                all.add(submit(prompt, Options.greedy(n).withStopTokens(Set.of()), null));
             }
             java.util.concurrent.CompletableFuture.allOf(all.toArray(java.util.concurrent.CompletableFuture[]::new))
                     .join();
@@ -688,6 +706,11 @@ public final class Generator {
                         for (int i = 0; i < active.size(); i++) {
                             Job j = active.get(i);
                             Row r = j.row;
+                            if (j.logits == null) {
+                                next[i] = j.chosen;
+                                done[i] = r.add(j.chosen, j.stops);
+                                continue;
+                            }
                             float[] row = j.logits;
                             if (r.matcher != null && !constrain(row, r.matcher, j.stops)) {
                                 r.end();
@@ -713,6 +736,7 @@ public final class Generator {
                         }
                         if (kept.isEmpty()) {
                             active.clear();
+                            state.close();
                             state = null;
                             continue;
                         }
@@ -768,7 +792,25 @@ public final class Generator {
             return s;
         }
 
+        /**
+         * Hands each job its logits. When every job decodes greedily without constraints or
+         * a repetition penalty, only the chosen tokens are read back: the device finds them,
+         * so the whole vocabulary per row is neither downloaded nor copied.
+         */
         private void spread(Tensor logits, List<Job> jobs) {
+            boolean greedy = true;
+            for (Job j : jobs) {
+                Sampling s = j.row.options.sampling();
+                greedy &= j.row.matcher == null && s.temperature() == 0 && s.repetitionPenalty() == 1;
+            }
+            if (greedy) {
+                float[] best = logits.argmax(-1).toArray();
+                for (int i = 0; i < jobs.size(); i++) {
+                    jobs.get(i).logits = null;
+                    jobs.get(i).chosen = (int) best[i];
+                }
+                return;
+            }
             float[] all = logits.toArray();
             int vocab = all.length / jobs.size();
             for (int i = 0; i < jobs.size(); i++) {
@@ -824,6 +866,8 @@ public final class Generator {
             float[] p = model.next(target, new int[][] {prompt}, null).toArray();
             float[] q = draft.next(small, new int[][] {prompt}, null).toArray();
             targetSteps++;
+            int vocab = model.vocabSize();
+            int pending = -1;   // the model's last token, which the model has not read yet
             boolean done = false;
             while (!done) {
                 int base = target.length();
@@ -837,14 +881,21 @@ public final class Generator {
                         q = draft.next(small, new int[][] {{guess[i]}}, null).toArray();
                     }
                 }
-                // the model's distributions after the prompt so far and after each guess
-                float[] all = model.nextAll(target, new int[][] {guess}).toArray();
+                // one step of the model reads its pending token and every guess, and gives
+                // its distribution before each guess and after the last one
+                int skip = pending < 0 ? 0 : 1;
+                int[] read = new int[skip + lookahead];
+                if (skip == 1) {
+                    read[0] = pending;
+                }
+                System.arraycopy(guess, 0, read, skip, lookahead);
+                float[] all = model.nextAll(target, new int[][] {read}).toArray();
                 targetSteps++;
-                int vocab = model.vocabSize();
                 int keep = 0;
                 int extra = -1;
                 for (int i = 0; i < lookahead; i++) {
-                    float[] logits = i == 0 ? p : Arrays.copyOfRange(all, (i - 1) * vocab, i * vocab);
+                    int at = skip + i - 1;
+                    float[] logits = at < 0 ? p : Arrays.copyOfRange(all, at * vocab, (at + 1) * vocab);
                     double[] ps = sampling.probabilities(logits);
                     int x = guess[i];
                     if (random.nextDouble() * qs[i][x] < ps[x]) {
@@ -863,8 +914,9 @@ public final class Generator {
                 accepted += keep;
                 if (extra < 0) {
                     // every guess kept: one more token from the model's last distribution
-                    extra = draw(sampling.probabilities(Arrays.copyOfRange(all, (lookahead - 1) * vocab,
-                            lookahead * vocab)), random);
+                    int at = skip + lookahead - 1;
+                    extra = draw(sampling.probabilities(Arrays.copyOfRange(all, at * vocab, (at + 1) * vocab)),
+                            random);
                 }
                 for (int i = 0; i < keep && !done; i++) {
                     done = row.add(guess[i], stops);
@@ -875,11 +927,14 @@ public final class Generator {
                 if (done) {
                     break;
                 }
-                // both states keep the accepted guesses, then read the new token
-                target = target.truncate(base + keep);
-                p = model.next(target, new int[][] {{extra}}, null).toArray();
+                // the model keeps its pending token and the accepted guesses; the new token
+                // waits for the next step
+                target = target.truncate(base + skip + keep);
+                pending = extra;
+                // the draft keeps the accepted guesses, then reads the new token
+                int draftBase = base + skip;
                 int drafted = Math.min(keep, lookahead - 1);   // the draft never read its last guess
-                small = small.truncate(base + drafted);
+                small = small.truncate(draftBase + drafted);
                 int[] missing = new int[keep - drafted + 1];
                 for (int i = drafted; i < keep; i++) {
                     missing[i - drafted] = guess[i];
@@ -888,6 +943,8 @@ public final class Generator {
                 q = draft.next(small, new int[][] {missing}, null).toArray();
             }
         }
+        target.close();
+        small.close();
         return new Speculation(row.finish(), proposed, accepted, targetSteps);
     }
 
