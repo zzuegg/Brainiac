@@ -47,6 +47,7 @@ public final class VulkanBackend implements Backend {
     private static final int GROUP = 256;
 
     private VkContext vk;
+    private long initNanos;
     private boolean initialized;
     private String unavailable;
     private final Map<String, Tables> tables = new LinkedHashMap<>(16, 0.75f, true) {
@@ -92,7 +93,9 @@ public final class VulkanBackend implements Backend {
         if (!initialized) {
             initialized = true;
             try {
+                long start = System.nanoTime();
                 vk = new VkContext();
+                initNanos = System.nanoTime() - start;
                 if (FUSION) {
                     try {
                         compiler = new ShaderCompiler();
@@ -144,11 +147,24 @@ public final class VulkanBackend implements Backend {
         if (vk == null) {
             return "not initialized";
         }
-        return vk.dispatches + " dispatches (" + fusedDispatches + " fused, " + fusedShaders.size()
+        return "init " + initNanos / 1_000_000 + " ms, " + (vk.uploaded >> 20) + " MB uploaded in "
+                + vk.uploadNanos / 1_000_000 + " ms, allocating " + vk.allocNanos / 1_000_000 + " ms, pipelines "
+                + vk.pipelineNanos / 1_000_000 + " ms, waiting " + vk.waitNanos / 1_000_000 + " ms; "
+                + vk.dispatches + " dispatches (" + fusedDispatches + " fused, " + fusedShaders.size()
                 + " shaders generated in " + compileNanos / 1_000_000 + " ms), " + vk.barriers + " barriers, " + vk.submits + " submits, " + vk.waits
-                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
+                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.spilled() >> 20) + " MB spilled, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
                 + vk.perShader.entrySet().stream().sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
                         .limit(12).map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    /** Tests: new device-local blocks fail from now on, so memory spills; false lifts that. */
+    synchronized void simulateFullDevice(boolean full) {
+        vk.simulatedLimit = full ? Math.max(1, vk.allocated()) : 0;
+    }
+
+    /** @return bytes spilled from device-local memory; for tests */
+    synchronized long spilled() {
+        return vk == null ? 0 : vk.spilled();
     }
 
     /** Commands recorded so far, fused or not; for tests. */
@@ -948,7 +964,14 @@ public final class VulkanBackend implements Backend {
         done(y, vs(b));
     }
 
+    /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
+    private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
+
     private void matmul(VkStorage x, VkStorage y, int batch, int m, int k, int n, VkStorage z) {
+        if (m <= VEC_ROWS && batch == 1) {
+            matvec(x, y, m, k, n, z);
+            return;
+        }
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
         // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
         boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
@@ -979,6 +1002,28 @@ public final class VulkanBackend implements Backend {
         }
         if (splits > 1) {
             reduce(ReduceOp.SUM.ordinal(), target, z, (long) batch * mn, splits, mn);
+            target.release();
+        }
+    }
+
+    /** Few rows times a matrix, limited by reading the matrix: see matmul_vec.comp. */
+    private void matvec(VkStorage x, VkStorage y, int m, int k, int n, VkStorage z) {
+        int columnGroups = ceil(n, 128);
+        // enough pieces to fill the device, of at least 64 rows each
+        int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
+        int chunk = ceil(k, pieces);
+        pieces = ceil(k, chunk);
+        long mn = (long) m * n;
+        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
+        int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        // the vector loads need four aligned columns
+        boolean vectors = n % 4 == 0 && y.address() % (4L * y.dtype.bytes()) == 0;
+        vk.push().putLong(x.address()).putLong(y.address()).putLong(y.address()).putLong(target.address())
+                .putInt(m).putInt(k).putInt(n).putInt(chunk).putInt(vectors ? 1 : 0);
+        vk.dispatch(shader("matmul_vec" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
+                y.slot());
+        if (pieces > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
             target.release();
         }
     }
