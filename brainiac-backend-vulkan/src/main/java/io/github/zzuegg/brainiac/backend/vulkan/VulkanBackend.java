@@ -1030,19 +1030,62 @@ public final class VulkanBackend implements Backend {
         int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
         int chunk = ceil(k, pieces);
         pieces = ceil(k, chunk);
-        long mn = (long) m * n;
-        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         // the vector loads need four aligned columns
         boolean vectors = n % 4 == 0 && y.address() % (4L * y.dtype.bytes()) == 0;
-        vk.push().putLong(x.address()).putLong(y.address()).putLong(y.address()).putLong(target.address())
-                .putInt(m).putInt(k).putInt(n).putInt(chunk).putInt(vectors ? 1 : 0);
-        vk.dispatch(shader("matmul_vec" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
+        Pieces split = pieces(pieces, m, n, columnGroups, z.dtype);
+        vk.push().putLong(x.address()).putLong(y.address()).putLong(y.address()).putLong(z.address())
+                .putLong(split.partsAddress()).putLong(counters.address()).putInt(m).putInt(k).putInt(n).putInt(chunk)
+                .putInt(vectors ? 1 : 0).putInt(pieces).putInt(split.counter());
+        vk.dispatch(shader("matmul_vec" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), x.slot(),
                 y.slot());
-        if (pieces > 1) {
-            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
-            target.release();
+        split.release();
+    }
+
+    /**
+     * Scratch for a product split into pieces along k: each piece's sums and a run of
+     * counters (one per column group) by which the last piece to finish adds them up and
+     * resets the counter. Runs of the counter buffer rotate, so products running at once use
+     * different counters; the buffer is not listed as written, which would order them.
+     */
+    private record Pieces(VkStorage parts, int counter) {
+
+        long partsAddress() {
+            return parts == null ? 0 : parts.address();
         }
+
+        VkContext.Slot[] writes(VkStorage z) {
+            return parts == null ? new VkContext.Slot[] {z.slot()} : new VkContext.Slot[] {z.slot(), parts.slot()};
+        }
+
+        void release() {
+            if (parts != null) {
+                parts.release();
+            }
+        }
+    }
+
+    /** Counters of products split into pieces, all 0 between products. */
+    private static final int COUNTERS = 1 << 16;
+    private VkStorage counters;
+    private int nextCounter;
+
+    private Pieces pieces(int pieces, int m, int n, int columnGroups, DType type) {
+        if (counters == null) {
+            counters = raw(COUNTERS, null);
+            fillNow(counters, 0);
+        }
+        if (pieces == 1) {
+            return new Pieces(null, 0);
+        }
+        if (nextCounter + columnGroups > COUNTERS) {
+            nextCounter = 0;
+        }
+        int counter = nextCounter;
+        nextCounter += columnGroups;
+        long vectors = (long) pieces * m * ceil(n, 4);
+        VkStorage parts = type == DType.FLOAT64 ? raw(vectors * 4, DType.FLOAT64, null) : raw(vectors * 4, null);
+        return new Pieces(parts, counter);
     }
 
     private static int ceil(long a, int b) {
@@ -1434,17 +1477,15 @@ public final class VulkanBackend implements Backend {
         int pieces = Math.max(1, Math.min(ceil(k, PACKED_PIECE), PACKED_GROUPS / columnGroups));
         int chunk = ceil(ceil(k, pieces), 2) * 2;
         pieces = ceil(k, chunk);
-        long mn = (long) m * n;
-        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        Pieces split = pieces(pieces, m, n, columnGroups, z.dtype);
         vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
-                .putLong(p.offsetsAddress()).putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
-                .putInt(p.nibbles() ? 1 : 0).putInt(chunk).putInt(p.offsets() == null ? 0 : 1);
-        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), p.reads(x));
-        if (pieces > 1) {
-            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
-            target.release();
-        }
+                .putLong(p.offsetsAddress()).putLong(z.address()).putLong(split.partsAddress())
+                .putLong(counters.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
+                .putInt(p.nibbles() ? 1 : 0).putInt(chunk).putInt(p.offsets() == null ? 0 : 1).putInt(pieces)
+                .putInt(split.counter());
+        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
+        split.release();
         done(x, vs(a));
     }
 
