@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.data.VectorIndex;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -106,7 +107,9 @@ public final class TwoTowerRetrieval {
     }
 
     /**
-     * Retrieves the best items for every user by exhaustive similarity search.
+     * Retrieves the best items for every user by exhaustive similarity search, with an exact
+     * core {@link VectorIndex#flat} index over the item embeddings (use {@link #embedItems}
+     * with {@link VectorIndex#hnsw} for large catalogues).
      *
      * @param users {@code [n, userFeatures]}
      * @param items {@code [m, itemFeatures]}
@@ -114,15 +117,16 @@ public final class TwoTowerRetrieval {
      * @return {@code [n][k]} item indices, best first
      */
     public int[][] topK(Tensor users, Tensor items, int k) {
-        float[] s = embedUsers(users).matmul(embedItems(items).transpose()).to(DType.FLOAT32).toArray();
+        Tensor itemEmbeddings = embedItems(items).to(DType.FLOAT32);
+        Tensor userEmbeddings = embedUsers(users).to(DType.FLOAT32);
+        int dim = itemEmbeddings.shape().dim(1);
+        VectorIndex index = VectorIndex.flat(dim, VectorIndex.Metric.DOT, itemEmbeddings.device());
+        index.add(itemEmbeddings);
         int n = users.shape().dim(0);
-        int m = items.shape().dim(0);
         int[][] out = new int[n][];
         for (int i = 0; i < n; i++) {
-            final int row = i;
-            out[i] = java.util.stream.IntStream.range(0, m).boxed()
-                    .sorted((x, y) -> Float.compare(s[row * m + y], s[row * m + x]))
-                    .limit(k).mapToInt(Integer::intValue).toArray();
+            out[i] = index.search(userEmbeddings.slice(0, i, i + 1).reshape(dim), k).stream()
+                    .mapToInt(VectorIndex.Hit::id).toArray();
         }
         return out;
     }

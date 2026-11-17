@@ -3,6 +3,17 @@ package io.github.zzuegg.brainiac.experimental.llm;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.zzuegg.brainiac.data.CharacterTokenizer;
+import io.github.zzuegg.brainiac.llm.Constraint;
+import io.github.zzuegg.brainiac.llm.Generator;
+import io.github.zzuegg.brainiac.llm.Llama;
+import io.github.zzuegg.brainiac.llm.LlamaConfig;
+import io.github.zzuegg.brainiac.llm.Sampling;
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+
+import java.util.List;
+import java.util.Set;
 import java.util.SplittableRandom;
 
 import org.junit.jupiter.api.Test;
@@ -65,5 +76,32 @@ class StructuredDecodingTest {
         assertTrue(zMarked > 4, "watermarked z " + zMarked);
         assertTrue(zPlain < 3, "plain z " + zPlain);
         assertTrue(new GreenListWatermark(7, 0.25, 4f).zScore(withPrompt) < 3, "a wrong key sees no watermark");
+    }
+
+    @Test
+    void theSameGrammarDrivesTheCoreGenerator() {
+        JsonSchemaLite schema = JsonSchemaLite.object().integer("id").enumeration("kind", "cat", "dog");
+        Constraint core = schema.toConstraint();
+        String chars = "abcdefghijklmnopqrstuvwxyz0123456789{}[]\":,- $";
+        CharacterTokenizer tok = new CharacterTokenizer(chars);
+        int stop = chars.indexOf('$');
+        // the token-level adapter and the core constraint accept the same texts
+        GrammarConstraint g = GrammarConstraint.of(core, tok, stop);
+        assertTrue(g.constraint() == core);
+        assertTrue(g.automaton().matches("{\"id\":-12,\"kind\":\"dog\"}"));
+        assertFalse(g.automaton().matches("{\"id\": 12,\"kind\":\"dog\"}"));
+        Llama model = Llama.random(LlamaConfig.small(chars.length(), 32, 2, 4, 2), 3, Device.cpu(), DType.FLOAT32);
+        Generator gen = new Generator(model, tok);
+        for (long seed = 0; seed < 2; seed++) {
+            Generator.Output out = gen.generate(List.of("x"), Generator.Options.sampled(40, Sampling.temperature(1.5f),
+                    seed).withStopTokens(Set.of(stop)).withConstraint(g.constraint()), null).getFirst();
+            assertTrue(out.finish() == Generator.Finish.LENGTH || out.text().matches(schema.toRegex()), out.text());
+            assertTrue(out.text().startsWith("{\"id\":"), out.text());
+        }
+        // and a core JSON schema numbers into the same int-state automaton
+        RegexAutomaton a = RegexAutomaton.of(Constraint.jsonSchema(
+                "{\"type\": \"object\", \"properties\": {\"ok\": {\"type\": \"boolean\"}}, \"required\": [\"ok\"]}"));
+        assertTrue(a.matches("{\"ok\": true}"));
+        assertFalse(a.matches("{\"ok\": 1}"));
     }
 }

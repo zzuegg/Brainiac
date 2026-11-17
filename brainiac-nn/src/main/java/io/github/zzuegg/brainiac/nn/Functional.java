@@ -766,6 +766,280 @@ public final class Functional {
     }
 
     /**
+     * The selective scan of Mamba (Gu and Dao, 2023): a linear recurrence per feature whose
+     * step size and input and output projections depend on the input, so the state keeps or
+     * forgets by content. With {@code h_0 = 0}:
+     * {@code h_t = exp(delta_t A) * h_(t-1) + delta_t B_t x_t} and {@code y_t = h_t . C_t}.
+     * Stepped in time on the autograd graph: for short sequences and experiments, not speed.
+     *
+     * @param x {@code [batch, steps, features]}
+     * @param delta step sizes, positive (a softplus of a projection), same shape as {@code x}
+     * @param a {@code [features, state]}, negative for a decaying state
+     * @param b {@code [batch, steps, state]}
+     * @param c {@code [batch, steps, state]}
+     * @return {@code [batch, steps, features]}
+     */
+    public static Var selectiveScan(Var x, Var delta, Var a, Var b, Var c) {
+        int batch = x.shape().dim(0);
+        int steps = x.shape().dim(1);
+        int features = x.shape().dim(2);
+        int state = a.shape().dim(1);
+        Var h = null;
+        Var[] ys = new Var[steps];
+        for (int t = 0; t < steps; t++) {
+            Var xt = x.slice(1, t, t + 1).reshape(batch, features, 1);
+            Var dt = delta.slice(1, t, t + 1).reshape(batch, features, 1);
+            Var bt = b.slice(1, t, t + 1).reshape(batch, 1, state);
+            Var ct = c.slice(1, t, t + 1).reshape(batch, 1, state);
+            Var input = dt.mul(xt).mul(bt);
+            h = h == null ? input : dt.mul(a).exp().mul(h).add(input);
+            ys[t] = h.mul(ct).sum(2, false).reshape(batch, 1, features);
+        }
+        return Var.concat(1, ys);
+    }
+
+    /**
+     * Linear attention (Katharopoulos et al., 2020): softmax replaced by the kernel
+     * {@code phi(x) = elu(x) + 1}, so attention costs time linear in the sequence:
+     * {@code out_i = phi(q_i) S_i / (phi(q_i) . z_i)} with {@code S_i} the sum of
+     * {@code phi(k_j) v_j^T} and {@code z_i} of {@code phi(k_j)} over the keys {@code i} sees.
+     *
+     * @param q {@code [batch, heads, steps, dk]}
+     * @param k {@code [batch, heads, steps, dk]}
+     * @param v {@code [batch, heads, steps, dv]}
+     * @param causal whether step {@code i} sees only keys up to {@code i}
+     * @return {@code [batch, heads, steps, dv]}
+     */
+    public static Var linearAttention(Var q, Var k, Var v, boolean causal) {
+        int[] s = q.shape().toArray();
+        int dk = s[3];
+        int dv = v.shape().dim(3);
+        Var fq = elu1(q);
+        Var fk = elu1(k);
+        if (!causal) {
+            Var kv = fk.transpose().matmul(v);                        // [b, h, dk, dv]
+            Var num = fq.matmul(kv);
+            Var den = fq.mul(fk.sum(2, true)).sum(3, true);
+            return num.div(den);
+        }
+        Var kv = fk.reshape(s[0], s[1], s[2], dk, 1).mul(v.reshape(s[0], s[1], s[2], 1, dv)).cumsum(2);
+        Var num = fq.reshape(s[0], s[1], s[2], dk, 1).mul(kv).sum(3, false);
+        Var den = fq.mul(fk.cumsum(2)).sum(3, true);
+        return num.div(den);
+    }
+
+    /** {@code elu(x) + 1}: {@code x + 1} above 0, {@code exp(x)} below. */
+    private static Var elu1(Var x) {
+        return x.maximum(0).add(x.minimum(0).exp());
+    }
+
+    /**
+     * The output of {@link #mixtureOfExperts} and its load-balancing loss.
+     *
+     * @param output {@code [tokens, features]}
+     * @param balanceLoss the Switch Transformer auxiliary loss, 1 when routing is even; add
+     *     it scaled (about 0.01) to the training loss
+     * @param load the share of routed slots each expert received
+     */
+    public record Experts(Var output, Var balanceLoss, double[] load) {
+    }
+
+    /**
+     * A mixture-of-experts layer (Shazeer et al., 2017; Fedus et al., 2021): a router scores
+     * each token for every expert, the token goes to its {@code k} best, and their outputs are
+     * added weighted by the router's probabilities renormalized over those {@code k}. Each
+     * expert runs once on just its tokens.
+     *
+     * @param x {@code [tokens, features]}
+     * @param router {@code [features, experts]}
+     * @param experts the expert networks, each mapping {@code [m, features]} to
+     *     {@code [m, outFeatures]}
+     * @param k experts per token
+     * @return the output, the balance loss and the load
+     */
+    public static Experts mixtureOfExperts(Var x, Var router, List<java.util.function.Function<Var, Var>> experts,
+            int k) {
+        int n = x.shape().dim(0);
+        int count = experts.size();
+        if (router.shape().dim(1) != count || k < 1 || k > count) {
+            throw new IllegalArgumentException(count + " experts, a router with " + router.shape().dim(1)
+                    + " outputs, k " + k);
+        }
+        Device device = x.value().device();
+        Var probs = Activation.SOFTMAX.forward(x.matmul(router));
+        float[] p = probs.value().to(DType.FLOAT32).toArray();
+        float[] chosen = new float[n * k];
+        List<List<Integer>> slots = new ArrayList<>();
+        for (int e = 0; e < count; e++) {
+            slots.add(new ArrayList<>());
+        }
+        double[] firstChoice = new double[count];
+        for (int t = 0; t < n; t++) {
+            Integer[] order = new Integer[count];
+            for (int e = 0; e < count; e++) {
+                order[e] = e;
+            }
+            int row = t * count;
+            Arrays.sort(order, (a, b) -> Float.compare(p[row + b], p[row + a]));
+            firstChoice[order[0]]++;
+            for (int j = 0; j < k; j++) {
+                chosen[t * k + j] = order[j];
+                slots.get(order[j]).add(t * k + j);
+            }
+        }
+        Var gates = probs.takeAlong(Tensor.of(Shape.of(n, k), chosen, device));
+        gates = gates.div(gates.sum(1, true)).reshape(n * k, 1);
+        Var out = null;
+        double[] load = new double[count];
+        for (int e = 0; e < count; e++) {
+            List<Integer> mine = slots.get(e);
+            load[e] = (double) mine.size() / (n * k);
+            if (mine.isEmpty()) {
+                continue;
+            }
+            float[] slot = new float[mine.size()];
+            float[] token = new float[mine.size()];
+            for (int i = 0; i < slot.length; i++) {
+                slot[i] = mine.get(i);
+                token[i] = mine.get(i) / k;
+            }
+            Tensor tokens = Tensor.of(Shape.of(token.length), token, device);
+            Var y = experts.get(e).apply(x.gather(0, tokens));
+            y = y.mul(gates.gather(0, Tensor.of(Shape.of(slot.length), slot, device)));
+            Var placed = y.scatterAdd(0, tokens, n);
+            out = out == null ? placed : out.add(placed);
+        }
+        // Switch: experts * sum(fraction routed first to e * mean probability of e)
+        float[] f = new float[count];
+        for (int e = 0; e < count; e++) {
+            f[e] = (float) (firstChoice[e] / n);
+        }
+        Var balance = probs.mean(0, false).mul(Tensor.of(Shape.of(count), f, device).to(probs.value().dtype()))
+                .sum().mul(count);
+        return new Experts(out, balance, load);
+    }
+
+    /**
+     * Sampled softmax cross-entropy (Jean et al., 2015) for very large output layers, such as
+     * recommendation catalogues: the logits are computed only for the rows' own classes and
+     * {@code negatives} classes drawn uniformly, shared by the batch. Every row's class is a
+     * negative for the others. Uniform draws need no correction; the loss estimates full
+     * cross-entropy and its gradient, not exactly.
+     *
+     * @param hidden {@code [rows, size]}
+     * @param weight {@code [size, classes]}
+     * @param ids {@code [rows]} class ids
+     * @param negatives how many classes to draw
+     * @param random the source of the draws
+     * @return a scalar
+     */
+    public static Var sampledSoftmax(Var hidden, Var weight, Tensor ids, int negatives,
+            java.util.random.RandomGenerator random) {
+        int rows = hidden.shape().dim(0);
+        int classes = weight.shape().dim(1);
+        float[] target = ids.toArray();
+        java.util.LinkedHashMap<Integer, Integer> column = new java.util.LinkedHashMap<>();
+        for (float t : target) {
+            column.putIfAbsent((int) t, column.size());
+        }
+        for (int i = 0; i < negatives && column.size() < classes; i++) {
+            column.putIfAbsent(random.nextInt(classes), column.size());
+        }
+        float[] picked = new float[column.size()];
+        column.forEach((c, at) -> picked[at] = c);
+        float[] remapped = new float[rows];
+        for (int r = 0; r < rows; r++) {
+            remapped[r] = column.get((int) target[r]);
+        }
+        Device device = hidden.value().device();
+        Var w = weight.transpose().gather(0, Tensor.of(Shape.of(picked.length), picked, device));
+        Var logits = hidden.matmul(w.transpose());
+        return crossEntropy(logits, Tensor.of(Shape.of(rows), remapped, device));
+    }
+
+    /**
+     * Spectral normalization (Miyato et al., 2018): the weight divided by an estimate of its
+     * largest singular value, so a GAN discriminator stays 1-Lipschitz. One power iteration
+     * per call refines {@code u}, carried between steps.
+     *
+     * @param weight {@code [rows, cols]}, or more axes flattened after the first
+     * @param u {@code [rows]} the running left singular vector estimate; updated in place
+     * @return the normalized weight, same shape
+     */
+    public static Var spectralNorm(Var weight, float[] u) {
+        int rows = weight.shape().dim(0);
+        int cols = Math.toIntExact(weight.shape().size() / rows);
+        float[] w = weight.value().to(io.github.zzuegg.brainiac.tensor.DType.FLOAT32).toArray();
+        if (u.length != rows) {
+            throw new IllegalArgumentException("u needs " + rows + " values, got " + u.length);
+        }
+        if (norm(u) == 0) {
+            java.util.Arrays.fill(u, 1);
+        }
+        float[] v = new float[cols];
+        for (int c = 0; c < cols; c++) {
+            for (int r = 0; r < rows; r++) {
+                v[c] += w[r * cols + c] * u[r];
+            }
+        }
+        float nv = norm(v);
+        for (int c = 0; c < cols; c++) {
+            v[c] /= Math.max(nv, 1e-12f);
+        }
+        java.util.Arrays.fill(u, 0);
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                u[r] += w[r * cols + c] * v[c];
+            }
+        }
+        float nu = norm(u);
+        for (int r = 0; r < rows; r++) {
+            u[r] /= Math.max(nu, 1e-12f);
+        }
+        // sigma = u^T W v, differentiable in W with u and v held fixed
+        Device device = weight.value().device();
+        Tensor uv = Tensor.of(Shape.of(rows, cols), outer(u, v), device).to(weight.value().dtype());
+        Var sigma = weight.reshape(rows, cols).mul(uv).sum();
+        return weight.div(sigma);
+    }
+
+    private static float norm(float[] x) {
+        double s = 0;
+        for (float f : x) {
+            s += f * f;
+        }
+        return (float) Math.sqrt(s);
+    }
+
+    private static float[] outer(float[] u, float[] v) {
+        float[] o = new float[u.length * v.length];
+        for (int r = 0; r < u.length; r++) {
+            for (int c = 0; c < v.length; c++) {
+                o[r * v.length + c] = u[r] * v[c];
+            }
+        }
+        return o;
+    }
+
+    /**
+     * The R1 gradient penalty (Mescheder et al., 2018) for GAN discriminators:
+     * {@code gamma / 2 * E[|grad_x D(x)|^2]} over real samples, differentiable in the
+     * discriminator's weights (double backward).
+     *
+     * @param discriminator scores a batch {@code [batch, ...] -> [batch, 1]}
+     * @param real the real samples
+     * @param gamma the penalty weight
+     * @return a scalar to add to the discriminator's loss
+     */
+    public static Var r1Penalty(java.util.function.Function<Var, Var> discriminator, Tensor real, float gamma) {
+        Var x = Var.param(real);
+        Var scores = discriminator.apply(x).sum();
+        Var g = Var.gradients(scores, java.util.List.of(x), true).getFirst();
+        int batch = real.shape().dim(0);
+        return g.square().sum().mul(gamma / 2 / batch);
+    }
+
+    /**
      * Cross-entropy from logits: the mean over rows of {@code logsumexp(logits) - logits[id]},
      * skipping rows whose id is negative (padding, as PyTorch's {@code ignore_index}).
      *

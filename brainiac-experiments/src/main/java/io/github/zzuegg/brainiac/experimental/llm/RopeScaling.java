@@ -1,7 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.llm;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.llm.Rope;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -21,10 +21,11 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
  *     linear ramp between ({@code beta_fast}, {@code beta_slow} rotations), plus an attention
  *     temperature {@code sqrt(1/t) = 0.1 ln s + 1}.</li>
  * </ul>
- * The frequencies plug into the core: {@link #freqFactors()} gives the per-frequency divisors
- * that {@code Rope.Settings.withFreqFactors} takes, so a Llama-family model uses YaRN with a
- * one-line change. {@link #apply} rotates directly, in the half-split layout of
- * {@code Functional.rotary}.
+ * Linear, dynamic NTK and YaRN are the core {@link Rope}'s {@code "linear"}, {@code "dynamic"}
+ * and {@code "yarn"} types, which this class delegates to; it adds static NTK scaling, which
+ * the core has no type for, and a stateless {@link #apply} for any {@code [..., steps, dim]}
+ * input. {@link #settings()} gives the matching core settings, and {@link #freqFactors()} the
+ * per-frequency divisors that {@code Rope.Settings.withFreqFactors} takes.
  */
 public final class RopeScaling {
 
@@ -87,49 +88,60 @@ public final class RopeScaling {
         return new RopeScaling(dim, theta, method, factor, originalContext, fast, slow);
     }
 
-    /** @return the unscaled inverse frequencies {@code theta^(-2i/d)} */
+    /**
+     * The core rotary settings this scaling corresponds to: {@code "default"}, {@code "linear"},
+     * {@code "dynamic"} and {@code "yarn"} for {@link Method#NONE}, {@link Method#LINEAR},
+     * {@link Method#DYNAMIC_NTK} and {@link Method#YARN}, and {@code "default"} with the base
+     * raised to {@code theta * s^(d / (d - 2))} for {@link Method#NTK}, which the core has no
+     * type for.
+     *
+     * @return settings for {@code new Rope(...)}
+     */
+    public Rope.Settings settings() {
+        return switch (method) {
+            case NONE -> settings("default", 1, theta);
+            case LINEAR -> settings("linear", factor, theta);
+            case NTK -> settings("default", 1, ntkBase(factor));
+            case DYNAMIC_NTK -> settings("dynamic", factor, theta);
+            case YARN -> settings("yarn", factor, theta).withYarn(betaFast, betaSlow, 0);
+        };
+    }
+
+    private Rope.Settings settings(String type, double f, double base) {
+        return new Rope.Settings(dim, base, type, f, 1, 1, originalContext, null);
+    }
+
+    private double ntkBase(double s) {
+        return theta * Math.pow(s, dim / (dim - 2.0));
+    }
+
+    /** @return the unscaled inverse frequencies {@code theta^(-2i/d)}, as the core {@link Rope} computes them */
     public double[] baseFrequencies() {
-        double[] f = new double[dim / 2];
-        for (int i = 0; i < f.length; i++) {
-            f[i] = Math.pow(theta, -2.0 * i / dim);
-        }
-        return f;
+        return new Rope(settings("default", 1, theta)).frequencies();
     }
 
     /**
      * The scaled inverse frequencies for inputs of a given length (only {@link Method#DYNAMIC_NTK}
-     * depends on it).
+     * depends on it). Every method but {@link Method#NTK} comes from the core {@link Rope}.
      *
      * @param length the current sequence length
      * @return one frequency per rotated pair
      */
     public double[] frequencies(int length) {
-        double[] base = baseFrequencies();
-        double[] f = base.clone();
-        switch (method) {
-            case NONE -> { }
-            case LINEAR -> {
-                for (int i = 0; i < f.length; i++) {
-                    f[i] /= factor;
-                }
+        if (method == Method.NTK) {
+            double t = ntkBase(factor);
+            double[] f = new double[dim / 2];
+            for (int i = 0; i < f.length; i++) {
+                f[i] = Math.pow(t, -2.0 * i / dim);
             }
-            case NTK, DYNAMIC_NTK -> {
-                double s = method == Method.NTK ? factor
-                        : Math.max(1, factor * length / (double) originalContext - (factor - 1));
-                double t = theta * Math.pow(s, dim / (dim - 2.0));
-                for (int i = 0; i < f.length; i++) {
-                    f[i] = Math.pow(t, -2.0 * i / dim);
-                }
-            }
-            case YARN -> {
-                for (int i = 0; i < f.length; i++) {
-                    double rotations = originalContext * base[i] / (2 * Math.PI);
-                    double keep = Math.clamp((rotations - betaSlow) / (betaFast - betaSlow), 0, 1);
-                    f[i] = (1 - keep) * base[i] / factor + keep * base[i];
-                }
-            }
+            return f;
         }
-        return f;
+        Rope rope = new Rope(settings());
+        if (method == Method.DYNAMIC_NTK && length > originalContext) {
+            // the core grows its base from the positions it rotates
+            rope.apply(Var.of(Tensor.zeros(Shape.of(1, 1, 1, dim))), new int[][] {{length - 1}});
+        }
+        return rope.frequencies();
     }
 
     /** @return the frequencies for the full target context */
@@ -154,11 +166,12 @@ public final class RopeScaling {
 
     /** @return YaRN's {@code 0.1 ln s + 1} (1 for the other methods), applied to queries and keys */
     public double mscale() {
-        return method == Method.YARN && factor > 1 ? 0.1 * Math.log(factor) + 1 : 1;
+        return new Rope(settings()).magnitude();
     }
 
     /**
-     * Rotates queries or keys (and multiplies them by {@link #mscale()}).
+     * Rotates queries or keys (and multiplies them by {@link #mscale()}) with a fresh core
+     * {@link Rope}, so {@link Method#DYNAMIC_NTK} scales by this call's length alone.
      *
      * @param x {@code [..., steps, dim]}
      * @param offset the position of the first step
@@ -170,24 +183,13 @@ public final class RopeScaling {
         if (s.dim(-1) != dim) {
             throw new IllegalArgumentException("expected " + dim + " features, got " + s);
         }
-        int half = dim / 2;
-        double[] f = frequencies(offset + steps);
-        double m = mscale();
-        float[] cos = new float[steps * half];
-        float[] sin = new float[steps * half];
+        int[] positions = new int[steps];
         for (int t = 0; t < steps; t++) {
-            for (int i = 0; i < half; i++) {
-                double angle = (t + offset) * f[i];
-                cos[t * half + i] = (float) (m * Math.cos(angle));
-                sin[t * half + i] = (float) (m * Math.sin(angle));
-            }
+            positions[t] = offset + t;
         }
-        Device device = x.value().device();
-        Tensor c = Tensor.of(Shape.of(steps, half), cos, device);
-        Tensor sn = Tensor.of(Shape.of(steps, half), sin, device);
-        Var x1 = x.slice(-1, 0, half);
-        Var x2 = x.slice(-1, half, dim);
-        return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn)));
+        int rows = Math.toIntExact(s.size() / ((long) steps * dim));
+        Var rotated = new Rope(settings()).apply(x.reshape(1, rows, steps, dim), new int[][] {positions});
+        return rotated.reshape(s.toArray());
     }
 
     @Override

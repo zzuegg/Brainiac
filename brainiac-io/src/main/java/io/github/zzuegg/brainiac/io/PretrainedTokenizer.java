@@ -518,6 +518,106 @@ public final class PretrainedTokenizer implements Tokenizer {
         }
     }
 
+    /**
+     * The {@code tokenizer.ggml.*} metadata that describes this tokenizer in a GGUF file, so
+     * llama.cpp (and {@link #fromGguf}) can rebuild it: SentencePiece models as
+     * {@code "llama"}, byte-level BPE from {@code tokenizer.json} as {@code "gpt2"}. GGUF has no
+     * place for a few rarer settings: a byte-level {@code add_prefix_space}, and SentencePiece's
+     * removal of extra whitespace, so texts that depend on them encode differently there.
+     *
+     * @return the keys and values, in order
+     * @throws IllegalArgumentException for WordPiece and Unigram {@code tokenizer.json} models
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> ggufMetadata() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        Map<String, Object> cfg = config instanceof Map<?, ?> c ? (Map<String, Object>) c : Map.of();
+        List<Integer> types = new ArrayList<>();
+        if (engine instanceof Spm) {
+            cfg = Json.object(cfg.get("sentencepiece"));
+            m.put("tokenizer.ggml.model", "llama");
+            List<Object> specTypes = Json.array(cfg.get("types"));
+            for (Object t : specTypes) {
+                types.add(((Number) t).intValue());
+            }
+            List<Float> scores = new ArrayList<>();
+            List<Object> scoreList = cfg.get("scores") instanceof double[] d
+                    ? Arrays.stream(d).boxed().map(Object.class::cast).toList() : Json.array(cfg.get("scores"));
+            for (Object o : scoreList) {
+                scores.add(((Number) o).floatValue());
+            }
+            m.put("tokenizer.ggml.tokens", tokens);
+            m.put("tokenizer.ggml.scores", scores);
+            m.put("tokenizer.ggml.token_type", types);
+            m.put("tokenizer.ggml.add_space_prefix", !Boolean.FALSE.equals(cfg.get("add_dummy_prefix")));
+        } else {
+            Map<String, Object> model = Json.object(cfg.get("model"));
+            if (!model.containsKey("merges")) {
+                throw new IllegalArgumentException("only byte-level BPE and SentencePiece tokenizers go into GGUF");
+            }
+            m.put("tokenizer.ggml.model", "gpt2");
+            String regex = findRegex(cfg.get("pre_tokenizer"));
+            String pre = TokenizerParts.QWEN2_PATTERN.equals(regex) ? "qwen2"
+                    : TokenizerParts.LLAMA3_PATTERN.equals(regex) ? "llama-bpe" : "gpt2";
+            m.put("tokenizer.ggml.pre", pre);
+            Set<Integer> control = new HashSet<>();
+            Set<Integer> user = new HashSet<>();
+            for (Added a : added) {
+                (a.special ? control : user).add(a.id);
+            }
+            for (int i = 0; i < tokens.size(); i++) {
+                types.add(control.contains(i) ? 3 : user.contains(i) ? 4 : 1);
+            }
+            List<String> merges = new ArrayList<>();
+            for (Object o : Json.array(model.get("merges"))) {
+                merges.add(o instanceof String str ? str : Json.array(o).get(0) + " " + Json.array(o).get(1));
+            }
+            List<String> names = new ArrayList<>(tokens.size());
+            for (int i = 0; i < tokens.size(); i++) {
+                names.add(tokens.get(i) == null ? "[PAD" + i + "]" : tokens.get(i));
+            }
+            m.put("tokenizer.ggml.tokens", names);
+            m.put("tokenizer.ggml.token_type", types);
+            m.put("tokenizer.ggml.merges", merges);
+        }
+        if (bos != null) {
+            m.put("tokenizer.ggml.bos_token_id", (long) bos);
+        }
+        if (eos != null) {
+            m.put("tokenizer.ggml.eos_token_id", (long) eos);
+        }
+        int[] with = encode("a", true);
+        int[] without = encode("a", false);
+        m.put("tokenizer.ggml.add_bos_token", with.length > without.length && bos != null && with[0] == bos);
+        if (chatTemplate != null) {
+            m.put("tokenizer.chat_template", chatTemplate);
+        }
+        return m;
+    }
+
+    /** The first split pattern in a pre-tokenizer description, or null. */
+    private static String findRegex(Object node) {
+        if (node instanceof Map<?, ?> map) {
+            if (map.get("Regex") instanceof String r) {
+                return r;
+            }
+            for (Object v : map.values()) {
+                String r = findRegex(v);
+                if (r != null) {
+                    return r;
+                }
+            }
+        } else if (node instanceof List<?> list) {
+            for (Object v : list) {
+                String r = findRegex(v);
+                if (r != null) {
+                    return r;
+                }
+            }
+        }
+        return null;
+    }
+
     // ---------------------------------------------------------------- encoding
 
     /**

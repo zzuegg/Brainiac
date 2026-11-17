@@ -146,6 +146,34 @@ public interface Loss {
         };
     }
 
+    /**
+     * The quantile (pinball) loss for probabilistic forecasts: prediction column {@code j}
+     * estimates quantile {@code quantiles[j]} of the target, under-predictions costing
+     * {@code q} and over-predictions {@code 1 - q} per unit.
+     *
+     * @param quantiles the quantile of each prediction column, each in {@code (0, 1)}
+     * @return the loss over predictions {@code [batch, quantiles]} and targets {@code [batch, 1]}
+     */
+    static Loss quantile(float... quantiles) {
+        for (float q : quantiles) {
+            if (!(q > 0 && q < 1)) {
+                throw new IllegalArgumentException("quantiles must be in (0, 1): " + q);
+            }
+        }
+        float[] qs = quantiles.clone();
+        return (p, t) -> {
+            int batch = p.shape().dim(0);
+            if (p.shape().rank() != 2 || p.shape().dim(1) != qs.length || t.size() != batch) {
+                throw new IllegalArgumentException("quantile loss needs predictions [batch, " + qs.length
+                        + "] and one target per row, got " + p.shape() + " and " + t.shape());
+            }
+            Tensor q = Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(1, qs.length), qs, t.device())
+                    .to(p.value().dtype());
+            Var err = Var.of(t.reshape(batch, 1)).sub(p);   // positive: predicted too low
+            return err.mul(q).maximum(err.mul(q.sub(1))).mean();
+        };
+    }
+
     /** Added inside logarithms so a probability of exactly 0 does not give infinity. */
     float EPSILON = 1e-7f;
 

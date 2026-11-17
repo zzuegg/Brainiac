@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
+import io.github.zzuegg.brainiac.autograd.Complex;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Layer;
@@ -90,23 +91,21 @@ public final class S4dLayer implements Layer {
         return MixerOps.sameShape((in, r) -> new S4dLayer(in.dim(-1), state, r));
     }
 
-    /** Discretized parameters: {A_bar re, A_bar im, C B_bar re, C B_bar im}, each [H, modes]. */
+    /**
+     * Discretized parameters, complex values on the core {@link Complex} layout:
+     * {A_bar [H, modes, 2], C B_bar [H, modes, 2], delta [H, 1], Re A, Im A}.
+     */
     private Var[] discretize() {
         Var delta = logDelta.exp();
         Var are = aRealLog.exp().neg();
         Var aim = aImag;
-        Var mag = are.mul(delta).exp();
-        Var ang = aim.mul(delta);
-        Var abRe = mag.mul(ang.cos());
-        Var abIm = mag.mul(ang.sin());
+        Var a = Complex.of(are, aim);
+        Var aBar = Complex.polar(are.mul(delta).exp(), aim.mul(delta));
         // B_bar = (A_bar - 1) / A  (B = 1): multiply by conj(A) / |A|^2
-        Var norm = are.square().add(aim.square());
-        Var nr = abRe.sub(1f);
-        Var bRe = nr.mul(are).add(abIm.mul(aim)).div(norm);
-        Var bIm = abIm.mul(are).sub(nr.mul(aim)).div(norm);
-        Var cbRe = cRe.mul(bRe).sub(cIm.mul(bIm));
-        Var cbIm = cRe.mul(bIm).add(cIm.mul(bRe));
-        return new Var[] {abRe, abIm, cbRe, cbIm, delta, are, aim};
+        Var norm = are.square().add(aim.square()).reshape(features, modes, 1);
+        Var bBar = Complex.mul(Complex.of(Complex.real(aBar).sub(1f), Complex.imag(aBar)), Complex.conj(a)).div(norm);
+        Var cb = Complex.mul(Complex.of(cRe, cIm), bBar);
+        return new Var[] {aBar, cb, delta, are, aim};
     }
 
     /**
@@ -122,15 +121,12 @@ public final class S4dLayer implements Layer {
             steps[l] = l;
         }
         Tensor ls = Tensor.of(Shape.of(1, 1, length), steps);
-        Var dt = p[4].reshape(features, 1, 1);
-        Var re = p[5].reshape(features, modes, 1).mul(dt).mul(ls);     // l delta Re(A)
-        Var im = p[6].reshape(features, modes, 1).mul(dt).mul(ls);
-        Var mag = re.exp();
-        Var powRe = mag.mul(im.cos());
-        Var powIm = mag.mul(im.sin());
-        Var cbRe = p[2].reshape(features, modes, 1);
-        Var cbIm = p[3].reshape(features, modes, 1);
-        return cbRe.mul(powRe).sub(cbIm.mul(powIm)).sum(1, false).mul(2f);
+        Var dt = p[2].reshape(features, 1, 1);
+        Var re = p[3].reshape(features, modes, 1).mul(dt).mul(ls);     // l delta Re(A)
+        Var im = p[4].reshape(features, modes, 1).mul(dt).mul(ls);
+        Var power = Complex.polar(re.exp(), im);                        // A_bar^l, [H, modes, length, 2]
+        Var cb = p[1].reshape(features, modes, 1, 2);
+        return Complex.real(Complex.mul(cb, power)).sum(1, false).mul(2f);
     }
 
     private Var finish(Var u, Var y) {
@@ -156,16 +152,12 @@ public final class S4dLayer implements Layer {
         int t = input.shape().dim(1);
         Var[] p = discretize();
         // x = A_bar x + B_bar u, tracked as C x (C commutes with the diagonal A_bar)
-        Var xr = Var.of(Tensor.zeros(Shape.of(b, features, modes)));
-        Var xi = xr;
+        Var x = Var.of(Tensor.zeros(Shape.of(b, features, modes, 2)));
         List<Var> ys = new ArrayList<>();
         for (int s = 0; s < t; s++) {
-            Var u = input.slice(1, s, s + 1).reshape(b, features, 1);
-            Var nr = xr.mul(p[0]).sub(xi.mul(p[1])).add(u.mul(p[2]));
-            Var ni = xr.mul(p[1]).add(xi.mul(p[0])).add(u.mul(p[3]));
-            xr = nr;
-            xi = ni;
-            ys.add(xr.sum(-1, false).mul(2f).reshape(b, 1, features));
+            Var u = input.slice(1, s, s + 1).reshape(b, features, 1, 1);
+            x = Complex.mul(x, p[0]).add(u.mul(p[1]));
+            ys.add(Complex.real(x).sum(-1, false).mul(2f).reshape(b, 1, features));
         }
         return finish(input, Var.concat(1, ys.toArray(Var[]::new)));
     }

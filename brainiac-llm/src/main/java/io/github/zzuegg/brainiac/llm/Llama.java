@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.llm;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.Gguf;
 import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.io.SafeTensors;
 import io.github.zzuegg.brainiac.io.WeightSource;
 import io.github.zzuegg.brainiac.nn.Functional;
@@ -1137,6 +1138,114 @@ public final class Llama implements LanguageModel {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /**
+     * Writes the model as a GGUF file that llama.cpp, Ollama and LM Studio can run, and
+     * {@link #load} reads back: llama.cpp's tensor names and rotary layout, float16 or float32
+     * matrices (packed ones unpacked), and the tokenizer's {@code tokenizer.ggml.*} metadata
+     * when one is given. Llama 3 rope scaling goes in as llama.cpp's {@code rope_freqs}.
+     *
+     * @param file the {@code .gguf} file to write
+     * @param tokenizer the model's tokenizer, or {@code null} to leave it out (llama.cpp
+     *     needs one)
+     * @param half whether matrices are stored as float16
+     */
+    public void saveGguf(Path file, PretrainedTokenizer tokenizer, boolean half) {
+        if (fused != null) {
+            throw new IllegalStateException("a model with fused projections cannot be saved");
+        }
+        String a = config.architecture().equals("qwen2") ? "qwen2" : "llama";
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("general.architecture", a);
+        m.put("general.name", "brainiac-" + a);
+        m.put(a + ".context_length", (long) config.maxPositions());
+        m.put(a + ".embedding_length", (long) config.hidden());
+        m.put(a + ".block_count", (long) config.layers());
+        m.put(a + ".feed_forward_length", (long) config.intermediate());
+        m.put(a + ".attention.head_count", (long) config.heads());
+        m.put(a + ".attention.head_count_kv", (long) config.kvHeads());
+        m.put(a + ".attention.layer_norm_rms_epsilon", config.rmsEps());
+        m.put(a + ".rope.freq_base", (float) config.rope().theta());
+        m.put(a + ".rope.dimension_count", (long) config.headDim());
+        m.put(a + ".vocab_size", (long) config.vocabSize());
+        Rope.Settings r = config.rope();
+        Map<String, Tensor> t = new LinkedHashMap<>();
+        switch (r.type()) {
+            case "default" -> {
+            }
+            case "linear", "yarn" -> {
+                m.put(a + ".rope.scaling.type", r.type());
+                m.put(a + ".rope.scaling.factor", (float) r.factor());
+                m.put(a + ".rope.scaling.original_context_length", (long) r.originalMaxPositions());
+                if (r.type().equals("yarn")) {
+                    m.put(a + ".rope.scaling.yarn_beta_fast", (float) r.betaFast());
+                    m.put(a + ".rope.scaling.yarn_beta_slow", (float) r.betaSlow());
+                }
+            }
+            default -> {
+                // llama3 and others: the divisors from plain frequencies to the scaled ones
+                double[] plain = new Rope(new Rope.Settings(r.dim(), r.theta(), "default", 1, 1, 4,
+                        r.originalMaxPositions(), null)).frequencies();
+                double[] scaled = rope.frequencies();
+                float[] f = new float[plain.length];
+                for (int i = 0; i < f.length; i++) {
+                    f[i] = (float) (plain[i] / scaled[i]);
+                }
+                t.put("rope_freqs.weight", Tensor.of(Shape.of(f.length), f));
+            }
+        }
+        if (tokenizer != null) {
+            m.putAll(tokenizer.ggufMetadata());
+        }
+        t.put("token_embd.weight", plain(embed.value()));
+        t.put("output_norm.weight", plain(norm.value()));
+        if (lmHead != null) {
+            t.put("output.weight", plain(lmHead.weight.value()).transpose());
+        }
+        boolean permuted = a.equals("llama");
+        Map<String, String> parts = new LinkedHashMap<>();
+        parts.put("self_attn.q_proj", "attn_q");
+        parts.put("self_attn.k_proj", "attn_k");
+        parts.put("self_attn.v_proj", "attn_v");
+        parts.put("self_attn.o_proj", "attn_output");
+        parts.put("mlp.gate_proj", "ffn_gate");
+        parts.put("mlp.up_proj", "ffn_up");
+        parts.put("mlp.down_proj", "ffn_down");
+        for (int i = 0; i < config.layers(); i++) {
+            String p = "model.layers." + i + ".";
+            String g = "blk." + i + ".";
+            Block b = blocks.get(i);
+            t.put(g + "attn_norm.weight", plain(b.attnNorm().value()));
+            t.put(g + "ffn_norm.weight", plain(b.ffnNorm().value()));
+            for (Map.Entry<String, String> e : parts.entrySet()) {
+                Linear l = linears.get(p + e.getKey());
+                int heads = e.getValue().equals("attn_q") ? config.heads()
+                        : e.getValue().equals("attn_k") ? config.kvHeads() : 0;
+                Tensor w = plain(l.weight.value()).transpose();   // [out, in], as llama.cpp keeps it
+                Tensor bias = l.bias == null ? null : plain(l.bias.value());
+                if (permuted && heads > 0) {
+                    int[] order = unpermute(heads, config.headDim());
+                    int[] inverse = new int[order.length];
+                    for (int k = 0; k < order.length; k++) {
+                        inverse[order[k]] = k;
+                    }
+                    Tensor idx = indices(inverse, w.device());
+                    w = w.gather(0, idx);
+                    bias = bias == null ? null : bias.gather(0, idx);
+                }
+                t.put(g + e.getValue() + ".weight", w);
+                if (bias != null) {
+                    t.put(g + e.getValue() + ".bias", bias);
+                }
+            }
+        }
+        io.github.zzuegg.brainiac.io.GgufWriter.write(file, m, t, half);
+    }
+
+    /** Values a writer can read: packed matrices unpacked. */
+    private static Tensor plain(Tensor t) {
+        return t.isPacked() ? t.unpacked() : t;
     }
 
     @Override
