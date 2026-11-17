@@ -224,6 +224,13 @@ public final class Json {
                 }
                 write(l, out);
             }
+            case double[] a -> {
+                List<Object> l = new ArrayList<>();
+                for (double x : a) {
+                    l.add(x);
+                }
+                write(l, out);
+            }
             case float[] a -> {
                 List<Object> l = new ArrayList<>();
                 for (float x : a) {

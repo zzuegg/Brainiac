@@ -1,0 +1,252 @@
+[
+{
+"text": "Hello world",
+"ids": [
+2,
+42,
+82,
+203,
+88,
+180,
+369,
+3
+],
+"decoded": "[CLS] hello world [SEP]",
+"decodedSkip": "hello world"
+},
+{
+"text": " leading space and  double  spaces",
+"ids": [
+2,
+363,
+86,
+298,
+344,
+192,
+82,
+158,
+165,
+222,
+82,
+344,
+192,
+138,
+3
+],
+"decoded": "[CLS] leading space and double spaces [SEP]",
+"decodedSkip": "leading space and double spaces"
+},
+{
+"text": "Grüße aus München! 🙂🚀",
+"ids": [
+2,
+41,
+92,
+99,
+121,
+82,
+35,
+398,
+293,
+89,
+239,
+133,
+5,
+80,
+112,
+3
+],
+"decoded": "[CLS] gruße aus munchen! 🙂🚀 [SEP]",
+"decodedSkip": "gruße aus munchen! 🙂🚀"
+},
+{
+"text": "I'm sure you've seen it; they'll say we'd won.",
+"ids": [
+2,
+43,
+9,
+47,
+235,
+164,
+157,
+9,
+56,
+82,
+419,
+133,
+223,
+28,
+492,
+9,
+46,
+94,
+53,
+329,
+420,
+9,
+38,
+57,
+131,
+15,
+3
+],
+"decoded": "[CLS] i ' m sure you ' ve seen it ; they ' ll say we ' d won. [SEP]",
+"decodedSkip": "i ' m sure you ' ve seen it ; they ' ll say we ' d won."
+},
+{
+"text": "def f(x):\n    return x**2\n\n",
+"ids": [
+2,
+406,
+40,
+10,
+58,
+11,
+27,
+172,
+87,
+283,
+89,
+58,
+12,
+12,
+19,
+3
+],
+"decoded": "[CLS] def f ( x ) : return x * * 2 [SEP]",
+"decodedSkip": "def f ( x ) : return x * * 2"
+},
+{
+"text": "12345 67 8 3.14159",
+"ids": [
+2,
+18,
+111,
+119,
+102,
+104,
+23,
+122,
+25,
+20,
+15,
+18,
+102,
+103,
+104,
+105,
+3
+],
+"decoded": "[CLS] 12345 67 8 3. 14159 [SEP]",
+"decodedSkip": "12345 67 8 3. 14159"
+},
+{
+"text": "你好，世界。 こんにちは",
+"ids": [
+2,
+76,
+77,
+79,
+75,
+78,
+69,
+70,
+114,
+115,
+116,
+117,
+3
+],
+"decoded": "[CLS] 你 好 ， 世 界 。 こんにちは [SEP]",
+"decodedSkip": "你 好 ， 世 界 。 こんにちは"
+},
+{
+"text": "<|im_start|>user\nHi there<|im_end|>\n",
+"ids": [
+2,
+29,
+1,
+418,
+1,
+270,
+150,
+87,
+1,
+30,
+295,
+92,
+42,
+84,
+132,
+164,
+29,
+1,
+418,
+1,
+242,
+83,
+1,
+30,
+3
+],
+"decoded": "[CLS] < [UNK] im [UNK] start [UNK] > user hi there < [UNK] im [UNK] end [UNK] > [SEP]",
+"decodedSkip": "< im start > user hi there < im end >"
+},
+{
+"text": "unseen ✓ symbols ⚙ and  nbsp",
+"ids": [
+2,
+212,
+148,
+133,
+1,
+53,
+95,
+106,
+96,
+292,
+90,
+1,
+158,
+48,
+96,
+90,
+97,
+3
+],
+"decoded": "[CLS] unseen [UNK] symbols [UNK] and nbsp [SEP]",
+"decodedSkip": "unseen symbols and nbsp"
+},
+{
+"text": "",
+"ids": [
+2,
+3
+],
+"decoded": "[CLS] [SEP]",
+"decodedSkip": ""
+},
+{
+"text": "   ",
+"ids": [
+2,
+3
+],
+"decoded": "[CLS] [SEP]",
+"decodedSkip": ""
+},
+{
+"text": "tail spaces   ",
+"ids": [
+2,
+54,
+437,
+344,
+192,
+138,
+3
+],
+"decoded": "[CLS] tail spaces [SEP]",
+"decodedSkip": "tail spaces"
+}
+]

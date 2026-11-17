@@ -35,7 +35,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
-| `brainiac-io` | File formats: JSON, memory-mapped safetensors weights (single or sharded), weight-name mapping |
+| `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -314,7 +314,7 @@ p = cache.append(nextToken);
 Shakespeare with each tokenizer and reports the loss in nats per character, so they
 compare fairly (char-level nanoGPT reaches about 1.47).
 
-## Pretrained weights: safetensors
+## Pretrained weights: safetensors and GGUF
 
 `WeightSource.open` reads a `.safetensors` file, a sharded model's `*.index.json`, or a
 directory downloaded from Hugging Face. Files are memory-mapped, so opening a 40 GB model
@@ -333,6 +333,38 @@ try (WeightSource w = WeightSource.open(Path.of("Qwen2.5-0.5B")).renamed(names))
     Tensor q0 = w.tensor("block0.query", Device.gpu(), DType.FLOAT16);
 }
 SafeTensors.write(Path.of("mine.safetensors"), Map.of("w", q0));   // each tensor in its own type
+```
+
+GGUF files (llama.cpp's format) open the same way. Every common quantized format
+(`Q4_0` to `Q8_0`, and the k-quants `Q2_K` to `Q8_K`) decodes to float, checked against
+llama.cpp's own gguf-py. `Q8_0` and `Q4_0` matrices can also stay packed at 8 or 4 bits on
+the device, where `x.matmul(w)` reads the levels directly:
+
+```java
+try (Gguf g = Gguf.open(Path.of("qwen2.5-0.5b-instruct-q8_0.gguf"))) {
+    String arch = g.architecture();                       // "qwen2"
+    long layers = (Long) g.metadata().get(arch + ".block_count");
+    Tensor wq = g.packedTransposed("blk.0.attn_q.weight", Device.gpu());   // [in, out], 8-bit
+}
+```
+
+### Pretrained tokenizers
+
+`PretrainedTokenizer` reads a Hugging Face `tokenizer.json`, a SentencePiece `.model` or the
+vocabulary inside a GGUF file, and produces the same ids as the library the model was
+trained with (checked against Hugging Face tokenizers and sentencepiece). It covers
+byte-level BPE (GPT-2, Llama 3, Qwen), SentencePiece BPE with byte fallback (Llama 2,
+Mistral), Unigram (T5) and WordPiece (BERT).
+
+```java
+PretrainedTokenizer tok = PretrainedTokenizer.load(Path.of("Qwen2.5-0.5B-Instruct"));
+int[] ids = tok.encode("<|im_start|>user\nHi<|im_end|>\n");   // special tokens in text are recognized
+String text = tok.decode(ids, true);                           // skipping special tokens
+int eos = tok.eos().orElseThrow();
+
+String prompt = tok.applyChatTemplate(List.of(              // the model's own Jinja chat template
+        ChatTemplate.message("system", "You are terse."),
+        ChatTemplate.message("user", "Hi!")), true);
 ```
 
 ## Reinforcement learning
