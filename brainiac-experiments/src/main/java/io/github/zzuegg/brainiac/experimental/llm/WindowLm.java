@@ -275,6 +275,21 @@ public final class WindowLm implements LanguageModel {
      * @return the completions, each including its end token if one was produced
      */
     public int[][] sample(int[][] prompts, int maxNew, int eos, double temperature, SplittableRandom random) {
+        return sampleUntil(prompts, maxNew, new int[] {eos}, temperature, random);
+    }
+
+    /**
+     * Samples completions that stop at any of several tokens, for example at the end of a
+     * reasoning step.
+     *
+     * @param prompts the prompts
+     * @param maxNew the most tokens to add
+     * @param stops the tokens that end a completion (included in it)
+     * @param temperature softmax temperature; 0 picks the most likely token
+     * @param random the random source
+     * @return the completions
+     */
+    public int[][] sampleUntil(int[][] prompts, int maxNew, int[] stops, double temperature, SplittableRandom random) {
         int n = prompts.length;
         int[][] seqs = new int[n][];
         int[] lengths = new int[n];
@@ -300,8 +315,10 @@ public final class WindowLm implements LanguageModel {
                 int i = who.get(j);
                 int tok = LlmTensors.sample(Arrays.copyOfRange(logits, j * vocab, (j + 1) * vocab), temperature, random);
                 seqs[i][lengths[i]++] = tok;
-                if (tok == eos) {
-                    done[i] = true;
+                for (int stop : stops) {
+                    if (tok == stop) {
+                        done[i] = true;
+                    }
                 }
             }
         }
