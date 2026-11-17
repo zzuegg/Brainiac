@@ -130,7 +130,7 @@ public final class Hub {
             String type = Json.string(config, "model_type", "");
             boolean hasGguf = !gguf.isEmpty() || tags.contains("gguf");
             boolean runs = (!arch.isEmpty() && GGUF_ARCHITECTURES.contains(arch))
-                    || (!type.isEmpty() && FAMILIES.contains(type) && (tags.contains("safetensors") || !hasGguf));
+                    || (!type.isEmpty() && FAMILIES.contains(type) && tags.contains("safetensors"));
             if (!runs) {
                 hidden++;
                 continue;
