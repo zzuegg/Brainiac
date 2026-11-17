@@ -68,6 +68,8 @@ public final class TrainingRun {
     private double pendingLoss;
     private int pendingCount;
     private volatile boolean stopAsked;
+    private String remoteId;
+    private long remoteSpeed = -1;
 
     TrainingRun(String id, String name, Map<String, Object> spec, String host) {
         this(id, name, spec, host, System.currentTimeMillis());
@@ -117,6 +119,66 @@ public final class TrainingRun {
      */
     public synchronized State state() {
         return state;
+    }
+
+    /**
+     * Returns where the run is on its host: the run's id on that host, or null for this machine.
+     *
+     * @return the id there
+     */
+    synchronized String remoteId() {
+        return remoteId;
+    }
+
+    synchronized void remoteId(String id) {
+        this.remoteId = id;
+    }
+
+    /**
+     * Returns the host the run trains on.
+     *
+     * @return {@link TrainingService#THIS_PC} or a host's name
+     */
+    public String host() {
+        return host;
+    }
+
+    /**
+     * Takes over what a host reports about the run it trains for this one.
+     *
+     * @param m the host's description of its run
+     */
+    synchronized void mirror(Map<String, Object> m) {
+        String s = Json.string(m, "state", "running").toUpperCase(java.util.Locale.ROOT);
+        try {
+            State there = State.valueOf(s);
+            state = there.active() ? there : State.RUNNING;   // the end is decided after the model is fetched
+        } catch (IllegalArgumentException e) {
+            state = State.RUNNING;
+        }
+        device = Json.string(m, "device", device);
+        epoch = (int) Json.integer(m, "epoch", epoch);
+        step = Json.integer(m, "step", step);
+        samples = (int) Json.integer(m, "samples", samples);
+        long steps = Json.integer(m, "steps", 0);
+        stepsPerEpoch = epochs > 0 ? steps / epochs : 0;
+        remoteSpeed = Json.integer(m, "samplesPerSecond", -1);
+        if (m.get("history") != null) {
+            history.clear();
+            for (Object h : Json.array(m.get("history"))) {
+                history.add(Json.object(h));
+            }
+        }
+        if (m.get("curve") != null) {
+            curve.clear();
+            for (Object p : Json.array(m.get("curve"))) {
+                List<Object> pt = Json.array(p);
+                if (pt.size() == 2 && pt.get(0) instanceof Number a && pt.get(1) instanceof Number b) {
+                    curve.add(new float[] {a.floatValue(), b.floatValue()});
+                }
+            }
+            stride = (int) Math.max(1, Json.integer(m, "stride", 1));
+        }
     }
 
     boolean stopAsked() {
@@ -242,9 +304,14 @@ public final class TrainingRun {
         if (bestEpoch > 0) {
             m.put("bestEpoch", bestEpoch);
         }
+        if (remoteId != null) {
+            m.put("remoteId", remoteId);
+        }
         m.put("stoppedEarly", stoppedEarly);
         long now = ended > 0 ? ended : System.currentTimeMillis();
-        if (started > 0 && step > 0) {
+        if (remoteSpeed >= 0) {
+            m.put("samplesPerSecond", remoteSpeed);
+        } else if (started > 0 && step > 0) {
             double seconds = Math.max(1e-3, (now - started) / 1000.0);
             m.put("samplesPerSecond", Math.round(step * batchSize / seconds));
         }
@@ -265,7 +332,8 @@ public final class TrainingRun {
     }
 
     /**
-     * Reads a saved run back.
+     * Reads a saved run back. A run that was active is still marked so; the caller decides
+     * whether it can carry on.
      *
      * @param m what {@link #toJson} wrote
      * @return the run
@@ -293,6 +361,9 @@ public final class TrainingRun {
         r.bestEpoch = (int) Json.integer(m, "bestEpoch", 0);
         r.stoppedEarly = Boolean.TRUE.equals(m.get("stoppedEarly"));
         r.stride = (int) Math.max(1, Json.integer(m, "stride", 1));
+        r.remoteId = Json.string(m, "remoteId", null);
+        long speed = Json.integer(m, "samplesPerSecond", -1);
+        r.remoteSpeed = r.remoteId != null ? speed : -1;
         for (Object h : m.get("history") == null ? List.of() : Json.array(m.get("history"))) {
             r.history.add(Json.object(h));
         }
@@ -302,7 +373,6 @@ public final class TrainingRun {
                 r.curve.add(new float[] {a.floatValue(), b.floatValue()});
             }
         }
-        r.interrupted();
         return r;
     }
 }

@@ -100,8 +100,8 @@ final class GgmlQuants {
      */
     static int group(Gguf.Format format) {
         return switch (format) {
-            case Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K -> 32;
-            case Q2_K, Q3_K, Q6_K -> 16;
+            case Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K, IQ4_NL, IQ4_XS, MXFP4, IQ2_XXS, IQ3_XXS, IQ3_S, IQ1_S -> 32;
+            case Q2_K, Q3_K, Q6_K, IQ2_XS, IQ2_S, IQ1_M -> 16;
             default -> 0;
         };
     }
@@ -153,6 +153,16 @@ final class GgmlQuants {
                 case Q4_K -> q4k(m, at, y, o);
                 case Q5_K -> q5k(m, at, y, o);
                 case Q6_K -> q6k(m, at, y, o);
+                case IQ4_NL -> nonLinear(m, at + 2, y, o, IQ4, f16(m, at));
+                case IQ4_XS -> iq4xs(m, at, y, o);
+                case IQ2_XXS -> iq2xxs(m, at, y, o);
+                case IQ2_XS -> iq2xs(m, at, y, o);
+                case IQ2_S -> iq2s(m, at, y, o);
+                case IQ3_XXS -> iq3xxs(m, at, y, o);
+                case IQ3_S -> iq3s(m, at, y, o);
+                case IQ1_S -> iq1s(m, at, y, o);
+                case IQ1_M -> iq1m(m, at, y, o);
+                case MXFP4 -> nonLinear(m, at + 1, y, o, MXFP4_VALUES, Math.scalb(1f, u8(m, at) - 128));
                 case Q8_K -> {
                     float d = m.get(RawValues.FLOAT, at);
                     for (int j = 0; j < 256; j++) {
@@ -160,6 +170,195 @@ final class GgmlQuants {
                     }
                 }
                 default -> throw new IllegalArgumentException("cannot decode " + format);
+            }
+        }
+    }
+
+    /** IQ4_NL's and IQ4_XS's sixteen levels (llama.cpp's kvalues_iq4nl). */
+    private static final int[] IQ4 = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+
+    /** MXFP4's sixteen E2M1 values, doubled to whole numbers (the scale is halved to match). */
+    private static final int[] MXFP4_VALUES = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+
+    /** 32 values from 16 bytes of 4-bit indices into a table: low nibbles first, then high. */
+    private static void nonLinear(MemorySegment m, long qs, Sink y, int o, int[] table, float d) {
+        for (int j = 0; j < 16; j++) {
+            int q = u8(m, qs + j);
+            y.put(o + j, table[q & 0xF], d, 0);
+            y.put(o + j + 16, table[q >>> 4], d, 0);
+        }
+    }
+
+    private static void iq4xs(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        int high = Short.toUnsignedInt(m.get(RawValues.SHORT, at + 2));
+        long low = at + 4;
+        long qs = at + 8;
+        for (int ib = 0; ib < 8; ib++) {
+            int ls = ((u8(m, low + ib / 2) >>> (4 * (ib % 2))) & 0xF) | (((high >>> (2 * ib)) & 3) << 4);
+            nonLinear(m, qs + 16L * ib, y, o + 32 * ib, IQ4, d * (ls - 32));
+        }
+    }
+
+    // ---------------------------------------------------------------- i-quants
+    // Grids of whole levels from llama.cpp's ggml-common.h, as gguf-py unpacks them (iq-grids.bin):
+    // iq2xxs 256x8, iq2xs 512x8, iq2s 1024x8, iq3xxs 256x4, iq3s 512x4, iq1s 2048x8.
+
+    private static final byte[] GRIDS;
+    private static final int IQ2XXS = 0;
+    private static final int IQ2XS = IQ2XXS + 256 * 8;
+    private static final int IQ2S = IQ2XS + 512 * 8;
+    private static final int IQ3XXS = IQ2S + 1024 * 8;
+    private static final int IQ3S = IQ3XXS + 256 * 4;
+    private static final int IQ1S = IQ3S + 512 * 4;
+
+    static {
+        try (java.io.InputStream in = GgmlQuants.class.getResourceAsStream("iq-grids.bin")) {
+            GRIDS = java.util.Objects.requireNonNull(in, "iq-grids.bin").readAllBytes();
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        if (GRIDS.length != IQ1S + 2048 * 8) {
+            throw new IllegalStateException("iq-grids.bin has " + GRIDS.length + " bytes");
+        }
+    }
+
+    /** Seven sign bits and an eighth that makes their count even (llama.cpp's ksigns_iq2xs). */
+    private static int signs(int index) {
+        return index | ((Integer.bitCount(index) & 1) << 7);
+    }
+
+    private static int sign(int bits, int j) {
+        return (bits >>> j & 1) != 0 ? -1 : 1;
+    }
+
+    private static long u32(MemorySegment m, long at) {
+        return Integer.toUnsignedLong(m.get(INT, at));
+    }
+
+    private static int u16(MemorySegment m, long at) {
+        return Short.toUnsignedInt(m.get(RawValues.SHORT, at));
+    }
+
+    private static void iq2xxs(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        for (int ib = 0; ib < 8; ib++) {
+            long a0 = u32(m, at + 2 + 8L * ib);
+            long a1 = u32(m, at + 6 + 8L * ib);
+            float db = d * (0.5f + (a1 >>> 28)) * 0.25f;
+            for (int l = 0; l < 4; l++) {
+                int grid = IQ2XXS + (int) (a0 >>> (8 * l) & 0xFF) * 8;
+                int bits = signs((int) (a1 >>> (7 * l) & 0x7F));
+                for (int j = 0; j < 8; j++) {
+                    y.put(o + 32 * ib + 8 * l + j, GRIDS[grid + j] * sign(bits, j), db, 0);
+                }
+            }
+        }
+    }
+
+    private static void iq2xs(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        long scales = at + 66;
+        for (int i = 0; i < 32; i++) {   // 32 groups of 8 values, two per scale
+            int q = u16(m, at + 2 + 2L * i);
+            int s = u8(m, scales + i / 4) >>> (4 * (i / 2 % 2)) & 0xF;
+            float db = d * (0.5f + s) * 0.25f;
+            int grid = IQ2XS + (q & 511) * 8;
+            int bits = signs(q >>> 9);
+            for (int j = 0; j < 8; j++) {
+                y.put(o + 8 * i + j, GRIDS[grid + j] * sign(bits, j), db, 0);
+            }
+        }
+    }
+
+    private static void iq2s(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        long qs = at + 2;
+        long sg = at + 34;
+        long qh = at + 66;
+        long scales = at + 74;
+        for (int i = 0; i < 32; i++) {
+            int index = u8(m, qs + i) | (u8(m, qh + i / 4) >>> (2 * (i % 4)) & 3) << 8;
+            int s = u8(m, scales + i / 4) >>> (4 * (i / 2 % 2)) & 0xF;
+            float db = d * (0.5f + s) * 0.25f;
+            int bits = u8(m, sg + i);
+            int grid = IQ2S + index * 8;
+            for (int j = 0; j < 8; j++) {
+                y.put(o + 8 * i + j, GRIDS[grid + j] * sign(bits, j), db, 0);
+            }
+        }
+    }
+
+    private static void iq3xxs(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        long qs = at + 2;
+        for (int ib = 0; ib < 8; ib++) {
+            long a = u32(m, at + 66 + 4L * ib);
+            float db = d * (0.5f + (a >>> 28)) * 0.5f;
+            for (int l = 0; l < 4; l++) {
+                int bits = signs((int) (a >>> (7 * l) & 0x7F));
+                for (int j = 0; j < 8; j++) {
+                    int grid = IQ3XXS + u8(m, qs + 8L * ib + 2 * l + j / 4) * 4;
+                    y.put(o + 32 * ib + 8 * l + j, GRIDS[grid + j % 4] * sign(bits, j), db, 0);
+                }
+            }
+        }
+    }
+
+    private static void iq3s(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        long qs = at + 2;
+        long qh = at + 66;
+        long sg = at + 74;
+        long scales = at + 106;
+        for (int i = 0; i < 64; i++) {   // 64 groups of 4 values
+            int index = u8(m, qs + i) | (u8(m, qh + i / 8) >>> (i % 8) & 1) << 8;
+            int ib = i / 8;
+            int s = u8(m, scales + ib / 2) >>> (4 * (ib % 2)) & 0xF;
+            float db = d * (1 + 2 * s);
+            int grid = IQ3S + index * 4;
+            for (int j = 0; j < 4; j++) {
+                int v = 4 * i + j;
+                y.put(o + v, GRIDS[grid + j] * sign(u8(m, sg + v / 8), v % 8), db, 0);
+            }
+        }
+    }
+
+    /** IQ1_S: levels -1, 0, 1 shifted by 1/8 of the step, kept as 8 times the level plus or minus 1. */
+    private static void iq1s(MemorySegment m, long at, Sink y, int o) {
+        float d = f16(m, at);
+        long qs = at + 2;
+        for (int ib = 0; ib < 8; ib++) {
+            int h = u16(m, at + 34 + 2L * ib);
+            float dl = d * (2 * (h >>> 12 & 7) + 1) / 8;
+            int delta = (h & 0x8000) == 0 ? 1 : -1;
+            for (int l = 0; l < 4; l++) {
+                int grid = IQ1S + (u8(m, qs + 4L * ib + l) | (h >>> (3 * l) & 7) << 8) * 8;
+                for (int j = 0; j < 8; j++) {
+                    y.put(o + 32 * ib + 8 * l + j, 8 * GRIDS[grid + j] + delta, dl, 0);
+                }
+            }
+        }
+    }
+
+    private static void iq1m(MemorySegment m, long at, Sink y, int o) {
+        long qs = at;
+        long qh = at + 32;
+        int[] sc = new int[4];
+        for (int k = 0; k < 4; k++) {
+            sc[k] = u16(m, at + 48 + 2L * k);
+        }
+        short bits = (short) ((sc[0] & 0xF000) >>> 12 | (sc[1] & 0xF000) >>> 8 | (sc[2] & 0xF000) >>> 4 | sc[3] & 0xF000);
+        float d = Float.float16ToFloat(bits);
+        for (int i = 0; i < 32; i++) {   // 32 groups of 8 values, two per scale
+            int nibble = u8(m, qh + i / 2) >>> (4 * (i % 2)) & 0xF;
+            int index = u8(m, qs + i) | (nibble & 7) << 8;
+            int delta = (nibble & 8) == 0 ? 1 : -1;
+            int k = i / 2;   // sixteen 3-bit scales, four per 16-bit word
+            float dl = d * (2 * (sc[k / 4] >>> (3 * (k % 4)) & 7) + 1) / 8;
+            int grid = IQ1S + index * 8;
+            for (int j = 0; j < 8; j++) {
+                y.put(o + 8 * i + j, 8 * GRIDS[grid + j] + delta, dl, 0);
             }
         }
     }

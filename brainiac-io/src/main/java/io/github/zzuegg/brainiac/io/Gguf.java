@@ -34,7 +34,8 @@ import java.util.Objects;
  * <ul>
  *   <li>{@code F32, F16, BF16, F64} go straight from the mapping to the device;
  *   <li>the quantized formats {@code Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
- *       Q6_K, Q8_K} and the integer types are decoded on the host by {@link
+ *       Q6_K, Q8_K}, the i-quants {@code IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S,
+ *       IQ4_NL, IQ4_XS} and {@code MXFP4} and the integer types are decoded on the host by {@link
  *       #tensor(String, Device, DType)};
  *   <li>matrices in any of those formats but {@code Q8_K} also map onto Brainiac's own
  *       packed weights with {@link #packedTransposed(String, Device)}, so they stay at 2 to 8
@@ -56,7 +57,9 @@ public final class Gguf implements WeightSource {
         F32(0, 1, 4), F16(1, 1, 2), Q4_0(2, 32, 18), Q4_1(3, 32, 20), Q5_0(6, 32, 22), Q5_1(7, 32, 24),
         Q8_0(8, 32, 34), Q8_1(9, 32, 36), Q2_K(10, 256, 84), Q3_K(11, 256, 110), Q4_K(12, 256, 144),
         Q5_K(13, 256, 176), Q6_K(14, 256, 210), Q8_K(15, 256, 292), I8(24, 1, 1), I16(25, 1, 2), I32(26, 1, 4),
-        I64(27, 1, 8), F64(28, 1, 8), BF16(30, 1, 2);
+        I64(27, 1, 8), F64(28, 1, 8), BF16(30, 1, 2), IQ4_NL(20, 32, 18), IQ4_XS(23, 256, 136),
+        MXFP4(39, 32, 17), IQ2_XXS(16, 256, 66), IQ2_XS(17, 256, 74), IQ3_XXS(18, 256, 98), IQ1_S(19, 256, 50),
+        IQ3_S(21, 256, 110), IQ2_S(22, 256, 82), IQ1_M(29, 256, 56);
 
         final int id;
         final int block;
@@ -342,7 +345,9 @@ public final class Gguf implements WeightSource {
     /**
      * Returns whether {@link #packedTransposed} can keep a tensor packed: a matrix in {@code
      * Q8_0}, {@code Q4_0}, {@code Q4_1}, {@code Q5_0}, {@code Q5_1}, {@code Q2_K}, {@code
-     * Q3_K}, {@code Q4_K}, {@code Q5_K} or {@code Q6_K}.
+     * Q3_K}, {@code Q4_K}, {@code Q5_K}, {@code Q6_K}, an i-quant or {@code MXFP4}. The
+     * i-quants and {@code MXFP4} keep their levels (codebook values) as one byte per weight,
+     * more memory than their files take.
      *
      * @param name the name
      * @return {@code true} if it can

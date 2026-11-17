@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.studio.server;
 
 import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.studio.train.Hosts;
 import io.github.zzuegg.brainiac.studio.train.TrainingRun;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
 import java.util.LinkedHashMap;
@@ -19,6 +20,9 @@ import java.util.Map;
  *   <li>{@code POST /api/train/start {spec}}: starts a run, or queues it behind the one training.
  *   <li>{@code POST /api/train/stop {id}} and {@code POST /api/train/delete {id}}.
  *   <li>{@code GET /api/train/runs}: every run with its progress and loss curve.
+ *   <li>{@code GET /api/hosts}: the other machines runs can train on, and how each is; {@code POST
+ *       /api/hosts {name, url, token}} adds one after checking it answers, and {@code {id, remove: true}}
+ *       forgets one. Tokens are never sent back.
  * </ul>
  */
 final class TrainRoutes {
@@ -53,6 +57,22 @@ final class TrainRoutes {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             boolean ok = training.delete(Json.string(body, "id", ""));
             Exchanges.json(ex, ok ? 200 : 404, Map.of("ok", ok));
+        });
+        server.get("/api/hosts", ex -> Exchanges.json(ex, 200, Map.of("hosts", training.hosts().toJson())));
+        server.post("/api/hosts", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            if (Boolean.TRUE.equals(body.get("remove"))) {
+                boolean ok = training.hosts().remove(Json.string(body, "id", ""));
+                Exchanges.json(ex, ok ? 200 : 404, Map.of("ok", ok));
+                return;
+            }
+            try {
+                Hosts.Host h = training.hosts().add(Json.string(body, "name", ""), Json.string(body, "url", ""),
+                        Json.string(body, "token", ""));
+                Exchanges.json(ex, 200, Map.of("id", h.id(), "name", h.name(), "url", h.url()));
+            } catch (java.io.IOException e) {
+                Exchanges.error(ex, 400, e.getMessage());
+            }
         });
         server.get("/api/train/runs", ex -> {
             List<TrainingRun> runs = training.runs();

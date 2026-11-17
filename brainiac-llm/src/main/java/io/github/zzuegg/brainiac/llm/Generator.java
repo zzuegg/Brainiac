@@ -45,6 +45,32 @@ public final class Generator {
         this.tokenizer = tokenizer;
     }
 
+    private volatile PrefixCache prefixes;
+
+    /**
+     * Reuses the key/value cache of prompts read before (see {@link PrefixCache}): requests
+     * that start with the same system prompt, examples or earlier turns of a chat read only
+     * what is new. Used by single-prompt {@link #generate} and by {@link #batcher}. The text
+     * is the same as without the cache, up to rounding where a prompt is read in parts.
+     *
+     * @param capacity the most prompt states kept, each with its own key/value cache; 0 turns
+     *     the cache off and frees it
+     * @return this generator
+     */
+    public Generator cachePrefixes(int capacity) {
+        PrefixCache old = prefixes;
+        prefixes = capacity > 0 ? new PrefixCache(model, capacity) : null;
+        if (old != null) {
+            old.clear();
+        }
+        return this;
+    }
+
+    /** @return the prefix cache, or {@code null} when {@link #cachePrefixes} is off */
+    public PrefixCache prefixCache() {
+        return prefixes;
+    }
+
     /**
      * What to generate.
      *
@@ -59,7 +85,22 @@ public final class Generator {
      *     accepted, and a sequence that cannot go on ends there (needs a tokenizer)
      */
     public record Options(int maxNewTokens, Sampling sampling, long seed, Set<Integer> stopTokens,
-            List<String> stopStrings, Constraint constraint) {
+            List<String> stopStrings, Constraint constraint, int logprobs) {
+
+        /**
+         * Options without log-probabilities.
+         *
+         * @param maxNewTokens the most tokens to add
+         * @param sampling how to pick tokens
+         * @param seed seeds the draws
+         * @param stopTokens stop tokens
+         * @param stopStrings stop strings
+         * @param constraint the constraint, or {@code null}
+         */
+        public Options(int maxNewTokens, Sampling sampling, long seed, Set<Integer> stopTokens,
+                List<String> stopStrings, Constraint constraint) {
+            this(maxNewTokens, sampling, seed, stopTokens, stopStrings, constraint, -1);
+        }
 
         /**
          * Options without a constraint.
@@ -84,10 +125,17 @@ public final class Generator {
          * @param stopTokens stop tokens
          * @param stopStrings stop strings
          * @param constraint the constraint, or {@code null}
+         * @param logprobs -1 for none; else each written token's log-probability under the
+         *     model (its raw logits, before temperature and filters; with a constraint, over the
+         *     allowed tokens) and the {@code logprobs} most likely alternatives, in
+         *     {@link Output#logprobs()}; not for speculative decoding or beam search
          */
         public Options {
             if (maxNewTokens < 0) {
                 throw new IllegalArgumentException("maxNewTokens < 0");
+            }
+            if (logprobs < -1) {
+                throw new IllegalArgumentException("logprobs must be -1 or more, got " + logprobs);
             }
             Objects.requireNonNull(sampling, "sampling");
             stopTokens = stopTokens == null ? null : Set.copyOf(stopTokens);
@@ -117,7 +165,7 @@ public final class Generator {
          * @return a copy that stops on them
          */
         public Options withStopTokens(Set<Integer> tokens) {
-            return new Options(maxNewTokens, sampling, seed, tokens, stopStrings, constraint);
+            return new Options(maxNewTokens, sampling, seed, tokens, stopStrings, constraint, logprobs);
         }
 
         /**
@@ -125,7 +173,16 @@ public final class Generator {
          * @return a copy that stops on them
          */
         public Options withStopStrings(String... strings) {
-            return new Options(maxNewTokens, sampling, seed, stopTokens, List.of(strings), constraint);
+            return new Options(maxNewTokens, sampling, seed, stopTokens, List.of(strings), constraint, logprobs);
+        }
+
+        /**
+         * @param top -1 for none, else how many likely alternatives to report with each
+         *     written token's log-probability
+         * @return a copy that reports log-probabilities
+         */
+        public Options withLogprobs(int top) {
+            return new Options(maxNewTokens, sampling, seed, stopTokens, stopStrings, constraint, top);
         }
 
         /**
@@ -133,7 +190,7 @@ public final class Generator {
          * @return a copy constrained to it
          */
         public Options withConstraint(Constraint c) {
-            return new Options(maxNewTokens, sampling, seed, stopTokens, stopStrings, c);
+            return new Options(maxNewTokens, sampling, seed, stopTokens, stopStrings, c, logprobs);
         }
     }
 
@@ -166,7 +223,62 @@ public final class Generator {
      * @param text their text (empty without a tokenizer), cut before a stop string
      * @param finish why it ended
      */
-    public record Output(int[] tokens, String text, Finish finish) {
+    public record Output(int[] tokens, String text, Finish finish, List<TokenLogprob> logprobs) {
+
+        /**
+         * An output without log-probabilities.
+         *
+         * @param tokens the new tokens
+         * @param text their text
+         * @param finish why it ended
+         */
+        public Output(int[] tokens, String text, Finish finish) {
+            this(tokens, text, finish, null);
+        }
+    }
+
+    /**
+     * A written token's log-probability under the model, and the most likely alternatives.
+     *
+     * @param token the token
+     * @param logprob its natural log-probability
+     * @param top the most likely tokens, most likely first
+     * @param topLogprobs their log-probabilities
+     */
+    public record TokenLogprob(int token, float logprob, int[] top, float[] topLogprobs) {
+    }
+
+    /** The log-probability of {@code token} and of the {@code top} most likely tokens. */
+    static TokenLogprob logprob(float[] logits, int token, int top) {
+        double max = Double.NEGATIVE_INFINITY;
+        for (float l : logits) {
+            max = Math.max(max, l);
+        }
+        double sum = 0;
+        for (float l : logits) {
+            sum += Math.exp(l - max);
+        }
+        double lse = max + Math.log(sum);
+        int k = Math.min(top, logits.length);
+        int[] best = new int[k];
+        float[] bestLp = new float[k];
+        int n = 0;
+        for (int i = 0; i < logits.length && k > 0; i++) {
+            float l = logits[i];
+            if (n < k || l > logits[best[n - 1]]) {
+                int at = Math.min(n, k - 1);
+                while (at > 0 && logits[best[at - 1]] < l) {
+                    best[at] = best[at - 1];
+                    at--;
+                }
+                best[at] = i;
+                n = Math.min(n + 1, k);
+            }
+        }
+        for (int i = 0; i < k; i++) {
+            bestLp[i] = (float) (logits[best[i]] - lse);
+        }
+        return new TokenLogprob(token, (float) (logits[token] - lse), best, bestLp);
     }
 
     /** End-of-turn tokens of common chat models. */
@@ -284,14 +396,23 @@ public final class Generator {
             rows[b] = new Row(b, prompts[b], options, listener);
         }
         SplittableRandom random = new SplittableRandom(options.seed());
-        LanguageModel.State state = model.newState(batch);
+        PrefixCache cache = prefixes;
+        LanguageModel.State state;
         int active = batch;
         if (options.maxNewTokens() > 0) {
-            Tensor logits = model.next(state, first, padded ? pad : null);
+            Tensor logits;
+            if (cache != null && batch == 1) {
+                PrefixCache.Prefill p = cache.prefill(prompts[0]);
+                state = p.state();
+                logits = p.logits();
+            } else {
+                state = model.newState(batch);
+                logits = model.next(state, first, padded ? pad : null);
+            }
             // plain greedy decoding reads back only the chosen tokens, which the device finds
             Sampling sampling = options.sampling();
             boolean onDevice = options.constraint() == null && sampling.temperature() == 0
-                    && sampling.repetitionPenalty() == 1;
+                    && sampling.repetitionPenalty() == 1 && options.logprobs() < 0;
             for (int step = 0; active > 0; step++) {
                 float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;
@@ -319,6 +440,7 @@ public final class Generator {
                         continue;
                     }
                     int token = options.sampling().sample(row, r.seen(), random);
+                    r.score(row, token);
                     next[b][0] = token;
                     if (r.matcher != null && !stops.contains(token)) {
                         r.matcher = vocabulary(vocab).advance(r.matcher, token);
@@ -333,8 +455,12 @@ public final class Generator {
                 }
                 logits = model.next(state, next, active < batch ? skip : null);
             }
+        } else {
+            state = null;
         }
-        state.close();
+        if (state != null) {
+            state.close();
+        }
         List<Output> out = new ArrayList<>(batch);
         for (Row r : rows) {
             out.add(r.finish());
@@ -402,6 +528,10 @@ public final class Generator {
         String text = "";
         int emitted;
         Finish finish;
+        /** The written tokens' log-probabilities, when the options ask for them. */
+        final List<TokenLogprob> logprobs = new ArrayList<>();
+        /** The log-probability of the token about to be added. */
+        TokenLogprob pending;
 
         /** Where the text stands in the options' constraint, or {@code null} without one. */
         Constraint.Matcher matcher;
@@ -446,6 +576,10 @@ public final class Generator {
                 tokens = Arrays.copyOf(tokens, count * 2);
             }
             tokens[count++] = token;
+            if (pending != null) {
+                logprobs.add(pending);
+                pending = null;
+            }
             if (tokenizer != null && (listener != null || !options.stopStrings().isEmpty())) {
                 text = decode(Arrays.copyOf(tokens, count));
                 int cut = firstStop();
@@ -516,7 +650,14 @@ public final class Generator {
             if (finish == Finish.LENGTH || options.stopStrings().isEmpty() && listener == null) {
                 text = decode(t);
             }
-            return new Output(t, text, finish);
+            return new Output(t, text, finish, options.logprobs() >= 0 ? List.copyOf(logprobs) : null);
+        }
+
+        /** Notes the log-probability of the token about to be added, if asked for. */
+        void score(float[] logits, int token) {
+            if (options.logprobs() >= 0) {
+                pending = logprob(logits, token, options.logprobs());
+            }
         }
     }
 
@@ -718,6 +859,7 @@ public final class Generator {
                                 continue;
                             }
                             int token = r.options.sampling().sample(row, r.seen(), j.random);
+                            r.score(row, token);
                             next[i] = token;
                             if (r.matcher != null && !j.stops.contains(token)) {
                                 r.matcher = vocabulary(row.length).advance(r.matcher, token);
@@ -787,6 +929,19 @@ public final class Generator {
                     padded = true;
                 }
             }
+            PrefixCache cache = prefixes;
+            if (cache != null) {
+                // each prompt from the longest cached prefix, then side by side
+                LanguageModel.State s = null;
+                List<Tensor> logits = new ArrayList<>(n);
+                for (Job j : jobs) {
+                    PrefixCache.Prefill p = cache.prefill(j.row.prompt);
+                    s = s == null ? p.state() : s.join(p.state());
+                    logits.add(p.logits());
+                }
+                spread(Tensor.concat(0, logits.toArray(Tensor[]::new)), jobs);
+                return s;
+            }
             LanguageModel.State s = model.newState(n);
             spread(model.next(s, first, padded ? pad : null), jobs);
             return s;
@@ -801,7 +956,8 @@ public final class Generator {
             boolean greedy = true;
             for (Job j : jobs) {
                 Sampling s = j.row.options.sampling();
-                greedy &= j.row.matcher == null && s.temperature() == 0 && s.repetitionPenalty() == 1;
+                greedy &= j.row.matcher == null && s.temperature() == 0 && s.repetitionPenalty() == 1
+                        && j.row.options.logprobs() < 0;
             }
             if (greedy) {
                 float[] best = logits.argmax(-1).toArray();

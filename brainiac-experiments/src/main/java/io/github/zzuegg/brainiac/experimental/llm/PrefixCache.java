@@ -23,8 +23,8 @@ import java.util.function.UnaryOperator;
  *
  * <p>It works with any {@link LanguageModel} whose states can be copied and truncated. The
  * core {@code LanguageModel.State} has no copy or close, so both are given as functions: for
- * the core {@code Llama} a copy is {@code s -> s.select(new int[] {0})} (a gather of the
- * whole cache, see {@link #forCore}); for {@link PagedLlama} it is a copy-on-write
+ * the core {@code Llama} a copy is {@code State::fork} (a gather of the whole cache, see
+ * {@link #forCore}); for {@link PagedLlama} it is a copy-on-write
  * {@linkplain PagedLlama#fork fork} that shares the prefix's blocks and copies nothing.
  *
  * <p>Zheng et al., "SGLang: Efficient Execution of Structured Language Model Programs"
@@ -81,15 +81,15 @@ public final class PrefixCache {
     }
 
     /**
-     * A cache for a model whose {@code select} leaves the old state usable, as the core
-     * {@code Llama}'s does: copies are gathers, and dropped states are left to the collector.
+     * A cache for a model whose states {@linkplain LanguageModel.State#fork fork}, as the core
+     * {@code Llama}'s do: copies are gathers, and dropped states are closed.
      *
      * @param model the model
      * @param capacity the most states kept
      * @return the cache
      */
     public static PrefixCache forCore(LanguageModel model, int capacity) {
-        return new PrefixCache(model, s -> s.select(new int[] {0}), s -> { }, capacity);
+        return new PrefixCache(model, LanguageModel.State::fork, LanguageModel.State::close, capacity);
     }
 
     /**
