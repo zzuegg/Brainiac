@@ -185,6 +185,17 @@ public final class OpenAiServer implements AutoCloseable {
                     Generator.Output o = run(prompt, options, null);
                     Map<String, Object> message = assistant(o.text(), true);
                     message.remove("role");
+                    if (message.get("tool_calls") instanceof List<?> calls) {
+                        // streamed calls carry their place, which clients gather deltas by
+                        List<Object> indexed = new ArrayList<>();
+                        for (int i = 0; i < calls.size(); i++) {
+                            Map<String, Object> c = new LinkedHashMap<>();
+                            c.put("index", i);
+                            c.putAll(Json.object(calls.get(i)));
+                            indexed.add(c);
+                        }
+                        message.put("tool_calls", indexed);
+                    }
                     if (message.get("content") == null) {
                         message.remove("content");
                     }
@@ -377,6 +388,33 @@ public final class OpenAiServer implements AutoCloseable {
                 throw new BadRequest("top_logprobs must be 0 to 20");
             }
             options = options.withLogprobs((int) top);
+        }
+        Object choice = req.get("tool_choice");
+        List<Object> tools = chat ? tools(req) : null;
+        if (tools != null && choice != null && !"auto".equals(choice)) {
+            // "required" or one named function: the reply is a call, its arguments held to the schema
+            String wanted = null;
+            if (choice instanceof Map<?, ?> c && c.get("function") instanceof Map<?, ?> f && f.get("name") instanceof String n) {
+                wanted = n;
+            } else if (!"required".equals(choice)) {
+                throw new BadRequest("tool_choice must be \"none\", \"auto\", \"required\" or a function");
+            }
+            List<Object> any = new ArrayList<>();
+            for (Object t : tools) {
+                Map<String, Object> f = Json.object(Json.object(t).get("function"));
+                if (wanted != null && !wanted.equals(f.get("name"))) {
+                    continue;
+                }
+                Object params = f.get("parameters") instanceof Map<?, ?> m ? m : Map.of("type", "object");
+                any.add(Map.of("type", "object", "properties", Map.of("name", Map.of("const", f.get("name")),
+                        "arguments", params), "required", List.of("name", "arguments")));
+            }
+            if (any.isEmpty()) {
+                throw new BadRequest("tool_choice names " + wanted + ", which is not among the tools");
+            }
+            options = options.withConstraint(Constraint.jsonSchema(any.size() == 1
+                    ? Json.object(any.getFirst()) : Map.of("anyOf", any)));
+            return options;
         }
         if (req.get("response_format") instanceof Map<?, ?> format) {
             Object type = format.get("type");
