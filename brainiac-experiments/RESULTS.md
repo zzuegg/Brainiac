@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1".
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety.
 
 ## How the module is laid out
 
@@ -16,6 +16,7 @@ Rules this page follows:
 - Every number was found in one of the sources below. None was estimated. Numbers keyed **Run** were printed by the tests in the full suite run of 2026-11-17 (577 tests, all passing); everything else predates that run. Tests that printed nothing in that run were then given print statements (no assertion, threshold, seed or budget changed) and the module was run again the same day (576 tests, all passing). Their numbers are also keyed **Run**.
 - Where a Run number clearly disagrees with an earlier recorded number, both are given and the difference is noted. PR #105 changed four things numerically: GumbelChannel's noise stream, and exact second-order maths in MAML, Sophia and GradientPenalty.
 - Wave 4 numbers are keyed **Run-w4**: they were printed by the tests in the full suite runs after wave 4 on 2026-11-17, one of the merged WP1–WP5 work (690 tests, all passing) and one of the WP6 branch (601 tests, all passing). Where a wave 4 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave4)** next to it. Where the two disagree, the test's number is given and the report's is noted.
+- Wave 5 numbers are keyed **Run-w5**: they were printed by the tests in three full suite runs after wave 5 on 2026-11-17, one of the merged WP1–WP4 work (804 tests), one of the WP5 branch (711 tests) and one of the WP6 branch (735 tests), all passing. Where a wave 5 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave5)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -36,6 +37,8 @@ Source keys (given under each experiment):
 | Run | Full suite run, 2026-11-17, after the core-hooks switch (PR #105) |
 | Run-w4 | Full suite runs after wave 4, 2026-11-17: merged WP1–WP5 (690 tests) and the WP6 branch (601 tests), all passing |
 | R-wave4 | Session transcript: final reports of the six wave 4 work-package agents (WP1–WP6) |
+| Run-w5 | Full suite runs after wave 5, 2026-11-17: merged WP1–WP4 (804 tests), the WP5 branch (711 tests) and the WP6 branch (735 tests), all passing |
+| R-wave5 | Session transcript: final reports of the six wave 5 work-package agents (WP1–WP6) |
 
 ---
 
@@ -168,6 +171,15 @@ Sources: Run-w4, R-wave4.
 | Latent-action world model (Gumbel bottleneck) trained on 6x6 grid-world frames with no action labels | Action recovery | 0.763 | Chance: 0.25 | Discrete latent actions line up with the true actions three times better than chance. The test threshold was lowered to 0.7 to match (R-wave4). |
 | Same, driven by its latent codes | Next-cell accuracy | 1.000 | Action-conditioned `MlpWorldModel`: 1.000 | The model learned from action-free frames is as good a simulator as one given the actions. |
 
+
+### DiffusionDreaming (W5 6.15: DIAMOND diffusion world model)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Diffusion world model (`DiffusionWorldModel`), cart-pole | Open-loop RMSE at 1 / 10 steps | 0.0028 / 0.0456 | MLP world model (`MlpWorldModel`): 0.0096 / 0.1103 | The diffusion model is 3.4x more accurate at 1 step and 2.4x at 10 steps. |
+| `DreamerAgent` trained inside the diffusion world model | Real cart-pole return | 199.5 | Inside the MLP world model: 200.0 | Both solve the task, so the better model gives no return gain here. |
+
 ---
 
 ## attention
@@ -258,6 +270,65 @@ Sources: Run-w4, R-wave4.
 | Sparse upcycling (MoE initialised as exact copies of the trained dense FFN) | Validation MSE after continued training | 0.880 | Dense continued: 0.950; MoE from scratch at equal compute: 0.541 | Beats continuing the dense model, but a MoE trained from scratch is far better here. |
 | Drop-upcycling (half of each expert re-initialised) | Same | 0.964 | Same | Worse than continuing the dense model. |
 
+
+### SparseSelectionShootout (W5 1.1: DeepSeek Sparse Attention, 1.3: MoBA)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DSA (lightning indexer, dense warm-up, then top-8 keys), toy LM, 1 block, width 16, 200 steps | Validation loss; keys read per query | 2.954; 6.8 | Dense (core): 2.805; 12.5 on average. NSA: 2.864 | Reads about half the keys at a loss cost; NSA stays closer to dense. |
+| DSA, recall trained at 32 pairs (R-wave5) | Recall at 8 / 16 / 32 pairs; keys per query | 0.438 / 0.297 / 0.281; 7.6 | Dense: 0.578 / 0.391 / 0.219 (chance 0.125) | Beats dense only at the longest length. |
+| MoBA (mixture of block attention, 4 blocks, top-2) | Validation loss; keys per query | 2.980; 6.5 | Dense: 2.805 | Worse than DSA at a similar key budget. |
+| MoBA | Recall at 8 / 16 / 32 pairs; keys per query | 0.227 / 0.195 / 0.133; 7.1 | Dense: 0.578 / 0.391 / 0.219 | Clearly worse than dense at every length. |
+
+### CompressedKvShootout (W5 1.2: compressed / heavily compressed attention, CSA / HCA)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CSA/HCA (DeepSeek-V4 style compressed KV) | Validation loss; cached values per token (+ fixed) | 3.0273; 3.0 (+64), 5992 params | Core MHA: 3.0124; 64. Core GQA kv=1: 3.1121; 16. MLA latent 4: 3.0863; 16. Compressive (Infini-attention): 3.0479; 0 (+672) | Close to MHA's loss with a twentieth of its per-token cache, and better than GQA and MLA at less cache. |
+
+### MultiTokenLookup (W5 1.9: multi-token attention)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Multi-token attention (2x7 key-query convolution) | Block-lookup accuracy (3 blocks) | 0.949 | MHA: 0.395 (chance 0.333) | MHA stays near chance; MTA solves the lookup. |
+| Same | Toy LM validation loss | 1.9409 | MHA: 2.9863 | A large LM-loss gain as well. |
+
+### Gemma3nBlocks (W5 1.10: MatFormer, 1.12: AltUp and per-layer embeddings)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MatFormer nested FFN (one model, sub-widths of 64) | Validation loss at FFN width 8 / 16 / 32 / 64 | 2.8445 / 2.8361 / 2.8319 / 2.8319 | Plain model truncated: 3.0174 / 2.9841 / 2.9387 / 2.9074. Magnitude-pruned: 3.0179 / 2.9679 / 2.9171 / 2.9074. Trained from scratch at width 16: 2.8605 | Every nested width beats truncating or pruning a plain model, and the width-16 slice beats a model trained at width 16. |
+| AltUp, K=2, d=16 | Validation loss; hot parameters | 2.4511; 5196 | Plain d=16: 2.7967; 5184. Plain d=32: 1.7246; 20,608 | A wider residual stream for 12 extra parameters closes about a third of the gap to d=32. |
+| Per-layer embeddings (PLE), p=8, d=16 | Validation loss; hot parameters (+ cold) | 2.8939; 5728 (+512 cold) | Plain d=16: 2.7967; 5184 | Negative: slightly worse than plain. The test only requires PLE within 0.15 of plain (R-wave5). |
+
+### AugmentedResidualDepth (W5 1.11: LAuReL)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| LAuReL-RW+LR (learned residual weight plus low-rank term), depth 6, 150 steps | Validation loss; parameters | 3.0008; 17,112 (+1560) | Plain residual: 3.0000; 15,552. Value residual: 2.8729; 15,557 | No gain: at this budget every model except value residual stays stuck at about 3.0 (R-wave5). |
+| LAuReL-PA (previous activations) | Same | 3.0000; 15,618 | Same | Identical to plain. |
+
+### MoeRefinements: compute per token (W5 1.13: ReMoE, 1.14: MoE++)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ReMoE (ReLU routing, target 2 experts) | Validation MSE; FFN experts per token; load CV | 1.4649; 1.99; 0.628 | `FineGrainedMoe` top-2: 0.6333; 2; 0.426. Expert choice c=2: 0.7061; 2; 0.000. Zero predictor: 2.8902 | Negative: reaches the sparsity target at more than twice top-2's error. It needed a router bias; without one, zero-mean inputs keep at least half the gates open (R-wave5). |
+| MoE++ (8 FFN experts + 4 zero-computation experts: zero, copy, constant) | Validation MSE; FFN experts per token | 0.7005; 1.76 | Top-2: 0.6333; 2 | 12% fewer FFN calls for a small loss cost. |
+
+### MlaConversion (W5 4.10: TransMLA / MHA2MLA conversion)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Convert a trained GQA (one KV head) to `LatentAttention`, latent 12 (partial RoPE, activation-aware joint KV SVD, R-wave5) | Validation loss right after conversion → after 40 steps; cached values per token | 2.374 → 2.171; 32 | Original GQA: 2.289, and 2.143 after 40 more steps. MLA from scratch, latent 12: 2.198 | Conversion costs loss at first; after 40 steps it beats a from-scratch MLA but not the GQA it came from. |
+| Same, latent 8 | Same | 2.561 → 2.334; 24 | MLA from scratch, latent 8: 2.510 | Beats from-scratch MLA and caches 25% less than the original. |
+
 ---
 
 ## context
@@ -286,6 +357,21 @@ Sources: Run-w4, R-wave4.
 | KIVI 2-bit (keys per channel, values per token, full-precision recent window), 384 steps with outlier key channels (R-wave4) | Relative attention-output error; KB held | 0.453; 32 KB | float32: 0; 192 KB. H2O (`EvictingKvCache.heavyHitters`) at the same 32 KB: 1.213 | At equal memory, quantizing beats evicting by a wide margin. |
 | KIVI 4-bit | Same | 0.084; 43 KB | Same | About a fifth of the 2-bit error for 11 KB more. |
 | 2-bit with per-token keys | Same | 1.667; 32 KB | KIVI 2-bit: 0.453 | Per-channel key quantization is what makes 2-bit work when keys have outlier channels. |
+
+
+### HeadBudgetComparison (W5 4.4: Quest, 4.5: DuoAttention, 4.6: PyramidKV / Ada-KV, 4.7: KVzip)
+Sources: Run-w5.
+
+All rows use a synthetic 2-layer × 4-head context at a 25% budget (384 of 1536 entries).
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| PyramidKV / Ada-KV budget allocation | Recall; error on the question used for scoring | 1.00; 0.004 / 1.00; 0.003 | SnapKV (uniform): 1.00; 0.009. H2O: 1.00; 0.024. StreamingLLM: 0.08; 0.802 | Allocating budget across layers and heads gives the lowest error on the scoring question. |
+| Same | Recall; error on other questions | 0.32; 0.683 / 0.53; 0.457 | SnapKV: 0.47; 0.546. H2O: 0.00; 0.898. StreamingLLM: 0.07; 0.802 | Query-specific scoring breaks down on questions it was not scored for. |
+| KVzip (context-reconstruction scoring) | Recall; error, scoring question / other questions | 1.00; 0.124 / 1.00; 0.119 | Same | Query-agnostic: keeps full recall on any question, at a higher error. |
+| DuoAttention (retrieval heads keep everything, streaming heads a window) | Same; entries kept | 1.00; 0.026 / 1.00; 0.025; 552 entries | Others at 384 entries; full cache 1536 | Full recall on any question at 36% of the full cache. |
+| Quest (query-aware page selection, nothing evicted) | Same | 1.00; 0.009 / 1.00; 0.008 | Same | Best on both: it reads a subset per query but keeps the whole cache. |
+| Quest on `PagedLlama` (4-slot pages, 16 pages) | Top-1 agreement with full attention; share of KV bytes read | 0.44; 0.23 | Recent window: 0.31; 0.23 | Better agreement at the same bytes read. |
 
 ---
 
@@ -343,6 +429,86 @@ Sources: Run-w4.
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | Backprop through a mass-spring "flexible arm" simulator (BPTT), 2000 episodes | Mean final distance to the goal (same MLP for all) | 0.024 | CEM over weights: 0.240; core PPO: 0.691; untrained: 2.423 | Gradients through the physics give a controller 10x closer than CEM and nearly 30x closer than PPO at equal samples. |
+
+
+### ChunkedRobotPolicies (W5 6.9: diffusion policy, 6.10: flow-matching action expert with real-time chunking)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Diffusion Policy (action chunks), new multimodal-demonstration reach task | Success rate | 0.88 | Demonstrator: 1.00. MSE behaviour cloning: 0.20. Gaussian BC: 0.63. Flow action expert: 0.70 | Handles the multimodal demonstrations far better than unimodal cloning. |
+| Real-time chunking (RTC) with the flow action expert, delay 2, period 4 | Success; action jump at the chunk switch | 0.85; 0.153 | Naive chunk switching: 0.68; 0.212. Temporal ensemble: 0.70; 0.144 | Highest success, with a switch jump close to ensembling's. |
+
+### ActionTokenPolicies (W5 6.11: FAST action tokenizer)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| FAST tokenizer (DCT + BPE), autoregressive policy on multimodal reach | Success; tokens per 8x2 chunk | 0.55; 5.1 | Binning tokenizer: 0.60; 16 | A third of the tokens at slightly lower success. A larger 65 s run gave 0.83 against 0.57 (R-wave5). |
+| FAST tokenizer alone (`FastActionTokenizerTest`) | Tokens per 16x2 chunk; max absolute error | 3.8; 0.039 | Binning: 32; 0.004 | About 8x compression with a small reconstruction error. |
+
+### ContinuousOfflineRl (W5 6.12: flow Q-learning and Q-chunking)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Flow Q-learning (FQL), offline WindyReach | Normalized return | 0.63 | Data: 0.20. BC: -0.02. Flow BC: 0.33. IQL: -0.06. CQL: 0.99 | Beats BC, flow BC and IQL, but CQL is far better. FQL failed on MultimodalReach, so it is measured on WindyReach (R-wave5). |
+| FQL with Q-chunking | Same | 0.49 | FQL: 0.63 | Chunking hurts here. |
+
+### ContrastiveGoals (W5 6.13: deep contrastive goal-conditioned RL)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Contrastive RL, depth 4 / depth 16, bit flipping (6 bits, 2000 steps) | Success rate | 0.85 / 0.80 | HER + DQN: 1.00 | Depth does not help at this scale, and HER wins. At 8 bits: 0.49 / 0.46 against 0.9 (R-wave5). |
+
+### ScalableRlNetworks (W5 6.14: SimBa networks + HL-Gauss value classification)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SimBa critic + HL-Gauss value loss, Pendulum SAC, 1500 steps | Return | -323.8 (10,323 critic params) | MLP + MSE: -360.1 (1249). Random: -357.0 | The only setup above random at this budget. |
+| 2x2 ablation at 2500 steps (R-wave5) | Return | SimBa + HL-Gauss -456; SimBa + MSE -410 | MLP + MSE -580; MLP + HL-Gauss -516 | The SimBa network helps most; HL-Gauss helps the MLP but not SimBa. |
+
+---
+
+## data
+
+New theme in wave 5 (package `experiments.data`): data curation, synthetic data and benchmark methodology.
+
+### DataCuration (W5 2.11: Rho-1, 2.12: quality classifier, 2.14: RegMix, 2.16: EntiGraph)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Rho-1 selective token loss (`SelectiveTokenLoss`), counting with 30% noise tokens | Loss on clean tokens | 0.089 | Full-token cross-entropy: 0.576. EL2N pruning: 0.145 | Training only on useful tokens cuts the clean loss more than 6x. |
+| Quality classifier (`QualityClassifierFilter`, hashed 1–3-grams), keep 50% of a 40%-clean pool | Clean loss; clean share of kept data | 1.899; 59% | No filter: 2.084; 40%. Perplexity filter: 1.705; 77% | Partial negative: it helps, but the perplexity filter is better. |
+| RegMix (`RegressionMixer`) | Target loss; mixture weights | 2.175; [0.04, 0.42, 0.02, 0.51] | Uniform: 2.482. DoReMi: 2.482 with [0.25, 0.24, 0.25, 0.26] | RegMix finds a better mixture; DoReMi stays at uniform. |
+| EntiGraph synthetic corpus (`EntityGraphAugmenter`) | Fact QA accuracy forward / reversed / two-hop / overall | 1.00 / 1.00 / 1.00 / 1.00 | Raw corpus: 1.00 / 0.25 / 0.00 / 0.50. Paraphrases: 1.00 / 0.00 / 0.00 / 0.40 | Entity-pair rewrites teach reversed and two-hop facts that raw text and paraphrases do not. |
+
+### ShapleyPruning (W5 2.13: In-Run Data Shapley)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| In-Run Shapley, first / second order, 20% of labels flipped, 20% of examples removed | Share of flipped labels among removed examples; test accuracy | 0.35 / 0.43; 0.685 / 0.685 | EL2N: 0.56; 0.675. Random: 0.20; 0.690 | Negative: above chance, but EL2N finds more flipped labels, and no method beats random pruning on accuracy. |
+| Ghost dot products (`InRunShapleyTest`) | Max error against explicit per-example gradients | 2.24e-9 | Explicit per-example gradients | The fast estimate is exact for dense layers. |
+
+### ModelCollapse (W5 2.15: model collapse, replace vs accumulate)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Accumulate: each generation trains on all real and synthetic data so far | Test loss at generation 5; output diversity | 2.433; 1.79 | Replace (each generation trains only on the last one's output): 5.108; 0.67. Generation 0: 2.210; 1.33 | Accumulating data avoids collapse; replacing it more than doubles the loss. |
+
+### BenchmarkMethodology (W5 2.17: Fluid Benchmarking, 2.18: Min-K%++ contamination detection)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Fluid Benchmarking (IRT with adaptive item selection, `IrtEvaluator`), 10% of items | Kendall τ with true model quality | 0.725 | IRT on random items: 0.447. Accuracy on a random subset: 0.311. All items: IRT 0.851, accuracy 0.895 | Adaptive IRT ranks models far better than a random subset of the same size. |
+| Same | Share of training steps where the score drops | 0.14 | Random subset: 0.27. True quality: 0.18 | Less noisy than subset accuracy. |
+| Min-K%++ (`ContaminationDetector`) | Contamination AUROC | 0.746 | Plain Min-K%: 0.755. Loss threshold: 0.702 | Negative: beats the loss but not plain Min-K%. |
 
 ---
 
@@ -665,6 +831,69 @@ Sources: Run-w4, R-wave4.
 |---|---|---|---|---|
 | DTM: 4 chained conditional Boltzmann stages on `PBitIsingMachine`, 4x4 bars and stripes | Valid share; distinct patterns of 30; MMD | 0.963; 30; 0.0045 | Single Boltzmann machine: 0.973; 30; 0.0059. Thresholded DDPM, 10 steps: 0.145; 26; 0.0110 | Negative: the DTM is only on par with a single machine (slightly better MMD, slightly fewer valid samples). On 6x6 data the single machine was clearly better, 0.903 valid vs 0.413 (R-wave4). |
 
+
+### DiffusionArithmeticRl (W5 3.12: RL for diffusion LMs, diffu-GRPO and JustGRPO)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| diffu-GRPO on `MaskedDiffusion` | Accuracy on 100 sums, parallel (left-to-right) decoding | 0.47 (0.49) | SFT only: 0.30 (0.36) | Gains in both decoding modes. |
+| JustGRPO (RL on the left-to-right policy) | Same | 0.18 (0.56) | Same | Best left-to-right, but the gain does not carry over to one-step parallel decoding, which falls below SFT. |
+
+### BlockDiffusionText (W5 6.1: block diffusion, BD3-LM)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| BD3-LM, block size 4, grammar sentences | Perplexity; tokens per step; valid share | 1.36; 2.00; 0.94 | Same model as AR (B=1): 1.30; 1.00; 1.00. `MaskedDiffusion` (B=16): 1.42; 1.75; 0.72 | Half the decoding steps at a small perplexity cost, and better than full masked diffusion on every count. |
+
+### RepaExperiment (W5 6.2: REPA representation alignment)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| REPA auxiliary loss on ToyImages | Distance per pixel at 150 / 300 / 500 steps | 1.001 / 0.676 / 0.551 | Plain diffusion: 0.989 / 0.649 / 0.560 | Negative: no speed-up at toy scale. |
+
+### GuidanceComparison (W5 6.3: autoguidance and APG)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Autoguidance, w=3 (guide with a weaker model) | Precision; recall (ToyPoints) | 0.77; 0.70 | No guidance: 0.96; 0.92. Classifier-free guidance, w=3: 0.82; 0.08 | Keeps most of the recall that CFG destroys. |
+| Adaptive projected guidance (APG), w=3 | Same | 0.99; 0.22 | Same | Highest precision, and nearly 3x CFG's recall. |
+
+### HighDimensionalTargets (W5 6.4: x-prediction, JiT)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| x-prediction, 8x8 images lifted to 512 dimensions, width-96 MLP | Distance per pixel; off-manifold energy | 0.216; 0.00 | ε-prediction: 3.953; 0.87. v-prediction: 0.751; 0.78 | Predicting clean data stays on the data manifold, 3.5x closer than v-prediction. |
+| x-prediction trained with a v-loss | Same | 0.665; 0.03 | Same | The loss weighting matters: most of the gain is lost. |
+
+### TarFlowExperiment (W5 6.5: TarFlow transformer autoregressive flow)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| TarFlow (2 blocks, committed config) | Bits per dimension (ToyImages) | 7.245 | RealNVP: 7.303 | Wins on likelihood. A 4-block, 89 s run gave 7.125 against 7.180 (R-wave5). |
+| Same | Nearest-real squared distance | 23.05 (24.87 without the denoising step) | RealNVP: 16.86. TinyDdpm at the same budget: 33.35 | Loses to RealNVP on sample quality; the score-denoising step helps. |
+
+### EquilibriumMatchingExperiment (W5 6.6: equilibrium matching)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Equilibrium matching (EqM), ToyPoints ring | Distance to the nearest centre at 1 / 2 / 4 / 16 steps | 0.756 / 0.539 / 0.236 / 0.153 | Flow matching: 1.763 / 0.758 / 0.357 / 0.230. Consistency model: 0.443 / 0.371 / 0.307 / 0.295 | Beats flow matching at every step count, and is the best from 4 steps on. |
+| EqM with adaptive stopping | Distance; mean steps | 0.137; 8.4 | Same | The best result overall. |
+
+### MemorizationTimescale (W5 6.8: memorization-onset timescale in diffusion)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Diffusion on a ring of 8 blobs, n = 4 / 16 / 64 training points, 2000 steps | Memorization onset τ_mem; excess copy rate | n=4: 200, 0.26. n=16: never, 0.02. n=64: never, -0.03 | Chance copy rate: 0.08 / 0.20 / 0.13 | Only the 4-point set memorizes within the budget. |
+| Same | Generalization time τ_gen | 1400 / 800 / 1200 steps | — | Noisy rather than clearly independent of n, so the paper's separation of timescales is not clearly shown. |
+
 ---
 
 ## graphs
@@ -715,6 +944,82 @@ Sources: R-evo, Test.
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | BrainMovie listener filming a growing Brain with RigL-style rewiring | Frames; neuron count | 16-frame GIF; neurons 7 → 11 | n/a | A demo: the GIF shows recruitment and rewiring as the loss falls. |
+
+
+### TranscoderComparison (W5 5.1: transcoders and skip-transcoders)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Skip-transcoder | Explained variance, superposition MLP k=1 / 2 / 4; toy LM k=4 | 0.788 / 0.824 / 0.867; 0.995 | SAE on the MLP output: 0.724 / 0.838 / 0.911; 0.988. Plain transcoder: 0.612 / 0.728 / 0.840; 0.988 | The skip connection lifts the transcoder above the SAE at k=1 and on the toy LM, but not at k=2 or 4. |
+
+### CircuitTracing (W5 5.2: cross-layer transcoders and attribution graphs)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Cross-layer transcoder + attribution graph | Explained variance; replacement agreement; B-feature recovery; pruned graph nodes | 0.974; 0.996; 0.50; 4.6 | Per-layer transcoders: 0.966; 0.997; 0.75; 4.9 | Negative: slightly better fit, but it recovers fewer of the planted features. The graph is exact (completeness gap 4.4e-8). |
+
+### ModelDiffing (W5 5.3: crosscoders)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Crosscoder over a base and a fine-tuned model | Features exclusive to the fine-tune; best AUROC for the planted feature; precision | 4; 0.858; 0.75 | Separate SAEs: 8 new features; 0.732; 0.00 | The crosscoder isolates the planted change. The diffed model is a planted fine-tune, not PreferenceTuning (R-wave5). |
+
+### SuperpositionRecovery: hierarchical features (W5 5.4: Matryoshka, BatchTopK and JumpReLU SAEs)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Matryoshka SAE, hierarchy toy with 16 true features | Features recovered; absorption; dead share; L0; explained variance | 9; 0.405; 0.53; 1.98; 0.913 | TopK: 4; 0.884; 0.03; 2.00; 0.899. L1: 5; 0.217; 0.00; 7.97; 0.995 | Recovers the most features with far less absorption than TopK, but half its latents are dead. |
+| BatchTopK SAE | Same | 5; 0.750; 0.44; 1.99; 0.976 | Same | Better fit than TopK, little less absorption. |
+| JumpReLU SAE | Same | 5; 0.313; 0.16; 3.87; 0.996 | Same | Best fit, low absorption, at a higher L0. |
+
+### PatchingAttribution (W5 5.5: AtP and AtP*)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| AtP / AtP* on a recall model (24 nodes) | Spearman correlation with exact patching; top-3 nodes found; time | 0.996 / 0.996; 3 of 3; 4 ms / 10 ms | Exact activation patching: 27 ms | Gradient attribution matches exact patching at a fraction of the cost. The agent's report gave 56 / 13 / 18 ms (R-wave5). |
+
+### MechanismDecomposition (W5 5.6: stochastic parameter decomposition)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SPD on toy models of superposition | Mechanisms recovered; active components per input; faithfulness error | 1 of 5; 1.80; 0.005 | SAE on activations: 5 of 5 directions | Negative: SPD did not converge in the CPU budget despite extensive tuning (R-wave5). |
+
+### WeightSparseCircuits (W5 5.7: weight-sparse transformers)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Top-k weight-sparse training, bracket matching | Weights in the circuit at accuracy ≥ 0.98 (of 1600) | 93 | Pruned dense model: 390 (both accuracy 1.000) | The weight-sparse model's circuit is 4x smaller. |
+
+### SequentialEditing (W5 5.10: AlphaEdit null-space editing)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| AlphaEdit (ridge 1e-3), 80 sequential edits over 160 subjects | Efficacy; final success; specificity | 0.91; 0.81; 1.00 | ROME: 0.99; 0.86; 0.93 | Trades some edit success for perfect specificity. The null space has 57 dimensions, fewer than the 80 edits (R-wave5). |
+
+### UnlearningComparison (W5 5.11: NPO and SimNPO, 5.12: RMU)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| NPO / SimNPO, memorised exceptions | Forget-set accuracy; test accuracy; membership AUC; accuracy after a relearning attack | 0.00; 0.83; 0.72; 0.05 | Retrain: 0.03; 0.89; 0.53; 0.00. Original: 1.00; 0.79; 1.00; 1.00. Gradient ascent: 0.65; 0.75; 0.84; 0.90. Random labels: 0.00; 0.70; 0.86; 0.45 | The best approximate method, and it resists relearning. NPO and SimNPO coincide here, because the labels have length 1 (R-wave5). |
+| RMU (representation misdirection) | Same | 0.25; 0.73; 0.91; 0.35 | Same | Weak, because forget and retain inputs come from the same distribution (R-wave5). |
+
+### MemorizationCapacity (W5 5.18: bits per parameter)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MLP next-bit models, hidden 4 / 8 / 12 / 16 | Bits memorised per parameter | 1.15 / 1.08 / 1.11 / 0.92 | The paper's about 3.6 bits per parameter for toy GPTs (R-wave5) | Far below the paper (tiny MLPs, short training). Hidden 32 gave 0.64 (R-wave5). |
+| Same, quantized | Bits kept at hidden 16, int8 / int4 | 817 / 321 | Float: 823 | int8 keeps nearly everything; int4 loses most. |
+| Dataset sweep at hidden 8 | Bits memorised, 10 → 540 strings | 87 → 520 | — | Still rising at the largest set, so capacity is not reached. |
 
 ---
 
@@ -858,6 +1163,80 @@ Sources: Run-w4.
 |---|---|---|---|---|
 | PSM/SPM fill-in-the-middle transform | Infill token accuracy (exact) | 0.910 (0.820) | Plain causal LM: 0.098 (0.008) | FIM teaches infilling. |
 | Same | Left-to-right loss | 1.274 | Plain causal LM: 1.271 | "FIM is free": left-to-right loss is unchanged. |
+
+
+### DynamicChunking (W5 1.15: H-Net dynamic chunking)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| H-Net dynamic chunker, 110 steps | Bits per byte; bytes per main-network step | 0.807; 2.50 | Per byte: 0.795; 1.00. BLT entropy patches: 0.796; 2.72. BPE (32 merges): 0.679; 2.86. Uniform: 3.17 | Learned chunking cuts main-network steps 2.5x at a small cost, but BPE is clearly better at this budget. |
+
+### Eagle3Speculation (W5 4.1: EAGLE-3 and parallel drafting)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| EAGLE-3 draft (multi-layer feature fusion), chain / tree | Tokens per target pass (lossless); draft passes | 2.22 / 2.58; 128 / 108 | EAGLE: 2.42 / 2.76; 132 / 116 | Negative: EAGLE-3 trails EAGLE, because the feature fusion overfits at toy scale (R-wave5). |
+| EAGLE-3 with the feature loss, chain / tree | Tokens per target pass | 1.95 / 2.50 | Same | The feature loss does not help. With the fusion frozen, the feature loss on and no training-time test it ties, 2.62 against 2.67 (R-wave5). |
+| P-EAGLE (parallel drafting) | Tokens per target pass; draft passes | 2.05; 35 | EAGLE-3 chain: 2.22; 128 | About a quarter of the draft passes for slightly fewer tokens per pass. |
+
+### CascadeDecoding (W5 4.2: speculative cascades)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Speculative cascade, token-level deferral rule, α=0.3 | Accuracy; cost; large-model passes | 1.000; 7.01; 4.75 | Lossless speculative decoding (α=0): 1.000; 8.09; 5.44. Confidence cascade (α=0.3): 1.000; 9.04; 7.91. Large model alone: 1.000; 9.13; 8.00. Small model alone: 0.570; 1.13 | The cheapest setup at full accuracy, 13% under lossless speculation. |
+| Same, α=0.5 | Accuracy; cost | 0.824; 5.79 | Same | Deferring more starts to cost accuracy. |
+| Difference-based deferral rule, α=0.3 | Accuracy; cost | 0.664; 5.69 | Same | Degrades much faster than the token rule. |
+
+### SuffixDecoding (W5 4.3: SuffixDecoding)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Suffix-tree drafter (adaptive), agent traces | Tokens per target pass (lossless); verified tokens per token | 1.86; 1.80 | Prompt lookup: 1.01; 4.82. Greedy: 1.00 | Nearly doubles the tokens per pass where prompt lookup barely helps. |
+
+### SharedPrefixServing (W5 4.8: Hydragen, 4.9: prefill/decode disaggregation)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Hydragen shared-prefix attention, 32 samples of a 1024-token prompt | Time; share of keys read; max difference | 5.61 ms; 5%; 3.0e-8 | Per-sequence attention: 28.26 ms | 5.0x faster with the same output. The agent's report gave 7.4 against 27.9 ms (3.8x) (R-wave5). |
+| Prefill/decode disaggregation, 2 workers, SLO 60 ms TTFT / 3.0 ms TPOT (SLO from R-wave5) | Goodput; SLO attainment; mean TTFT; mean TPOT | 78.4 req/s; 1.00; 12.0 ms; 2.24 ms | Colocated chunked serving: 56.7 req/s; 0.73; 12.7 ms; 2.75 ms | 38% more goodput with every request in SLO; the generated tokens are identical (R-wave5). |
+
+### SliceCompression (W5 4.14: SliceGPT)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SliceGPT, keep 75% of the width (32 → 24) | Validation loss; after 40 recovery steps | 2.618; 2.335 | Dense: 2.071. Wanda at 75%: 2.085. Drop 1 block: 2.139; 1.962 after 40 steps | Negative: slicing loses to Wanda and to dropping blocks, because the width-32 residual stream is not low-rank (R-wave5). |
+| Same, keep 50% (32 → 16) | Same | 3.113; 2.913 | Wanda: 2.218. Drop 2 blocks: 2.291; 2.047 after 40 steps | Same, by a wider margin. |
+| Rotation without slicing | Validation loss | 2.071 | Dense: 2.071 | The rotation itself is exact. |
+
+### RepresentationTuning (W5 4.16: LoReFT, 4.17: LISA)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| LoReFT, rank 4 | Loss before → after; trainable values | 7.945 → 0.523; 520 | LoRA: 0.054 with 4608. IA3: 1.898 with 384. BitFit: 1.817 with 908 | Far better than IA3 and BitFit at a similar size; LoRA is better with 9x the values. LoReFT sits in the FFN-output adapter slot, because `HookedDecoder` has no residual-stream hook (R-wave5). |
+| LISA (1 of 4 blocks trained, resampled every 5 steps) | Loss before → after; peak optimizer state (values) | 8.946 → 0.000; 26,712 | Full fine-tuning: 0.012; 103,320. LoRA: 0.037; 18,432 | Matches full fine-tuning with a quarter of the optimizer state. |
+
+### Hyperfitting (W5 4.18: hyperfitting)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Hyperfitting (fine-tune to near-zero training loss), greedy decoding | 3-gram repetition; distinct-2; copied 8-grams; validation loss | 0.115; 0.215; 0.109; 5.092 (train 0.032) | Base greedy: 0.806; 0.022; 0.024; 1.856. Base top-p 0.9: 0.064; 0.164; 0.002; 1.856 | Greedy repetition drops 7x and diversity beats top-p sampling while validation loss nearly triples; 11% of 8-grams are copied from the fine-tuning set. |
+
+### OpenEndedDiversity (W5 3.17: output homogeneity and seed-conditioning)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Random seed prefix + greedy decoding (`SeedPrefix`) | Valid share; unique valid; novel unique valid | 0.80; 0.38; 0.08 | Temperature 0.5 / 1.0 / 1.5: valid 1.00 / 0.99 / 0.92, unique valid 0.37 / 0.40 / 0.43, novel 0.00 / 0.01 / 0.02 | Seed-conditioning gives the most novel outputs, at a cost in validity. |
+| Seed prefix + temperature 0.5 | Same | 0.77; 0.35; 0.08 | Same | Same novelty as greedy with a seed. |
+| Homogeneity of the baseline model | Share of valid samples repeated; overlap of two baseline models (Jaccard) | 0.60; 0.80 | — | The "hivemind" effect: models repeat themselves and each other. |
 
 ---
 
@@ -1040,6 +1419,51 @@ All wave 4 optimizers on the block-level classification task in `ModernOptimizer
 | MARS-Lion | Same | 0.099; 0.983 | Same | Slightly behind. |
 | Grokfast, moving-average mode | Same | 0.383; 0.844 | Same | The only setting that clearly hurts here. |
 
+
+### MuonFamilyExperiment (W5 2.1: Polar Express, 2.2: NorMuon, 2.3: NAMO / MALT, 2.10: APOLLO)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Polar Express orthogonaliser | Orthogonality error at 5 / 8 iterations | 0.174 / 0.0000 | Newton-Schulz: 0.346 / 0.373 | Far more accurate, and it reproduces the paper's coefficients (8.2872, -23.5959, 17.3004). |
+| Muon with Polar Express | Loss at 3 / 5 iterations | 1.111 / 1.109 | Muon with Newton-Schulz: 1.101 / 1.106 | Negative: the better orthogonalisation gives no training gain. |
+| NorMuon (neuron-wise normalised Muon) | Loss; neuron update spread (max/median) | 1.107; 1.05 | Muon: 1.109; 1.25. AdamW: 1.123; 1.35 | Evens out neuron updates for a tiny loss gain. |
+| Adaptive Muon, NAMO / NAMO_D | Best loss; learning-rate sensitivity | 1.152 / 1.144; 0.217 / 0.242 | Muon: 1.211; 0.508. NorMuon: 1.217; 0.446 | Lower loss and half the sensitivity to the learning rate. |
+| Adaptive Muon, MALT | Same | 1.303; 0.273 | Same | Less sensitive, but a worse loss. |
+| APOLLO / APOLLO-Mini | Loss; optimizer state | 1.170 / 1.171; 13,404 / 2652 bytes | AdamW: 1.093; 49,232. Adam8bit: 1.120; 24,784. Adam-mini: 1.138; 25,180. GaLore: 1.296; 16,400 | Beats GaLore at less memory but trails the Adam family; APOLLO-Mini uses a nineteenth of AdamW's state. |
+
+### TrainingStabilityExperiment (W5 2.4: cautious weight decay, 2.5: AdamC, 2.7: ZClip, 2.8: WSM)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Cautious weight decay (wd 0.5) | Loss; weight norm | 1.105; 20.5 | Decoupled weight decay: 1.239; 15.2 | A much lower loss, with less shrinkage of the weights. |
+| AdamC (corrected weight decay), cosine schedule, wd 1 | End/minimum gradient-norm ratio; loss | 0.99; 1.039 | AdamW: 1.70; 1.045 | Removes the late rise in gradient norm. It needed wd 1 to show the effect (R-wave5). |
+| ZClip (z-score adaptive clipping), lr 1e-2 with outlier batches | Final MSE; loss spikes | 0.0019; 0 | No clipping: 0.0399; 84. Fixed-norm clipping: 0.0035; 70. Core SpikeGuard: 0.0006; 10 | The only method with no spikes; SpikeGuard has the lower MSE. |
+| WSM (warmup–stable–merge) | Final loss at 500 steps | 0.959 | WSD: 0.961. LAWA: 0.955. Cosine: 0.939. Constant: 1.044 | Level with WSD; cosine is better here. |
+
+### DepthTransferExperiment (W5 2.6: CompleteP)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CompleteP (depth-μP with α = 1), depth 2 → 16 | Shift in best learning rate; regret | 0; 0.000 | Depth-μP: shift 1; 0.000. Standard parametrisation: shift 1; 0.037 | The best learning rate transfers across depth unchanged. |
+
+### SparseMemoryFacts (W5 6.16: sparse memory fine-tuning)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Sparse memory fine-tuning (`ProductKeyMemory`, TF-IDF slot selection), 100 new facts in batches of 10 | New-fact / background accuracy | 0.81 / 0.91 | Full fine-tuning: 0.20 / 0.06. LoRA: 0.22 / 0.16. EWC: 0.21 / 0.10. Background after pretraining: 1.00 | Learns the new facts and keeps most of the old ones; every baseline does neither. |
+
+### LowCommunicationTraining (W5 6.17: Streaming DiLoCo and DeMo)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Streaming DiLoCo (parameter fragments, 4-bit outer gradients, overlap), spiral task, 4 workers, 300 steps | Loss; accuracy; kB communicated | 0.027; 0.99; 45 | Synchronous data parallel: 0.027; 0.99; 12,009. FedAvg: 0.031; 0.99; 400. DiLoCo: 0.043; 0.99; 400 | Matches synchronous data parallel with about 270x less traffic. |
+| DeMo (decoupled momentum, fast DCT components only) | Same | 0.295; 0.94; 1267 | Same | Worse loss and more traffic than DiLoCo here. |
+
 ---
 
 ## reasoning
@@ -1191,6 +1615,192 @@ Sources: Run-w4, R-wave4.
 |---|---|---|---|---|
 | Union-find congruence engine plus a neural proposer of auxiliary terms, toy algebra | Proof rate | 0.978 (1.60 auxiliary terms on average) | Random auxiliary terms: 0.689; engine alone: 0.089 | The proposer turns a weak engine into a near-complete prover. It gets two engineered distance inputs; without them it reached only 0.60 vs 0.52 for random terms (R-wave4). |
 
+
+Wave 5 (WP3) post-training experiments share the harness `RlvrRecipes` and the extended `GrpoTrainer`. Two setups recur (R-wave5): **from scratch** is addition(4), 300 steps, seed 1; **weak base** is addition(6), starting from an SFT model trained on half the puzzles (greedy accuracy 0.49). Where an item has no experiment class of its own, its section is named after its test class.
+
+### RecurrentDepthScaling (W5 1.16: recurrent-depth latent reasoning, Huginn)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Recurrent-depth model, r = 1 / 2 / 4 / 8 core iterations at test time | 2-hop pointer-chasing accuracy | 0.426 / 0.453 / 0.473 / 0.488 | Fixed stack of 3 attention blocks: 0.840 (chance 0.25) | Negative: test-time scaling is monotone but small, and the fixed stack wins clearly. The test asserts only above-chance and no divergence (R-wave5). |
+
+### EntropyMechanism (W5 3.1: Clip-Cov / KL-Cov)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Clip-Cov, from scratch | Final policy entropy (from 2.96); greedy accuracy; pass@8 | 0.213; 0.88; 0.88 | GRPO: 0.178; 0.72; 0.72. DAPO (clip-higher): 0.272; 0.80; 0.82 | The best accuracy, with more entropy kept than GRPO. |
+| KL-Cov | Same | 0.279; 0.76; 0.76 | Same | The most entropy, a small accuracy gain. Both act on 20% of tokens instead of the papers' 2e-4 and 2e-3, because the batches are tiny (R-wave5). |
+
+### ForkingTokens (W5 3.2: high-entropy forking-token updates, 80/20)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Gradient only on the top 20% highest-entropy tokens, weak base | Greedy accuracy (from 0.49); pass@1; pass@64; final entropy | 0.55; 0.48; 0.61; 0.350 | All-token GRPO: 0.57; 0.55; 0.57; 0.210 | Slightly lower greedy accuracy, more large-k coverage and entropy. From scratch it fails (0.16), because almost every token is high-entropy there (R-wave5). |
+
+### Cispo (W5 3.3: CISPO)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CISPO (clipped importance weights, every token keeps its gradient) | Greedy accuracy every 60 steps; share of tokens outside the clip range | 0.32 / 0.60 / 0.64 / 0.68 / 0.76; 0.003 | GRPO: 0.20 / 0.48 / 0.68 / 0.72 / 0.72; 0.011. DAPO: 0.40 / 0.68 / 0.76 / 0.72 / 0.80; 0.019 | Ahead of GRPO early, ends between GRPO and DAPO. |
+
+### Gmpo (W5 3.4: GMPO)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GMPO (geometric-mean policy optimisation) | Greedy accuracy; token ratio range; mean per-step ln(max/min) | 0.76; [0.47, 2.95]; 0.383 | GRPO: 0.72; [0.44, 3.73]; 0.358. GSPO: 0.84; [0.60, 2.98]; 0.284 | Negative on stability: a smaller extreme ratio, but the mean spread is not lower than GRPO's, and GSPO is better on both. |
+
+### PassAtKTraining (W5 3.5: pass@k training)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Pass@4 training | pass@1; pass@16; greedy accuracy; final entropy | 0.46; 0.96; 0.92; 1.636 | Pass@1 GRPO: 0.70; 0.72; 0.72; 0.178 | Trades pass@1 for much higher pass@16 and greedy accuracy, and keeps entropy high. |
+
+### NegativeSampleReinforcement (W5 3.6: NSR and W-REINFORCE)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| NSR (negative samples only), weak base | pass@1 / pass@64 | 0.49 / 0.57 | Base: 0.32 / 0.61. GRPO: 0.55 / 0.57. PSR (positive only): 0.52 / 0.57 | Level with GRPO at large k. |
+| W-REINFORCE (down-weighted positives) | Same | 0.49 / 0.59 | Same | Keeps the most large-k coverage, but the gaps are small and no method reaches the base's pass@64. |
+
+### SpuriousRewards (W5 3.7: Intuitor, 3.8: spurious / random-reward control)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| True reward (control) | Greedy accuracy; pass@1 | 0.49 → 0.57 (+0.08); 0.30 → 0.56 | — | The reference gain. |
+| Format-only reward | Same | 0.49 → 0.47 (-0.02); 0.30 → 0.30 | True reward | Negative: no reward-independent gain. |
+| Random reward | Same | 0.49 → 0.22 (-0.27); 0.30 → 0.20 | True reward | A random reward harms the model. |
+| Intuitor (self-certainty reward), barely trained base | Same | 0.06 → 0.12; 0.09 → 0.12 | Majority-vote reward (TTRL): same. Random reward: 0.06 → 0.10; 0.09 → 0.09 | Negative: barely above a random reward. |
+| Intuitor, default base (R-wave5) | Greedy accuracy | 0.49 → 0.12 | TTRL: 0.49 → 0.27 | Both label-free rewards collapse the model (R-wave5). |
+
+### LengthControlledThinking (W5 3.9: L1 / LCPO length-controlled RL)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| LCPO, budgets 0–4 thoughts | Accuracy; realized length | 0.19 / 0.38 / 0.81 / 0.88 / 0.81; 0.13 / 1.25 / 2.38 / 2.81 / 3.44 (mean error 0.30) | Budget forcing: 0.06 / 0.13 / 0.25 / 0.50 / 1.00. Unconstrained: 0.31 at 1.81 thoughts | Beats budget forcing at budgets 0–3 by thinking longer on the instances that need it; budget forcing wins at 4. |
+
+### RolloutMismatch (W5 3.10: truncated importance sampling)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| 2-bit quantized rollouts + TIS (cap 2) | Learner greedy accuracy; KL(sampler‖learner) per token | 0.68; 0.247 | 2-bit without TIS: 0.72; 0.207. On-policy: 0.72; 0 | Negative: TIS brings no gain. 3- and 4-bit rollouts give only 0.010 and 0.001 KL (R-wave5). |
+
+### ClarifyingQuestions (W5 3.11: CollabLLM multiturn-aware reward)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CollabLLM | Task success (on underspecified requests); turns; asks when needed / needlessly | 1.00 (1.00); 1.50; 1.00 / 0.00 | Single-turn GRPO and SFT: 0.60 (0.20); 1.00; 0.00 / 0.00 | Learns to ask exactly when a request is underspecified. Trained at temperature 2, with a few clarification demonstrations in the SFT base (R-wave5). |
+
+### ConfidenceVoting (W5 3.13: DeepConf)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DeepConf-offline, keep the top 90% | Accuracy | 0.453 | Self-consistency: 0.438. PRM best-of-16: 0.734 | A small gain over self-consistency. |
+| DeepConf-online, keep the top 90% | Accuracy; tokens per question | 0.281; 63.4 | Self-consistency: 0.438; 63.9 | Negative: early stopping loses accuracy and saves almost no tokens. |
+| DeepConf offline / online, keep the top 50% | Accuracy | 0.281 / 0.281 (60.6 tokens) | Self-consistency: 0.422. PRM best-of-16: 0.750 | Aggressive filtering hurts. |
+
+### GenerativeVerification (W5 3.14: generative verifier, GenRM)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GenRM-CoT (4 rationales) | Best-of-16 accuracy | 0.781 | PRM: 0.734. Discriminative outcome verifier: 0.516. One sample: 0.203. Oracle: 0.984 | The best verifier, ahead of the process reward model. |
+| GenRM direct (no rationale) | Same | 0.266 | Same | Without rationales it barely beats one sample. |
+
+### ReasoningCoverage (W5 3.15: RLVR coverage, pass@k at large k)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GRPO | pass@1 / pass@256 | 0.55 / 0.57 | Base: 0.31 / 0.67 (it overtakes GRPO at k=64). Distilled: 0.77 / 1.00 | RL sharpens but narrows; distillation widens coverage. Reproduces Yue et al. |
+
+### ShardedConversation (W5 3.16: lost-in-conversation sharded evaluation)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CollabLLM | Single-turn → sharded accuracy; unreliability (P90-P10) | 1.00 → 0.99; 0.00 → 0.08 | SFT: 0.90 → 0.14; 0.64 → 0.40. Single-turn GRPO: 1.00 → 0.16; 0.00 → 0.28 | The models not trained for multiple turns lose most of their accuracy when the request comes in pieces. |
+
+### ForgettingVsKl (W5 3.18: RL's Razor)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GRPO on a new task | New-task accuracy; old-task accuracy (from 0.88); KL(base‖model) on the new task | 0.65; 0.75 (forgot 0.13); 2.681 | SFT on labels in a format the base never wrote: 0.65; 0.00 (forgot 0.88); 8.347. SFT in the base's own format: 0.65; 0.69 (forgot 0.19); 0.339 | GRPO forgets far less than off-format SFT. But native-format SFT has lower KL than GRPO and forgets slightly more, so KL predicts forgetting only partly. The off-format SFT was needed to show the effect (R-wave5). |
+
+### CompressArc (W5 6.18: CompressARC, MDL test-time training)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CompressARC (per-puzzle VAE-style network, no pretraining), ARC-like tasks | Tasks solved; cell accuracy | Colour map 1 of 2, mirror 0 of 2, row fill 0 of 2, column fill 0 of 2; cells 0.61 | Copying the input: cells 0.44 | Negative: only one task family is solved. |
+| Same, Latin squares | Puzzles solved; blank-cell accuracy | 0 of 6; 0.58 | TRM: 0.33; 0.83. HRM: 0.17; 0.83 (both trained on 1600 puzzles) | Loses to TRM and HRM. The KL weight is tuned to β=0.1; the full-MDL β=1 collapsed the latents (R-wave5). |
+
+---
+
+## safety
+
+New theme in wave 5 (package `experiments.safety`). BackdoorRemoval, CircuitBreakers and DeepSafetyAlignment share `SafetyToyLm`, a planted-backdoor and refusal toy LM. CircuitBreakers and DeepSafetyAlignment are measured by `RefusalRobustnessTest`.
+
+### PersonaSteering (W5 5.8: persona vectors)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Steer against the persona vector at inference (−α), after a fine-tune that induces the trait | Trait rate (evil sign-off on neutral prompts); task accuracy | 0.05; 1.00 | Before fine-tuning: 0.00; 1.00. Plain fine-tune: 1.00; 1.00 (projection shift +5.48) | Inference steering removes the trait without hurting the task. |
+| Ablate the persona direction at inference | Same | 0.98; 1.00 | Same | Negative: after fine-tuning, the trait is no longer carried only along that direction (R-wave5). |
+| Preventative steering (+α during the fine-tune) | Same; projection shift | 0.00; 1.00; -1.11 | Same | Steering during training stops the trait from being learned at all. |
+
+### ObfuscationAtlas (W5 5.9: deception probes under RL pressure)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GRPO with a linear-probe penalty (λ 0.6, no KL), mod-6 addition with a hackable grader | Honest share; hack share (unseen HACK2 share); category | 0.00; 1.00 (0.99); obfuscated policy | Starting model: 0.72; 0.20 (0.05); probe AUROC 0.94. No penalty: 0.00; 1.00 (0.00); blatant | The policy switches to a hack the probe never saw, rather than becoming honest. |
+| Probe penalty + KL 1.0 | Same; probe AUROC | 0.72; 0.24 (0.02); 0.96 (retrained 0.97); honest | Same | It stays near the starting model, but is no more honest. With KL 0.2, probe AUROC fell to 0.76 while a retrained probe still got 0.94 (R-wave5). |
+
+### BackdoorRemoval (W5 5.13: latent adversarial training)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Latent adversarial training (LAT) | Backdoor success rate (refusal and benign accuracy 1.00 in every row) | 0.00 | Backdoored model: 1.00. Plain safety SFT: 1.00. Input-space adversarial training: 1.00 | Only perturbing the latents removes the backdoor. All defences use SGD; with Adam even plain SFT removed this small backdoor (R-wave5). |
+
+### CircuitBreakers (W5 5.14: circuit breakers, representation rerouting)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Circuit breakers | Harmful-completion rate: direct / prefill 1 / prefill 2 / token edit (mean); benign accuracy | 0 / 0 / 0 / 0 (0.00); 1.00 | No defence: 1 / 1 / 1 / 1 (1.00); 1.00. Refusal SFT: 0 / 0.10 / 0.97 / 0 (0.27); 1.00 | Stops all four attacks, including the 2-token prefill that defeats refusal training. |
+
+### DeepSafetyAlignment (W5 5.15: deep safety alignment, recovery augmentation)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Recovery-augmented alignment | Refusal; harm after a 1-token / 2-token prefill; recovery after a prefill | 1.00; 0.00 / 0.00; 1.00 | Standard alignment: 1.00; 0.02 / 0.94; 0.00 | Training on recoveries makes refusal survive prefilling attacks. |
+| Token-wise constrained fine-tuning loss, against a harmful fine-tune | Refusal after; benign accuracy | Standard: 0.99; 0.92. Augmented: 0.97; 0.71 | Plain SFT: 0.00; 1.00 for both alignments | The constraint keeps refusal through the attack but costs benign accuracy. It pins only the first token; pinning two zeroed the benign task (R-wave5). |
+
+### PrivateTraining (W5 5.16: DP-SGD with an RDP accountant, 5.17: one-run privacy audit)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DP-SGD, 8x8 digits, 1000 samples, q = 0.2, 200 steps, δ = 1e-5 (setup R-wave5) | Test accuracy at ε = 8 / 3 / 1 (noise multiplier) | 0.84 (2.01) / 0.65 (4.39) / 0.25 (11.57) | Non-private: 0.93 | The usual privacy-utility curve; the accountant's spent ε equals the target exactly. |
+| One-run audit of the DP-SGD model (theoretical ε 8), 200 canaries, 40 guesses (setup R-wave5) | Right guesses; audited ε lower bound; membership AUC; test accuracy | 26 of 40; 0.03; 0.63; 0.45 | Non-private: 39 of 40; 2.06; 0.98; 0.82 | The audit separates private from non-private training in one run. Its pure-DP bound caps at about 2.1 with 40 guesses (R-wave5). |
+| Same audit after NPO unlearning of a non-private model | Same | 37 of 40; 1.50; 0.70; 0.77 | Same | Unlearning does not hide membership from the audit. |
+
 ---
 
 ## selfsupervised
@@ -1234,6 +1844,23 @@ Sources: Run-w4.
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | Attention and Mamba-2 heads in parallel with meta tokens, 2 layers | Associative recall; parameters | 1.000; 7,564 | Kimi 3:1 `HybridLinearStack`, 4 layers: 0.996; 10,768 | Matches the sequential hybrid with 30% fewer parameters. |
+
+
+### DeltaFamilyShootout (W5 1.4: Kimi Delta Attention, 1.6: log-linear attention)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Kimi Delta Attention (per-channel decay) | recall(8,8,4) accuracy | 0.969 (1522 params) | Gated DeltaNet: 0.648 (1540). Mamba-2: 0.391 (1126). Chance 0.125 | Per-channel gating gives a large recall gain over Gated DeltaNet. |
+| Log-linear attention (gated linear, O(log T) Fenwick states), width 32 | recall(16,16,12) accuracy | 0.324 (6098 params) | Gated linear attention, one state: 0.234 (5570). Chance 0.0625 | More states, better recall. Only the gated-linear variant is built, not the delta-rule one (R-wave5). |
+
+### StateTracking (W5 1.5: DeltaProduct)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DeltaProduct, n=2 Householder steps per token | parity(8) accuracy | 1.000 (1841 params) | DeltaProduct n=1: 0.621. Gated DeltaNet (β in (0,1)): 0.508. Chance 0.5 | Two steps per token solve parity. |
+| Same, 600 steps | S3 composition of 3 permutations | 1.000 | n=1: 0.805. Chance 0.167 | Solves permutation tracking where n=1 does not. Length 4 was not solved by any model at 600 steps (R-wave5). |
 
 ---
 
@@ -1317,6 +1944,43 @@ Sources: Run-w4, R-wave4.
 | HQQ, per column | Same | 3.03e-3 / 3.38e-4 | Asymmetric RTN per column: 3.34e-3 / 2.73e-4 | Beats RTN at 3 bits but not at 4. Quantize time about 18–19 ms vs 13–18 ms for GPTQ and 136–145 ms for AWQ (Run-w4); times swing with JIT warm-up (R-wave4). |
 | NVFP4 (16 per E4M3 scale), MXFP4 (32 per E8M0 scale) | Decoder KL to float | NVFP4 7.83e-4; MXFP4 8.29e-4 | int4 per column 8.65e-4; core int4 groups of 32: 6.16e-4; groups of 16: 3.73e-4; FP8 E4M3: 5.09e-5 | The FP4 formats beat per-column int4 but lose to core int4 at the same group size. |
 
+
+### DataDependentPositions (W5 1.7: PaTH attention, 1.8: CoPE)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| PaTH and PaTH-FoX (Householder position transforms) | Flip-flop accuracy at length 16 / 32 / 48 | 1.000 / 1.000 / 1.000 (both) | RoPE: 1.000 / 0.938 / 0.680. NoPE: 0.836 / 0.797 / 0.672. FoX: 1.000 / 1.000 / 0.992. Chance 0.5 | Perfect at 3x the length where RoPE slips. |
+| CoPE (contextual position encoding) | k-th last word accuracy at length 16 / 24 | 1.000 / 1.000 | RoPE: 0.820 / 0.859. Stick-breaking: 0.563 / 0.516. Chance 0.125 | Counting positions by content solves the task. |
+
+### Fp4Training (W5 2.9: Quartet native FP4 training)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Quartet (MXFP4 with Hadamard rotation and stochastic rounding) | Loss after 300 steps (gap to FP32) | 1.234 (+0.069) | Naive FP4: 1.317 (+0.152). FP8: 1.177 (+0.013). FP32: 1.164 | Halves the FP4 gap, but FP8 is still much closer. |
+| MXFP4 stochastic rounding (`QuartetDenseTest`) | Mean absolute bias over 400 draws | 0.0057 | One round-to-nearest error: 0.0925 | Unbiased in expectation. |
+
+### CodebookQuantization (W5 4.11: QTIP, 4.12: AQLM, 4.13: SVDQuant)
+Sources: Run-w5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| QTIP (trellis-coded quantization), 2-bit weights | Decoder KL to float; perplexity | 6.38e-3; 1.089 | HQQ (groups of 16): 1.85e-2; 1.108. GPTQ: 1.01e-1; 1.191. RTN: 3.14e-1; 1.473. Float: 1.081 | Best at 2 bits, 3x below HQQ; slow to quantize (1019 ms against 32 ms for HQQ). |
+| AQLM (2 x 4-bit codes per 4 weights, codebooks shared across layers), 2-bit | Same | 5.27e-2; 1.140 | Same | Beats GPTQ and RTN, not HQQ. |
+| QTIP / AQLM, 3-bit weights | Decoder KL | 1.21e-3 / 1.67e-3 | HQQ: 1.63e-3. GPTQ: 1.69e-3. RTN: 3.20e-3 | All methods are close at 3 bits; QTIP is slightly best. |
+| SVDQuant (low-rank branch absorbs outliers), rank 8, W4A4 | Relative output error on an outlier layer | 0.163 (rank 4: 0.173) | RTN: 0.470. SmoothQuant: 0.214. Hadamard: 0.166 | Level with Hadamard on the single layer. |
+| Same | W4A4 decoder KL to float | 5.33e-4 (rank 4: 1.48e-3) | RTN: 1.64e-3. SmoothQuant: 2.14e-3. Hadamard: 1.88e-3 | 3x lower KL than any other W4A4 method. |
+
+### ParetoQat (W5 4.15: ParetoQ low-bit QAT recipe)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ParetoQ (float training, then QAT for the last 30% of steps) | Test loss at 1.58 / 2 / 3 bits | 0.064 / 0.058 / 0.046 | QAT from scratch: 0.099 / 0.119 / 0.040. PTQ: 1.223 / 0.134 / 0.098. Float: 0.030 | Best at 1.58 and 2 bits; QAT from scratch edges it at 3. The paper's 10% QAT share was too short at 300 steps, so the test uses 30% (R-wave5). |
+| Same | Accuracy at 1.58 / 2 / 3 bits | 0.98 / 0.99 / 1.00 | QAT from scratch: 0.97 / 0.97 / 1.00. PTQ: 0.65 / 0.96 / 0.97 | PTQ collapses at 1.58 bits. |
+| Same, 1 bit (R-wave5) | Test loss | About 0.19 | QAT from scratch: 0.146 | At 1 bit, quantized training from the start wins (R-wave5). |
+
 ---
 
 ## timeseries
@@ -1341,6 +2005,14 @@ Sources: R-rl, Test.
 |---|---|---|---|---|
 | DeepAR (GRU + Gaussian head, sampled paths) | 80% interval coverage / mean width | 0.75 / 0.47 | Target coverage 0.80 | Slightly under-covers, with narrower intervals. |
 | Quantile MLP (pinball loss) | Same | 0.77 / 0.55 | Target 0.80 | Closer to target, with wider intervals. |
+
+
+### DiffusionForcingRollouts (W5 6.7: diffusion forcing)
+Sources: Run-w5, R-wave5.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Diffusion forcing with a noisy past, Lorenz, 200-step rollouts | 10-step RMSE; attractor distance; share diverged | 0.219; 0.093; 0.00 | Teacher-forced AR: 0.127; 2.640; 0.94. Full-sequence diffusion: 0.305; 0.136; 0.00. Diffusion forcing with a clean past: 0.303; 0.142; 0.00 | AR is best short-term but diverges 94% of the time; diffusion forcing stays on the attractor and is the best there. The causal model is a Markov window (an MLP over the last 4 tokens) (R-wave5). |
 
 ---
 
@@ -1399,6 +2071,23 @@ The ten most interesting wave 4 findings (Run-w4):
 10. **More forced thinking, more accuracy.** Budget forcing rises from 0.06 at budget 0 to 0.88 at budget 4, against 0.38 unconstrained (reasoning).
 
 Honourable mentions: CLIP and SigLIP classify digits zero-shot at 0.786 and 0.780, against 0.312 for a 5-shot SimCLR probe (multimodal). On-policy distillation (GKD) lifts the student to 0.61 against 0.48 for logit KD (language). KIVI 2-bit holds the attention error to 0.45 where H2O at the same bytes gives 1.21 (context). A Generative Agents memory stream recalls 0.89 against 0.58 for a sliding window (agents). DreamCoder-style library learning solves 50 of 65 tasks against a flat 38 for a fixed DSL (evolution). v-prediction halves the diffusion sample distance, 0.27 against 0.57 for ε-prediction (generative). Stick-breaking attention keeps lag-2 accuracy at 0.998 at 4x the training length, against 0.938 for RoPE (attention).
+
+### Wave 5
+
+The ten most interesting wave 5 findings (Run-w5):
+
+1. **Sparse memory fine-tuning learns without forgetting.** After 100 streamed facts it scores 0.81 on the new facts and keeps background accuracy at 0.91, against 0.20 / 0.06 for full fine-tuning, 0.22 / 0.16 for LoRA and 0.21 / 0.10 for EWC (optim).
+2. **Streaming DiLoCo cuts traffic about 270x for free.** Loss 0.027 with 45 kB communicated, the same loss as synchronous data parallel with 12,009 kB (optim).
+3. **Only latent adversarial training removes the backdoor.** Backdoor success 0.00 against 1.00 for plain safety SFT and for input-space adversarial training (safety).
+4. **Circuit breakers stop every attack.** Mean harmful-completion rate 0.00 over four attacks against 0.27 for refusal SFT, which fails the 2-token prefill at 0.97 (safety).
+5. **Accumulate synthetic data, don't replace it.** At generation 5 the test loss is 2.433 when data accumulates against 5.108 when each generation replaces the last (data).
+6. **Multiturn-aware reward survives sharded conversations.** CollabLLM keeps 0.99 when a request arrives in pieces, while SFT falls from 0.90 to 0.14 and single-turn GRPO from 1.00 to 0.16 (reasoning).
+7. **EntiGraph teaches reversed and two-hop facts.** Fact QA 1.00 overall against 0.50 for the raw corpus and 0.40 for paraphrases (data).
+8. **x-prediction keeps high-dimensional diffusion on the manifold.** Distance per pixel 0.216 against 0.751 for v-prediction and 3.953 for ε-prediction in 512 dimensions (generative).
+9. **Per-channel gating and Householder products track state.** Kimi Delta Attention recalls 0.969 against 0.648 for Gated DeltaNet, and DeltaProduct with two steps solves parity at 1.000 against 0.508 (sequence).
+10. **A nested FFN beats a model trained at its size.** MatFormer's width-16 slice reaches validation loss 2.8361, against 2.8605 for a model trained from scratch at width 16 and 2.9841 for a truncated plain model (attention).
+
+Honourable mentions: multi-token attention solves block lookup at 0.949 against 0.395 for MHA (attention). Hydragen runs shared-prefix attention 5.0x faster with identical output (language). GenRM-CoT picks the right answer from 16 samples at 0.781 against 0.734 for a PRM (reasoning). Pass@4 training lifts pass@16 from 0.72 to 0.96 (reasoning). RLVR narrows coverage: the base model overtakes GRPO at k=64 (0.67 vs 0.57 at k=256), reproducing Yue et al. (reasoning). QTIP quantizes to 2 bits at decoder KL 6.4e-3 against 1.85e-2 for HQQ (techniques). Prefill/decode disaggregation raises goodput from 56.7 to 78.4 req/s with every request in SLO (language). CoPE solves the k-th-word task at 1.000 against 0.820 for RoPE (techniques).
 
 ## Negative or null results
 
@@ -1460,5 +2149,35 @@ Wave 4 (Run-w4):
 | generative | ThermodynamicDenoising (DTM) | Valid share 0.963 vs 0.973 for a single Boltzmann machine; on 6x6 data 0.413 vs 0.903 (R-wave4) | Chaining denoising stages gives no gain over one machine. |
 | generative | MaskGit vs autoregressive | At 16 steps: distance 0.056, real share 0.58 vs 0.049 and 0.75 | MaskGIT trails the autoregressive model at equal steps. |
 | generative | NextScalePrediction (VAR) | Real share 0.09 and 7 distinct vs 0.15 and 13 for MaskGIT at 3 calls | Lowest distance (0.209 vs 0.215), but less realistic and less varied. |
+
+Wave 5 (Run-w5):
+
+| Theme | Experiment | Result | What it means |
+|---|---|---|---|
+| optim | MuonFamilyExperiment, Polar Express | Muon loss 1.111 / 1.109 (3 / 5 iterations) vs 1.101 / 1.106 with Newton-Schulz | A far better orthogonaliser (error 0.174 vs 0.346 at 5 iterations) gives no training gain. |
+| data | DataCuration, quality classifier | Clean loss 1.899 (59% clean kept) vs 1.705 (77%) for a perplexity filter | The classifier helps over no filter (2.084) but loses to perplexity filtering. |
+| data | DataCuration, DoReMi | Target loss 2.482 with weights [0.25, 0.24, 0.25, 0.26], same as uniform | DoReMi does not move away from uniform weights; RegMix reaches 2.175. |
+| data | ShapleyPruning, In-Run Shapley | Flipped labels found 0.35 / 0.43 vs 0.56 for EL2N; test accuracy 0.685 vs 0.690 random | Above chance, but EL2N detects more and no method beats random pruning. |
+| data | BenchmarkMethodology, Min-K%++ | AUROC 0.746 vs 0.755 for plain Min-K% | Beats the loss threshold (0.702) but not Min-K%. |
+| attention | SparseSelectionShootout, MoBA (and DSA) | MoBA recall 0.227 / 0.195 / 0.133 vs dense 0.578 / 0.391 / 0.219; DSA 0.438 / 0.297 / 0.281 | Block routing loses recall at every length; DSA beats dense only at the longest. |
+| attention | MoeRefinements, ReMoE | MSE 1.4649 vs 0.6333 for top-2 at the same experts per token | ReLU routing hits the sparsity target with more than twice the error. |
+| attention | AugmentedResidualDepth, LAuReL | 3.0008 / 3.0000 vs 3.0000 plain; value residual 2.8729 | No gain at this budget. |
+| attention | Gemma3nBlocks, per-layer embeddings | 2.8939 vs 2.7967 for plain d=16 | PLE is slightly worse than plain on this toy task. |
+| reasoning | RecurrentDepthScaling | 0.426 → 0.488 from 1 to 8 iterations vs 0.840 for a fixed 3-block stack | Test-time depth helps only a little, and a fixed stack wins clearly. |
+| language | Eagle3Speculation, EAGLE-3 | Tokens per pass 2.22 / 2.58 (chain / tree) vs 2.42 / 2.76 for EAGLE | Feature fusion overfits at toy scale (R-wave5). |
+| language | SliceCompression, SliceGPT | 2.618 at 75% width vs 2.085 for Wanda and 2.139 for dropping a block | The width-32 residual stream is not low-rank enough to slice. |
+| language | DynamicChunking, H-Net | 0.807 bits/byte vs 0.679 for BPE | Learned chunking does not reach BPE at this budget. |
+| reasoning | RolloutMismatch, TIS | Learner accuracy 0.68 with TIS vs 0.72 without | Truncated importance sampling does not repair 2-bit rollouts here. |
+| reasoning | Gmpo | Mean per-step ratio spread 0.383 vs 0.358 for GRPO | The geometric mean does not stabilise the ratios; GSPO does better (0.284). |
+| reasoning | SpuriousRewards and Intuitor | Format-only -0.02, random -0.27; Intuitor 0.06 → 0.12 vs 0.06 → 0.10 for a random reward | No reward-independent gains; on the default base Intuitor collapses (0.49 → 0.12, R-wave5). |
+| reasoning | ConfidenceVoting, DeepConf-online | 0.281 vs 0.438 self-consistency, at 63.4 vs 63.9 tokens | Early stopping costs accuracy and saves almost no tokens. |
+| generative | DiffusionArithmeticRl, JustGRPO | Parallel decoding 0.18 vs 0.30 SFT (left-to-right 0.56) | The left-to-right gain does not carry over to parallel decoding. |
+| interp | MechanismDecomposition, SPD | 1 of 5 mechanisms vs 5 of 5 directions for an SAE | SPD did not converge in the CPU budget. |
+| interp | CircuitTracing, cross-layer transcoder | B-feature recovery 0.50 vs 0.75 for per-layer transcoders | Better fit, fewer planted features recovered. |
+| safety | PersonaSteering, ablation | Trait 0.98 after ablating the persona direction vs 1.00 without | The fine-tuned trait is not carried only along the persona vector. |
+| generative | RepaExperiment, REPA | 0.551 vs 0.560 at 500 steps (and worse at 150 and 300) | No speed-up at toy scale. |
+| reasoning | CompressArc | 1 of 8 ARC-like tasks; Latin squares 0 of 6 vs 0.33 TRM and 0.17 HRM | Only one task family compresses, and it loses to the trained reasoners. |
+| control | ContrastiveGoals, deeper CRL | Depth 16 0.80 vs depth 4 0.85, both below HER + DQN at 1.00 | Depth does not help contrastive RL at this scale. |
+| control | ContinuousOfflineRl, Q-chunking | FQL 0.49 with Q-chunking vs 0.63 without; CQL 0.99 | Chunking hurts here, and FQL trails CQL. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.
