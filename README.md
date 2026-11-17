@@ -855,7 +855,16 @@ their SHA-256, so a file the worker already has is not sent again), the progress
 curve come back live, and the trained model is saved to `models/` here as for a local run. A
 worker trains only on files it was sent, keeps them in `<data>/worker`, and trains one run at a
 time. The token is kept in `hosts.properties` and never sent to the page. The connection is
-plain HTTP with the token, so use workers on your own network or over a VPN.
+plain HTTP with the token, so use workers on your own network, over a VPN or through an SSH
+tunnel (`ssh -L 7870:127.0.0.1:7870 ...` with the worker on `--listen 127.0.0.1`).
+
+A worker also **serves its chat models**: the ones in its model folders (`--models`, else the
+usual ones) and in `<data>/worker/downloads` and `<data>/worker/models`. Every host added on the
+Train screen shows up on the Models screen under **Compute**, next to this PC and Vast.ai (the
+hosted APIs are under **Model APIs**), as a provider named after the host, right after this PC, and
+its models answer in Chat and for agents through the worker's own engine, streamed back as they
+are written. Setting `BRAINIAC_WORKER_TOKEN` (32 characters or more) gives the worker that token
+instead of the one it makes and keeps in `worker.token`, for machines that are set up by a script.
 
 **Agents** work towards a goal with a chat model and the studio's tools: listing and asking
 models, searching Hugging Face and downloading from it, listing data sets, checking and starting
@@ -867,6 +876,12 @@ waits on the Agents screen before a tool that acts (downloading, training, askin
 may cost money); Allow or Deny it, with a note if you like. In **Auto** it calls every tool
 itself. A finished agent takes another message and goes on. Programs that bring their own agent
 call the same tools over `/api/tools` with the studio's token.
+
+**Vast.ai** rents GPU machines by the hour. Paste an API key on the Training screen (it is kept in
+`keys.properties`, or comes from `VAST_API_KEY`, and is sent only to Vast.ai) to see your balance,
+the machines you rent, and verified offers to rent, cheapest first, filtered by GPU, memory, count
+and price. The studio only reads there for now; renting will ask you each time before anything is
+billed.
 
 **Ctrl K** finds anything: a screen, a conversation, a chat model, a saved model in the
 builder, a training run, or a command such as a new conversation, a new model or another layout.
@@ -894,6 +909,9 @@ POST /api/hub/files         {"repo":"Qwen/Qwen2.5-0.5B-Instruct-GGUF"} -> its GG
 POST /api/hub/download      {"repo":"...","option":"qwen2.5-0.5b-instruct-q8_0.gguf"} ("folder" for the whole model)
 GET  /api/hub/downloads     every download with its progress; POST /api/hub/cancel {"id":"1"} stops one,
                             POST /api/hub/delete {"name":"..."} deletes a downloaded model
+GET  /api/vast              the Vast.ai key (last 4 characters), balance and rented machines
+POST /api/vast/key          {"key":"..."} saves the Vast.ai key in keys.properties ("remove": true removes it)
+POST /api/vast/offers       {"gpu":"4090","minGpuRam":24,"gpus":1,"maxPrice":0.5} -> machines to rent, cheapest first
 POST /api/hub/token         {"token":"hf_..."} saves the Hugging Face token to ~/.brainiac/hf_token ("remove": true
                             deletes it); GET /api/hub/downloads says which token is used, by its last 4 characters
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
@@ -934,6 +952,9 @@ A worker answers only requests that carry its token (`Authorization: Bearer <tok
 
 ```
 GET  /worker/info           name, devices, cores, memory, and what it is training and has queued
+GET  /worker/models         the chat models it serves
+POST /worker/chat           {"model":"...","system":"...","messages":[{"role":"user","text":"..."}],"maxTokens":1024}
+                            answers as server-sent events: text, thinking, then done (or error)
 GET  /worker/files/<sha256> whether it has a file; PUT with ?name= sends one (checked against the hash)
 POST /worker/runs           {"spec":{...},"model":"sha:<sha256>/net.brainiac"} starts a run on files it was sent
 GET  /worker/runs?id=1      the run's progress, epochs and loss curve

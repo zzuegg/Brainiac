@@ -1365,6 +1365,7 @@
       T.options = o; T.data = d; T.models = m.models || []; T.hosts = h.hosts || []; T.hostsAt = Date.now();
       ensureForm();
       T.loaded = true;
+      loadVast();
       await pollRuns(true);
       checkTrain();
       if (state.view === "train") render();
@@ -1405,6 +1406,7 @@
     return `
     <div class="train live-train">
       <section class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</section>
+      <section id="train-vast" aria-label="GPUs to rent">${vastPanel()}</section>
       <div class="train-body">
         <aside class="launch panel" id="train-form" aria-label="Start a training run">${trainForm()}</aside>
         <section class="runs-col">
@@ -1447,7 +1449,7 @@
         <button class="btn primary" type="submit" ${T.hostBusy ? "disabled" : ""}>${T.hostBusy ? "Connecting…" : "Connect"}</button>
       </form>`
       : `<button class="host add" id="host-add" aria-label="Add a host">${icon("plus")}<b>Add a host</b><span class="muted">Run <code>brainiac-studio --worker</code> on another machine and paste its address and token.</span></button>`;
-    return here + remote + add;
+    return here + remote + vastCard() + add;
   }
 
   function entrySelect(kind, cur, label, allowNone) {
@@ -1659,7 +1661,7 @@
   function renderTrainLive() {
     if (state.view !== "train" || !T.loaded) return;
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
-    const typing = !!document.activeElement?.matches?.("#host-form input");
+    const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key");
     if (!typing) set("train-hosts", trainHosts());
     set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
     const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
@@ -1667,7 +1669,7 @@
     if (!tip || tip.hidden) { set("train-chart", trainChartFrame()); drawLossChart(); }
     renderTrainCheck();
     bindTrainLists();
-    if (!typing) bindHosts();
+    if (!typing) { bindHosts(); bindVastCard(); }
   }
   function renderTrainForm() {
     const box = $("#train-form"); if (!box) return;
@@ -1736,9 +1738,126 @@
     });
     $("#train-start")?.addEventListener("click", startTraining);
   }
+
+  // ----- Vast.ai: GPU machines to rent. The studio only reads here; renting will ask each time.
+  const V = { status: null, loading: false, error: null, busy: false, keyError: null, removing: false, open: false,
+    filters: { gpu: "", minGpuRam: 0, gpus: 1, maxPrice: 0 }, offers: null, searching: false, offerError: null };
+  const usd = n => n == null ? "—" : "$" + (n < 1 ? n.toFixed(3) : n.toFixed(2));
+
+  async function loadVast() {
+    if (V.loading) return;
+    V.loading = true;
+    try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
+    finally { V.loading = false; }
+    if (state.view === "train" && T.loaded) renderHosts();
+    else if (state.view === "library") render();
+  }
+
+  function vastCard() {
+    const s = V.status;
+    if (!s) return `<div class="host vast"><div class="host-head"><span class="dot" style="--c:var(--muted)"></span><b>Vast.ai</b><span class="grow"></span><span class="typing"><i></i><i></i><i></i></span></div></div>`;
+    if (!s.key) return `<form class="host vast" id="vast-key-form" autocomplete="off">
+        <div class="host-head"><span class="dot" style="--c:var(--muted)"></span><b>Vast.ai</b><span class="chip plain">rent GPUs</span></div>
+        <span class="muted" style="font-size:12px">Rent GPU machines by the hour. Paste an API key from <a href="https://cloud.vast.ai/manage-keys/" target="_blank" rel="noopener">cloud.vast.ai</a>. It is kept in <code>keys.properties</code> and sent only to Vast.ai.</span>
+        <div class="vast-row"><input class="input mono" id="vast-key" type="password" placeholder="API key" spellcheck="false" aria-label="Vast.ai API key">
+          <button class="btn" type="submit" ${V.busy ? "disabled" : ""}>${V.busy ? "Checking…" : "Save"}</button></div>
+        ${V.keyError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.keyError)}</span></div>` : ""}
+      </form>`;
+    const ins = s.instances || [];
+    return `<div class="host vast">
+        <div class="host-head"><span class="dot" style="--c:var(--${s.error ? "bad" : "ok"})"></span><b>Vast.ai</b><span class="chip plain" title="Key ${esc(s.key.source === "environment" ? "from " + s.key.label : "saved in keys.properties")}">${esc(s.key.hint)}</span>
+          <span class="grow"></span>${s.balance != null ? `<span class="mono tnum" title="Balance on Vast.ai">${usd(s.balance)}</span>` : ""}
+          ${s.key.source === "saved" ? `<button class="iconbtn sm" id="vast-remove" aria-label="Remove the Vast.ai key" title="${V.removing ? "Click again to remove the key" : "Remove the key"}">${V.removing ? icon("check") : icon("trash")}</button>` : ""}</div>
+        ${s.error ? `<div class="flag bad">${icon("alert")}<span>${esc(s.error)}</span></div>` : ""}
+        ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
+        <div class="host-foot"><span class="muted">${ins.length ? `${ins.length} rented machine${ins.length === 1 ? "" : "s"}` : "No machines rented."}</span><span class="grow"></span>
+          <button class="btn sm" id="vast-open" aria-expanded="${V.open}">${icon("search")}${V.open ? "Hide offers" : "Find GPUs"}</button></div>
+      </div>`;
+  }
+
+  // Vast.ai on the Models screen, under Compute: the account at a glance; renting and offers are on Training.
+  function vastCompute() {
+    const s = V.status;
+    const open = `<button class="btn sm" data-vast-train>${icon("search")}${s?.key ? "Find GPUs on Training" : "Add the key on Training"}</button>`;
+    if (!s) return `<div class="prov off"><div style="display:flex;gap:10px;align-items:center"><span class="plogo">V</span><b>Vast.ai</b><span class="grow"></span>${V.error ? `<span class="chip plain">unreachable</span>` : `<span class="typing"><i></i><i></i><i></i></span>`}</div></div>`;
+    const ins = s.instances || [];
+    return `<div class="prov ${s.key && !s.error ? "on" : "off"}">
+        <div style="display:flex;gap:10px;align-items:center"><span class="plogo">V</span><b>Vast.ai</b><span class="grow"></span>
+          ${s.key ? `<span class="chip plain">${esc(s.key.hint)}</span>${s.balance != null ? `<span class="mono tnum" title="Balance on Vast.ai">${usd(s.balance)}</span>` : ""}` : `<span class="chip plain">no key</span>`}</div>
+        <div class="muted" style="font-size:12.5px">GPU machines rented by the hour. A rented machine runs the studio as a worker and shows up here as a host.</div>
+        ${s.error ? `<div class="keyerr">${esc(s.error)}</div>` : ""}
+        ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
+        <div class="provset"><span class="mono faint" style="font-size:11px">${s.key ? (ins.length ? `${ins.length} rented` : "nothing rented") : "rent GPUs by the hour"}</span><span class="grow"></span>${open}</div>
+      </div>`;
+  }
+
+  function vastPanel() {
+    if (!V.open || !V.status?.key) return "";
+    const f = V.filters, o = V.offers;
+    const rows = !o ? "" : !o.length ? `<div class="faint pad">No offers match. Loosen the filters.</div>`
+      : `<div class="tablebox vast-table"><table class="models"><thead><tr><th>GPU</th><th>Memory</th><th>$/hour</th><th>Reliability</th><th>Where</th><th>CUDA</th><th>CPU · RAM</th><th>Download</th></tr></thead><tbody>
+        ${o.map(x => `<tr><td><b>${esc(x.gpu)}</b>${x.gpus > 1 ? ` <span class="faint">× ${x.gpus}</span>` : ""}</td><td class="mono tnum">${x.gpuRamGb ?? "?"} GB</td><td class="mono tnum">${usd(x.pricePerHour)}</td>
+          <td class="mono tnum">${x.reliability != null ? (x.reliability * 100).toFixed(1) + "%" : "—"}</td><td>${esc(x.location || "—")}</td><td class="mono">${x.cuda ?? "—"}</td>
+          <td class="mono tnum">${x.cpuCores != null ? Math.round(x.cpuCores) : "?"} · ${x.ramGb ?? "?"} GB</td><td class="mono tnum">${x.downMbps != null ? Math.round(x.downMbps) + " Mb/s" : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="panel vast-panel">
+      <div class="col-head"><span class="h3">GPUs on Vast.ai</span><span class="muted" style="font-size:12px">verified machines you can rent now, cheapest first</span><span class="grow"></span>
+        <button class="iconbtn sm" id="vast-close" aria-label="Close">${icon("x")}</button></div>
+      <form class="vast-filters" id="vast-filters" autocomplete="off">
+        <label>GPU<input class="input" id="vf-gpu" placeholder="any, or 4090, A100…" value="${esc(f.gpu)}"></label>
+        <label>Memory per GPU<input class="input mono" id="vf-mem" type="number" min="0" step="1" value="${f.minGpuRam || ""}" placeholder="any GB"></label>
+        <label>GPUs<input class="input mono" id="vf-gpus" type="number" min="1" max="16" value="${f.gpus || 1}"></label>
+        <label>Most per hour<input class="input mono" id="vf-price" type="number" min="0" step="0.05" value="${f.maxPrice || ""}" placeholder="any $"></label>
+        <button class="btn primary" type="submit" ${V.searching ? "disabled" : ""}>${icon("search")}${V.searching ? "Looking…" : "Search"}</button>
+      </form>
+      ${V.offerError ? `<div class="flag bad" style="margin:0 16px 12px">${icon("alert")}<span>${esc(V.offerError)}</span></div>` : ""}
+      ${rows}
+      <p class="muted vast-note">Renting from the studio comes next: it will show the price and ask you each time before anything is billed, then add the machine as a host.</p>
+    </div>`;
+  }
+
+  function renderVast() {
+    const box = $("#train-vast"); if (!box) return;
+    box.innerHTML = vastPanel(); bindVastPanel();
+  }
+
+  async function searchVast() {
+    V.searching = true; V.offerError = null; renderVast();
+    try { V.offers = (await postJson("/api/vast/offers", V.filters)).offers; }
+    catch (e) { V.offerError = String(e.message || e); }
+    V.searching = false; renderVast();
+  }
+
+  function bindVastCard() {
+    $("#vast-key-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const key = $("#vast-key").value.trim();
+      if (!key) { V.keyError = "Paste the key first."; renderHosts(); return; }
+      V.busy = true; V.keyError = null; renderHosts();
+      try { V.status = await postJson("/api/vast/key", { key }); if (V.status.error) V.keyError = V.status.error; }
+      catch (err) { V.keyError = String(err.message || err); }
+      V.busy = false; renderHosts();
+    });
+    $("#vast-remove")?.addEventListener("click", async () => {
+      if (!V.removing) { V.removing = true; renderHosts(); setTimeout(() => { if (V.removing) { V.removing = false; renderHosts(); } }, 4000); return; }
+      V.removing = false; V.open = false; V.offers = null;
+      try { V.status = await postJson("/api/vast/key", { remove: true }); } catch (e) { console.warn(e); }
+      renderHosts(); renderVast();
+    });
+    $("#vast-open")?.addEventListener("click", () => { V.open = !V.open; renderHosts(); renderVast(); if (V.open && !V.offers) searchVast(); });
+  }
+
+  function bindVastPanel() {
+    $("#vast-close")?.addEventListener("click", () => { V.open = false; renderHosts(); renderVast(); });
+    $("#vast-filters")?.addEventListener("submit", e => {
+      e.preventDefault();
+      V.filters = { gpu: $("#vf-gpu").value.trim(), minGpuRam: +$("#vf-mem").value || 0, gpus: +$("#vf-gpus").value || 1, maxPrice: +$("#vf-price").value || 0 };
+      searchVast();
+    });
+  }
+
   function renderHosts(focus) {
     const box = $("#train-hosts"); if (!box) return;
-    box.innerHTML = trainHosts(); bindHosts();
+    box.innerHTML = trainHosts(); bindHosts(); bindVastCard();
     if (focus) $(focus)?.focus();
   }
   function bindHosts() {
@@ -1803,7 +1922,7 @@
     }
   }
   function bindLiveTrain() {
-    bindTrainForm(); bindTrainLists(); bindHosts(); drawLossChart();
+    bindTrainForm(); bindTrainLists(); bindHosts(); bindVastCard(); bindVastPanel(); drawLossChart();
     if (!T.timer) pollRuns(false);
   }
 
@@ -1832,7 +1951,7 @@
           <td class="mono">${m.fmt}</td><td class="mono tnum">${m.size}</td><td class="mono">${m.ctx}</td><td>${fitCell(m)}</td>
           <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "remote" ? `<span class="chip c-agent">remote · your key</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
         </tr>`).join("")}</tbody></table></div>`}
-      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>
+      ${isLive() ? "" : `<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>`}
       ${isLive() ? liveProviders() : `<div class="providers">${M.providers.map(p => `
         <div class="prov ${p.state}">
           <div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
@@ -2175,6 +2294,7 @@
   const chatModels = sel => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === sel));
   const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
   const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
+  const providerKind = id => id === "local" ? "local" : (L.info?.providers || []).find(p => p.id === id)?.kind || "api";
   const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
   const mediaName = { text: "Text", vision: "Vision", image: "Image", speech: "Speech", transcribe: "Transcribe", video: "Video" };
 
@@ -2422,7 +2542,8 @@
     const key = model === "auto" ? L.info.auto.text : model;
     const m = modelByKey(key);
     if (!key) return `${icon("wand")}<span>No chat model yet.</span>`;
-    const where = m && m.provider === "local" ? "this PC · nothing leaves it" : `${providerName(m ? m.provider : key.split("/")[0])} · uses your key`;
+    const pid = m ? m.provider : key.split("/")[0], kind = providerKind(pid);
+    const where = kind === "local" ? "this PC · nothing leaves it" : kind === "host" ? `${providerName(pid)} · your machine` : `${providerName(pid)} · uses your key`;
     return `${icon("wand")}<span>${model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
   }
 
@@ -2905,7 +3026,7 @@
           <button class="gtoggle" data-fold="${esc(id)}" aria-expanded="${!folded}">${icon("chev")}<b>${esc(name)}</b>
             <span class="faint tnum">${list.length} model${list.length === 1 ? "" : "s"}${hidden ? ` · ${hidden} hidden` : ""}</span></button>
           <span class="grow"></span>
-          ${id === "local" ? `<span class="chip c-ok">free · private</span>` : `<span class="chip c-agent">your key</span>`}
+          ${id === "local" ? `<span class="chip c-ok">free · private</span>` : providerKind(id) === "host" ? `<span class="chip c-ok">your machine</span>` : `<span class="chip c-agent">your key</span>`}
           ${p && p.settings ? `<button class="btn ghost sm" data-edit-provider="${esc(id)}">${icon("edit")}Edit</button>` : ""}
         </div></td></tr>
         ${list.map(row).join("")}</tbody>`;
@@ -2995,8 +3116,11 @@
 
   function liveProviders() {
     if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
-    const ready = L.info.providers.filter(p => p.local || p.keys.length);
-    const more = L.info.providers.filter(p => !p.local && !p.keys.length);
+    const apis = L.info.providers.filter(p => p.kind === "api");
+    const ready = apis.filter(p => p.keys.length);
+    const more = apis.filter(p => !p.keys.length);
+    const local = L.info.providers.filter(p => p.local);
+    const hosts = L.info.providers.filter(p => p.kind === "host");
     const keyUse = (p, label) => usageLine(L.usage && L.usage.keys[p.id + "/" + label]);
     const form = (p, open) => `<form class="keyform" data-provider="${p.id}" ${open ? "" : "hidden"}>
           <input class="input" name="label" placeholder="Name" value="${p.keys.some(k => k.source === "saved") ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
@@ -3005,7 +3129,14 @@
         </form>`;
     const card = p => {
       const head = `<div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
-        ${p.ready ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
+        ${p.ready && !(p.kind === "host" && p.error) ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : p.kind === "host" ? "offline" : "no key"}</span>`}</div>`;
+      if (p.kind === "host") {
+        return `<div class="prov ${p.error ? "off" : "on"}">${head}
+          <div class="muted" style="font-size:12.5px">A machine of yours running <code>brainiac-studio --worker</code>. Its models answer with its own engine and hardware.</div>
+          ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
+          <div class="provset"><span class="mono faint" style="font-size:11px">free · your machine${L.usage && L.usage.providers[p.id] ? " · " + esc(usageLine(L.usage.providers[p.id])) : ""}</span><span class="grow"></span>
+            <button class="btn sm" data-go="train">${icon("train")}Hosts on Training</button></div></div>`;
+      }
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
           <div class="muted" style="font-size:12.5px">Hugging Face model folders (${esc((p.families || ["llama", "mistral", "qwen2"]).join(", "))}) and <code>.gguf</code> files in:</div>
@@ -3036,7 +3167,13 @@
         ${form(p, true)}
         <span class="mono faint" style="font-size:11px">${total && p.keys.length > 1 ? esc(usageLine(total)) + " in all · " : ""}several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
     };
-    return `<div class="providers">${ready.map(card).join("")}</div>
+    return `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
+      <div class="providers">${local.map(card).join("")}${hosts.map(card).join("")}${hosts.length ? "" : `<div class="prov off hint-card">
+          <b>Another machine of yours</b>
+          <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it on Training. Its models show up here and answer in Chat; it can also train.</div>
+          <div class="provset"><span class="grow"></span><button class="btn sm" data-go="train">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
+      <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>
+      ${ready.length ? `<div class="providers">${ready.map(card).join("")}</div>` : ""}
       ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
       <div class="more">${more.map(p => `<div class="prov-row ${L.adding === p.id ? "open" : ""}">
           <span class="plogo">${esc(p.name[0])}</span>
@@ -3047,7 +3184,7 @@
         </div>`).join("")}</div>` : ""}
       <div class="prov routing">
         <b>Routing</b>
-        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then the providers with keys, in the order shown here.</span>
+        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then your worker hosts, then the providers with keys, in the order shown here.</span>
         <button class="btn" id="refresh-models">${icon("retry")}List models again</button>
         ${L.info.providers.some(p => p.balance && p.keys.length) ? `<button class="btn" id="refresh-balances">${icon("retry")}Check balances</button>` : ""}
         <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters. Anthropic, OpenAI and Google report no balance to an API key; DeepSeek, Kimi and OpenRouter do.</span>
@@ -3415,6 +3552,12 @@
     });
     $("#new-model")?.addEventListener("click", newModel);
     bindPlace();
+    if (!V.status && !V.loading && !V.error) loadVast();
+    $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+    $("[data-vast-train]")?.addEventListener("click", () => {
+      if (V.status?.key) { V.open = true; if (!V.offers) searchVast(); }
+      go("train");
+    });
     $$("[data-place-remove]").forEach(b => b.addEventListener("click", async () => {
       const f = b.dataset.placeRemove;
       if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); } }, 4000); return; }

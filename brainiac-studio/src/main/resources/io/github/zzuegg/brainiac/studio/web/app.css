@@ -755,6 +755,8 @@ button.linkchip { border: 0; font: inherit; font-size: 12px; cursor: pointer; }
 button.linkchip:hover { filter: brightness(1.15); text-decoration: underline; text-underline-offset: 2px; }
 .keyuse { flex-basis: 100%; font-size: 11.5px; color: var(--muted); padding-left: 16px; }
 .more-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-top: 4px; }
+.sect-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.prov.hint-card { border-style: dashed; }
 .more { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 0 18px; border: 1px dashed var(--line); border-radius: 12px; padding: 4px 12px; }
 .prov-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; gap: 4px 10px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line-soft); }
 .more > .prov-row:nth-child(-n+1) { border-top: 0; }
@@ -1118,3 +1120,26 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .hub-token > span { min-width: 0; flex: 1 1 240px; }
 .hub-token.edit input { flex: 1 1 220px; min-width: 0; height: 30px; }
 .hub-token .flag { flex-basis: 100%; }
+
+/* ---------- Vast.ai ---------- */
+.host.vast .vast-row { display: flex; gap: 6px; }
+.host.vast .vast-row input { flex: 1; min-width: 0; height: 30px; }
+.host.vast a { color: var(--accent); }
+.host-foot { display: flex; align-items: center; gap: 8px; }
+#train-vast:empty { display: none; }
+#train-vast { padding: 10px 20px 0; min-width: 0; }
+.live-train { grid-template-columns: minmax(0, 1fr); }
+.vast-panel { min-width: 0; overflow: hidden; }
+.vast-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 0 16px 12px; }
+.vast-filters label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.vast-filters input { height: 32px; width: 140px; }
+.vast-filters #vf-gpu { width: 190px; }
+.vast-table { margin: 0 16px; overflow-x: auto; }
+.vast-table table { min-width: 760px; }
+.vast-table td { padding: 7px 12px; white-space: nowrap; }
+.vast-note { font-size: 12px; padding: 10px 16px 14px; margin: 0; }
+@media (max-width: 720px) {
+  #train-vast { padding: 10px 12px 0; }
+  .vast-filters input, .vast-filters #vf-gpu { width: 100%; }
+  .vast-filters label { flex: 1 1 130px; }
+}

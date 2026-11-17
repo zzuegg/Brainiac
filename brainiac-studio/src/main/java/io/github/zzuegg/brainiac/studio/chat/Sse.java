@@ -6,12 +6,12 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
-/** Reads a server-sent event stream. */
-final class Sse {
+/** Reads server-sent event streams. */
+public final class Sse {
 
     /** Receives one event. */
     @FunctionalInterface
-    interface Handler {
+    public interface Handler {
         /**
          * Handles an event.
          *
@@ -26,7 +26,14 @@ final class Sse {
     private Sse() {
     }
 
-    static void read(InputStream in, Handler handler) throws IOException {
+    /**
+     * Reads events until the stream ends or the handler stops.
+     *
+     * @param in the stream
+     * @param handler receives each event
+     * @throws IOException if reading or handling fails
+     */
+    public static void read(InputStream in, Handler handler) throws IOException {
         BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
         String event = "message";
         StringBuilder data = null;
