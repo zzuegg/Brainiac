@@ -126,4 +126,19 @@ class ChatApiTest {
         assertEquals(502, r.statusCode());
         assertTrue(r.body().contains("OpenAI answered 500"), r.body());
     }
+
+    @Test
+    void usageAndBalancesAreReadable() throws Exception {
+        call("POST", "/api/keys", "{\"provider\":\"deepseek\",\"label\":\"lab\",\"key\":\"sk-ds-1\"}");
+        call("POST", "/api/chat", "{\"model\":\"deepseek/deepseek-chat\",\"messages\":[{\"role\":\"user\",\"text\":\"Hi\"}]}");
+        HttpResponse<String> r = call("GET", "/api/usage", null);
+        assertEquals(200, r.statusCode());
+        Map<String, Object> usage = Json.object(Json.parse(r.body()));
+        assertEquals(1L, ((Number) Json.object(Json.object(usage.get("keys")).get("deepseek/lab")).get("calls")).longValue());
+        r = call("GET", "/api/balances", null);
+        assertEquals(200, r.statusCode());
+        assertTrue(r.body().contains("\"label\":\"lab\""), r.body());
+        assertTrue(r.body().contains("\"currency\":\"CNY\""), r.body());
+        assertFalse(r.body().contains("sk-ds-1"));
+    }
 }

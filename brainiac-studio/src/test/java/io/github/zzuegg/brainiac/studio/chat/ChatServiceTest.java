@@ -194,13 +194,13 @@ class ChatServiceTest {
         // asked for by name, the empty key is not swapped for another
         IOException e = assertThrows(IOException.class, () -> chat.chat("anthropic/claude-opus-5-5", "", HELLO, 10,
                 "empty", heard.routes()::add, heard));
-        assertTrue(e.getMessage().contains("credit balance too low"), e.getMessage());
+        assertTrue(e.getMessage().contains("(out of credit): Your credit balance is too low"), e.getMessage());
         // the model list joins what each key sees, and names the key that failed
         Map<String, Object> anthropic = Json.array(chat.describe(true).get("providers")).stream().map(Json::object)
                 .filter(p -> p.get("id").equals("anthropic")).findFirst().orElseThrow();
         assertEquals(2L, ((Number) anthropic.get("models")).longValue());
         List<Map<String, Object>> ks = Json.array(anthropic.get("keys")).stream().map(Json::object).toList();
-        assertTrue(String.valueOf(ks.get(0).get("error")).contains("429"), ks.toString());
+        assertTrue(String.valueOf(ks.get(0).get("error")).contains("400 (out of credit)"), ks.toString());
         assertFalse(ks.get(1).containsKey("error"));
     }
 

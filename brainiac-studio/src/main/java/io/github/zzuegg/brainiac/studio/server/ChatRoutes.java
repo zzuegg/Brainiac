@@ -33,6 +33,8 @@ import java.util.Map;
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
  *       Both answer with the model used and each file, base64 encoded, and where it was saved.
+ *   <li>{@code GET /api/usage} sums every call by provider, key, model and day;
+ *       {@code GET /api/balances} asks the providers that report one what is left on each key.
  * </ul>
  */
 final class ChatRoutes {
@@ -53,6 +55,15 @@ final class ChatRoutes {
         server.post("/api/keys", this::keys);
         server.post("/api/chat", this::chat);
         server.post("/api/images", this::images);
+        server.get("/api/usage", ex -> Exchanges.json(ex, 200, chat.usage().summary(java.time.ZoneId.systemDefault())));
+        server.get("/api/balances", ex -> {
+            try {
+                Exchanges.json(ex, 200, chat.balances());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Exchanges.error(ex, 503, "stopped");
+            }
+        });
         server.post("/api/speech", this::speech);
     }
 

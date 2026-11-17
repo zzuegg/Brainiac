@@ -29,6 +29,11 @@ final class AnthropicProvider extends RemoteProvider {
     }
 
     @Override
+    String note() {
+        return "Claude models: text, vision and visible thinking";
+    }
+
+    @Override
     public String name() {
         return "Anthropic";
     }

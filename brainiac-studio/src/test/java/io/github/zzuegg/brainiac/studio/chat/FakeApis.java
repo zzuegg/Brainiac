@@ -16,11 +16,13 @@ import java.util.concurrent.ConcurrentHashMap;
 final class FakeApis implements AutoCloseable {
 
     final HttpServer http;
+    /** Where outputs and the usage log go when a test has no model folder. */
+    final java.nio.file.Path scratch;
     /** The last request body and headers seen per path prefix: a, o, g. */
     final Map<String, String> bodies = new ConcurrentHashMap<>();
     final Map<String, com.sun.net.httpserver.Headers> headers = new ConcurrentHashMap<>();
     volatile int failWith;
-    /** A key that gets 429, as if out of credit. */
+    /** A key that is out of credit: Anthropic answers 400, the others 429. */
     volatile String failKey;
 
     FakeApis() throws IOException {
@@ -28,6 +30,9 @@ final class FakeApis implements AutoCloseable {
         http.createContext("/a/", ex -> handle(ex, "a"));
         http.createContext("/o/", ex -> handle(ex, "o"));
         http.createContext("/g/", ex -> handle(ex, "g"));
+        http.createContext("/d/", ex -> handle(ex, "d"));
+        http.createContext("/r/", ex -> handle(ex, "r"));
+        scratch = java.nio.file.Files.createTempDirectory("studio-fake");
         http.start();
     }
 
@@ -39,9 +44,9 @@ final class FakeApis implements AutoCloseable {
     final Map<String, Integer> calls = new ConcurrentHashMap<>();
 
     ChatService service(Keys keys, List<java.nio.file.Path> folders) {
-        return ChatService.at(keys, folders, base("a"), base("o"), base("g"),
-                folders.isEmpty() ? java.nio.file.Path.of(System.getProperty("java.io.tmpdir"), "studio-test-outputs")
-                        : folders.getFirst().resolve("outputs"));
+        return ChatService.at(keys, folders, Map.of("anthropic", base("a"), "openai", base("o").resolve("v1/"),
+                "google", base("g"), "deepseek", base("d"), "openrouter", base("r").resolve("api/v1/")),
+                folders.isEmpty() ? scratch.resolve("outputs") : folders.getFirst().resolve("outputs"));
     }
 
     private static String b64(String s) {
@@ -57,7 +62,12 @@ final class FakeApis implements AutoCloseable {
         String auth = String.valueOf(ex.getRequestHeaders().getFirst("x-api-key")) + " "
                 + ex.getRequestHeaders().getFirst("Authorization") + " " + ex.getRequestHeaders().getFirst("x-goog-api-key");
         if (failKey != null && auth.contains(failKey)) {
-            send(ex, 429, "application/json", "{\"error\":{\"message\":\"credit balance too low\"}}");
+            if (p.equals("a")) {   // what Anthropic really answers: a 400, not a 429
+                send(ex, 400, "application/json", "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+                        + "\"message\":\"Your credit balance is too low to access the Anthropic API.\"}}");
+            } else {
+                send(ex, 429, "application/json", "{\"error\":{\"message\":\"credit balance too low\"}}");
+            }
             return;
         }
         if (failWith != 0) {
@@ -143,6 +153,27 @@ final class FakeApis implements AutoCloseable {
             case "g /v1beta/models/gemini-2.5-flash-preview-tts:generateContent" -> send(ex, 200, "application/json",
                     "{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":"
                     + "\"audio/L16;codec=pcm;rate=24000\",\"data\":\"" + b64("abcd") + "\"}}]}}]}");
+            case "d /models" -> send(ex, 200, "application/json", """
+                    {"object":"list","data":[{"id":"deepseek-chat","object":"model","owned_by":"deepseek"},
+                     {"id":"deepseek-reasoner","object":"model","owned_by":"deepseek"}]}""");
+            case "d /chat/completions" -> send(ex, 200, "text/event-stream", """
+                    data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Ni"}}]}
+
+                    data: {"choices":[{"index":0,"delta":{"content":" hao"},"finish_reason":"stop"}]}
+
+                    data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2}}
+
+                    data: [DONE]
+
+                    """);
+            case "d /user/balance" -> send(ex, 200, "application/json", """
+                    {"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00",
+                     "granted_balance":"10.00","topped_up_balance":"100.00"}]}""");
+            case "r /api/v1/models" -> send(ex, 200, "application/json", """
+                    {"data":[{"id":"qwen/qwen3-vl-235b","name":"Qwen3 VL","created":1750000000,"context_length":262144},
+                     {"id":"openai/text-embedding-3-small","name":"Embedding","created":1}]}""");
+            case "r /api/v1/key" -> send(ex, 200, "application/json", """
+                    {"data":{"label":"sk-or-v1-abc","limit":20,"limit_remaining":12.5,"usage":7.5}}""");
             default -> send(ex, 404, "application/json", "{\"error\":{\"message\":\"no route " + path + "\"}}");
         }
     }
