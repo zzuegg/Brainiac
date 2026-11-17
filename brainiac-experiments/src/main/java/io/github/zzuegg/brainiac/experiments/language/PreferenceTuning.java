@@ -12,6 +12,10 @@ import java.util.SplittableRandom;
  * {@code a, a+1} upwards, the "human" prefers counting back down. Each objective (IPO, KTO,
  * ORPO, SimPO) tunes a copy of the model on preference pairs and the policy's margin
  * {@code log pi(chosen) - log pi(rejected)} is compared before and after.
+ *
+ * <p>{@link #noisy} compares the DPO family (DPO, cDPO, rDPO, DPOP, beta-DPO) when a share of
+ * the preference labels is flipped: held-out win rate and the drift of the chosen answers'
+ * likelihood.
  */
 public final class PreferenceTuning {
 
@@ -130,5 +134,105 @@ public final class PreferenceTuning {
             base.zeroGrad();
         }
         return new Result(objective, before, margin(policy, seed + 50));
+    }
+
+    /** The DPO family compared under label noise. */
+    public enum DpoVariant {
+        /** plain DPO */
+        DPO,
+        /** conservative DPO: label smoothing at the flip rate */
+        CDPO,
+        /** robust DPO: unbiased noisy-label correction at the flip rate */
+        RDPO,
+        /** DPO-Positive: penalizes a falling chosen likelihood */
+        DPOP,
+        /** beta-DPO: batch-adaptive beta */
+        BETA_DPO
+    }
+
+    /**
+     * @param variant the loss
+     * @param winRate held-out pairs whose chosen answer the tuned policy finds more likely
+     *     than the rejected one
+     * @param chosenDrift the change of the mean held-out {@code log pi(chosen)}
+     * @param marginBefore the mean held-out log-probability margin before tuning
+     * @param marginAfter the mean held-out log-probability margin after tuning
+     */
+    public record NoisyResult(DpoVariant variant, double winRate, double chosenDrift, double marginBefore,
+            double marginAfter) {
+    }
+
+    private static double winRate(HookedDecoder model, long seed) {
+        int[][][] p = pairs(new SplittableRandom(seed), 64, model.vocabSize());
+        int[] f = from(64);
+        float[] c = model.sequenceLogProb(p[0], f, false).value().toArray();
+        float[] r = model.sequenceLogProb(p[1], f, false).value().toArray();
+        int wins = 0;
+        for (int i = 0; i < c.length; i++) {
+            wins += c[i] > r[i] ? 1 : 0;
+        }
+        return (double) wins / c.length;
+    }
+
+    private static double chosenLogProb(HookedDecoder model, long seed) {
+        int[][][] p = pairs(new SplittableRandom(seed), 64, model.vocabSize());
+        return model.sequenceLogProb(p[0], from(64), false).mean().value().item();
+    }
+
+    /**
+     * Tunes a copy of {@code base} on preference pairs whose labels are flipped at random
+     * with probability {@code flipRate}, and measures the held-out (clean) win rate and how
+     * far the chosen answers' likelihood moved.
+     *
+     * @param base the pretrained model (not changed; also the reference)
+     * @param variant the loss
+     * @param flipRate the share of flipped labels, also the epsilon given to cDPO and rDPO
+     * @param steps the steps
+     * @param seed the seed
+     * @return the result
+     */
+    public static NoisyResult noisy(HookedDecoder base, DpoVariant variant, double flipRate, int steps, long seed) {
+        HookedDecoder policy = base.copy();
+        double chosenBefore = chosenLogProb(policy, seed + 50);
+        double marginBefore = margin(policy, seed + 50);
+        Optimizer opt = Optimizer.adam(0.005f);
+        SplittableRandom r = new SplittableRandom(seed);
+        int batch = 16;
+        int[] f = from(batch);
+        float beta = 0.5f;
+        float eps = (float) flipRate;
+        float m0 = 0;
+        for (int s = 0; s < steps; s++) {
+            int[][][] p = pairs(r, batch, base.vocabSize());
+            for (int b = 0; b < batch; b++) {
+                if (r.nextDouble() < flipRate) {
+                    int[] t = p[0][b];
+                    p[0][b] = p[1][b];
+                    p[1][b] = t;
+                }
+            }
+            Var pc = policy.sequenceLogProb(p[0], f, false);
+            Var pr = policy.sequenceLogProb(p[1], f, false);
+            Var rc = base.sequenceLogProb(p[0], f, false).detach();
+            Var rr = base.sequenceLogProb(p[1], f, false).detach();
+            Var loss = switch (variant) {
+                case DPO -> PreferenceLosses.dpo(pc, pr, rc, rr, beta);
+                case CDPO -> PreferenceLosses.conservativeDpo(pc, pr, rc, rr, beta, eps);
+                case RDPO -> PreferenceLosses.robustDpo(pc, pr, rc, rr, beta, eps);
+                case DPOP -> PreferenceLosses.dpoPositive(pc, pr, rc, rr, beta, 5f);
+                case BETA_DPO -> {
+                    float mean = PreferenceLosses.margin(pc, pr, rc, rr).mean().value().item();
+                    Var l = PreferenceLosses.betaDpo(pc, pr, rc, rr, beta, 0.6f, m0);
+                    m0 = s == 0 ? mean : 0.9f * m0 + 0.1f * mean;
+                    yield l;
+                }
+            };
+            loss.backward();
+            opt.step(policy.parameters());
+            policy.zeroGrad();
+            base.zeroGrad();
+        }
+        return new NoisyResult(variant, winRate(policy, seed + 50), chosenLogProb(policy, seed + 50) - chosenBefore,
+                marginBefore, margin(policy, seed + 50));
     }
 }

@@ -19,6 +19,10 @@ import java.util.SplittableRandom;
  * with strong weight decay, much later suddenly generalises. A cheap, reproducible probe
  * of training dynamics: memorisation versus the slow, decay-driven formation of a
  * general (Fourier) circuit. Inputs are the two one-hot operands side by side.
+ *
+ * <p>{@link #run(int, double, int, int, Optimizer, int, long)} takes any optimizer, so the
+ * same curve measures Grokfast (amplified slow gradients) against AdamW with weight decay:
+ * the step at which test accuracy first passes 0.99.
  */
 @SuppressWarnings("exports")   // experimental.* gets exported when the lead integrates it
 public final class GrokkingExperiment {
@@ -121,9 +125,27 @@ public final class GrokkingExperiment {
      */
     public static Curve run(int p, double trainFraction, int hidden, int steps, float learningRate,
             float weightDecay, int logEvery, long seed) {
+        return run(p, trainFraction, hidden, steps,
+                Optimizer.adamW(learningRate, 0.9f, 0.98f, 1e-8f, weightDecay), logEvery, seed);
+    }
+
+    /**
+     * Trains full-batch with any optimizer, for example AdamW behind
+     * {@link io.github.zzuegg.brainiac.experimental.train.Grokfast}, and records the curve.
+     *
+     * @param p the modulus
+     * @param trainFraction the training share
+     * @param hidden the hidden width
+     * @param steps the training steps
+     * @param opt the optimizer, new
+     * @param logEvery steps between curve points
+     * @param seed the seed
+     * @return the learning curve
+     */
+    public static Curve run(int p, double trainFraction, int hidden, int steps, Optimizer opt, int logEvery,
+            long seed) {
         Tensor[] d = modularAddition(p, trainFraction, seed);
         SimpleMlp net = SimpleMlp.relu(seed, 2 * p, hidden, p);
-        Optimizer opt = Optimizer.adamW(learningRate, 0.9f, 0.98f, 1e-8f, weightDecay);
         Curve curve = new Curve(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         for (int s = 1; s <= steps; s++) {
             Functional.crossEntropy(net.forward(Var.of(d[0])), d[1]).backward();

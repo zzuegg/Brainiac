@@ -181,6 +181,34 @@ public final class WindowLm implements LanguageModel {
     }
 
     /**
+     * The next-token logits together with the last hidden layer, read with a core
+     * {@link Model.Hook}: what feature distillation matches.
+     *
+     * @param prefixes token prefixes
+     * @return {@code {hidden [n, hidden], logits [n, vocab]}}
+     */
+    public Var[] logitsAndHidden(List<int[]> prefixes) {
+        float[][] rows = new float[prefixes.size()][];
+        for (int i = 0; i < rows.length; i++) {
+            rows[i] = encode(prefixes.get(i));
+        }
+        int last = model.graph().size() - 2;
+        Var[] hidden = new Var[1];
+        Var logits = model.forward(Var.of(LlmTensors.rows(rows)), true, (step, out) -> {
+            if (step.index() == last) {
+                hidden[0] = out;
+            }
+            return out;
+        });
+        return new Var[] {hidden[0], logits};
+    }
+
+    /** @return the width of the hidden layers */
+    public int hiddenSize() {
+        return hidden;
+    }
+
+    /**
      * @param prefix the tokens so far
      * @return the next-token logits
      */
