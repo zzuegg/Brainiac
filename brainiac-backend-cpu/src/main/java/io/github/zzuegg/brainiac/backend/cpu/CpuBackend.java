@@ -6,6 +6,8 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
+import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
@@ -265,6 +267,50 @@ public final class CpuBackend implements Backend {
         } else {
             Parallel.forRange(m, 2L * k * n, (from, to) -> Kernels.matmulRows(x, y, z, k, n, from, to));
         }
+    }
+
+    /** Rows up to which a product reads packed levels directly; above, it unpacks first. */
+    private static final int PACKED_ROWS = Integer.getInteger("brainiac.cpu.packedRows", 16);
+
+    @Override
+    public void unpack(PackedStorage packed, Storage out) {
+        PackedMatrix m = unpackToHost(packed);
+        CpuStorage o = cpu(out);
+        if (o.data != null) {
+            m.dequantize(o.data);
+        } else {
+            float[] f = new float[Math.toIntExact(m.size())];
+            m.dequantize(f);
+            double[] v = o.target();
+            for (int i = 0; i < f.length; i++) {
+                v[i] = f[i];
+            }
+            o.write(v);
+        }
+    }
+
+    @Override
+    public void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS || wide(a, out)) {
+            Backend.super.matmulPacked(a, b, m, k, n, out);
+            return;
+        }
+        PackedMatrix w = unpackToHost(b);
+        float[] x = data(a);
+        float[] z = data(out);
+        int chunks = Math.ceilDiv(n, PackedKernels.CHUNK);
+        boolean simd = SIMD && VectorPackedKernels.usable();
+        Parallel.forRange(chunks, 2L * m * k * PackedKernels.CHUNK, (from, to) -> {
+            for (int c = from; c < to; c++) {
+                int j0 = c * PackedKernels.CHUNK;
+                int j1 = Math.min(n, j0 + PackedKernels.CHUNK);
+                if (simd) {
+                    VectorPackedKernels.matmul(x, w, z, m, j0, j1);
+                } else {
+                    PackedKernels.matmul(x, w, z, m, j0, j1);
+                }
+            }
+        });
     }
 
     @Override

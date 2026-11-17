@@ -3,10 +3,17 @@ package io.github.zzuegg.brainiac.benchmarks;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Activation;
+import io.github.zzuegg.brainiac.nn.Embedding;
+import io.github.zzuegg.brainiac.nn.KvCache;
+import io.github.zzuegg.brainiac.nn.LayerNorm;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.nn.Quantization;
+import io.github.zzuegg.brainiac.nn.TransformerBlock;
+import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import io.github.zzuegg.brainiac.train.Trainer;
 
@@ -92,6 +99,36 @@ public final class Benchmarks {
         Tensor w = Tensor.uniform(Shape.of(784, 256), -1, 1, random);
         cases.add(new Case("matmul 256x784 * 784x256", 2.0 * 256 * 784 * 256 / 1e9, "GFLOP/s", () -> x.matmul(w)));
 
+        // one token at a time through a large layer: reading the weights is the cost
+        int d = quick ? 2048 : 4096;
+        Tensor big = Tensor.uniform(Shape.of(d, d), -1, 1, random);
+        for (int rows : new int[] {1, 8}) {
+            Tensor v = Tensor.uniform(Shape.of(rows, d), -1, 1, random);
+            double flops = 2.0 * rows * d * d / 1e9;
+            cases.add(new Case("matvec " + rows + "x" + d + " f32 weights", flops, "GFLOP/s", () -> v.matmul(big)));
+            for (int bits : new int[] {8, 4}) {
+                Tensor packed = Tensor.packed(packed(d, d, bits, random), Device.cpu());
+                cases.add(new Case("matvec " + rows + "x" + d + " int" + bits + " weights", flops, "GFLOP/s",
+                        () -> v.matmul(packed)));
+            }
+        }
+
+        // writing text one token at a time with a GPT-2-small-sized transformer (6 blocks of 768)
+        int width = quick ? 384 : 768;
+        Model.Builder gptBuilder = Model.sequential().input(128).add(Embedding.of(256, width));
+        for (int i = 0; i < 6; i++) {
+            gptBuilder.add(TransformerBlock.of(width / 64).causal(true).rotary(10000).ffnSize(4 * width));
+        }
+        Model lm = gptBuilder.layer(LayerNorm.of(width)).dense(256, Activation.SOFTMAX).seed(1).build();
+        int tokens = 16;
+        cases.add(new Case("generate " + tokens + " tokens, 6x" + width + " f32", tokens, "tokens/s",
+                () -> generate(lm, tokens)));
+        for (Quantization q : List.of(Quantization.int8(), Quantization.int4().groups(32))) {
+            Model packedLm = lm.copy(Device.cpu()).quantize(q).pack();
+            cases.add(new Case("generate " + tokens + " tokens, 6x" + width + " " + q.bits() + "-bit packed", tokens,
+                    "tokens/s", () -> generate(packedLm, tokens)));
+        }
+
         int elements = 1 << 22;
         Tensor u = Tensor.uniform(Shape.of(elements), -1, 1, random);
         Tensor v = Tensor.uniform(Shape.of(elements), -1, 1, random);
@@ -140,6 +177,28 @@ public final class Benchmarks {
                 .batchSize(128).epochs(1).seed(1);
         cases.add(new Case("train MLP 784-256-128-10, 1 epoch", samples / 1e3, "k samples/s", () -> trainer.fit(data)));
         return cases;
+    }
+
+    /** Writes tokens one at a time through a fresh cache. */
+    private static void generate(Model model, int tokens) {
+        KvCache cache = KvCache.of(model);
+        Tensor out = cache.append(1, 2, 3);
+        for (int i = 0; i < tokens; i++) {
+            out.toArray();
+            out = cache.append(i % 200);
+        }
+    }
+
+    /** Random levels with one scale per column. */
+    private static PackedMatrix packed(int rows, int cols, int bits, SplittableRandom random) {
+        int limit = (1 << (bits - 1)) - 1;
+        byte[] levels = new byte[rows * cols];
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = (byte) random.nextInt(-limit, limit + 1);
+        }
+        float[] scales = new float[cols];
+        Arrays.fill(scales, 1f / limit);
+        return PackedMatrix.of(levels, scales, rows, cols, bits, rows);
     }
 
     private static void activationStep(Var in, UnaryOperator<Var> f) {

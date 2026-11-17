@@ -1,0 +1,153 @@
+package io.github.zzuegg.brainiac.tensor.spi;
+
+import java.util.Objects;
+
+/**
+ * A {@code [rows, cols]} matrix as whole-number levels times per-group scales, in Java
+ * memory: the form backends receive packed weights in, and the CPU backend's own storage.
+ *
+ * <p>The value at {@code (r, c)} is {@code level(r, c) * scale(r / group, c)}: each column
+ * (an output unit) has a scale for every {@code group} consecutive rows (inputs). Levels
+ * take one signed byte each, row-major; with {@code bits <= 4} and an even group size they
+ * take half a byte: the byte at {@code (r / 2) * cols + c} holds row {@code r} (even) in
+ * its low four bits and row {@code r + 1} in its high four bits, two's complement, so a
+ * SIMD lane or GPU work item for column {@code c} reads both from one byte.
+ */
+public final class PackedMatrix implements PackedStorage {
+
+    private final int rows;
+    private final int cols;
+    private final int bits;
+    private final int group;
+    private final boolean nibbles;
+    private final byte[] data;
+    private final float[] scales;
+
+    private PackedMatrix(int rows, int cols, int bits, int group, boolean nibbles, byte[] data, float[] scales) {
+        this.rows = rows;
+        this.cols = cols;
+        this.bits = bits;
+        this.group = group;
+        this.nibbles = nibbles;
+        this.data = data;
+        this.scales = scales;
+    }
+
+    /**
+     * Packs levels.
+     *
+     * @param levels one level per value, row-major, each within {@code bits} bits signed
+     * @param scales {@code (rows / group) * cols} scales, row-major
+     * @param rows the rows
+     * @param cols the columns
+     * @param bits the bits per level, 2 to 8
+     * @param group the rows per scale; must divide {@code rows}
+     * @return the packed matrix
+     */
+    public static PackedMatrix of(byte[] levels, float[] scales, int rows, int cols, int bits, int group) {
+        Objects.requireNonNull(levels, "levels");
+        Objects.requireNonNull(scales, "scales");
+        if (rows < 1 || cols < 1 || bits < 2 || bits > 8 || group < 1 || rows % group != 0) {
+            throw new IllegalArgumentException("bad packed matrix: " + rows + "x" + cols + ", " + bits + " bits, group "
+                    + group);
+        }
+        if (levels.length != (long) rows * cols || scales.length != (long) rows / group * cols) {
+            throw new IllegalArgumentException("a " + rows + "x" + cols + " matrix in groups of " + group + " needs "
+                    + (long) rows * cols + " levels and " + (long) rows / group * cols + " scales, got "
+                    + levels.length + " and " + scales.length);
+        }
+        boolean nibbles = bits <= 4 && group % 2 == 0;
+        byte[] data;
+        if (nibbles) {
+            data = new byte[rows / 2 * cols];
+            for (int r = 0; r < rows; r += 2) {
+                int base = r / 2 * cols;
+                for (int c = 0; c < cols; c++) {
+                    data[base + c] = (byte) ((levels[r * cols + c] & 0xF) | (levels[(r + 1) * cols + c] << 4));
+                }
+            }
+        } else {
+            data = levels.clone();
+        }
+        return new PackedMatrix(rows, cols, bits, group, nibbles, data, scales.clone());
+    }
+
+    @Override
+    public int rows() {
+        return rows;
+    }
+
+    @Override
+    public int cols() {
+        return cols;
+    }
+
+    /** @return the bits per level */
+    public int bits() {
+        return bits;
+    }
+
+    /** @return the rows per scale */
+    public int group() {
+        return group;
+    }
+
+    /** @return whether levels take half a byte each (see the class description) */
+    public boolean nibbles() {
+        return nibbles;
+    }
+
+    /** @return the packed levels; not a copy, do not change */
+    public byte[] data() {
+        return data;
+    }
+
+    /** @return the scales, {@code [rows / group, cols]}; not a copy, do not change */
+    public float[] scales() {
+        return scales;
+    }
+
+    /**
+     * Returns one level.
+     *
+     * @param r the row
+     * @param c the column
+     * @return the level
+     */
+    public int level(int r, int c) {
+        if (!nibbles) {
+            return data[r * cols + c];
+        }
+        byte b = data[r / 2 * cols + c];
+        return (r & 1) == 0 ? (byte) (b << 4) >> 4 : b >> 4;
+    }
+
+    /**
+     * Computes the values, row-major.
+     *
+     * @param out {@code rows * cols} floats to fill
+     */
+    public void dequantize(float[] out) {
+        for (int r = 0; r < rows; r++) {
+            int s = r / group * cols;
+            for (int c = 0; c < cols; c++) {
+                out[r * cols + c] = level(r, c) * scales[s + c];
+            }
+        }
+    }
+
+    @Override
+    public long size() {
+        return (long) rows * cols;
+    }
+
+    @Override
+    public long bytes() {
+        return data.length + 4L * scales.length;
+    }
+
+    @Override
+    public String toString() {
+        return "PackedMatrix[" + rows + "x" + cols + ", " + bits + " bits, groups of " + group + "]";
+    }
+}

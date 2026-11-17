@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -225,6 +226,28 @@ public final class Quantization {
             out[i] = q * packed.scales[layout.group(i)];
         }
         return out;
+    }
+
+    /**
+     * Packs dense-like weights {@code [inputs, units]} (channel axis last) for
+     * {@link Tensor#packed}: levels and scales computed as {@link #quantize} does.
+     */
+    PackedMatrix packMatrix(float[] values, Shape shape) {
+        int rows = shape.dim(0);
+        int cols = shape.dim(1);
+        Layout layout = layout(shape, 1);
+        Packed p = pack(values, shape, 1);
+        byte[] levels = new byte[values.length];
+        for (int i = 0; i < values.length; i++) {
+            levels[i] = (byte) Math.max(-levels(), Math.min(levels(), Math.rint(values[i] / p.scales()[layout.group(i)])));
+        }
+        int group = layout.perTensor() ? rows : layout.group();
+        float[] scales = p.scales();
+        if (layout.perTensor()) {
+            scales = new float[cols];
+            java.util.Arrays.fill(scales, p.scales()[0]);
+        }
+        return PackedMatrix.of(levels, scales, rows, cols, bits, group);
     }
 
     /** @return the number of scales for weights of a shape */

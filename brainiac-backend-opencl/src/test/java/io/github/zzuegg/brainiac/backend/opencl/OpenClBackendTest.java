@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.backend.opencl;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -234,5 +235,35 @@ class OpenClBackendTest {
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "opencl".length(), status);
         assertTrue(List.of(DType.values()).size() == 4);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
+        "4, 3, 9", "8, 64, 20"})
+    void packedMatricesMatchTheCpu(int bits, int group, int m) {
+        int rows = 192;
+        int cols = 77;
+        SplittableRandom r = new SplittableRandom(bits * 100L + m);
+        int limit = (1 << (bits - 1)) - 1;
+        byte[] levels = new byte[rows * cols];
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = (byte) r.nextInt(-limit, limit + 1);
+        }
+        float[] scales = new float[rows / group * cols];
+        for (int i = 0; i < scales.length; i++) {
+            scales[i] = (float) r.nextDouble(0.001, 0.05);
+        }
+        io.github.zzuegg.brainiac.tensor.spi.PackedMatrix w =
+                io.github.zzuegg.brainiac.tensor.spi.PackedMatrix.of(levels, scales, rows, cols, bits, group);
+        Tensor x = random(3, m, rows);
+        Tensor onCpu = Tensor.packed(w, CPU);
+        Tensor onGpu = onCpu.to(gpu);
+        assertTrue(onGpu.isPacked());
+        assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f);
+        assertArrayEquals(x.matmul(onCpu).toArray(), x.to(gpu).matmul(onGpu).toArray(), 1e-4f, bits + " bits, m " + m);
+        assertArrayEquals(x.matmul(onCpu).toArray(), x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(), 1e-4f);
+        if (supported(DType.FLOAT16)) {
+            assertArrayEquals(x.matmul(onCpu).toArray(), x.to(gpu).to(DType.FLOAT16).matmul(onGpu).toArray(), 3e-2f);
+        }
     }
 }

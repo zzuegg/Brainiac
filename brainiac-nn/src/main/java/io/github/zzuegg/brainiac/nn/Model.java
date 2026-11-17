@@ -113,7 +113,8 @@ public final class Model {
         try {
             java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
             ModelFile.write(this, bytes);
-            return ModelFile.read(new java.io.ByteArrayInputStream(bytes.toByteArray()), device);
+            Model copy = ModelFile.read(new java.io.ByteArrayInputStream(bytes.toByteArray()), device);
+            return isPacked() ? copy.pack() : copy;
         } catch (IOException e) {
             throw new IllegalStateException("cannot copy " + this + ": " + e.getMessage(), e);
         }
@@ -411,6 +412,77 @@ public final class Model {
 
     void quantization(Quantization q) {
         this.quantization = q;
+    }
+
+    /**
+     * Keeps the quantized weights packed in memory, for inference: a matrix of 8-bit levels
+     * takes a quarter of float32's memory, of 4-bit levels an eighth, and matrix products
+     * read the levels directly (see {@link Tensor#packed}), which makes generating text one
+     * token at a time faster where it waits for memory. Dense-like weights
+     * {@code [inputs, units]} (dense, attention, recurrent) are packed; convolution filters
+     * and embeddings stay as they are. Training a packed model unpacks each weight it
+     * updates; {@link #unpack()} unpacks them all.
+     *
+     * <pre>{@code
+     * model.quantize(Quantization.int8()).pack();
+     * Model.load(path).pack();   // a file saved quantized
+     * }</pre>
+     *
+     * @return this model
+     * @throws IllegalStateException if the model is not {@linkplain #quantize quantized}
+     */
+    public Model pack() {
+        if (quantization == null) {
+            throw new IllegalStateException("quantize the model before packing it");
+        }
+        for (Quantization.Weight w : Quantization.weights(this)) {
+            Tensor v = w.weight().value();
+            if (v.rank() == 2 && w.axis() == 1 && !v.isPacked()) {
+                Tensor packed = Tensor.packed(quantization.packMatrix(v.toArray(), v.shape()), v.device());
+                w.weight().assign(packed);
+            }
+        }
+        return this;
+    }
+
+    /**
+     * Turns packed weights back into ordinary float32 tensors (see {@link #pack()}).
+     *
+     * @return this model
+     */
+    public Model unpack() {
+        for (Var p : parameters()) {
+            if (p.value().isPacked()) {
+                p.assign(p.value().unpacked());
+            }
+        }
+        return this;
+    }
+
+    /** @return whether any weight is {@linkplain #pack() packed} */
+    public boolean isPacked() {
+        for (Var p : parameters()) {
+            if (p.value().isPacked()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the bytes the parameters and buffers take on their device.
+     *
+     * @return the size in bytes
+     */
+    public long bytes() {
+        long n = 0;
+        for (Var p : parameters()) {
+            n += p.value().bytes();
+        }
+        for (Var b : buffers()) {
+            n += b.value().bytes();
+        }
+        return n;
     }
 
     /**

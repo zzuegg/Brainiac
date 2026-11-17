@@ -310,6 +310,68 @@ public interface Backend {
         copy(in, 0, one, new int[] {Math.toIntExact(in.size())}, out, 0, one);
     }
 
+    // ---------------------------------------------------------------- packed (quantized) matrices
+
+    /**
+     * Takes a quantized matrix into this backend's own form. The default keeps the
+     * {@link PackedMatrix} itself, in Java memory, which every backend can read through the
+     * default {@link #unpack} and {@link #matmulPacked}.
+     *
+     * @param matrix the levels and scales
+     * @return storage for it
+     */
+    default PackedStorage pack(PackedMatrix matrix) {
+        return matrix;
+    }
+
+    /**
+     * Returns a packed storage of this backend in Java memory, to move it to another backend.
+     *
+     * @param packed storage from {@link #pack}
+     * @return the matrix
+     */
+    default PackedMatrix unpackToHost(PackedStorage packed) {
+        if (packed instanceof PackedMatrix m) {
+            return m;
+        }
+        throw unsupported("reading back " + packed);
+    }
+
+    /**
+     * Computes a packed matrix's values into ordinary storage.
+     *
+     * @param packed storage from {@link #pack}
+     * @param out {@code rows * cols} values of any type this backend supports
+     */
+    default void unpack(PackedStorage packed, Storage out) {
+        PackedMatrix m = unpackToHost(packed);
+        float[] values = new float[Math.toIntExact(m.size())];
+        m.dequantize(values);
+        Storage host = upload(values);
+        convert(host, out);
+        release(host);
+    }
+
+    /**
+     * Multiplies by a packed matrix: {@code out = a x b} with {@code a} row-major
+     * {@code [m, k]} and {@code b} a packed {@code [k, n]}. The default unpacks {@code b}
+     * into temporary storage and calls {@link #matmul}; backends override it to read the
+     * levels directly, which moves a quarter (8 bits) or an eighth (4 bits) of the bytes.
+     *
+     * @param a the left matrix
+     * @param b the packed right matrix
+     * @param m rows of {@code a}
+     * @param k columns of {@code a}, rows of {@code b}
+     * @param n columns of {@code b}
+     * @param out the output, {@code [m, n]}, of {@code a}'s type
+     */
+    default void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        Storage w = allocateUninitialized((long) k * n, out.dtype());
+        unpack(b, w);
+        matmul(a, w, m, k, n, out);
+        release(w);
+    }
+
     // ---------------------------------------------------------------- optional operations
     //
     // The operations below have default implementations that throw, so a new backend can

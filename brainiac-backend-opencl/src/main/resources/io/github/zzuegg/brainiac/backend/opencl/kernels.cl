@@ -593,3 +593,56 @@ __kernel void from_float(__global const float* x, __global T* y, long n) {
     long i = get_global_id(0);
     if (i < n) STORE(y, i, (ACC) x[i]);
 }
+
+// Packed (quantized) matrices: levels row-major [k, n], one signed byte each, or with
+// nibbles = 1 two per byte, the byte at (r / 2) * n + c holding row r (even) in its low four
+// bits and row r + 1 in its high four bits; one float scale per column for every `group` rows.
+int packed_level(__global const char* q, int r, int c, int n, int nibbles) {
+    if (!nibbles) {
+        return q[(long) r * n + c];
+    }
+    char b = q[(long) (r >> 1) * n + c];
+    return (r & 1) ? (b >> 4) : ((char) (b << 4) >> 4);
+}
+
+__kernel void unpack_packed(__global const char* q, __global const float* scales, __global T* z, int k, int n,
+                            int group, int nibbles) {
+    long idx = get_global_id(0);
+    if (idx >= (long) k * n) return;
+    int r = idx / n;
+    int c = idx % n;
+    STORE(z, idx, (ACC) (packed_level(q, r, c, n, nibbles) * scales[(long) (r / group) * n + c]));
+}
+
+#define PACKED_ROWS 8
+
+// z = a x packed for up to PACKED_ROWS rows of a: one work item per column reads that
+// column's levels once for all rows.
+__kernel void matmul_packed(__global const T* a, __global const char* q, __global const float* scales, __global T* z,
+                            int m, int k, int n, int group, int nibbles) {
+    int c = get_global_id(0);
+    if (c >= n) return;
+    ACC total[PACKED_ROWS];
+    ACC part[PACKED_ROWS];
+    for (int i = 0; i < PACKED_ROWS; i++) {
+        total[i] = (ACC) 0;
+    }
+    for (int g0 = 0; g0 < k; g0 += group) {
+        for (int i = 0; i < PACKED_ROWS; i++) {
+            part[i] = (ACC) 0;
+        }
+        for (int r = g0; r < g0 + group; r++) {
+            ACC level = (ACC) packed_level(q, r, c, n, nibbles);
+            for (int i = 0; i < m; i++) {
+                part[i] += LOAD(a, (long) i * k + r) * level;
+            }
+        }
+        ACC s = (ACC) scales[(long) (g0 / group) * n + c];
+        for (int i = 0; i < m; i++) {
+            total[i] += part[i] * s;
+        }
+    }
+    for (int i = 0; i < m; i++) {
+        STORE(z, (long) i * n + c, total[i]);
+    }
+}

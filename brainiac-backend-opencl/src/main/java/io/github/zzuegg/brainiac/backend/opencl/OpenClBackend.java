@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.backend.opencl;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
+import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_DOUBLE;
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
@@ -13,6 +14,8 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
+import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
@@ -455,7 +458,7 @@ public final class OpenClBackend implements Backend {
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
-                "attention_dkv")) {
+                "attention_dkv", "unpack_packed", "matmul_packed")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -1317,6 +1320,9 @@ public final class OpenClBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
+        if (storage instanceof Packed) {
+            return;   // its buffers go back when it is collected
+        }
         ClStorage s = cl(storage);
         MemorySegment mem = s.buffer.mem;
         if (s.pending != null || mem == null || s.released) {
@@ -2401,6 +2407,82 @@ public final class OpenClBackend implements Backend {
         long total = outer * count * inner;
         run(o.dtype, "gather", total, as(in, o.dtype), idx, o, length, inner, count, total);
         release(idx);
+    }
+
+    // ---------------------------------------------------------------- packed matrices
+
+    /** A packed matrix on the device: its levels as raw bytes and its scales, plus the host copy. */
+    private record Packed(PackedMatrix host, ClStorage levels, ClStorage scales) implements PackedStorage {
+
+        @Override
+        public int rows() {
+            return host.rows();
+        }
+
+        @Override
+        public int cols() {
+            return host.cols();
+        }
+
+        @Override
+        public long size() {
+            return host.size();
+        }
+
+        @Override
+        public long bytes() {
+            return levels.bytes() + scales.bytes();
+        }
+    }
+
+    /** Rows up to which a product reads packed levels directly ({@code PACKED_ROWS} in the kernel). */
+    private static final int PACKED_ROWS = 8;
+
+    @Override
+    public synchronized PackedStorage pack(PackedMatrix matrix) {
+        byte[] data = matrix.data();
+        byte[] padded = Arrays.copyOf(data, Math.max(4, (data.length + 3) / 4 * 4));
+        try (Arena arena = Arena.ofConfined()) {
+            ClStorage levels = uploaded(arena.allocateFrom(JAVA_BYTE, padded), padded.length / 4, DType.FLOAT32);
+            return new Packed(matrix, levels, cl(upload(matrix.scales())));
+        }
+    }
+
+    @Override
+    public PackedMatrix unpackToHost(PackedStorage packed) {
+        if (packed instanceof Packed p) {
+            return p.host();
+        }
+        return Backend.super.unpackToHost(packed);
+    }
+
+    private Packed packed(PackedStorage s) {
+        if (s instanceof Packed p && p.levels().owner == this) {
+            return p;
+        }
+        return (Packed) pack(unpackToHost(s));   // packed for another backend: bring it here
+    }
+
+    @Override
+    public synchronized void unpack(PackedStorage packed, Storage out) {
+        Packed p = packed(packed);
+        ClStorage o = cl(out);
+        PackedMatrix h = p.host();
+        run(o.dtype, "unpack_packed", h.size(), p.levels(), p.scales(), o, h.rows(), h.cols(), h.group(),
+                h.nibbles() ? 1 : 0);
+    }
+
+    @Override
+    public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS) {
+            Backend.super.matmulPacked(a, b, m, k, n, out);
+            return;
+        }
+        Packed p = packed(b);
+        ClStorage o = cl(out);
+        PackedMatrix h = p.host();
+        run(o.dtype, "matmul_packed", n, as(a, o.dtype), p.levels(), p.scales(), o, m, k, n, h.group(),
+                h.nibbles() ? 1 : 0);
     }
 
     /** The largest head size the attention kernels keep in registers ({@code ATT_D}). */

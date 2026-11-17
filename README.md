@@ -654,14 +654,35 @@ Trainer.of(model)                                  // quantization-aware trainin
 ```
 
 Quantized are dense, convolution, attention, recurrent and embedding weights; biases,
-normalization and activation parameters stay in floating point. The model keeps computing
-in its own number format with the rounded values, so it runs unchanged on the CPU and the
-GPU; the savings are in the file (and in what a quantized kernel could later read).
+normalization and activation parameters stay in floating point. A quantized model keeps
+computing in its own number format with the rounded values, so it runs unchanged on the
+CPU and the GPU. To also save memory and time, pack it: dense-like weights (dense,
+attention, recurrent) then stay in memory as their 8- or 4-bit levels plus scales
+(`Tensor.packed`), and matrix products read the levels directly, on the CPU (SIMD) and
+in OpenCL. That pays off when generating text one token at a time, which waits on reading
+the weights:
+
+```java
+model.quantize(Quantization.int4().groups(32)).pack();   // or Model.load(path).pack()
+model.bytes();                                           // ~7x less weight memory
+```
+
+| 4-core machine, Vector API | float32 | int8 packed | int4 packed |
+| --- | --- | --- | --- |
+| one row x 4096x4096 weights | 6.3 ms | 2.9 ms | 2.2 ms |
+| generating with 6 transformer blocks of 768 | 22 tokens/s | 99 tokens/s | 126 tokens/s (groups of 32) |
+
+Products of more than a few rows (training, batch inference) unpack the weights first,
+and any other operation on a packed weight sees its values; `unpack()` turns them back
+into float32 tensors. The packed product is also simply a better kernel for one row than
+the general float32 one, so part of the gain is not from the narrower weights.
+
 Files with quantized weights are format version 5; others are still written as version 4.
 Compare schemes on any benchmark task:
 
 ```
 ./gradlew :brainiac-examples:run --args="bench mnist cnn --quantize int8,int4,int4/g32,int2 --qat 1"
+./gradlew :brainiac-examples:run --args="bench shakespeare --quantize int8,int4/g32 --pack"   # + generation speed
 ```
 
 ## Performance

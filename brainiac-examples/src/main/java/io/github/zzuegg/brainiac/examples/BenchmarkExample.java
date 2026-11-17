@@ -270,6 +270,7 @@ public final class BenchmarkExample {
      *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
      *        {@code --quantize int8,int4/g32,int2} (after training, compare quantized copies:
      *        accuracy and file size), {@code --qat N} (also train a copy N epochs for each),
+     *        {@code --pack} (for shakespeare, generation speed with packed weights),
      *        {@code --cache none,restart,sliding,sinks:4,h2o:32,restart/bf16} (for shakespeare:
      *        compare KV cache strategies on long text), {@code --streams 1,8,32} (for
      *        shakespeare: generation speed with several texts at once)
@@ -297,6 +298,10 @@ public final class BenchmarkExample {
             }
             if (args[i].equals("--quantize")) {
                 quantizations = java.util.Arrays.stream(args[++i].split(",")).map(BenchmarkExample::quantization).toList();
+                continue;
+            }
+            if (args[i].equals("--pack")) {
+                pack = true;
                 continue;
             }
             if (args[i].equals("--qat")) {
@@ -377,6 +382,36 @@ public final class BenchmarkExample {
 
     /** Quantizations to compare after a model is trained ({@code --quantize}). */
     private static List<Quantization> quantizations = List.of();
+
+    /** Whether to compare generation with packed weights ({@code --pack}). */
+    private static boolean pack;
+
+    /**
+     * Generation speed and weight memory with each quantization's weights {@linkplain
+     * Model#pack() packed}, against the float model ({@code --pack}).
+     */
+    private static void comparePacked(Model model, io.github.zzuegg.brainiac.data.Tokenizer tokenizer) {
+        if (!pack || quantizations.isEmpty()) {
+            return;
+        }
+        int count = 300;
+        System.out.println("generating " + count + " tokens, 1 stream, weights packed in memory:");
+        System.out.printf("  %-14s %12s %10s%n", "weights", "memory KB", "tokens/s");
+        List<String> names = new ArrayList<>(List.of(model.dtype().name().toLowerCase()));
+        List<Model> models = new ArrayList<>(List.of(model));
+        for (Quantization q : quantizations) {
+            names.add(quantizationName(q));
+            models.add(model.copy(model.device()).quantize(q).pack());
+        }
+        for (int i = 0; i < models.size(); i++) {
+            Model m = models.get(i);
+            LanguageExample.generate(m, tokenizer, "ROMEO:\n", 1, 40, 0.8f, 1);   // warm up
+            long start = System.nanoTime();
+            LanguageExample.generate(m, tokenizer, "ROMEO:\n", 1, count, 0.8f, 1);
+            double seconds = (System.nanoTime() - start) / 1e9;
+            System.out.printf("  %-14s %12.1f %10.0f%n", names.get(i), m.bytes() / 1024.0, count / seconds);
+        }
+    }
 
     /** Epochs of quantization-aware training per quantization ({@code --qat}); 0 for none. */
     private static int qatEpochs;
@@ -530,6 +565,7 @@ public final class BenchmarkExample {
                     (int) Math.ceil(400 / tokenizer.charactersPerToken("ROMEO:\nWhat light through yonder window "
                             + "breaks? It is the east, and Juliet is the sun.")), 0.8f, 1) + "\n");
             compareCaches(model, tokenizer, text);
+            comparePacked(model, tokenizer);
             compareStreams(model, tokenizer);
         }
         return r;
@@ -596,6 +632,8 @@ public final class BenchmarkExample {
                   --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
                   --quantize L  after training, test quantized copies: int8, int4, int2, ...;
                                 /g32 for a scale per 32 inputs, /t for one per tensor
+                  --pack        with --quantize, for shakespeare: generation speed and memory
+                                with each quantization's weights packed (Model.pack)
                   --qat N       with --quantize, also train a copy N epochs for each
                                 quantization (quantization-aware training)
                   --precisions L  train each model once per precision, e.g. f32,bf16,f16

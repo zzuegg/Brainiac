@@ -216,6 +216,39 @@ class QuantizationTest {
     }
 
     @Test
+    void packedModelsComputeTheSameWithLessMemory() throws IOException {
+        for (Quantization q : List.of(Quantization.int8(), Quantization.int4(), Quantization.int4().groups(4),
+                Quantization.bits(3).perTensor())) {
+            Model m = Model.sequential().input(16).dense(64, Activation.RELU).dense(64, Activation.RELU).dense(4)
+                    .seed(7).build().quantize(q);
+            float[] expected = m.predict(X).toArray();
+            long before = m.bytes();
+            assertSame(m, m.pack());
+            assertTrue(m.isPacked());
+            assertTrue(((Dense) m.layers().get(0)).weight().value().isPacked());
+            assertTrue(m.bytes() < before / (q.groupSize() > 0 ? 2 : q.bits() == 8 ? 3 : 5), q + ": " + m.bytes() + " of " + before);
+            assertArrayEquals(expected, m.predict(X).toArray(), 1e-5f, q.toString());
+            Path file = dir.resolve("packed.brainiac");
+            m.save(file);
+            assertArrayEquals(expected, Model.load(file).pack().predict(X).toArray(), 1e-5f);
+            Model copy = m.copy(Device.cpu());
+            assertTrue(copy.isPacked());
+            assertArrayEquals(expected, copy.predict(X).toArray(), 1e-5f);
+            m.unpack();
+            assertTrue(!m.isPacked());
+            assertArrayEquals(expected, m.predict(X).toArray(), 1e-5f);
+        }
+    }
+
+    @Test
+    void packingSkipsConvolutionsAndEmbeddings() {
+        Model m = Model.sequential().input(1, 6, 6).conv2d(4, 3, Activation.RELU).flatten().dense(5).seed(1).build()
+                .quantize(Quantization.int8()).pack();
+        assertTrue(!((Conv) m.layers().get(0)).weight().value().isPacked());
+        assertThrows(IllegalStateException.class, () -> Model.sequential().input(3).dense(2).build().pack());
+    }
+
+    @Test
     void rejectsBadSettings() {
         assertThrows(IllegalArgumentException.class, () -> Quantization.bits(1));
         assertThrows(IllegalArgumentException.class, () -> Quantization.bits(9));
