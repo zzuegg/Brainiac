@@ -686,17 +686,45 @@ public final class MyTts implements CapabilityProvider {
 // module-info.java: provides io.github.zzuegg.brainiac.studio.spi.CapabilityProvider with MyTts;
 ```
 
-**Chat** works with models on this PC and at Anthropic, OpenAI and Google. Local models are
-Hugging Face model folders (Llama, Qwen2, Mistral) and `.gguf` files in `./models`,
-`~/.brainiac/models`, `$BRAINIAC_MODELS`, or the folders given with `--models <folder>`.
-Remote providers list their own models live; add API keys under Models, Providers. Each
-provider can hold several named keys: they are tried in order, and the next one takes over
-when a key is refused, rate limited or out of credit. Saved keys go to
-`~/.brainiac/studio/keys.properties`, readable only by your account; `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY` and `GEMINI_API_KEY` count as one more key each. The page never sees a key,
-only its name and last four characters. Auto sends a conversation to a model on this PC when
-there is one, then to Anthropic, OpenAI and Google. A gateway or proxy in front of a provider
-is set with `-Dstudio.anthropic.url=`, `-Dstudio.openai.url=` or `-Dstudio.google.url=`.
+**Chat** works with models on this PC and at Anthropic, OpenAI, Google, Hugging Face, DeepSeek,
+Qwen (Alibaba Cloud), Kimi (Moonshot), GLM (Zhipu), MiniMax, Mistral, xAI, Groq and OpenRouter.
+Local models are Hugging Face model folders (Llama, Qwen2, Mistral) and `.gguf` files in
+`./models`, `~/.brainiac/models`, `$BRAINIAC_MODELS`, or the folders given with
+`--models <folder>`. Remote providers list their own models live; add API keys under Models,
+Providers. Each provider can hold several named keys: they are tried in order, and the next one
+takes over when a key is refused, rate limited or out of credit. Saved keys go to
+`~/.brainiac/studio/keys.properties`, readable only by your account. A key in the provider's
+environment variable counts as one more key:
+
+| provider | environment variable | balance shown |
+|---|---|---|
+| Anthropic | `ANTHROPIC_API_KEY` | no |
+| OpenAI | `OPENAI_API_KEY` | no |
+| Google | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | no |
+| Hugging Face | `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN` | no |
+| DeepSeek | `DEEPSEEK_API_KEY` | yes |
+| Qwen (Alibaba Cloud, international) | `DASHSCOPE_API_KEY` | no |
+| Kimi (Moonshot) | `MOONSHOT_API_KEY` | yes |
+| GLM (Zhipu BigModel) | `ZHIPUAI_API_KEY` or `BIGMODEL_API_KEY` | no |
+| MiniMax | `MINIMAX_API_KEY` | no |
+| Mistral | `MISTRAL_API_KEY` | no |
+| xAI | `XAI_API_KEY` | no |
+| Groq | `GROQ_API_KEY` | no |
+| OpenRouter | `OPENROUTER_API_KEY` | yes (the key's limit) |
+
+The page never sees a key, only its name and last four characters. Auto sends a conversation
+to a model on this PC when there is one, then to the providers with keys in the order above.
+A gateway or proxy in front of a provider is set with `-Dstudio.<provider>.url=`, such as
+`-Dstudio.openai.url=https://gateway.example/v1/` or `-Dstudio.qwen.url=` for Alibaba Cloud's
+China region.
+
+**Usage** is logged for every call, by provider, key, model and day, in
+`~/.brainiac/studio/usage.jsonl`: tokens as the provider counts them, pictures made,
+characters spoken, time taken and failures. Prompts are not kept, and keys appear by name only.
+Models, Providers shows the totals, a chart of the last 30 days and, where the provider
+reports one, what is left on each key. Anthropic, OpenAI and Google only report spend to
+organization admin keys, so the studio shows tokens for them but no balance, and it does not
+turn tokens into money.
 
 **Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
 `gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
@@ -711,6 +739,8 @@ POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"H
                             route, thinking, text ..., done or error
 POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","count":2}
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
+GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
+GET  /api/balances          what is left on each key, at providers that report it
 ```
 
 The other surfaces are being connected one at a time; until a surface reads real data it
@@ -805,7 +835,9 @@ System properties: `brainiac.vulkan.devices`
 (`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
 (index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
 validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
-`brainiac.vulkan.statistics` (`true` prints the counts below at exit).
+`brainiac.vulkan.statistics` (`true` prints the counts below at exit), `brainiac.vulkan.profile` (`true` runs
+every dispatch alone between GPU timestamps and adds the device time per shader to the statistics; the
+generated shaders are written to `brainiac-fused` in the temp folder).
 `VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
 barriers and submits. The examples take `--device vulkan` (or `gpu`) to run there. CI runs the tests on lavapipe.
 Without a Vulkan driver the backend reports itself unavailable and its tests are skipped.

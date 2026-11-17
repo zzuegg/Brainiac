@@ -981,10 +981,10 @@
     back.addEventListener("click", e => { if (e.target === back) back.remove(); });
   }
 
-  function go(v) { state.view = v; if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v); render(); }
+  function go(v) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v); render(); }
 
   // ---------- wiring ----------
-  window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { state.view = v; render(); } });
+  window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; render(); } });
   window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
   $("#cmdk-open").addEventListener("click", openCmdk);
@@ -1017,6 +1017,10 @@
     sel: store.get("convo", null),        // a conversation id, "example", or null for a new one
     model: store.get("chatModel", "auto"),
     busy: null,                           // the AbortController of the answer being written
+    usage: null,                          // GET /api/usage: calls and tokens by provider, key, model, day
+    balances: null,                       // GET /api/balances: what is left per key, where providers say
+    libProvider: "all",                   // which provider's models the table shows
+    adding: null,                         // the provider whose key form is open
   };
   const isLive = () => !!document.querySelector('meta[name="studio-token"]');
   const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
@@ -1029,13 +1033,37 @@
 
   // A little Markdown: code fences, inline code, bold, paragraphs. Everything is escaped first.
   function md(text) {
-    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
+    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s.,;:!?)]|$)/g, "$1<i>$2</i>").replace(/\n/g, "<br>");
     return text.split("```").map((part, i) => {
       if (i % 2) {
         const nl = part.indexOf("\n");
         return `<pre class="code">${esc((nl >= 0 ? part.slice(nl + 1) : part).replace(/\n$/, ""))}</pre>`;
       }
-      return part.split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${inline(p.trim())}</p>`).join("");
+      // blocks of lines: headings, rules, bullet and numbered lists (which a blank line does not end), paragraphs
+      const out = [];
+      let para = [], list = null;
+      const flushPara = () => { if (para.length) out.push(`<p>${inline(para.join("\n"))}</p>`); para = []; };
+      const flushList = () => {
+        if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map(x => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`);
+        list = null;
+      };
+      for (const raw of part.split("\n")) {
+        const line = raw.trimEnd();
+        const h = /^(#{1,4})\s+(.*)$/.exec(line), ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+        if (!line.trim()) { flushPara(); continue; }
+        if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); flushList(); out.push("<hr>"); }
+        else if (h) { flushPara(); flushList(); out.push(`<p class="mdh mdh${h[1].length}">${inline(h[2])}</p>`); }
+        else if (ul || ol) {
+          flushPara();
+          const tag = ul ? "ul" : "ol";
+          if (!list || list.tag !== tag) { flushList(); list = { tag, start: ol ? +ol[1] : 1, items: [] }; }
+          list.items.push(ul ? ul[1] : ol[2]);
+        } else if (list && /^\s{2,}/.test(raw)) list.items[list.items.length - 1] += "\n" + line.trim();
+        else { flushList(); para.push(line); }
+      }
+      flushPara(); flushList();
+      return out.join("");
     }).join("");
   }
 
@@ -1497,9 +1525,21 @@
   // ---------- live models and providers ----------
   function liveModelsTable() {
     const ms = L.info ? L.info.models : [];
-    return `<div class="tablebox"><table class="models">
+    const counts = {};
+    ms.forEach(m => counts[m.provider] = (counts[m.provider] || 0) + 1);
+    const ids = Object.keys(counts);
+    if (L.libProvider !== "all" && !counts[L.libProvider]) L.libProvider = "all";
+    const shown = ms.filter(m => L.libProvider === "all" || m.provider === L.libProvider);
+    return `${ids.length > 1 || ms.length > 12 ? `<div class="modelbar">
+        <div class="seg" role="group" aria-label="Show models from">
+          <button data-lib-provider="all" aria-pressed="${L.libProvider === "all"}">All <span class="faint tnum">${ms.length}</span></button>
+          ${ids.map(id => `<button data-lib-provider="${esc(id)}" aria-pressed="${L.libProvider === id}">${esc(id === "local" ? "This PC" : providerName(id))} <span class="faint tnum">${counts[id]}</span></button>`).join("")}
+        </div>
+        <input class="input" id="model-find" type="search" placeholder="Find a model" aria-label="Find a model">
+      </div>` : ""}
+      <div class="tablebox models-box"><table class="models">
       <thead><tr><th>Model</th><th>Can</th><th>Where</th><th>Detail</th></tr></thead>
-      <tbody>${ms.length ? ms.map(m => `<tr>
+      <tbody>${shown.length ? shown.map(m => `<tr data-find="${esc((m.name + " " + m.key).toLowerCase())}">
         <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.key)}</div></td>
         <td>${m.media.map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join(" ")}</td>
         <td>${m.provider === "local" ? `<span class="chip c-ok">this PC</span>` : `<span class="chip c-agent">${esc(providerName(m.provider))} · your key</span>`}</td>
@@ -1507,41 +1547,130 @@
         : `<tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr>`}</tbody></table></div>`;
   }
 
+  // ---------- usage and balances ----------
+  const compact = n => n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M"
+    : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(Math.round(n));
+  const plural = (n, one, many) => `${compact(n)} ${n === 1 ? one : many || one + "s"}`;
+  const money = b => b.amount === undefined ? "no limit" : `${b.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${b.currency}`;
+  function usageLine(t) {
+    if (!t || !t.calls) return "";
+    const bits = [plural(t.calls, "call")];
+    if (t.in + t.out) bits.push(`${compact(t.in)} in · ${compact(t.out)} out`);
+    if (t.failed) bits.push(`${t.failed} failed`);
+    return bits.join(" · ");
+  }
+  function keyBalance(p, label) {
+    const list = L.balances && L.balances[p.id];
+    const b = list && list.find(x => x.label === label);
+    if (!p.balance) return "";
+    if (!b) return L.balances ? "" : `<span class="chip plain faint">balance…</span>`;
+    if (b.error) return `<span class="chip plain" title="${esc(b.error)}">balance unknown</span>`;
+    const low = b.balance.amount !== undefined && b.balance.amount < 1;
+    return `<span class="chip ${low ? "c-warn" : "c-ok"}" title="${esc(b.balance.detail)}">${esc(money(b.balance))} left</span>`;
+  }
+
+  function liveUsage() {
+    const u = L.usage;
+    if (!u) return `<div class="usage"><span class="muted">Reading the usage log…</span></div>`;
+    const days = u.daily;
+    const sum = (row, f) => Object.values(row.providers).reduce((a, t) => a + f(t), 0);
+    const tot = { calls: 0, in: 0, out: 0, failed: 0, images: 0, chars: 0 };
+    days.forEach(d => Object.values(d.providers).forEach(t => { tot.calls += t.calls; tot.in += t.in; tot.out += t.out; tot.failed += t.failed; }));
+    const kinds = { image: 0, speech: 0 };
+    // pictures and characters come from the per-model totals, split by the model's medium
+    Object.entries(u.models).forEach(([k, t]) => {
+      const m = modelByKey(k);
+      if (m && m.media.includes("image")) kinds.image += t.units;
+      else if (m && m.media.includes("speech")) kinds.speech += t.units;
+    });
+    const tokens = days.map(d => sum(d, t => t.in + t.out));
+    const max = Math.max(1, ...tokens);
+    const bars = days.map((d, i) => {
+      const v = tokens[i];
+      const label = new Date(d.day + "T12:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      const per = Object.entries(d.providers).map(([p, t]) => `${providerName(p)}: ${t.in + t.out ? compact(t.in + t.out) + " tokens, " : ""}${plural(t.calls, "call")}${t.failed ? `, ${t.failed} failed` : ""}`).join("; ");
+      return `<button class="bar" data-tip="${esc(label)}|${esc(per || "no calls")}" aria-label="${esc(label)}: ${esc(per || "no calls")}">${v
+        ? `<i style="height:${Math.max(2, v / max * 100).toFixed(1)}%"></i>` : `<i class="zero"></i>`}</button>`;
+    }).join("");
+    const first = new Date(days[0].day + "T12:00"), last = new Date(days[days.length - 1].day + "T12:00");
+    const fmtDay = d => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const provRows = Object.entries(u.providers).sort((a, b) => (b[1].in + b[1].out) - (a[1].in + a[1].out) || b[1].calls - a[1].calls);
+    const tile = (v, l) => `<div class="tile"><b class="tnum">${v}</b><span>${l}</span></div>`;
+    return `<div class="usage">
+      <div class="usage-head"><span class="h3">Usage</span><span class="muted">every call this studio made, kept on this PC; tokens as the providers count them</span></div>
+      ${provRows.length ? `<div class="tiles">
+        ${tile(compact(tot.calls), "calls, last 30 days")}${tile(compact(tot.in), "tokens in")}${tile(compact(tot.out), "tokens out")}
+        ${kinds.image ? tile(compact(kinds.image), "pictures, all time") : ""}${kinds.speech ? tile(compact(kinds.speech), "characters spoken, all time") : ""}
+        ${tot.failed ? tile(compact(tot.failed), "failed calls") : ""}</div>
+      <figure class="daychart">
+        <figcaption>Tokens per day, last 30 days <span class="faint">· most ${compact(max)}</span></figcaption>
+        <div class="chartwrap"><div class="bars" role="group" aria-label="Tokens per day for the last 30 days">${bars}</div><div class="charttip" hidden></div></div>
+        <div class="axis"><span>${esc(fmtDay(first))}</span><span>today</span></div>
+      </figure>
+      <div class="tablebox"><table class="usage-table">
+        <thead><tr><th>Provider and model</th><th class="r">Calls</th><th class="r">Failed</th><th class="r">Tokens in</th><th class="r">Tokens out</th><th class="r">Pictures or characters</th><th class="r">Avg time</th></tr></thead>
+        <tbody>${provRows.map(([p, t]) => {
+          const ms = Object.entries(u.models).filter(([k]) => k.startsWith(p + "/")).sort((a, b) => b[1].calls - a[1].calls);
+          const row = (name, t, cls) => `<tr class="${cls}"><td>${name}</td><td class="r tnum">${compact(t.calls)}</td><td class="r tnum ${t.failed ? "bad" : "faint"}">${t.failed}</td>
+            <td class="r tnum">${compact(t.in)}</td><td class="r tnum">${compact(t.out)}</td><td class="r tnum">${t.units ? compact(t.units) : "—"}</td><td class="r tnum">${t.calls ? (t.seconds / t.calls).toFixed(1) + " s" : "—"}</td></tr>`;
+          return row(`<b>${esc(p === "local" ? "This PC" : providerName(p))}</b>`, t, "p-total") + ms.map(([k, mt]) => row(`<span class="mono">${esc(k.slice(p.length + 1))}</span>`, mt, "p-model")).join("");
+        }).join("")}</tbody></table></div>`
+      : `<div class="muted" style="font-size:13px">No calls yet. Chats, pictures and speech show up here with their tokens, per provider, key and model.</div>`}
+    </div>`;
+  }
+
   function liveProviders() {
     if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
-    return `<div class="providers">${L.info.providers.map(p => {
+    const ready = L.info.providers.filter(p => p.local || p.keys.length);
+    const more = L.info.providers.filter(p => !p.local && !p.keys.length);
+    const keyUse = (p, label) => usageLine(L.usage && L.usage.keys[p.id + "/" + label]);
+    const form = (p, open) => `<form class="keyform" data-provider="${p.id}" ${open ? "" : "hidden"}>
+          <input class="input" name="label" placeholder="Name" value="${p.keys.some(k => k.source === "saved") ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
+          <input class="input mono" name="key" type="password" placeholder="API key" aria-label="${esc(p.name)} API key" required autocomplete="off">
+          <button class="btn" type="submit">${icon("plus")}Add</button>
+        </form>`;
+    const card = p => {
       const head = `<div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
-        ${p.ready ? `<span class="chip c-ok">${p.models} model${p.models === 1 ? "" : "s"}</span>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
+        ${p.ready ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
           <div class="muted" style="font-size:12.5px">Hugging Face model folders (Llama, Qwen2, Mistral) and <code>.gguf</code> files in:</div>
           ${p.folders.map(f => `<div class="mono faint" style="font-size:11.5px;word-break:break-all">${esc(f)}</div>`).join("")}
-          <span class="mono faint" style="font-size:11px">free · private · works offline</span></div>`;
+          <span class="mono faint" style="font-size:11px">free · private · works offline${L.usage && L.usage.providers.local ? " · " + esc(usageLine(L.usage.providers.local)) : ""}</span></div>`;
       }
-      const saved = p.keys.filter(k => k.source === "saved");
+      const total = L.usage && L.usage.providers[p.id];
       return `<div class="prov ${p.ready ? "on" : "off"}">${head}
+        ${p.note ? `<div class="muted" style="font-size:12.5px">${esc(p.note)}</div>` : ""}
         ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
-        <div class="keys">${p.keys.length ? p.keys.map((k, n) => `<div class="keyrow">
+        <div class="keys">${p.keys.map((k, n) => `<div class="keyrow">
             <span class="dot" style="--c:var(--${k.error ? "bad" : "ok"})"></span>
             <span class="lbl">${esc(k.label)}</span><span class="mono faint">${esc(k.hint)}</span>
             ${n === 0 && p.keys.length > 1 ? `<span class="chip plain">tried first</span>` : ""}
+            ${keyBalance(p, k.label)}
             <span class="grow"></span>
             ${k.source === "saved" ? `${n > 0 ? `<button class="btn ghost sm" data-key-first="${p.id}" data-label="${esc(k.label)}">Try first</button>` : ""}<button class="btn ghost sm" data-key-remove="${p.id}" data-label="${esc(k.label)}" aria-label="Remove key ${esc(k.label)}">Remove</button>` : `<span class="chip plain" title="Set in the environment the studio started from">environment</span>`}
-            ${k.error ? `<div class="keyerr">${esc(k.error)}</div>` : ""}</div>`).join("") : `<div class="muted" style="font-size:12.5px">Add a key to list and use ${esc(p.name)} models.</div>`}</div>
-        <form class="keyform" data-provider="${p.id}">
-          <input class="input" name="label" placeholder="Name" value="${saved.length ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
-          <input class="input mono" name="key" type="password" placeholder="API key" aria-label="${esc(p.name)} API key" required autocomplete="off">
-          <button class="btn" type="submit">${icon("plus")}Add</button>
-        </form>
-        <span class="mono faint" style="font-size:11px">several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
-    }).join("")}
+            ${keyUse(p, k.label) ? `<div class="keyuse mono">${esc(keyUse(p, k.label))}</div>` : ""}
+            ${k.error ? `<div class="keyerr">${esc(k.error)}</div>` : ""}</div>`).join("")}</div>
+        ${form(p, true)}
+        <span class="mono faint" style="font-size:11px">${total && p.keys.length > 1 ? esc(usageLine(total)) + " in all · " : ""}several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
+    };
+    return `<div class="providers">${ready.map(card).join("")}</div>
+      ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
+      <div class="more">${more.map(p => `<div class="prov-row ${L.adding === p.id ? "open" : ""}">
+          <span class="plogo">${esc(p.name[0])}</span>
+          <div class="who"><b>${esc(p.name)}</b><span class="muted">${esc(p.note || "")}</span></div>
+          <span class="mono faint env">${esc((p.env || []).join(" or "))}</span>
+          <button class="btn sm" data-add-key="${p.id}" aria-expanded="${L.adding === p.id}">${icon("plus")}Add key</button>
+          ${form(p, L.adding === p.id)}
+        </div>`).join("")}</div>` : ""}
       <div class="prov routing">
         <b>Routing</b>
-        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then Anthropic, OpenAI and Google, in that order.</span>
+        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then the providers with keys, in the order shown here.</span>
         <button class="btn" id="refresh-models">${icon("retry")}List models again</button>
-        <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters.</span>
+        ${L.info.providers.some(p => p.balance && p.keys.length) ? `<button class="btn" id="refresh-balances">${icon("retry")}Check balances</button>` : ""}
+        <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters. Anthropic, OpenAI and Google report no balance to an API key; DeepSeek, Kimi and OpenRouter do.</span>
       </div>
-    </div>`;
+      ${liveUsage()}`;
   }
 
   async function postKeys(body) {
@@ -1562,6 +1691,52 @@
     $$("[data-key-remove]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyRemove, label: b.dataset.label, remove: true }).catch(e => console.warn(e))));
     $$("[data-key-first]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyFirst, label: b.dataset.label, first: true }).catch(e => console.warn(e))));
     $("#refresh-models")?.addEventListener("click", () => loadModels(true));
+    $("#refresh-balances")?.addEventListener("click", () => loadBalances());
+    $$("[data-add-key]").forEach(b => b.addEventListener("click", () => {
+      L.adding = L.adding === b.dataset.addKey ? null : b.dataset.addKey;
+      render();
+      $(`.keyform[data-provider="${L.adding}"] input[name=key]`)?.focus();
+    }));
+    $$("[data-lib-provider]").forEach(b => b.addEventListener("click", () => { L.libProvider = b.dataset.libProvider; render(); }));
+    $$("[data-show-models]").forEach(b => b.addEventListener("click", () => {
+      L.libProvider = b.dataset.showModels; render();
+      $(".models-box")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+    const find = $("#model-find");
+    find?.addEventListener("input", () => {
+      const q = find.value.trim().toLowerCase();
+      $$(".models-box tr[data-find]").forEach(tr => tr.hidden = !!q && !tr.dataset.find.includes(q));
+    });
+    const tip = $(".charttip");
+    $$(".daychart .bar").forEach(g => {
+      const show = () => {
+        const [day, per] = g.dataset.tip.split("|");
+        tip.innerHTML = `<b>${esc(day)}</b>${per.split("; ").map(x => `<div>${esc(x)}</div>`).join("")}`;
+        const box = g.closest(".chartwrap").getBoundingClientRect(), r = g.getBoundingClientRect();
+        tip.hidden = false;
+        tip.style.left = Math.min(Math.max(0, r.left - box.left + r.width / 2 - tip.offsetWidth / 2), box.width - tip.offsetWidth) + "px";
+        g.classList.add("on");
+      };
+      const hide = () => { tip.hidden = true; g.classList.remove("on"); };
+      g.addEventListener("mouseenter", show); g.addEventListener("focus", show);
+      g.addEventListener("mouseleave", hide); g.addEventListener("blur", hide);
+    });
+    if (!L.usage) loadUsage();
+    if (!L.balances && L.info && L.info.providers.some(p => p.balance && p.keys.length)) loadBalances();
+  }
+
+  async function loadUsage() {
+    try { L.usage = await api("/api/usage"); } catch (e) { console.warn("cannot read usage", e); L.usage = { providers: {}, keys: {}, models: {}, daily: [], recent: [] }; }
+    if (state.view === "library") render();
+  }
+
+  let balancesBusy = false;
+  async function loadBalances() {
+    if (balancesBusy) return;
+    balancesBusy = true;
+    try { L.balances = await api("/api/balances"); } catch (e) { console.warn("cannot read balances", e); L.balances = {}; }
+    balancesBusy = false;
+    if (state.view === "library") render();
   }
 
   async function loadModels(refresh) {

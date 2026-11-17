@@ -29,6 +29,11 @@ final class GoogleProvider extends RemoteProvider {
     }
 
     @Override
+    String note() {
+        return "Gemini, Imagen pictures and Gemini speech";
+    }
+
+    @Override
     public String name() {
         return "Google";
     }
