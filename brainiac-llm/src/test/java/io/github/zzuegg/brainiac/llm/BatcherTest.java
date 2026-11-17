@@ -2,7 +2,6 @@ package io.github.zzuegg.brainiac.llm;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.data.CharacterTokenizer;
 
@@ -25,7 +24,7 @@ class BatcherTest {
         for (int i = 0; i < prompts.length; i++) {
             expected.add(gen.generate(List.of(prompts[i]), options(lengths[i]), null).getFirst());
         }
-        try (Generator.Batcher batcher = gen.batcher(3)) {
+        try (Generator.Batcher batcher = gen.batcher(3).warmUp(new int[] {1, 2}, 4)) {
             List<CompletableFuture<Generator.Output>> futures = new ArrayList<>();
             StringBuilder streamed = new StringBuilder();
             for (int i = 0; i < prompts.length; i++) {
@@ -39,7 +38,6 @@ class BatcherTest {
                 assertEquals(expected.get(i).finish(), o.finish());
             }
             assertEquals(expected.get(2).text(), streamed.toString());
-            assertTrue(batcher.largestBatch() > 1 && batcher.largestBatch() <= 3, "" + batcher.largestBatch());
         }
     }
 

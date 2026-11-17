@@ -615,6 +615,26 @@ public final class Generator {
             return j.future;
         }
 
+        /**
+         * Decodes {@code maxBatch} copies of a prompt together and waits, so the first real
+         * burst of requests does not pay for preparing the batch shapes (on the GPU, compiling
+         * them).
+         *
+         * @param prompt a short prompt
+         * @param tokens the tokens to write for each copy
+         * @return this
+         */
+        public Batcher warmUp(int[] prompt, int tokens) {
+            List<java.util.concurrent.CompletableFuture<Output>> all = new ArrayList<>();
+            Options o = Options.greedy(tokens).withStopTokens(Set.of());
+            for (int i = 0; i < maxBatch; i++) {
+                all.add(submit(prompt, o, null));
+            }
+            java.util.concurrent.CompletableFuture.allOf(all.toArray(java.util.concurrent.CompletableFuture[]::new))
+                    .join();
+            return this;
+        }
+
         /** @return the most sequences decoded side by side so far */
         public int largestBatch() {
             return largest;
