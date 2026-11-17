@@ -44,14 +44,22 @@ import java.util.SplittableRandom;
 public final class Llama implements LanguageModel {
 
     /**
-     * A projection {@code x W^T + b} with {@code W} stored {@code [out, in]} as Hugging Face
-     * stores it, or {@code x W} with a packed {@code [in, out]} matrix.
+     * A projection {@code x W + b} with {@code W} stored {@code [in, out]}: transposed once
+     * from Hugging Face's {@code [out, in]} when loading, so no step copies it.
      */
-    private record Linear(Var weight, boolean outIn, Var bias) {
+    private record Linear(Var weight, Var bias) {
         Var apply(Var x) {
-            Var y = x.matmul(outIn ? weight.transpose() : weight);
+            Var y = x.matmul(weight);
             return bias == null ? y : y.add(bias);
         }
+    }
+
+    /** Hugging Face's {@code [out, in]} matrix as {@code [in, out]}, freeing the original. */
+    private static Tensor inOut(Tensor outIn) {
+        Tensor t = outIn.transpose();
+        Tensor.evaluate(List.of(t));
+        outIn.release();
+        return t;
     }
 
     private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
@@ -168,7 +176,9 @@ public final class Llama implements LanguageModel {
         }
         for (String l : linearNames(config)) {
             Var bias = hasBias(config, l) ? read.apply(l + ".bias") : null;
-            linears.put(l, new Linear(read.apply(l + ".weight"), true, bias));
+            Var w = Var.param(inOut(weights.tensor(l + ".weight", device, dtype)));
+            named.put(l + ".weight", w);
+            linears.put(l, new Linear(w, bias));
         }
         return new Llama(config, device, dtype, named, linears);
     }
@@ -229,15 +239,15 @@ public final class Llama implements LanguageModel {
     private static Linear linear(Gguf gguf, String name, String hfName, int[] order, Device device, DType dtype,
             Map<String, Var> named, Var bias) {
         if (gguf.packable(name)) {
-            return new Linear(Var.of(gguf.packedTransposed(name, device, order)), false, bias);
+            return new Linear(Var.of(gguf.packedTransposed(name, device, order)), bias);
         }
         Tensor w = gguf.tensor(name, device, dtype);
         if (order != null) {
             w = w.gather(0, indices(order, device));
         }
-        Var v = Var.param(w);
+        Var v = Var.param(inOut(w));
         named.put(hfName + ".weight", v);
-        return new Linear(v, true, bias);
+        return new Linear(v, bias);
     }
 
     /** For each Hugging Face output row, the row llama.cpp's converter moved it to. */
@@ -297,14 +307,14 @@ public final class Llama implements LanguageModel {
                     : l.equals("lm_head") ? new int[] {config.vocabSize(), config.hidden()}
                     : new int[] {config.intermediate(), config.hidden()};
             float s = l.endsWith("o_proj") || l.endsWith("down_proj") ? residual : std;
-            Var w = Var.param(Tensor.normal(Shape.of(shape), 0, s, random).to(device).to(dtype));
+            Var w = Var.param(Tensor.normal(Shape.of(shape[1], shape[0]), 0, s, random).to(device).to(dtype));
             named.put(l + ".weight", w);
             Var b = null;
             if (hasBias(config, l)) {
                 b = Var.param(Tensor.zeros(Shape.of(shape[0]), dtype, device));
                 named.put(l + ".bias", b);
             }
-            linears.put(l, new Linear(w, true, b));
+            linears.put(l, new Linear(w, b));
         }
         return new Llama(config, device, dtype, named, linears);
     }
@@ -332,8 +342,9 @@ public final class Llama implements LanguageModel {
     }
 
     /**
-     * Returns the trainable weights by their Hugging Face names. Packed GGUF matrices are
-     * not among them.
+     * Returns the trainable weights by their Hugging Face names. Projection matrices are held
+     * {@code [in, out]}, the transpose of Hugging Face's layout ({@link #save} writes them
+     * back in that layout). Packed GGUF matrices are not among them.
      *
      * @return the weights, in a stable order
      */
@@ -499,7 +510,28 @@ public final class Llama implements LanguageModel {
             x = x.add(blk.down.apply(gated));
         }
         x = rmsNorm(x, norm);
-        return lmHead != null ? lmHead.apply(x) : x.matmul(embed.transpose());
+        if (lmHead != null) {
+            return lmHead.apply(x);
+        }
+        // tied: while decoding, a transposed copy of the embeddings made once; while
+        // training, through the embeddings so they get the gradient
+        return x.matmul(cache != null ? Var.of(tiedHead()) : embed.transpose());
+    }
+
+    private Tensor headSource;
+    private Tensor head;
+
+    /** The embeddings transposed, made again whenever they change. */
+    private synchronized Tensor tiedHead() {
+        if (headSource != embed.value()) {
+            if (head != null) {
+                head.release();
+            }
+            headSource = embed.value();
+            head = headSource.transpose();
+            Tensor.evaluate(List.of(head));
+        }
+        return head;
     }
 
     // ---------------------------------------------------------------- saving
@@ -521,8 +553,13 @@ public final class Llama implements LanguageModel {
             Files.createDirectories(dir);
             Files.writeString(dir.resolve("config.json"), Json.write(config.toHuggingFace()), StandardCharsets.UTF_8);
             Map<String, Tensor> tensors = new LinkedHashMap<>();
+            java.util.Set<String> matrices = new java.util.HashSet<>();
+            for (String l : linearNames(config)) {
+                matrices.add(l + ".weight");
+            }
             for (Map.Entry<String, Var> e : named.entrySet()) {
-                tensors.put(e.getKey(), e.getValue().value());
+                Tensor t = e.getValue().value();
+                tensors.put(e.getKey(), matrices.contains(e.getKey()) ? t.transpose() : t);
             }
             SafeTensors.write(dir.resolve("model.safetensors"), tensors, Map.of("format", "pt"));
         } catch (IOException e) {

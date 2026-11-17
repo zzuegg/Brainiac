@@ -1,4 +1,4 @@
-import json, os, glob, sys
+import json, os, glob, sys, shutil
 from tokenizers import Tokenizer, models, pre_tokenizers, decoders, normalizers, processors, trainers, Regex
 import sentencepiece as spm
 out = sys.argv[1]
@@ -120,3 +120,17 @@ w.add_array("tokenizer.ggml.token_type", [ty(i) for i in range(n)])
 w.add_uint32("tokenizer.ggml.bos_token_id", sp.bos_id()); w.add_uint32("tokenizer.ggml.eos_token_id", sp.eos_id())
 w.add_uint32("tokenizer.ggml.unknown_token_id", sp.unk_id()); w.add_bool("tokenizer.ggml.add_bos_token", True)
 w.write_header_to_file(); w.write_kv_data_to_file(); w.close()
+
+# 7 a Llama tokenizer as transformers loads it: tokenizer_class LlamaTokenizer rebuilds the
+# pipeline (Metaspace pre-tokenizer, "first" without legacy, so no "▁" after special tokens)
+from transformers import AutoTokenizer
+llama_texts = ["hello world</s>\nthe end", "<s>hi there", "The quick brown fox.</s></s> jumps", " leading space",
+               "line\n\nbreaks</s>x", ""]
+for legacy in (False, True):
+    d = f"{out}/llama-legacy-{str(legacy).lower()}"
+    os.makedirs(d, exist_ok=True)
+    shutil.copy(f"{out}/metaspace-bpe.json", f"{d}/tokenizer.json")
+    json.dump({"tokenizer_class": "LlamaTokenizer", "legacy": legacy, "add_bos_token": True, "add_eos_token": False,
+               "bos_token": "<s>", "eos_token": "</s>", "unk_token": "<unk>"}, open(f"{d}/tokenizer_config.json", "w"))
+    tok = AutoTokenizer.from_pretrained(d)
+    json.dump([{"text": s, "ids": tok(s)["input_ids"]} for s in llama_texts], open(f"{d}/expected.json", "w"))
