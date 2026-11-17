@@ -82,6 +82,10 @@ class GradCheckOpsTest {
                 op("where broadcast", v -> Var.where(a.greater(Tensor.scalar(0)), v.get(0), v.get(1)).square().sum(),
                         a, row),
                 op("reused value", v -> v.get(0).mul(v.get(0)).add(v.get(0)).sum(), a),
+                op("fft", v -> v.get(0).fft(false).mul(v.get(1)).sum(), rand(11, 2, 6, 2), rand(12, 2, 6, 2)),
+                op("inverse fft", v -> v.get(0).fft(true).mul(v.get(1)).sum(), rand(13, 5, 2), rand(14, 5, 2)),
+                op("rfft", v -> v.get(0).rfft().mul(v.get(1)).sum(), rand(15, 2, 8), rand(16, 2, 5, 2)),
+                op("irfft", v -> v.get(0).irfft(7).mul(v.get(1)).sum(), rand(17, 4, 2), rand(18, 7)),
                 op("dense layer", v -> v.get(0).matmul(v.get(1)).add(v.get(2)).tanh().sub(v.get(3)).square().mean(),
                         rand(10, 4, 2), rand(11, 2, 8), rand(12, 8), rand(13, 4, 8)));
     }

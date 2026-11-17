@@ -41,6 +41,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac` | Facade: depend on this one module to get the whole API |
 | `brainiac-examples` | Runnable examples |
 | `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
+| `brainiac-experiments` | Experimental research ideas (memory, context, new architectures, learning rules, evolution, generative toys, reasoning, agents, unconventional computing, interpretability). Untested; its API may change at any time |
 
 Shared build configuration lives in `build-logic/` as Gradle convention plugins
 (`brainiac.java-library`, `brainiac.java-application`). Each module has a
