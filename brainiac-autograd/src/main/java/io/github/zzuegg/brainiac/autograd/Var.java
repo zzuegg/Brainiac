@@ -833,6 +833,16 @@ public final class Var {
     }
 
     /**
+     * Reverses the order along one axis; see {@link Tensor#flip}.
+     *
+     * @param axis the axis; negative counts from the end
+     * @return the reversed value
+     */
+    public Var flip(int axis) {
+        return unary(value.flip(axis), g -> new Tensor[] {g.flip(axis)});
+    }
+
+    /**
      * Returns the part of this value from {@code start} to {@code end} (exclusive) along
      * one axis.
      *

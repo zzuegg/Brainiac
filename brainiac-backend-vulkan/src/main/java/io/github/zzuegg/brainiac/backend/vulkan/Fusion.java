@@ -285,8 +285,8 @@ final class Fusion {
     }
 
     /** Generates the shader computing {@code root} at every index of the output. */
-    static Kernel generate(Expr root) {
-        Gen g = new Gen();
+    static Kernel generate(Expr root, io.github.zzuegg.brainiac.tensor.DType type) {
+        Gen g = new Gen(type);
         String v = g.eval(root, "i0");
         StringBuilder src = new StringBuilder();
         src.append("layout(local_size_x = GROUP) in;\n");
@@ -304,6 +304,11 @@ final class Fusion {
             src.append("layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer Meta {")
                     .append(table).append(" };\n");
             src.append("layout(push_constant) uniform P { Meta m; Buf out_; uint n; } pc;\n");
+        }
+        if (g.words32) {
+            // other 16-bit formats than the kernel's, read as 32-bit words: no 16-bit features needed
+            src.append("layout(buffer_reference, std430, buffer_reference_align = 4) restrict readonly buffer "
+                    + "InWords32 { uint v[]; };\n");
         }
         if (g.random) {
             src.append("""
@@ -337,7 +342,14 @@ final class Fusion {
         final Map<Const, String> consts = new IdentityHashMap<>();
         final Set<VkStorage> inlining = new LinkedHashSet<>();
         boolean random;
+        boolean words32;
         int vars = 1;   // i0 is the chain's own index
+        /** The kernel's format; sources in another one are converted as they are read. */
+        final io.github.zzuegg.brainiac.tensor.DType type;
+
+        Gen(io.github.zzuegg.brainiac.tensor.DType type) {
+            this.type = type;
+        }
 
         String fresh(String type, String prefix, String value) {
             String name = prefix + (vars++);
@@ -400,7 +412,21 @@ final class Fusion {
                     loads.add(st);
                     pointerIndex.put(st, k);
                 }
-                v = fresh("ACC", "v", "LOAD(In(m.p[" + k + "]), " + j + ")");
+                String p = "m.p[" + k + "]";
+                v = fresh("ACC", "v", switch (st.dtype == type ? null : st.dtype) {
+                    case null -> "LOAD(In(" + p + "), " + j + ")";
+                    case FLOAT32 -> "ACC(InFloats(" + p + ").v[" + j + "])";
+                    case FLOAT16 -> {
+                        words32 = true;
+                        yield "ACC(unpackHalf2x16(InWords32(" + p + ").v[" + j + " >> 1u])[" + j + " & 1u])";
+                    }
+                    case BFLOAT16 -> {
+                        words32 = true;
+                        yield "ACC(uintBitsToFloat(((InWords32(" + p + ").v[" + j + " >> 1u] >> ((" + j
+                                + " & 1u) * 16u)) & 0xFFFFu) << 16))";
+                    }
+                    case FLOAT64 -> throw new IllegalStateException("float64 read by a " + type + " chain");
+                });
             }
             at.put(j, v);
             return v;
