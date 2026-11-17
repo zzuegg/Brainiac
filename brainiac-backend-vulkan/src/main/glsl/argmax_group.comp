@@ -1,0 +1,66 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// The index of the first largest value of long rows, by work groups rather than one
+// invocation per row. With pieces > 1, pass 0 finds the best of each equal piece of each
+// row (value and index into part), and pass 1 the best of a row's pieces; with one piece,
+// pass 0 writes the indices directly. As argmax.comp: NaN is never the largest, and a row
+// that starts with NaN gives 0.
+layout(push_constant) uniform P {
+    In x; Floats part; Buf y; uint rows; uint len; uint inner; uint pieces; uint pass_;
+} p;
+shared float bestV[GROUP];
+shared uint bestI[GROUP];
+#define NONE 0xFFFFFFFFu
+bool better(float v, uint i, float bv, uint bi) {
+    return v > bv || (v == bv && i < bi);
+}
+void main() {
+    uint g = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+    float bv = uintBitsToFloat(0xff800000u);
+    uint bi = NONE;
+    uint r;
+    if (p.pass_ == 0u) {
+        r = g / p.pieces;
+        uint s = g % p.pieces;
+        uint chunk = (p.len + p.pieces - 1u) / p.pieces;
+        uint from = s * chunk;
+        uint to = min(p.len, from + chunk);
+        uint base = (r / p.inner) * p.len * p.inner + r % p.inner;
+        for (uint t = from + lid; t < to; t += GROUP) {
+            float v = float(LOAD(p.x, base + t * p.inner));
+            if (better(v, t, bv, bi)) { bv = v; bi = t; }
+        }
+    } else {
+        r = g;
+        for (uint t = lid; t < p.pieces; t += GROUP) {
+            uint at = (r * p.pieces + t) * 2u;
+            float v = p.part.v[at];
+            uint i = floatBitsToUint(p.part.v[at + 1u]);
+            if (i != NONE && better(v, i, bv, bi)) { bv = v; bi = i; }
+        }
+    }
+    bestV[lid] = bv;
+    bestI[lid] = bi;
+    barrier();
+    for (uint h = GROUP / 2; h > 0; h >>= 1) {
+        if (lid < h && bestI[lid + h] != NONE && better(bestV[lid + h], bestI[lid + h], bestV[lid], bestI[lid])) {
+            bestV[lid] = bestV[lid + h];
+            bestI[lid] = bestI[lid + h];
+        }
+        barrier();
+    }
+    if (lid == 0u) {
+        if (p.pass_ == 0u && p.pieces > 1u) {
+            uint at = g * 2u;
+            p.part.v[at] = bestV[0];
+            p.part.v[at + 1u] = uintBitsToFloat(bestI[0]);
+        } else {
+            uint base = (r / p.inner) * p.len * p.inner + r % p.inner;
+            uint best = bestI[0] == NONE || isnan(float(LOAD(p.x, base))) ? 0u : bestI[0];
+            STORE(p.y, r, ACC(best));
+        }
+    }
+}

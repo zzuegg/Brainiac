@@ -978,13 +978,40 @@ public final class VulkanBackend implements Backend {
         eager(vs(in), y);
         VkStorage x = as(vs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
-            vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
-                    .putInt((int) inner);
-            vk.dispatch(shader("argmax", y.dtype), groups(rows), y.slot(), x.slot());
+            argmax(x, y, rows, length, inner);
         } else {
             reduce(op.ordinal(), x, y, rows, length, inner);
         }
         done(x, vs(in));
+    }
+
+    /**
+     * The index of each row's first largest value. Few long rows (the logits of a sampled
+     * token) go to work groups, split into pieces when there are too few rows to fill the
+     * device; otherwise one invocation per row.
+     */
+    private void argmax(VkStorage x, VkStorage y, long rows, long length, long inner) {
+        if (rows >= 1024 || length <= 256 || x.dtype == DType.FLOAT64 || length >= (1L << 31)) {
+            vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
+                    .putInt((int) inner);
+            vk.dispatch(shader("argmax", y.dtype), groups(rows), y.slot(), x.slot());
+            return;
+        }
+        int pieces = (int) Math.max(1, Math.min(ceil(length, 2048), 256 / rows));
+        if (pieces == 1) {
+            vk.push().putLong(x.address()).putLong(0).putLong(y.address()).putInt((int) rows).putInt((int) length)
+                    .putInt((int) inner).putInt(1).putInt(0);
+            vk.dispatch(shader("argmax_group", y.dtype), rows, y.slot(), x.slot());
+            return;
+        }
+        VkStorage part = raw(rows * pieces * 2, DType.FLOAT32, null);
+        vk.push().putLong(x.address()).putLong(part.address()).putLong(y.address()).putInt((int) rows)
+                .putInt((int) length).putInt((int) inner).putInt(pieces).putInt(0);
+        vk.dispatch(shader("argmax_group", y.dtype), rows * pieces, part.slot(), x.slot());
+        vk.push().putLong(x.address()).putLong(part.address()).putLong(y.address()).putInt((int) rows)
+                .putInt((int) length).putInt((int) inner).putInt(pieces).putInt(1);
+        vk.dispatch(shader("argmax_group", y.dtype), rows, y.slot(), x.slot(), part.slot());
+        part.release();
     }
 
     /** Whether contiguous rows are reduced by 32 invocations each ({@code -Dbrainiac.vulkan.reduceRows=false}: one). */
@@ -1084,13 +1111,14 @@ public final class VulkanBackend implements Backend {
                 return null;
             }
         }
+        Operand o = null;
         if (batch == 1 && d.length == 2 && d[0] == rows && d[1] == cols) {
-            return new Operand(src.storage(), src.offset(), 0, st[0], st[1]);
+            o = new Operand(src.storage(), src.offset(), 0, st[0], st[1]);
+        } else if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
+            o = new Operand(src.storage(), src.offset(), st[0], st[1], st[2]);
         }
-        if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
-            return new Operand(src.storage(), src.offset(), st[0], st[1], st[2]);
-        }
-        return null;
+        // the product reads along a contiguous row or column (see matmul.comp)
+        return o != null && (o.col() == 1 || o.row() == 1) ? o : null;
     }
 
     /** Whether a float16 product has enough rows for the matrix cores, where the device has them. */
@@ -1141,7 +1169,8 @@ public final class VulkanBackend implements Backend {
                     .putInt((int) xo.col()).putInt((int) yo.row()).putInt((int) yo.col());
             // the strided variant only where an operand needs it: its addressing costs the plain case
             boolean plain = xo.row() == k && xo.col() == 1 && yo.row() == n && yo.col() == 1;
-            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32") + (plain ? "" : "s");
+            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32")
+                    + (plain ? "" : "s" + (xo.col() == 1 ? "" : "a") + (yo.col() == 1 ? "" : "b"));
             vk.dispatch(shader(name, z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }
