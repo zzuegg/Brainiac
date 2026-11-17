@@ -170,6 +170,107 @@ class LlamaTest {
         }
     }
 
+    /** Plain gradient steps on the adapters; returns the losses before and after. */
+    private static float[] trainAdapters(Llama model, java.util.List<io.github.zzuegg.brainiac.autograd.Var> params,
+            int[][] tokens, int steps) {
+        float first = 0;
+        float last = 0;
+        for (int i = 0; i < steps; i++) {
+            var loss = model.loss(tokens);
+            loss.backward();
+            last = loss.value().item();
+            if (i == 0) {
+                first = last;
+            }
+            for (var p : params) {
+                p.assign(p.value().sub(p.grad().mul(0.5f)));
+                p.zeroGrad();
+            }
+        }
+        return new float[] {first, last};
+    }
+
+    @Test
+    void loraStartsUnchangedTrainsOnlyTheAdaptersAndMerges() {
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 8, DEVICE, DType.FLOAT32);
+        int[][] tokens = {{1, 5, 9, 3, 7, 2, 30, 4}, {4, 4, 8, 0, 39, 12, 6, 6}};
+        float[] before = model.forward(tokens).value().toArray();
+        Map<String, float[]> weights = new java.util.HashMap<>();
+        model.namedParameters().forEach((n, v) -> weights.put(n, v.value().toArray()));
+        var adapters = model.addLora(4, 8, Llama.attentionAndMlp(), 9);
+        assertEquals(2 * 2 * 7, adapters.size());
+        assertEquals(adapters.size(), model.loraParameters().size());
+        assertArrayEquals(before, model.forward(tokens).value().toArray(), 1e-6f);
+        float[] losses = trainAdapters(model, adapters, tokens, 20);
+        assertTrue(losses[1] < losses[0] - 0.1f, java.util.Arrays.toString(losses));
+        model.namedParameters().forEach((n, v) -> {
+            assertArrayEquals(weights.get(n), v.value().toArray(), 0f, n + " is frozen");
+            assertTrue(v.grad() == null || v.grad().toArray().length == 0 || java.util.Arrays.equals(v.grad().toArray(),
+                    new float[v.grad().toArray().length]), n + " has no gradient");
+        });
+        float[] adapted = model.forward(tokens).value().toArray();
+        model.mergeLora();
+        assertTrue(model.loraParameters().isEmpty());
+        assertArrayEquals(adapted, model.forward(tokens).value().toArray(), 1e-4f);
+    }
+
+    @Test
+    void qloraTrainsAdaptersOnQuantizedWeights() {
+        Llama model = Llama.random(LlamaConfig.small(40, 64, 2, 4, 2), 10, DEVICE, DType.FLOAT32);
+        int[][] tokens = {{1, 5, 9, 3, 7, 2, 30, 4}, {4, 4, 8, 0, 39, 12, 6, 6}};
+        float[] full = model.forward(tokens).value().toArray();
+        model.quantizeWeights(8, 32);
+        float[] quantized = model.forward(tokens).value().toArray();
+        assertArrayEquals(full, quantized, 2e-2f);
+        var adapters = model.addLora(4, 8, Llama.attentionAndMlp(), 11);
+        float[] losses = trainAdapters(model, adapters, tokens, 20);
+        assertTrue(losses[1] < losses[0] - 0.1f, java.util.Arrays.toString(losses));
+        // decoding with the adapters matches the full pass
+        LanguageModel.State s = model.newState(2);
+        float[] last = model.next(s, tokens, null).toArray();
+        float[] all = model.forward(tokens).value().toArray();
+        int v = model.vocabSize();
+        for (int b = 0; b < 2; b++) {
+            int row = (b * 8 + 7) * v;
+            assertArrayEquals(java.util.Arrays.copyOfRange(all, row, row + v),
+                    java.util.Arrays.copyOfRange(last, b * v, b * v + v), 1e-4f);
+        }
+    }
+
+    @Test
+    void aWindowedStateForgetsTheMiddleAndStaysSmall() {
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 12, DEVICE, DType.FLOAT32);
+        LanguageModel.State full = model.newState(1);
+        LanguageModel.State windowed = model.newState(1, 4, 16);
+        java.util.SplittableRandom r = new java.util.SplittableRandom(13);
+        int[] first = new int[10];
+        for (int i = 0; i < first.length; i++) {
+            first[i] = r.nextInt(40);
+        }
+        float[] a = model.next(full, new int[][] {first}, null).toArray();
+        float[] b = model.next(windowed, new int[][] {first}, null).toArray();
+        int maxLength = 0;
+        boolean differed = false;
+        for (int step = 0; step < 100; step++) {
+            int t = r.nextInt(40);
+            if (step < 10) {
+                // nothing forgotten yet: the same as keeping everything
+                assertArrayEquals(a, b, 1e-5f, "step " + step);
+            } else {
+                differed |= !java.util.Arrays.equals(a, b);
+            }
+            a = model.next(full, new int[][] {{t}}, null).toArray();
+            b = model.next(windowed, new int[][] {{t}}, null).toArray();
+            maxLength = Math.max(maxLength, windowed.length());
+            for (float f : b) {
+                assertTrue(Float.isFinite(f));
+            }
+        }
+        assertTrue(differed);
+        assertTrue(maxLength <= 4 + 16 + 4, "length " + maxLength);
+        assertEquals(110, full.length());
+    }
+
     @Test
     void selectReordersRows() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
