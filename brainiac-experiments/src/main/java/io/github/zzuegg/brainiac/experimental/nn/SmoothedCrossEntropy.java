@@ -10,7 +10,8 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
  * {@code 1 - epsilon} on the true class and spreads {@code epsilon} evenly over all classes,
  * so the model is not pushed to infinitely confident logits; better calibration and
  * generalisation. Like the core {@link Loss#CROSS_ENTROPY} it takes probabilities from a
- * softmax output and one-hot (or soft) targets, or class ids.
+ * softmax output and one-hot (or soft) targets, or class ids. For logits, use the core
+ * {@code Loss.crossEntropyFromLogits(epsilon)} instead.
  */
 public final class SmoothedCrossEntropy implements Loss {
 

@@ -44,7 +44,9 @@ public final class SelfSupervisedLosses {
     }
 
     /**
-     * SimCLR's NT-Xent / InfoNCE loss.
+     * SimCLR's NT-Xent / InfoNCE loss, with every other embedding of both views as a
+     * negative ({@code 2N - 2} of them); the core {@code Functional.infoNce} is the
+     * CLIP-style variant that contrasts only across the two views.
      *
      * @param z1 the first views' embeddings {@code [n, dim]}
      * @param z2 the second views' embeddings {@code [n, dim]}

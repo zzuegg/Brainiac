@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
+import io.github.zzuegg.brainiac.nn.Graphs;
 import io.github.zzuegg.brainiac.nn.MultiInputLayer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -19,7 +20,9 @@ import java.util.SplittableRandom;
  * than averaging them in, as {@link GcnLayer} does) helps on heterophilous graphs, and the
  * layer is inductive: it applies to nodes and graphs never seen in training.
  *
- * <p>Inputs: node features {@code [n, in]} and the adjacency {@code [n, n]}.
+ * <p>Inputs: node features {@code [n, in]} and the adjacency {@code [n, n]} (read as 0/1:
+ * non-zero entries are edges). A {@link MultiInputLayer} around the core
+ * {@link Graphs#sage}, so it drops into {@code Node.merge} graphs.
  */
 public final class SageLayer implements MultiInputLayer {
 
@@ -71,8 +74,10 @@ public final class SageLayer implements MultiInputLayer {
     @Override
     public Var forward(List<Var> inputs, boolean training) {
         Var x = inputs.get(0);
-        Tensor mean = GraphOps.meanNormalize(inputs.get(1).value());
-        Var h = x.matmul(self).add(Var.of(mean).matmul(x).matmul(neighbour)).add(bias);
+        Graphs.Graph g = GraphOps.toGraph(x.value(), inputs.get(1).value(), true);
+        // without edges, every neighbourhood mean is zero
+        Var h = g != null ? Graphs.sage(g, x, self, neighbour, bias)
+                : x.matmul(self).add(Var.of(Tensor.zeros(x.shape()).to(x.value().device())).matmul(neighbour)).add(bias);
         h = activation.forward(h, training);
         if (normalize) {
             h = h.div(h.square().sum(1, true).add(1e-8f).sqrt());

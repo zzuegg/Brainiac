@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
+import io.github.zzuegg.brainiac.autograd.Complex;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
@@ -169,15 +170,6 @@ final class MixerOps {
         return diff.mul(mask).exp().mul(mask);
     }
 
-    /** Complex product of {@code [..., 2]} pairs. */
-    static Var complexMul(Var a, Var b) {
-        Var ar = a.slice(-1, 0, 1);
-        Var ai = a.slice(-1, 1, 2);
-        Var br = b.slice(-1, 0, 1);
-        Var bi = b.slice(-1, 1, 2);
-        return Var.concat(-1, ar.mul(br).sub(ai.mul(bi)), ar.mul(bi).add(ai.mul(br)));
-    }
-
     /**
      * Causal long convolution along the last axis with one filter per channel, by FFT:
      * {@code y[t] = sum_{s <= t} h[t - s] u[s]} in {@code O(L log L)}.
@@ -194,7 +186,7 @@ final class MixerOps {
         }
         Var uf = padLast(u, n).rfft();
         Var hf = padLast(h, n).rfft();
-        return complexMul(uf, hf).irfft(n).slice(-1, 0, length);
+        return Complex.mul(uf, hf).irfft(n).slice(-1, 0, length);
     }
 
     /** Zero-pads the last axis to {@code n}. */
@@ -228,12 +220,11 @@ final class MixerOps {
             throw new IllegalArgumentException(modes + " modes do not fit length " + n);
         }
         Var spec = u.rfft().slice(2, 0, modes);                    // [b, cin, M, 2]
-        Var ur = spec.slice(3, 0, 1).reshape(b, u.shape().dim(1), modes).permute(2, 0, 1);
-        Var ui = spec.slice(3, 1, 2).reshape(b, u.shape().dim(1), modes).permute(2, 0, 1);   // [M, b, cin]
+        Var ur = Complex.real(spec).permute(2, 0, 1);
+        Var ui = Complex.imag(spec).permute(2, 0, 1);              // [M, b, cin]
         Var yr = ur.matmul(wRe).sub(ui.matmul(wIm));               // [M, b, cout]
         Var yi = ur.matmul(wIm).add(ui.matmul(wRe));
-        Var y = Var.concat(3, yr.permute(1, 2, 0).reshape(b, cout, modes, 1),
-                yi.permute(1, 2, 0).reshape(b, cout, modes, 1));    // [b, cout, M, 2]
+        Var y = Complex.of(yr.permute(1, 2, 0), yi.permute(1, 2, 0));   // [b, cout, M, 2]
         if (modes < half) {
             y = Var.concat(2, y, Var.of(Tensor.zeros(Shape.of(b, cout, half - modes, 2))));
         }
