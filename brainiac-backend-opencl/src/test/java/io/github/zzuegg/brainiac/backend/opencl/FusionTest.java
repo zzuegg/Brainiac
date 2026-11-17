@@ -129,6 +129,11 @@ class FusionTest {
                 random(31, 100, 70));
         same(DType.FLOAT32, x -> x.relu().add(0.5f).matmul(w.to(x.device()).tanh()).sigmoid(), random(32, 100, 70));
         same(DType.FLOAT32, x -> x.matmul(x.transpose()).exp().sum(1), random(33, 2, 80, 33));
+        // 32 x 32 tiles
+        Tensor v = random(34, 70, 50);
+        same(DType.FLOAT32, x -> x.matmul(v.to(x.device())).add(bias.to(x.device()).slice(0, 0, 50)).relu(),
+                random(35, 40, 70));
+        same(DType.FLOAT32, x -> x.relu().add(0.5f).matmul(v.to(x.device()).tanh()).sigmoid(), random(36, 40, 70));
     }
 
     @Test

@@ -287,7 +287,7 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
         for (int i = 0; i < TS; i++) {
             ACC bv = tileB[i][lc];
             for (int w = 0; w < WPT; w++) {
-                acc[w] += tileA[lr + w * RTS][i] * bv;
+                acc[w] = fma(tileA[lr + w * RTS][i], bv, acc[w]);
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
@@ -300,70 +300,74 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
     }
 }
 
-// The same product for larger matrices: a work-group of 16 x 16 items computes a 64 x 64
-// tile of outputs, each item 4 x 4 of them, 16 apart, so every value loaded from local
-// memory serves 4 products instead of 1 (and the k loop is shared by 16 outputs). Each
-// output still sums k in order, as matmul does, so both give the same values.
-__kernel void matmul_big(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
-                         long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol,
-                         long bOff, long bRow, long bCol, int splits, int chunk) {
-    int lc = get_local_id(0);
-    int lr = get_local_id(1);
-    int tid = lr * 16 + lc;
-    int colBase = get_group_id(0) * 64;
-    int rowBase = get_group_id(1) * 64;
-    long piece = get_global_id(2);
-    long batch = piece / splits;
-    int from = (int) (piece % splits) * chunk;
-    int to = min(k, from + chunk);
-    __local ACC tileA[16][65];
-    __local ACC tileB[16][64];
-    long aBase = aOff + batch * strideA;
-    long bBase = bOff + batch * strideB;
-    ACC acc[4][4];
-    for (int wm = 0; wm < 4; wm++) {
-        for (int wn = 0; wn < 4; wn++) {
-            acc[wm][wn] = (ACC) 0;
-        }
-    }
-    for (int t = from; t < to; t += 16) {
-        for (int l = 0; l < 4; l++) {
-            int idx = l * 256 + tid;
-            int row = rowBase + (idx >> 4);
-            int ac = t + (idx & 15);
-            tileA[idx & 15][idx >> 4] = row < m && ac < k ? LOAD(a, aBase + (long) row * aRow + (long) ac * aCol)
-                    : (ACC) 0;
-            int br = t + (idx >> 6);
-            int col = colBase + (idx & 63);
-            tileB[idx >> 6][idx & 63] = br < k && col < n ? LOAD(b, bBase + (long) br * bRow + (long) col * bCol)
-                    : (ACC) 0;
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-        for (int q = 0; q < 16; q++) {
-            ACC ra[4];
-            ACC rb[4];
-            for (int w = 0; w < 4; w++) {
-                ra[w] = tileA[q][lr + w * 16];
-                rb[w] = tileB[q][lc + w * 16];
-            }
-            for (int wm = 0; wm < 4; wm++) {
-                for (int wn = 0; wn < 4; wn++) {
-                    acc[wm][wn] += ra[wm] * rb[wn];
-                }
-            }
-        }
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    for (int wm = 0; wm < 4; wm++) {
-        int row = rowBase + lr + wm * 16;
-        for (int wn = 0; wn < 4; wn++) {
-            int col = colBase + lc + wn * 16;
-            if (row < m && col < n) {
-                STORE(z, piece * strideZ + (long) row * n + col, acc[wm][wn]);
-            }
-        }
-    }
+// The same product for larger matrices: a work-group of 16 x 16 items computes a TILE x TILE
+// tile of outputs (TILE = 16 * MW), each item MW x MW of them, 16 apart, so every value loaded
+// from local memory serves MW products instead of 1 (and the k loop is shared by MW * MW
+// outputs). Each output still sums k in order, as matmul does. matmul_big has 64 x 64 tiles
+// (MW 4), matmul_mid 32 x 32 (MW 2), for products with too few big tiles to fill the device.
+#define TILED_MATMUL(NAME, MW) \
+__kernel void NAME(__global const T* a, __global const T* b, __global T* z, int m, int k, int n, \
+                   long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol, \
+                   long bOff, long bRow, long bCol, int splits, int chunk) { \
+    int lc = get_local_id(0); \
+    int lr = get_local_id(1); \
+    int tid = lr * 16 + lc; \
+    int colBase = get_group_id(0) * (16 * MW); \
+    int rowBase = get_group_id(1) * (16 * MW); \
+    long piece = get_global_id(2); \
+    long batch = piece / splits; \
+    int from = (int) (piece % splits) * chunk; \
+    int to = min(k, from + chunk); \
+    __local ACC tileA[16][16 * MW + 1]; \
+    __local ACC tileB[16][16 * MW]; \
+    long aBase = aOff + batch * strideA; \
+    long bBase = bOff + batch * strideB; \
+    ACC acc[MW][MW]; \
+    for (int wm = 0; wm < MW; wm++) { \
+        for (int wn = 0; wn < MW; wn++) { \
+            acc[wm][wn] = (ACC) 0; \
+        } \
+    } \
+    for (int t = from; t < to; t += 16) { \
+        for (int l = 0; l < MW; l++) { \
+            int idx = l * 256 + tid; \
+            int row = rowBase + (idx >> 4); \
+            int ac = t + (idx & 15); \
+            tileA[idx & 15][idx >> 4] = row < m && ac < k ? LOAD(a, aBase + (long) row * aRow + (long) ac * aCol) \
+                    : (ACC) 0; \
+            int br = t + idx / (16 * MW); \
+            int col = colBase + idx % (16 * MW); \
+            tileB[idx / (16 * MW)][idx % (16 * MW)] = br < k && col < n \
+                    ? LOAD(b, bBase + (long) br * bRow + (long) col * bCol) : (ACC) 0; \
+        } \
+        barrier(CLK_LOCAL_MEM_FENCE); \
+        for (int q = 0; q < 16; q++) { \
+            ACC ra[MW]; \
+            ACC rb[MW]; \
+            for (int w = 0; w < MW; w++) { \
+                ra[w] = tileA[q][lr + w * 16]; \
+                rb[w] = tileB[q][lc + w * 16]; \
+            } \
+            for (int wm = 0; wm < MW; wm++) { \
+                for (int wn = 0; wn < MW; wn++) { \
+                    acc[wm][wn] = fma(ra[wm], rb[wn], acc[wm][wn]); \
+                } \
+            } \
+        } \
+        barrier(CLK_LOCAL_MEM_FENCE); \
+    } \
+    for (int wm = 0; wm < MW; wm++) { \
+        int row = rowBase + lr + wm * 16; \
+        for (int wn = 0; wn < MW; wn++) { \
+            int col = colBase + lc + wn * 16; \
+            if (row < m && col < n) { \
+                STORE(z, piece * strideZ + (long) row * n + col, acc[wm][wn]); \
+            } \
+        } \
+    } \
 }
+TILED_MATMUL(matmul_big, 4)
+TILED_MATMUL(matmul_mid, 2)
 
 // Attention in one pass per query row, without storing the [queries, keys] weights: the
 // softmax is computed online (running maximum and sum), as in FlashAttention. q is

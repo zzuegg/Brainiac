@@ -78,7 +78,7 @@ final class Fused {
      * an element-wise chain on it becomes the matmul kernel's epilogue. A non-null {@code a}
      * or {@code b} is an operand left pending (an unrolled image) for the kernel to compute.
      */
-    record MatMul(Object[] args, long[] global, long[] local, ClStorage a, ClStorage b) implements Expr {
+    record MatMul(Object[] args, long[] global, long[] local, ClStorage a, ClStorage b, int w) implements Expr {
     }
 
     /**
@@ -223,17 +223,17 @@ final class Fused {
      */
     static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
             int bLayout) {
-        return generateMatMul(root, base, store, a, aLayout, b, bLayout, false);
+        return generateMatMul(root, base, store, a, aLayout, b, bLayout, 0);
     }
 
     /**
-     * As above; with {@code big}, in the tiling of the precompiled {@code matmul_big}: 16 x 16
-     * work items each computing 4 x 4 outputs of a 64 x 64 tile.
+     * As above; with {@code w} 4 or 2, in the tiling of the precompiled {@code matmul_big} or
+     * {@code matmul_mid}: 16 x 16 work items each computing w x w outputs of a 16w x 16w tile.
      */
     static Kernel generateMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
-            int bLayout, boolean big) {
-        if (big) {
-            return generateBigMatMul(root, base, store, a, aLayout, b, bLayout);
+            int bLayout, int w) {
+        if (w > 0) {
+            return generateTiledMatMul(root, base, store, a, aLayout, b, bLayout, w);
         }
         Gen g = new Gen();
         g.root = store ? "i" : null;
@@ -268,7 +268,7 @@ final class Fused {
                 + loadB.replace("TILE", "tileB[lr][lc]")
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "        for (int q = 0; q < TS; q++) {\n"
-                + "            acc += tileA[lr][q] * tileB[q][lc];\n"
+                + "            acc = fma(tileA[lr][q], tileB[q][lc], acc);\n"
                 + "        }\n"
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "    }\n"
@@ -280,8 +280,9 @@ final class Fused {
         return new Kernel(src, g.args, g.argBytes, g.outputs);
     }
 
-    private static Kernel generateBigMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
-            int bLayout) {
+    private static Kernel generateTiledMatMul(Expr root, ClStorage base, boolean store, Expr a, int aLayout, Expr b,
+            int bLayout, int w) {
+        int tile = 16 * w;
         Gen g = new Gen();
         g.root = store ? "i" : null;
         g.base = base;
@@ -298,24 +299,24 @@ final class Fused {
                 + "    int lc = get_local_id(0);\n"
                 + "    int lr = get_local_id(1);\n"
                 + "    int tid = lr * 16 + lc;\n"
-                + "    int colBase = get_group_id(0) * 64;\n"
-                + "    int rowBase = get_group_id(1) * 64;\n"
+                + "    int colBase = get_group_id(0) * " + tile + ";\n"
+                + "    int rowBase = get_group_id(1) * " + tile + ";\n"
                 + "    long piece = get_global_id(2);\n"
                 + "    long batch = piece / splits;\n"
                 + "    int from = (int) (piece % splits) * chunk;\n"
                 + "    int to = min(K, from + chunk);\n"
-                + "    __local ACC tileA[16][65];\n"
-                + "    __local ACC tileB[16][64];\n"
+                + "    __local ACC tileA[16][" + (tile + 1) + "];\n"
+                + "    __local ACC tileB[16][" + tile + "];\n"
                 + "    long aBase = aOff + batch * strideA;\n"
                 + "    long bBase = bOff + batch * strideB;\n"
-                + "    ACC accs[4][4];\n"
-                + "    for (int wm = 0; wm < 4; wm++) {\n"
-                + "        for (int wn = 0; wn < 4; wn++) {\n"
+                + "    ACC accs[" + w + "][" + w + "];\n"
+                + "    for (int wm = 0; wm < " + w + "; wm++) {\n"
+                + "        for (int wn = 0; wn < " + w + "; wn++) {\n"
                 + "            accs[wm][wn] = (ACC) 0;\n"
                 + "        }\n"
                 + "    }\n"
                 + "    for (int t = from; t < to; t += 16) {\n"
-                + "        for (int l = 0; l < 4; l++) {\n"
+                + "        for (int l = 0; l < " + w + "; l++) {\n"
                 + "            int idx = l * 256 + tid;\n"
                 + "            {\n"
                 + "            int row = rowBase + (idx >> 4);\n"
@@ -323,29 +324,29 @@ final class Fused {
                 + loadA.replace("TILE", "tileA[idx & 15][idx >> 4]")
                 + "            }\n"
                 + "            {\n"
-                + "            int br = t + (idx >> 6);\n"
-                + "            int col = colBase + (idx & 63);\n"
-                + loadB.replace("TILE", "tileB[idx >> 6][idx & 63]")
+                + "            int br = t + idx / " + tile + ";\n"
+                + "            int col = colBase + idx % " + tile + ";\n"
+                + loadB.replace("TILE", "tileB[idx / " + tile + "][idx % " + tile + "]")
                 + "            }\n"
                 + "        }\n"
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "        for (int q = 0; q < 16; q++) {\n"
-                + "            ACC ra[4];\n"
-                + "            ACC rb[4];\n"
-                + "            for (int w = 0; w < 4; w++) {\n"
+                + "            ACC ra[" + w + "];\n"
+                + "            ACC rb[" + w + "];\n"
+                + "            for (int w = 0; w < " + w + "; w++) {\n"
                 + "                ra[w] = tileA[q][lr + w * 16];\n"
                 + "                rb[w] = tileB[q][lc + w * 16];\n"
                 + "            }\n"
-                + "            for (int wm = 0; wm < 4; wm++) {\n"
-                + "                for (int wn = 0; wn < 4; wn++) {\n"
-                + "                    accs[wm][wn] += ra[wm] * rb[wn];\n"
+                + "            for (int wm = 0; wm < " + w + "; wm++) {\n"
+                + "                for (int wn = 0; wn < " + w + "; wn++) {\n"
+                + "                    accs[wm][wn] = fma(ra[wm], rb[wn], accs[wm][wn]);\n"
                 + "                }\n"
                 + "            }\n"
                 + "        }\n"
                 + "        barrier(CLK_LOCAL_MEM_FENCE);\n"
                 + "    }\n"
-                + "    for (int wm = 0; wm < 4; wm++) {\n"
-                + "    for (int wn = 0; wn < 4; wn++) {\n"
+                + "    for (int wm = 0; wm < " + w + "; wm++) {\n"
+                + "    for (int wn = 0; wn < " + w + "; wn++) {\n"
                 + "    int row = rowBase + lr + wm * 16;\n"
                 + "    int col = colBase + lc + wn * 16;\n"
                 + "    if (row < M && col < N) {\n"
