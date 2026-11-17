@@ -913,7 +913,7 @@ public final class VulkanBackend implements Backend {
     /** Product tiles at least this many 64 x 64 tiles use them; smaller products use 32 x 32. */
     private static final long BIG_TILES = Long.getLong("brainiac.vulkan.bigTileGroups", 128);
     /** Float16 products with at least this many rows use cooperative matrices where the device has them. */
-    private static final int COOP_ROWS = Integer.getInteger("brainiac.vulkan.coopRows", 16);
+    private static final int COOP_ROWS = Integer.getInteger("brainiac.vulkan.coopRows", 64);
     /** Products with fewer tiles than this, and a long k, split k into pieces summed afterwards. */
     private static final long SPLIT_BELOW = 64;
 
@@ -940,7 +940,7 @@ public final class VulkanBackend implements Backend {
         // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
         boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
                 && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
-        int tile = coop || big >= BIG_TILES ? 64 : 32;
+        int tile = coop ? 128 : big >= BIG_TILES ? 64 : 32;
         long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
         int splits = 1;
         int chunk = k;
@@ -973,6 +973,73 @@ public final class VulkanBackend implements Backend {
     private static int ceil(long a, int b) {
         return (int) ((a + b - 1) / b);
     }
+
+    // ------------------------------------------------------------------ attention
+
+    /**
+     * When the fused attention kernel is used: {@code -Dbrainiac.vulkan.fusedAttention=false}
+     * never; by default for inference (it has no backward kernel yet) with head sizes up to
+     * 256, in float32, float16 and bfloat16.
+     */
+    private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.vulkan.fusedAttention"));
+
+    @Override
+    public boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return FUSED_ATTENTION && !backward && type != DType.FLOAT64 && shape[5] <= GROUP_SIZE
+                && shape[6] <= GROUP_SIZE && supports(type);
+    }
+
+    @Override
+    public boolean hasAttentionWithBias(int[] shape, DType type) {
+        return hasAttention(shape, type, false);
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage out, Storage lse) {
+        attention(q, k, v, shape, scale, causal, null, new long[4], out, lse);
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage bias, long[] strides, Storage out, Storage lse) {
+        VkStorage z = vs(out);
+        if (z.dtype == DType.FLOAT64 || shape[5] > GROUP_SIZE || shape[6] > GROUP_SIZE) {
+            throw new UnsupportedOperationException("fused attention: " + z.dtype + ", heads of " + shape[5] + " and "
+                    + shape[6]);
+        }
+        VkStorage l = vs(lse);
+        eager(vs(q), vs(k), vs(v), z, l);
+        VkStorage xq = as(vs(q), z.dtype);
+        VkStorage xk = as(vs(k), z.dtype);
+        VkStorage xv = as(vs(v), z.dtype);
+        if (l.dtype != z.dtype) {
+            throw new IllegalArgumentException("lse " + l.dtype + ", output " + z.dtype);
+        }
+        VkStorage xl = l;
+        VkStorage xb = bias == null ? xq : as(vs(bias), z.dtype);   // no bias: an address never read
+        if (bias != null) {
+            eager(vs(bias));
+        }
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(z.address())
+                .putLong(xl.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+                .putInt(shape[4]).putInt(shape[5]).putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0)
+                .putInt((int) rows).putInt(bias != null ? 1 : 0).putInt(Math.toIntExact(strides[0]))
+                .putInt(Math.toIntExact(strides[1])).putInt(Math.toIntExact(strides[2]))
+                .putInt(Math.toIntExact(strides[3]));
+        vk.dispatch(shader("attention", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()}, xq.slot(),
+                xk.slot(), xv.slot(), xb.slot());
+        if (bias != null) {
+            done(xb, vs(bias));
+        }
+        done(xq, vs(q));
+        done(xk, vs(k));
+        done(xv, vs(v));
+    }
+
+    /** The work group size of the shaders ({@code GROUP} in common.glsl). */
+    private static final int GROUP_SIZE = 256;
 
     // ------------------------------------------------------------------ packed weights
 

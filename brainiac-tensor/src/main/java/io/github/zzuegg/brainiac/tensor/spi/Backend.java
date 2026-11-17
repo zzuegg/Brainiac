@@ -527,6 +527,41 @@ public interface Backend {
     }
 
     /**
+     * Whether {@link #attention(Storage, Storage, Storage, int[], float, boolean, Storage, long[], Storage, Storage)}
+     * takes an additive score bias for these sizes, for inference.
+     *
+     * @param shape {@code batch, heads, kvHeads, tq, tk, dk, dv}
+     * @param type the element type
+     * @return whether to use it
+     */
+    default boolean hasAttentionWithBias(int[] shape, DType type) {
+        return false;
+    }
+
+    /**
+     * {@link #attention} with a bias added to the scaled scores before the softmax, such as
+     * masks for padding and for unused cache positions. The bias value for batch {@code b},
+     * head {@code h}, query {@code i} and key {@code j} is at
+     * {@code b * strides[0] + h * strides[1] + i * strides[2] + j * strides[3]}; a stride of
+     * 0 broadcasts. Without gradients: {@code lse} is still written.
+     *
+     * @param q the queries
+     * @param k the keys
+     * @param v the values
+     * @param shape {@code batch, heads, kvHeads, tq, tk, dk, dv}
+     * @param scale the score scale
+     * @param causal whether to mask later keys as well
+     * @param bias the bias, of the output's type
+     * @param strides the bias strides, in elements
+     * @param out {@code [batch, heads, tq, dv]}
+     * @param lse {@code [batch, heads, tq]}
+     */
+    default void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal, Storage bias,
+            long[] strides, Storage out, Storage lse) {
+        throw unsupported("fused attention with a bias");
+    }
+
+    /**
      * The gradients of {@link #attention}, recomputing the weights from {@code lse}.
      *
      * @param q the queries

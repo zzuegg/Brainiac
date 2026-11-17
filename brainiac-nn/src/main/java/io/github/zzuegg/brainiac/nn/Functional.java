@@ -647,6 +647,17 @@ public final class Functional {
             throw new IllegalArgumentException("query heads " + heads + " must be a multiple of key/value heads "
                     + kvHeads + " (and keys and values need the same heads)");
         }
+        if (FUSED && bias != null && weightsOut == null && (dropout == 0 || random == null)
+                && !(q.requiresGrad() || k.requiresGrad() || v.requiresGrad())
+                && q.value().dtype() == k.value().dtype() && q.value().dtype() == v.value().dtype()
+                && Tensor.hasAttentionWithBias(q.value(), k.value(), v.value())) {
+            try {
+                // inference: the fused kernel adds the bias itself and never builds the weights
+                return Var.of(Tensor.attention(q.value(), k.value(), v.value(), bias, scale, false)[0]);
+            } catch (UnsupportedOperationException | IllegalArgumentException e) {
+                // this backend, type, size or bias shape has no fused kernel
+            }
+        }
         if (kvHeads != heads) {
             k = repeatHeads(k, heads / kvHeads);
             v = repeatHeads(v, heads / kvHeads);

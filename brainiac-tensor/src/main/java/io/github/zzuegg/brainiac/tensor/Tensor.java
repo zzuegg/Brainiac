@@ -1297,6 +1297,62 @@ public final class Tensor {
     }
 
     /**
+     * Whether {@link #attention(Tensor, Tensor, Tensor, Tensor, float, boolean)} runs fused on
+     * the backend of {@code q} for these arrays.
+     *
+     * @param q the queries
+     * @param k the keys
+     * @param v the values
+     * @return whether to call it
+     */
+    public static boolean hasAttentionWithBias(Tensor q, Tensor k, Tensor v) {
+        return q.backend().hasAttentionWithBias(attentionShape(q, k, v), q.dtype());
+    }
+
+    /**
+     * Fused attention for inference with a bias added to the scaled scores:
+     * {@code softmax(scale * q k^T + bias) v}, the bias broadcast to
+     * {@code [batch, heads, tq, tk]} as for {@link #add}.
+     *
+     * @param q queries {@code [batch, heads, tq, dk]}
+     * @param k keys {@code [batch, kvHeads, tk, dk]}
+     * @param v values {@code [batch, kvHeads, tk, dv]}
+     * @param bias broadcast to {@code [batch, heads, tq, tk]}
+     * @param scale the score scale
+     * @param causal whether each query also ignores later keys
+     * @return the output {@code [batch, heads, tq, dv]} and each row's log-sum-exp
+     * @throws UnsupportedOperationException if the backend has no such kernel
+     */
+    public static Tensor[] attention(Tensor q, Tensor k, Tensor v, Tensor bias, float scale, boolean causal) {
+        int[] d = attentionShape(q, k, v);
+        q.sameDevice(bias);
+        int rank = bias.shape.rank();
+        if (rank > 4) {
+            throw new IllegalArgumentException("an attention bias has at most 4 axes, got " + bias.shape);
+        }
+        int[] full = {d[0], d[1], d[3], d[4]};
+        long[] strides = new long[4];
+        long stride = 1;
+        for (int a = 3; a >= 0; a--) {
+            int axis = a - (4 - rank);
+            int size = axis < 0 ? 1 : bias.shape.dim(axis);
+            if (size != 1 && size != full[a]) {
+                throw new IllegalArgumentException("bias " + bias.shape + " does not broadcast to "
+                        + Shape.of(full));
+            }
+            strides[a] = size == 1 ? 0 : stride;
+            stride *= size;
+        }
+        Tensor b = bias.dtype() == q.dtype() ? bias : bias.to(q.dtype());
+        Backend backend = q.backend();
+        Storage out = backend.allocateUninitialized((long) d[0] * d[1] * d[3] * d[6], q.dtype());
+        Storage lse = backend.allocateUninitialized((long) d[0] * d[1] * d[3], q.dtype());
+        backend.attention(q.storage(), k.storage(), v.storage(), d, scale, causal, b.storage(), strides, out, lse);
+        return new Tensor[] {new Tensor(Shape.of(d[0], d[1], d[3], d[6]), q.device, out),
+                new Tensor(Shape.of(d[0], d[1], d[3]), q.device, lse)};
+    }
+
+    /**
      * The gradients of {@link #attention}.
      *
      * @param q the queries

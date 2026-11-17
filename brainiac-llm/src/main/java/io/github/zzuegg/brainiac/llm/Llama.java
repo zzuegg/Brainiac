@@ -526,6 +526,7 @@ public final class Llama implements LanguageModel {
                 cache.values[l].write(2, cache.length, v.value());
                 k = Var.of(cache.keys[l]);
                 v = Var.of(cache.values[l]);
+                q = Var.of(q.value());   // decoding has no gradients: lets the fused kernel take the mask
             }
             Var a = bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
                     : Functional.attention(q, k, v, causal, scale);

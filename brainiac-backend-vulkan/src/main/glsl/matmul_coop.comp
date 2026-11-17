@@ -5,81 +5,121 @@
 #extension GL_KHR_shader_subgroup_basic : require
 #include "common.glsl"
 // matmul.comp on cooperative matrices (VK_KHR_cooperative_matrix), float16 only: the same
-// push constants, batches and k pieces. A work group of 256 invocations computes a 64 x 64
-// tile of 16 x 16 pieces, each subgroup TILES_PER of them (16 / subgroups; 4 at most), from
-// float16 values staged in shared memory, adding up in float32.
-#define TILE 64
-#define KT 32
-#define PAD 8
+// push constants, batches and k pieces. Runs with subgroups of 32 (the pipeline requires
+// them): 8 subgroups per work group compute a 128 x 128 tile, each a 32 x 64 block of
+// 2 x 4 pieces of 16 x 16 with float32 sums, from float16 values staged in shared memory.
+#define BM 128
+#define BN 128
+#define BK 32
+#define SA (BK + 8)      // shared row strides, padded against bank conflicts
+#define SB (BN + 8)
 layout(local_size_x = 256) in;
 layout(push_constant) uniform P {
     In a; In b; Buf z;
     uint m; uint k; uint n; uint strideA; uint strideB; uint strideZ; uint splits; uint chunk;
 } p;
-shared float16_t tileA[TILE * (KT + PAD)];      // [row][k]
-shared float16_t tileB[KT * (TILE + PAD)];      // [k][col]
-shared float tileC[TILE * (TILE + 4)];          // results, written out with bounds
+layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer In4 { f16vec4 v[]; };
+shared float16_t tileA[BM * SA];
+shared float16_t tileB[BK * SB];
+shared float scratch[8 * 256];   // one 16 x 16 piece per subgroup, for edge tiles
+
+#define ACCM coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
+
 void main() {
     uint tid = gl_LocalInvocationID.x;
-    uint colBase = gl_WorkGroupID.x * TILE;
-    uint rowBase = gl_WorkGroupID.y * TILE;
+    uint colBase = gl_WorkGroupID.x * BN;
+    uint rowBase = gl_WorkGroupID.y * BM;
     uint piece = gl_WorkGroupID.z;
     uint batch = piece / p.splits;
     uint from = (piece % p.splits) * p.chunk;
     uint to = min(p.k, from + p.chunk);
     uint aBase = batch * p.strideA;
     uint bBase = batch * p.strideB;
+    // vector loads where every run of 4 starts at a multiple of 4
+    bool aligned = (p.k & 3u) == 0 && (p.n & 3u) == 0 && (from & 3u) == 0;
     uint sg = gl_SubgroupID;
-    uint groups = gl_NumSubgroups;
-    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[4];
-    for (int i = 0; i < 4; i++) {
-        acc[i] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    uint sr = sg >> 1;   // rows sr * 32 .. + 32
+    uint sc = sg & 1u;   // columns sc * 64 .. + 64
+    ACCM acc[2][4];
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 4; j++) {
+            acc[i][j] = ACCM(0.0);
+        }
     }
-    for (uint t = from; t < to; t += KT) {
-        // 64 x 32 values of a and 32 x 64 of b: 8 of each per invocation
-        for (uint l = 0; l < 8; l++) {
-            uint idx = l * 256 + tid;
-            uint row = rowBase + idx / KT;
-            uint ac = t + idx % KT;
-            tileA[(idx / KT) * (KT + PAD) + idx % KT] = row < p.m && ac < to ? p.a.v[aBase + row * p.k + ac]
-                    : float16_t(0);
-            uint br = t + idx / TILE;
-            uint col = colBase + idx % TILE;
-            tileB[(idx / TILE) * (TILE + PAD) + idx % TILE] = br < to && col < p.n ? p.b.v[bBase + br * p.n + col]
-                    : float16_t(0);
+    for (uint t = from; t < to; t += BK) {
+        // a: 128 x 32 as 1024 runs of 4; b: 32 x 128 likewise; 4 of each per invocation
+        for (uint l = 0; l < 4; l++) {
+            uint r4 = l * 256 + tid;
+            uint row = r4 / (BK / 4);
+            uint c = (r4 % (BK / 4)) * 4;
+            uint gr = rowBase + row;
+            uint gc = t + c;
+            f16vec4 x = f16vec4(0);
+            if (aligned && gr < p.m && gc + 3 < to) {
+                x = In4(p.a).v[(aBase + gr * p.k + gc) >> 2];
+            } else {
+                for (uint e = 0; e < 4; e++) {
+                    x[e] = gr < p.m && gc + e < to ? p.a.v[aBase + gr * p.k + gc + e] : float16_t(0);
+                }
+            }
+            for (uint e = 0; e < 4; e++) {
+                tileA[row * SA + c + e] = x[e];
+            }
+            uint br = r4 / (BN / 4);
+            uint bc = (r4 % (BN / 4)) * 4;
+            uint gbr = t + br;
+            uint gbc = colBase + bc;
+            f16vec4 y = f16vec4(0);
+            if (aligned && gbr < to && gbc + 3 < p.n) {
+                y = In4(p.b).v[(bBase + gbr * p.n + gbc) >> 2];
+            } else {
+                for (uint e = 0; e < 4; e++) {
+                    y[e] = gbr < to && gbc + e < p.n ? p.b.v[bBase + gbr * p.n + gbc + e] : float16_t(0);
+                }
+            }
+            for (uint e = 0; e < 4; e++) {
+                tileB[br * SB + bc + e] = y[e];
+            }
         }
         barrier();
-        for (uint q = 0; q < KT; q += 16) {
-            for (uint i = 0; i < 4; i++) {
-                uint tile = sg + i * groups;
-                if (tile < 16) {
-                    uint tr = tile / 4;
-                    uint tc = tile % 4;
-                    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> ma;
-                    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> mb;
-                    coopMatLoad(ma, tileA, tr * 16 * (KT + PAD) + q, KT + PAD, gl_CooperativeMatrixLayoutRowMajor);
-                    coopMatLoad(mb, tileB, q * (TILE + PAD) + tc * 16, TILE + PAD,
-                            gl_CooperativeMatrixLayoutRowMajor);
-                    acc[i] = coopMatMulAdd(ma, mb, acc[i]);
+        for (uint q = 0; q < BK; q += 16) {
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> ma[2];
+            for (uint i = 0; i < 2; i++) {
+                coopMatLoad(ma[i], tileA, (sr * 32 + i * 16) * SA + q, SA, gl_CooperativeMatrixLayoutRowMajor);
+            }
+            for (uint j = 0; j < 4; j++) {
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> mb;
+                coopMatLoad(mb, tileB, q * SB + sc * 64 + j * 16, SB, gl_CooperativeMatrixLayoutRowMajor);
+                for (uint i = 0; i < 2; i++) {
+                    acc[i][j] = coopMatMulAdd(ma[i], mb, acc[i][j]);
                 }
             }
         }
         barrier();
     }
-    for (uint i = 0; i < 4; i++) {
-        uint tile = sg + i * groups;
-        if (tile < 16) {
-            coopMatStore(acc[i], tileC, (tile / 4) * 16 * (TILE + 4) + (tile % 4) * 16, TILE + 4,
-                    gl_CooperativeMatrixLayoutRowMajor);
-        }
-    }
-    barrier();
-    for (uint l = 0; l < 16; l++) {
-        uint idx = l * 256 + tid;
-        uint row = rowBase + idx / TILE;
-        uint col = colBase + idx % TILE;
-        if (row < p.m && col < p.n) {
-            STORE(p.z, piece * p.strideZ + row * p.n + col, tileC[(idx / TILE) * (TILE + 4) + idx % TILE]);
+    uint zBase = piece * p.strideZ;
+    bool whole = rowBase + BM <= p.m && colBase + BN <= p.n;
+    for (uint i = 0; i < 2; i++) {
+        for (uint j = 0; j < 4; j++) {
+            uint row0 = rowBase + sr * 32 + i * 16;
+            uint col0 = colBase + sc * 64 + j * 16;
+            if (whole) {
+                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> h =
+                        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(acc[i][j]);
+                coopMatStore(h, p.z.v, zBase + row0 * p.n + col0, p.n, gl_CooperativeMatrixLayoutRowMajor);
+            } else {
+                coopMatStore(acc[i][j], scratch, sg * 256, 16, gl_CooperativeMatrixLayoutRowMajor);
+                subgroupMemoryBarrierShared();
+                subgroupBarrier();
+                for (uint e = gl_SubgroupInvocationID; e < 256; e += gl_SubgroupSize) {
+                    uint row = row0 + e / 16;
+                    uint col = col0 + e % 16;
+                    if (row < p.m && col < p.n) {
+                        STORE(p.z, zBase + row * p.n + col, scratch[sg * 256 + e]);
+                    }
+                }
+                subgroupBarrier();
+            }
         }
     }
 }

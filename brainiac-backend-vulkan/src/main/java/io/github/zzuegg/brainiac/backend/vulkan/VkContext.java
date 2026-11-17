@@ -3,7 +3,12 @@ package io.github.zzuegg.brainiac.backend.vulkan;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK12.*;
 
+import org.lwjgl.vulkan.EXTSubgroupSizeControl;
 import org.lwjgl.vulkan.KHRCooperativeMatrix;
+import org.lwjgl.vulkan.VkPhysicalDeviceProperties2;
+import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlFeaturesEXT;
+import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlPropertiesEXT;
+import org.lwjgl.vulkan.VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT;
 import org.lwjgl.vulkan.VkCooperativeMatrixPropertiesKHR;
 import org.lwjgl.vulkan.VkExtensionProperties;
 import org.lwjgl.vulkan.VkPhysicalDeviceCooperativeMatrixFeaturesKHR;
@@ -218,8 +223,10 @@ final class VkContext {
             try (MemoryStack st = stackPush()) {
                 // chained by address: LWJGL's typed pNext setters insert a struct in front of
                 // the existing chain and would drop the links made before
+                VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sizes = VkPhysicalDeviceSubgroupSizeControlFeaturesEXT
+                        .calloc(st).sType$Default().subgroupSizeControl(true).computeFullSubgroups(true);
                 VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop = VkPhysicalDeviceCooperativeMatrixFeaturesKHR
-                        .calloc(st).sType$Default().cooperativeMatrix(true);
+                        .calloc(st).sType$Default().cooperativeMatrix(true).pNext(sizes.address());
                 VkPhysicalDeviceVulkan12Features f12 = VkPhysicalDeviceVulkan12Features.calloc(st).sType$Default()
                         .bufferDeviceAddress(true).vulkanMemoryModel(coopMatrix).shaderFloat16(coopMatrix)
                         .pNext(coopMatrix ? coop.address() : 0);
@@ -236,7 +243,8 @@ final class VkContext {
                         .pQueueCreateInfos(q);
                 if (coopMatrix) {
                     dci.ppEnabledExtensionNames(st.pointers(
-                            st.UTF8(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)));
+                            st.UTF8(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME),
+                            st.UTF8(EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME)));
                 }
                 PointerBuffer pp = st.mallocPointer(1);
                 check(vkCreateDevice(physical, dci, null, pp), "vkCreateDevice");
@@ -398,7 +406,25 @@ final class VkContext {
             for (int i = 0; i < exts.capacity(); i++) {
                 has |= exts.get(i).extensionNameString().equals(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
             }
-            if (!has || pd.getCapabilities().vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR == 0) {
+            boolean sizes = false;
+            for (int i = 0; i < exts.capacity(); i++) {
+                sizes |= exts.get(i).extensionNameString().equals(
+                        EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+            }
+            if (!has || !sizes || pd.getCapabilities().vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR == 0) {
+                return false;
+            }
+            // the shader needs whole subgroups of 32: 8 per work group of 256
+            VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sf = VkPhysicalDeviceSubgroupSizeControlFeaturesEXT.calloc(st)
+                    .sType$Default();
+            vkGetPhysicalDeviceFeatures2(pd, VkPhysicalDeviceFeatures2.calloc(st).sType$Default().pNext(sf.address()));
+            VkPhysicalDeviceSubgroupSizeControlPropertiesEXT sp = VkPhysicalDeviceSubgroupSizeControlPropertiesEXT
+                    .calloc(st).sType$Default();
+            vkGetPhysicalDeviceProperties2(pd, VkPhysicalDeviceProperties2.calloc(st).sType$Default()
+                    .pNext(sp.address()));
+            if (!sf.subgroupSizeControl() || !sf.computeFullSubgroups() || sp.minSubgroupSize() > 32
+                    || sp.maxSubgroupSize() < 32 || (sp.requiredSubgroupSizeStages() & VK_SHADER_STAGE_COMPUTE_BIT) == 0
+                    || sp.maxComputeWorkgroupSubgroups() < 8) {
                 return false;
             }
             KHRCooperativeMatrix.vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(pd, ip, null);
@@ -630,7 +656,7 @@ final class VkContext {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        long p2 = createPipeline(code);
+        long p2 = createPipeline(code, name.startsWith("matmul_coop"));
         pipelines.put(name, p2);
         return p2;
     }
@@ -642,10 +668,11 @@ final class VkContext {
 
     /** Makes SPIR-V compiled at run time (a fused shader) available to {@link #dispatch} by name. */
     void register(String name, byte[] code) {
-        pipelines.put(name, createPipeline(code));
+        pipelines.put(name, createPipeline(code, false));
     }
 
-    private long createPipeline(byte[] code) {
+    /** @param subgroups32 whether the shader needs whole subgroups of 32 invocations */
+    private long createPipeline(byte[] code, boolean subgroups32) {
         ByteBuffer spirv = MemoryUtil.memAlloc(code.length);
         try (MemoryStack st = stackPush()) {
             spirv.put(code).flip();
@@ -655,6 +682,13 @@ final class VkContext {
             long module = lp.get(0);
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(st).sType$Default()
                     .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(st.UTF8("main"));
+            if (subgroups32) {
+                VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT size =
+                        VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT.calloc(st).sType$Default()
+                                .requiredSubgroupSize(32);
+                stage.flags(EXTSubgroupSizeControl.VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT)
+                        .pNext(size.address());
+            }
             VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, st).sType$Default()
                     .stage(stage).layout(pipelineLayout);
             check(vkCreateComputePipelines(device, VK_NULL_HANDLE, ci, null, lp), "vkCreateComputePipelines");
