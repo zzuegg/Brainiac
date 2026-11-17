@@ -113,7 +113,8 @@ public final class VulkanBackend implements Backend {
                 }
                 String mode = System.getProperty("brainiac.vulkan.tune", "auto");
                 if (!mode.equals("false") && !mode.equals("off")) {
-                    loadTuning(mode.equals("force"));
+                    // forced once per run: further instances read what the first measured
+                    loadTuning(mode.equals("force") && FORCED.compareAndSet(false, true));
                 }
                 if (Boolean.getBoolean("brainiac.vulkan.statistics")) {
                     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -226,6 +227,8 @@ public final class VulkanBackend implements Backend {
      * Uses the kept tuning for this device, or measures one (a few seconds) when there is none
      * and the device is not the CPU, or always with {@code force}.
      */
+    private static final java.util.concurrent.atomic.AtomicBoolean FORCED = new java.util.concurrent.atomic.AtomicBoolean();
+
     private void loadTuning(boolean force) {
         java.nio.file.Path file = Tuning.file(vk.deviceKey);
         Tuning kept = force ? null : Tuning.load(file);

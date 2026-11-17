@@ -64,8 +64,7 @@ final class Tuner {
 
     private void coopShape() {
         int[][] shapes = {{2048, 2048, 2048}, {512, 4096, 4096}};
-        double best = Double.MAX_VALUE;
-        int choice = 0;
+        double[] times = new double[Tuning.COOP_SHAPES.size() + 1];
         for (int c = -1; c < Tuning.COOP_SHAPES.size(); c++) {
             tuning.set("coopShape", c);
             tuning.set("coopRows", 1);
@@ -74,12 +73,9 @@ final class Tuner {
                 t += product(DType.FLOAT16, s[0], s[1], s[2]);
             }
             note("coopShape", c < 0 ? "off" : name(c), t, flops(shapes) / t);
-            if (t < best * 0.98 || c == 0 && t < best) {   // the current default unless clearly beaten
-                best = t;
-                choice = c;
-            }
+            times[c + 1] = t;
         }
-        tuning.set("coopShape", choice);
+        tuning.set("coopShape", pick(times, 1) - 1);
         tuning.set("coopRows", Tuning.DEFAULTS.get("coopRows"));
     }
 
@@ -154,19 +150,31 @@ final class Tuner {
     }
 
     private void choose(String key, long[] candidates, Measure measure) {
-        double best = Double.MAX_VALUE;
-        long choice = tuning.get(key);
-        long current = Tuning.DEFAULTS.get(key);
-        for (long c : candidates) {
-            tuning.set(key, c);
-            double t = measure.seconds();
-            note(key + " " + c, "", t, 0);
-            if (t < best * (c == current ? 1.0 : 0.98) || c == current && t < best * 1.02) {
-                best = t;
-                choice = c;
+        double[] times = new double[candidates.length];
+        int current = -1;
+        for (int i = 0; i < candidates.length; i++) {
+            tuning.set(key, candidates[i]);
+            times[i] = measure.seconds();
+            note(key + " " + candidates[i], "", times[i], 0);
+            if (candidates[i] == Tuning.DEFAULTS.get(key)) {
+                current = i;
             }
         }
-        tuning.set(key, choice);
+        tuning.set(key, candidates[pick(times, current)]);
+    }
+
+    /** Below this ratio to the default's time a candidate replaces it: measurements vary by a few percent. */
+    private static final double MARGIN = 0.97;
+
+    /** The fastest candidate if it beats the default (index {@code current}, -1: none) by the margin, else the default. */
+    static int pick(double[] times, int current) {
+        int best = 0;
+        for (int i = 1; i < times.length; i++) {
+            if (times[i] < times[best]) {
+                best = i;
+            }
+        }
+        return current < 0 || times[best] < times[current] * MARGIN ? best : current;
     }
 
     /** Seconds per product of an m x k and a k x n matrix in a format. */

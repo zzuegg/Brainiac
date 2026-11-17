@@ -45,9 +45,18 @@ class TuningTest {
         assertEquals(Tuning.DEFAULTS.get("bigTileGroups"), t.get("bigTileGroups"));
     }
 
+    @Test
+    void theDefaultStaysUnlessClearlyBeaten() {
+        assertEquals(1, Tuner.pick(new double[] {1.0, 0.99, 1.2}, 1));
+        assertEquals(0, Tuner.pick(new double[] {0.9, 1.0, 1.2}, 1));
+        assertEquals(2, Tuner.pick(new double[] {1.0, 1.1, 0.5}, -1));
+    }
+
     /** A tuning measured on the device is kept in the tuning directory and used. */
     @Test
     void tuningMeasuresAndKeepsTheChoices(@TempDir Path dir) {
+        // the device's own backend first: it stays VulkanBackend.loaded(), whose statistics other tests read
+        io.github.zzuegg.brainiac.tensor.Device.available();
         System.setProperty("brainiac.vulkan.tuningDir", dir.toString());
         System.setProperty("brainiac.vulkan.tune", "false");
         try {
