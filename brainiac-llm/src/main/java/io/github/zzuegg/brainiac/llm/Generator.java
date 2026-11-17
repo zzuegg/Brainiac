@@ -45,6 +45,32 @@ public final class Generator {
         this.tokenizer = tokenizer;
     }
 
+    private volatile PrefixCache prefixes;
+
+    /**
+     * Reuses the key/value cache of prompts read before (see {@link PrefixCache}): requests
+     * that start with the same system prompt, examples or earlier turns of a chat read only
+     * what is new. Used by single-prompt {@link #generate} and by {@link #batcher}. The text
+     * is the same as without the cache, up to rounding where a prompt is read in parts.
+     *
+     * @param capacity the most prompt states kept, each with its own key/value cache; 0 turns
+     *     the cache off and frees it
+     * @return this generator
+     */
+    public Generator cachePrefixes(int capacity) {
+        PrefixCache old = prefixes;
+        prefixes = capacity > 0 ? new PrefixCache(model, capacity) : null;
+        if (old != null) {
+            old.clear();
+        }
+        return this;
+    }
+
+    /** @return the prefix cache, or {@code null} when {@link #cachePrefixes} is off */
+    public PrefixCache prefixCache() {
+        return prefixes;
+    }
+
     /**
      * What to generate.
      *
@@ -284,10 +310,19 @@ public final class Generator {
             rows[b] = new Row(b, prompts[b], options, listener);
         }
         SplittableRandom random = new SplittableRandom(options.seed());
-        LanguageModel.State state = model.newState(batch);
+        PrefixCache cache = prefixes;
+        LanguageModel.State state;
         int active = batch;
         if (options.maxNewTokens() > 0) {
-            Tensor logits = model.next(state, first, padded ? pad : null);
+            Tensor logits;
+            if (cache != null && batch == 1) {
+                PrefixCache.Prefill p = cache.prefill(prompts[0]);
+                state = p.state();
+                logits = p.logits();
+            } else {
+                state = model.newState(batch);
+                logits = model.next(state, first, padded ? pad : null);
+            }
             // plain greedy decoding reads back only the chosen tokens, which the device finds
             Sampling sampling = options.sampling();
             boolean onDevice = options.constraint() == null && sampling.temperature() == 0
@@ -333,8 +368,12 @@ public final class Generator {
                 }
                 logits = model.next(state, next, active < batch ? skip : null);
             }
+        } else {
+            state = null;
         }
-        state.close();
+        if (state != null) {
+            state.close();
+        }
         List<Output> out = new ArrayList<>(batch);
         for (Row r : rows) {
             out.add(r.finish());
@@ -786,6 +825,19 @@ public final class Generator {
                     pad[b][t] = true;
                     padded = true;
                 }
+            }
+            PrefixCache cache = prefixes;
+            if (cache != null) {
+                // each prompt from the longest cached prefix, then side by side
+                LanguageModel.State s = null;
+                List<Tensor> logits = new ArrayList<>(n);
+                for (Job j : jobs) {
+                    PrefixCache.Prefill p = cache.prefill(j.row.prompt);
+                    s = s == null ? p.state() : s.join(p.state());
+                    logits.add(p.logits());
+                }
+                spread(Tensor.concat(0, logits.toArray(Tensor[]::new)), jobs);
+                return s;
             }
             LanguageModel.State s = model.newState(n);
             spread(model.next(s, first, padded ? pad : null), jobs);

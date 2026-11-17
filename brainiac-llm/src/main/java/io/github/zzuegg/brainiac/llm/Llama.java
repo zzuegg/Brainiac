@@ -520,6 +520,24 @@ public final class Llama implements LanguageModel {
 
         @Override
         public State select(int[] rows) {
+            Cache c = rows(rows);
+            if (capacity > 0) {
+                release(this);
+            }
+            return c;
+        }
+
+        @Override
+        public State fork() {
+            int[] all = new int[next.length];
+            for (int i = 0; i < all.length; i++) {
+                all[i] = i;
+            }
+            return rows(all);
+        }
+
+        /** A new cache of chosen rows; this one stays as it is. */
+        private Cache rows(int[] rows) {
             Cache c = new Cache(keys.length, rows.length, quantized);
             c.sinks = sinks;
             c.window = window;
@@ -531,7 +549,6 @@ public final class Llama implements LanguageModel {
                 }
                 Tensor.evaluate(java.util.Arrays.asList(c.keys));
                 Tensor.evaluate(java.util.Arrays.asList(c.values));
-                release(this);
             }
             for (int i = 0; i < rows.length; i++) {
                 c.padding[i] = padding[rows[i]].clone();
