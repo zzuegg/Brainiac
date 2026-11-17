@@ -618,17 +618,20 @@ public final class Generator {
         /**
          * Decodes {@code maxBatch} copies of a prompt together and waits, so the first real
          * burst of requests does not pay for preparing the batch shapes (on the GPU, compiling
-         * them).
+         * them) or for the JVM compiling the decoding loop. Copy {@code i} writes
+         * {@code tokens * (i + 1) / maxBatch} tokens, so the copies finish one after another
+         * and every batch size from {@code maxBatch} down to 1 is decoded. About 64 tokens
+         * warm the loop well; the JVM keeps getting faster over the first few bursts.
          *
          * @param prompt a short prompt
-         * @param tokens the tokens to write for each copy
+         * @param tokens the tokens to write for the longest copy
          * @return this
          */
         public Batcher warmUp(int[] prompt, int tokens) {
             List<java.util.concurrent.CompletableFuture<Output>> all = new ArrayList<>();
-            Options o = Options.greedy(tokens).withStopTokens(Set.of());
             for (int i = 0; i < maxBatch; i++) {
-                all.add(submit(prompt, o, null));
+                int n = Math.max(1, (int) ((long) tokens * (i + 1) / maxBatch));
+                all.add(submit(prompt, Options.greedy(n).withStopTokens(Set.of()), null));
             }
             java.util.concurrent.CompletableFuture.allOf(all.toArray(java.util.concurrent.CompletableFuture[]::new))
                     .join();
