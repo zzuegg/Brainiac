@@ -32,6 +32,7 @@ final class FakeApis implements AutoCloseable {
         http.createContext("/g/", ex -> handle(ex, "g"));
         http.createContext("/d/", ex -> handle(ex, "d"));
         http.createContext("/r/", ex -> handle(ex, "r"));
+        http.createContext("/h/", ex -> handle(ex, "h"));
         scratch = java.nio.file.Files.createTempDirectory("studio-fake");
         http.start();
     }
@@ -45,7 +46,8 @@ final class FakeApis implements AutoCloseable {
 
     ChatService service(Keys keys, List<java.nio.file.Path> folders) {
         return ChatService.at(keys, folders, Map.of("anthropic", base("a"), "openai", base("o").resolve("v1/"),
-                "google", base("g"), "deepseek", base("d"), "openrouter", base("r").resolve("api/v1/")),
+                "google", base("g"), "deepseek", base("d"), "openrouter", base("r").resolve("api/v1/"),
+                "huggingface", base("h").resolve("v1/")),
                 folders.isEmpty() ? scratch.resolve("outputs") : folders.getFirst().resolve("outputs"));
     }
 
@@ -178,6 +180,21 @@ final class FakeApis implements AutoCloseable {
                      {"id":"openai/text-embedding-3-small","name":"Embedding","created":1}]}""");
             case "r /api/v1/key" -> send(ex, 200, "application/json", """
                     {"data":{"label":"sk-or-v1-abc","limit":20,"limit_remaining":12.5,"usage":7.5}}""");
+            case "h /v1/models" -> send(ex, 200, "application/json", """
+                    {"object":"list","data":[
+                     {"id":"openai/gpt-oss-120b","object":"model","created":1754000000,"owned_by":"openai","providers":[
+                       {"provider":"groq","status":"live","context_length":131072,"pricing":{"input":0.15,"output":0.6}},
+                       {"provider":"cerebras","status":"live","context_length":131072,"pricing":{"input":0.25,"output":0.69}},
+                       {"provider":"novita","status":"offline","pricing":{"input":0.05,"output":0.1}}]},
+                     {"id":"meta-llama/Llama-3.3-70B-Instruct","object":"model","created":1733000000,"owned_by":"meta-llama",
+                      "providers":[{"provider":"together","status":"live","context_length":131072}]},
+                     {"id":"old/retired-model","object":"model","created":1,"providers":[{"provider":"x","status":"deprecated"}]}]}""");
+            case "h /v1/chat/completions" -> send(ex, 200, "text/event-stream", """
+                    data: {"choices":[{"index":0,"delta":{"content":"Hello from the hub"},"finish_reason":"stop"}]}
+
+                    data: [DONE]
+
+                    """);
             default -> send(ex, 404, "application/json", "{\"error\":{\"message\":\"no route " + path + "\"}}");
         }
     }

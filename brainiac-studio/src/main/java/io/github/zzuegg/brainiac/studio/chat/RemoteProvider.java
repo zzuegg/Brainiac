@@ -37,7 +37,10 @@ abstract class RemoteProvider implements ChatProvider {
             .followRedirects(HttpClient.Redirect.NEVER).build();
 
     private final Keys keys;
-    private final URI base;
+    private final URI home;
+    private volatile URI base;
+    /** Options from {@link ProviderSettings}, such as the organization to bill. */
+    volatile Map<String, String> options = Map.of();
     private final Map<String, String> keyErrors = new ConcurrentHashMap<>();
 
     /** An error answer from the provider. */
@@ -60,7 +63,28 @@ abstract class RemoteProvider implements ChatProvider {
 
     RemoteProvider(Keys keys, URI base) {
         this.keys = keys;
-        this.base = base.toString().endsWith("/") ? base : URI.create(base + "/");
+        this.home = base.toString().endsWith("/") ? base : URI.create(base + "/");
+        this.base = home;
+    }
+
+    /** The address the provider started with: its own, or one set with {@code -Dstudio.<id>.url}. */
+    URI home() {
+        return home;
+    }
+
+    /** The address calls go to now. */
+    URI base() {
+        return base;
+    }
+
+    /** Sends calls to another address, or back to {@link #home()} with null. */
+    void base(URI other) {
+        base = other == null ? home : other.toString().endsWith("/") ? other : URI.create(other + "/");
+    }
+
+    /** The options this provider understands, by name. */
+    List<String> optionNames() {
+        return List.of();
     }
 
     @Override

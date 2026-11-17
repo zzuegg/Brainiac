@@ -34,6 +34,7 @@ public final class ChatService {
     private final List<ChatProvider> providers;
     private final Path outputs;
     private final UsageLog usage;
+    private final ProviderSettings settings;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
 
     private record Listing(List<ModelInfo> models, String error, long at) {
@@ -51,6 +52,68 @@ public final class ChatService {
         this.providers = List.copyOf(providers);
         this.outputs = outputs;
         this.usage = new UsageLog(outputs.resolveSibling("usage.jsonl"));
+        this.settings = new ProviderSettings(outputs.resolveSibling("providers.properties"));
+        for (ChatProvider p : this.providers) {
+            if (p instanceof RemoteProvider r) {
+                apply(r);
+            }
+        }
+    }
+
+    private void apply(RemoteProvider r) {
+        r.base(settings.url(r.id()).orElse(null));
+        Map<String, String> o = new LinkedHashMap<>();
+        for (String name : r.optionNames()) {
+            String v = settings.option(r.id(), name);
+            if (!v.isEmpty()) {
+                o.put(name, v);
+            }
+        }
+        r.options = Map.copyOf(o);
+    }
+
+    /**
+     * Changes how a provider is used. Each argument left null stays as it is.
+     *
+     * @param provider the provider id
+     * @param auto whether Auto may pick its models
+     * @param models the model ids to show, an empty optional to show all, or null to leave as is
+     * @param url another address, an empty string for its own, or null to leave as is
+     * @param options options by name, such as {@link ProviderSettings#BILL_TO}; an empty value clears one
+     * @throws IOException if the settings cannot be saved
+     */
+    public void configure(String provider, Boolean auto, java.util.Optional<List<String>> models, String url,
+            Map<String, String> options) throws IOException {
+        if (!(provider(provider) instanceof RemoteProvider r)) {
+            throw new IllegalArgumentException(provider + " has no settings");
+        }
+        if (options != null) {
+            for (String name : options.keySet()) {
+                if (!r.optionNames().contains(name)) {
+                    throw new IllegalArgumentException(r.name() + " has no option " + name);
+                }
+            }
+        }
+        if (auto != null) {
+            settings.auto(provider, auto);
+        }
+        if (models != null) {
+            settings.models(provider, models.orElse(null));
+        }
+        if (url != null) {
+            settings.url(provider, url);
+            listings.remove(provider);
+        }
+        if (options != null) {
+            for (Map.Entry<String, String> e : options.entrySet()) {
+                settings.option(provider, e.getKey(), e.getValue());
+            }
+        }
+        apply(r);
+    }
+
+    private boolean shown(ModelInfo m) {
+        return settings.models(m.provider()).map(ids -> ids.contains(m.id())).orElse(true);
     }
 
     /**
@@ -218,6 +281,17 @@ public final class ChatService {
                 m.put("note", r.note());
                 m.put("env", Keys.ENV.getOrDefault(p.id(), List.of()));
                 m.put("balance", r.reportsBalance());
+                Map<String, Object> st = new LinkedHashMap<>();
+                st.put("auto", settings.auto(p.id()));
+                st.put("models", settings.models(p.id()).map(List::copyOf).orElse(null));
+                st.put("url", settings.url(p.id()).map(URI::toString).orElse(""));
+                st.put("home", r.home().toString());
+                Map<String, Object> opts = new LinkedHashMap<>();
+                for (String name : r.optionNames()) {
+                    opts.put(name, settings.option(p.id(), name));
+                }
+                st.put("options", opts);
+                m.put("settings", st);
             }
             m.put("models", l == null ? 0 : l.models().size());
             if (l != null && l.error() != null) {
@@ -230,6 +304,7 @@ public final class ChatService {
             if (l != null) {
                 for (ModelInfo x : l.models()) {
                     Map<String, Object> j = x.toJson();
+                    j.put("shown", shown(x));
                     if (x.media().contains("speech") && p instanceof RemoteProvider r) {
                         j.put("speech", r.speechOptions(x.id()).toJson());
                     }
@@ -377,8 +452,8 @@ public final class ChatService {
     private ModelInfo pickAuto(Map<String, Listing> lists, String medium) {
         for (ChatProvider p : providers) {
             Listing l = lists.get(p.id());
-            if (p.ready() && l != null) {
-                ModelInfo m = p.preferredFor(medium, l.models());
+            if (p.ready() && l != null && settings.auto(p.id())) {
+                ModelInfo m = p.preferredFor(medium, l.models().stream().filter(this::shown).toList());
                 if (m != null) {
                     return m;
                 }

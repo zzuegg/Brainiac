@@ -987,6 +987,7 @@
   window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; render(); } });
   window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
   $("#cmdk-open").addEventListener("click", openCmdk);
   $("#theme-btn").addEventListener("click", () => {
     const root = document.documentElement;
@@ -1020,12 +1021,14 @@
     usage: null,                          // GET /api/usage: calls and tokens by provider, key, model, day
     balances: null,                       // GET /api/balances: what is left per key, where providers say
     libProvider: "all",                   // which provider's models the table shows
+    editing: null,                        // the provider open in the editor, and its unsaved draft
+    draft: null,
     adding: null,                         // the provider whose key form is open
   };
   const isLive = () => !!document.querySelector('meta[name="studio-token"]');
   const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
   const current = () => L.convos.find(c => c.id === L.sel) || null;
-  const chatModels = () => (L.info?.models || []).filter(m => m.media.includes("text"));
+  const chatModels = () => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === L.model));
   const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
   const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
   const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
@@ -1322,7 +1325,7 @@
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
     text: "", takes: [], speaking: false, video: null,
   };
-  const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium));
+  const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium) && m.shown !== false);
   const pickedModel = (sel, medium) => modelByKey(sel === "auto" ? L.info?.auto?.[medium] : sel);
 
   function mediaPicker(id, medium, sel) {
@@ -1539,10 +1542,10 @@
       </div>` : ""}
       <div class="tablebox models-box"><table class="models">
       <thead><tr><th>Model</th><th>Can</th><th>Where</th><th>Detail</th></tr></thead>
-      <tbody>${shown.length ? shown.map(m => `<tr data-find="${esc((m.name + " " + m.key).toLowerCase())}">
+      <tbody>${shown.length ? shown.map(m => `<tr data-find="${esc((m.name + " " + m.key).toLowerCase())}" class="${m.shown === false ? "hidden-model" : ""}">
         <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.key)}</div></td>
         <td>${m.media.map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join(" ")}</td>
-        <td>${m.provider === "local" ? `<span class="chip c-ok">this PC</span>` : `<span class="chip c-agent">${esc(providerName(m.provider))} · your key</span>`}</td>
+        <td>${m.provider === "local" ? `<span class="chip c-ok">this PC</span>` : `<span class="chip c-agent">${esc(providerName(m.provider))} · your key</span>`}${m.shown === false ? ` <span class="chip plain" title="Not offered in the model pickers or by Auto. Change it with Edit on the provider.">hidden</span>` : ""}</td>
         <td class="mono">${esc(m.detail)}</td></tr>`).join("")
         : `<tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr>`}</tbody></table></div>`;
   }
@@ -1639,8 +1642,13 @@
           <span class="mono faint" style="font-size:11px">free · private · works offline${L.usage && L.usage.providers.local ? " · " + esc(usageLine(L.usage.providers.local)) : ""}</span></div>`;
       }
       const total = L.usage && L.usage.providers[p.id];
+      const st = p.settings || {};
+      const flags = [st.auto === false ? "not used by Auto" : "", st.models ? `${st.models.length} of ${p.models} models shown` : "",
+        st.url ? "own address" : "", st.options && st.options.billTo ? `bills ${st.options.billTo}` : ""].filter(Boolean);
       return `<div class="prov ${p.ready ? "on" : "off"}">${head}
         ${p.note ? `<div class="muted" style="font-size:12.5px">${esc(p.note)}</div>` : ""}
+        <div class="provset">${flags.map(f => `<span class="chip plain">${esc(f)}</span>`).join("")}<span class="grow"></span>
+          <button class="btn sm" data-edit-provider="${p.id}">${icon("edit")}Edit</button></div>
         ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
         <div class="keys">${p.keys.map((k, n) => `<div class="keyrow">
             <span class="dot" style="--c:var(--${k.error ? "bad" : "ok"})"></span>
@@ -1670,7 +1678,104 @@
         ${L.info.providers.some(p => p.balance && p.keys.length) ? `<button class="btn" id="refresh-balances">${icon("retry")}Check balances</button>` : ""}
         <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters. Anthropic, OpenAI and Google report no balance to an API key; DeepSeek, Kimi and OpenRouter do.</span>
       </div>
-      ${liveUsage()}`;
+      ${liveUsage()}
+      ${L.editing ? providerEditor() : ""}`;
+  }
+
+  // ---------- provider editor ----------
+  const optionInfo = {
+    billTo: ["Organization to bill", "my-org", "Hugging Face charges this organization's credits instead of yours (sent as X-HF-Bill-To). Leave empty to pay yourself."],
+  };
+  function startEdit(id) {
+    const p = L.info.providers.find(x => x.id === id);
+    const st = p.settings || {};
+    L.editing = id;
+    L.draft = { auto: st.auto !== false, pick: !!st.models, picked: new Set(st.models || []), url: st.url || "", options: { ...(st.options || {}) }, error: "" };
+    render();
+    $("#ped")?.focus();
+  }
+  function providerEditor() {
+    const p = L.info.providers.find(x => x.id === L.editing);
+    if (!p) return "";
+    const d = L.draft, st = p.settings || {};
+    const ms = L.info.models.filter(m => m.provider === p.id);
+    // ids saved earlier that the provider no longer lists stay visible, so they can be removed
+    const gone = [...d.picked].filter(id => !ms.some(m => m.id === id));
+    const row = (id, name, detail, media) => `<label class="pick" data-find="${esc((name + " " + id).toLowerCase())}">
+        <input type="checkbox" data-pick="${esc(id)}" ${d.picked.has(id) ? "checked" : ""} ${d.pick ? "" : "disabled"}>
+        <span class="who"><b>${esc(name)}</b>${name === id ? "" : `<span class="mono faint">${esc(id)}</span>`}</span>
+        <span class="caps">${(media || []).map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join("")}</span>
+        <span class="mono faint det">${esc(detail || "")}</span></label>`;
+    return `<div class="ped-back" id="ped-back"><aside class="ped" id="ped" role="dialog" aria-modal="true" aria-label="Edit ${esc(p.name)}" tabindex="-1">
+      <header><span class="plogo">${esc(p.name[0])}</span><div><b>${esc(p.name)}</b><div class="muted">${esc(p.note || "")}</div></div>
+        <span class="grow"></span><button class="iconbtn" id="ped-close" aria-label="Close"><span aria-hidden="true" style="font-size:18px;line-height:1">×</span></button></header>
+      <div class="ped-body">
+        <label class="ped-row"><span><b>Use in Auto</b><span class="muted">Auto may pick this provider's models. Off, they can still be chosen by name.</span></span>
+          <span class="switch"><input type="checkbox" id="ped-auto" ${d.auto ? "checked" : ""} aria-label="Use ${esc(p.name)} in Auto"><i></i></span></label>
+        <div class="ped-field"><label for="ped-url"><b>Address</b></label>
+          <input class="input mono" id="ped-url" value="${esc(d.url)}" placeholder="${esc(st.home || "")}" spellcheck="false" autocomplete="off">
+          <span class="muted">Empty uses ${esc(st.home || "the provider's own")}. Set a gateway, a proxy or another region${p.id === "qwen" ? ", such as https://dashscope.aliyuncs.com/compatible-mode/v1/ for mainland China" : ""}.</span></div>
+        ${Object.keys(st.options || {}).map(o => `<div class="ped-field"><label for="ped-opt-${o}"><b>${esc(optionInfo[o] ? optionInfo[o][0] : o)}</b></label>
+          <input class="input" id="ped-opt-${o}" data-option="${o}" value="${esc(d.options[o] || "")}" placeholder="${esc(optionInfo[o] ? optionInfo[o][1] : "")}" spellcheck="false" autocomplete="off">
+          <span class="muted">${esc(optionInfo[o] ? optionInfo[o][2] : "")}</span></div>`).join("")}
+        ${p.id === "huggingface" ? `<div class="flag">${icon("flask")}<div>Hugging Face's plan decides how calls are paid, not which models you may call: Free has no included credits (buy some first), PRO includes $2 a month. Gated models also need their license accepted on the model page. Prices below are each model's cheapest live host.</div></div>` : ""}
+        <div class="ped-field grow-field"><b>Models</b>
+          <div class="seg" role="group" aria-label="Which models to offer">
+            <button data-pick-mode="all" aria-pressed="${!d.pick}">All ${ms.length}</button>
+            <button data-pick-mode="pick" aria-pressed="${d.pick}">Only the ones I pick</button></div>
+          <span class="muted" id="ped-count">${d.pick ? `${d.picked.size} picked. Only these appear in the model pickers and in Auto.` : "Every model the provider lists appears in the pickers, including new ones."}</span>
+          ${ms.length > 8 ? `<div class="ped-tools"><input class="input" id="ped-find" type="search" placeholder="Find a model" aria-label="Find a model">
+            <button class="btn sm" id="ped-all" ${d.pick ? "" : "disabled"}>Pick shown</button><button class="btn sm" id="ped-none" ${d.pick ? "" : "disabled"}>Clear</button></div>` : ""}
+          <div class="picks ${d.pick ? "" : "off"}">${ms.map(m => row(m.id, m.name, m.detail, m.media)).join("")}
+            ${gone.map(id => row(id, id, "no longer listed", [])).join("")}
+            ${ms.length || gone.length ? "" : `<div class="muted" style="padding:10px">${p.ready ? "The provider listed no models. Check its key or address." : "Add a key to list this provider's models."}</div>`}</div>
+        </div>
+      </div>
+      <footer>${d.error ? `<div class="keyerr">${esc(d.error)}</div>` : ""}<span class="grow"></span>
+        <button class="btn ghost" id="ped-cancel">Cancel</button><button class="btn primary" id="ped-save">Save</button></footer>
+    </aside></div>`;
+  }
+  function bindProviderEditor() {
+    if (!L.editing) return;
+    const d = L.draft;
+    const close = () => { L.editing = null; L.draft = null; render(); };
+    $("#ped-close").addEventListener("click", close);
+    $("#ped-cancel").addEventListener("click", close);
+    $("#ped-back").addEventListener("click", e => { if (e.target.id === "ped-back") close(); });
+    if (!document.activeElement || document.activeElement === document.body) $("#ped").focus();
+    $("#ped-auto").addEventListener("change", e => d.auto = e.target.checked);
+    $("#ped-url").addEventListener("input", e => d.url = e.target.value);
+    $$("[data-option]").forEach(i => i.addEventListener("input", () => d.options[i.dataset.option] = i.value));
+    const count = () => { $("#ped-count").textContent = `${d.picked.size} picked. Only these appear in the model pickers and in Auto.`; };
+    $$("[data-pick]").forEach(c => c.addEventListener("change", () => { if (c.checked) d.picked.add(c.dataset.pick); else d.picked.delete(c.dataset.pick); count(); }));
+    $$("[data-pick-mode]").forEach(b => b.addEventListener("click", () => {
+      d.pick = b.dataset.pickMode === "pick";
+      if (d.pick && !d.picked.size) {   // start from what Auto would use, so the list is not empty
+        const auto = Object.values(L.info.auto).find(k => k.startsWith(L.editing + "/"));
+        if (auto) d.picked.add(auto.slice(L.editing.length + 1));
+      }
+      render();
+    }));
+    const find = $("#ped-find");
+    find?.addEventListener("input", () => {
+      const q = find.value.trim().toLowerCase();
+      $$(".picks .pick").forEach(l => l.hidden = !!q && !l.dataset.find.includes(q));
+    });
+    $("#ped-all")?.addEventListener("click", () => { $$(".picks .pick:not([hidden]) input").forEach(c => { c.checked = true; d.picked.add(c.dataset.pick); }); count(); });
+    $("#ped-none")?.addEventListener("click", () => { $$(".picks .pick:not([hidden]) input").forEach(c => { c.checked = false; d.picked.delete(c.dataset.pick); }); count(); });
+    $("#ped-save").addEventListener("click", async () => {
+      if (d.pick && !d.picked.size) { d.error = "Pick at least one model, or choose All."; render(); return; }
+      const btn = $("#ped-save"); btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        const r = await fetch("/api/providers", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: L.editing, auto: d.auto, models: d.pick ? [...d.picked] : null, url: d.url.trim(), options: d.options }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || r.status);
+        L.info = j; L.editing = null; L.draft = null;
+        if (L.model !== "auto" && !modelByKey(L.model)) L.model = "auto";
+        render();
+      } catch (e) { d.error = e.message; render(); }
+    });
   }
 
   async function postKeys(body) {
@@ -1692,6 +1797,8 @@
     $$("[data-key-first]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyFirst, label: b.dataset.label, first: true }).catch(e => console.warn(e))));
     $("#refresh-models")?.addEventListener("click", () => loadModels(true));
     $("#refresh-balances")?.addEventListener("click", () => loadBalances());
+    $$("[data-edit-provider]").forEach(b => b.addEventListener("click", () => startEdit(b.dataset.editProvider)));
+    bindProviderEditor();
     $$("[data-add-key]").forEach(b => b.addEventListener("click", () => {
       L.adding = L.adding === b.dataset.addKey ? null : b.dataset.addKey;
       render();
