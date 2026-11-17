@@ -1140,6 +1140,8 @@ public final class VulkanBackend implements Backend {
 
     /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
     // the most rows of a product with a transposed matrix read by matmul_vect
+    // from how many rows matmul_vect sums each column with 32 invocations (8 columns per group) instead of 64
+    private static final int VECT_NARROW = Integer.getInteger("brainiac.vulkan.vectNarrow", 99);
     private static final int VECT_ROWS = Integer.getInteger("brainiac.vulkan.vectRows", 8);
     private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
 
@@ -1202,7 +1204,8 @@ public final class VulkanBackend implements Backend {
         boolean vectors = k % 4 == 0 && b.col() % 4 == 0 && first % align == 0 && x.address() % align == 0;
         vk.push().putLong(x.address()).putLong(x.address()).putLong(first).putLong(first).putLong(z.address()).putInt(m).putInt(k)
                 .putInt(n).putInt((int) b.col()).putInt(vectors ? 1 : 0);
-        vk.dispatch(shader("matmul_vect" + rows, z.dtype), ceil(n, 4), z.slot(), x.slot(), y.slot());
+        boolean narrow = rows >= VECT_NARROW;
+        vk.dispatch(shader("matmul_vect" + rows + (narrow ? "n" : ""), z.dtype), ceil(n, narrow ? 8 : 4), z.slot(), x.slot(), y.slot());
     }
 
     /** Few rows times a matrix, limited by reading the matrix: see matmul_vec.comp. */
