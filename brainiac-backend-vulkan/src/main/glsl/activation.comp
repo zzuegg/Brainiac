@@ -3,8 +3,8 @@
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
 #include "math.glsl"
-layout(push_constant) uniform P { In x; Floats y; uint n; uint op; float param; } p;
+layout(push_constant) uniform P { In x; Buf y; uint n; uint op; float param; } p;
 void main() {
     uint i = gid();
-    if (i < p.n) p.y.v[i] = activation_op(p.op, p.param, p.x.v[i]);
+    if (i < p.n) STORE(p.y, i, activation_op(p.op, ACC(p.param), LOAD(p.x, i)));
 }

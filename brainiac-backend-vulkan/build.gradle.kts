@@ -51,16 +51,23 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
 
     @TaskAction
     fun compile() {
-        // matmul is compiled twice: 64 x 64 and 32 x 32 output tiles
+        // every shader once per number format (random is float32 only); matmul twice more:
+        // 64 x 64 and 32 x 32 output tiles
+        val types = listOf("f32", "f64", "f16", "bf16")
         val variants = mapOf("matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")))
         val dir = sources.get().asFile
+        output.get().asFile.listFiles { f -> f.name.endsWith(".spv") }?.forEach { it.delete() }
         dir.listFiles { f -> f.name.endsWith(".comp") }!!.sorted().forEach { src ->
             val base = src.name.removeSuffix(".comp")
             for ((name, defines) in variants[base] ?: listOf(base to emptyList())) {
-                exec.exec {
-                    workingDir = dir
-                    commandLine(listOf("glslangValidator", "-V", "--target-env", "vulkan1.2") + defines
-                            + listOf("-o", output.file("$name.spv").get().asFile.absolutePath, src.name))
+                for (type in if (base == "random") listOf("") else types) {
+                    val file = if (type.isEmpty()) "$name.spv" else "${name}_$type.spv"
+                    val typeDefine = if (type.isEmpty()) emptyList() else listOf("-DTYPE_" + type.uppercase())
+                    exec.exec {
+                        workingDir = dir
+                        commandLine(listOf("glslangValidator", "-V", "--target-env", "vulkan1.2") + defines
+                                + typeDefine + listOf("-o", output.file(file).get().asFile.absolutePath, src.name))
+                    }
                 }
             }
         }

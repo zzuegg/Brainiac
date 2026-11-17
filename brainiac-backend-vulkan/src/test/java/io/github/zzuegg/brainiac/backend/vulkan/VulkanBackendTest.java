@@ -154,6 +154,20 @@ class VulkanBackendTest {
     }
 
     @Test
+    void float64HasDoublePrecision() {
+        assumeTrue(supported(DType.FLOAT64), "float64 not supported by " + gpu);
+        // GLSL has no double exp or log; the shaders bring their own
+        Tensor x = random(13, 64).mul(30).to(DType.FLOAT64);
+        UnaryOperator<Tensor> f = t -> t.exp().add(t.abs().add(1e-3f).log()).add(t.tanh()).add(t.sigmoid())
+                .add(t.abs().pow(0.7f));
+        double[] e = f.apply(x).toDoubleArray();
+        double[] a = f.apply(x.to(gpu)).toDoubleArray();
+        for (int i = 0; i < e.length; i++) {
+            assertEquals(e[i], a[i], 1e-12 * Math.max(1, Math.abs(e[i])), "at " + i);
+        }
+    }
+
+    @Test
     void highRanksAndLargeUploadsMatchTheCpu() {
         // eight axes that cannot be merged: run as several dispatches over the outer axes
         Tensor x = random(11, 2, 3, 2, 3, 2, 3, 2, 3);

@@ -635,8 +635,11 @@ resources; `./gradlew :brainiac-backend-vulkan:compileShaders` rebuilds them wit
 constants, so there are no descriptor sets to manage. Commands are recorded into command
 buffers and submitted in batches, with a memory barrier only before a command that touches
 memory an earlier one wrote, so the host waits for the device only when it reads values
-back. Tensors are slots in large device memory blocks, pooled by size. It stores float32
-only and does not fuse operations (yet). System properties: `brainiac.vulkan.devices`
+back. Tensors are slots in large device memory blocks, pooled by size. Every shader is
+compiled once per number format: float32 always; float64 (computed in double precision, with
+the shaders' own exp and log, since GLSL has none for doubles) where the device has
+`shaderFloat64`; float16 and bfloat16 (stored in 16 bits, computed in float32) where it has
+16-bit storage buffers. System properties: `brainiac.vulkan.devices`
 (`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
 (index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
 validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),

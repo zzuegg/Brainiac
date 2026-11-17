@@ -4,7 +4,7 @@
 layout(local_size_x = GROUP) in;
 // table[pos * ks + k]: the image cell of kernel cell k at window position pos, or -1 for padding
 layout(push_constant) uniform P {
-    In x; InInts table; Floats z;
+    In x; InInts table; Buf z;
     uint channels; uint positions; uint ks; uint img; float pad; uint total;
 } p;
 void main() {
@@ -18,5 +18,5 @@ void main() {
     uint ch = col / p.ks;
     uint k = col % p.ks;
     int cell = p.table.v[pos * p.ks + k];
-    p.z.v[idx] = cell < 0 ? p.pad : p.x.v[(nb * p.channels + ch) * p.img + uint(cell)];
+    STORE(p.z, idx, cell < 0 ? ACC(p.pad) : LOAD(p.x, (nb * p.channels + ch) * p.img + uint(cell)));
 }

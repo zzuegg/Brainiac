@@ -50,6 +50,7 @@ import org.lwjgl.vulkan.VkPhysicalDevice;
 import org.lwjgl.vulkan.VkPhysicalDeviceFeatures2;
 import org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties;
 import org.lwjgl.vulkan.VkPhysicalDeviceProperties;
+import org.lwjgl.vulkan.VkPhysicalDeviceVulkan11Features;
 import org.lwjgl.vulkan.VkPhysicalDeviceVulkan12Features;
 import org.lwjgl.vulkan.VkPipelineLayoutCreateInfo;
 import org.lwjgl.vulkan.VkPipelineShaderStageCreateInfo;
@@ -112,6 +113,12 @@ final class VkContext {
     final long deviceMemory;
     final long budget;
     final int maxGroups;
+    /** Whether shaders can use doubles (float64 tensors). */
+    final boolean fp64;
+    /** Whether storage buffers can hold 16-bit values (float16 tensors). */
+    final boolean storage16;
+    /** Whether shaders have 16-bit integers (with {@link #storage16}: bfloat16 tensors). */
+    final boolean int16;
     private final int family;
     private final long commandPool;
     private final long pipelineLayout;
@@ -194,11 +201,19 @@ final class VkContext {
             deviceList = candidatesText;
             family = chosen.family;
             maxGroups = chosen.maxGroups;
+            fp64 = chosen.fp64;
+            storage16 = chosen.storage16;
+            int16 = chosen.int16;
             try (MemoryStack st = stackPush()) {
+                // chained by address: LWJGL's typed pNext setters insert a struct in front of
+                // the existing chain and would drop the links made before
                 VkPhysicalDeviceVulkan12Features f12 = VkPhysicalDeviceVulkan12Features.calloc(st).sType$Default()
                         .bufferDeviceAddress(true);
-                VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(st).sType$Default().pNext(f12);
-                f2.features().shaderInt64(true);
+                VkPhysicalDeviceVulkan11Features f11 = VkPhysicalDeviceVulkan11Features.calloc(st).sType$Default()
+                        .pNext(f12.address()).storageBuffer16BitAccess(storage16);
+                VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(st).sType$Default()
+                        .pNext(f11.address());
+                f2.features().shaderInt64(true).shaderFloat64(fp64).shaderInt16(int16);
                 VkDeviceQueueCreateInfo.Buffer q = VkDeviceQueueCreateInfo.calloc(1, st).sType$Default()
                         .queueFamilyIndex(family).pQueuePriorities(st.floats(1f));
                 // by address: LWJGL's typed pNext setters insert the struct in front of the
@@ -248,7 +263,7 @@ final class VkContext {
     // ------------------------------------------------------------------ device choice
 
     private record Candidate(VkPhysicalDevice device, String name, int type, int family, int maxGroups,
-            String problem) {
+            boolean fp64, boolean storage16, boolean int16, String problem) {
     }
 
     private String candidatesText = "";
@@ -310,14 +325,23 @@ final class VkContext {
             // unsigned: AMD reports 2^32 - 1 here, which as an int would be -1
             int maxGroups = (int) Math.min(Integer.toUnsignedLong(props.limits().maxComputeWorkGroupCount(0)), 65535);
             String problem = null;
+            boolean fp64 = false;
+            boolean storage16 = false;
+            boolean int16 = false;
             if (VK_API_VERSION_MAJOR(props.apiVersion()) == 1 && VK_API_VERSION_MINOR(props.apiVersion()) < 2) {
                 problem = "needs Vulkan 1.2";
             } else if (props.limits().maxPushConstantsSize() < PUSH_BYTES) {
                 problem = "push constants too small";
             } else {
                 VkPhysicalDeviceVulkan12Features f12 = VkPhysicalDeviceVulkan12Features.calloc(st).sType$Default();
-                VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(st).sType$Default().pNext(f12);
+                VkPhysicalDeviceVulkan11Features f11 = VkPhysicalDeviceVulkan11Features.calloc(st).sType$Default()
+                        .pNext(f12.address());
+                VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(st).sType$Default()
+                        .pNext(f11.address());
                 vkGetPhysicalDeviceFeatures2(pd, f2);
+                fp64 = f2.features().shaderFloat64();
+                int16 = f2.features().shaderInt16();
+                storage16 = f11.storageBuffer16BitAccess();
                 if (!f12.bufferDeviceAddress()) {
                     problem = "no buffer device address";
                 } else if (!f2.features().shaderInt64()) {
@@ -337,7 +361,7 @@ final class VkContext {
             if (family < 0 && problem == null) {
                 problem = "no compute queue";
             }
-            return new Candidate(pd, name, props.deviceType(), family, maxGroups, problem);
+            return new Candidate(pd, name, props.deviceType(), family, maxGroups, fp64, storage16, int16, problem);
         }
     }
 
@@ -706,9 +730,12 @@ final class VkContext {
         access(s.address);
         Batch b = recording();
         if (bytes <= inline.capacity()) {
-            inline.clear().limit((int) bytes);
+            // whole 32-bit words, as vkCmdUpdateBuffer requires; the padding stays inside the slot
+            int words = (int) ((bytes + 3) & ~3L);
+            inline.clear().limit(words);
+            inline.putInt(words - 4, 0);
             writer.accept(inline);
-            inline.position(0).limit((int) bytes);
+            inline.position(0).limit(words);
             vkCmdUpdateBuffer(b.commands, s.block.buffer, s.offset, inline);
         } else {
             Block from;
