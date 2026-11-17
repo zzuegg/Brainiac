@@ -43,6 +43,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-examples` | Runnable examples |
 | `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
 | `brainiac-experiments` | Experimental research ideas (memory, context, new architectures, learning rules, evolution, generative toys, reasoning, agents, unconventional computing, interpretability). Untested; its API may change at any time |
+| `brainiac-studio` | Local web app: chat, generation, a shape-checked model builder, training and an MCP server for agents. JDK HTTP server, no dependencies |
 
 Shared build configuration lives in `build-logic/` as Gradle convention plugins
 (`brainiac.java-library`, `brainiac.java-application`). Each module has a
@@ -657,6 +658,37 @@ a 4-core CPU, both models then trained with the task's own settings and tested o
 
 With `--mutate connections,neurons,activations` (no learning-rate gene), xor shrinks to 2
 neurons, one tanh and one silu.
+
+## Brainiac Studio
+
+`brainiac-studio` is a local web app for the whole library: chat with models, generate with
+them, build models in a node editor whose sockets only accept matching shapes, train them,
+and let agents do the same over MCP. The Java process is the server (the JDK's own HTTP
+server, no dependencies) and the page is plain HTML, CSS and JavaScript.
+
+```sh
+./gradlew :brainiac-studio:run                     # then open http://127.0.0.1:7860/
+./gradlew :brainiac-studio:run --args="--port 0"   # any free port
+```
+
+It listens on this machine only, answers only requests addressed to `127.0.0.1` or
+`localhost`, and its API needs the token it creates at launch (the page it serves carries
+it). `GET /api/capabilities` lists what the installed modules can do, found at startup; a
+module adds its own by providing `io.github.zzuegg.brainiac.studio.spi.CapabilityProvider`,
+and an available capability replaces a planned placeholder of the same key:
+
+```java
+public final class MyTts implements CapabilityProvider {
+    public List<Capability> capabilities() {
+        return List.of(Capability.available("speech.synthesize", Medium.SPEECH, "Text to speech",
+                "Speak text with a chosen voice", "my-tts"));
+    }
+}
+// module-info.java: provides io.github.zzuegg.brainiac.studio.spi.CapabilityProvider with MyTts;
+```
+
+The surfaces are being connected one at a time; until a surface reads real data it shows
+example data and says so in the top bar.
 
 ## Benchmarks: test any model
 
