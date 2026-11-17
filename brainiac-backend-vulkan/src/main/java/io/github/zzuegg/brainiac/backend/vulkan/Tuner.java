@@ -123,7 +123,15 @@ final class Tuner {
     }
 
     private void packed() {
-        PackedStorage[] w = {packedMatrix(4096, 11008), packedMatrix(11008, 4096)};
+        // four copies of each, 180 MB in all: more than a GPU's last-level cache (72 MB on an
+        // RTX 4090), so the products read the weights from memory as decoding does
+        PackedMatrix up = packedMatrix(4096, 11008);
+        PackedMatrix down = packedMatrix(11008, 4096);
+        PackedStorage[] w = new PackedStorage[8];
+        for (int i = 0; i < 4; i++) {
+            w[2 * i] = backend.pack(up);
+            w[2 * i + 1] = backend.pack(down);
+        }
         Storage[] x = {f16(4096, 1), f16(11008, 2)};
         Storage[] out = {backend.allocate(11008, DType.FLOAT16), backend.allocate(4096, DType.FLOAT16)};
         owned.addAll(List.of(out));
@@ -134,8 +142,10 @@ final class Tuner {
                 tuning.set("packedGroups", groups);
                 tuning.set("packedPiece", piece);
                 double t = time(() -> {
-                    backend.matmulPacked(x[0], w[0], 1, 4096, 11008, out[0]);
-                    backend.matmulPacked(x[1], w[1], 1, 11008, 4096, out[1]);
+                    for (int i = 0; i < 4; i++) {
+                        backend.matmulPacked(x[0], w[2 * i], 1, 4096, 11008, out[0]);
+                        backend.matmulPacked(x[1], w[2 * i + 1], 1, 11008, 4096, out[1]);
+                    }
                 });
                 note("packed " + groups + "/" + piece, "", t, 0);
                 if (t < best) {
@@ -243,7 +253,7 @@ final class Tuner {
     }
 
     /** A 4-bit matrix in groups of 32 rows, as a Q4 model's. */
-    private PackedStorage packedMatrix(int rows, int cols) {
+    private static PackedMatrix packedMatrix(int rows, int cols) {
         SplittableRandom r = new SplittableRandom(rows);
         byte[] levels = new byte[rows * cols];
         for (int i = 0; i < levels.length; i++) {
@@ -251,7 +261,7 @@ final class Tuner {
         }
         float[] scales = new float[rows / 32 * cols];
         java.util.Arrays.fill(scales, 0.01f);
-        return backend.pack(PackedMatrix.of(levels, scales, rows, cols, 4, 32));
+        return PackedMatrix.of(levels, scales, rows, cols, 4, 32);
     }
 
     private static double flops(int[][] shapes) {
