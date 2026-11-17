@@ -255,6 +255,21 @@ public final class Var {
         return unary(value.to(type), g -> new Tensor[] {g.to(original)}, g -> new Var[] {g.to(original)});
     }
 
+    /**
+     * Moves to another device. Gradients flow back to this value's device, so a model can
+     * span devices, as a CPU/GPU layer split does.
+     *
+     * @param target the device
+     * @return the moved value; {@code this} if it is already there
+     */
+    public Var to(io.github.zzuegg.brainiac.tensor.Device target) {
+        io.github.zzuegg.brainiac.tensor.Device original = value.device();
+        if (target.equals(original)) {
+            return this;
+        }
+        return unary(value.to(target), g -> new Tensor[] {g.to(original)}, g -> new Var[] {g.to(original)});
+    }
+
     /** @return the number format of the value */
     public DType dtype() {
         return value.dtype();

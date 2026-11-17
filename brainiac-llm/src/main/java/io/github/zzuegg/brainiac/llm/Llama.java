@@ -50,7 +50,7 @@ public final class Llama implements LanguageModel {
      */
     private static final class Linear {
         private Var weight;
-        private final Var bias;
+        private Var bias;
         /** Low-rank adapter {@code [in, rank]} and {@code [rank, out]}, or null. */
         private Var loraA;
         private Var loraB;
@@ -111,8 +111,16 @@ public final class Llama implements LanguageModel {
     private final Rope localRope;
     private final Var embed;
     private final Linear lmHead;
-    private final Var norm;
+    private Var norm;
     private final List<Block> blocks;
+    /** Per block, its device and type after {@link #offload}; null while all are on {@code device}. */
+    private Device[] layerDevice;
+    private DType[] layerType;
+    /** Where the final norm and output layer run, and their type. */
+    private Device headDevice;
+    private DType headType;
+    /** A tied output layer's copy of the embeddings on {@code headDevice}, or null. */
+    private Var tiedOnHead;
     private final Map<String, Var> named;
     private final Map<String, Linear> linears;
     /** Whether the embeddings and norms are constants (see {@link #addLora}). */
@@ -444,6 +452,114 @@ public final class Llama implements LanguageModel {
         return new Llama(config, device, dtype, named, linears);
     }
 
+    // ---------------------------------------------------------------- device split
+
+    /**
+     * Moves the last {@code layers} blocks, the final norm and the output layer to another
+     * device, as llama.cpp's {@code --n-gpu-layers} does: a model too large for the GPU runs
+     * its first blocks on the CPU and the rest on the GPU, the hidden state crossing once per
+     * step. Keys and values stay with their block. Packed weights stay packed; other weights
+     * take {@code dtype} there. A tied output layer gets its own copy of the embeddings on
+     * the device, and the embeddings themselves stay where they are.
+     *
+     * @param target the device for the last blocks, usually a GPU
+     * @param dtype the weights' and activations' type there
+     * @param layers how many blocks to move, 0 to all
+     * @return this model
+     */
+    public Llama offload(Device target, DType dtype, int layers) {
+        java.util.Objects.requireNonNull(target, "target");
+        java.util.Objects.requireNonNull(dtype, "dtype");
+        if (layers < 0 || layers > blocks.size()) {
+            throw new IllegalArgumentException("can move 0 to " + blocks.size() + " blocks, not " + layers);
+        }
+        if (layerDevice != null) {
+            throw new IllegalStateException("the model is split already");
+        }
+        layerDevice = new Device[blocks.size()];
+        layerType = new DType[blocks.size()];
+        java.util.Arrays.fill(layerDevice, device);
+        java.util.Arrays.fill(layerType, this.dtype);
+        for (int i = blocks.size() - layers; i < blocks.size(); i++) {
+            layerDevice[i] = target;
+            layerType[i] = dtype;
+            String prefix = "model.layers." + i + ".";
+            for (Map.Entry<String, Var> e : List.copyOf(named.entrySet())) {
+                if (e.getKey().startsWith(prefix) && e.getKey().contains("norm")) {
+                    named.put(e.getKey(), moved(e.getValue(), target, dtype));
+                }
+            }
+            for (Map.Entry<String, Linear> e : linears.entrySet()) {
+                if (e.getKey().startsWith(prefix)) {
+                    move(e.getKey(), e.getValue(), target, dtype);
+                }
+            }
+            Block b = blocks.get(i);
+            String post = config.extras().postNorms() ? "pre_feedforward_layernorm" : "post_attention_layernorm";
+            blocks.set(i, new Block(named.get(prefix + "input_layernorm.weight"), b.q, b.k, b.v, b.o,
+                    named.get(prefix + post + ".weight"), b.gate, b.up, b.down,
+                    named.get(prefix + "self_attn.q_norm.weight"), named.get(prefix + "self_attn.k_norm.weight"),
+                    config.extras().postNorms() ? named.get(prefix + "post_attention_layernorm.weight") : null,
+                    config.extras().postNorms() ? named.get(prefix + "post_feedforward_layernorm.weight") : null));
+        }
+        headDevice = target;
+        headType = dtype;
+        named.put("model.norm.weight", moved(norm, target, dtype));
+        norm = named.get("model.norm.weight");
+        if (lmHead != null) {
+            move("lm_head", lmHead, target, dtype);
+        } else if (!target.equals(device)) {
+            tiedOnHead = Var.of(embed.value().to(target).to(dtype));
+        }
+        return this;
+    }
+
+    private static Var moved(Var v, Device target, DType dtype) {
+        if (v == null) {
+            return null;
+        }
+        Tensor t = v.value().to(target);
+        if (!t.isPacked()) {
+            t = t.to(dtype);
+        }
+        if (t != v.value()) {
+            v.value().release();
+        }
+        return v.requiresGrad() ? Var.param(t) : Var.of(t);
+    }
+
+    private void move(String name, Linear l, Device target, DType dtype) {
+        boolean listed = named.get(name + ".weight") == l.weight;
+        l.weight = moved(l.weight, target, dtype);
+        if (listed) {
+            named.put(name + ".weight", l.weight);
+        }
+        if (l.bias != null) {
+            l.bias = moved(l.bias, target, dtype);
+            named.put(name + ".bias", l.bias);
+        }
+        if (l.loraA != null) {
+            l.loraA = moved(l.loraA, target, dtype);
+            l.loraB = moved(l.loraB, target, dtype);
+        }
+    }
+
+    private Device deviceOf(int layer) {
+        return layerDevice == null ? device : layerDevice[layer];
+    }
+
+    private DType typeOf(int layer) {
+        return layerType == null ? dtype : layerType[layer];
+    }
+
+    private Device headDevice() {
+        return headDevice == null ? device : headDevice;
+    }
+
+    private DType headType() {
+        return headType == null ? dtype : headType;
+    }
+
     // ---------------------------------------------------------------- the model
 
     /** @return the model's shape */
@@ -531,7 +647,8 @@ public final class Llama implements LanguageModel {
         }
 
         /** Makes room for {@code steps} more, keeping what is cached. */
-        void reserve(int steps, int kvHeads, int headDim, DType dtype, Device device) {
+        void reserve(int steps, int kvHeads, int headDim, java.util.function.IntFunction<DType> types,
+                java.util.function.IntFunction<Device> devices) {
             int need = length + steps;
             if (need <= capacity) {
                 return;
@@ -540,6 +657,8 @@ public final class Llama implements LanguageModel {
             int batch = next.length;
             Shape shape = Shape.of(batch, kvHeads, grown, headDim);
             for (int l = 0; l < keys.length; l++) {
+                DType dtype = types.apply(l);
+                Device device = devices.apply(l);
                 Tensor k = quantized ? Tensor.quantizedRows(shape, dtype, device) : Tensor.zeros(shape, dtype, device);
                 Tensor v = quantized ? Tensor.quantizedRows(shape, dtype, device) : Tensor.zeros(shape, dtype, device);
                 Tensor.evaluate(List.of(k, v));
@@ -624,8 +743,8 @@ public final class Llama implements LanguageModel {
             c.sinks = sinks;
             c.window = window;
             if (capacity > 0) {
-                Tensor index = indices(rows, keys[0].device());
                 for (int l = 0; l < keys.length; l++) {
+                    Tensor index = indices(rows, keys[l].device());
                     c.keys[l] = requantized(keys[l].gather(0, index));
                     c.values[l] = requantized(values[l].gather(0, index));
                 }
@@ -656,10 +775,11 @@ public final class Llama implements LanguageModel {
             if (any != null) {
                 int cap = Math.max(len, Math.max(capacity, o.capacity));
                 for (int l = 0; l < keys.length; l++) {
-                    c.keys[l] = Tensor.concat(0, padded(keys[l], next.length, length, len, cap, any),
-                            padded(o.keys[l], o.next.length, o.length, len, cap, any));
-                    c.values[l] = Tensor.concat(0, padded(values[l], next.length, length, len, cap, any),
-                            padded(o.values[l], o.next.length, o.length, len, cap, any));
+                    Tensor like = capacity > 0 ? keys[l] : o.keys[l];   // this layer's device and type
+                    c.keys[l] = Tensor.concat(0, padded(keys[l], next.length, length, len, cap, like),
+                            padded(o.keys[l], o.next.length, o.length, len, cap, like));
+                    c.values[l] = Tensor.concat(0, padded(values[l], next.length, length, len, cap, like),
+                            padded(o.values[l], o.next.length, o.length, len, cap, like));
                 }
                 Tensor.evaluate(java.util.Arrays.asList(c.keys));
                 Tensor.evaluate(java.util.Arrays.asList(c.values));
@@ -876,16 +996,20 @@ public final class Llama implements LanguageModel {
         Tensor[] masks = null;
         if (packed) {
             masks = new Tensor[blocks.size()];
-            Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+            Map<String, Tensor> byWindow = new java.util.HashMap<>();
             for (int l = 0; l < masks.length; l++) {
-                masks[l] = byWindow.computeIfAbsent(windowOf(l), w -> segmentMask(batch.segments(), w));
+                int window = windowOf(l);
+                Device d = deviceOf(l);
+                DType t = typeOf(l);
+                masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t,
+                        k -> segmentMask(batch.segments(), window, d, t));
             }
         }
         return loss(batch.tokens(), next, positions, masks, Math.max(1, (1 << 24) / config.vocabSize()));
     }
 
     /** Causal within each segment, optionally windowed: {@code [rows, 1, steps, steps]}. */
-    private Tensor segmentMask(int[][] segments, int window) {
+    private Tensor segmentMask(int[][] segments, int window, Device device, DType dtype) {
         int rows = segments.length;
         int steps = segments[0].length;
         float[] m = new float[rows * steps * steps];
@@ -905,7 +1029,7 @@ public final class Llama implements LanguageModel {
         int batch = tokens.length;
         int steps = tokens[0].length;
         Var h = hidden(tokens, positions, null, masks).reshape(batch * steps, config.hidden());
-        Tensor ids = Tensor.of(Shape.of(batch * steps), next, device);
+        Tensor ids = Tensor.of(Shape.of(batch * steps), next, headDevice());
         if (config.extras().finalSoftcap() > 0) {
             return Functional.crossEntropy(softcap(head(h, false)).reshape(batch * steps, config.vocabSize()), ids);
         }
@@ -915,7 +1039,9 @@ public final class Llama implements LanguageModel {
         if (lmHead != null && lmHead.loraA != null) {
             return Functional.crossEntropy(lmHead.apply(h).reshape(batch * steps, config.vocabSize()), ids);
         }
-        Var weight = lmHead != null ? lmHead.base() : base(embed).transpose();
+        Var weight = lmHead != null ? lmHead.base()
+                : tiedOnHead != null ? tiedOnHead.transpose()   // a split model's copy: it does not learn
+                : base(embed).transpose();
         return Functional.linearCrossEntropy(h, weight, ids, chunk);
     }
 
@@ -992,7 +1118,7 @@ public final class Llama implements LanguageModel {
         if (batch != cache.next.length) {
             throw new IllegalArgumentException("the state holds " + cache.next.length + " sequences, got " + batch);
         }
-        cache.reserve(steps, config.kvHeads(), config.headDim(), dtype, device);
+        cache.reserve(steps, config.kvHeads(), config.headDim(), this::typeOf, this::deviceOf);
         int[][] positions = new int[batch][steps];
         boolean[][] keysPad = new boolean[batch][];
         for (int b = 0; b < batch; b++) {
@@ -1005,9 +1131,13 @@ public final class Llama implements LanguageModel {
         }
         // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]; one per window
         Tensor[] masks = new Tensor[blocks.size()];
-        Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+        Map<String, Tensor> byWindow = new java.util.HashMap<>();
         for (int l = 0; l < masks.length; l++) {
-            masks[l] = byWindow.computeIfAbsent(windowOf(l), w -> cacheMask(cache, keysPad, steps, w));
+            int window = windowOf(l);
+            Device d = deviceOf(l);
+            DType t = typeOf(l);
+            masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t,
+                    k -> cacheMask(cache, keysPad, steps, window, d, t));
         }
         Var[] hidden = new Var[1];
         Var logits = run(tokens, positions, cache, masks, hidden);
@@ -1026,7 +1156,7 @@ public final class Llama implements LanguageModel {
         return out;
     }
 
-    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window) {
+    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window, Device device, DType dtype) {
         int batch = keysPad.length;
         int keys = cache.capacity;
         float[] m = new float[batch * steps * keys];
@@ -1070,6 +1200,9 @@ public final class Llama implements LanguageModel {
         // training, through the embeddings so they get the gradient
         // decoding on the CPU keeps a transposed copy of the embeddings; a GPU reads the
         // transpose in place, saving the copy's memory (272 MB for Qwen2.5-0.5B)
+        if (tiedOnHead != null) {
+            return x.matmul(tiedOnHead.transpose());
+        }
         boolean copy = decoding && embed.value().device().kind() == io.github.zzuegg.brainiac.tensor.Device.Kind.CPU;
         return x.matmul(copy ? Var.of(tiedHead()) : base(embed).transpose());
     }
@@ -1090,11 +1223,13 @@ public final class Llama implements LanguageModel {
         }
         if (masks == null) {
             masks = new Tensor[blocks.size()];
-            Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+            Map<String, Tensor> byWindow = new java.util.HashMap<>();
             for (int l = 0; l < blocks.size(); l++) {
                 int window = windowOf(l);
                 if (window > 0 && steps > window) {
-                    masks[l] = byWindow.computeIfAbsent(window, w -> mask(steps, w));
+                    Device d = deviceOf(l);
+                    DType t = typeOf(l);
+                    masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t, k -> mask(steps, window, d, t));
                 }
             }
         }
@@ -1104,6 +1239,8 @@ public final class Llama implements LanguageModel {
         boolean decoding = cache != null;
         for (int l = 0; l < blocks.size(); l++) {
             Block blk = blocks.get(l);
+            Device layerDev = deviceOf(l);
+            x = x.to(layerDev).to(typeOf(l));   // crossing a device split
             Var h = rmsNorm(x, blk.attnNorm, decoding);
             Fused f = fused == null ? null : fused[l];
             Var qOut;
@@ -1143,7 +1280,7 @@ public final class Llama implements LanguageModel {
             }
             Tensor bias = masks[l];
             if (bias == null && e.attentionSoftcap() > 0 && causal) {
-                bias = Functional.causalMask(steps, k.shape().dim(2), device).to(dtype);
+                bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
             }
             Var a = e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
                     : bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
@@ -1174,6 +1311,7 @@ public final class Llama implements LanguageModel {
             }
             x = x.add(ffnOut);
         }
+        x = x.to(headDevice()).to(headType());
         return rmsNorm(x, norm, decoding);
     }
 
@@ -1195,7 +1333,7 @@ public final class Llama implements LanguageModel {
     }
 
     /** A causal mask over {@code steps} steps where each sees only the last {@code window}. */
-    private Tensor mask(int steps, int window) {
+    private Tensor mask(int steps, int window, Device device, DType dtype) {
         float[] m = new float[steps * steps];
         for (int t = 0; t < steps; t++) {
             for (int k = 0; k < steps; k++) {
