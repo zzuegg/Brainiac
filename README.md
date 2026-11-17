@@ -750,8 +750,8 @@ picked by browsing this PC or typed; the files stay where they are, and the list
 `local-models.txt` in the data folder. **Hugging Face** on the same screen searches the Hub
 and shows only the models the studio runs: whole model folders of a family `LlamaConfig.MODEL_TYPES`
 names, and GGUF files of an architecture in `LlamaConfig.GGUF_ARCHITECTURES`. Each model's files
-say whether they run, and why not, such as a quantization `Gguf.formats()` does not read (the IQ
-ones) or a GGUF split into parts. The studio keeps no list of its own, so a family or format the
+say whether they run, and why not, such as a quantization `Gguf.formats()` does not read or a GGUF
+split into parts. The studio keeps no list of its own, so a family or format the
 core learns shows up there by itself. A GGUF file's architecture is also read from its first
 megabyte before anything is downloaded.
 Downloads go to `downloads/` in the data folder, resume where they stopped, are checked against

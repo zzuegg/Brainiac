@@ -73,6 +73,7 @@ class HubTest {
         cdn.start();
         files.put("Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q8_0.gguf", gguf("qwen2", 300_000));
         files.put("Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-iq4_xs.gguf", gguf("qwen2", 10));
+        files.put("Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-tq1_0.gguf", gguf("qwen2", 10));
         files.put("Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m-00001-of-00002.gguf", gguf("qwen2", 10));
         files.put("google/gemma-3-1b-it-GGUF/gemma-3-1b-it-Q4_K_M.gguf", gguf("gemma3", 10));
         files.put("Qwen/Qwen2.5-0.5B-Instruct/model.safetensors", new byte[5000]);
@@ -110,6 +111,8 @@ class HubTest {
                         "tags", List.of("safetensors", "gemma3"), "config", Map.of("model_type", "gemma3"), "gated", "manual"));
                 out.add(Map.of("id", "google/gemma-3-1b-it-GGUF", "downloads", 4000, "likes", 50,
                         "tags", List.of("gguf"), "gguf", Map.of("architecture", "gemma3")));
+                out.add(Map.of("id", "onnx-community/Qwen2.5-0.5B-Instruct", "downloads", 2500, "likes", 9,
+                        "tags", List.of("onnx", "qwen2"), "config", Map.of("model_type", "qwen2")));
                 out.add(Map.of("id", "meta-llama/Llama-3.2-1B", "downloads", 3000, "likes", 900,
                         "tags", List.of("safetensors", "llama"), "config", Map.of("model_type", "llama"), "gated", "auto"));
                 send(ex, 200, Json.write(out).getBytes(StandardCharsets.UTF_8));
@@ -226,7 +229,7 @@ class HubTest {
         List<Map<String, Object>> models = Json.array(found.get("models")).stream().map(Json::object).toList();
         assertEquals(List.of("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "Qwen/Qwen2.5-0.5B-Instruct", "meta-llama/Llama-3.2-1B"),
                 models.stream().map(m -> m.get("id")).toList());
-        assertEquals(2, found.get("hidden"), "the two gemma3 ones");
+        assertEquals(3, found.get("hidden"), "the two gemma3 ones, and ONNX weights the core does not load");
         assertEquals(true, models.getFirst().get("gguf"));
         assertEquals(630_167_424L, models.getFirst().get("parameters"));
         assertEquals(true, models.get(1).get("safetensors"));
@@ -245,9 +248,12 @@ class HubTest {
         Map<String, Object> q8 = option(l, "qwen2.5-0.5b-instruct-q8_0.gguf");
         assertEquals(true, q8.get("supported"), q8.toString());
         assertEquals("Q8_0", q8.get("quant"));
+        // whether a quantization runs is the core's answer: IQ4_XS runs once Gguf reads it
         Map<String, Object> iq = option(l, "qwen2.5-0.5b-instruct-iq4_xs.gguf");
-        assertEquals(false, iq.get("supported"));
-        assertTrue(((String) iq.get("reason")).contains("IQ4_XS"), iq.toString());
+        assertEquals(io.github.zzuegg.brainiac.io.Gguf.formats().contains("IQ4_XS"), iq.get("supported"), iq.toString());
+        Map<String, Object> tq = option(l, "qwen2.5-0.5b-instruct-tq1_0.gguf");
+        assertEquals(false, tq.get("supported"));
+        assertTrue(((String) tq.get("reason")).contains("TQ1_0"), tq.toString());
         Map<String, Object> split = option(l, "qwen2.5-0.5b-instruct-q4_k_m-00001-of-00002.gguf");
         assertTrue(((String) split.get("reason")).contains("split into 2 parts"), split.toString());
 
@@ -328,7 +334,7 @@ class HubTest {
     @Test
     void unsupportedAndGatedModelsAreRefusedWithAReason() throws Exception {
         IOException iq = assertThrows(IOException.class,
-                () -> hub().download("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-iq4_xs.gguf"));
+                () -> hub().download("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-tq1_0.gguf"));
         assertTrue(iq.getMessage().contains("cannot run"), iq.getMessage());
         IOException gated = assertThrows(IOException.class, () -> hub().files("meta-llama/Llama-3.2-1B"));
         assertTrue(gated.getMessage().contains("gated"), gated.getMessage());
