@@ -55,6 +55,10 @@ tasks.test {
         jvmArgs("-Dbrainiac.bench=true")
         testLogging.showStandardStreams = true
     }
+    // -Pbrainiac.vulkan.profile=true runs the tests with every dispatch timed (it must not change results)
+    if (providers.gradleProperty("brainiac.vulkan.profile").orNull == "true") {
+        jvmArgs("-Dbrainiac.vulkan.profile=true")
+    }
     // -Pbrainiac.vulkan.diagnose=<case> compiles test shaders one by one (DriverDiagnosisTest)
     providers.gradleProperty("brainiac.vulkan.diagnose").orNull?.let {
         jvmArgs("-Dbrainiac.vulkan.diagnose=$it")
