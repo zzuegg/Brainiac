@@ -54,6 +54,11 @@ import java.util.Map;
  *       download into {@code downloads} in the data folder; {@code GET /api/hub/downloads} shows them;
  *       {@code POST /api/hub/cancel} with {@code {"id": "1"}} stops one, and {@code POST
  *       /api/hub/delete} with {@code {"name": "..."}} deletes a downloaded model.
+ *   <li>{@code GET /api/vast}: the Vast.ai key (its last four characters), the account's balance
+ *       and the machines rented; {@code POST /api/vast/key} with {@code {"key": "..."}} saves the
+ *       key ({@code {"remove": true}} removes it); {@code POST /api/vast/offers} with {@code {"gpu":
+ *       "4090", "minGpuRam": 24, "gpus": 1, "maxPrice": 0.5}} lists machines to rent, cheapest first.
+ *       Nothing is rented from here.
  *   <li>{@code POST /api/hub/token} with {@code {"token": "hf_..."}} saves the Hugging Face token to
  *       {@code ~/.brainiac/hf_token}, readable only by this account, where the core's downloader
  *       finds it too; {@code {"remove": true}} deletes that file. Only its last four characters come back.
@@ -136,6 +141,34 @@ final class ChatRoutes {
             out.put("runs", chat.hub().runs());
             out.put("token", chat.hubToken());
             Exchanges.json(ex, 200, out);
+        });
+        server.get("/api/vast", ex -> Exchanges.json(ex, 200, chat.vast() == null ? Map.of() : chat.vast().status()));
+        server.post("/api/vast/key", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 8192);
+            if (Boolean.TRUE.equals(body.get("remove"))) {
+                chat.removeKey(io.github.zzuegg.brainiac.studio.chat.VastAi.PROVIDER, "default");
+            } else {
+                String key = Json.string(body, "key", "").strip();
+                if (key.isEmpty() || key.chars().anyMatch(c -> c <= ' ')) {
+                    Exchanges.error(ex, 400, "paste the key on its own, without spaces");
+                    return;
+                }
+                chat.addKey(io.github.zzuegg.brainiac.studio.chat.VastAi.PROVIDER, "default", key);
+            }
+            Exchanges.json(ex, 200, chat.vast().status());
+        });
+        server.post("/api/vast/offers", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 8192);
+            try {
+                Exchanges.json(ex, 200, Map.of("offers", chat.vast().offers(Json.string(body, "gpu", ""),
+                        Json.number(body, "minGpuRam", 0), (int) Json.integer(body, "gpus", 0),
+                        Json.number(body, "maxPrice", 0))));
+            } catch (java.io.IOException e) {
+                Exchanges.error(ex, 400, e.getMessage());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Exchanges.error(ex, 500, "interrupted");
+            }
         });
         server.post("/api/hub/token", ex -> {
             Map<String, Object> body = Exchanges.body(ex, 8192);
