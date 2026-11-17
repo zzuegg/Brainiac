@@ -132,7 +132,7 @@ public final class LayerCatalog {
                 }
             }
         }
-        return of(names.stream().map(LayerCatalog::load).filter(c -> c != null).toList(), moduleOf);
+        return of(names.stream().<Class<?>>map(LayerCatalog::load).filter(c -> c != null).toList(), moduleOf);
     }
 
     /**
