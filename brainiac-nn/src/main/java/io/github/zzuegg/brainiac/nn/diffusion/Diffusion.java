@@ -95,6 +95,85 @@ public final class Diffusion {
     }
 
     /**
+     * Noisy sequences with a step per token, as diffusion forcing trains: token {@code j} of
+     * example {@code i} gets the noise of step {@code steps[i][j]}.
+     *
+     * @param x0 the data, {@code [batch, tokens, ...]}
+     * @param noise standard normal noise of the same shape
+     * @param steps {@code [batch][tokens]} steps
+     * @return the noisy data
+     */
+    public Tensor noisy(Tensor x0, Tensor noise, int[][] steps) {
+        double[][] a = new double[steps.length][];
+        double[][] b = new double[steps.length][];
+        for (int i = 0; i < steps.length; i++) {
+            a[i] = new double[steps[i].length];
+            b[i] = new double[steps[i].length];
+            for (int j = 0; j < steps[i].length; j++) {
+                a[i][j] = Math.sqrt(schedule.alphaBar(steps[i][j]));
+                b[i][j] = Math.sqrt(1 - schedule.alphaBar(steps[i][j]));
+            }
+        }
+        return x0.mul(perToken(a, x0)).add(noise.mul(perToken(b, x0)));
+    }
+
+    /**
+     * Independent random steps for every token, as diffusion forcing (Chen et al. 2024)
+     * samples them, so one model learns to denoise any mix of clean and noisy tokens.
+     *
+     * @param batch the examples
+     * @param tokens the tokens per example
+     * @param random the source of steps
+     * @return {@code [batch][tokens]} steps
+     */
+    public int[][] randomTokenSteps(int batch, int tokens, RandomGenerator random) {
+        int[][] steps = new int[batch][tokens];
+        for (int[] row : steps) {
+            for (int j = 0; j < tokens; j++) {
+                row[j] = random.nextInt(schedule.steps());
+            }
+        }
+        return steps;
+    }
+
+    /**
+     * The training loss with a step per token (diffusion forcing): the denoiser receives the
+     * steps as a {@code [batch, tokens]} time tensor and must accept that form.
+     *
+     * @param model the denoiser
+     * @param x0 clean sequences, {@code [batch, tokens, ...]}
+     * @param steps {@code [batch][tokens]} steps, such as {@link #randomTokenSteps}
+     * @param random the source of noise
+     * @return the loss, a scalar
+     */
+    public Var loss(Denoiser model, Tensor x0, int[][] steps, RandomGenerator random) {
+        int batch = x0.shape().dim(0);
+        int tokens = x0.shape().dim(1);
+        if (steps.length != batch || steps[0].length != tokens) {
+            throw new IllegalArgumentException("steps must be [" + batch + "][" + tokens + "]");
+        }
+        float[] time = new float[batch * tokens];
+        double[][] a = new double[batch][tokens];
+        double[][] b = new double[batch][tokens];
+        for (int i = 0; i < batch; i++) {
+            for (int j = 0; j < tokens; j++) {
+                time[i * tokens + j] = steps[i][j];
+                a[i][j] = Math.sqrt(schedule.alphaBar(steps[i][j]));
+                b[i][j] = Math.sqrt(1 - schedule.alphaBar(steps[i][j]));
+            }
+        }
+        Tensor noise = Tensor.normal(x0.shape(), 0, 1, random).to(x0.device()).to(x0.dtype());
+        Tensor xt = noisy(x0, noise, steps);
+        Tensor target = switch (prediction) {
+            case NOISE -> noise;
+            case SAMPLE -> x0;
+            case VELOCITY -> noise.mul(perToken(a, x0)).sub(x0.mul(perToken(b, x0)));
+        };
+        Var out = model.apply(Var.of(xt), Tensor.of(Shape.of(batch, tokens), time, x0.device()));
+        return out.sub(Var.of(target)).square().mean();
+    }
+
+    /**
      * The training loss for a batch: a random step per example, noise added, and the mean
      * squared error of the denoiser's prediction.
      *
@@ -208,6 +287,21 @@ public final class Diffusion {
             x = next;
         }
         return x;
+    }
+
+    /** {@code [batch][tokens]} values shaped to broadcast over {@code like}'s later axes. */
+    static Tensor perToken(double[][] values, Tensor like) {
+        int[] dims = new int[like.shape().rank()];
+        java.util.Arrays.fill(dims, 1);
+        dims[0] = values.length;
+        dims[1] = values[0].length;
+        float[] f = new float[dims[0] * dims[1]];
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                f[i * dims[1] + j] = (float) values[i][j];
+            }
+        }
+        return Tensor.of(Shape.of(dims), f, like.device()).to(like.dtype());
     }
 
     /** One value per example, shaped to broadcast over the rest of {@code like}. */

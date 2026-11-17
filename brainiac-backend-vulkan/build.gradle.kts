@@ -55,6 +55,10 @@ tasks.test {
         jvmArgs("-Dbrainiac.bench=true")
         testLogging.showStandardStreams = true
     }
+    // -Pbrainiac.vulkan.tune=false|auto|force: the kernel tuning (VulkanBackend); force measures again
+    providers.gradleProperty("brainiac.vulkan.tune").orNull?.let {
+        jvmArgs("-Dbrainiac.vulkan.tune=$it", "-Dbrainiac.vulkan.tuneLog=true")
+    }
     // -Pbrainiac.vulkan.profile=true runs the tests with every dispatch timed (it must not change results)
     if (providers.gradleProperty("brainiac.vulkan.profile").orNull == "true") {
         jvmArgs("-Dbrainiac.vulkan.profile=true")
@@ -83,12 +87,19 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
         val types = listOf("f32", "f64", "f16", "bf16")
         val variants = mapOf(
             "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2"),
+                // times a packed matrix, staged from its levels
+                "matmul64p" to listOf("-DW=4", "-DPACKED"), "matmul32p" to listOf("-DW=2", "-DPACKED"),
                 // operands read through strides: a transposed matrix in place
                 *listOf("" to emptyList(), "a" to listOf("-DA_T"), "b" to listOf("-DB_T"),
                         "ab" to listOf("-DA_T", "-DB_T")).flatMap { (t, flags) ->
                     listOf("matmul64s$t" to listOf("-DW=4", "-DSTRIDED") + flags,
                             "matmul32s$t" to listOf("-DW=2", "-DSTRIDED") + flags)
                 }.toTypedArray()),
+            // tile shapes the per-device tuning picks from (VulkanBackend.COOP_SHAPES)
+            "matmul_coop" to listOf("" to emptyList(), "k64" to listOf("-DBK=64"), "m64" to listOf("-DBM=64", "-DSGR=2"),
+                    "n256" to listOf("-DBN=256"), "m256" to listOf("-DBM=256"), "t44" to listOf("-DSGR=2", "-DSGC=4"),
+                    "v" to listOf("-DVEC"), "t44v" to listOf("-DSGR=2", "-DSGC=4", "-DVEC"), "k64v" to listOf("-DBK=64", "-DVEC"))
+                .flatMap { (v, d) -> listOf("matmul_coop$v" to d, "matmul_coop_packed$v" to d + "-DPACKED") },
             "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
             "matmul_vec" to listOf(1, 2, 4, 8).map { "matmul_vec$it" to listOf("-DROWS=$it") },
             "matmul_vect" to listOf(1, 2, 4, 8).flatMap { listOf("matmul_vect$it" to listOf("-DROWS=$it"), "matmul_vect${it}n" to listOf("-DROWS=$it", "-DLANES=32")) },

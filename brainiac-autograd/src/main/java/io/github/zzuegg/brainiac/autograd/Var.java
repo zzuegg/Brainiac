@@ -66,9 +66,6 @@ public final class Var {
     /** Whether operations on this thread check for NaN, see {@link #anomalyDetection(boolean)}. */
     private static final ThreadLocal<Boolean> ANOMALIES = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
-    /** How many {@link #noGrad} calls are running on this thread. */
-    private static final ThreadLocal<int[]> NO_GRAD = ThreadLocal.withInitial(() -> new int[1]);
-
     /** The operation and the code that made this value, when anomaly detection was on. */
     private String origin;
 
@@ -99,38 +96,32 @@ public final class Var {
         return ANOMALIES.get();
     }
 
+    /** Whether operations on this thread record a graph, see {@link #noGrad}. */
+    private static final ThreadLocal<Boolean> NO_GRAD = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
     /**
-     * Runs inference code without recording gradients: every operation on the calling
-     * thread inside {@code body} returns a constant, even when its inputs are parameters.
-     * No graph is kept, so intermediate values can be freed as soon as they are unused, and
-     * operations that have a faster form without gradients (such as fused attention) use
-     * it. Calls nest.
+     * Runs work without recording a graph, as PyTorch's {@code torch.no_grad()}: every value
+     * computed on this thread meanwhile is a constant that remembers no inputs, so the
+     * intermediate values of a long evaluation are freed as soon as they are unused instead
+     * of staying reachable from the result. Calls nest.
      *
-     * <pre>{@code
-     * Tensor out = Var.noGrad(() -> model.forward(Var.of(batch)).value());
-     * }</pre>
-     *
-     * @param body the code to run
-     * @param <T> what it returns
-     * @return what {@code body} returned
+     * @param work the computation, such as an evaluation or a reference model's forward pass
+     * @param <T> its result
+     * @return what {@code work} returned
      */
-    public static <T> T noGrad(java.util.function.Supplier<T> body) {
-        int[] depth = NO_GRAD.get();
-        depth[0]++;
+    public static <T> T noGrad(java.util.function.Supplier<T> work) {
+        boolean was = NO_GRAD.get();
+        NO_GRAD.set(Boolean.TRUE);
         try {
-            return body.get();
+            return work.get();
         } finally {
-            depth[0]--;
+            NO_GRAD.set(was);
         }
     }
 
-    /**
-     * Returns whether operations on the calling thread record gradients.
-     *
-     * @return {@code false} inside {@link #noGrad}
-     */
+    /** @return whether operations on the calling thread record a graph, false inside {@link #noGrad} */
     public static boolean gradEnabled() {
-        return NO_GRAD.get()[0] == 0;
+        return !NO_GRAD.get();
     }
 
     /** The public method that created a value and its first caller outside {@code Var}. */
@@ -483,7 +474,7 @@ public final class Var {
     }
 
     private static Var op(Tensor out, Var[] inputs, Backward backward, Higher higher) {
-        if (NO_GRAD.get()[0] > 0) {
+        if (NO_GRAD.get()) {
             // no graph: anomaly detection still needs the inputs to tell where NaN came from
             return checked(new Var(out, false, ANOMALIES.get() ? inputs : NO_INPUTS, null, null));
         }

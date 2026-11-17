@@ -290,9 +290,23 @@ public final class WorkerServer implements AutoCloseable {
         List<ChatMessage> messages = new ArrayList<>();
         for (Object o : Json.array(body.getOrDefault("messages", List.of()))) {
             Map<String, Object> m = Json.object(o);
-            messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", "")));
+            // "text" as the studio sends it, or "content" as most chat APIs do
+            String text = Json.string(m, "text", Json.string(m, "content", ""));
+            if (text.isBlank()) {
+                throw new IllegalArgumentException("every message needs a non-empty \"text\"");
+            }
+            messages.add(new ChatMessage(Json.string(m, "role", "user"), text));
         }
-        ChatRequest request = new ChatRequest(Json.string(body, "model", ""), Json.string(body, "system", ""), messages,
+        if (messages.isEmpty()) {
+            throw new IllegalArgumentException("\"messages\" is empty");
+        }
+        // the model's id, or its key from /worker/models ("local/<id>")
+        String model = Json.string(body, "model", "");
+        String prefix = models.id() + "/";
+        if (model.startsWith(prefix)) {
+            model = model.substring(prefix.length());
+        }
+        ChatRequest request = new ChatRequest(model, Json.string(body, "system", ""), messages,
                 (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null);
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");

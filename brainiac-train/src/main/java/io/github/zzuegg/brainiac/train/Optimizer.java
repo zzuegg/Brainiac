@@ -330,6 +330,23 @@ public interface Optimizer {
     }
 
     /**
+     * Muon with an orthogonalizer of one's own in place of five Newton-Schulz steps: such as
+     * an exact polar factor from {@link io.github.zzuegg.brainiac.tensor.Linalg#svd} ({@code U V^T}),
+     * other polynomial coefficients, or a cheaper approximation for large matrices.
+     *
+     * @param learningRate the step size
+     * @param weightDecay the decoupled weight decay
+     * @param momentum the momentum
+     * @param matchAdamW as for {@link #muon(float, float, float, boolean)}
+     * @param orthogonalizer maps each momentum matrix to its update direction, of the same shape
+     * @return a new optimizer
+     */
+    static Optimizer muon(float learningRate, float weightDecay, float momentum, boolean matchAdamW,
+            java.util.function.UnaryOperator<io.github.zzuegg.brainiac.tensor.Tensor> orthogonalizer) {
+        return new Muon(learningRate, weightDecay, momentum, true, matchAdamW, orthogonalizer);
+    }
+
+    /**
      * Different optimizers (or settings) for different parameters: each parameter goes to
      * the first group that takes it, the rest to {@code rest}. Setting the learning rate
      * scales every group's rate by the same factor.

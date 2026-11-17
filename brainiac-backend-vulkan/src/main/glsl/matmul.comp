@@ -8,18 +8,30 @@
 // separately: piece s of batch b goes to z[(b * splits + s) * strideZ], added up afterwards.
 // Compiled twice: W = 4 (64 x 64 tiles) and W = 2 (32 x 32 tiles, for smaller products).
 // With STRIDED, a and b are read through a row or column stride: a transposed matrix (A_T,
-// B_T: contiguous columns) or a slice is read in place.
+// B_T: contiguous columns) or a slice is read in place. With PACKED, b is a packed matrix
+// (see packed_layout.glsl), its values computed as the tiles are staged: no unpacked copy.
 #ifndef W
 #define W 4
 #endif
 #define TILE (16 * W)
 #define KT 16
 layout(local_size_x = 16, local_size_y = 16) in;
+#ifdef PACKED
+#include "packed.glsl"
+layout(push_constant) uniform P {
+    In a; InWords q; InWords hi; InWords scaleCodes; InWords offsetCodes; InWords scales; InWords offsets; Buf z;
+    uint m; uint k; uint n; uint strideZ; uint splits; uint chunk; uint group; uint flags; uint perSuper; float shift;
+} p;
+#include "packed_layout.glsl"
+#include "packed_tile.glsl"
+shared vec2 factorsB[2][TILE];
+#else
 layout(push_constant) uniform P {
     In a; In b; Buf z;
     uint m; uint k; uint n; uint strideA; uint strideB; uint strideZ; uint splits; uint chunk;
     uint aRow; uint aCol; uint bRow; uint bCol;
 } p;
+#endif
 shared ACC tileA[KT][TILE + 1];
 #ifdef STRIDED
 shared ACC tileB[KT][TILE + 1];
@@ -36,8 +48,13 @@ void main() {
     uint batch = piece / p.splits;
     uint from = (piece % p.splits) * p.chunk;
     uint to = min(p.k, from + p.chunk);
+#ifdef PACKED
+    uint aBase = 0;
+    bool stage = staged(from, KT);
+#else
     uint aBase = batch * p.strideA;
     uint bBase = batch * p.strideB;
+#endif
     ACC acc[W][W];
     for (int i = 0; i < W; i++) {
         for (int j = 0; j < W; j++) {
@@ -81,11 +98,40 @@ void main() {
             uint row = rowBase + idx / KT;
             uint ac = t + idx % KT;
             tileA[idx % KT][idx / KT] = row < p.m && ac < to ? LOAD(p.a, aBase + row * p.k + ac) : K(0.0);
+#ifndef PACKED
             uint br = t + idx / TILE;
             uint col = colBase + idx % TILE;
             tileB[idx / TILE][idx % TILE] = br < to && col < p.n ? LOAD(p.b, bBase + br * p.n + col) : K(0.0);
 #endif
+#endif
         }
+#ifdef PACKED
+        // KT x TILE values of b as runs of 4 columns, one per invocation
+        if (stage) {
+            if (tid < 2 * TILE) {
+                factorsB[tid / TILE][tid % TILE] = stagedFactors(t, tid / TILE, colBase + tid % TILE);
+            }
+            barrier();
+        }
+        if (tid < KT * TILE / 4) {
+            uint bk = tid / (TILE / 4);
+            uint bj = (tid % (TILE / 4)) * 4;
+            ACC4 v = ACC4(0);
+            if (t + bk < to && stage) {
+                uint i = (t + bk) / p.group - t / p.group;
+                if (colBase + bj < p.n) {
+                    vec2 f0 = factorsB[i][bj], f1 = factorsB[i][bj + 1], f2 = factorsB[i][bj + 2], f3 = factorsB[i][bj + 3];
+                    v = ACC4(levels4At(t + bk, colBase + bj)) * ACC4(f0.x, f1.x, f2.x, f3.x)
+                            + ACC4(f0.y, f1.y, f2.y, f3.y);
+                }
+            } else if (t + bk < to) {
+                v = packed4(t + bk, colBase + bj);
+            }
+            for (uint e = 0; e < 4; e++) {
+                tileB[bk][bj + e] = ACC(v[e]);
+            }
+        }
+#endif
         barrier();
         for (uint q = 0; q < KT; q++) {
             ACC ra[W];

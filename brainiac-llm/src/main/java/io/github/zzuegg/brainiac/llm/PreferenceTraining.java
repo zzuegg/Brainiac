@@ -108,7 +108,7 @@ public final class PreferenceTraining {
         float[][] out = new float[pairs.size()][];
         for (int from = 0; from < pairs.size(); from += batch) {
             List<Pair> part = pairs.subList(from, Math.min(pairs.size(), from + batch));
-            float[] lp = model.sequenceLogProbs(rows(part)).value().toArray();
+            float[] lp = Var.noGrad(() -> model.sequenceLogProbs(rows(part)).value().toArray());
             for (int i = 0; i < part.size(); i++) {
                 out[from + i] = new float[] {lp[i], lp[part.size() + i]};
             }

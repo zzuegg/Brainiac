@@ -12,6 +12,9 @@ import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlPropertiesEXT;
 import org.lwjgl.vulkan.VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT;
 import org.lwjgl.vulkan.VkCooperativeMatrixPropertiesKHR;
 import org.lwjgl.vulkan.VkExtensionProperties;
+import org.lwjgl.vulkan.EXTMemoryBudget;
+import org.lwjgl.vulkan.VkPhysicalDeviceMemoryBudgetPropertiesEXT;
+import org.lwjgl.vulkan.VkPhysicalDeviceMemoryProperties2;
 import org.lwjgl.vulkan.VkPhysicalDeviceCooperativeMatrixFeaturesKHR;
 
 import java.io.IOException;
@@ -125,6 +128,10 @@ final class VkContext {
     final VkDevice device;
     final VkQueue queue;
     final String deviceName;
+    /** Device and driver, as a file name: what a tuning is kept for. */
+    final String deviceKey;
+    /** Whether the device is the CPU (lavapipe, SwiftShader): not tuned. */
+    final boolean softwareDevice;
     final String deviceList;
     final long deviceMemory;
     final long budget;
@@ -157,7 +164,22 @@ final class VkContext {
      * {@code -Dbrainiac.vulkan.spill=false} turns spilling off.
      */
     private final int spillType;
-    /** Bytes spilled to {@link #spillType}. */
+    /**
+     * Every host-visible type outside the device-local heap, {@link #spillType} first: when one
+     * runs out (AMD's Windows driver refused type 1 after 948 MB of 45 GB), the next is tried.
+     */
+    private final int[] spillTypes;
+    /** The device-local heap. */
+    private final int deviceHeap;
+    /** Whether the driver reports what this process may still allocate (VK_EXT_memory_budget). */
+    private final boolean memoryBudget;
+    /**
+     * Device memory left free by the driver's budget: on an RX 9070 XT under Windows, filling
+     * the device up to its last megabytes made even allocations of system memory fail.
+     * {@code -Dbrainiac.vulkan.headroomMb}, default 256.
+     */
+    private static final long HEADROOM = Long.getLong("brainiac.vulkan.headroomMb", 256) << 20;
+    /** Bytes spilled to {@link #spillTypes}. */
     private long spilled;
     /** Tests: device-local allocations fail once this many bytes are allocated (0: never). */
     long simulatedLimit;
@@ -170,6 +192,8 @@ final class VkContext {
     private final List<Block> chunks = new ArrayList<>();
     private Block chunk;
     private long allocated;
+    /** Live Vulkan memory allocations, for out-of-memory messages (drivers limit their number). */
+    private int allocations;
     private long inUse;
     private long peakInUse;
 
@@ -232,6 +256,17 @@ final class VkContext {
     /** Timed dispatches per key of {@link #shaderNanos}. */
     final Map<String, Long> shaderCalls = new HashMap<>();
 
+    /**
+     * Waits for the device and destroys it and the instance, at exit: NVIDIA's Linux driver
+     * crashed in libEGL_nvidia while the JVM unloaded libraries under a live device.
+     */
+    void shutdown() {
+        vkDeviceWaitIdle(device);
+        vkDestroyCommandPool(device, commandPool, null);
+        vkDestroyDevice(device, null);
+        vkDestroyInstance(instance, null);
+    }
+
     VkContext() {
         try (MemoryStack st = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(st).sType$Default()
@@ -270,6 +305,10 @@ final class VkContext {
                 VkPhysicalDeviceProperties tp = VkPhysicalDeviceProperties.calloc(ts);
                 vkGetPhysicalDeviceProperties(physical, tp);
                 timestampPeriod = tp.limits().timestampPeriod();
+                deviceKey = (tp.deviceNameString() + "-" + Integer.toHexString(tp.vendorID()) + "-"
+                        + Integer.toHexString(tp.deviceID()) + "-driver-" + Integer.toUnsignedString(tp.driverVersion()))
+                        .replaceAll("[^A-Za-z0-9._-]+", "_");
+                softwareDevice = tp.deviceType() == VK_PHYSICAL_DEVICE_TYPE_CPU;
             }
             deviceName = chosen.name;
             deviceList = candidatesText;
@@ -340,6 +379,9 @@ final class VkContext {
                 deviceMemory = mp.memoryHeaps(mp.memoryTypes(deviceLocalType).heapIndex()).size();
                 spillType = "false".equals(System.getProperty("brainiac.vulkan.spill")) ? -1
                         : spillType(mp, mp.memoryTypes(deviceLocalType).heapIndex());
+                spillTypes = spillType < 0 ? new int[0] : spillTypes(mp, mp.memoryTypes(deviceLocalType).heapIndex(), spillType);
+                deviceHeap = mp.memoryTypes(deviceLocalType).heapIndex();
+                memoryBudget = hasExtension(physical, EXTMemoryBudget.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
                 Integer mb = Integer.getInteger("brainiac.vulkan.memory");
                 budget = mb != null ? (long) mb << 20 : deviceMemory / 10 * 8;
             }
@@ -458,22 +500,54 @@ final class VkContext {
         }
     }
 
+    private static boolean hasExtension(VkPhysicalDevice pd, String name) {
+        return extensions(pd).contains(name);
+    }
+
+    /**
+     * The names of a device's extensions. The list goes on the heap: NVIDIA's drivers report
+     * about 250 extensions of 260 bytes each, more than LWJGL's 64 KB thread stack holds.
+     */
+    private static java.util.Set<String> extensions(VkPhysicalDevice pd) {
+        try (MemoryStack st = stackPush()) {
+            IntBuffer ip = st.mallocInt(1);
+            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, null);
+            VkExtensionProperties.Buffer exts = VkExtensionProperties.calloc(ip.get(0));
+            try {
+                vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, exts);
+                java.util.Set<String> names = new java.util.HashSet<>();
+                for (int i = 0; i < ip.get(0); i++) {
+                    names.add(exts.get(i).extensionNameString());
+                }
+                return names;
+            } finally {
+                exts.free();
+            }
+        }
+    }
+
+    /** @return device-heap bytes this process may still allocate by the driver's budget; MAX_VALUE if unknown */
+    private long deviceRoom() {
+        if (!memoryBudget) {
+            return Long.MAX_VALUE;
+        }
+        try (MemoryStack st = stackPush()) {
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT b = VkPhysicalDeviceMemoryBudgetPropertiesEXT.calloc(st).sType$Default();
+            VkPhysicalDeviceMemoryProperties2 p = VkPhysicalDeviceMemoryProperties2.calloc(st).sType$Default();
+            p.pNext(b.address());
+            vkGetPhysicalDeviceMemoryProperties2(physical, p);
+            long budget = b.heapBudget(deviceHeap);
+            return budget == 0 ? Long.MAX_VALUE : budget - b.heapUsage(deviceHeap);
+        }
+    }
+
     /** Whether a device has 16 x 16 x 16 float16 cooperative matrices with float32 sums in subgroups. */
     private static boolean cooperativeMatrix(VkPhysicalDevice pd) {
         try (MemoryStack st = stackPush()) {
             IntBuffer ip = st.mallocInt(1);
-            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, null);
-            VkExtensionProperties.Buffer exts = VkExtensionProperties.calloc(ip.get(0), st);
-            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, exts);
-            boolean has = false;
-            for (int i = 0; i < exts.capacity(); i++) {
-                has |= exts.get(i).extensionNameString().equals(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
-            }
-            boolean sizes = false;
-            for (int i = 0; i < exts.capacity(); i++) {
-                sizes |= exts.get(i).extensionNameString().equals(
-                        EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
-            }
+            java.util.Set<String> names = extensions(pd);
+            boolean has = names.contains(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+            boolean sizes = names.contains(EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
             if (!has || !sizes || pd.getCapabilities().vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR == 0) {
                 return false;
             }
@@ -537,6 +611,20 @@ final class VkContext {
             }
         }
         return best;
+    }
+
+    /** {@code first}, then the other host-visible types outside the device heap, in order. */
+    private static int[] spillTypes(VkPhysicalDeviceMemoryProperties mp, int deviceHeap, int first) {
+        List<Integer> types = new ArrayList<>(List.of(first));
+        for (int i = 0; i < mp.memoryTypeCount(); i++) {
+            int flags = mp.memoryTypes(i).propertyFlags();
+            // not AMD's device-coherent, uncached types (0x40, 0x80): slow, and refused for these buffers
+            if (i != first && mp.memoryTypes(i).heapIndex() != deviceHeap
+                    && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 && (flags & 0xc0) == 0) {
+                types.add(i);
+            }
+        }
+        return types.stream().mapToInt(Integer::intValue).toArray();
     }
 
     private static int memoryType(VkPhysicalDeviceMemoryProperties mp, int required, int preferred) {
@@ -710,11 +798,25 @@ final class VkContext {
             } catch (OutOfDeviceMemory again) {
                 fullAt = allocated;
                 // the device's own memory is full: slower memory the device reads over the bus
-                int spill = spillType >= 0 ? spillType : simulatedLimit > 0 ? uploadType : -1;
-                if (spill < 0) {
+                if (spillType < 0) {
+                    if (simulatedLimit > 0) {
+                        return tryBlock(size, uploadType, map, true);
+                    }
                     throw again;
                 }
-                return tryBlock(size, spill, map, true);
+                OutOfDeviceMemory last = again;
+                for (int i = spillFrom; i < spillTypes.length; i++) {
+                    try {
+                        Block b = tryBlock(size, spillTypes[i], map, true);
+                        spillFrom = i;   // the types before it are full: start here next time
+                        return b;
+                    } catch (OutOfDeviceMemory full) {
+                        if (last == again || full.getMessage().startsWith("out of")) {
+                            last = full;   // a type that ran out says more than one these buffers cannot use
+                        }
+                    }
+                }
+                throw last;
             }
         }
     }
@@ -724,6 +826,8 @@ final class VkContext {
      * while no more than that is allocated again, new blocks spill without reclaiming first.
      */
     private long fullAt = -1;
+    /** The first of {@link #spillTypes} that still had room. */
+    private int spillFrom;
 
     private boolean deviceFull() {
         if (fullAt >= 0 && allocated < fullAt) {
@@ -754,6 +858,10 @@ final class VkContext {
             if (!spill && type == deviceLocalType && simulatedLimit > 0 && allocated + size > simulatedLimit) {
                 throw new OutOfDeviceMemory("simulated: out of device memory");
             }
+            if (!spill && type == deviceLocalType && spillType >= 0 && deviceRoom() < size + HEADROOM) {
+                throw new OutOfDeviceMemory("device memory budget reached allocating " + (size >> 20) + " MB ("
+                        + (allocated >> 20) + " MB allocated)");
+            }
             VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(st).sType$Default().size(size)
                     .usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
                             | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
@@ -765,6 +873,10 @@ final class VkContext {
             vkGetBufferMemoryRequirements(device, b.buffer, req);
             if ((req.memoryTypeBits() & (1 << type)) == 0) {
                 vkDestroyBuffer(device, b.buffer, null);
+                if (spill) {
+                    // not one for these buffers (AMD's device-coherent types): the next is tried
+                    throw new OutOfDeviceMemory("memory type " + type + " cannot hold storage buffers");
+                }
                 throw new IllegalStateException("memory type " + type + " cannot hold storage buffers");
             }
             VkMemoryAllocateFlagsInfo flags = VkMemoryAllocateFlagsInfo.calloc(st).sType$Default()
@@ -778,11 +890,13 @@ final class VkContext {
                 vkDestroyBuffer(device, b.buffer, null);
                 if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
                     throw new OutOfDeviceMemory("out of Vulkan memory allocating " + (size >> 20) + " MB ("
-                            + (allocated >> 20) + " MB allocated)");
+                            + (allocated >> 20) + " MB allocated, " + (spilled >> 20) + " MB spilled; memory type "
+                            + type + (spill ? ", spilling" : "") + ", result " + r + ", " + allocations + " allocations)");
                 }
                 check(r, "vkAllocateMemory");
             }
             b.memory = lp.get(0);
+            allocations++;
             check(vkBindBufferMemory(device, b.buffer, b.memory, 0), "vkBindBufferMemory");
             b.address = vkGetBufferDeviceAddress(device,
                     VkBufferDeviceAddressInfo.calloc(st).sType$Default().buffer(b.buffer));
@@ -806,8 +920,10 @@ final class VkContext {
         }
         vkDestroyBuffer(device, b.buffer, null);
         vkFreeMemory(device, b.memory, null);
+        allocations--;
         if (b.spill) {
             spilled -= b.size;
+            spillFrom = 0;
         } else if (b.type == deviceLocalType) {
             allocated -= b.size;
         }

@@ -935,7 +935,9 @@ public final class Generator {
                             tokens[i][0] = next[rows.get(i)];
                         }
                         spread(model.next(state, tokens, null), active);
-                    } catch (RuntimeException e) {
+                    } catch (RuntimeException | Error e) {
+                        // the requests fail, not the batcher: an out-of-memory error on one
+                        // batch must still answer them, and let later requests run
                         for (Job j : active) {
                             j.future.completeExceptionally(e);
                         }
@@ -944,6 +946,9 @@ public final class Generator {
                         }
                         active.clear();
                         state = null;
+                        if (e instanceof VirtualMachineError && !(e instanceof OutOfMemoryError)) {
+                            throw e;
+                        }
                     }
                 }
             } catch (InterruptedException e) {
