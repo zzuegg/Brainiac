@@ -419,13 +419,64 @@ public final class Gguf implements WeightSource {
         for (int c = 0; c < out; c++) {
             column[order == null ? c : order[c]] = c;
         }
+        if (!GgmlQuants.factored(e.format)) {
+            return packedPlain(e, name, device, column, group, bits, shifted, shift);
+        }
+        // scales and offsets as GGUF stores them: a small code per group times a value per
+        // super-block of 256 inputs (k-quants), or a value per group (the others)
+        boolean superBlocks = e.format.block == 256;
+        int superGroup = superBlocks ? 256 : group;
+        byte[] levels = new byte[in * out];
+        byte[] scaleCodes = superBlocks ? new byte[in / group * out] : null;
+        float[] superScales = new float[in / superGroup * out];
+        byte[] offsetCodes = shifted && superBlocks ? new byte[in / group * out] : null;
+        float[] superOffsets = shifted ? new float[superScales.length] : null;
+        int perSuper = superGroup / group;
+        MemorySegment m = raw(name);
+        long rowBytes = (long) in / e.format.block * e.format.bytes;
+        int perTask = 64;
+        // stored rows decoded in parallel, each into one output column
+        java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
+            GgmlQuants.Row row = new GgmlQuants.Row(in, group);
+            for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
+                GgmlQuants.levels(e.format, m.asSlice(o * rowBytes, rowBytes), in, row);
+                int c = column[o];
+                byte[] q = row.levels();
+                for (int r = 0; r < in; r++) {
+                    levels[r * out + c] = (byte) (q[r] - shift);
+                }
+                for (int g = 0; g < in / group; g++) {
+                    if (scaleCodes != null) {
+                        scaleCodes[g * out + c] = row.scaleCodes()[g];
+                    }
+                    if (offsetCodes != null) {
+                        offsetCodes[g * out + c] = row.offsetCodes()[g];
+                    }
+                    if (g % perSuper == 0) {
+                        superScales[g / perSuper * out + c] = row.d()[g];
+                        if (superOffsets != null) {
+                            superOffsets[g / perSuper * out + c] = row.m()[g];
+                        }
+                    }
+                }
+            }
+        });
+        PackedMatrix.Factors factors = new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets,
+                superGroup, shift);
+        return Tensor.packed(PackedMatrix.of(levels, factors, in, out, bits, group), device);
+    }
+
+    /** As packedTransposed, with a float scale and offset per group. */
+    private Tensor packedPlain(Entry e, String name, Device device, int[] column, int group, int bits, boolean shifted,
+            int shift) {
+        int out = e.shape.dim(0);
+        int in = e.shape.dim(1);
         byte[] levels = new byte[in * out];
         float[] scales = new float[in / group * out];
         float[] offsets = shifted ? new float[scales.length] : null;
         MemorySegment m = raw(name);
         long rowBytes = (long) in / e.format.block * e.format.bytes;
         int perTask = 64;
-        // stored rows decoded in parallel, each into one output column
         java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
             GgmlQuants.Row row = new GgmlQuants.Row(in, group);
             for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
