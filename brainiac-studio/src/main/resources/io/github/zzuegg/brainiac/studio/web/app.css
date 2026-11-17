@@ -914,3 +914,50 @@ button.linkchip:hover { filter: brightness(1.15); text-decoration: underline; te
   .pane .model-pick { max-width: 100%; flex: 1 1 160px; }
 }
 .pop code.datafolder { display: block; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--bg-sunk); border: 1px solid var(--line-soft); overflow-wrap: anywhere; user-select: all; }
+
+/* ---------- live builder ---------- */
+.builder.live-builder { grid-template-columns: 260px minmax(0,1fr) 320px; }
+[data-layout="ultra"] .builder.live-builder { grid-template-columns: 300px minmax(0,1fr) 380px; }
+.live-builder .props > *, .live-builder .sum > div { min-width: 0; }
+.live-builder .sum { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+.live-builder .sum b, .live-builder .props .flag { overflow-wrap: anywhere; }
+.live-builder .palette { display: flex; flex-direction: column; }
+.live-builder .pal-sec { padding: 6px 10px; display: grid; gap: 1px; }
+.live-builder .pal-sec > .eyebrow { padding: 8px 6px 6px; }
+.live-builder .pal-item { width: 100%; text-align: left; font: inherit; cursor: grab; display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 8px; align-items: center; background: transparent; color: var(--fg-2); }
+.live-builder .pal-item .pn { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-builder .pal-item .sig { grid-column: 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.live-builder .pal-item .sw { grid-row: span 2; font-size: 9.5px; }
+.pal-fold > .pal-item { padding-left: 22px; }
+.pal-head { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; color: var(--fg-2); font: inherit; font-size: 12.5px; padding: 5px 6px; border-radius: 7px; cursor: pointer; text-align: left; }
+.pal-head:hover { background: var(--panel); color: var(--fg); }
+.pal-head span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-head svg { width: 12px; height: 12px; color: var(--muted); transition: transform .15s; flex: none; }
+.pal-fold.open > .pal-head svg { transform: rotate(90deg); }
+.live-builder .canvas-wrap { touch-action: none; cursor: default; }
+.live-builder .canvas-tools { flex-wrap: wrap; right: 12px; }
+.live-builder .world { left: 0; top: 0; width: 1px; height: 1px; overflow: visible; }
+.live-builder .world svg.edges { width: 1px; height: 1px; }
+.gnode.live { position: absolute; width: 210px; touch-action: none; }
+.gnode.live.bad { border-color: color-mix(in srgb, var(--bad) 60%, var(--line)); }
+.gnode.live.exp .nh .sw { border-radius: 50%; }
+.gnode.live .nh b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.gnode.live .nerr { margin: 2px 8px 4px; padding: 5px 7px; border-radius: 7px; font-size: 11px; line-height: 1.35; color: var(--bad); background: color-mix(in srgb, var(--bad) 9%, transparent); overflow-wrap: anywhere; }
+.gnode.live .params span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gnode.live .sock { cursor: crosshair; }
+.gnode.live .row.in .sock:not(.on) { background: var(--bg-sunk); }
+.wire.drafting { stroke-dasharray: 5 5; opacity: .85; }
+.live-builder .props .h2 { overflow-wrap: anywhere; }
+.live-builder .props .flag.ok > svg { color: var(--ok); }
+.live-builder .props details.tool pre { max-height: 320px; overflow: auto; font-size: 11px; }
+.optbox { display: grid; gap: 6px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.opt { display: grid; gap: 8px; padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; }
+.opt.on { border-color: var(--line-soft); background: var(--panel); }
+label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; flex-wrap: wrap; }
+label.check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+@media (max-width: 1080px) {
+  .live-builder.builder { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(320px, 1fr) auto auto; overflow: auto; }
+  .live-builder .canvas-wrap { order: 1; }
+  .live-builder .props { order: 2; display: grid; max-height: 42vh; border-left: 0; border-top: 1px solid var(--line-soft); }
+  .live-builder .palette { order: 3; display: flex; max-height: 40vh; overflow: auto; border-right: 0; border-top: 1px solid var(--line-soft); }
+}

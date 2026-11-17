@@ -92,5 +92,12 @@ public interface LanguageModel {
         default State join(State other) {
             throw new UnsupportedOperationException("this model's states cannot be joined");
         }
+
+        /**
+         * Frees what this state holds (on a GPU, the key/value cache) now instead of when it
+         * is garbage collected. The state is not used afterwards. By default nothing.
+         */
+        default void close() {
+        }
     }
 }
