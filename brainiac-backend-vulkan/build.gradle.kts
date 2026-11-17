@@ -50,6 +50,11 @@ tasks.test {
     if (providers.gradleProperty("brainiac.vulkan.validate").orNull == "true") {
         jvmArgs("-Dbrainiac.vulkan.validate=true")
     }
+    // -Pbench prints matrix product speeds (MatmulBenchmarkTest)
+    if (providers.gradleProperty("bench").isPresent) {
+        jvmArgs("-Dbrainiac.bench=true")
+        testLogging.showStandardStreams = true
+    }
     // -Pbrainiac.vulkan.diagnose=<case> compiles test shaders one by one (DriverDiagnosisTest)
     providers.gradleProperty("brainiac.vulkan.diagnose").orNull?.let {
         jvmArgs("-Dbrainiac.vulkan.diagnose=$it")
@@ -81,7 +86,8 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
         dir.listFiles { f -> f.name.endsWith(".comp") }!!.sorted().forEach { src ->
             val base = src.name.removeSuffix(".comp")
             for ((name, defines) in variants[base] ?: listOf(base to emptyList())) {
-                for (type in if (base == "random") listOf("") else types) {
+                // cooperative matrices: float16 only
+                for (type in if (base == "random") listOf("") else if (base == "matmul_coop") listOf("f16") else types) {
                     val file = if (type.isEmpty()) "$name.spv" else "${name}_$type.spv"
                     val typeDefine = if (type.isEmpty()) emptyList() else listOf("-DTYPE_" + type.uppercase())
                     exec.exec {

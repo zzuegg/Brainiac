@@ -351,6 +351,24 @@ class VulkanBackendTest {
         assertTrue(List.of(DType.values()).size() == 4);
     }
 
+    /** Float16 products: on cooperative matrices where the device has them (see the status). */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1, 16, 16, 16", "1, 64, 64, 64", "1, 17, 33, 70", "3, 100, 48, 130",
+        "1, 16, 4096, 24", "2, 300, 520, 260", "1, 1, 64, 64", "1, 128, 5, 128"})
+    void float16ProductsMatchTheCpu(int batch, int m, int k, int n) {
+        assumeTrue(supported(DType.FLOAT16), "float16 not supported by " + gpu);
+        Tensor a = random(5, batch, m, k).to(DType.FLOAT16);
+        Tensor b = random(6, batch, k, n).to(DType.FLOAT16);
+        float[] expected = a.to(DType.FLOAT32).matmul(b.to(DType.FLOAT32)).toArray();   // exact sums of the halves
+        float[] actual = a.to(gpu).matmul(b.to(gpu)).toArray();
+        // rounding the result to float16, and sums in float32 in another order
+        double tolerance = 2e-3 * Math.sqrt(k) + 1e-3;
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual[i], tolerance + Math.abs(expected[i]) * 1e-3,
+                    batch + "x" + m + "x" + k + "x" + n + " at " + i + "; " + gpu);
+        }
+    }
+
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"256, 64", "16, 1024", "64, 4", "8, 36", "12, 6"})
     void quantizesOnTheDeviceAsTheCpuDoes(int rows, int cols) {

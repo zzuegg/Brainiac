@@ -130,7 +130,8 @@ public final class VulkanBackend implements Backend {
             return "unavailable: " + unavailable;
         }
         return vk.deviceName + ", " + (vk.deviceMemory >> 20) + " MB, " + (vk.budget >> 20) + " MB budget, fusion "
-                + (compiler != null ? "on" : FUSION ? "unavailable (" + fusionUnavailable + ")" : "off") + "; devices "
+                + (compiler != null ? "on" : FUSION ? "unavailable (" + fusionUnavailable + ")" : "off")
+                + (vk.coopMatrix ? ", cooperative matrices" : "") + "; devices "
                 + vk.deviceList;
     }
 
@@ -911,6 +912,8 @@ public final class VulkanBackend implements Backend {
 
     /** Product tiles at least this many 64 x 64 tiles use them; smaller products use 32 x 32. */
     private static final long BIG_TILES = Long.getLong("brainiac.vulkan.bigTileGroups", 128);
+    /** Float16 products with at least this many rows use cooperative matrices where the device has them. */
+    private static final int COOP_ROWS = Integer.getInteger("brainiac.vulkan.coopRows", 16);
     /** Products with fewer tiles than this, and a long k, split k into pieces summed afterwards. */
     private static final long SPLIT_BELOW = 64;
 
@@ -934,7 +937,10 @@ public final class VulkanBackend implements Backend {
 
     private void matmul(VkStorage x, VkStorage y, int batch, int m, int k, int n, VkStorage z) {
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
-        int tile = big >= BIG_TILES ? 64 : 32;
+        // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
+        boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
+                && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
+        int tile = coop || big >= BIG_TILES ? 64 : 32;
         long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
         int splits = 1;
         int chunk = k;
@@ -955,7 +961,7 @@ public final class VulkanBackend implements Backend {
             vk.push().putLong(x.address(firstBatch * m * k)).putLong(y.address(firstBatch * k * n))
                     .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt(m * k).putInt(k * n)
                     .putInt((int) mn).putInt(splits).putInt(chunk);
-            vk.dispatch(shader(tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
+            vk.dispatch(shader(coop ? "matmul_coop" : tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }
         if (splits > 1) {

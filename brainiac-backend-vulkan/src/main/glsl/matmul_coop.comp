@@ -1,0 +1,85 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#include "common.glsl"
+// matmul.comp on cooperative matrices (VK_KHR_cooperative_matrix), float16 only: the same
+// push constants, batches and k pieces. A work group of 256 invocations computes a 64 x 64
+// tile of 16 x 16 pieces, each subgroup TILES_PER of them (16 / subgroups; 4 at most), from
+// float16 values staged in shared memory, adding up in float32.
+#define TILE 64
+#define KT 32
+#define PAD 8
+layout(local_size_x = 256) in;
+layout(push_constant) uniform P {
+    In a; In b; Buf z;
+    uint m; uint k; uint n; uint strideA; uint strideB; uint strideZ; uint splits; uint chunk;
+} p;
+shared float16_t tileA[TILE * (KT + PAD)];      // [row][k]
+shared float16_t tileB[KT * (TILE + PAD)];      // [k][col]
+shared float tileC[TILE * (TILE + 4)];          // results, written out with bounds
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint colBase = gl_WorkGroupID.x * TILE;
+    uint rowBase = gl_WorkGroupID.y * TILE;
+    uint piece = gl_WorkGroupID.z;
+    uint batch = piece / p.splits;
+    uint from = (piece % p.splits) * p.chunk;
+    uint to = min(p.k, from + p.chunk);
+    uint aBase = batch * p.strideA;
+    uint bBase = batch * p.strideB;
+    uint sg = gl_SubgroupID;
+    uint groups = gl_NumSubgroups;
+    coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[4];
+    for (int i = 0; i < 4; i++) {
+        acc[i] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+    }
+    for (uint t = from; t < to; t += KT) {
+        // 64 x 32 values of a and 32 x 64 of b: 8 of each per invocation
+        for (uint l = 0; l < 8; l++) {
+            uint idx = l * 256 + tid;
+            uint row = rowBase + idx / KT;
+            uint ac = t + idx % KT;
+            tileA[(idx / KT) * (KT + PAD) + idx % KT] = row < p.m && ac < to ? p.a.v[aBase + row * p.k + ac]
+                    : float16_t(0);
+            uint br = t + idx / TILE;
+            uint col = colBase + idx % TILE;
+            tileB[(idx / TILE) * (TILE + PAD) + idx % TILE] = br < to && col < p.n ? p.b.v[bBase + br * p.n + col]
+                    : float16_t(0);
+        }
+        barrier();
+        for (uint q = 0; q < KT; q += 16) {
+            for (uint i = 0; i < 4; i++) {
+                uint tile = sg + i * groups;
+                if (tile < 16) {
+                    uint tr = tile / 4;
+                    uint tc = tile % 4;
+                    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> ma;
+                    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> mb;
+                    coopMatLoad(ma, tileA, tr * 16 * (KT + PAD) + q, KT + PAD, gl_CooperativeMatrixLayoutRowMajor);
+                    coopMatLoad(mb, tileB, q * (TILE + PAD) + tc * 16, TILE + PAD,
+                            gl_CooperativeMatrixLayoutRowMajor);
+                    acc[i] = coopMatMulAdd(ma, mb, acc[i]);
+                }
+            }
+        }
+        barrier();
+    }
+    for (uint i = 0; i < 4; i++) {
+        uint tile = sg + i * groups;
+        if (tile < 16) {
+            coopMatStore(acc[i], tileC, (tile / 4) * 16 * (TILE + 4) + (tile % 4) * 16, TILE + 4,
+                    gl_CooperativeMatrixLayoutRowMajor);
+        }
+    }
+    barrier();
+    for (uint l = 0; l < 16; l++) {
+        uint idx = l * 256 + tid;
+        uint row = rowBase + idx / TILE;
+        uint col = colBase + idx % TILE;
+        if (row < p.m && col < p.n) {
+            STORE(p.z, piece * p.strideZ + row * p.n + col, tileC[(idx / TILE) * (TILE + 4) + idx % TILE]);
+        }
+    }
+}
