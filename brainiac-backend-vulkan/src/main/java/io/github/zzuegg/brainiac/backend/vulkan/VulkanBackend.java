@@ -996,10 +996,65 @@ public final class VulkanBackend implements Backend {
      */
     private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.vulkan.fusedAttention"));
 
+    /**
+     * {@code -Dbrainiac.vulkan.fusedAttention=true} also uses it for training, with the
+     * backward shaders (heads up to {@link #BACKWARD_SIZE}): they keep a row in registers, one
+     * invocation per row, so they pay off only where the [queries, keys] weights would not fit.
+     */
+    private static final boolean FUSED_TRAINING = "true".equals(System.getProperty("brainiac.vulkan.fusedAttention"));
+
+    /** The largest head size of the backward shaders ({@code ATT_D} in attention_dq.comp). */
+    private static final int BACKWARD_SIZE = 64;
+
     @Override
     public boolean hasAttention(int[] shape, DType type, boolean backward) {
-        return FUSED_ATTENTION && !backward && type != DType.FLOAT64 && shape[5] <= GROUP_SIZE
-                && shape[6] <= GROUP_SIZE && supports(type);
+        if (backward && (!FUSED_TRAINING || shape[5] > BACKWARD_SIZE || shape[6] > BACKWARD_SIZE)) {
+            return false;
+        }
+        return FUSED_ATTENTION && type != DType.FLOAT64 && shape[5] <= GROUP_SIZE && shape[6] <= GROUP_SIZE
+                && supports(type);
+    }
+
+    @Override
+    public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
+            Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        VkStorage gq = vs(dq);
+        DType type = gq.dtype;
+        if (type == DType.FLOAT64 || shape[5] > BACKWARD_SIZE || shape[6] > BACKWARD_SIZE) {
+            throw new UnsupportedOperationException("fused attention backward: " + type + ", heads of " + shape[5]
+                    + " and " + shape[6]);
+        }
+        VkStorage gk = vs(dk);
+        VkStorage gv = vs(dv);
+        eager(vs(q), vs(k), vs(v), vs(out), vs(lse), vs(grad), gq, gk, gv);
+        VkStorage xq = as(vs(q), type);
+        VkStorage xk = as(vs(k), type);
+        VkStorage xv = as(vs(v), type);
+        VkStorage xo = as(vs(out), type);
+        VkStorage xl = as(vs(lse), type);
+        VkStorage xg = as(vs(grad), type);
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        long keys = (long) shape[0] * shape[2] * shape[4];
+        VkStorage dsum = raw(rows, type, null);
+        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(xo.address())
+                .putLong(xl.address()).putLong(xg.address()).putLong(gq.address()).putLong(dsum.address())
+                .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
+                .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(rows));
+        vk.dispatch(shader("attention_dq", type), groups(rows), new VkContext.Slot[] {gq.slot(), dsum.slot()},
+                xq.slot(), xk.slot(), xv.slot(), xo.slot(), xl.slot(), xg.slot());
+        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(xl.address())
+                .putLong(xg.address()).putLong(dsum.address()).putLong(gk.address()).putLong(gv.address())
+                .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
+                .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(keys));
+        vk.dispatch(shader("attention_dkv", type), groups(keys), new VkContext.Slot[] {gk.slot(), gv.slot()},
+                xq.slot(), xk.slot(), xv.slot(), xl.slot(), xg.slot(), dsum.slot());
+        dsum.release();
+        done(xq, vs(q));
+        done(xk, vs(k));
+        done(xv, vs(v));
+        done(xo, vs(out));
+        done(xl, vs(lse));
+        done(xg, vs(grad));
     }
 
     @Override
