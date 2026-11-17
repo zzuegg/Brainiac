@@ -394,8 +394,17 @@ List<Generator.Output> many = gen.generate(List.of("Once", "In a land"), Generat
 int[] best = gen.beamSearch(tok.encode("The capital of France is"), 4, 10, 1.0, null);
 ```
 
+To chat with a downloaded model: `./gradlew :brainiac-examples:run --args="chat
+models/Qwen2.5-0.5B-Instruct --device vulkan"` (a model directory or a `.gguf` file).
+
 The model tests run on the CPU by default; `./gradlew :brainiac-llm:test -PtestDevice=vulkan`
-(or `opencl`, or part of a device name such as `9070`) runs them on that device.
+(or `opencl`, or part of a device name such as `9070`) runs them on that device. Each GPU
+backend offers the one device it picked, so a second GPU also needs the backend's own
+choice, such as `-Dbrainiac.vulkan.device=1` in `JAVA_TOOL_OPTIONS`.
+`-PtestModels=<folder>` also runs real models from Hugging Face found in that folder (model
+directories and `.gguf` files): each must answer a question correctly, and where
+`reference_models.py` (in the test resources) has written transformers' output next to a
+model, its logits and greedy answer must match.
 
 ## Reinforcement learning
 

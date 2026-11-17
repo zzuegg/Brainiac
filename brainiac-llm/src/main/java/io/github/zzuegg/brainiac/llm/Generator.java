@@ -1,9 +1,14 @@
 package io.github.zzuegg.brainiac.llm;
 
 import io.github.zzuegg.brainiac.data.Tokenizer;
+import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -11,6 +16,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.SplittableRandom;
+import java.util.TreeSet;
 
 /**
  * Writes text with a {@link LanguageModel}: sampling, stop tokens and strings, streaming,
@@ -135,6 +141,43 @@ public final class Generator {
      * @param finish why it ended
      */
     public record Output(int[] tokens, String text, Finish finish) {
+    }
+
+    /** End-of-turn tokens of common chat models. */
+    private static final List<String> END_OF_TURN = List.of("<|im_end|>", "<|eot_id|>", "<|end|>", "<end_of_turn>",
+            "<|endoftext|>", "<|end_of_text|>", "</s>");
+
+    /**
+     * The tokens that end a pretrained model's answer: its {@code generation_config.json}'s
+     * {@code eos_token_id} (one or a list), the tokenizer's end-of-sequence token, and the
+     * end-of-turn tokens of common chat formats that its vocabulary has.
+     *
+     * @param model the model directory or {@code .gguf} file
+     * @param tokenizer its tokenizer
+     * @return the stop tokens
+     */
+    public static Set<Integer> stopTokens(Path model, PretrainedTokenizer tokenizer) {
+        Set<Integer> stops = new TreeSet<>();
+        Path config = model.resolve("generation_config.json");
+        if (Files.isDirectory(model) && Files.isRegularFile(config)) {
+            try {
+                Object eos = Json.object(Json.read(config)).get("eos_token_id");
+                if (eos instanceof Number n) {
+                    stops.add(n.intValue());
+                } else if (eos instanceof List<?> list) {
+                    for (Object o : list) {
+                        stops.add(((Number) o).intValue());
+                    }
+                }
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+        tokenizer.eos().ifPresent(stops::add);
+        for (String t : END_OF_TURN) {
+            tokenizer.id(t).ifPresent(stops::add);
+        }
+        return stops;
     }
 
     /**

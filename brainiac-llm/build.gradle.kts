@@ -14,6 +14,13 @@ dependencies {
 tasks.test {
     val device = providers.gradleProperty("testDevice").getOrElse("cpu")
     systemProperty("brainiac.test.device", device)
+    // -PtestModels=<folder of Hugging Face models and .gguf files> runs PretrainedModelsTest
+    systemProperty("brainiac.test.models", providers.gradleProperty("testModels").getOrElse(""))
+    systemProperty("brainiac.test.dtype", providers.gradleProperty("testDtype").getOrElse("f32"))
+    providers.gradleProperty("testModels").orNull?.let {
+        maxHeapSize = "8g"
+        testLogging.showStandardStreams = true
+    }
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     if (device != "cpu") {
         jvmArgs("-Dbrainiac.vulkan.devices=all")   // lavapipe counts too
