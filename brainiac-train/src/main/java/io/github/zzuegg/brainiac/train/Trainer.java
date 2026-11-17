@@ -420,6 +420,16 @@ public final class Trainer {
         }
     }
 
+    /** Whether a listener wants the batch losses: a lambda only receives epochs. */
+    private static boolean overridesOnBatch(TrainingListener listener) {
+        try {
+            return listener.getClass().getMethod("onBatch", int.class, long.class, float.class)
+                    .getDeclaringClass() != TrainingListener.class;
+        } catch (NoSuchMethodException e) {
+            return true;
+        }
+    }
+
     /**
      * Adds a listener called after every epoch.
      *
@@ -470,6 +480,7 @@ public final class Trainer {
         int bestEpoch = 0;
         List<Tensor> bestWeights = null;
         boolean stoppedEarly = false;
+        boolean batchListeners = listeners.stream().anyMatch(Trainer::overridesOnBatch);
 
         if (Float.isNaN(baseLearningRate)) {
             baseLearningRate = optimizer.learningRate();
@@ -577,7 +588,7 @@ public final class Trainer {
                 replaced.addAll(qatWork);
                 Tensor.release(replaced, kept);
                 stepsDone++;
-                if (!listeners.isEmpty()) {
+                if (batchListeners) {   // (reading the loss waits for the step to finish)
                     float batchLoss = l.value().item();
                     for (TrainingListener listener : listeners) {
                         listener.onBatch(epoch, stepsDone, batchLoss);
