@@ -359,6 +359,29 @@ class LlamaTest {
     }
 
     @Test
+    void ggufExportLoadsBackWithTheSameLogits(@TempDir Path dir) throws IOException {
+        int[][] prompt = {{1, 2, 3, 4, 5}};
+        for (String name : new String[] {"llama", "llama3-rope", "qwen2"}) {
+            Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+            float[] expected = model.forward(prompt).value().toArray();
+            Path f = dir.resolve(name + ".gguf");
+            model.saveGguf(f, null, false);
+            assertArrayEquals(expected, Llama.load(f, DEVICE, DType.FLOAT32).forward(prompt).value().toArray(), 1e-4f,
+                    name);
+            Path h = dir.resolve(name + "-f16.gguf");
+            model.saveGguf(h, null, true);
+            assertArrayEquals(expected, Llama.load(h, DEVICE, DType.FLOAT32).forward(prompt).value().toArray(), 5e-2f,
+                    name + " f16");
+        }
+        // packed weights are unpacked on the way out
+        Llama q = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 21, DEVICE, DType.FLOAT32).quantizeWeights(8, 16);
+        float[] expected = q.forward(prompt).value().toArray();
+        Path f = dir.resolve("q.gguf");
+        q.saveGguf(f, null, false);
+        assertArrayEquals(expected, Llama.load(f, DEVICE, DType.FLOAT32).forward(prompt).value().toArray(), 1e-4f);
+    }
+
+    @Test
     void hiddenStatesComeWithTheLogits() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 16, DEVICE, DType.FLOAT32);
         int[][] prompt = {{1, 2, 3}, {4, 5, 6}};
