@@ -115,12 +115,15 @@ public final class Studio implements AutoCloseable {
     public static Studio start(Settings settings) throws IOException {
         CapabilityRegistry capabilities = CapabilityRegistry.discover();
         Keys keys = new Keys(settings.keyFile(), settings.environment());
-        // -Dstudio.anthropic.url=... and the like point a provider at a proxy or gateway
-        ChatService chat = ChatService.at(keys, settings.modelFolders(),
-                URI.create(System.getProperty("studio.anthropic.url", "https://api.anthropic.com/")),
-                URI.create(System.getProperty("studio.openai.url", "https://api.openai.com/")),
-                URI.create(System.getProperty("studio.google.url", "https://generativelanguage.googleapis.com/")),
-                settings.outputs());
+        // -Dstudio.<provider>.url=... points a provider at a proxy or gateway, such as
+        // -Dstudio.openai.url=https://gateway.example/v1/
+        Map<String, URI> bases = new java.util.HashMap<>();
+        for (String name : System.getProperties().stringPropertyNames()) {
+            if (name.startsWith("studio.") && name.endsWith(".url")) {
+                bases.put(name.substring(7, name.length() - 4), URI.create(System.getProperty(name)));
+            }
+        }
+        ChatService chat = ChatService.at(keys, settings.modelFolders(), bases, settings.outputs());
         return new Studio(StudioServer.start(settings.port(), capabilities, chat), capabilities);
     }
 

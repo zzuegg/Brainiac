@@ -1,0 +1,174 @@
+package io.github.zzuegg.brainiac.studio.chat;
+
+import io.github.zzuegg.brainiac.io.Json;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * A provider that speaks the OpenAI Chat Completions format: Hugging Face, DeepSeek, Qwen,
+ * Kimi, GLM, MiniMax, Mistral, xAI, Groq, OpenRouter, and OpenAI itself.
+ */
+class CompatibleProvider extends RemoteProvider {
+
+    final Preset preset;
+
+    CompatibleProvider(Keys keys, Preset preset) {
+        super(keys, preset.base());
+        this.preset = preset;
+    }
+
+    @Override
+    public String id() {
+        return preset.id();
+    }
+
+    @Override
+    public String name() {
+        return preset.name();
+    }
+
+    @Override
+    String note() {
+        return preset.note();
+    }
+
+    @Override
+    boolean reportsBalance() {
+        return !preset.balance().equals("none");
+    }
+
+    @Override
+    List<String> auth(String key) {
+        return List.of("Authorization", "Bearer " + key);
+    }
+
+    @Override
+    List<ModelInfo> models(String key) throws IOException, InterruptedException {
+        List<ModelInfo> out = new ArrayList<>();
+        for (Object o : arr(getJson(uri("models"), key).get("data"))) {
+            Map<String, Object> m = obj(o);
+            String id = Json.string(m, "id", null);
+            List<String> media = id == null ? List.of() : media(id);
+            if (!media.isEmpty()) {
+                long context = num(m.get("context_length"));
+                out.add(new ModelInfo(id(), id, Json.string(m, "name", id), media, Math.max(0, num(m.get("created"))),
+                        ModelInfo.context(context)));
+            }
+        }
+        out.sort(Comparator.comparingLong(ModelInfo::created).reversed());
+        return out;
+    }
+
+    /** What a model does, from its name: the lists have no capability fields. */
+    List<String> media(String id) {
+        String s = id.toLowerCase(Locale.ROOT);
+        if (s.contains("embed") || s.contains("rerank") || s.contains("moderation") || s.contains("guard")
+                || s.contains("whisper") || s.contains("tts") || s.contains("ocr")) {
+            return List.of();
+        }
+        if (s.contains("image") || s.contains("flux") || s.contains("stable-diffusion")) {
+            return List.of();   // pictures from these providers are not wired yet
+        }
+        return s.contains("-vl") || s.contains("vision") || s.contains("pixtral") ? List.of("text", "vision")
+                : List.of("text");
+    }
+
+    @Override
+    ChatResult chat(ChatRequest request, ChatListener listener, String key) throws IOException, InterruptedException {
+        List<Object> messages = new ArrayList<>();
+        if (!request.system().isBlank()) {
+            messages.add(Map.of("role", "system", "content", request.system()));
+        }
+        for (ChatMessage m : request.messages()) {
+            messages.add(Map.of("role", m.role(), "content", m.text()));
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", request.model());
+        body.put("messages", messages);
+        body.put(preset.tokensField(), request.maxTokens());
+        body.put("stream", true);
+        if (preset.usageOption()) {
+            body.put("stream_options", Map.of("include_usage", true));
+        }
+        long[] usage = {-1, -1};
+        String[] stop = {"end"};
+        stream(uri("chat/completions"), key, body, (event, data) -> {
+            if (data.equals("[DONE]")) {
+                return false;
+            }
+            Map<String, Object> e = Json.object(Json.parse(data));
+            if (e.get("error") != null) {
+                throw new IOException(name() + " stopped the answer: " + Json.string(obj(e.get("error")), "message", data));
+            }
+            for (Object c : arr(e.get("choices"))) {
+                Map<String, Object> choice = obj(c);
+                Map<String, Object> delta = obj(choice.get("delta"));
+                if (delta.get("content") instanceof String s && !s.isEmpty()) {
+                    listener.text(s);
+                }
+                if (delta.get("refusal") instanceof String s && !s.isEmpty()) {
+                    listener.text(s);
+                    stop[0] = "refusal";
+                }
+                if (choice.get("finish_reason") instanceof String f) {
+                    stop[0] = switch (f) {
+                        case "stop" -> stop[0];
+                        case "length" -> "length";
+                        case "content_filter" -> "refusal";
+                        default -> f;
+                    };
+                }
+            }
+            // usually at the top; some providers put it in the choice
+            Map<String, Object> u = obj(e.get("usage"));
+            if (u.isEmpty() && !arr(e.get("choices")).isEmpty()) {
+                u = obj(obj(arr(e.get("choices")).getFirst()).get("usage"));
+            }
+            if (!u.isEmpty()) {
+                usage[0] = num(u.get("prompt_tokens"));
+                usage[1] = num(u.get("completion_tokens"));
+            }
+            return true;
+        });
+        return new ChatResult(stop[0], usage[0], usage[1]);
+    }
+
+
+    @Override
+    Balance balance(String key) throws IOException, InterruptedException {
+        switch (preset.balance()) {
+            case "deepseek" -> {
+                Map<String, Object> b = getJson(uri("user/balance"), key);
+                for (Object o : arr(b.get("balance_infos"))) {
+                    Map<String, Object> info = obj(o);
+                    return new Balance(Double.parseDouble(Json.string(info, "total_balance", "0")),
+                            Json.string(info, "currency", ""), Boolean.FALSE.equals(b.get("is_available"))
+                                    ? "too low to make calls" : "granted " + Json.string(info, "granted_balance", "0")
+                                    + ", topped up " + Json.string(info, "topped_up_balance", "0"));
+                }
+                return null;
+            }
+            case "moonshot" -> {
+                Map<String, Object> d = obj(getJson(uri("users/me/balance"), key).get("data"));
+                return new Balance(Json.number(d, "available_balance", 0), "USD", "cash "
+                        + Json.number(d, "cash_balance", 0) + ", vouchers " + Json.number(d, "voucher_balance", 0));
+            }
+            case "openrouter" -> {
+                Map<String, Object> d = obj(getJson(uri("key"), key).get("data"));
+                double used = Json.number(d, "usage", 0);
+                if (d.get("limit_remaining") instanceof Number left) {
+                    return new Balance(left.doubleValue(), "USD", String.format(Locale.ROOT, "used %.2f of this key's limit", used));
+                }
+                return new Balance(Double.NaN, "USD", String.format(Locale.ROOT, "no limit on this key; used %.2f", used));
+            }
+            default -> {
+                return super.balance(key);
+            }
+        }
+    }
+}

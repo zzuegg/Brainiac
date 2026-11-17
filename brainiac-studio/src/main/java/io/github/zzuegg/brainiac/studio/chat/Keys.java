@@ -34,10 +34,16 @@ import java.util.regex.Pattern;
 public final class Keys {
 
     /** The providers that take keys, and the environment variables each one reads. */
-    static final Map<String, List<String>> ENV = Map.of(
-            "anthropic", List.of("ANTHROPIC_API_KEY"),
-            "openai", List.of("OPENAI_API_KEY"),
-            "google", List.of("GEMINI_API_KEY", "GOOGLE_API_KEY"));
+    static final Map<String, List<String>> ENV = env();
+
+    private static Map<String, List<String>> env() {
+        Map<String, List<String>> m = new java.util.LinkedHashMap<>();
+        m.put("anthropic", List.of("ANTHROPIC_API_KEY"));
+        m.put(Preset.OPENAI.id(), Preset.OPENAI.env());
+        m.put("google", List.of("GEMINI_API_KEY", "GOOGLE_API_KEY"));
+        Preset.COMPATIBLE.forEach(p -> m.put(p.id(), p.env()));
+        return Map.copyOf(m);
+    }
 
     private static final Pattern LABEL = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}");
 
