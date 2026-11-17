@@ -971,10 +971,35 @@ public final class VulkanBackend implements Backend {
     /** Whether contiguous rows are reduced by 32 invocations each ({@code -Dbrainiac.vulkan.reduceRows=false}: one). */
     private static final boolean REDUCE_ROWS = !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.reduceRows"));
 
+    /** Whether few long rows are reduced in two passes ({@code -Dbrainiac.vulkan.reducePieces=false}: one work group each). */
+    private static final boolean REDUCE_PIECES = !"false".equalsIgnoreCase(
+            System.getProperty("brainiac.vulkan.reducePieces"));
+
+    /** The largest number of pieces, at most {@code most}, that splits {@code length} evenly; 1 if none. */
+    private static int pieces(long length, long most) {
+        for (long p = Math.min(most, length / 2); p > 1; p--) {
+            if (length % p == 0) {
+                return (int) p;
+            }
+        }
+        return 1;
+    }
+
     private void reduce(int op, VkStorage x, VkStorage y, long rows, long length, long inner) {
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
                 .putInt((int) inner).putInt(op);
         if (rows < 1024 && length > 256) {
+            // few long rows: in two passes, first over equal pieces of each row (many outputs,
+            // so the device fills), then over the pieces. A mean of equal pieces' means is the mean.
+            int pieces = REDUCE_PIECES ? pieces(length, Math.min(length / 64, (8192 + rows - 1) / rows)) : 1;
+            if (pieces > 1) {
+                long outer = rows / inner;
+                VkStorage part = raw(outer * pieces * inner, y.dtype, null);
+                reduce(op, x, part, outer * pieces * inner, length / pieces, inner);
+                reduce(op, part, y, rows, pieces, inner);
+                part.release();
+                return;
+            }
             vk.dispatch(shader("reduce_group", y.dtype), rows, y.slot(), x.slot());
         } else if (inner == 1 && length >= 32 && REDUCE_ROWS) {
             // contiguous rows: 32 invocations per row, 8 rows per work group
