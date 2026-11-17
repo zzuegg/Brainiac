@@ -288,8 +288,12 @@ public final class Generator {
         int active = batch;
         if (options.maxNewTokens() > 0) {
             Tensor logits = model.next(state, first, padded ? pad : null);
+            // plain greedy decoding reads back only the chosen tokens, which the device finds
+            Sampling sampling = options.sampling();
+            boolean onDevice = options.constraint() == null && sampling.temperature() == 0
+                    && sampling.repetitionPenalty() == 1;
             for (int step = 0; active > 0; step++) {
-                float[] all = logits.toArray();
+                float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;
                 int[][] next = new int[batch][1];
                 boolean[][] skip = new boolean[batch][1];
@@ -297,6 +301,14 @@ public final class Generator {
                     Row r = rows[b];
                     if (r.finish != null) {
                         skip[b][0] = true;
+                        continue;
+                    }
+                    if (onDevice) {
+                        next[b][0] = (int) all[b];
+                        if (r.add(next[b][0], stops)) {
+                            active--;
+                            skip[b][0] = true;
+                        }
                         continue;
                     }
                     float[] row = Arrays.copyOfRange(all, b * vocab, (b + 1) * vocab);
@@ -567,6 +579,8 @@ public final class Generator {
             final SplittableRandom random;
             final java.util.concurrent.CompletableFuture<Output> future = new java.util.concurrent.CompletableFuture<>();
             float[] logits;
+            /** The next token when only it was read back (greedy rows), else -1. */
+            int chosen = -1;
 
             Job(int[] prompt, Options options, Listener listener) {
                 row = new Row(0, prompt, options, listener);
@@ -691,6 +705,11 @@ public final class Generator {
                         for (int i = 0; i < active.size(); i++) {
                             Job j = active.get(i);
                             Row r = j.row;
+                            if (j.logits == null) {
+                                next[i] = j.chosen;
+                                done[i] = r.add(j.chosen, j.stops);
+                                continue;
+                            }
                             float[] row = j.logits;
                             if (r.matcher != null && !constrain(row, r.matcher, j.stops)) {
                                 r.end();
@@ -771,7 +790,25 @@ public final class Generator {
             return s;
         }
 
+        /**
+         * Hands each job its logits. When every job decodes greedily without constraints or
+         * a repetition penalty, only the chosen tokens are read back: the device finds them,
+         * so the whole vocabulary per row is neither downloaded nor copied.
+         */
         private void spread(Tensor logits, List<Job> jobs) {
+            boolean greedy = true;
+            for (Job j : jobs) {
+                Sampling s = j.row.options.sampling();
+                greedy &= j.row.matcher == null && s.temperature() == 0 && s.repetitionPenalty() == 1;
+            }
+            if (greedy) {
+                float[] best = logits.argmax(-1).toArray();
+                for (int i = 0; i < jobs.size(); i++) {
+                    jobs.get(i).logits = null;
+                    jobs.get(i).chosen = (int) best[i];
+                }
+                return;
+            }
             float[] all = logits.toArray();
             int vocab = all.length / jobs.size();
             for (int i = 0; i < jobs.size(); i++) {
