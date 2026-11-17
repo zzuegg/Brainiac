@@ -2784,24 +2784,7 @@
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
         body: JSON.stringify({ model: usable(c.model || L.model), messages: history }),
       });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
-      const reader = r.body.getReader(), dec = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let cut;
-        while ((cut = buf.indexOf("\n\n")) >= 0) {
-          const block = buf.slice(0, cut); buf = buf.slice(cut + 2);
-          let event = "message", data = "";
-          for (const line of block.split("\n")) {
-            if (line.startsWith("event: ")) event = line.slice(7);
-            else if (line.startsWith("data: ")) data += line.slice(6);
-          }
-          if (data) onEvent(event, JSON.parse(data));
-        }
-      }
+      await readEvents(r, onEvent);
     } catch (e) {
       if (e.name === "AbortError") a.stopped = true; else a.error = e.message;
     }
@@ -2810,6 +2793,28 @@
     c.updated = Date.now();
     persist(c);
     if (state.view === "chat") render();
+  }
+
+  // reads a server-sent event stream from the studio, after checking the answer is one
+  async function readEvents(r, onEvent) {
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        let event = "message", data = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event: ")) event = line.slice(7);
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (data) onEvent(event, JSON.parse(data));
+      }
+    }
   }
 
   function send(i) {
@@ -2911,6 +2916,8 @@
   const G = {
     imgModel: store.get("imgModel", "auto"), aspect: store.get("aspect", "1:1"), count: store.get("imgCount", 2),
     prompt: "", batches: [], drawing: null,
+    // drawing on this PC: what is not sent anywhere else, and kept per model where it differs
+    neg: "", steps: {}, guidance: {}, seed: "", sampler: store.get("sampler", "DPM_PP_2M_KARRAS"), opts: {}, stop: null,
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
     text: "", takes: [], speaking: false, video: null,
   };
@@ -2934,7 +2941,8 @@
 
   function noModel(medium) {
     return `<div class="empty"><div class="flag">${icon("flask")}<div><b>No ${medium === "image" ? "image" : "speech"} model yet.</b>
-      ${L.info ? `Nothing on this PC can ${medium === "image" ? "draw" : "speak"} yet. Add an OpenAI or Google API key and their ${medium === "image" ? "image" : "voice"} models appear here.` : "Looking for models…"}
+      ${L.info ? (medium === "image" ? "Put a Stable Diffusion model (1.x, 2.x or XL, as a diffusers folder or a single .safetensors file) in a model folder to draw on this PC, or add an OpenAI or Google API key and their image models appear here."
+        : "Nothing on this PC can speak yet. Add an OpenAI or Google API key and their voice models appear here.") : "Looking for models…"}
       <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
   }
 
@@ -2953,41 +2961,143 @@
   const fileName = p => p.split(/[\\/]/).pop();
   const ratioCss = a => a.replace(":", " / ");
 
+  // the usual steps and guidance of a model on this PC, asked for once
+  function drawOpts(m) {
+    if (!m || m.provider !== "local") return null;
+    const o = G.opts[m.key];
+    if (!o) {
+      G.opts[m.key] = { loading: true };
+      postJson("/api/images/options", { model: m.key }).then(j => { G.opts[m.key] = j; if (state.view === "create") renderCreateSide(); })
+        .catch(() => { G.opts[m.key] = { samplers: ["DPM_PP_2M_KARRAS"] }; });
+      return null;
+    }
+    return o.loading ? null : o;
+  }
+  const samplerName = n => ({ EULER: "Euler", EULER_ANCESTRAL: "Euler ancestral", DPM_PP_2M: "DPM++ 2M", DPM_PP_2M_KARRAS: "DPM++ 2M Karras", EULER_KARRAS: "Euler Karras" })[n] || n;
+
+  function localSettings(m) {
+    const o = drawOpts(m) || {};
+    const steps = G.steps[m.key] ?? o.steps ?? 25, guidance = G.guidance[m.key] ?? o.guidance ?? 7;
+    return `<div class="flag ok-note">${icon("lock")}<div><b>Draws on this PC.</b> Nothing is sent anywhere.${o.kind ? ` <span class="muted">${esc({ SD1: "Stable Diffusion 1.x", SD2: "Stable Diffusion 2.x", SDXL: "Stable Diffusion XL" }[o.kind] || o.kind)}</span>` : ""}</div></div>
+      <div class="field"><label for="img-neg">Leave out</label><input class="input" id="img-neg" placeholder="blurry, text, watermark" value="${esc(G.neg)}"></div>
+      <div class="img-grid">
+        <div class="field"><label for="img-steps">Steps</label><input class="input mono" id="img-steps" type="number" min="1" max="150" value="${steps}"></div>
+        <div class="field"><label for="img-guidance" title="How closely to follow the prompt">Guidance</label><input class="input mono" id="img-guidance" type="number" min="0" max="30" step="0.5" value="${guidance}"></div>
+        <div class="field"><label for="img-seed">Seed</label><div class="seed-row"><input class="input mono" id="img-seed" inputmode="numeric" placeholder="random" value="${esc(G.seed)}">
+          <button class="iconbtn sm" id="img-seed-dice" type="button" aria-label="Random seed" title="Random seed each time">${icon("retry")}</button></div></div>
+        <div class="field"><label for="img-sampler">Sampler</label><select class="input" id="img-sampler">${(o.samplers || [G.sampler]).map(n => `<option value="${n}" ${n === G.sampler ? "selected" : ""}>${esc(samplerName(n))}</option>`).join("")}</select></div>
+      </div>`;
+  }
+
+  function renderCreateSide() {
+    const side = $(".create .side"); if (!side) return;
+    const focus = document.activeElement?.id;
+    keepCreateFields();
+    render();
+    if (focus) document.getElementById(focus)?.focus();
+  }
+  // what is typed in the side panel survives a redraw
+  function keepCreateFields() {
+    const m = pickedModel(G.imgModel, "image");
+    if ($("#img-prompt")) G.prompt = $("#img-prompt").value;
+    if ($("#img-neg")) G.neg = $("#img-neg").value;
+    if ($("#img-seed")) G.seed = $("#img-seed").value.trim();
+    if (m && $("#img-steps")) G.steps[m.key] = +$("#img-steps").value || undefined;
+    if (m && $("#img-guidance")) { const g = parseFloat($("#img-guidance").value); G.guidance[m.key] = isNaN(g) ? undefined : g; }
+  }
+
   function liveCreateView() {
     const m = pickedModel(G.imgModel, "image");
+    const local = m?.provider === "local";
     const ratios = [["1:1", 14, 14], ["4:3", 16, 12], ["16:9", 18, 10], ["3:4", 12, 16], ["9:16", 10, 18]];
     return `
     <div class="create">
       <aside class="side" aria-label="Image settings">
         <div style="display:flex;align-items:center;gap:8px"><span class="h2">Images</span><span class="grow"></span>${m ? `<span class="chip c-image">${esc(m.name)}</span>` : ""}</div>
         <div class="field"><label for="img-model">Model</label>${mediaPicker("img-model", "image", G.imgModel)}</div>
-        ${remoteNote(m, "The prompt")}
+        ${local ? "" : remoteNote(m, "The prompt")}
         <div class="prompt-box"><textarea id="img-prompt" aria-label="Prompt" placeholder="What should the picture show?">${esc(G.prompt)}</textarea></div>
         <div class="field"><label>Aspect</label>
           <div class="ratio">${ratios.map(([l, w, h]) => `<button data-aspect="${l}" aria-pressed="${G.aspect === l}"><i style="width:${w}px;height:${h}px"></i>${l}</button>`).join("")}</div></div>
         <div class="field"><label>Pictures</label><div class="seg" style="width:100%">${[1, 2, 3, 4].map(n => `<button data-count="${n}" aria-pressed="${G.count === n}" style="flex:1">${n}</button>`).join("")}</div></div>
-        <button class="btn primary" id="img-go" style="height:40px;justify-content:center" ${!m || G.drawing ? "disabled" : ""}>${icon("wand")}${G.drawing ? "Drawing…" : `Draw ${G.count}`} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>
+        ${local ? localSettings(m) : ""}
+        ${G.drawing && G.stop ? `<button class="btn" id="img-stop" style="height:40px;justify-content:center">${icon("stop")}Stop drawing</button>` : `<button class="btn primary" id="img-go" style="height:40px;justify-content:center" ${!m || G.drawing ? "disabled" : ""}>`}${G.drawing && G.stop ? "" : `${icon("wand")}${G.drawing ? "Drawing…" : `Draw ${G.count}`} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>`}
       </aside>
       <section class="gallery" aria-label="Pictures">
         ${!mediaModels("image").length ? noModel("image") : ""}
-        ${G.drawing ? `<div><div class="batch-head"><span class="eyebrow">Drawing</span><span class="p">${esc(G.drawing.prompt)}</span><span class="mono muted">${esc(G.drawing.model)}</span></div>
-          <div class="batch">${Array.from({ length: G.drawing.count }, () => `<div class="tile wait" style="aspect-ratio:${ratioCss(G.drawing.aspect)}"></div>`).join("")}</div></div>` : ""}
+        ${G.drawing ? `<div id="drawing">${drawingHtml()}</div>` : ""}
         ${G.batches.map((b, bi) => `
           <div>
-            <div class="batch-head"><span class="p">${esc(b.prompt)}</span><span class="mono muted">${esc(b.model)} · ${b.aspect}${b.seconds ? ` · ${b.seconds.toFixed(1)} s` : ""}</span></div>
-            ${b.error ? `<div class="flag bad">${icon("flask")}<div><b>No picture.</b> ${esc(b.error)}</div></div>` : `
-            <div class="batch">${b.items.map(it => `<div class="tile" title="Saved as ${esc(it.file)}"><img src="${it.url}" alt="${esc(b.prompt)}" style="aspect-ratio:${ratioCss(b.aspect)}">
-              <div class="ov"><a href="${it.url}" download="${esc(fileName(it.file))}">Save</a><button data-reuse="${bi}">Reuse prompt</button></div></div>`).join("")}</div>`}
+            <div class="batch-head"><span class="p">${esc(b.prompt)}</span><span class="mono muted">${esc(b.model)} · ${b.aspect}${b.local ? ` · ${b.local.steps} steps · ${samplerName(b.local.sampler)}` : ""}${b.seconds ? ` · ${b.seconds.toFixed(1)} s` : ""}</span></div>
+            ${b.error ? `<div class="flag bad">${icon("flask")}<div><b>${b.stopped ? "Stopped." : "No picture."}</b> ${b.stopped ? "" : esc(b.error)}</div></div>` : ""}
+            ${b.items.length ? `<div class="batch">${b.items.map(it => `<div class="tile" title="Saved as ${esc(it.file)}${it.seed != null ? ` · seed ${it.seed}` : ""}"><img src="${it.url}" alt="${esc(b.prompt)}" style="aspect-ratio:${ratioCss(b.aspect)}">
+              ${it.seed != null ? `<span class="step">seed ${it.seed}</span>` : ""}
+              <div class="ov"><a href="${it.url}" download="${esc(fileName(it.file))}">Save</a><button data-reuse="${bi}">Reuse prompt</button>${it.seed != null ? `<button data-reseed="${bi}:${it.seed}">Reuse seed</button>` : ""}</div></div>`).join("")}</div>` : ""}
           </div>`).join("")}
         ${mediaModels("image").length && !G.batches.length && !G.drawing ? `<div class="empty"><div class="h2">Describe a picture</div><div class="muted">Pictures are also saved in the studio's outputs folder.</div></div>` : ""}
       </section>
     </div>`;
   }
 
+  // the pictures being drawn: shimmering tiles, or on this PC the latest rough preview and the step
+  function drawingHtml() {
+    const d = G.drawing;
+    const pct = d.total ? Math.round(100 * d.step / d.total) : 0;
+    const tiles = Array.from({ length: d.count }, (_, i) => {
+      const done = d.items?.[i];
+      if (done) return `<div class="tile"><img src="${done.url}" alt="" style="aspect-ratio:${ratioCss(d.aspect)}"></div>`;
+      const now = d.total && Math.floor((d.step - 1) / (d.total / d.count)) === i;
+      return `<div class="tile ${now && d.preview ? "previewing" : "wait"}" style="aspect-ratio:${ratioCss(d.aspect)}">${now && d.preview ? `<img src="${d.preview}" alt="" style="aspect-ratio:${ratioCss(d.aspect)}">` : ""}</div>`;
+    }).join("");
+    return `<div class="batch-head"><span class="eyebrow">Drawing</span><span class="p">${esc(d.prompt)}</span><span class="mono muted">${esc(d.model)}${d.total ? ` · step ${d.step} of ${d.total}` : d.local ? " · loading the model…" : ""}</span></div>
+      ${d.total ? `<div class="draw-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>` : ""}
+      <div class="batch">${tiles}</div>`;
+  }
+  function paintDrawing() {
+    const box = $("#drawing");
+    if (box && G.drawing) box.innerHTML = drawingHtml(); else if (state.view === "create") render();
+  }
+
+  async function drawHere(m, prompt) {
+    keepCreateFields();
+    const o = G.opts[m.key] || {};
+    const seed = G.seed === "" ? null : Math.max(0, Math.floor(+G.seed) || 0);
+    const body = { model: m.key, prompt, negativePrompt: G.neg, aspect: G.aspect, count: G.count,
+      steps: G.steps[m.key] ?? o.steps ?? 25, guidance: G.guidance[m.key] ?? o.guidance ?? 7, sampler: G.sampler };
+    if (seed != null) body.seed = seed;
+    const ctrl = new AbortController();
+    G.stop = ctrl;
+    G.drawing = { prompt, model: m.name, aspect: G.aspect, count: G.count, local: true, step: 0, total: 0, items: [] };
+    const batch = { prompt, model: m.name, aspect: G.aspect, items: [], local: { steps: body.steps, sampler: body.sampler } };
+    render();
+    let last = 0;
+    try {
+      const r = await fetch("/api/images/draw", { method: "POST", signal: ctrl.signal,
+        headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await readEvents(r, (event, d) => {
+        if (event === "route") { batch.model = G.drawing.model = d.name; }
+        else if (event === "step") { G.drawing.step = d.step; G.drawing.total = d.total; }
+        else if (event === "preview") G.drawing.preview = "data:image/png;base64," + d.data;
+        else if (event === "image") { const it = { url: blobUrl(d), file: d.file, seed: d.seed }; batch.items.push(it); G.drawing.items.push(it); }
+        else if (event === "done") batch.seconds = d.seconds;
+        else if (event === "error") { batch.error = d.message; batch.stopped = d.message === "stopped"; }
+        // a preview a few times a second is plenty
+        const now = performance.now();
+        if (event !== "step" || now - last > 120) { last = now; paintDrawing(); }
+      });
+    } catch (e) {
+      if (e.name === "AbortError") { batch.error = "stopped"; batch.stopped = true; } else batch.error = e.message;
+    }
+    G.batches.unshift(batch);
+    G.drawing = null; G.stop = null;
+    if (state.view === "create") render();
+  }
+
   async function draw() {
     const m = pickedModel(G.imgModel, "image");
     const prompt = ($("#img-prompt")?.value || "").trim();
     if (!m || !prompt || G.drawing) return;
+    if (m.provider === "local") return drawHere(m, prompt);
     G.prompt = prompt;
     G.drawing = { prompt, model: m.name, aspect: G.aspect, count: G.count };
     render();
@@ -3003,12 +3113,20 @@
   }
 
   function bindLiveCreate() {
-    $("#img-model")?.addEventListener("change", e => { G.imgModel = e.target.value; store.set("imgModel", G.imgModel); G.prompt = $("#img-prompt").value; render(); });
-    $$("[data-aspect]").forEach(b => b.addEventListener("click", () => { G.aspect = b.dataset.aspect; store.set("aspect", G.aspect); G.prompt = $("#img-prompt").value; render(); }));
-    $$("[data-count]").forEach(b => b.addEventListener("click", () => { G.count = +b.dataset.count; store.set("imgCount", G.count); G.prompt = $("#img-prompt").value; render(); }));
+    $("#img-model")?.addEventListener("change", e => { keepCreateFields(); G.imgModel = e.target.value; store.set("imgModel", G.imgModel); render(); });
+    $$("[data-aspect]").forEach(b => b.addEventListener("click", () => { keepCreateFields(); G.aspect = b.dataset.aspect; store.set("aspect", G.aspect); render(); }));
+    $$("[data-count]").forEach(b => b.addEventListener("click", () => { keepCreateFields(); G.count = +b.dataset.count; store.set("imgCount", G.count); render(); }));
     $("#img-prompt")?.addEventListener("input", e => { G.prompt = e.target.value; });
     $("#img-prompt")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") draw(); });
     $("#img-go")?.addEventListener("click", draw);
+    $("#img-stop")?.addEventListener("click", () => G.stop?.abort());
+    $("#img-sampler")?.addEventListener("change", e => { G.sampler = e.target.value; store.set("sampler", G.sampler); });
+    $("#img-seed-dice")?.addEventListener("click", () => { G.seed = ""; const f = $("#img-seed"); if (f) { f.value = ""; f.focus(); } });
+    ["#img-neg", "#img-seed", "#img-steps", "#img-guidance"].forEach(id => $(id)?.addEventListener("change", keepCreateFields));
+    $$("[data-reseed]").forEach(b => b.addEventListener("click", () => {
+      const [bi, seed] = b.dataset.reseed.split(":");
+      keepCreateFields(); G.prompt = G.batches[+bi].prompt; G.seed = seed; render(); $("#img-prompt").focus();
+    }));
     $$("[data-reuse]").forEach(b => b.addEventListener("click", () => { G.prompt = G.batches[+b.dataset.reuse].prompt; render(); $("#img-prompt").focus(); }));
     $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
   }

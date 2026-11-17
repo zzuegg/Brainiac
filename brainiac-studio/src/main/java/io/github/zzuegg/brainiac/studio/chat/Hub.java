@@ -91,6 +91,16 @@ public final class Hub {
     }
 
     /**
+     * Returns the core library's client for the same hub, with the same token, for files the core
+     * fetches itself (such as the CLIP vocabulary of Stable Diffusion checkpoints).
+     *
+     * @return the client
+     */
+    public io.github.zzuegg.brainiac.io.HuggingFaceHub core() {
+        return new io.github.zzuegg.brainiac.io.HuggingFaceHub(base, token().orElse(null));
+    }
+
+    /**
      * Returns where downloads go.
      *
      * @return the folder

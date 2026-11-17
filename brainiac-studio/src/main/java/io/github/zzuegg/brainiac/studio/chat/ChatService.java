@@ -320,7 +320,8 @@ public final class ChatService {
         if (!folders.contains(downloads)) {
             folders.add(downloads);
         }
-        ps.add(new LocalProvider(folders, outputs.resolveSibling("local-models.txt")));
+        LocalProvider local = new LocalProvider(folders, outputs.resolveSibling("local-models.txt"));
+        ps.add(local);
         ps.add(new AnthropicProvider(keys, bases.getOrDefault("anthropic", AnthropicProvider.BASE)));
         ps.add(new OpenAiProvider(keys, bases.getOrDefault("openai", Preset.OPENAI.base())));
         ps.add(new GoogleProvider(keys, bases.getOrDefault("google", GoogleProvider.BASE)));
@@ -329,6 +330,7 @@ public final class ChatService {
         }
         ChatService service = new ChatService(keys, ps, outputs);
         service.hub = new Hub(keys, downloads, bases.getOrDefault("hub", Hub.BASE));
+        local.drawToo(() -> service.hub().core());
         service.vast = new VastAi(keys, bases.getOrDefault(VastAi.PROVIDER, VastAi.BASE));
         return service;
     }
@@ -584,10 +586,79 @@ public final class ChatService {
     public Generated images(String model, String prompt, String aspect, int count, String key)
             throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "image");
+        if (provider(target.provider()) instanceof LocalProvider) {
+            return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), (step, total, preview) -> true)
+                    .generated();
+        }
         ImageRequest request = new ImageRequest(target.id(), prompt, aspect, count, key);
         List<Media> media = logged(target, "image", () -> remote(target).images(request),
                 r -> new long[] {-1, -1, r.size()});
         return new Generated(target, media, save(media, "image"));
+    }
+
+    /**
+     * What a drawing on this PC made.
+     *
+     * @param generated the pictures and where they were saved
+     * @param seeds each picture's seed
+     */
+    public record Drawn(Generated generated, List<Long> seeds) {
+    }
+
+    /**
+     * Draws pictures with a Stable Diffusion model on this PC, step by step, and saves them to the
+     * outputs folder.
+     *
+     * @param model a local image model's key ({@code local/name}) or {@value #AUTO}
+     * @param prompt what the pictures show
+     * @param settings the settings
+     * @param listener hears each step, with rough previews, and can stop the drawing
+     * @param route told which model draws, before it starts
+     * @return the pictures
+     * @throws IOException if there is no such model or it cannot be loaded
+     * @throws InterruptedException if interrupted
+     * @throws java.util.concurrent.CancellationException if the listener stopped it
+     */
+    public Drawn draw(String model, String prompt, LocalImages.Settings settings, LocalImages.Listener listener,
+            Consumer<ModelInfo> route) throws IOException, InterruptedException {
+        if (prompt == null || prompt.isBlank()) {
+            throw new IllegalArgumentException("describe the picture first");
+        }
+        ModelInfo target = resolve(model, "image");
+        if (!(provider(target.provider()) instanceof LocalProvider)) {
+            throw new IllegalArgumentException(target.key() + " does not run on this PC");
+        }
+        route.accept(target);
+        return drawHere(target, prompt, settings, listener);
+    }
+
+    /**
+     * Describes the samplers and a local image model's usual settings, for the page.
+     *
+     * @param model a local image model's key
+     * @return {@code {samplers, kind?, steps?, guidance?}}
+     */
+    public Map<String, Object> drawOptions(String model) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("samplers", LocalImages.SAMPLERS);
+        LocalImages images = local().images();
+        if (images != null && model != null && model.startsWith("local/")) {
+            images.describe(model.substring("local/".length())).ifPresent(out::putAll);
+        }
+        return out;
+    }
+
+    private Drawn drawHere(ModelInfo target, String prompt, LocalImages.Settings settings, LocalImages.Listener listener)
+            throws IOException, InterruptedException {
+        LocalImages images = local().images();
+        if (images == null) {
+            throw new IOException("this studio does not draw on this PC");
+        }
+        List<LocalImages.Picture> pictures = logged(target, "image", () -> images.draw(target.id(), prompt, settings, listener),
+                r -> new long[] {-1, -1, r.size()});
+        List<Media> media = pictures.stream().map(LocalImages.Picture::media).toList();
+        return new Drawn(new Generated(target, media, save(media, "image")),
+                pictures.stream().map(LocalImages.Picture::seed).toList());
     }
 
     /**
@@ -643,7 +714,8 @@ public final class ChatService {
             if (target == null) {
                 throw new IOException(switch (medium) {
                     case "text" -> "no chat model is available: put a model in a model folder or add an API key";
-                    case "image" -> "no image model is available: add an OpenAI or Google API key";
+                    case "image" -> "no image model is available: put a Stable Diffusion model in a model folder"
+                            + " or add an OpenAI or Google API key";
                     default -> "no speech model is available: add an OpenAI or Google API key";
                 });
             }
