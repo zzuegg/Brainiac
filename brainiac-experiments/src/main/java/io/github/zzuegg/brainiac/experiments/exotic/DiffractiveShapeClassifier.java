@@ -20,7 +20,6 @@ import java.util.SplittableRandom;
  * per class. The class is the brightest detector; the only trained quantities are the
  * phases of the masks, which in hardware would be the thickness of 3-D printed plates.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class DiffractiveShapeClassifier {
     private static final int UPSAMPLE = 2;
     private final int size;

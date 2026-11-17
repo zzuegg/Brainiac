@@ -18,7 +18,7 @@ import java.util.SplittableRandom;
  * sampled with Euler or Heun steps and classifier-free guidance, and straightened by
  * reflow so that one Euler step approaches the many-step result.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
+@SuppressWarnings("exports")   // experimental.nn.diffusion is not exported yet
 public final class RectifiedFlowExperiment {
     private final ConditionalDenoiser net;
     private final Optimizer optimizer;

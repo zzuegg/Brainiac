@@ -17,7 +17,6 @@ import java.util.SplittableRandom;
  * keeps most of its accuracy; the conventionally trained one, with its sharper and larger
  * weights, degrades much more.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class AnalogNoiseAwareTraining {
     private AnalogNoiseAwareTraining() {
     }

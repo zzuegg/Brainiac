@@ -18,7 +18,6 @@ import java.util.SplittableRandom;
  * that spikes most. Inputs can be rate coded or latency coded, so the two encodings can
  * be compared, along with how sparse the network's activity is.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class SpikingClassifier {
     /** Time steps per sample. */
     public static final int STEPS = 12;

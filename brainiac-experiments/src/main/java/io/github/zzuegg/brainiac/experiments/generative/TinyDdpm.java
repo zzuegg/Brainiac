@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.data.GifWriter;
 import io.github.zzuegg.brainiac.experimental.nn.diffusion.ClippedDenoiser;
 import io.github.zzuegg.brainiac.experimental.nn.diffusion.ConditionalDenoiser;
 import io.github.zzuegg.brainiac.nn.diffusion.Denoiser;
@@ -25,7 +24,7 @@ import java.util.SplittableRandom;
  * <p>Samplers can record the predicted clean images at every step, and
  * {@link #denoisingGif} renders that as an animation of noise crystallizing into shapes.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
+@SuppressWarnings("exports")   // experimental.nn.diffusion is not exported yet
 public final class TinyDdpm {
     private final ConditionalDenoiser net;
     private final Diffusion diffusion;
@@ -168,7 +167,7 @@ public final class TinyDdpm {
     public static byte[] denoisingGif(List<float[][]> trajectory, int side, int scale) {
         int n = trajectory.get(0).length;
         int w = n * (side + 1) - 1;
-        GifWriter gif = GifWriter.grayscale(w, side).scale(scale).delay(12);
+        List<float[]> frames = new java.util.ArrayList<>();
         for (int f = 0; f < trajectory.size() + 4; f++) {
             float[][] frame = trajectory.get(Math.min(f, trajectory.size() - 1));
             float[] px = new float[w * side];
@@ -179,8 +178,8 @@ public final class TinyDdpm {
                     }
                 }
             }
-            gif.frame(px, -1, 1);
+            frames.add(px);
         }
-        return gif.toBytes();
+        return Nets.grayGif(frames, w, side, -1, 1, scale, 12);
     }
 }

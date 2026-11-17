@@ -19,7 +19,6 @@ import java.util.SplittableRandom;
  * Trained with quantizer dropout, one model serves several bitrates: each extra RVQ
  * stage adds {@code log2(codes)} bits per frame and raises the signal-to-noise ratio.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class ToyAudioCodec {
     private final int frame;
     private final Model encoder;

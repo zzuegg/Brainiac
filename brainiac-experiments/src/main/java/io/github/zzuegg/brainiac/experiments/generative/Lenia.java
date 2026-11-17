@@ -1,6 +1,5 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
-import io.github.zzuegg.brainiac.experimental.data.GifWriter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -198,11 +197,7 @@ public final class Lenia {
      * @return the GIF file's bytes
      */
     public byte[] gif(List<float[]> frames, int scale) {
-        GifWriter gif = GifWriter.grayscale(size, size).scale(scale).delay(5);
-        for (float[] f : frames) {
-            gif.frame(f, 0, 1);
-        }
-        return gif.toBytes();
+        return Nets.grayGif(frames, size, size, 0, 1, scale, 5);
     }
 
     /**

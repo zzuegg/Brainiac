@@ -19,7 +19,6 @@ import java.util.function.IntPredicate;
  * class scores are group sums of the last layer's outputs, divided by a temperature
  * while training.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class LogicGateExperiment {
     private final List<LogicGateLayer> layers = new ArrayList<>();
     private final IntPredicate function;

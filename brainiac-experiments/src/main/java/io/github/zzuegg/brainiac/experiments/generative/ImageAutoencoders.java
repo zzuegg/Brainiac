@@ -18,7 +18,6 @@ import java.util.SplittableRandom;
  * sampled from the prior; the VQ-VAE squeezes it into a handful of discrete codes, the
  * representation that token-based generators (MaskGIT, audio LMs) build on.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class ImageAutoencoders {
     private ImageAutoencoders() {
     }

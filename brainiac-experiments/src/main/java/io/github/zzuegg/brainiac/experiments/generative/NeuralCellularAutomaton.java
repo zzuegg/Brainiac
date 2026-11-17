@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.data.GifWriter;
 import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -294,10 +293,6 @@ public final class NeuralCellularAutomaton {
      * @return the GIF file's bytes
      */
     public byte[] gif(List<float[]> frames, int scale) {
-        GifWriter gif = GifWriter.grayscale(size, size).scale(scale).delay(6);
-        for (float[] f : frames) {
-            gif.frame(f, 0, 1);
-        }
-        return gif.toBytes();
+        return Nets.grayGif(frames, size, size, 0, 1, scale, 6);
     }
 }

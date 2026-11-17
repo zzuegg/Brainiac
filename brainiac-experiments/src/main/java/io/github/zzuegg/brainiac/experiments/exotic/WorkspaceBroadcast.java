@@ -21,7 +21,6 @@ import java.util.SplittableRandom;
  * network has to learn to let the flagged specialist win the competition and then broadcast
  * its content to all.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class WorkspaceBroadcast {
     /** Number of specialists. */
     public static final int SPECIALISTS = 6;

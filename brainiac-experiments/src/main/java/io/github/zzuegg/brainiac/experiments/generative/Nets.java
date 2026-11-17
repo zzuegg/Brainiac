@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.data.AnimatedGifWriter;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -68,5 +69,37 @@ final class Nets {
             s += d * d;
         }
         return s;
+    }
+
+    /**
+     * Renders grayscale frames as an animated GIF with 256 gray levels.
+     *
+     * @param frames row-major frames of {@code width * height} values
+     * @param width the frame width
+     * @param height the frame height
+     * @param min the value shown black
+     * @param max the value shown white
+     * @param scale the pixel upscaling factor
+     * @param delay the frame delay in hundredths of a second
+     * @return the GIF file's bytes
+     */
+    static byte[] grayGif(List<float[]> frames, int width, int height, float min, float max, int scale, int delay) {
+        int[] palette = new int[256];
+        for (int i = 0; i < 256; i++) {
+            palette[i] = i << 16 | i << 8 | i;
+        }
+        int w = width * scale;
+        AnimatedGifWriter gif = AnimatedGifWriter.of(w, height * scale, palette);
+        for (float[] f : frames) {
+            byte[] px = new byte[w * height * scale];
+            for (int y = 0; y < height * scale; y++) {
+                for (int x = 0; x < w; x++) {
+                    float v = (f[(y / scale) * width + x / scale] - min) / (max - min);
+                    px[y * w + x] = (byte) Math.round(255 * Math.max(0, Math.min(1, v)));
+                }
+            }
+            gif.frame(px, delay);
+        }
+        return gif.toBytes();
     }
 }

@@ -16,7 +16,6 @@ import java.util.SplittableRandom;
  * coarse grid, then grid extension moves it to a finer grid and training continues from
  * where it was rather than from scratch.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class KolmogorovArnoldFit {
     private KanLayer first;
     private KanLayer second;

@@ -21,7 +21,6 @@ import java.util.SplittableRandom;
  * each class has its own length rather than a share of a softmax, the network trained on
  * single shapes and pairs reports both shapes of an overlay at once.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class OverlappingShapeCapsules {
     private static final int PRIMARY = 16;
     private static final int PRIMARY_DIM = 6;

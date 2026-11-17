@@ -17,7 +17,6 @@ import java.util.SplittableRandom;
  * fitting {@code y = A sin(x + phi)}. Trained on random tasks, it produces working networks
  * for amplitudes and phases it never saw.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class HyperSines {
     private final HyperDense first;
     private final HyperDense second;

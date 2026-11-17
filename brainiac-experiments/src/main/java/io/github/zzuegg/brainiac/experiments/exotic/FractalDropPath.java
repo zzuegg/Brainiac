@@ -17,7 +17,6 @@ import java.util.SplittableRandom;
  * that each classify well on their own, from the one-layer column to the deepest; trained
  * without it, the columns co-adapt and individually fall apart.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class FractalDropPath {
     private FractalDropPath() {
     }

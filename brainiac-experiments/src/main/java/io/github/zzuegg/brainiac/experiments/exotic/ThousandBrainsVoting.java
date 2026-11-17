@@ -15,7 +15,6 @@ import java.util.SplittableRandom;
  * several times, path-integrating between touches; several columns touching different
  * places at once and voting after every sensation need far fewer movements.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class ThousandBrainsVoting {
     private final int side;
     private final int[][][] objects;

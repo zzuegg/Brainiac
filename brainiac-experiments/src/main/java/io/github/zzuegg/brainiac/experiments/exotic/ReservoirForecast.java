@@ -12,7 +12,6 @@ import io.github.zzuegg.brainiac.experimental.train.RidgeRegression;
  * feeding their own predictions back. The figure of merit is the valid time: how many steps
  * the free-running forecast stays within a normalized error of the true trajectory.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class ReservoirForecast {
     private ReservoirForecast() {
     }

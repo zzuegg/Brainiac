@@ -22,7 +22,6 @@ import java.util.SplittableRandom;
  * orientation; testing rotates them at random. The EGNN, invariant by construction, keeps its
  * accuracy, while an MLP on the raw coordinates trained the same way does not.
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class EquivariantPointClouds {
     /** Points per cloud. */
     public static final int POINTS = 6;

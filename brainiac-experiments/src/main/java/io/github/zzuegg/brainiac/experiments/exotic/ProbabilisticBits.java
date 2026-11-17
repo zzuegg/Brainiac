@@ -12,7 +12,6 @@ import java.util.SplittableRandom;
  * backwards (clamp the output and sample the inputs), and the ferromagnetic phase
  * transition of a 2-D Ising lattice (Onsager: {@code beta_c = ln(1 + sqrt 2) / 2 ~ 0.4407}).
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class ProbabilisticBits {
     private ProbabilisticBits() {
     }
