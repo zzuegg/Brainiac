@@ -27,40 +27,38 @@ layout(buffer_reference, std430, buffer_reference_align = 16) coherent buffer Pa
 layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer Counters { uint v[]; };
 shared bool lastPiece;
 layout(push_constant) uniform P {
-    In a; InWords q; InFloats scales; InFloats offsets; Buf z; Parts parts; Counters counters;
-    uint m; uint k; uint n; uint group; uint nibbles; uint chunk; uint hasOffsets; uint pieces; uint counter;
+    In a; InWords q; InWords hi; InWords scaleCodes; InWords offsetCodes; InWords scales; InWords offsets; Buf z;
+    Parts parts; Counters counters;
+    uint m; uint k; uint n; uint group; uint flags; uint chunk; uint pieces; uint counter; uint perSuper; float shift;
 } p;
 shared ACC4 sums[SLICES][QUADS];
+#include "packed_layout.glsl"
 
 // the levels of columns c .. c + 3 at row r (columns past n read as 0)
 ACC4 levels(uint r, uint c, bool words) {
-    uint shift = 0;
-    uint b = r * p.n + c;
-    if (p.nibbles != 0) {
-        b = (r >> 1) * p.n + c;
-        shift = (r & 1u) * 4u;
-    }
-    int bits = p.nibbles != 0 ? 4 : 8;
     if (words) {
-        int w = int(p.q.v[b >> 2]);
-        return ACC4(bitfieldExtract(w, int(shift), bits), bitfieldExtract(w, int(8 + shift), bits),
-                    bitfieldExtract(w, int(16 + shift), bits), bitfieldExtract(w, int(24 + shift), bits));
+        return ACC4(levels4At(r, c));
     }
     ACC4 v = ACC4(0.0);
     for (uint j = 0; j < 4; j++) {
-        if (c + j < p.n) {
-            uint bj = b + j;
-            v[j] = ACC(bitfieldExtract(int(p.q.v[bj >> 2]), int((bj & 3u) * 8u + shift), bits));
-        }
+        if (c + j < p.n) v[j] = ACC(levelAt(r, c + j));
     }
     return v;
 }
 
-ACC4 perGroup(InFloats f, uint g, uint c) {
-    uint s = g * p.n + c;
-    ACC4 v = ACC4(0.0);
+// the scales of group g in columns c .. c + 3
+vec4 scales4(uint g, uint c) {
+    vec4 v = vec4(0.0);
     for (uint j = 0; j < 4; j++) {
-        if (c + j < p.n) v[j] = ACC(f.v[s + j]);
+        if (c + j < p.n) v[j] = scaleAt(g, c + j);
+    }
+    return v;
+}
+
+vec4 offsets4(uint g, uint c, vec4 s) {
+    vec4 v = vec4(0.0);
+    for (uint j = 0; j < 4; j++) {
+        if (c + j < p.n) v[j] = offsetAt(g, c + j, s[j]);
     }
     return v;
 }
@@ -104,12 +102,13 @@ void main() {
                     sum[i] += x;
                 }
             }
-            ACC4 s = perGroup(p.scales, g, c);
+            vec4 sf = scales4(g, c);
+            ACC4 s = ACC4(sf);
             for (uint i = 0; i < ROWS; i++) {
                 total[i] = fma(part[i], s, total[i]);
             }
-            if (p.hasOffsets != 0) {
-                ACC4 o = perGroup(p.offsets, g, c);
+            if ((p.flags & 2u) != 0) {
+                ACC4 o = ACC4(offsets4(g, c, sf));
                 for (uint i = 0; i < ROWS; i++) {
                     total[i] = fma(ACC4(sum[i]), o, total[i]);
                 }

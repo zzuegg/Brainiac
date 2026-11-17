@@ -762,7 +762,21 @@ class VulkanBackendTest {
         packedMatches(bits, group, m, 768, 256, true);
     }
 
+    /** Scales and offsets factored as GGUF's k-quants store them, kept factored on the device. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4, 32, 1, true", "5, 32, 3, true", "6, 16, 8, false",
+            "2, 16, 2, true", "3, 16, 4, false", "8, 32, 12, false", "4, 32, 2, false", "5, 32, 1, false"})
+    void packedMatricesWithFactoredScalesMatchTheCpu(int bits, int group, int m, boolean withOffsets) {
+        packedMatches(bits, group, m, 192, 77, withOffsets, true);
+        packedMatches(bits, group, m, 768, 256, withOffsets, true);
+    }
+
     private static void packedMatches(int bits, int group, int m, int rows, int cols, boolean withOffsets) {
+        packedMatches(bits, group, m, rows, cols, withOffsets, false);
+    }
+
+    private static void packedMatches(int bits, int group, int m, int rows, int cols, boolean withOffsets,
+            boolean factored) {
         if (rows % group != 0) {
             return;
         }
@@ -784,10 +798,40 @@ class VulkanBackendTest {
             }
         }
         PackedMatrix w = PackedMatrix.of(levels, scales, offsets, rows, cols, bits, group);
+        if (factored) {
+            // codes per group times float16 values per super-group; offsets add a multiple of the scale
+            int superGroup = rows % 256 == 0 ? 256 : 2 * group;
+            boolean codes = bits != 4 || withOffsets;   // 4 bits without offsets: one value per group, as Q4_0
+            if (!codes) {
+                superGroup = group;
+            }
+            byte[] scaleCodes = codes ? new byte[scales.length] : null;
+            byte[] offsetCodes = codes && withOffsets ? new byte[scales.length] : null;
+            float[] superScales = new float[rows / superGroup * cols];
+            float[] superOffsets = withOffsets ? new float[superScales.length] : null;
+            for (int i = 0; i < scales.length; i++) {
+                if (scaleCodes != null) {
+                    scaleCodes[i] = (byte) (bits == 6 || bits == 3 ? r.nextInt(-32, 32) : r.nextInt(0, 64));
+                }
+                if (offsetCodes != null) {
+                    offsetCodes[i] = (byte) r.nextInt(0, 64);
+                }
+            }
+            for (int i = 0; i < superScales.length; i++) {
+                superScales[i] = Float.float16ToFloat(Float.floatToFloat16((float) r.nextDouble(1e-4, 1e-3)));
+                if (superOffsets != null) {
+                    superOffsets[i] = Float.float16ToFloat(Float.floatToFloat16((float) -r.nextDouble(1e-4, 3e-3)));
+                }
+            }
+            int shift = withOffsets ? 1 << (bits - 1) : 0;
+            w = PackedMatrix.of(levels, new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets,
+                    superGroup, shift), rows, cols, bits, group);
+        }
         Tensor x = random(3, m, rows);
         Tensor onCpu = Tensor.packed(w, CPU);
         Tensor onGpu = onCpu.to(gpu);
-        String what = bits + " bits, groups of " + group + ", " + m + " x " + rows + " x " + cols;
+        String what = bits + " bits, groups of " + group + ", " + m + " x " + rows + " x " + cols
+                + (factored ? ", factored" : "");
         assertTrue(onGpu.isPacked());
         org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
         float[] expected = x.matmul(onCpu).toArray();
