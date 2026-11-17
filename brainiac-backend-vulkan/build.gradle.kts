@@ -33,6 +33,10 @@ tasks.test {
         "--add-modules", "jdk.incubator.vector",
         "-Dbrainiac.vulkan.devices=all",
     )
+    // -Pbrainiac.vulkan.validate=true runs the tests under the Khronos validation layer
+    if (providers.gradleProperty("brainiac.vulkan.validate").orNull == "true") {
+        jvmArgs("-Dbrainiac.vulkan.validate=true")
+    }
 }
 
 // The shaders are compiled to SPIR-V ahead of time and kept in src/main/resources, so

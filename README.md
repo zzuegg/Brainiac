@@ -616,6 +616,34 @@ can span other kernels: fewer launches, but slower on some drivers).
 Without an OpenCL GPU the backend reports itself unavailable and its tests are skipped;
 CI runs them on PoCL.
 
+### Vulkan
+
+`brainiac-backend-vulkan` is a second GPU backend, on Vulkan compute shaders called through
+LWJGL (its only dependency; the natives jar for the build platform is picked
+automatically). It needs a Vulkan 1.2 driver with buffer device addresses and 64-bit shader
+integers, which current AMD, NVIDIA and Intel drivers have. Allow LWJGL to call native code
+with `--enable-native-access=org.lwjgl`.
+
+```java
+Device vulkan = Device.available().stream()
+        .filter(d -> d.name().startsWith("vulkan")).findFirst().orElseThrow();
+```
+
+Every operation is one precompiled compute shader (GLSL in `src/main/glsl`, SPIR-V in the
+resources; `./gradlew :brainiac-backend-vulkan:compileShaders` rebuilds them with
+`glslangValidator`). Shaders reach tensors through device addresses passed as push
+constants, so there are no descriptor sets to manage. Commands are recorded into command
+buffers and submitted in batches, with a memory barrier only before a command that touches
+memory an earlier one wrote, so the host waits for the device only when it reads values
+back. Tensors are slots in large device memory blocks, pooled by size. It stores float32
+only and does not fuse operations (yet). System properties: `brainiac.vulkan.devices`
+(`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
+(index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
+validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests).
+`VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
+barriers and submits. The examples take `--device vulkan` or `--device opencl` to pick one
+GPU backend when both are present. CI runs the tests on lavapipe.
+
 Tensors and models come in four number formats:
 
 ```java

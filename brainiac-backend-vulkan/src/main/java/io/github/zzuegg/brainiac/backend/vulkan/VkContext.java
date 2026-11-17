@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.vulkan.EXTDebugUtils;
 import org.lwjgl.vulkan.VkApplicationInfo;
 import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkBufferCreateInfo;
@@ -33,6 +34,8 @@ import org.lwjgl.vulkan.VkCommandBufferAllocateInfo;
 import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
 import org.lwjgl.vulkan.VkCommandPoolCreateInfo;
 import org.lwjgl.vulkan.VkComputePipelineCreateInfo;
+import org.lwjgl.vulkan.VkDebugUtilsMessengerCallbackDataEXT;
+import org.lwjgl.vulkan.VkDebugUtilsMessengerCreateInfoEXT;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkDeviceCreateInfo;
 import org.lwjgl.vulkan.VkDeviceQueueCreateInfo;
@@ -81,6 +84,8 @@ final class VkContext {
     private static final long STAGING_CHUNK = 16L << 20;
     private static final int MAX_IN_FLIGHT = 3;
     private static final int SUBMIT_EVERY = Integer.getInteger("brainiac.vulkan.submitEvery", 64);
+    /** {@code -Dbrainiac.vulkan.validate=true} turns on the Khronos validation layer. */
+    private static final boolean VALIDATE = Boolean.getBoolean("brainiac.vulkan.validate");
     /** Below this many recorded commands, an idle queue still waits for more before a submit. */
     private static final int SUBMIT_IDLE = Integer.getInteger("brainiac.vulkan.submitIdle", 8);
 
@@ -154,9 +159,30 @@ final class VkContext {
                     .pApplicationName(st.UTF8("brainiac")).pEngineName(st.UTF8("brainiac"))
                     .apiVersion(VK_API_VERSION_1_2);
             VkInstanceCreateInfo ici = VkInstanceCreateInfo.calloc(st).sType$Default().pApplicationInfo(app);
+            if (VALIDATE) {
+                // needs the Khronos validation layer (Vulkan SDK); messages go to standard error
+                ici.ppEnabledLayerNames(st.pointers(st.UTF8("VK_LAYER_KHRONOS_validation")))
+                        .ppEnabledExtensionNames(st.pointers(st.UTF8(EXTDebugUtils.VK_EXT_DEBUG_UTILS_EXTENSION_NAME)));
+            }
             PointerBuffer pp = st.mallocPointer(1);
             check(vkCreateInstance(ici, null, pp), "vkCreateInstance");
             instance = new VkInstance(pp.get(0), ici);
+            if (VALIDATE) {
+                VkDebugUtilsMessengerCreateInfoEXT mci = VkDebugUtilsMessengerCreateInfoEXT.calloc(st).sType$Default()
+                        .messageSeverity(EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+                                | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+                        .messageType(EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+                                | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                                | EXTDebugUtils.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+                        .pfnUserCallback((severity, types, data, user) -> {
+                            System.err.println("[vulkan] " + VkDebugUtilsMessengerCallbackDataEXT.create(data)
+                                    .pMessageString());
+                            return VK_FALSE;
+                        });
+                LongBuffer lp = st.mallocLong(1);
+                check(EXTDebugUtils.vkCreateDebugUtilsMessengerEXT(instance, mci, null, lp),
+                        "vkCreateDebugUtilsMessengerEXT");
+            }
         }
         try {
             Candidate chosen = choose();
@@ -172,7 +198,9 @@ final class VkContext {
                 f2.features().shaderInt64(true);
                 VkDeviceQueueCreateInfo.Buffer q = VkDeviceQueueCreateInfo.calloc(1, st).sType$Default()
                         .queueFamilyIndex(family).pQueuePriorities(st.floats(1f));
-                VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(st).sType$Default().pNext(f2)
+                // by address: LWJGL's typed pNext setters insert the struct in front of the
+                // existing chain, which would drop f2's link to f12
+                VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(st).sType$Default().pNext(f2.address())
                         .pQueueCreateInfos(q);
                 PointerBuffer pp = st.mallocPointer(1);
                 check(vkCreateDevice(physical, dci, null, pp), "vkCreateDevice");
