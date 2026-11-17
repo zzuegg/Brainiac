@@ -766,6 +766,126 @@ public final class Functional {
     }
 
     /**
+     * Sampled softmax cross-entropy (Jean et al., 2015) for very large output layers, such as
+     * recommendation catalogues: the logits are computed only for the rows' own classes and
+     * {@code negatives} classes drawn uniformly, shared by the batch. Every row's class is a
+     * negative for the others. Uniform draws need no correction; the loss estimates full
+     * cross-entropy and its gradient, not exactly.
+     *
+     * @param hidden {@code [rows, size]}
+     * @param weight {@code [size, classes]}
+     * @param ids {@code [rows]} class ids
+     * @param negatives how many classes to draw
+     * @param random the source of the draws
+     * @return a scalar
+     */
+    public static Var sampledSoftmax(Var hidden, Var weight, Tensor ids, int negatives,
+            java.util.random.RandomGenerator random) {
+        int rows = hidden.shape().dim(0);
+        int classes = weight.shape().dim(1);
+        float[] target = ids.toArray();
+        java.util.LinkedHashMap<Integer, Integer> column = new java.util.LinkedHashMap<>();
+        for (float t : target) {
+            column.putIfAbsent((int) t, column.size());
+        }
+        for (int i = 0; i < negatives && column.size() < classes; i++) {
+            column.putIfAbsent(random.nextInt(classes), column.size());
+        }
+        float[] picked = new float[column.size()];
+        column.forEach((c, at) -> picked[at] = c);
+        float[] remapped = new float[rows];
+        for (int r = 0; r < rows; r++) {
+            remapped[r] = column.get((int) target[r]);
+        }
+        Device device = hidden.value().device();
+        Var w = weight.transpose().gather(0, Tensor.of(Shape.of(picked.length), picked, device));
+        Var logits = hidden.matmul(w.transpose());
+        return crossEntropy(logits, Tensor.of(Shape.of(rows), remapped, device));
+    }
+
+    /**
+     * Spectral normalization (Miyato et al., 2018): the weight divided by an estimate of its
+     * largest singular value, so a GAN discriminator stays 1-Lipschitz. One power iteration
+     * per call refines {@code u}, carried between steps.
+     *
+     * @param weight {@code [rows, cols]}, or more axes flattened after the first
+     * @param u {@code [rows]} the running left singular vector estimate; updated in place
+     * @return the normalized weight, same shape
+     */
+    public static Var spectralNorm(Var weight, float[] u) {
+        int rows = weight.shape().dim(0);
+        int cols = Math.toIntExact(weight.shape().size() / rows);
+        float[] w = weight.value().to(io.github.zzuegg.brainiac.tensor.DType.FLOAT32).toArray();
+        if (u.length != rows) {
+            throw new IllegalArgumentException("u needs " + rows + " values, got " + u.length);
+        }
+        if (norm(u) == 0) {
+            java.util.Arrays.fill(u, 1);
+        }
+        float[] v = new float[cols];
+        for (int c = 0; c < cols; c++) {
+            for (int r = 0; r < rows; r++) {
+                v[c] += w[r * cols + c] * u[r];
+            }
+        }
+        float nv = norm(v);
+        for (int c = 0; c < cols; c++) {
+            v[c] /= Math.max(nv, 1e-12f);
+        }
+        java.util.Arrays.fill(u, 0);
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                u[r] += w[r * cols + c] * v[c];
+            }
+        }
+        float nu = norm(u);
+        for (int r = 0; r < rows; r++) {
+            u[r] /= Math.max(nu, 1e-12f);
+        }
+        // sigma = u^T W v, differentiable in W with u and v held fixed
+        Device device = weight.value().device();
+        Tensor uv = Tensor.of(Shape.of(rows, cols), outer(u, v), device).to(weight.value().dtype());
+        Var sigma = weight.reshape(rows, cols).mul(uv).sum();
+        return weight.div(sigma);
+    }
+
+    private static float norm(float[] x) {
+        double s = 0;
+        for (float f : x) {
+            s += f * f;
+        }
+        return (float) Math.sqrt(s);
+    }
+
+    private static float[] outer(float[] u, float[] v) {
+        float[] o = new float[u.length * v.length];
+        for (int r = 0; r < u.length; r++) {
+            for (int c = 0; c < v.length; c++) {
+                o[r * v.length + c] = u[r] * v[c];
+            }
+        }
+        return o;
+    }
+
+    /**
+     * The R1 gradient penalty (Mescheder et al., 2018) for GAN discriminators:
+     * {@code gamma / 2 * E[|grad_x D(x)|^2]} over real samples, differentiable in the
+     * discriminator's weights (double backward).
+     *
+     * @param discriminator scores a batch {@code [batch, ...] -> [batch, 1]}
+     * @param real the real samples
+     * @param gamma the penalty weight
+     * @return a scalar to add to the discriminator's loss
+     */
+    public static Var r1Penalty(java.util.function.Function<Var, Var> discriminator, Tensor real, float gamma) {
+        Var x = Var.param(real);
+        Var scores = discriminator.apply(x).sum();
+        Var g = Var.gradients(scores, java.util.List.of(x), true).getFirst();
+        int batch = real.shape().dim(0);
+        return g.square().sum().mul(gamma / 2 / batch);
+    }
+
+    /**
      * Cross-entropy from logits: the mean over rows of {@code logsumexp(logits) - logits[id]},
      * skipping rows whose id is negative (padding, as PyTorch's {@code ignore_index}).
      *
