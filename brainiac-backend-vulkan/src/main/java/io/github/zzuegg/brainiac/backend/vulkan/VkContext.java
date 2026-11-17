@@ -690,8 +690,28 @@ final class VkContext {
     }
 
     void dispatch(String shader, int x, int y, int z, Slot write, Slot... reads) {
+        dispatch(shader, x, y, z, new Slot[] {write}, reads);
+    }
+
+    /** A dispatch that writes several slots. */
+    void dispatch(String shader, long groups, Slot[] writes, Slot... reads) {
+        long x = Math.min(groups, maxGroups);
+        dispatch(shader, (int) x, (int) ((groups + x - 1) / x), 1, writes, reads);
+    }
+
+    private void dispatch(String shader, int x, int y, int z, Slot[] writes, Slot... reads) {
         long p = pipeline(shader);
-        access(write.address, addresses(reads));
+        long[] w = addresses(writes);
+        boolean hazard = false;
+        for (long a : w) {
+            hazard |= a != 0 && (written.contains(a) || read.contains(a));
+        }
+        if (hazard) {
+            barrier();
+        }
+        for (int i = 0; i < w.length; i++) {
+            access(w[i], i == 0 ? addresses(reads) : new long[0]);
+        }
         Batch b = recording();
         vkCmdBindPipeline(b.commands, VK_PIPELINE_BIND_POINT_COMPUTE, p);
         push.flip();

@@ -72,6 +72,46 @@ public final class PackedMatrix implements PackedStorage {
         return new PackedMatrix(rows, cols, bits, group, nibbles, data, scales.clone());
     }
 
+    /**
+     * Quantizes values: each column's scale for a group of rows is its largest magnitude
+     * there over {@code 2^(bits-1) - 1}, and each level is the value over its scale,
+     * rounded half to even. A group of zeros gets the smallest normal float as its scale.
+     *
+     * @param values {@code rows * cols} values, row-major
+     * @param rows the rows
+     * @param cols the columns
+     * @param bits the bits per level, 2 to 8
+     * @param group the rows per scale; must divide {@code rows}
+     * @return the packed matrix
+     */
+    public static PackedMatrix quantize(float[] values, int rows, int cols, int bits, int group) {
+        if (rows < 1 || cols < 1 || bits < 2 || bits > 8 || group < 1 || rows % group != 0
+                || values.length != (long) rows * cols) {
+            throw new IllegalArgumentException("cannot quantize " + values.length + " values as " + rows + "x" + cols
+                    + ", " + bits + " bits, groups of " + group);
+        }
+        int limit = (1 << (bits - 1)) - 1;
+        float[] scales = new float[rows / group * cols];
+        for (int r = 0; r < rows; r++) {
+            int s = r / group * cols;
+            for (int c = 0; c < cols; c++) {
+                scales[s + c] = Math.max(scales[s + c], Math.abs(values[r * cols + c]));
+            }
+        }
+        for (int i = 0; i < scales.length; i++) {
+            scales[i] = Math.max(scales[i], Float.MIN_NORMAL) / limit;
+        }
+        byte[] levels = new byte[values.length];
+        for (int r = 0; r < rows; r++) {
+            int s = r / group * cols;
+            for (int c = 0; c < cols; c++) {
+                int q = (int) Math.rint(values[r * cols + c] / scales[s + c]);
+                levels[r * cols + c] = (byte) Math.max(-limit, Math.min(limit, q));
+            }
+        }
+        return of(levels, scales, rows, cols, bits, group);
+    }
+
     @Override
     public int rows() {
         return rows;

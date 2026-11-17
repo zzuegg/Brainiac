@@ -432,6 +432,25 @@ public final class Tensor {
         return new Tensor(Shape.of(matrix.rows(), matrix.cols()), device, device.backend().pack(matrix));
     }
 
+    /**
+     * Quantizes this {@code [rows, cols]} float32 matrix into a {@linkplain #packed packed} one
+     * on the same device (see {@link PackedMatrix#quantize}): each column gets a scale for
+     * every {@code group} rows. On a GPU the values stay on the device.
+     *
+     * @param bits the bits per level, 2 to 8
+     * @param group the rows per scale; must divide the rows
+     * @return the packed matrix
+     */
+    public Tensor quantized(int bits, int group) {
+        if (shape.rank() != 2 || dtype() != DType.FLOAT32) {
+            throw new IllegalArgumentException("quantizes a float32 matrix, not " + dtype() + " " + shape);
+        }
+        if (isPacked()) {
+            throw new IllegalArgumentException("already packed");
+        }
+        return new Tensor(shape, device, backend().quantize(storage(), shape.dim(0), shape.dim(1), bits, group));
+    }
+
     /** @return whether this tensor is a {@linkplain #packed packed} matrix */
     public boolean isPacked() {
         return storage instanceof PackedStorage;

@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.backend.vulkan;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -348,6 +349,30 @@ class VulkanBackendTest {
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "vulkan".length(), status);
         assertTrue(List.of(DType.values()).size() == 4);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"256, 64", "16, 1024", "64, 4", "8, 36", "12, 6"})
+    void quantizesOnTheDeviceAsTheCpuDoes(int rows, int cols) {
+        Tensor x = random(11, rows, cols).mul(3);
+        x = x.mul(Tensor.uniform(Shape.of(1, cols), 0, 1, new SplittableRandom(2)));   // a column of near zeros
+        int group = rows % 8 == 0 ? rows / 2 : rows;
+        PackedMatrix expected = PackedMatrix.quantize(x.toArray(), rows, cols, 8, group);
+        Tensor q = x.to(gpu).quantized(8, group);
+        assertTrue(q.isPacked());
+        float[] values = new float[rows * cols];
+        expected.dequantize(values);
+        float[] actual = q.toArray();
+        float[] scales = expected.scales();
+        for (int i = 0; i < values.length; i++) {
+            // the GPU divides to within a few ulps: a level may round the other way at .5
+            float step = scales[i / cols / group * cols + i % cols];
+            assertEquals(values[i], actual[i], step * 1.001f + 1e-6f, rows + "x" + cols + " at " + i);
+        }
+        Tensor back = q.to(CPU);   // levels read back from the device
+        assertArrayEquals(actual, back.toArray(), 0f);
+        Tensor again = Tensor.packed(PackedMatrix.quantize(new float[rows * cols], rows, cols, 8, group), gpu);
+        assertArrayEquals(new float[rows * cols], again.toArray(), 0f);
     }
 
     @ParameterizedTest

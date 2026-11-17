@@ -418,8 +418,12 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
-        if (storage instanceof Packed) {
-            return;   // weights: freed with the tensor that holds them
+        if (storage instanceof Packed p) {
+            if (p.host() == null) {   // quantized here, such as optimizer state: freed now
+                p.levels().release();
+                p.scales().release();
+            }
+            return;   // uploaded weights: freed with the tensor that holds them
         }
         VkStorage s = vs(storage);
         if (s.pending == null) {
@@ -966,22 +970,17 @@ public final class VulkanBackend implements Backend {
 
     // ------------------------------------------------------------------ packed weights
 
-    /** A packed matrix on the device: levels as raw bytes (read as 32-bit words) and scales. */
-    private record Packed(PackedMatrix host, VkStorage levels, VkStorage scales) implements PackedStorage {
-
-        @Override
-        public int rows() {
-            return host.rows();
-        }
-
-        @Override
-        public int cols() {
-            return host.cols();
-        }
+    /**
+     * A packed matrix on the device: levels as raw bytes (read as 32-bit words) and scales.
+     * {@code host} is the matrix it was uploaded from, or null for one quantized on the device,
+     * which {@link #release} frees.
+     */
+    private record Packed(int rows, int cols, int bits, int group, boolean nibbles, PackedMatrix host, VkStorage levels,
+            VkStorage scales) implements PackedStorage {
 
         @Override
         public long size() {
-            return host.size();
+            return (long) rows * cols;
         }
 
         @Override
@@ -1000,13 +999,40 @@ public final class VulkanBackend implements Backend {
         byte[] data = matrix.data();
         VkStorage levels = raw(Math.max(1, (data.length + 3) / 4), null);
         vk.upload(levels.slot(), levels.bytes(), b -> b.put(data));
-        return new Packed(matrix, levels, vs(upload(matrix.scales())));
+        return new Packed(matrix.rows(), matrix.cols(), matrix.bits(), matrix.group(), matrix.nibbles(), matrix, levels,
+                vs(upload(matrix.scales())));
+    }
+
+    @Override
+    public synchronized PackedStorage quantize(Storage values, int rows, int cols, int bits, int group) {
+        VkStorage x = vs(values);
+        if (bits != 8 || cols % 4 != 0 || rows % group != 0 || x.dtype != DType.FLOAT32 || x.size != (long) rows * cols) {
+            return Backend.super.quantize(values, rows, cols, bits, group);
+        }
+        eager(x);
+        VkStorage levels = raw((long) rows * cols / 4, null);
+        VkStorage scales = raw((long) rows / group * cols, DType.FLOAT32, null);
+        long work = (long) rows / group * (cols / 4);
+        vk.push().putLong(x.address()).putLong(levels.address()).putLong(scales.address()).putInt(cols / 4)
+                .putInt(group).putInt((int) work);
+        vk.dispatch(shader("quantize8", DType.FLOAT32), groups(work), new VkContext.Slot[] {levels.slot(), scales.slot()},
+                x.slot());
+        return new Packed(rows, cols, bits, group, false, null, levels, scales);
     }
 
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
         if (packed instanceof Packed p) {
-            return p.host();
+            if (p.host() != null) {
+                return p.host();
+            }
+            float[] scales = download(p.scales());
+            byte[] levels = new byte[(int) p.size()];
+            synchronized (this) {
+                eager(p.levels());
+                vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
+            }
+            return PackedMatrix.of(levels, scales, p.rows(), p.cols(), p.bits(), p.group());
         }
         return Backend.super.unpackToHost(packed);
     }
@@ -1023,10 +1049,9 @@ public final class VulkanBackend implements Backend {
         Packed p = packed(packed);
         VkStorage z = vs(out);
         eager(z);
-        PackedMatrix h = p.host();
         vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(z.address())
-                .putInt(h.rows()).putInt(h.cols()).putInt(h.group()).putInt(h.nibbles() ? 1 : 0);
-        vk.dispatch(shader("unpack_packed", z.dtype), groups(h.size()), z.slot(), p.levels().slot(),
+                .putInt(p.rows()).putInt(p.cols()).putInt(p.group()).putInt(p.nibbles() ? 1 : 0);
+        vk.dispatch(shader("unpack_packed", z.dtype), groups(p.size()), z.slot(), p.levels().slot(),
                 p.scales().slot());
     }
 
@@ -1050,8 +1075,8 @@ public final class VulkanBackend implements Backend {
         VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
-                .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.host().group())
-                .putInt(p.host().nibbles() ? 1 : 0).putInt(chunk);
+                .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
+                .putInt(p.nibbles() ? 1 : 0).putInt(chunk);
         vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
                 p.levels().slot(), p.scales().slot());
         if (pieces > 1) {

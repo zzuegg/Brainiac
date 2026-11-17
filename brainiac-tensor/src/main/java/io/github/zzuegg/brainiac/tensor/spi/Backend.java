@@ -345,6 +345,22 @@ public interface Backend {
     }
 
     /**
+     * Quantizes a {@code [rows, cols]} float32 matrix on this backend, as
+     * {@link PackedMatrix#quantize} does. The default downloads the values and quantizes them
+     * in Java; backends override it to keep the values on the device.
+     *
+     * @param values {@code rows * cols} float32 values, row-major
+     * @param rows the rows
+     * @param cols the columns
+     * @param bits the bits per level, 2 to 8
+     * @param group the rows per scale; must divide {@code rows}
+     * @return the packed storage
+     */
+    default PackedStorage quantize(Storage values, int rows, int cols, int bits, int group) {
+        return pack(PackedMatrix.quantize(download(values), rows, cols, bits, group));
+    }
+
+    /**
      * Returns a packed storage of this backend in Java memory, to move it to another backend.
      *
      * @param packed storage from {@link #pack}

@@ -1,0 +1,31 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// Quantizes float32 [rows, n] to 8-bit levels (see PackedMatrix.quantize): one invocation
+// per group of rows and four columns, writing one 32-bit word of levels per row and four
+// scales, max |x| / 127 over the group.
+layout(local_size_x = GROUP) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) restrict writeonly buffer OutWords { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) restrict readonly buffer InVec4 { vec4 v[]; };
+layout(push_constant) uniform P { InVec4 x; OutWords q; Floats scales; uint n4; uint group; uint work; } p;
+void main() {
+    uint i = gid();
+    if (i >= p.work) return;
+    uint g = i / p.n4;
+    uint c4 = i % p.n4;
+    uint first = g * p.group;
+    vec4 m = vec4(0);
+    for (uint r = first; r < first + p.group; r++) {
+        m = max(m, abs(p.x.v[r * p.n4 + c4]));
+    }
+    vec4 s = max(m, vec4(uintBitsToFloat(0x00800000u))) / 127.0;
+    uint n = p.n4 * 4u;
+    for (uint j = 0; j < 4u; j++) {
+        p.scales.v[g * n + c4 * 4u + j] = s[j];
+    }
+    for (uint r = first; r < first + p.group; r++) {
+        ivec4 q = clamp(ivec4(roundEven(p.x.v[r * p.n4 + c4] / s)), ivec4(-127), ivec4(127));
+        p.q.v[r * p.n4 + c4] = uint(q.x & 0xFF) | (uint(q.y & 0xFF) << 8) | (uint(q.z & 0xFF) << 16)
+                | (uint(q.w & 0xFF) << 24);
+    }
+}

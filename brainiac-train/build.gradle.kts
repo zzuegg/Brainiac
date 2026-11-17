@@ -7,4 +7,15 @@ dependencies {
     api(project(":brainiac-data"))
     api(project(":brainiac-io"))
     testRuntimeOnly(project(":brainiac-backend-cpu"))
+    testRuntimeOnly(project(":brainiac-backend-vulkan"))
+}
+
+// -PtestDevice=vulkan (or part of a device name) runs the tests that use TestDevice there
+tasks.test {
+    val device = providers.gradleProperty("testDevice").getOrElse("cpu")
+    systemProperty("brainiac.test.device", device)
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    if (device != "cpu") {
+        jvmArgs("-Dbrainiac.vulkan.devices=all")   // lavapipe counts too
+    }
 }

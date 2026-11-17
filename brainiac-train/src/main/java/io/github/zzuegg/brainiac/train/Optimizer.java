@@ -112,6 +112,32 @@ public interface Optimizer {
     }
 
     /**
+     * Adam with 8-bit state (Dettmers et al. 2022): the same steps as {@link #adam(float)}
+     * from averages kept as 8-bit levels with a scale per block of 256, a quarter of the
+     * memory. Small parameters (under 4096 values) keep float32 state.
+     *
+     * @param learningRate the step size
+     * @return a new optimizer
+     */
+    static Optimizer adam8bit(float learningRate) {
+        return adam8bit(learningRate, 0.9f, 0.999f, 1e-8f, 0);
+    }
+
+    /**
+     * Adam, or AdamW with a weight decay, with 8-bit state and every setting.
+     *
+     * @param learningRate the step size
+     * @param beta1 decay of the gradient average
+     * @param beta2 decay of the squared-gradient average
+     * @param epsilon added to the denominator
+     * @param weightDecay the decoupled weight decay, 0 for none
+     * @return a new optimizer
+     */
+    static Optimizer adam8bit(float learningRate, float beta1, float beta2, float epsilon, float weightDecay) {
+        return new Adam8bit(learningRate, beta1, beta2, epsilon, weightDecay);
+    }
+
+    /**
      * AdamW (Loshchilov and Hutter 2019): Adam with weight decay applied to the weights
      * directly ({@code w -= lr * weightDecay * w}), not through the gradient.
      *
