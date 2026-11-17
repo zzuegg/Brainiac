@@ -9,6 +9,7 @@ import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
+import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
 
@@ -70,6 +71,19 @@ public final class CpuBackend implements Backend {
     public Storage upload(double[] data, DType dtype) {
         CpuStorage s = CpuStorage.allocate(data.length, dtype);
         s.write(data);
+        return s;
+    }
+
+    @Override
+    public Storage upload(java.lang.foreign.MemorySegment data, DType dtype) {
+        long n = data.byteSize() / dtype.bytes();
+        CpuStorage s = (CpuStorage) allocate(n, dtype);
+        switch (dtype) {
+            case FLOAT32 -> java.lang.foreign.MemorySegment.copy(data, RawValues.FLOAT, 0, s.data, 0, s.data.length);
+            case FLOAT64 -> java.lang.foreign.MemorySegment.copy(data, RawValues.DOUBLE, 0, s.wide, 0, s.wide.length);
+            case FLOAT16, BFLOAT16 ->
+                    java.lang.foreign.MemorySegment.copy(data, RawValues.SHORT, 0, s.half, 0, s.half.length);
+        }
         return s;
     }
 

@@ -128,6 +128,37 @@ class VulkanBackendTest {
         same(type, "convert", t -> t.to(DType.FLOAT32).to(type).add(t), x);
     }
 
+    @ParameterizedTest
+    @EnumSource(DType.class)
+    void uploadsRawValuesFromNativeMemory(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        // small (inline update), mid-size (staging ring) and large (own staging block)
+        for (int n : new int[] {7, 5_000, 3_000_000}) {
+            Tensor host = random(n, n).to(type);
+            double[] values = host.toDoubleArray();
+            try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+                java.lang.foreign.MemorySegment raw = arena.allocate((long) n * type.bytes());
+                for (int i = 0; i < n; i++) {
+                    switch (type) {
+                        case FLOAT32 -> raw.setAtIndex(io.github.zzuegg.brainiac.tensor.spi.RawValues.FLOAT, i,
+                                (float) values[i]);
+                        case FLOAT64 -> raw.setAtIndex(io.github.zzuegg.brainiac.tensor.spi.RawValues.DOUBLE, i,
+                                values[i]);
+                        case FLOAT16 -> raw.setAtIndex(io.github.zzuegg.brainiac.tensor.spi.RawValues.SHORT, i,
+                                Float.floatToFloat16((float) values[i]));
+                        case BFLOAT16 -> raw.setAtIndex(io.github.zzuegg.brainiac.tensor.spi.RawValues.SHORT, i,
+                                DType.floatToBfloat16((float) values[i]));
+                    }
+                }
+                Tensor t = Tensor.of(Shape.of(n), raw, type, gpu);
+                assertEquals(type, t.dtype());
+                assertEquals(gpu, t.device());
+                assertTrue(java.util.Arrays.equals(values, t.toDoubleArray()), type + " x " + n);
+                assertTrue(java.util.Arrays.equals(values, Tensor.of(Shape.of(n), raw, type, CPU).toDoubleArray()));
+            }
+        }
+    }
+
     @Test
     void largeShapesUseTilesAndChunkedReductions() {
         Tensor a = random(3, 67, 131);

@@ -282,6 +282,26 @@ public interface Backend {
     }
 
     /**
+     * Copies raw values into new storage of the same type, without rounding. The values
+     * are laid out as the type stores them, little-endian: four bytes per float32, eight
+     * per float64, two per float16 or bfloat16. This is how weights in a memory-mapped
+     * file reach a device without passing through the Java heap: the default decodes them
+     * into an array and calls {@link #upload(double[], DType)}; backends override it to copy
+     * the bytes straight into their own memory.
+     *
+     * @param data the values; not retained, and only read during this call
+     * @param dtype their type
+     * @return the new storage, of type {@code dtype}
+     */
+    default Storage upload(java.lang.foreign.MemorySegment data, DType dtype) {
+        long n = data.byteSize() / dtype.bytes();
+        if (dtype == DType.FLOAT32) {
+            return upload(data.toArray(RawValues.FLOAT));
+        }
+        return upload(RawValues.decode(data, dtype, n), dtype);
+    }
+
+    /**
      * Copies storage contents to the Java heap without losing precision.
      *
      * @param src the storage to read
