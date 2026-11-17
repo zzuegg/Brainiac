@@ -69,7 +69,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"})
+    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3", "mixtral", "qwen3moe", "qwen2moe"})
     void matchesTransformersLogits(String name) throws IOException {
         Map<String, Object> e = expected(name + "/expected.json");
         Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
@@ -79,7 +79,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"})
+    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3", "mixtral", "qwen3moe", "qwen2moe"})
     void greedyDecodingWithTheCacheMatchesTransformers(String name) throws IOException {
         Map<String, Object> e = expected(name + "/expected.json");
         Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
@@ -97,7 +97,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"qwen3", "phi3", "gemma2", "gemma3"})
+    @ValueSource(strings = {"qwen3", "phi3", "gemma2", "gemma3", "qwen3moe", "qwen2moe"})
     void readsOtherFamiliesFromGguf(String name) throws IOException {
         Map<String, Object> e = expected(name + ".gguf.expected.json");
         Llama model = Llama.load(resource(name + ".gguf"), DEVICE, DType.FLOAT32);
@@ -106,13 +106,85 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"phi3", "gemma2", "gemma3"})
+    @ValueSource(strings = {"phi3", "gemma2", "gemma3", "qwen2moe", "mixtral"})
     void otherFamiliesSaveAndLoad(String name, @TempDir Path dir) {
         Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
         model.save(dir);
         Llama back = Llama.load(dir, DEVICE, DType.FLOAT32);
         int[][] ids = {{1, 2, 3, 4, 5, 6, 7}};
         assertArrayEquals(model.forward(ids).value().toArray(), back.forward(ids).value().toArray(), 1e-5f, name);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"qwen2", "gemma2", "qwen3moe"})
+    void checkpointedTrainingGivesTheSameGradients(String name) {
+        int[][] ids = {{1, 5, 9, 3, 7, 2, 11, 4}};
+        Llama plain = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+        Llama saved = Llama.load(resource(name), DEVICE, DType.FLOAT32).checkpointActivations(true);
+        io.github.zzuegg.brainiac.autograd.Var a = plain.loss(ids);
+        io.github.zzuegg.brainiac.autograd.Var b = saved.loss(ids);
+        assertEquals(a.value().item(), b.value().item(), 1e-5f);
+        a.backward();
+        b.backward();
+        for (String p : plain.namedParameters().keySet()) {
+            // an expert no token chose has no gradient, or a zero one
+            Tensor ga = plain.namedParameters().get(p).grad();
+            Tensor gb = saved.namedParameters().get(p).grad();
+            float[] fa = ga != null ? ga.toArray() : new float[gb == null ? 0 : (int) gb.shape().size()];
+            float[] fb = gb != null ? gb.toArray() : new float[fa.length];
+            assertArrayEquals(fa, fb, 1e-4f, p);
+        }
+        // with adapters: only they learn
+        Llama lora = Llama.load(resource(name), DEVICE, DType.FLOAT32).checkpointActivations(true);
+        java.util.List<io.github.zzuegg.brainiac.autograd.Var> adapters = lora.addLora(4, 8, Llama.attentionAndMlp(), 1);
+        Llama loraPlain = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+        java.util.List<io.github.zzuegg.brainiac.autograd.Var> adaptersPlain = loraPlain.addLora(4, 8,
+                Llama.attentionAndMlp(), 1);
+        lora.loss(ids).backward();
+        loraPlain.loss(ids).backward();
+        for (int i = 0; i < adapters.size(); i++) {
+            if (adaptersPlain.get(i).grad() != null) {
+                assertArrayEquals(adaptersPlain.get(i).grad().toArray(), adapters.get(i).grad().toArray(), 1e-4f);
+            }
+        }
+    }
+
+    @Test
+    void loadsAndSavesPeftAdapters(@TempDir Path dir) throws IOException {
+        Map<String, Object> e = expected("qwen2-lora/expected.json");
+        Llama model = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
+        java.util.List<io.github.zzuegg.brainiac.autograd.Var> adapters = model.loadLora(resource("qwen2-lora"));
+        assertEquals(2 * 3 * 2, adapters.size());
+        int[][] ids = {ints(e.get("ids"))};
+        float[] logits = model.forward(ids).value().toArray();
+        assertArrayEquals(rows(e.get("logits")), logits, 1e-4f);
+        model.saveLora(dir);
+        Llama again = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
+        again.loadLora(dir);
+        assertArrayEquals(logits, again.forward(ids).value().toArray(), 1e-5f);
+        again.mergeLora();
+        assertArrayEquals(logits, again.forward(ids).value().toArray(), 1e-4f);
+    }
+
+    @Test
+    void statesSaveAndLoad(@TempDir Path dir) {
+        Llama model = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
+        LanguageModel.State s = model.newState(2);
+        model.next(s, new int[][] {{0, 5, 9, 3}, {2, 4, 6, 8}}, new boolean[][] {{true, false, false, false},
+            {false, false, false, false}});
+        Path f = dir.resolve("state.safetensors");
+        model.saveState(s, f);
+        LanguageModel.State back = model.loadState(f);
+        assertEquals(s.length(), back.length());
+        int[][] step = {{7}, {7}};
+        assertArrayEquals(model.next(s, step, null).toArray(), model.next(back, step, null).toArray(), 1e-6f);
+        Llama q = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32).quantizeCache(true);
+        LanguageModel.State qs = q.newState(1);
+        q.next(qs, new int[][] {{1, 2, 3}}, null);
+        q.saveState(qs, f);
+        LanguageModel.State qb = q.loadState(f);
+        assertArrayEquals(q.next(qs, new int[][] {{4}}, null).toArray(), q.next(qb, new int[][] {{4}}, null).toArray(),
+                1e-3f);
     }
 
     @Test
@@ -380,7 +452,10 @@ class LlamaTest {
     @Test
     void ggufExportLoadsBackWithTheSameLogits(@TempDir Path dir) throws IOException {
         int[][] prompt = {{1, 2, 3, 4, 5}};
-        for (String name : new String[] {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"}) {
+        for (String name : new String[] {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3", "mixtral", "qwen3moe", "qwen2moe"}) {
+            if (name.contains("moe") || name.equals("mixtral")) {
+                continue;   // experts are not written as GGUF yet
+            }
             Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
             float[] expected = model.forward(prompt).value().toArray();
             Path f = dir.resolve(name + ".gguf");

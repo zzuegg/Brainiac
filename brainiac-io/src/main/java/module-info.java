@@ -7,5 +7,6 @@ module io.github.zzuegg.brainiac.io {
     requires transitive io.github.zzuegg.brainiac.tensor;
     requires transitive io.github.zzuegg.brainiac.data;
     requires java.xml;
+    requires java.net.http;
     exports io.github.zzuegg.brainiac.io;
 }

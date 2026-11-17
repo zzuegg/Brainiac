@@ -32,7 +32,9 @@ import java.util.Set;
  * Without {@code --prompt} it reads questions from the console. Options: {@code --device
  * cpu|vulkan|<part of a name>}, {@code --dtype f32|f16|bf16}, {@code --max N},
  * {@code --temperature T} (0 for greedy), {@code --top-p P}, {@code --kv8} (an 8-bit
- * key/value cache), {@code --no-fuse} (keep q, k, v and gate, up as separate products).
+ * key/value cache), {@code --no-fuse} (keep q, k, v and gate, up as separate products),
+ * {@code --gpu-layers N} (only the last N blocks on the device, the rest on the CPU: for
+ * models larger than the GPU's memory).
  */
 public final class ChatExample {
 
@@ -51,7 +53,7 @@ public final class ChatExample {
                 StandardCharsets.UTF_8));
         if (args.length == 0) {
             System.out.println("Usage: chat <model directory or .gguf> [--prompt text] [--device name] [--dtype f32|f16]"
-                    + " [--max N] [--temperature T] [--top-p P] [--kv8] [--no-fuse]");
+                    + " [--max N] [--temperature T] [--top-p P] [--kv8] [--no-fuse] [--gpu-layers N]");
             return;
         }
         Path path = Path.of(args[0]);
@@ -63,6 +65,7 @@ public final class ChatExample {
         float topP = 0.9f;
         boolean kv8 = false;
         boolean fuse = true;
+        int gpuLayers = -1;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--prompt" -> prompt = args[++i];
@@ -77,6 +80,7 @@ public final class ChatExample {
                 case "--top-p" -> topP = Float.parseFloat(args[++i]);
                 case "--kv8" -> kv8 = true;
                 case "--no-fuse" -> fuse = false;
+                case "--gpu-layers" -> gpuLayers = Integer.parseInt(args[++i]);
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -85,7 +89,14 @@ public final class ChatExample {
             dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
         }
         long start = System.nanoTime();
-        Llama model = Llama.load(path, device, dtype).quantizeCache(kv8);
+        Llama model;
+        if (gpuLayers >= 0 && device.kind() != Device.Kind.CPU) {
+            model = Llama.load(path, Device.cpu(), DType.FLOAT32);
+            model.offload(device, dtype, Math.min(gpuLayers, model.config().layers()));
+        } else {
+            model = Llama.load(path, device, dtype);
+        }
+        model.quantizeCache(kv8);
         if (fuse) {
             model.fuseProjections();
         }

@@ -58,14 +58,21 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      * @param queryScale the attention score scale, or 0 for {@code 1 / sqrt(headDim)}
      * @param fused whether the weights join q, k and v in one projection and gate and up in
      *     another (Phi-3)
+     * @param moe the mixture of experts that replaces the feed-forward network, or
+     *     {@link Moe#NONE}
      */
     public record Extras(boolean qkNorm, int slidingWindow, int globalEvery, double localTheta,
             ActivationOp activation, boolean scaleEmbeddings, boolean postNorms, boolean normOffset,
-            float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused) {
+            float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe) {
 
         /** Plain Llama. */
         public static final Extras NONE = new Extras(false, 0, 0, 0, ActivationOp.SILU, false, false, false, 0, 0, 0,
-                false);
+                false, Moe.NONE);
+
+        /** Checks the experts are there. */
+        public Extras {
+            java.util.Objects.requireNonNull(moe, "moe");
+        }
 
         /**
          * @param layer a layer
@@ -73,6 +80,38 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
          */
         public boolean local(int layer) {
             return slidingWindow > 0 && !(globalEvery > 0 && (layer + 1) % globalEvery == 0);
+        }
+    }
+
+    /**
+     * A sparse mixture of experts in every block (Mixtral, Qwen 2 and 3 MoE): a router picks
+     * {@code perToken} of {@code experts} gated feed-forward networks for each token, whose
+     * outputs are summed by the router's softmax weights.
+     *
+     * @param experts the experts per block, or 0 for a dense feed-forward network
+     * @param perToken the experts each token uses
+     * @param ffn each expert's hidden size
+     * @param normalize whether the chosen experts' weights are scaled to sum to one (Mixtral,
+     *     Qwen 3) or kept as the softmax gave them (Qwen 2)
+     * @param sharedFfn the hidden size of an expert every token uses, gated by a sigmoid
+     *     (Qwen 2), or 0 for none
+     */
+    public record Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn) {
+
+        /** No experts. */
+        public static final Moe NONE = new Moe(0, 0, 0, false, 0);
+
+        /** Checks the sizes. */
+        public Moe {
+            if (experts < 0 || experts > 0 && (perToken < 1 || perToken > experts || ffn < 1)) {
+                throw new IllegalArgumentException("bad mixture of experts: " + perToken + " of " + experts
+                        + " experts of " + ffn);
+            }
+        }
+
+        /** @return whether there are experts */
+        public boolean present() {
+            return experts > 0;
         }
     }
 
@@ -132,11 +171,11 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      * weights {@link Llama} loads from a model folder.
      */
     public static final java.util.Set<String> MODEL_TYPES = java.util.Set.of("llama", "mistral", "qwen2", "qwen3",
-            "phi3", "gemma", "gemma2", "gemma3_text");
+            "phi3", "gemma", "gemma2", "gemma3_text", "mixtral", "qwen2_moe", "qwen3_moe");
 
     /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
     public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2", "qwen3", "phi3",
-            "gemma", "gemma2", "gemma3");
+            "gemma", "gemma2", "gemma3", "qwen2moe", "qwen3moe");
 
     /**
      * Reads a Hugging Face {@code config.json} (transformers 4 or 5 layout) of Llama, Mistral,
@@ -177,7 +216,8 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
                 freqFactors).withYarn(Json.number(ropeNode, "beta_fast", 32), Json.number(ropeNode, "beta_slow", 1),
                         Json.number(ropeNode, "attention_factor", 0));
         boolean bias = config.containsKey("attention_bias") ? Boolean.TRUE.equals(config.get("attention_bias"))
-                : type.equals("qwen2");
+                : config.containsKey("qkv_bias") ? Boolean.TRUE.equals(config.get("qkv_bias"))
+                : type.equals("qwen2") || type.equals("qwen2_moe");
 
         boolean gemma = gemma(type);
         boolean gemma23 = type.equals("gemma2") || type.startsWith("gemma3");
@@ -208,16 +248,34 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         };
         float queryScale = config.get("query_pre_attn_scalar") instanceof Number s
                 ? (float) (1 / Math.sqrt(s.doubleValue())) : 0;
-        Extras extras = new Extras(type.equals("qwen3") || type.startsWith("gemma3"), Math.max(window, 0),
+        Extras extras = new Extras(type.equals("qwen3") || type.equals("qwen3_moe") || type.startsWith("gemma3"),
+                Math.max(window, 0),
                 Math.max(every, 0), localTheta, activation, gemma, gemma23, gemma,
                 (float) Json.number(config, "attn_logit_softcapping", 0),
-                (float) Json.number(config, "final_logit_softcapping", 0), queryScale, type.equals("phi3"));
+                (float) Json.number(config, "final_logit_softcapping", 0), queryScale, type.equals("phi3"),
+                moe(config, type));
         boolean tied = config.containsKey("tie_word_embeddings") ? Boolean.TRUE.equals(config.get("tie_word_embeddings"))
                 : gemma;
         return new LlamaConfig(type, (int) Json.integer(config, "vocab_size"), hidden,
                 (int) Json.integer(config, "intermediate_size"), layers, heads,
                 (int) Json.integer(config, "num_key_value_heads", heads), headDim,
                 (float) Json.number(config, "rms_norm_eps", 1e-6), rope, tied, bias, maxPositions, extras);
+    }
+
+    private static Moe moe(Map<String, Object> config, String type) {
+        long experts = Json.integer(config, "num_local_experts", Json.integer(config, "num_experts", 0));
+        if (experts == 0) {
+            return Moe.NONE;
+        }
+        if (Json.integer(config, "decoder_sparse_step", 1) != 1
+                || config.get("mlp_only_layers") instanceof List<?> dense && !dense.isEmpty()) {
+            throw new IllegalArgumentException("mixtures of experts in only some layers are not supported");
+        }
+        boolean mixtral = type.equals("mixtral");
+        return new Moe((int) experts, (int) Json.integer(config, "num_experts_per_tok", 2),
+                (int) (mixtral ? Json.integer(config, "intermediate_size") : Json.integer(config, "moe_intermediate_size")),
+                mixtral || Boolean.TRUE.equals(config.get("norm_topk_prob")),
+                (int) Json.integer(config, "shared_expert_intermediate_size", 0));
     }
 
     /** The period of the full-attention layers among {@code layer_types}: 0 none, -1 no window at all. */
@@ -300,13 +358,29 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         boolean big = a.equals("gemma2") && layers == 46 || a.equals("gemma3") && layers == 62;
         float queryScale = (float) number(m, a + ".attention.scale",
                 big ? 1 / Math.sqrt((double) hidden / heads) : 0);
-        Extras extras = new Extras(a.equals("qwen3") || a.equals("gemma3"), window, window > 0 ? every : 0,
+        Moe moe = Moe.NONE;
+        if (m.get(a + ".expert_count") instanceof Number count && count.intValue() > 0) {
+            // Mixtral is written as "llama" with experts
+            moe = new Moe(count.intValue(), (int) number(m, a + ".expert_used_count", -1),
+                    (int) number(m, a + ".expert_feed_forward_length", number(m, a + ".feed_forward_length", -1)),
+                    a.equals("qwen2moe") ? false : !Boolean.FALSE.equals(m.get(a + ".expert_weights_norm")),
+                    (int) number(m, a + ".expert_shared_feed_forward_length", 0));
+        }
+        Extras extras = new Extras(a.equals("qwen3") || a.equals("qwen3moe") || a.equals("gemma3"), window,
+                window > 0 ? every : 0,
                 a.equals("gemma3") ? number(m, a + ".rope.freq_base_swa", 10000) : 0,
                 gemma ? ActivationOp.GELU_TANH : ActivationOp.SILU, gemma, gemma23, gemma,
                 (float) number(m, a + ".attn_logit_softcapping", 0), (float) number(m, a + ".final_logit_softcapping", 0),
-                queryScale, gguf.contains("blk.0.attn_qkv.weight"));
-        String type = a.equals("gemma3") ? "gemma3_text" : a;
-        return new LlamaConfig(type, vocab, hidden, (int) number(m, a + ".feed_forward_length", -1), layers, heads,
+                queryScale, gguf.contains("blk.0.attn_qkv.weight"), moe);
+        String type = switch (a) {
+            case "gemma3" -> "gemma3_text";
+            case "qwen2moe" -> "qwen2_moe";
+            case "qwen3moe" -> "qwen3_moe";
+            case "llama" -> moe.present() ? "mixtral" : a;
+            default -> a;
+        };
+        return new LlamaConfig(type, vocab, hidden, (int) number(m, a + ".feed_forward_length",
+                moe.present() ? moe.ffn() : -1), layers, heads,
                 (int) number(m, a + ".attention.head_count_kv", heads), headDim,
                 (float) number(m, a + ".attention.layer_norm_rms_epsilon", 1e-6), rope,
                 !gguf.contains("output.weight"), a.equals("qwen2") || gguf.contains("blk.0.attn_q.bias"), context,
@@ -333,6 +407,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         Map<String, Object> c = new LinkedHashMap<>();
         c.put("architectures", List.of(switch (architecture) {
             case "mistral" -> "MistralForCausalLM";
+            case "mixtral" -> "MixtralForCausalLM";
+            case "qwen2_moe" -> "Qwen2MoeForCausalLM";
+            case "qwen3_moe" -> "Qwen3MoeForCausalLM";
             case "qwen2" -> "Qwen2ForCausalLM";
             case "qwen3" -> "Qwen3ForCausalLM";
             case "phi3" -> "Phi3ForCausalLM";
@@ -399,6 +476,19 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
             c.put("layer_types", types);
             if (e.globalEvery() > 0) {
                 c.put("sliding_window_pattern", (long) e.globalEvery());
+            }
+        }
+        Moe moe = e.moe();
+        if (moe.present()) {
+            c.put(architecture.equals("mixtral") ? "num_local_experts" : "num_experts", (long) moe.experts());
+            c.put("num_experts_per_tok", (long) moe.perToken());
+            if (!architecture.equals("mixtral")) {
+                c.put("moe_intermediate_size", (long) moe.ffn());
+                c.put("norm_topk_prob", moe.normalize());
+                c.put("decoder_sparse_step", 1L);
+            }
+            if (moe.sharedFfn() > 0) {
+                c.put("shared_expert_intermediate_size", (long) moe.sharedFfn());
             }
         }
         if (e.localTheta() > 0) {

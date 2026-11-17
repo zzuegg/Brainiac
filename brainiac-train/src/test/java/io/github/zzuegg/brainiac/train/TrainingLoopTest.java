@@ -55,6 +55,32 @@ class TrainingLoopTest {
     }
 
     @Test
+    void lossScalingUnscalesSkipsOverflowsAndGrows() {
+        Map<String, Var> plain = model(3);
+        Map<String, Var> scaled = model(3);
+        TrainingLoop a = TrainingLoop.of(plain, Optimizer.adam(0.1f));
+        TrainingLoop b = TrainingLoop.of(scaled, Optimizer.adam(0.1f)).lossScaling(1024, 2).clipGradientNorm(5);
+        for (int step = 0; step < 2; step++) {
+            a.clipGradientNorm(5).microBatch(loss(plain, 0, 8));
+            b.microBatch(loss(scaled, 0, 8));
+        }
+        assertArrayEquals(plain.get("w").value().toArray(), scaled.get("w").value().toArray(), 1e-5f);
+        assertEquals(2048, b.lossScale());   // two good steps in a row
+
+        float[] w = scaled.get("w").value().toArray();
+        java.util.function.Supplier<Var> huge = loss(scaled, 0, 8);
+        b.microBatch(() -> huge.get().mul(1e38f));   // overflows once scaled
+        assertTrue(!b.stepped());
+        assertEquals(1, b.skippedSteps());
+        assertEquals(1024, b.lossScale());
+        assertEquals(2, b.step());
+        assertArrayEquals(w, scaled.get("w").value().toArray(), 0f);
+        b.microBatch(loss(scaled, 0, 8));
+        assertTrue(b.stepped());
+        assertEquals(3, b.step());
+    }
+
+    @Test
     void clipsTheGradientNorm() {
         Map<String, Var> m = model(4);
         float[] w0 = m.get("w").value().toArray();

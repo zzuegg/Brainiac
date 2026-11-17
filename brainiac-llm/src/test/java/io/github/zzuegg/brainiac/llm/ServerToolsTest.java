@@ -106,10 +106,14 @@ class ServerToolsTest {
             Map<String, Object> forced = Json.object(Json.object(Json.array(Json.object(choice.get("message"))
                     .get("tool_calls")).getFirst()).get("function"));
             assertEquals("{\"city\":\"Oslo\"}", forced.get("arguments"));
+            assertTrue(Json.object(choice.get("message")).containsKey("content"));
+            assertEquals(null, Json.object(choice.get("message")).get("content"));
             assertEquals(400, status(server, "{\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"nope\"}},"
                     + "\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]," + TOOLS + "}"));
             assertEquals(400, status(server, "{\"tool_choice\":\"sometimes\",\"messages\":[{\"role\":\"user\","
                     + "\"content\":\"x\"}]," + TOOLS + "}"));
+            // the script has run out, so the model fails: the client still gets an answer
+            assertEquals(500, status(server, "{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}"));
         }
     }
 }

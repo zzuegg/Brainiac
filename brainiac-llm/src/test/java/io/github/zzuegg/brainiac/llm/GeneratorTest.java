@@ -31,7 +31,7 @@ class GeneratorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"})
+    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3", "mixtral", "qwen3moe", "qwen2moe"})
     void greedyAndBeamSearchMatchTransformers(String name) throws IOException {
         Map<String, Object> e = LlamaTest.expected(name + "/expected.json");
         Generator gen = new Generator(Llama.load(LlamaTest.resource(name), DEVICE, DType.FLOAT32), null);
@@ -165,6 +165,18 @@ class GeneratorTest {
         Sampling s = Sampling.GREEDY.withRepetitionPenalty(2);
         s.penalize(logits, new int[] {0, 1, 0});
         assertArrayEquals(new float[] {1, -4, 1}, logits);
+    }
+
+    @Test
+    void presenceFrequencyAndBiasFollowOpenAi() {
+        float[] logits = {2, -2, 1, 0};
+        Sampling s = Sampling.GREEDY.withPenalties(0.5f, 0.25f).withLogitBias(java.util.Map.of(3, 5f, 9, 1f));
+        assertTrue(s.usesHistory() && !s.plain());
+        // the prompt is {0, 1}; tokens 0, 2, 0 were written
+        s.penalize(logits, new int[] {0, 1, 0, 2, 0}, 3);
+        assertArrayEquals(new float[] {2 - 0.5f - 0.5f, -2, 1 - 0.5f - 0.25f, 5}, logits);
+        assertEquals(3, s.sample(new float[] {2, -2, 1, 0}, new int[] {0}, 0, null));
+        assertTrue(Sampling.GREEDY.plain());
     }
 
     @Test
