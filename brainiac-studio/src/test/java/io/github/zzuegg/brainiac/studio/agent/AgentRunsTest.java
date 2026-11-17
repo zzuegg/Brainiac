@@ -1,0 +1,248 @@
+package io.github.zzuegg.brainiac.studio.agent;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.studio.chat.ChatListener;
+import io.github.zzuegg.brainiac.studio.chat.ChatProvider;
+import io.github.zzuegg.brainiac.studio.chat.ChatRequest;
+import io.github.zzuegg.brainiac.studio.chat.ChatResult;
+import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.chat.Keys;
+import io.github.zzuegg.brainiac.studio.chat.ModelInfo;
+import io.github.zzuegg.brainiac.studio.train.TrainingService;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Predicate;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/** Agents think with any chat model, call the studio's tools, and wait for the user before acting. */
+class AgentRunsTest {
+
+    @TempDir
+    Path data;
+
+    private Script script;
+    private ChatService chat;
+    private TrainingService training;
+    private AgentRuns agents;
+
+    /** A model that says what the test tells it to, and remembers what it was sent. */
+    static final class Script implements ChatProvider {
+        final Deque<String> turns = new ArrayDeque<>();
+        final List<ChatRequest> heard = new ArrayList<>();
+
+        @Override
+        public String id() {
+            return "script";
+        }
+
+        @Override
+        public String name() {
+            return "Script";
+        }
+
+        @Override
+        public boolean ready() {
+            return true;
+        }
+
+        @Override
+        public boolean local() {
+            return true;
+        }
+
+        @Override
+        public List<ModelInfo> models() {
+            return List.of(new ModelInfo("script", "bot", "Bot", List.of("text"), 0, ""));
+        }
+
+        @Override
+        public synchronized ChatResult chat(ChatRequest request, ChatListener listener) throws IOException {
+            heard.add(request);
+            String turn = turns.isEmpty() ? "I am out of words." : turns.pop();
+            listener.text(turn);
+            return new ChatResult("end", 10, 5);
+        }
+    }
+
+    @BeforeEach
+    void open() {
+        script = new Script();
+        chat = new ChatService(new Keys(data.resolve("keys.properties"), Map.of()), List.of(script),
+                data.resolve("outputs"));
+        training = new TrainingService(data);
+        agents = new AgentRuns(chat, new StudioTools(chat, training), data.resolve("agents"));
+    }
+
+    @AfterEach
+    void close() throws InterruptedException {
+        // agents write their files from their own threads; let them end before the folder goes
+        for (int i = 0; i < 200 && agents.list().stream().anyMatch(r -> "running".equals(r.get("state"))
+                || "waiting".equals(r.get("state"))); i++) {
+            agents.list().stream().filter(r -> "waiting".equals(r.get("state")))
+                    .forEach(r -> agents.stop((String) r.get("id")));
+            Thread.sleep(20);
+        }
+        training.close();
+    }
+
+    private Map<String, Object> until(String id, Predicate<Map<String, Object>> done) throws InterruptedException {
+        for (int i = 0; i < 200; i++) {
+            Map<String, Object> r = agents.get(id).orElseThrow();
+            if (done.test(r)) {
+                return r;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("the agent did not get there: " + agents.get(id).orElseThrow());
+    }
+
+    private static List<String> kinds(Map<String, Object> run) {
+        return Json.array(run.get("steps")).stream().map(s -> (String) Json.object(s).get("kind")).toList();
+    }
+
+    @Test
+    void theToolsAreGeneratedFromTheStudiosMethods() {
+        Map<String, StudioTools.Entry> tools = agents.tools();
+        assertTrue(tools.keySet().containsAll(List.of("list_models", "search_hub", "hub_files", "download_model",
+                "list_datasets", "start_training", "stop_training", "list_training_runs")), tools.keySet().toString());
+        assertNull(tools.get("list_datasets").acts());
+        assertNotNull(tools.get("download_model").acts());
+        assertNotNull(tools.get("start_training").acts());
+        Map<String, Object> schema = tools.get("start_training").tool().parameters();
+        assertEquals(List.of("model", "data"), schema.get("required"));
+        assertTrue(Json.object(schema.get("properties")).containsKey("epochs"));
+
+        String models = agents.call("list_models", Map.of());
+        assertTrue(models.contains("\"model\":\"script/bot\""), models);
+        assertTrue(agents.call("list_datasets", Map.of()).contains("spirals"));
+        assertTrue(agents.call("stop_training", Map.of()).startsWith("error:"), "a missing argument is an error");
+        assertThrows(IllegalArgumentException.class, () -> agents.call("format_disk", Map.of()));
+    }
+
+    @Test
+    void anAgentCallsToolsAndAnswers() throws Exception {
+        script.turns.add("Let me look.\n<tool_call>\n{\"name\": \"list_datasets\", \"arguments\": {}}\n</tool_call>\n"
+                + "<tool_response>\nmade up\n</tool_response>");
+        script.turns.add("There are built-in sets such as spirals.");
+        Map<String, Object> started = agents.start("Which data sets are there?", "script/bot", "ask", 5, null);
+        Map<String, Object> run = until((String) started.get("id"), r -> !"running".equals(r.get("state")));
+
+        assertEquals("done", run.get("state"));
+        assertEquals("There are built-in sets such as spirals.", run.get("answer"));
+        assertEquals("script/bot", run.get("by"));
+        assertEquals(List.of("goal", "say", "call", "result", "answer"), kinds(run));
+        assertEquals(20L, ((Number) run.get("inputTokens")).longValue());
+
+        ChatRequest first = script.heard.getFirst();
+        assertTrue(first.system().contains("<tools>") && first.system().contains("\"name\":\"start_training\""));
+        ChatRequest second = script.heard.get(1);
+        String asked = second.messages().get(1).text();
+        assertFalse(asked.contains("made up"), "what the model imagined after its call is dropped");
+        String answered = second.messages().getLast().text();
+        assertTrue(answered.startsWith("<tool_response>") && answered.contains("spirals"), answered);
+    }
+
+    @Test
+    void inAskModeAToolThatActsWaitsForTheUser() throws Exception {
+        String call = "<tool_call>{\"name\": \"stop_training\", \"arguments\": {\"id\": \"7\"}}</tool_call>";
+        script.turns.add(call);
+        script.turns.add("You did not want that, so I left it.");
+        String id = (String) agents.start("Stop run 7", "script/bot", "ask", 5, null).get("id");
+        Map<String, Object> waiting = until(id, r -> "waiting".equals(r.get("state")));
+        Map<String, Object> pending = Json.object(waiting.get("pending"));
+        assertEquals("stop_training", pending.get("tool"));
+        assertEquals(Map.of("id", "7"), pending.get("arguments"));
+        assertFalse(agents.answer("nope", true, null));
+
+        assertTrue(agents.answer(id, false, "keep it going"));
+        Map<String, Object> run = until(id, r -> "done".equals(r.get("state")));
+        assertTrue(script.heard.get(1).messages().getLast().text().contains("did not allow this call; they said: keep "
+                + "it going"));
+        assertEquals(List.of("goal", "call", "decision", "result", "answer"), kinds(run));
+
+        // in auto mode it calls the tool itself
+        script.turns.add(call);
+        script.turns.add("Done.");
+        String auto = (String) agents.start("Stop run 7", "script/bot", "auto", 5, null).get("id");
+        Map<String, Object> r2 = until(auto, r -> "done".equals(r.get("state")));
+        assertEquals(List.of("goal", "call", "result", "answer"), kinds(r2));
+        assertTrue(script.heard.getLast().messages().getLast().text().contains("there is no run 7"));
+    }
+
+    @Test
+    void runsAreKeptStoppedAndContinued() throws Exception {
+        script.turns.add("<tool_call>{\"name\": \"download_model\", \"arguments\": {\"repo\": \"a/b\", "
+                + "\"option\": \"x.gguf\"}}</tool_call>");
+        String id = (String) agents.start("Get a model", "script/bot", "ask", 5, null).get("id");
+        until(id, r -> "waiting".equals(r.get("state")));
+        assertThrows(IllegalArgumentException.class, () -> agents.delete(id), "a working agent is not removed");
+        assertTrue(agents.stop(id));
+        Map<String, Object> stopped = until(id, r -> "stopped".equals(r.get("state")));
+        assertNull(stopped.get("pending"));
+
+        script.turns.add("Ok, I will not.");
+        agents.reply(id, "Never mind").orElseThrow();
+        assertEquals("Ok, I will not.", until(id, r -> "done".equals(r.get("state"))).get("answer"));
+        String told = script.heard.getLast().messages().getLast().text();
+        assertTrue(told.contains("stopped the agent before this call ran") && told.endsWith("Never mind"), told);
+
+        script.turns.add("Hello.");
+        String done = (String) agents.start("Say hello", "script/bot", "auto", 5, null).get("id");
+        until(done, r -> "done".equals(r.get("state")));
+        script.turns.add("Hello again.");
+        agents.reply(done, "Once more").orElseThrow();
+        Map<String, Object> again = until(done, r -> "done".equals(r.get("state")) && "Hello again.".equals(r.get("answer")));
+        assertEquals(4, Json.array(again.get("messages")).size());
+
+        AgentRuns reopened = new AgentRuns(chat, new StudioTools(chat, training), data.resolve("agents"));
+        assertEquals(2, reopened.list().size());
+        assertEquals(done, reopened.list().getFirst().get("id"));
+        assertEquals("Hello again.", reopened.get(done).orElseThrow().get("answer"));
+        String third = (String) reopened.start("x", "script/bot", "auto", 1, null).get("id");
+        assertEquals("3", third, "ids go on after the kept ones");
+        for (int i = 0; i < 200 && "running".equals(reopened.get(third).orElseThrow().get("state")); i++) {
+            Thread.sleep(20);   // its last save must land before the folder is cleaned up
+        }
+        assertTrue(reopened.delete(id));
+        assertFalse(reopened.get(id).isPresent());
+    }
+
+    @Test
+    void anAgentStopsAtItsStepLimitAndOnlySeesItsTools() throws Exception {
+        for (int i = 0; i < 3; i++) {
+            script.turns.add("<tool_call>{\"name\": \"list_training_runs\", \"arguments\": {}}</tool_call>");
+        }
+        String id = (String) agents.start("Loop", "script/bot", "auto", 2, List.of("list_training_runs")).get("id");
+        Map<String, Object> run = until(id, r -> !"running".equals(r.get("state")));
+        assertEquals("out of steps", run.get("state"));
+        assertTrue(((String) run.get("error")).contains("all 2 steps"));
+        String system = script.heard.getFirst().system();
+        assertTrue(system.contains("list_training_runs") && !system.contains("start_training"));
+
+        script.turns.clear();
+        script.turns.add("<tool_call>{\"name\": \"start_training\", \"arguments\": {\"model\": \"m\", \"data\": "
+                + "\"spirals\"}}</tool_call>");
+        script.turns.add("I cannot.");
+        String id2 = (String) agents.start("Train", "script/bot", "auto", 3, List.of("list_datasets")).get("id");
+        until(id2, r -> "done".equals(r.get("state")));
+        assertTrue(script.heard.getLast().messages().getLast().text().contains("error: there is no tool named "
+                + "start_training"));
+        assertThrows(IllegalArgumentException.class, () -> agents.start("x", "auto", "yolo", 3, null));
+        assertThrows(IllegalArgumentException.class, () -> agents.start(" ", "auto", "ask", 3, null));
+    }
+}

@@ -13,6 +13,8 @@ module io.github.zzuegg.brainiac.studio {
 
     exports io.github.zzuegg.brainiac.studio;
     exports io.github.zzuegg.brainiac.studio.spi;
+    // Tools.from reads the studio's tool methods by reflection
+    opens io.github.zzuegg.brainiac.studio.agent to io.github.zzuegg.brainiac.llm;
 
     uses io.github.zzuegg.brainiac.studio.spi.CapabilityProvider;
     provides io.github.zzuegg.brainiac.studio.spi.CapabilityProvider

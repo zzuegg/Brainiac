@@ -3,6 +3,8 @@ package io.github.zzuegg.brainiac.studio.server;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import io.github.zzuegg.brainiac.studio.agent.AgentRuns;
+import io.github.zzuegg.brainiac.studio.agent.StudioTools;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
 import java.io.IOException;
@@ -85,6 +87,8 @@ public final class StudioServer implements AutoCloseable {
         new ChatRoutes(chat).register(server);
         new BuilderRoutes(chat.folder()).register(server);
         new TrainRoutes(server.training).register(server);
+        new AgentRoutes(new AgentRuns(chat, new StudioTools(chat, server.training), chat.folder().resolve("agents")))
+                .register(server);
         http.start();
         return server;
     }

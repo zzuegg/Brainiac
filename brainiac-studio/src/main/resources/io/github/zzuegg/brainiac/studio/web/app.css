@@ -1064,3 +1064,51 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .cmdk li .faint { font-size: 12px; white-space: nowrap; }
 .cmdk li svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
 .cmdk li.none { cursor: default; }
+
+/* ---------- agents, live ---------- */
+.live-agents.with-detail { grid-template-columns: 340px minmax(0, 1fr) minmax(360px, 36%); }
+.live-agents .lanes { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.live-agents .agent .name { flex-wrap: nowrap; min-width: 0; }
+.live-agents .agent .doing .chip { margin-right: 4px; vertical-align: 1px; }
+.agent-goal { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-form { display: grid; gap: 10px; padding-bottom: 6px; }
+.ag-form textarea, .ag-reply textarea { resize: vertical; min-height: 64px; font: inherit; line-height: 1.45; padding: 8px 10px; height: auto; }
+.ag-form .field { display: grid; gap: 4px; }
+.ag-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ag-steps { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; margin-left: auto; }
+.ag-steps input { width: 64px; height: 30px; }
+.ag-none { font-size: 12.5px; padding: 0 16px; margin: 0 0 10px; }
+.ask-args { font-size: 11.5px; word-break: break-all; }
+.ask .approve { align-items: center; }
+.ag-tools { list-style: none; margin: 0; padding: 0 16px 10px; display: grid; gap: 8px; font-size: 12.5px; }
+.ag-tools li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ag-tools li .muted { flex-basis: 100%; }
+.ag-empty { grid-column: 1 / -1; padding: 10vh 20px 0; max-width: 520px; justify-self: center; }
+.ag-empty svg { width: 28px; height: 28px; color: var(--cap-agent); }
+.agent-detail { border-left: 1px solid var(--line-soft); background: var(--bg); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+#ag-detail-body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.ag-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 16px 10px; border-bottom: 1px solid var(--line-soft); }
+.ag-meta .mono { font-size: 11.5px; }
+.ag-steps-list { flex: 1; overflow: auto; padding: 14px 16px; display: grid; gap: 10px; align-content: start; min-height: 0; }
+.ag-steps-list .ask { margin: 0; }
+.st { font-size: 13px; line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
+.st p { margin: 0 0 6px; }
+.st-goal { background: var(--panel); border: 1px solid var(--line-soft); border-radius: 12px; padding: 10px 12px; display: grid; gap: 4px; }
+.st-say { color: var(--fg-2); }
+.st-call, .st-decision { display: flex; gap: 8px; align-items: baseline; color: var(--fg-2); }
+.st-call svg, .st-decision svg { width: 13px; height: 13px; flex: none; color: var(--cap-agent); align-self: center; }
+.st-call .mono { font-size: 11.5px; word-break: break-all; }
+.st-result { border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); }
+.st-result summary { display: flex; gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; font-size: 12.5px; list-style: none; }
+.st-result summary::-webkit-details-marker { display: none; }
+.st-result summary svg { width: 13px; height: 13px; color: var(--ok); flex: none; }
+.st-result.bad summary svg { color: var(--bad); }
+.st-result summary .faint { margin-left: auto; font-size: 11px; }
+.st-result pre { margin: 0; padding: 8px 10px; border-top: 1px solid var(--line-soft); font: 11.5px/1.45 var(--font-mono); white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
+.st-answer { border-left: 3px solid var(--cap-agent); padding: 4px 0 4px 12px; display: grid; gap: 4px; }
+.ag-reply { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; padding: 10px 16px 14px; border-top: 1px solid var(--line-soft); }
+@media (max-width: 1080px) {
+  .live-agents.with-detail { grid-template-columns: minmax(0, 1fr); }
+  .agent-detail { border-left: 0; border-top: 1px solid var(--line-soft); }
+  .ag-steps-list { overflow: visible; }
+}
