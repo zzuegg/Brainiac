@@ -159,6 +159,9 @@ public final class VulkanBackend implements Backend {
 
     /** Tests: new device-local blocks fail from now on, so memory spills; false lifts that. */
     synchronized void simulateFullDevice(boolean full) {
+        if (full) {
+            vk.reclaim();   // pooled blocks freed, so new tensors need new blocks
+        }
         vk.simulatedLimit = full ? Math.max(1, vk.allocated()) : 0;
     }
 
@@ -458,7 +461,11 @@ public final class VulkanBackend implements Backend {
     @Override
     public synchronized Storage upload(float[] data) {
         VkStorage s = raw(data.length, data.length <= 4096 ? data.clone() : null);
-        vk.upload(s.slot(), s.bytes(), b -> b.asFloatBuffer().put(data));
+        if (java.nio.ByteOrder.nativeOrder() == java.nio.ByteOrder.LITTLE_ENDIAN) {
+            vk.upload(s.slot(), java.lang.foreign.MemorySegment.ofArray(data));
+        } else {
+            vk.upload(s.slot(), s.bytes(), b -> b.asFloatBuffer().put(data));
+        }
         return s;
     }
 
@@ -499,8 +506,7 @@ public final class VulkanBackend implements Backend {
         }
         long n = data.byteSize() / dtype.bytes();
         VkStorage s = raw(n, dtype, null);
-        vk.upload(s.slot(), data.byteSize(), b -> java.lang.foreign.MemorySegment.ofBuffer(b)
-                .copyFrom(data));
+        vk.upload(s.slot(), data);
         return s;
     }
 

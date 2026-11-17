@@ -313,6 +313,20 @@ class VulkanBackendTest {
         }
     }
 
+    /** Uploads larger than a staging block stream through several, in order. */
+    @Test
+    void largeUploadsArriveWhole() {
+        float[] data = new float[(80 << 20) / 4 + 12345];
+        SplittableRandom r = new SplittableRandom(81);
+        for (int i = 0; i < data.length; i++) {
+            data[i] = (float) r.nextDouble();
+        }
+        Tensor t = Tensor.of(Shape.of(data.length), data, gpu);
+        assertArrayEquals(data, t.toArray());
+        java.lang.foreign.MemorySegment seg = java.lang.foreign.MemorySegment.ofArray(data);
+        assertArrayEquals(data, Tensor.of(Shape.of(data.length), seg, DType.FLOAT32, gpu).toArray());
+    }
+
     /** A full device keeps working: new tensors go to memory the device reads over the bus. */
     @Test
     void spillsToHostMemoryWhenTheDeviceIsFull() {

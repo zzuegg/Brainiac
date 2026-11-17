@@ -16,6 +16,7 @@ import org.lwjgl.vulkan.VkPhysicalDeviceCooperativeMatrixFeaturesKHR;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
@@ -145,6 +146,11 @@ final class VkContext {
     private final int uploadType;
     private final int readbackType;
     /**
+     * Host-visible memory for bulk uploads: system memory, not the small window of device memory
+     * the CPU can map (256 MB on many integrated GPUs), as large as the host heap allows.
+     */
+    private final int bulkType;
+    /**
      * Where device memory spills when the device-local heap is full: a host-visible type in
      * another heap (system memory on integrated GPUs and with resizable BAR), or -1.
      * {@code -Dbrainiac.vulkan.spill=false} turns spilling off.
@@ -166,6 +172,10 @@ final class VkContext {
 
     private final ArrayDeque<Block> stagingPool = new ArrayDeque<>();
     private Block staging;
+    /** Bulk upload blocks: each serves one batch, like staging, and returns when it is done. */
+    private final ArrayDeque<Block> bulkPool = new ArrayDeque<>();
+    private Block bulk;
+    private static final long BULK_CHUNK = 32L << 20;
     private Block readback;
 
     private final ArrayDeque<Batch> idleBatches = new ArrayDeque<>();
@@ -291,6 +301,8 @@ final class VkContext {
                 int cached = memoryType(mp, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                         | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
                 readbackType = cached >= 0 ? cached : uploadType;
+                int bulk = bulkType(mp);
+                bulkType = bulk >= 0 ? bulk : uploadType;
                 if (deviceLocalType < 0 || uploadType < 0) {
                     throw new IllegalStateException("no suitable memory types");
                 }
@@ -467,6 +479,21 @@ final class VkContext {
         }
     }
 
+    /** A host-visible, coherent memory type that is not device-local, on the largest heap; or -1. */
+    private static int bulkType(VkPhysicalDeviceMemoryProperties mp) {
+        int best = -1;
+        int need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        for (int i = 0; i < mp.memoryTypeCount(); i++) {
+            int flags = mp.memoryTypes(i).propertyFlags();
+            if ((flags & need) == need && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0
+                    && (best < 0 || mp.memoryHeaps(mp.memoryTypes(i).heapIndex()).size()
+                            > mp.memoryHeaps(mp.memoryTypes(best).heapIndex()).size())) {
+                best = i;
+            }
+        }
+        return best;
+    }
+
     /** A host-visible memory type outside the device-local heap, preferring the largest heap. */
     private static int spillType(VkPhysicalDeviceMemoryProperties mp, int deviceHeap) {
         int best = -1;
@@ -569,7 +596,7 @@ final class VkContext {
     }
 
     /** Frees unused dedicated blocks after collecting garbage, to stay within the budget. */
-    private void reclaim() {
+    void reclaim() {
         reclaims++;
         finish();
         System.gc();
@@ -957,7 +984,7 @@ final class VkContext {
             Block from;
             long at;
             if (bytes > STAGING_CHUNK / 2) {
-                from = block(bytes, uploadType, true);
+                from = block(bytes, bulkType, true);
                 at = 0;
                 b.done.add(() -> destroy(from));
             } else {
@@ -972,6 +999,45 @@ final class VkContext {
         }
         uploadNanos += System.nanoTime() - t;
         recorded(b);
+    }
+
+    /**
+     * Copies host memory into a slot. Large amounts stream through blocks of system memory,
+     * each submitted once full, so the device copies one while the next is written.
+     */
+    void upload(Slot s, MemorySegment src) {
+        long bytes = src.byteSize();
+        if (bytes <= STAGING_CHUNK / 2) {
+            upload(s, bytes, b -> MemorySegment.ofBuffer(b).copyFrom(src));
+            return;
+        }
+        long t = System.nanoTime();
+        uploaded += bytes;
+        access(s.address);
+        long done = 0;
+        while (done < bytes) {
+            Batch b = recording();
+            if (bulk == null || bulk.used == bulk.size) {
+                Block fresh = bulkPool.poll();
+                bulk = fresh != null ? fresh : block(BULK_CHUNK, bulkType, true);
+                bulk.used = 0;
+                Block mine = bulk;
+                b.done.add(() -> bulkPool.add(mine));
+            }
+            long n = Math.min(bytes - done, bulk.size - bulk.used);
+            MemorySegment.ofBuffer(MemoryUtil.memByteBuffer(bulk.mapped + bulk.used, (int) n)).copyFrom(src.asSlice(done, n));
+            try (MemoryStack st = stackPush()) {
+                vkCmdCopyBuffer(b.commands, bulk.buffer, s.block.buffer, VkBufferCopy.calloc(1, st)
+                        .srcOffset(bulk.used).dstOffset(s.offset + done).size(n));
+            }
+            bulk.used += n;
+            done += n;
+            recorded(b);
+            if (bulk != null && bulk.used == bulk.size) {
+                submit();   // the device copies this block while the next one is written
+            }
+        }
+        uploadNanos += System.nanoTime() - t;
     }
 
     /** Room for {@code bytes} bytes in the staging chunk, for commands recorded into {@code b}. */
@@ -1048,6 +1114,7 @@ final class VkContext {
         }
         current = null;
         staging = null;   // its space belongs to this batch until it completes
+        bulk = null;
         while (inFlight.size() >= MAX_IN_FLIGHT) {
             complete(inFlight.poll());
         }
