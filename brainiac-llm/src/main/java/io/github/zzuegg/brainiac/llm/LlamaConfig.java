@@ -167,6 +167,17 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
     }
 
     /**
+     * The Hugging Face {@code model_type} values whose {@code config.json} this reads and whose
+     * weights {@link Llama} loads from a model folder.
+     */
+    public static final java.util.Set<String> MODEL_TYPES = java.util.Set.of("llama", "mistral", "qwen2", "qwen3",
+            "phi3", "gemma", "gemma2", "gemma3_text");
+
+    /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
+    public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2", "qwen3", "phi3",
+            "gemma", "gemma2", "gemma3");
+
+    /**
      * Reads a Hugging Face {@code config.json} (transformers 4 or 5 layout) of Llama, Mistral,
      * Qwen 2 or 3, Phi-3 or Gemma 1, 2 or 3 ({@code gemma3_text}).
      *
@@ -308,9 +319,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
     public static LlamaConfig fromGguf(Gguf gguf) {
         Map<String, Object> m = gguf.metadata();
         String a = gguf.architecture();
-        if (!List.of("llama", "qwen2", "qwen3", "phi3", "gemma", "gemma2", "gemma3").contains(a)) {
-            throw new IllegalArgumentException("GGUF architecture " + a
-                    + " is not supported; llama, qwen2, qwen3, phi3, gemma, gemma2 and gemma3 are");
+        if (!GGUF_ARCHITECTURES.contains(a)) {
+            throw new IllegalArgumentException("GGUF architecture " + a + " is not supported; "
+                    + new java.util.TreeSet<>(GGUF_ARCHITECTURES) + " are");
         }
         int hidden = (int) number(m, a + ".embedding_length", -1);
         int heads = (int) number(m, a + ".attention.head_count", -1);
