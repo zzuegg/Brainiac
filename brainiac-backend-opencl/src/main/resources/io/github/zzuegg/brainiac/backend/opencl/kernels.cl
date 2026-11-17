@@ -252,7 +252,8 @@ __kernel void argmax(__global const T* x, __global float* y, long outer, long le
 // sliced operands are read in place. With splits > 1, the third dimension also splits k into
 // pieces of chunk (a multiple of TS) summed separately: entry s of batch b is written to
 // z[(b * splits + s) * strideZ ...], and the pieces are added up afterwards.
-__kernel void matmul(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
+// the work-group size is fixed at compile time, so the compiler can budget registers for it
+__kernel __attribute__((reqd_work_group_size(TS, RTS, 1))) void matmul(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
                      long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol,
                      long bOff, long bRow, long bCol, int splits, int chunk) {
     // each work item computes WPT outputs of a column, RTS rows apart, so a value loaded from
@@ -306,7 +307,7 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
 // outputs). Each output still sums k in order, as matmul does. matmul_big has 64 x 64 tiles
 // (MW 4), matmul_mid 32 x 32 (MW 2), for products with too few big tiles to fill the device.
 #define TILED_MATMUL(NAME, MW) \
-__kernel void NAME(__global const T* a, __global const T* b, __global T* z, int m, int k, int n, \
+__kernel __attribute__((reqd_work_group_size(16, 16, 1))) void NAME(__global const T* a, __global const T* b, __global T* z, int m, int k, int n, \
                    long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol, \
                    long bOff, long bRow, long bCol, int splits, int chunk) { \
     int lc = get_local_id(0); \

@@ -244,7 +244,8 @@ final class Fused {
         String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol",
                 bLayout == 1 ? "br" : bLayout == 2 ? "col" : null, bLayout == 1 ? "col" : "br");
         String v = root == null ? null : g.eval(root, "i");
-        String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
+        String src = "__kernel __attribute__((reqd_work_group_size(TS, TS, 1))) void fused(__global T* out, long total,"
+                + " __global const T* ma, __global const T* mb,"
                 + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
                 + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol, int splits, int chunk"
                 + g.params + ") {\n"
@@ -292,7 +293,8 @@ final class Fused {
         String loadB = g.load(b, "mb", "br < K && col < N", "bBase + (long) br * bRow + (long) col * bCol",
                 bLayout == 1 ? "br" : bLayout == 2 ? "col" : null, bLayout == 1 ? "col" : "br");
         String v = root == null ? null : g.eval(root, "i");
-        String src = "__kernel void fused(__global T* out, long total, __global const T* ma, __global const T* mb,"
+        String src = "__kernel __attribute__((reqd_work_group_size(16, 16, 1))) void fused(__global T* out, long total,"
+                + " __global const T* ma, __global const T* mb,"
                 + " __global T* mz, int M, int K, int N, long strideA, long strideB, long strideZ,"
                 + " long aOff, long aRow, long aCol, long bOff, long bRow, long bCol, int splits, int chunk"
                 + g.params + ") {\n"
