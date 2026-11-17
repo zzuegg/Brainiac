@@ -171,7 +171,7 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      * weights {@link Llama} loads from a model folder.
      */
     public static final java.util.Set<String> MODEL_TYPES = java.util.Set.of("llama", "mistral", "qwen2", "qwen3",
-            "phi3", "gemma", "gemma2", "gemma3_text");
+            "phi3", "gemma", "gemma2", "gemma3_text", "mixtral", "qwen2_moe", "qwen3_moe");
 
     /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
     public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2", "qwen3", "phi3",
