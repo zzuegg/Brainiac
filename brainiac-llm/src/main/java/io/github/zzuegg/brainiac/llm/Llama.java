@@ -2123,13 +2123,12 @@ public final class Llama implements LanguageModel {
         if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
         }
-        if (config.extras().moe().present()) {
-            throw new IllegalStateException("mixtures of experts cannot be written as GGUF yet");
-        }
         String a = switch (config.architecture()) {
             case "qwen2", "qwen3", "phi3", "gemma", "gemma2" -> config.architecture();
             case "gemma3_text" -> "gemma3";
-            default -> "llama";
+            case "qwen2_moe" -> "qwen2moe";
+            case "qwen3_moe" -> "qwen3moe";
+            default -> "llama";   // Mixtral too
         };
         LlamaConfig.Extras x = config.extras();
         Map<String, Object> m = new LinkedHashMap<>();
@@ -2164,6 +2163,18 @@ public final class Llama implements LanguageModel {
         }
         if (x.finalSoftcap() > 0) {
             m.put(a + ".final_logit_softcapping", x.finalSoftcap());
+        }
+        LlamaConfig.Moe moe = x.moe();
+        if (moe.present()) {
+            m.put(a + ".expert_count", (long) moe.experts());
+            m.put(a + ".expert_used_count", (long) moe.perToken());
+            m.put(a + ".expert_feed_forward_length", (long) moe.ffn());
+            if (moe.sharedFfn() > 0) {
+                m.put(a + ".expert_shared_feed_forward_length", (long) moe.sharedFfn());
+            }
+            if (!a.equals("llama")) {
+                m.put(a + ".expert_weights_norm", moe.normalize());
+            }
         }
         Rope.Settings r = config.rope();
         Map<String, Tensor> t = new LinkedHashMap<>();
@@ -2232,6 +2243,27 @@ public final class Llama implements LanguageModel {
                 t.put(g + e.getValue() + ".weight", w);
                 if (bias != null) {
                     t.put(g + e.getValue() + ".bias", bias);
+                }
+            }
+            Experts ex = blocks.get(i).experts;
+            if (ex != null) {
+                // as llama.cpp: the router, then each projection's experts in one [experts, out, in] stack
+                t.put(g + "ffn_gate_inp.weight", plain(ex.router.weight.value()).transpose());
+                Linear[][] all = {ex.gate, ex.up, ex.down};
+                String[] stored = {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"};
+                for (int k = 0; k < 3; k++) {
+                    Tensor[] each = new Tensor[all[k].length];
+                    for (int e = 0; e < each.length; e++) {
+                        Tensor w = plain(all[k][e].weight.value()).transpose();
+                        each[e] = w.reshape(1, w.shape().dim(0), w.shape().dim(1));
+                    }
+                    t.put(g + stored[k] + ".weight", Tensor.concat(0, each));
+                }
+                if (ex.sharedGate != null) {
+                    t.put(g + "ffn_gate_shexp.weight", plain(ex.sharedGate.weight.value()).transpose());
+                    t.put(g + "ffn_up_shexp.weight", plain(ex.sharedUp.weight.value()).transpose());
+                    t.put(g + "ffn_down_shexp.weight", plain(ex.sharedDown.weight.value()).transpose());
+                    t.put(g + "ffn_gate_inp_shexp.weight", plain(ex.sharedScale.weight.value()).reshape(config.hidden()));
                 }
             }
         }

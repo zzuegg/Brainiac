@@ -453,9 +453,6 @@ class LlamaTest {
     void ggufExportLoadsBackWithTheSameLogits(@TempDir Path dir) throws IOException {
         int[][] prompt = {{1, 2, 3, 4, 5}};
         for (String name : new String[] {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3", "mixtral", "qwen3moe", "qwen2moe"}) {
-            if (name.contains("moe") || name.equals("mixtral")) {
-                continue;   // experts are not written as GGUF yet
-            }
             Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
             float[] expected = model.forward(prompt).value().toArray();
             Path f = dir.resolve(name + ".gguf");
