@@ -36,9 +36,9 @@ import java.util.Objects;
  *   <li>the quantized formats {@code Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
  *       Q6_K, Q8_K} and the integer types are decoded on the host by {@link
  *       #tensor(String, Device, DType)};
- *   <li>{@code Q8_0} and {@code Q4_0} matrices also map exactly onto Brainiac's own packed
- *       weights with {@link #packedTransposed(String, Device)}, so they stay at 8 or 4 bits
- *       on the device and multiply without being expanded.
+ *   <li>matrices in any of those formats but {@code Q8_K} also map onto Brainiac's own
+ *       packed weights with {@link #packedTransposed(String, Device)}, so they stay at 2 to 8
+ *       bits on the device and multiply without being expanded.
  * </ul>
  *
  * <p>Shapes are reported row-major, as everywhere in Brainiac: GGUF lists dimensions
@@ -340,23 +340,27 @@ public final class Gguf implements WeightSource {
     }
 
     /**
-     * Returns whether {@link #packedTransposed} can keep a tensor packed: a {@code Q8_0} or
-     * {@code Q4_0} matrix.
+     * Returns whether {@link #packedTransposed} can keep a tensor packed: a matrix in {@code
+     * Q8_0}, {@code Q4_0}, {@code Q4_1}, {@code Q5_0}, {@code Q5_1}, {@code Q2_K}, {@code
+     * Q3_K}, {@code Q4_K}, {@code Q5_K} or {@code Q6_K}.
      *
      * @param name the name
      * @return {@code true} if it can
      */
     public boolean packable(String name) {
         Entry e = entry(name);
-        return e.shape.rank() == 2 && (e.format == Format.Q8_0 || e.format == Format.Q4_0);
+        return e.shape.rank() == 2 && GgmlQuants.group(e.format) > 0 && e.shape.dim(1) % e.format.block == 0;
     }
 
     /**
-     * Reads a {@code Q8_0} or {@code Q4_0} weight matrix as a {@linkplain Tensor#packed packed}
-     * tensor, transposed: GGUF stores a layer's weights as {@code [out, in]} with blocks along
-     * the input, while Brainiac multiplies {@code x.matmul(w)} with {@code w} as {@code [in,
-     * out]}. The levels and block scales are kept exactly (groups of 32 inputs per output),
-     * at a quarter or an eighth of float32's memory.
+     * Reads a quantized weight matrix as a {@linkplain Tensor#packed packed} tensor,
+     * transposed: GGUF stores a layer's weights as {@code [out, in]} with blocks along the
+     * input, while Brainiac multiplies {@code x.matmul(w)} with {@code w} as {@code [in, out]}.
+     * The levels are kept exactly, with a scale for every 32 inputs of an output (16 for
+     * {@code Q2_K}, {@code Q3_K} and {@code Q6_K}) and, for the formats with a minimum
+     * ({@code Q4_1}, {@code Q5_1}, {@code Q2_K}, {@code Q4_K}, {@code Q5_K}), an offset. Their
+     * unsigned levels are shifted to signed ones, the shift moving into the offset, so values
+     * can differ from the file's in the last bit of a float.
      *
      * @param name the name of a {@linkplain #packable packable} matrix
      * @param device where to put it
@@ -380,37 +384,38 @@ public final class Gguf implements WeightSource {
     public Tensor packedTransposed(String name, Device device, int[] order) {
         if (!packable(name)) {
             throw new IllegalArgumentException(name + " is " + format(name) + " " + shape(name)
-                    + "; only Q8_0 and Q4_0 matrices can stay packed");
+                    + "; it cannot stay packed");
         }
         Entry e = entry(name);
         int out = e.shape.dim(0);
         int in = e.shape.dim(1);
-        int groups = in / 32;
-        byte[] levels = new byte[in * out];
-        float[] scales = new float[groups * out];
-        MemorySegment m = raw(name);
-        boolean eight = e.format == Format.Q8_0;
+        int group = GgmlQuants.group(e.format);
+        int bits = GgmlQuants.bits(e.format);
+        boolean shifted = GgmlQuants.offsets(e.format);
+        int shift = shifted ? 1 << (bits - 1) : 0;
         if (order != null && order.length != out) {
             throw new IllegalArgumentException("order has " + order.length + " entries for " + out + " outputs");
         }
+        int[] column = new int[out];   // the output each stored row becomes
         for (int c = 0; c < out; c++) {
-            int o = order == null ? c : order[c];
-            for (int g = 0; g < groups; g++) {
-                long b = ((long) o * groups + g) * e.format.bytes;
-                scales[g * out + c] = Float.float16ToFloat(m.get(RawValues.SHORT, b));
-                for (int j = 0; j < 32; j++) {
-                    int level;
-                    if (eight) {
-                        level = m.get(ValueLayout.JAVA_BYTE, b + 2 + j);
-                    } else {
-                        int q = Byte.toUnsignedInt(m.get(ValueLayout.JAVA_BYTE, b + 2 + (j & 15)));
-                        level = (j < 16 ? q & 0xF : q >>> 4) - 8;
-                    }
-                    levels[(g * 32 + j) * out + c] = (byte) level;
+            column[order == null ? c : order[c]] = c;
+        }
+        byte[] levels = new byte[in * out];
+        float[] scales = new float[in / group * out];
+        float[] offsets = shifted ? new float[scales.length] : null;
+        GgmlQuants.levels(e.format, raw(name), (long) in * out, (i, q, scale, offset) -> {
+            int c = column[i / in];
+            int r = i % in;
+            levels[r * out + c] = (byte) (q - shift);
+            if (r % group == 0) {
+                int g = r / group * out + c;
+                scales[g] = scale;
+                if (shifted) {
+                    offsets[g] = (float) (offset + (double) scale * shift);
                 }
             }
-        }
-        return Tensor.packed(PackedMatrix.of(levels, scales, in, out, eight ? 8 : 4, 32), device);
+        });
+        return Tensor.packed(PackedMatrix.of(levels, scales, offsets, in, out, bits, group), device);
     }
 
     @Override

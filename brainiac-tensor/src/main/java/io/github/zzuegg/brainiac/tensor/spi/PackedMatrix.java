@@ -12,6 +12,9 @@ import java.util.Objects;
  * take half a byte: the byte at {@code (r / 2) * cols + c} holds row {@code r} (even) in
  * its low four bits and row {@code r + 1} in its high four bits, two's complement, so a
  * SIMD lane or GPU work item for column {@code c} reads both from one byte.
+ *
+ * <p>A matrix may also have an offset per scale, as GGUF's k-quants and {@code Q4_1} do:
+ * then the value is {@code level(r, c) * scale(r / group, c) + offset(r / group, c)}.
  */
 public final class PackedMatrix implements PackedStorage {
 
@@ -22,8 +25,10 @@ public final class PackedMatrix implements PackedStorage {
     private final boolean nibbles;
     private final byte[] data;
     private final float[] scales;
+    private final float[] offsets;
 
-    private PackedMatrix(int rows, int cols, int bits, int group, boolean nibbles, byte[] data, float[] scales) {
+    private PackedMatrix(int rows, int cols, int bits, int group, boolean nibbles, byte[] data, float[] scales,
+            float[] offsets) {
         this.rows = rows;
         this.cols = cols;
         this.bits = bits;
@@ -31,6 +36,7 @@ public final class PackedMatrix implements PackedStorage {
         this.nibbles = nibbles;
         this.data = data;
         this.scales = scales;
+        this.offsets = offsets;
     }
 
     /**
@@ -45,6 +51,23 @@ public final class PackedMatrix implements PackedStorage {
      * @return the packed matrix
      */
     public static PackedMatrix of(byte[] levels, float[] scales, int rows, int cols, int bits, int group) {
+        return of(levels, scales, null, rows, cols, bits, group);
+    }
+
+    /**
+     * Packs levels with an offset per scale.
+     *
+     * @param levels one level per value, row-major, each within {@code bits} bits signed
+     * @param scales {@code (rows / group) * cols} scales, row-major
+     * @param offsets as many offsets as scales, or null for none
+     * @param rows the rows
+     * @param cols the columns
+     * @param bits the bits per level, 2 to 8
+     * @param group the rows per scale; must divide {@code rows}
+     * @return the packed matrix
+     */
+    public static PackedMatrix of(byte[] levels, float[] scales, float[] offsets, int rows, int cols, int bits,
+            int group) {
         Objects.requireNonNull(levels, "levels");
         Objects.requireNonNull(scales, "scales");
         if (rows < 1 || cols < 1 || bits < 2 || bits > 8 || group < 1 || rows % group != 0) {
@@ -55,6 +78,9 @@ public final class PackedMatrix implements PackedStorage {
             throw new IllegalArgumentException("a " + rows + "x" + cols + " matrix in groups of " + group + " needs "
                     + (long) rows * cols + " levels and " + (long) rows / group * cols + " scales, got "
                     + levels.length + " and " + scales.length);
+        }
+        if (offsets != null && offsets.length != scales.length) {
+            throw new IllegalArgumentException(scales.length + " scales but " + offsets.length + " offsets");
         }
         boolean nibbles = bits <= 4 && group % 2 == 0;
         byte[] data;
@@ -69,7 +95,8 @@ public final class PackedMatrix implements PackedStorage {
         } else {
             data = levels.clone();
         }
-        return new PackedMatrix(rows, cols, bits, group, nibbles, data, scales.clone());
+        return new PackedMatrix(rows, cols, bits, group, nibbles, data, scales.clone(),
+                offsets == null ? null : offsets.clone());
     }
 
     /**
@@ -147,6 +174,11 @@ public final class PackedMatrix implements PackedStorage {
         return scales;
     }
 
+    /** @return the offsets, like {@link #scales()}, or null for none; not a copy, do not change */
+    public float[] offsets() {
+        return offsets;
+    }
+
     /**
      * Returns one level.
      *
@@ -171,7 +203,8 @@ public final class PackedMatrix implements PackedStorage {
         for (int r = 0; r < rows; r++) {
             int s = r / group * cols;
             for (int c = 0; c < cols; c++) {
-                out[r * cols + c] = level(r, c) * scales[s + c];
+                out[r * cols + c] = offsets == null ? level(r, c) * scales[s + c]
+                        : level(r, c) * scales[s + c] + offsets[s + c];
             }
         }
     }
@@ -183,7 +216,7 @@ public final class PackedMatrix implements PackedStorage {
 
     @Override
     public long bytes() {
-        return data.length + 4L * scales.length;
+        return data.length + 4L * scales.length * (offsets == null ? 1 : 2);
     }
 
     @Override
