@@ -1,11 +1,12 @@
 package io.github.zzuegg.brainiac.backend.vulkan;
 
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 
 import java.lang.ref.Cleaner;
 
 /**
- * Float32 values in Vulkan device memory: a slot carved out of a larger memory block,
+ * Values of one {@link DType} in Vulkan device memory: a slot carved out of a larger memory block,
  * returned to the pool when this object is released or garbage collected.
  */
 final class VkStorage implements Storage {
@@ -13,16 +14,18 @@ final class VkStorage implements Storage {
     final VulkanBackend owner;
     final VkContext.Slot slot;
     final long size;
+    final DType dtype;
     /** The values as uploaded, kept for small uploads so indices can be checked without a download. */
     final float[] host;
     private final Cleaner.Cleanable cleanable;
     private boolean released;
 
-    VkStorage(VulkanBackend owner, VkContext.Slot slot, long size, float[] host, Cleaner cleaner,
+    VkStorage(VulkanBackend owner, VkContext.Slot slot, long size, DType dtype, float[] host, Cleaner cleaner,
             VkContext context) {
         this.owner = owner;
         this.slot = slot;
         this.size = size;
+        this.dtype = dtype;
         this.host = host;
         this.cleanable = cleaner.register(this, new Free(context, slot));
     }
@@ -40,12 +43,17 @@ final class VkStorage implements Storage {
         return size;
     }
 
+    @Override
+    public DType dtype() {
+        return dtype;
+    }
+
     /** The device address of element {@code index}. */
     long address(long index) {
         if (released) {
             throw new IllegalStateException("a released tensor was used");
         }
-        return slot.address() + index * Float.BYTES;
+        return slot.address() + index * dtype.bytes();
     }
 
     /** The device address of the first element. */
@@ -54,7 +62,7 @@ final class VkStorage implements Storage {
     }
 
     long bytes() {
-        return size * Float.BYTES;
+        return size * dtype.bytes();
     }
 
     void release() {
@@ -66,6 +74,6 @@ final class VkStorage implements Storage {
 
     @Override
     public String toString() {
-        return "VkStorage[" + size + "]";
+        return "VkStorage[" + size + " " + dtype + "]";
     }
 }

@@ -4,7 +4,7 @@
 layout(local_size_x = GROUP) in;
 // For every image cell, offsets/entries list the (pos * ks + k) that read it.
 layout(push_constant) uniform P {
-    In cols; InInts offsets; InInts entries; Floats z;
+    In cols; InInts offsets; InInts entries; Buf z;
     uint channels; uint positions; uint ks; uint img; uint total;
 } p;
 void main() {
@@ -15,13 +15,13 @@ void main() {
     uint nb = plane / p.channels;
     uint ch = plane % p.channels;
     uint width = p.channels * p.ks;
-    float acc = 0.0;
+    ACC acc = K(0.0);
     int end = p.offsets.v[cell + 1];
     for (int e = p.offsets.v[cell]; e < end; e++) {
         uint en = uint(p.entries.v[e]);
         uint pos = en / p.ks;
         uint k = en % p.ks;
-        acc += p.cols.v[(nb * p.positions + pos) * width + ch * p.ks + k];
+        acc += LOAD(p.cols, (nb * p.positions + pos) * width + ch * p.ks + k);
     }
-    p.z.v[idx] = acc;
+    STORE(p.z, idx, acc);
 }

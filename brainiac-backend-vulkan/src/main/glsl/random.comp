@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
-// Element i of CounterRandom.uniform(seed, i): SplitMix64's mixing function.
+// Element i of CounterRandom.uniform(seed, i): SplitMix64's mixing function. Always float32.
 layout(push_constant) uniform P { Floats out_; int64_t seed; uint n; } p;
 void main() {
     uint i = gid();

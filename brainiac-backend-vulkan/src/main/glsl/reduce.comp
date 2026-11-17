@@ -3,8 +3,8 @@
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
 // One invocation per output, looping over its row. op: 0 sum, 1 mean, 2 max, 3 min.
-layout(push_constant) uniform P { In x; Floats y; uint rows; uint len; uint inner; uint op; } p;
-float combine(uint op, float a, float b) {
+layout(push_constant) uniform P { In x; Buf y; uint rows; uint len; uint inner; uint op; } p;
+ACC combine(uint op, ACC a, ACC b) {
     if (op == 2) return isnan(a) || isnan(b) ? a + b : max(a, b);
     if (op == 3) return isnan(a) || isnan(b) ? a + b : min(a, b);
     return a + b;
@@ -13,9 +13,9 @@ void main() {
     uint r = gid();
     if (r >= p.rows) return;
     uint base = (r / p.inner) * p.len * p.inner + r % p.inner;
-    float acc = p.op == 2 ? NEG_INF : p.op == 3 ? POS_INF : 0.0;
+    ACC acc = p.op == 2 ? NEG_INF : p.op == 3 ? POS_INF : K(0.0);
     for (uint t = 0; t < p.len; t++) {
-        acc = combine(p.op, acc, p.x.v[base + t * p.inner]);
+        acc = combine(p.op, acc, LOAD(p.x, base + t * p.inner));
     }
-    p.y.v[r] = p.op == 1 ? acc / float(p.len) : acc;
+    STORE(p.y, r, p.op == 1 ? acc / ACC(p.len) : acc);
 }

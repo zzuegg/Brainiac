@@ -23,7 +23,9 @@ import java.util.Map;
  * driver that supports buffer device addresses and 64-bit shader integers, which covers
  * current AMD, NVIDIA and Intel GPUs.
  *
- * <p>Stores float32 tensors. Operations are recorded into command buffers and submitted in
+ * <p>Stores float32 tensors, and float64, float16 and bfloat16 where the device supports them
+ * (doubles, and 16-bit storage buffers); float16 and bfloat16 are computed in float32, float64
+ * in double precision. Operations are recorded into command buffers and submitted in
  * batches, so the host rarely waits for the device: only when values are read back.
  *
  * <p>System properties: {@code brainiac.vulkan.device} picks a device by index (the list is
@@ -140,12 +142,20 @@ public final class VulkanBackend implements Backend {
 
     // ------------------------------------------------------------------ storage
 
-    private VkStorage raw(long size, float[] host) {
+    private VkStorage raw(long size, DType dtype, float[] host) {
         if (size > Integer.MAX_VALUE) {
             throw new UnsupportedOperationException("the vulkan backend holds at most 2^31 values per tensor");
         }
         isAvailable();
-        return new VkStorage(this, vk.allocate(size * Float.BYTES), size, host, CLEANER, vk);
+        if (!supports(dtype)) {
+            throw new UnsupportedOperationException("the " + name() + " backend does not support " + dtype
+                    + " tensors on this device");
+        }
+        return new VkStorage(this, vk.allocate(size * dtype.bytes()), size, dtype, host, CLEANER, vk);
+    }
+
+    private VkStorage raw(long size, float[] host) {
+        return raw(size, DType.FLOAT32, host);
     }
 
     private VkStorage vs(Storage s) {
@@ -155,24 +165,68 @@ public final class VulkanBackend implements Backend {
         throw new IllegalArgumentException("storage " + s + " does not belong to " + name());
     }
 
+    /** The shader compiled for a number format. */
+    private static String shader(String name, DType dtype) {
+        return name + switch (dtype) {
+            case FLOAT32 -> "_f32";
+            case FLOAT64 -> "_f64";
+            case FLOAT16 -> "_f16";
+            case BFLOAT16 -> "_bf16";
+        };
+    }
+
+    /**
+     * {@code s} in another format: itself if it already is, else a converted copy that the
+     * caller releases (with {@link #done}) once the command that reads it is recorded.
+     */
+    private VkStorage as(VkStorage s, DType dtype) {
+        if (s.dtype == dtype) {
+            return s;
+        }
+        VkStorage c = raw(s.size, dtype, null);
+        convert(s, c);
+        return c;
+    }
+
+    /** Releases conversions made by {@link #as}: those that differ from the originals. */
+    private static void done(VkStorage converted, VkStorage original) {
+        if (converted != original) {
+            converted.release();
+        }
+    }
+
     @Override
     public boolean supports(DType dtype) {
-        return dtype == DType.FLOAT32;
+        if (dtype == DType.FLOAT32) {
+            return true;
+        }
+        if (!isAvailable()) {
+            return false;
+        }
+        return switch (dtype) {
+            case FLOAT64 -> vk.fp64;
+            case FLOAT16 -> vk.storage16;
+            case BFLOAT16 -> vk.storage16 && vk.int16;
+            default -> false;
+        };
     }
 
     @Override
     public synchronized Storage allocate(long size) {
-        VkStorage s = raw(size, null);
-        vk.fill(s.slot, 0, s.bytes(), 0);
+        return allocate(size, DType.FLOAT32);
+    }
+
+    @Override
+    public synchronized Storage allocate(long size, DType dtype) {
+        VkStorage s = raw(size, dtype, null);
+        // zero bits are 0.0 in every format; fills cover whole 32-bit words, inside the slot
+        vk.fill(s.slot, 0, (s.bytes() + 3) & ~3L, 0);
         return s;
     }
 
     @Override
     public synchronized Storage allocateUninitialized(long size, DType dtype) {
-        if (dtype != DType.FLOAT32) {
-            return allocate(size, dtype);
-        }
-        return raw(size, null);
+        return raw(size, dtype, null);
     }
 
     @Override
@@ -190,6 +244,36 @@ public final class VulkanBackend implements Backend {
         return s;
     }
 
+    @Override
+    public synchronized Storage upload(double[] data, DType dtype) {
+        if (dtype == DType.FLOAT32) {
+            float[] f = new float[data.length];
+            for (int i = 0; i < f.length; i++) {
+                f[i] = (float) data[i];
+            }
+            return upload(f);
+        }
+        VkStorage s = raw(data.length, dtype, null);
+        vk.upload(s.slot, s.bytes(), b -> {
+            switch (dtype) {
+                case FLOAT64 -> b.asDoubleBuffer().put(data);
+                case FLOAT16 -> {
+                    var h = b.asShortBuffer();
+                    for (double v : data) {
+                        h.put(Float.floatToFloat16((float) v));
+                    }
+                }
+                default -> {
+                    var h = b.asShortBuffer();
+                    for (double v : data) {
+                        h.put(DType.floatToBfloat16((float) v));
+                    }
+                }
+            }
+        });
+        return s;
+    }
+
     private VkStorage uploadInts(int[] data) {
         VkStorage s = raw(Math.max(1, data.length), null);
         vk.upload(s.slot, (long) data.length * Integer.BYTES, b -> b.asIntBuffer().put(data));
@@ -200,15 +284,87 @@ public final class VulkanBackend implements Backend {
     public synchronized float[] download(Storage src) {
         VkStorage s = vs(src);
         float[] out = new float[Math.toIntExact(s.size)];
-        ByteBuffer b = vk.download(s.slot, s.bytes());
-        b.asFloatBuffer().get(out);
+        if (s.dtype == DType.FLOAT32) {
+            vk.download(s.slot, s.bytes()).asFloatBuffer().get(out);
+        } else {
+            double[] d = downloadDouble(s);
+            for (int i = 0; i < out.length; i++) {
+                out[i] = (float) d[i];
+            }
+        }
         return out;
+    }
+
+    @Override
+    public synchronized double[] downloadDouble(Storage src) {
+        VkStorage s = vs(src);
+        double[] out = new double[Math.toIntExact(s.size)];
+        ByteBuffer b = vk.download(s.slot, s.bytes());
+        switch (s.dtype) {
+            case FLOAT64 -> b.asDoubleBuffer().get(out);
+            case FLOAT32 -> {
+                var f = b.asFloatBuffer();
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = f.get(i);
+                }
+            }
+            case FLOAT16 -> {
+                var h = b.asShortBuffer();
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = Float.float16ToFloat(h.get(i));
+                }
+            }
+            case BFLOAT16 -> {
+                var h = b.asShortBuffer();
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = DType.bfloat16ToFloat(h.get(i));
+                }
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public synchronized void convert(Storage in, Storage out) {
+        VkStorage x = vs(in);
+        VkStorage y = vs(out);
+        if (x.dtype == y.dtype) {
+            vk.copy(x.slot, 0, y.slot, 0, x.bytes());
+        } else if (x.dtype == DType.FLOAT32) {
+            vk.push().putLong(x.address()).putLong(y.address()).putInt((int) y.size);
+            vk.dispatch(shader("from_float", y.dtype), groups(y.size), y.slot, x.slot);
+        } else if (y.dtype == DType.FLOAT32) {
+            vk.push().putLong(x.address()).putLong(y.address()).putInt((int) y.size);
+            vk.dispatch(shader("to_float", x.dtype), groups(y.size), y.slot, x.slot);
+        } else {
+            // through float32, which is also how the CPU rounds between these formats
+            VkStorage f = raw(x.size, null);
+            convert(x, f);
+            convert(f, y);
+            f.release();
+        }
     }
 
     @Override
     public synchronized void fill(Storage dst, float value) {
         VkStorage s = vs(dst);
-        vk.fill(s.slot, 0, s.bytes(), Float.floatToRawIntBits(value));
+        switch (s.dtype) {
+            case FLOAT32 -> vk.fill(s.slot, 0, s.bytes(), Float.floatToRawIntBits(value));
+            case FLOAT16, BFLOAT16 -> {
+                int h = (s.dtype == DType.FLOAT16 ? Float.floatToFloat16(value) : DType.floatToBfloat16(value))
+                        & 0xFFFF;
+                // whole 32-bit words: an odd count writes one value past the end, inside the slot
+                vk.fill(s.slot, 0, (s.bytes() + 3) & ~3L, h | h << 16);
+            }
+            case FLOAT64 -> {
+                if (Double.doubleToRawLongBits(value) == 0) {
+                    vk.fill(s.slot, 0, s.bytes(), 0);
+                } else {
+                    vk.push().putLong(s.address()).putInt((int) s.size).putFloat(value);
+                    vk.dispatch(shader("fill", s.dtype), groups(s.size), s.slot);
+                }
+            }
+        }
     }
 
     @Override
@@ -227,45 +383,56 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void unary(UnaryOp op, Storage in, Storage out) {
-        VkStorage x = vs(in);
         VkStorage y = vs(out);
+        VkStorage x = as(vs(in), y.dtype);
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) y.size).putInt(op.ordinal());
-        vk.dispatch("unary", groups(y.size), y.slot, x.slot);
+        vk.dispatch(shader("unary", y.dtype), groups(y.size), y.slot, x.slot);
+        done(x, vs(in));
     }
 
     @Override
     public synchronized void activation(ActivationOp op, float param, Storage in, Storage out) {
-        VkStorage x = vs(in);
         VkStorage y = vs(out);
+        VkStorage x = as(vs(in), y.dtype);
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) y.size).putInt(op.ordinal()).putFloat(param);
-        vk.dispatch("activation", groups(y.size), y.slot, x.slot);
+        vk.dispatch(shader("activation", y.dtype), groups(y.size), y.slot, x.slot);
+        done(x, vs(in));
     }
 
     @Override
     public synchronized void activationBackward(ActivationOp op, float param, Storage in, Storage grad, Storage out) {
-        VkStorage x = vs(in);
-        VkStorage g = vs(grad);
         VkStorage y = vs(out);
+        VkStorage x = as(vs(in), y.dtype);
+        VkStorage g = as(vs(grad), y.dtype);
         vk.push().putLong(x.address()).putLong(g.address()).putLong(y.address()).putInt((int) y.size)
                 .putInt(op.ordinal()).putFloat(param);
-        vk.dispatch("activation_backward", groups(y.size), y.slot, x.slot, g.slot);
+        vk.dispatch(shader("activation_backward", y.dtype), groups(y.size), y.slot, x.slot, g.slot);
+        done(x, vs(in));
+        done(g, vs(grad));
     }
 
     @Override
     public synchronized void binary(BinaryOp op, Storage a, long[] aStrides, Storage b, long[] bStrides, int[] shape,
             Storage out) {
-        VkStorage x = vs(a);
-        VkStorage y = vs(b);
         VkStorage z = vs(out);
         long n = z.size;
         if (n == 0) {
             return;
         }
+        VkStorage x = as(vs(a), z.dtype);
+        VkStorage y = as(vs(b), z.dtype);
+        binary(op, x, aStrides, y, bStrides, shape, z, n);
+        done(x, vs(a));
+        done(y, vs(b));
+    }
+
+    private void binary(BinaryOp op, VkStorage x, long[] aStrides, VkStorage y, long[] bStrides, int[] shape,
+            VkStorage z, long n) {
         long[] contiguous = contiguous(shape);
         if (Arrays.equals(aStrides, contiguous) && Arrays.equals(bStrides, contiguous)) {
             vk.push().putLong(x.address()).putLong(y.address()).putLong(z.address()).putInt((int) n)
                     .putInt(op.ordinal());
-            vk.dispatch("binary_contiguous", groups(n), z.slot, x.slot, y.slot);
+            vk.dispatch(shader("binary_contiguous", z.dtype), groups(n), z.slot, x.slot, y.slot);
             return;
         }
         Axes ax = Axes.merge(shape, aStrides, bStrides, contiguous);
@@ -274,7 +441,7 @@ public final class VulkanBackend implements Backend {
                     .putLong(z.address(offsets[2])).putInt((int) count).putInt(op.ordinal()).putInt(inner)
                     .putInt(0).putInt(0);
             ax.put(p, inner);
-            vk.dispatch("binary", groups(count), z.slot, x.slot, y.slot);
+            vk.dispatch(shader("binary", z.dtype), groups(count), z.slot, x.slot, y.slot);
         });
     }
 
@@ -286,7 +453,6 @@ public final class VulkanBackend implements Backend {
     @Override
     public synchronized void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out,
             long outOffset, long[] outStrides) {
-        VkStorage x = vs(in);
         VkStorage z = vs(out);
         long n = 1;
         for (int d : shape) {
@@ -295,16 +461,24 @@ public final class VulkanBackend implements Backend {
         if (n == 0) {
             return;
         }
+        VkStorage x = as(vs(in), z.dtype);
+        copy(x, inOffset, inStrides, shape, z, outOffset, outStrides, n);
+        done(x, vs(in));
+    }
+
+    private void copy(VkStorage x, long inOffset, long[] inStrides, int[] shape, VkStorage z, long outOffset,
+            long[] outStrides, long n) {
+        int bytes = z.dtype.bytes();
         Axes ax = Axes.merge(shape, inStrides, outStrides, null);
         if (ax.rank() == 1 && ax.stride(0, 0) == 1 && ax.stride(1, 0) == 1) {
-            vk.copy(x.slot, inOffset * Float.BYTES, z.slot, outOffset * Float.BYTES, n * Float.BYTES);
+            vk.copy(x.slot, inOffset * bytes, z.slot, outOffset * bytes, n * bytes);
             return;
         }
         ax.forEachBlock((offsets, inner, count) -> {
             ByteBuffer p = vk.push().putLong(x.address(inOffset + offsets[0]))
                     .putLong(z.address(outOffset + offsets[1])).putInt((int) count).putInt(inner).putInt(0).putInt(0);
             ax.put(p, inner);
-            vk.dispatch("copy", groups(count), z.slot, x.slot);
+            vk.dispatch(shader("copy", z.dtype), groups(count), z.slot, x.slot);
         });
     }
 
@@ -437,28 +611,29 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void reduce(ReduceOp op, Storage in, long outer, long length, long inner, Storage out) {
-        VkStorage x = vs(in);
         VkStorage y = vs(out);
         long rows = outer * inner;
         if (rows == 0) {
             return;
         }
+        VkStorage x = as(vs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
             vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
                     .putInt((int) inner);
-            vk.dispatch("argmax", groups(rows), y.slot, x.slot);
-            return;
+            vk.dispatch(shader("argmax", y.dtype), groups(rows), y.slot, x.slot);
+        } else {
+            reduce(op.ordinal(), x, y, rows, length, inner);
         }
-        reduce(op.ordinal(), x, y, rows, length, inner);
+        done(x, vs(in));
     }
 
     private void reduce(int op, VkStorage x, VkStorage y, long rows, long length, long inner) {
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
                 .putInt((int) inner).putInt(op);
         if (rows < 1024 && length > 256) {
-            vk.dispatch("reduce_group", rows, y.slot, x.slot);
+            vk.dispatch(shader("reduce_group", y.dtype), rows, y.slot, x.slot);
         } else {
-            vk.dispatch("reduce", groups(rows), y.slot, x.slot);
+            vk.dispatch(shader("reduce", y.dtype), groups(rows), y.slot, x.slot);
         }
     }
 
@@ -476,16 +651,22 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
-        VkStorage x = vs(a);
-        VkStorage y = vs(b);
         VkStorage z = vs(out);
         if ((long) batch * m * n == 0) {
             return;
         }
         if (k == 0) {
-            vk.fill(z.slot, 0, z.bytes(), 0);
+            vk.fill(z.slot, 0, (z.bytes() + 3) & ~3L, 0);
             return;
         }
+        VkStorage x = as(vs(a), z.dtype);
+        VkStorage y = as(vs(b), z.dtype);
+        matmul(x, y, batch, m, k, n, z);
+        done(x, vs(a));
+        done(y, vs(b));
+    }
+
+    private void matmul(VkStorage x, VkStorage y, int batch, int m, int k, int n, VkStorage z) {
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
         int tile = big >= BIG_TILES ? 64 : 32;
         long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
@@ -497,7 +678,7 @@ public final class VulkanBackend implements Backend {
             splits = ceil(k, chunk);
         }
         long mn = (long) m * n;
-        VkStorage target = splits == 1 ? z : raw((long) batch * splits * mn, null);
+        VkStorage target = splits == 1 ? z : raw((long) batch * splits * mn, z.dtype, null);
         int maxZ = 65535;
         int pieces = batch * splits;
         // batches beyond the z limit go in several dispatches; each starts at a whole batch
@@ -508,8 +689,8 @@ public final class VulkanBackend implements Backend {
             vk.push().putLong(x.address(firstBatch * m * k)).putLong(y.address(firstBatch * k * n))
                     .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt(m * k).putInt(k * n)
                     .putInt((int) mn).putInt(splits).putInt(chunk);
-            vk.dispatch(tile == 64 ? "matmul64" : "matmul32", ceil(n, tile), ceil(m, tile), count, target.slot,
-                    x.slot, y.slot);
+            vk.dispatch(shader(tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
+                    target.slot, x.slot, y.slot);
         }
         if (splits > 1) {
             reduce(ReduceOp.SUM.ordinal(), target, z, (long) batch * mn, splits, mn);
@@ -582,7 +763,7 @@ public final class VulkanBackend implements Backend {
         PackedMatrix h = p.host();
         vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(z.address())
                 .putInt(h.rows()).putInt(h.cols()).putInt(h.group()).putInt(h.nibbles() ? 1 : 0);
-        vk.dispatch("unpack_packed", groups(h.size()), z.slot, p.levels().slot, p.scales().slot);
+        vk.dispatch(shader("unpack_packed", z.dtype), groups(h.size()), z.slot, p.levels().slot, p.scales().slot);
     }
 
     @Override
@@ -592,52 +773,55 @@ public final class VulkanBackend implements Backend {
             return;
         }
         Packed p = packed(b);
-        VkStorage x = vs(a);
         VkStorage z = vs(out);
+        VkStorage x = as(vs(a), z.dtype);
         int columnGroups = ceil(n, 128);
         // pieces of at least 64 rows, enough of them to fill the device
         int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
         int chunk = ceil(ceil(k, pieces), 2) * 2;
         pieces = ceil(k, chunk);
         long mn = (long) m * n;
-        VkStorage target = pieces == 1 ? z : raw(pieces * mn, null);
+        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
                 .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.host().group())
                 .putInt(p.host().nibbles() ? 1 : 0).putInt(chunk);
-        vk.dispatch("matmul_packed" + rows, columnGroups, 1, pieces, target.slot, x.slot, p.levels().slot,
+        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, target.slot, x.slot, p.levels().slot,
                 p.scales().slot);
         if (pieces > 1) {
             reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
             target.release();
         }
+        done(x, vs(a));
     }
 
     // ------------------------------------------------------------------ windows and indices
 
     @Override
     public synchronized void im2col(Storage in, ConvGeometry geometry, float padValue, Storage out) {
-        VkStorage x = vs(in);
         VkStorage z = vs(out);
+        VkStorage x = as(vs(in), z.dtype);
         Tables t = tables(geometry);
         int ks = geometry.kernelSize();
         long total = (long) geometry.batch() * geometry.positionCount() * geometry.channels() * ks;
         vk.push().putLong(x.address()).putLong(t.im2col.address()).putLong(z.address()).putInt(geometry.channels())
                 .putInt(geometry.positionCount()).putInt(ks).putInt(geometry.imageSize()).putFloat(padValue)
                 .putInt((int) total);
-        vk.dispatch("im2col", groups(total), z.slot, x.slot, t.im2col.slot);
+        vk.dispatch(shader("im2col", z.dtype), groups(total), z.slot, x.slot, t.im2col.slot);
+        done(x, vs(in));
     }
 
     @Override
     public synchronized void col2im(Storage cols, ConvGeometry geometry, Storage out) {
-        VkStorage c = vs(cols);
         VkStorage z = vs(out);
+        VkStorage c = as(vs(cols), z.dtype);
         Tables t = tables(geometry);
         long total = (long) geometry.batch() * geometry.channels() * geometry.imageSize();
         vk.push().putLong(c.address()).putLong(t.offsets.address()).putLong(t.entries.address())
                 .putLong(z.address()).putInt(geometry.channels()).putInt(geometry.positionCount())
                 .putInt(geometry.kernelSize()).putInt(geometry.imageSize()).putInt((int) total);
-        vk.dispatch("col2im", groups(total), z.slot, c.slot, t.offsets.slot, t.entries.slot);
+        vk.dispatch(shader("col2im", z.dtype), groups(total), z.slot, c.slot, t.offsets.slot, t.entries.slot);
+        done(c, vs(cols));
     }
 
     private Tables tables(ConvGeometry g) {
@@ -711,10 +895,18 @@ public final class VulkanBackend implements Backend {
 
     /** The indices as whole numbers, checked; read from the upload when it was kept. */
     private int[] indices(VkStorage storage, int count, long length) {
-        float[] values = storage.host != null ? storage.host : download(storage);
+        double[] values;
+        if (storage.host != null) {
+            values = new double[count];
+            for (int i = 0; i < count; i++) {
+                values[i] = storage.host[i];
+            }
+        } else {
+            values = downloadDouble(storage);
+        }
         int[] idx = new int[count];
         for (int i = 0; i < count; i++) {
-            float v = values[i];
+            double v = values[i];
             int j = (int) v;
             if (j != v || j < 0 || j >= length) {
                 throw new IndexOutOfBoundsException("index " + v + " out of range [0, " + length + ")");
@@ -727,21 +919,23 @@ public final class VulkanBackend implements Backend {
     @Override
     public synchronized void gather(Storage in, long outer, long length, long inner, Storage indices, int count,
             Storage out) {
-        VkStorage x = vs(in);
-        VkStorage ind = vs(indices);
         VkStorage z = vs(out);
-        indices(ind, count, length);
+        VkStorage x = as(vs(in), z.dtype);
+        indices(vs(indices), count, length);
+        VkStorage ind = as(vs(indices), DType.FLOAT32);
         long total = outer * count * inner;
         vk.push().putLong(x.address()).putLong(ind.address()).putLong(z.address()).putInt((int) length)
                 .putInt((int) inner).putInt(count).putInt((int) total);
-        vk.dispatch("gather", groups(total), z.slot, x.slot, ind.slot);
+        vk.dispatch(shader("gather", z.dtype), groups(total), z.slot, x.slot, ind.slot);
+        done(x, vs(in));
+        done(ind, vs(indices));
     }
 
     @Override
     public synchronized void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
             Storage out) {
-        VkStorage s = vs(src);
         VkStorage z = vs(out);
+        VkStorage s = as(vs(src), z.dtype);
         int[] idx = indices(vs(indices), count, length);
         int len = Math.toIntExact(length);
         int[] offsets = new int[len + 1];
@@ -761,7 +955,8 @@ public final class VulkanBackend implements Backend {
         long total = outer * length * inner;
         vk.push().putLong(s.address()).putLong(off.address()).putLong(ent.address()).putLong(z.address())
                 .putInt(len).putInt((int) inner).putInt(count).putInt((int) total);
-        vk.dispatch("scatter_add", groups(total), z.slot, s.slot, off.slot, ent.slot);
+        vk.dispatch(shader("scatter_add", z.dtype), groups(total), z.slot, s.slot, off.slot, ent.slot);
+        done(s, vs(src));
         off.release();
         ent.release();
     }

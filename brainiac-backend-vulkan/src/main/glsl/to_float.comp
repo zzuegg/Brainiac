@@ -1,0 +1,10 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// any format to float32
+layout(push_constant) uniform P { In x; Floats y; uint n; } p;
+void main() {
+    uint i = gid();
+    if (i < p.n) p.y.v[i] = float(LOAD(p.x, i));
+}

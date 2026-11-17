@@ -155,6 +155,20 @@ class VulkanBackendTest {
     }
 
     @Test
+    void float64HasDoublePrecision() {
+        assumeTrue(supported(DType.FLOAT64), "float64 not supported by " + gpu);
+        // GLSL has no double exp or log; the shaders bring their own
+        Tensor x = random(13, 64).mul(30).to(DType.FLOAT64);
+        UnaryOperator<Tensor> f = t -> t.exp().add(t.abs().add(1e-3f).log()).add(t.tanh()).add(t.sigmoid())
+                .add(t.abs().pow(0.7f));
+        double[] e = f.apply(x).toDoubleArray();
+        double[] a = f.apply(x.to(gpu)).toDoubleArray();
+        for (int i = 0; i < e.length; i++) {
+            assertEquals(e[i], a[i], 1e-12 * Math.max(1, Math.abs(e[i])), "at " + i);
+        }
+    }
+
+    @Test
     void highRanksAndLargeUploadsMatchTheCpu() {
         // eight axes that cannot be merged: run as several dispatches over the outer axes
         Tensor x = random(11, 2, 3, 2, 3, 2, 3, 2, 3);
@@ -281,5 +295,19 @@ class VulkanBackendTest {
         org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), 2e-4f, what);
         org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(),
                 2e-4f, what);
+        for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
+            if (supported(type)) {
+                // inputs rounded to 16 bits: errors relative to the largest output
+                float[] actual = x.to(type).to(gpu).matmul(onGpu).toArray();
+                double scale = 1;
+                for (float v : expected) {
+                    scale = Math.max(scale, Math.abs(v));
+                }
+                double tolerance = (type == DType.FLOAT64 ? 1e-5 : type == DType.FLOAT16 ? 4e-3 : 3e-2) * scale;
+                for (int i = 0; i < expected.length; i++) {
+                    assertEquals(expected[i], actual[i], tolerance, what + ", " + type + " at " + i);
+                }
+            }
+        }
     }
 }
