@@ -173,6 +173,8 @@ final class VkContext {
     private final List<Block> dedicated = new ArrayList<>();
     private Block chunk;
     private long allocated;
+    /** Live Vulkan memory allocations, for out-of-memory messages (drivers limit their number). */
+    private int allocations;
     private long inUse;
     private long peakInUse;
 
@@ -548,8 +550,9 @@ final class VkContext {
         List<Integer> types = new ArrayList<>(List.of(first));
         for (int i = 0; i < mp.memoryTypeCount(); i++) {
             int flags = mp.memoryTypes(i).propertyFlags();
+            // not AMD's device-coherent, uncached types (0x40, 0x80): slow, and refused for these buffers
             if (i != first && mp.memoryTypes(i).heapIndex() != deviceHeap
-                    && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                    && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 && (flags & 0xc0) == 0) {
                 types.add(i);
             }
         }
@@ -749,6 +752,10 @@ final class VkContext {
             vkGetBufferMemoryRequirements(device, b.buffer, req);
             if ((req.memoryTypeBits() & (1 << type)) == 0) {
                 vkDestroyBuffer(device, b.buffer, null);
+                if (spill) {
+                    // not one for these buffers (AMD's device-coherent types): the next is tried
+                    throw new OutOfDeviceMemory("memory type " + type + " cannot hold storage buffers");
+                }
                 throw new IllegalStateException("memory type " + type + " cannot hold storage buffers");
             }
             VkMemoryAllocateFlagsInfo flags = VkMemoryAllocateFlagsInfo.calloc(st).sType$Default()
@@ -763,11 +770,12 @@ final class VkContext {
                 if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
                     throw new OutOfDeviceMemory("out of Vulkan memory allocating " + (size >> 20) + " MB ("
                             + (allocated >> 20) + " MB allocated, " + (spilled >> 20) + " MB spilled; memory type "
-                            + type + (spill ? ", spilling" : "") + ", result " + r + ")");
+                            + type + (spill ? ", spilling" : "") + ", result " + r + ", " + allocations + " allocations)");
                 }
                 check(r, "vkAllocateMemory");
             }
             b.memory = lp.get(0);
+            allocations++;
             check(vkBindBufferMemory(device, b.buffer, b.memory, 0), "vkBindBufferMemory");
             b.address = vkGetBufferDeviceAddress(device,
                     VkBufferDeviceAddressInfo.calloc(st).sType$Default().buffer(b.buffer));
@@ -791,6 +799,7 @@ final class VkContext {
         }
         vkDestroyBuffer(device, b.buffer, null);
         vkFreeMemory(device, b.memory, null);
+        allocations--;
         if (b.spill) {
             spilled -= b.size;
             spillFrom = 0;
