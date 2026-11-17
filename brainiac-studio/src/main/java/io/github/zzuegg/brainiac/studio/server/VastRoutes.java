@@ -53,9 +53,8 @@ final class VastRoutes {
                     Exchanges.error(ex, 409, "that machine is no longer offered; search again");
                     return;
                 }
-                double now = Json.number(offer.get(), "pricePerHour", 0);
                 Map<String, Object> out = new LinkedHashMap<>();
-                out.put("rental", rentals.rent(id, Json.string(offer.get(), "gpu", "GPU"), now, agreed, hours));
+                out.put("rental", rentals.rent(VastAi.toOffer(offer.get()), agreed, hours));
                 out.putAll(rentals());
                 Exchanges.json(ex, 200, out);
             } catch (IOException e) {

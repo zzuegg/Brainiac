@@ -5,7 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.zzuegg.brainiac.cloud.VastBadHosts;
 import io.github.zzuegg.brainiac.cloud.VastInstance;
+import io.github.zzuegg.brainiac.cloud.VastOffer;
 import io.github.zzuegg.brainiac.studio.server.WorkerServer;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -66,6 +68,13 @@ class VastRentalsTest {
             return new VastInstance(id, "running", "", "RTX 4090", 0.36, "ssh.example", 22, "", "", Map.of());
         }
 
+        volatile boolean noVulkan;
+
+        @Override
+        public boolean usable(VastInstance i, Path log) {
+            return !noVulkan;
+        }
+
         @Override
         public void prepare(VastInstance i) throws IOException {
             if (failPrepare != null) {
@@ -107,6 +116,14 @@ class VastRentalsTest {
         }
     }
 
+    private VastBadHosts bad() {
+        return new VastBadHosts(studio.resolve("bad-machines.txt"));
+    }
+
+    private static VastOffer offer(long id, double price) {
+        return new VastOffer(id, "RTX 4090", 1, 24, price, 0.99, "570.1", "Sweden, SE", 900, 100, 16, true, 77);
+    }
+
     private static Map<String, Object> await(VastRentals v, Predicate<Map<String, Object>> done) throws InterruptedException {
         long end = System.nanoTime() + Duration.ofSeconds(20).toNanos();
         while (System.nanoTime() < end) {
@@ -127,8 +144,8 @@ class VastRentalsTest {
     void aRentedMachineBecomesAHostAndDestroyingItRemovesTheHost() throws Exception {
         Fake f = new Fake();
         Hosts hosts = new Hosts(studio.resolve("hosts.properties"));
-        try (VastRentals v = new VastRentals(hosts, f, studio.resolve("vast"), null)) {
-            Map<String, Object> started = v.rent(1234, "RTX 4090", 0.36, 0.36, 2);
+        try (VastRentals v = new VastRentals(hosts, f, studio.resolve("vast"), null, bad())) {
+            Map<String, Object> started = v.rent(offer(1234, 0.36), 0.36, 2);
             assertEquals("renting", started.get("stage"));
             Map<String, Object> ready = await(v, r -> stage(r, "ready"));
             assertEquals(9000L, ((Number) ready.get("instance")).longValue());
@@ -151,18 +168,18 @@ class VastRentalsTest {
     @Test
     void nothingIsRentedForMoreThanTheUserAgreedTo() {
         Fake f = new Fake();
-        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null)) {
+        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null, bad())) {
             IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                    () -> v.rent(1, "RTX 4090", 0.41, 0.36, 2));
+                    () -> v.rent(offer(1, 0.41), 0.36, 2));
             assertTrue(e.getMessage().contains("$0.410"), e.getMessage());
-            assertThrows(IllegalArgumentException.class, () -> v.rent(1, "RTX 4090", 0.36, 0.36, 0));
-            assertThrows(IllegalArgumentException.class, () -> v.rent(1, "RTX 4090", 0.36, 0.36, VastRentals.MAX_HOURS + 1));
+            assertThrows(IllegalArgumentException.class, () -> v.rent(offer(1, 0.36), 0.36, 0));
+            assertThrows(IllegalArgumentException.class, () -> v.rent(offer(1, 0.36), 0.36, VastRentals.MAX_HOURS + 1));
             assertTrue(f.rented.isEmpty());
             assertTrue(v.list().isEmpty());
         }
-        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, "no checkout")) {
+        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, "no checkout", bad())) {
             assertEquals("no checkout", assertThrows(IllegalStateException.class,
-                    () -> v.rent(1, "RTX 4090", 0.36, 0.36, 2)).getMessage());
+                    () -> v.rent(offer(1, 0.36), 0.36, 2)).getMessage());
         }
     }
 
@@ -170,8 +187,8 @@ class VastRentalsTest {
     void aMachineThatCannotBeSetUpIsDestroyed() throws Exception {
         Fake f = new Fake();
         f.failPrepare = new IOException("ssh refused the key");
-        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null)) {
-            v.rent(1, "RTX 4090", 0.36, 0.36, 2);
+        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null, bad())) {
+            v.rent(offer(1, 0.36), 0.36, 2);
             Map<String, Object> r = await(v, x -> stage(x, "failed"));
             assertEquals(List.of(9000L), f.destroyed);
             assertTrue(((String) r.get("error")).contains("ssh refused the key"), r.toString());
@@ -180,11 +197,24 @@ class VastRentalsTest {
     }
 
     @Test
+    void aMachineWithoutVulkanIsDestroyedAndSkippedFromThenOn() throws Exception {
+        Fake f = new Fake();
+        f.noVulkan = true;
+        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null, bad())) {
+            v.rent(offer(1, 0.36), 0.36, 2);
+            Map<String, Object> r = await(v, x -> stage(x, "failed"));
+            assertEquals(List.of(9000L), f.destroyed);
+            assertTrue(((String) r.get("error")).contains("Vulkan"), r.toString());
+            assertTrue(bad().contains(offer(2, 0.30)), "another offer on the same machine is skipped");
+        }
+    }
+
+    @Test
     void cancellingWhileVastAiRentsStillDestroysTheMachineItGives() throws Exception {
         Fake f = new Fake();
         f.slowRent = true;
-        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null)) {
-            String key = (String) v.rent(1, "RTX 4090", 0.36, 0.36, 2).get("key");
+        try (VastRentals v = new VastRentals(new Hosts(studio.resolve("hosts.properties")), f, studio, null, bad())) {
+            String key = (String) v.rent(offer(1, 0.36), 0.36, 2).get("key");
             assertTrue(f.asked.await(5, TimeUnit.SECONDS));
             assertTrue(v.cancel(key));
             Thread.sleep(200);
@@ -199,15 +229,15 @@ class VastRentalsTest {
     void theMachineIsDestroyedWhenItsHoursAreUpOrTheStudioCloses() throws Exception {
         Fake f = new Fake();
         Hosts hosts = new Hosts(studio.resolve("hosts.properties"));
-        try (VastRentals v = new VastRentals(hosts, f, studio, null, Duration.ofMillis(100))) {
-            v.rent(1, "RTX 4090", 0.36, 0.36, 2.0 / 3600);   // two seconds
+        try (VastRentals v = new VastRentals(hosts, f, studio, null, bad(), Duration.ofMillis(100))) {
+            v.rent(offer(1, 0.36), 0.36, 2.0 / 3600);   // two seconds
             await(v, x -> stage(x, "ready"));
             await(v, x -> stage(x, "destroyed"));
             assertEquals(List.of(9000L), f.destroyed);
             assertTrue(hosts.list().isEmpty());
         }
-        VastRentals v = new VastRentals(hosts, f, studio, null);
-        v.rent(1, "RTX 4090", 0.36, 0.36, 2);
+        VastRentals v = new VastRentals(hosts, f, studio, null, bad());
+        v.rent(offer(1, 0.36), 0.36, 2);
         await(v, x -> stage(x, "ready"));
         v.close();
         assertEquals(List.of(9000L, 9001L), f.destroyed, "closing the studio destroys what it rented");

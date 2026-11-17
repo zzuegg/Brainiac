@@ -1,8 +1,10 @@
 package io.github.zzuegg.brainiac.studio.train;
 
+import io.github.zzuegg.brainiac.cloud.VastBadHosts;
 import io.github.zzuegg.brainiac.cloud.VastClient;
 import io.github.zzuegg.brainiac.cloud.VastInstance;
 import io.github.zzuegg.brainiac.cloud.VastLaunch;
+import io.github.zzuegg.brainiac.cloud.VastOffer;
 import io.github.zzuegg.brainiac.cloud.VastRunner;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -70,7 +72,19 @@ public final class VastRentals implements AutoCloseable {
         VastInstance awaitReady(long id, Duration timeout) throws IOException, InterruptedException;
 
         /**
-         * Logs in and sends the checkout.
+         * Logs in and checks, before the checkout is sent, that the machine can run Brainiac
+         * (a usable NVIDIA Vulkan driver).
+         *
+         * @param i the instance
+         * @param log a file that gets the check's output
+         * @return false if this machine cannot run Brainiac
+         * @throws IOException if the check itself fails
+         * @throws InterruptedException if interrupted
+         */
+        boolean usable(VastInstance i, Path log) throws IOException, InterruptedException;
+
+        /**
+         * Sends the checkout.
          *
          * @param i the instance
          * @throws IOException if that fails
@@ -130,7 +144,7 @@ public final class VastRentals implements AutoCloseable {
     /** A machine rented from the studio. */
     private static final class Rental {
         final String key;
-        final long offer;
+        final VastOffer offer;
         final String gpu;
         final double pricePerHour;
         final long started = System.currentTimeMillis();
@@ -147,10 +161,10 @@ public final class VastRentals implements AutoCloseable {
         volatile Tunnel tunnel;
         volatile Thread thread;
 
-        Rental(String key, long offer, String gpu, double pricePerHour, long until) {
+        Rental(String key, VastOffer offer, double pricePerHour, long until) {
             this.key = key;
             this.offer = offer;
-            this.gpu = gpu;
+            this.gpu = offer.gpus() > 1 ? offer.gpus() + "× " + offer.gpuName() : offer.gpuName();
             this.pricePerHour = pricePerHour;
             this.until = until;
         }
@@ -178,7 +192,7 @@ public final class VastRentals implements AutoCloseable {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("key", key);
             m.put("instance", instance == 0 ? null : instance);
-            m.put("offer", offer);
+            m.put("offer", offer.id());
             m.put("gpu", gpu);
             m.put("pricePerHour", pricePerHour);
             m.put("stage", stage);
@@ -204,6 +218,7 @@ public final class VastRentals implements AutoCloseable {
     private final Machines machines;
     private final Path logs;
     private final String unavailable;
+    private final VastBadHosts bad;
     private final Map<String, Rental> rentals = new ConcurrentHashMap<>();
     private final AtomicLong counter = new AtomicLong();
     private final Thread watchdog;
@@ -217,14 +232,16 @@ public final class VastRentals implements AutoCloseable {
      * @param machines how machines are rented and set up
      * @param logs where each machine's setup output is written
      * @param unavailable why renting cannot work here (no checkout to send, say), or null
+     * @param bad the machines that cannot run Brainiac; one found is added
      */
-    public VastRentals(Hosts hosts, Machines machines, Path logs, String unavailable) {
-        this(hosts, machines, logs, unavailable, Duration.ofSeconds(15));
+    public VastRentals(Hosts hosts, Machines machines, Path logs, String unavailable, VastBadHosts bad) {
+        this(hosts, machines, logs, unavailable, bad, Duration.ofSeconds(15));
     }
 
     // the watchdog looks every tick
-    VastRentals(Hosts hosts, Machines machines, Path logs, String unavailable, Duration tick) {
+    VastRentals(Hosts hosts, Machines machines, Path logs, String unavailable, VastBadHosts bad, Duration tick) {
         this.tick = tick;
+        this.bad = bad;
         this.hosts = hosts;
         this.machines = machines;
         this.logs = logs;
@@ -265,8 +282,17 @@ public final class VastRentals implements AutoCloseable {
             }
 
             @Override
-            public void prepare(VastInstance i) throws IOException, InterruptedException {
+            public boolean usable(VastInstance i, Path log) throws IOException, InterruptedException {
                 runner().awaitSsh(i, Duration.ofMinutes(5));
+                int code = runner().check(i, log);
+                if (code != 0 && code != 2) {
+                    throw new IOException("checking the machine failed (setup.sh check ended with " + code + ")");
+                }
+                return code == 0;
+            }
+
+            @Override
+            public void prepare(VastInstance i) throws IOException, InterruptedException {
                 runner().ship(i);
             }
 
@@ -327,9 +353,7 @@ public final class VastRentals implements AutoCloseable {
     /**
      * Rents a machine and sets it up as a worker host, in the background.
      *
-     * @param offerId the offer the user chose
-     * @param gpu its GPU, for the host's name
-     * @param seenPrice what the offer costs now, from the latest search
+     * @param offer the offer the user chose, as it is now (its price looked up again)
      * @param agreedPrice the price per hour the user agreed to
      * @param hours how long it may run before it is destroyed
      * @return the rental
@@ -337,7 +361,8 @@ public final class VastRentals implements AutoCloseable {
      *     many machines are rented already
      * @throws IllegalStateException if renting cannot work here
      */
-    public Map<String, Object> rent(long offerId, String gpu, double seenPrice, double agreedPrice, double hours) {
+    public Map<String, Object> rent(VastOffer offer, double agreedPrice, double hours) {
+        double seenPrice = offer.dollarsPerHour();
         if (unavailable != null) {
             throw new IllegalStateException(unavailable);
         }
@@ -353,7 +378,7 @@ public final class VastRentals implements AutoCloseable {
                 throw new IllegalArgumentException("the studio keeps at most " + MAX_ACTIVE
                         + " machines rented at once; destroy one first");
             }
-            Rental r = new Rental("r" + counter.incrementAndGet(), offerId, gpu, seenPrice,
+            Rental r = new Rental("r" + counter.incrementAndGet(), offer, seenPrice,
                     System.currentTimeMillis() + (long) (hours * 3_600_000));
             rentals.put(r.key, r);
             r.thread = Thread.ofVirtual().name("studio-vast-" + r.key).start(() -> setUp(r));
@@ -419,12 +444,18 @@ public final class VastRentals implements AutoCloseable {
                 r.asking = true;
             }
             try {
-                r.instance = machines.rent(r.offer);
+                r.instance = machines.rent(r.offer.id());
             } finally {
                 r.asking = false;
             }
             r.advance("starting");
             r.running = machines.awaitReady(r.instance, Duration.ofMinutes(15));
+            r.advance("checking");
+            Files.createDirectories(logs);
+            if (!machines.usable(r.running, logs.resolve("vast-" + r.instance + "-check.log"))) {
+                bad.add(r.offer, "no usable NVIDIA Vulkan driver");
+                throw new IOException("this machine has no usable NVIDIA Vulkan driver, so it is skipped in searches from now on");
+            }
             r.advance("copying");
             machines.prepare(r.running);
             r.prepared = true;

@@ -159,7 +159,8 @@ public final class StudioServer implements AutoCloseable {
             return chat.vast().client();
         };
         return new VastRentals(training.hosts(), VastRentals.vast(client, repo.orElse(null)),
-                chat.folder().resolve("vast"), unavailable);
+                chat.folder().resolve("vast"), unavailable,
+                chat.vast() == null ? io.github.zzuegg.brainiac.cloud.VastBadHosts.load() : chat.vast().badHosts());
     }
 
     @Override

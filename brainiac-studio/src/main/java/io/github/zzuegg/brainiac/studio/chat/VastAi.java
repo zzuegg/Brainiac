@@ -1,6 +1,8 @@
 package io.github.zzuegg.brainiac.studio.chat;
 
+import io.github.zzuegg.brainiac.cloud.VastBadHosts;
 import io.github.zzuegg.brainiac.cloud.VastClient;
+import io.github.zzuegg.brainiac.cloud.VastOffer;
 import io.github.zzuegg.brainiac.io.Json;
 import java.io.IOException;
 import java.net.URI;
@@ -39,6 +41,7 @@ public final class VastAi {
     private final Keys keys;
     private final URI base;
     private final HttpClient http;
+    private final VastBadHosts bad;
 
     /**
      * Creates the client.
@@ -47,7 +50,19 @@ public final class VastAi {
      * @param base the API's address, normally {@link #BASE}
      */
     public VastAi(Keys keys, URI base) {
+        this(keys, base, VastBadHosts.load());
+    }
+
+    /**
+     * Creates the client.
+     *
+     * @param keys where the key is kept
+     * @param base the API's address, normally {@link #BASE}
+     * @param bad machines that cannot run Brainiac, whose offers are left out
+     */
+    public VastAi(Keys keys, URI base, VastBadHosts bad) {
         this.keys = keys;
+        this.bad = bad;
         this.base = base.toString().endsWith("/") ? base : URI.create(base + "/");
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
                 .followRedirects(HttpClient.Redirect.NEVER).build();
@@ -131,6 +146,9 @@ public final class VastAi {
         List<Map<String, Object>> out = new ArrayList<>();
         for (Object o : Json.array(Json.object(answer).getOrDefault("offers", List.of()))) {
             Map<String, Object> m = Json.object(o);
+            if (bad.contains(toOffer(row(m)))) {
+                continue;   // a machine that could not run Brainiac before
+            }
             String name = gpu(m);
             String lower = name.toLowerCase(Locale.ROOT);
             if (!words.stream().allMatch(lower::contains)) {
@@ -176,13 +194,8 @@ public final class VastAi {
         Object answer = send("POST", base.resolve("bundles/"), Json.write(q), "bundles", true);
         for (Object o : Json.array(Json.object(answer).getOrDefault("offers", List.of()))) {
             Map<String, Object> m = Json.object(o);
-            if (m.get("id") instanceof Number n && n.longValue() == id && m.get("dph_total") instanceof Number price) {
-                Map<String, Object> r = new LinkedHashMap<>();
-                r.put("id", id);
-                r.put("gpu", gpu(m));
-                r.put("gpus", m.get("num_gpus"));
-                r.put("pricePerHour", price.doubleValue());
-                return Optional.of(r);
+            if (m.get("id") instanceof Number n && n.longValue() == id && m.get("dph_total") instanceof Number) {
+                return Optional.of(row(m));
             }
         }
         return Optional.empty();
@@ -196,6 +209,40 @@ public final class VastAi {
      */
     public VastClient client() throws IOException {
         return new VastClient(key().orElseThrow(() -> new IOException("add your Vast.ai API key first")), base, http);
+    }
+
+    // the fields of an offer the studio keeps
+    private static Map<String, Object> row(Map<String, Object> m) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("id", m.get("id") instanceof Number n ? n.longValue() : 0L);
+        r.put("gpu", gpu(m));
+        r.put("gpus", m.get("num_gpus") instanceof Number n ? n.intValue() : 1);
+        r.put("pricePerHour", m.get("dph_total") instanceof Number n ? n.doubleValue() : 0.0);
+        r.put("location", Json.string(m, "geolocation", ""));
+        r.put("driver", Json.string(m, "driver_version", ""));
+        r.put("machine", m.get("machine_id") instanceof Number n ? n.longValue() : 0L);
+        return r;
+    }
+
+    /**
+     * Makes brainiac-cloud's offer from one {@link #offer} gives.
+     *
+     * @param r the offer's fields
+     * @return the offer
+     */
+    public static VastOffer toOffer(Map<String, Object> r) {
+        return new VastOffer(Json.integer(r, "id", 0), Json.string(r, "gpu", "GPU"), (int) Json.integer(r, "gpus", 1), 0,
+                Json.number(r, "pricePerHour", 0), 0, Json.string(r, "driver", ""), Json.string(r, "location", ""), 0, 0,
+                0, true, Json.integer(r, "machine", 0));
+    }
+
+    /**
+     * Returns the machines that cannot run Brainiac, shared with the rentals that find them.
+     *
+     * @return them
+     */
+    public VastBadHosts badHosts() {
+        return bad;
     }
 
     private static String gpu(Map<String, Object> m) {
