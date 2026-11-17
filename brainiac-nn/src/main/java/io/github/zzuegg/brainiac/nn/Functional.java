@@ -766,6 +766,74 @@ public final class Functional {
     }
 
     /**
+     * The selective scan of Mamba (Gu and Dao, 2023): a linear recurrence per feature whose
+     * step size and input and output projections depend on the input, so the state keeps or
+     * forgets by content. With {@code h_0 = 0}:
+     * {@code h_t = exp(delta_t A) * h_(t-1) + delta_t B_t x_t} and {@code y_t = h_t . C_t}.
+     * Stepped in time on the autograd graph: for short sequences and experiments, not speed.
+     *
+     * @param x {@code [batch, steps, features]}
+     * @param delta step sizes, positive (a softplus of a projection), same shape as {@code x}
+     * @param a {@code [features, state]}, negative for a decaying state
+     * @param b {@code [batch, steps, state]}
+     * @param c {@code [batch, steps, state]}
+     * @return {@code [batch, steps, features]}
+     */
+    public static Var selectiveScan(Var x, Var delta, Var a, Var b, Var c) {
+        int batch = x.shape().dim(0);
+        int steps = x.shape().dim(1);
+        int features = x.shape().dim(2);
+        int state = a.shape().dim(1);
+        Var h = null;
+        Var[] ys = new Var[steps];
+        for (int t = 0; t < steps; t++) {
+            Var xt = x.slice(1, t, t + 1).reshape(batch, features, 1);
+            Var dt = delta.slice(1, t, t + 1).reshape(batch, features, 1);
+            Var bt = b.slice(1, t, t + 1).reshape(batch, 1, state);
+            Var ct = c.slice(1, t, t + 1).reshape(batch, 1, state);
+            Var input = dt.mul(xt).mul(bt);
+            h = h == null ? input : dt.mul(a).exp().mul(h).add(input);
+            ys[t] = h.mul(ct).sum(2, false).reshape(batch, 1, features);
+        }
+        return Var.concat(1, ys);
+    }
+
+    /**
+     * Linear attention (Katharopoulos et al., 2020): softmax replaced by the kernel
+     * {@code phi(x) = elu(x) + 1}, so attention costs time linear in the sequence:
+     * {@code out_i = phi(q_i) S_i / (phi(q_i) . z_i)} with {@code S_i} the sum of
+     * {@code phi(k_j) v_j^T} and {@code z_i} of {@code phi(k_j)} over the keys {@code i} sees.
+     *
+     * @param q {@code [batch, heads, steps, dk]}
+     * @param k {@code [batch, heads, steps, dk]}
+     * @param v {@code [batch, heads, steps, dv]}
+     * @param causal whether step {@code i} sees only keys up to {@code i}
+     * @return {@code [batch, heads, steps, dv]}
+     */
+    public static Var linearAttention(Var q, Var k, Var v, boolean causal) {
+        int[] s = q.shape().toArray();
+        int dk = s[3];
+        int dv = v.shape().dim(3);
+        Var fq = elu1(q);
+        Var fk = elu1(k);
+        if (!causal) {
+            Var kv = fk.transpose().matmul(v);                        // [b, h, dk, dv]
+            Var num = fq.matmul(kv);
+            Var den = fq.mul(fk.sum(2, true)).sum(3, true);
+            return num.div(den);
+        }
+        Var kv = fk.reshape(s[0], s[1], s[2], dk, 1).mul(v.reshape(s[0], s[1], s[2], 1, dv)).cumsum(2);
+        Var num = fq.reshape(s[0], s[1], s[2], dk, 1).mul(kv).sum(3, false);
+        Var den = fq.mul(fk.cumsum(2)).sum(3, true);
+        return num.div(den);
+    }
+
+    /** {@code elu(x) + 1}: {@code x + 1} above 0, {@code exp(x)} below. */
+    private static Var elu1(Var x) {
+        return x.maximum(0).add(x.minimum(0).exp());
+    }
+
+    /**
      * The output of {@link #mixtureOfExperts} and its load-balancing loss.
      *
      * @param output {@code [tokens, features]}
