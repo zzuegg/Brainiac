@@ -4,7 +4,7 @@
 layout(local_size_x = GROUP) in;
 // For every target l, offsets/entries list the source rows i with indices[i] == l.
 layout(push_constant) uniform P {
-    Floats src; Ints offsets; Ints entries; Floats z; uint len; uint inner; uint count; uint total;
+    In src; InInts offsets; InInts entries; Floats z; uint len; uint inner; uint count; uint total;
 } p;
 void main() {
     uint idx = gid();

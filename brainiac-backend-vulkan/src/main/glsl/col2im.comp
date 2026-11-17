@@ -4,7 +4,7 @@
 layout(local_size_x = GROUP) in;
 // For every image cell, offsets/entries list the (pos * ks + k) that read it.
 layout(push_constant) uniform P {
-    Floats cols; Ints offsets; Ints entries; Floats z;
+    In cols; InInts offsets; InInts entries; Floats z;
     uint channels; uint positions; uint ks; uint img; uint total;
 } p;
 void main() {

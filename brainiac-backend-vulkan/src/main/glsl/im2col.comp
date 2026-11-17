@@ -4,7 +4,7 @@
 layout(local_size_x = GROUP) in;
 // table[pos * ks + k]: the image cell of kernel cell k at window position pos, or -1 for padding
 layout(push_constant) uniform P {
-    Floats x; Ints table; Floats z;
+    In x; InInts table; Floats z;
     uint channels; uint positions; uint ks; uint img; float pad; uint total;
 } p;
 void main() {

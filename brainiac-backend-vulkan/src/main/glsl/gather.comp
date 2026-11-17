@@ -3,7 +3,7 @@
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
 // Indices are whole numbers stored as floats, checked on the host.
-layout(push_constant) uniform P { Floats x; Floats indices; Floats z; uint len; uint inner; uint count; uint total; } p;
+layout(push_constant) uniform P { In x; In indices; Floats z; uint len; uint inner; uint count; uint total; } p;
 void main() {
     uint idx = gid();
     if (idx >= p.total) return;

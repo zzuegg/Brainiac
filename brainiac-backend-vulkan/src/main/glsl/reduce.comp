@@ -3,7 +3,7 @@
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
 // One invocation per output, looping over its row. op: 0 sum, 1 mean, 2 max, 3 min.
-layout(push_constant) uniform P { Floats x; Floats y; uint rows; uint len; uint inner; uint op; } p;
+layout(push_constant) uniform P { In x; Floats y; uint rows; uint len; uint inner; uint op; } p;
 float combine(uint op, float a, float b) {
     if (op == 2) return isnan(a) || isnan(b) ? a + b : max(a, b);
     if (op == 3) return isnan(a) || isnan(b) ? a + b : min(a, b);

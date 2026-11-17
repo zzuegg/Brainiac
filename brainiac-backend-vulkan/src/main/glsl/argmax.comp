@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
-layout(push_constant) uniform P { Floats x; Floats y; uint rows; uint len; uint inner; } p;
+layout(push_constant) uniform P { In x; Floats y; uint rows; uint len; uint inner; } p;
 void main() {
     uint r = gid();
     if (r >= p.rows) return;

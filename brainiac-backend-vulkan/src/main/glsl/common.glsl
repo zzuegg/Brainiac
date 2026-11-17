@@ -5,6 +5,9 @@
 
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer Floats { float v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer Ints { int v[]; };
+// inputs: read-only and not aliased by any output, so loads can be cached and reordered
+layout(buffer_reference, std430, buffer_reference_align = 4) restrict readonly buffer In { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) restrict readonly buffer InInts { int v[]; };
 
 #define GROUP 256
 

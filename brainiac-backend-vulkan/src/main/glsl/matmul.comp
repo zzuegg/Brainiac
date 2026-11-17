@@ -14,7 +14,7 @@
 #define KT 16
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(push_constant) uniform P {
-    Floats a; Floats b; Floats z;
+    In a; In b; Floats z;
     uint m; uint k; uint n; uint strideA; uint strideB; uint strideZ; uint splits; uint chunk;
 } p;
 shared float tileA[KT][TILE + 1];
