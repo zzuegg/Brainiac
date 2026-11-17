@@ -33,7 +33,7 @@ import java.util.SplittableRandom;
 public final class DreamerAgent implements Learner {
 
     private final int actions;
-    private final MlpWorldModel world;
+    private DiscreteWorldModel world;
     private final Model actor;
     private final Model critic;
     private final Optimizer actorOpt = Optimizer.adam(3e-3f);
@@ -93,8 +93,19 @@ public final class DreamerAgent implements Learner {
     }
 
     /** @return the world model */
-    public MlpWorldModel worldModel() {
+    public DiscreteWorldModel worldModel() {
         return world;
+    }
+
+    /**
+     * Replaces the world model, for example by a {@link DiffusionWorldModel}.
+     *
+     * @param model the model to learn and dream in
+     * @return this agent
+     */
+    public DreamerAgent worldModel(DiscreteWorldModel model) {
+        this.world = java.util.Objects.requireNonNull(model);
+        return this;
     }
 
     /** @return the return of every real episode during training */
