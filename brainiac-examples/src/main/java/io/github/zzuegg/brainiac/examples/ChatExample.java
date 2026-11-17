@@ -100,7 +100,7 @@ public final class ChatExample {
             }
             history.add(ChatTemplate.message("user", question));
             String text = tok.chatTemplate() != null ? tok.applyChatTemplate(history, true) : question;
-            int promptTokens = tok.encode(text).length;
+            int promptTokens = gen.encode(text).length;
             Generator.Options options = new Generator.Options(max, sampling, seed++, stops, List.of());
             long t0 = System.nanoTime();
             int[] count = {0};

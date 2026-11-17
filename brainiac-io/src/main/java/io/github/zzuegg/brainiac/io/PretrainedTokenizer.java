@@ -215,9 +215,26 @@ public final class PretrainedTokenizer implements Tokenizer {
                         Boolean.TRUE.equals(a.get("lstrip")), Boolean.TRUE.equals(a.get("rstrip"))));
             }
         }
-        Hf engine = new Hf(TokenizerParts.normalizer(root.get("normalizer")),
-                TokenizerParts.preTokenizer(root.get("pre_tokenizer")), m, TokenizerParts.decoder(root.get("decoder")),
-                template(root.get("post_processor")));
+        Object normalizer = root.get("normalizer");
+        Object preTokenizer = root.get("pre_tokenizer");
+        if (LLAMA_CLASSES.contains(String.valueOf(tokenizerConfig.get("tokenizer_class")))
+                && normalizer instanceof Map<?, ?> nm && prependsMetaspace(nm)) {
+            // transformers builds Llama tokenizers' pipeline itself rather than reading it from
+            // tokenizer.json: a Metaspace pre-tokenizer that, unless "legacy" is set, puts "▁"
+            // only before the text's first piece, not again after each special token
+            List<Object> rest = new ArrayList<>();
+            for (Object o : Json.array(nm.get("normalizers"))) {
+                if (!isPrepend(o) && !isSpaceToMetaspace(o)) {
+                    rest.add(o);
+                }
+            }
+            normalizer = rest.isEmpty() ? null : Map.of("type", "Sequence", "normalizers", rest);
+            boolean legacy = !Boolean.FALSE.equals(tokenizerConfig.get("legacy"));
+            preTokenizer = Map.of("type", "Metaspace", "replacement", "\u2581", "prepend_scheme",
+                    legacy ? "always" : "first", "split", false);
+        }
+        Hf engine = new Hf(TokenizerParts.normalizer(normalizer), TokenizerParts.preTokenizer(preTokenizer), m,
+                TokenizerParts.decoder(root.get("decoder")), template(root.get("post_processor")));
         Map<String, Integer> lookup = new HashMap<>();
         for (int i = 0; i < tokens.size(); i++) {
             if (tokens.get(i) != null) {
@@ -292,6 +309,25 @@ public final class PretrainedTokenizer implements Tokenizer {
                 return List.of("$A");
             }
         }
+    }
+
+    /** Tokenizer classes whose pipeline transformers builds itself. */
+    private static final Set<String> LLAMA_CLASSES = Set.of("LlamaTokenizer", "LlamaTokenizerFast",
+            "CodeLlamaTokenizer", "CodeLlamaTokenizerFast");
+
+    /** Whether a normalizer is the old Llama one: a Sequence that prepends "▁". */
+    private static boolean prependsMetaspace(Map<?, ?> n) {
+        return "Sequence".equals(n.get("type")) && n.get("normalizers") instanceof List<?> list
+                && list.stream().anyMatch(PretrainedTokenizer::isPrepend);
+    }
+
+    private static boolean isPrepend(Object o) {
+        return o instanceof Map<?, ?> m && "Prepend".equals(m.get("type")) && "\u2581".equals(m.get("prepend"));
+    }
+
+    private static boolean isSpaceToMetaspace(Object o) {
+        return o instanceof Map<?, ?> m && "Replace".equals(m.get("type")) && "\u2581".equals(m.get("content"))
+                && m.get("pattern") instanceof Map<?, ?> pat && " ".equals(pat.get("String"));
     }
 
     /**

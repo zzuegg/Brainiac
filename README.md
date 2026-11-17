@@ -194,6 +194,19 @@ while (loop.step() < 20_000) {
 loop.ema().swap();                                        // use the averaged weights
 ```
 
+Corpora larger than memory are kept as `TokenShards`: memory-mapped shards of 16- or
+32-bit token ids (nanoGPT's and llm.c's `.bin` format), read as training windows in order
+(with a position to save in a checkpoint) or at random:
+
+```java
+try (TokenShards.Writer w = TokenShards.writer(Path.of("data/web"), 100_000_000, tok.size())) {
+    for (String doc : documents) w.add(tok.encode(doc), endOfText);
+}
+TokenShards data = TokenShards.open(Path.of("data/web"));
+int[][] windows = data.next(16, 1024);   // 16 windows of 1024 inputs plus the next token
+loop.save(dir, Map.of("position", data.position()));   // later: data.seek(...)
+```
+
 `Recompute.apply(block, x, block.parameters())` runs a block without keeping what it
 computes inside and recomputes it in the backward pass (activation checkpointing), so deep
 models train in much less memory for about a third more compute.

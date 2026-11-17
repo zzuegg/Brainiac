@@ -62,6 +62,25 @@ class PretrainedTokenizerTest {
         assertArrayEquals(tok.encode("Grüße aus München! 🙂"), again.encode("Grüße aus München! 🙂"));
     }
 
+    /** transformers rebuilds a Llama tokenizer's pipeline: with "legacy": false no "▁" after special tokens. */
+    @ParameterizedTest
+    @ValueSource(strings = {"llama-legacy-false", "llama-legacy-true"})
+    void buildsLlamaTokenizersAsTransformersDoes(String name) throws IOException {
+        Path model = dir.resolve(name);
+        Files.createDirectories(model);
+        for (String f : List.of("tokenizer.json", "tokenizer_config.json", "expected.json")) {
+            try (InputStream in = getClass().getResourceAsStream("tokenizers/" + name + "/" + f)) {
+                Files.copy(in, model.resolve(f));
+            }
+        }
+        PretrainedTokenizer tok = PretrainedTokenizer.load(model);
+        for (Object o : Json.array(Json.read(model.resolve("expected.json")))) {
+            Map<String, Object> c = Json.object(o);
+            String text = (String) c.get("text");
+            assertArrayEquals(ints(c.get("ids")), tok.encode(text, true), name + ": \"" + text + "\"");
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"sp-bpe", "sp-unigram"})
     void matchesSentencePiece(String name) throws IOException {
