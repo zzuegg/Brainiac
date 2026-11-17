@@ -29,4 +29,15 @@ class ReflectiveSolverTest {
         assertTrue(r.retry() > r.firstTry(), r.toString());
         assertTrue(r.reflexion() > r.retry() + 0.1, r.toString());
     }
+
+    @Test
+    void pagedReflectionMemoryBeatsReflexionAloneOverLongSequences() {
+        ReflectiveSolver.Lifelong r = ReflectiveSolver.lifelong(40, 240, 2, 1);
+        System.out.printf("lifelong solve rate: memory agent %.3f (first try %.3f, last quarter %.3f) vs Reflexion "
+                + "alone %.3f (first try %.3f, last quarter %.3f)%n", r.memoryAgent(), r.memoryFirstTry(),
+                r.lastQuarterMemory(), r.reflexion(), r.reflexionFirstTry(), r.lastQuarterReflexion());
+        assertTrue(r.memoryAgent() > r.reflexion() + 0.1, r.toString());
+        assertTrue(r.lastQuarterMemory() > r.lastQuarterReflexion() + 0.2, r.toString());
+        assertTrue(r.memoryFirstTry() > r.reflexionFirstTry(), r.toString());
+    }
 }

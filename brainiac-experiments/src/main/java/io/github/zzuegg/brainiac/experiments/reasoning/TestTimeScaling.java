@@ -1,8 +1,10 @@
 package io.github.zzuegg.brainiac.experiments.reasoning;
 
+import io.github.zzuegg.brainiac.experimental.llm.GrpoTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.ProcessRewardModel;
 import io.github.zzuegg.brainiac.experimental.llm.SequenceScorer;
 import io.github.zzuegg.brainiac.experimental.llm.TestTimeCompute;
+import io.github.zzuegg.brainiac.experimental.llm.TestTimeRl;
 import io.github.zzuegg.brainiac.experimental.llm.WindowLm;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
@@ -16,7 +18,8 @@ import java.util.SplittableRandom;
  * {@link ProcessRewardModel} are trained on its own labelled samples. The same generator is
  * then evaluated with one sample, best-of-N, self-consistency, verifier-weighted voting, a
  * critique-and-resample loop, and Tree-of-Thoughts beam and depth-first search guided by the
- * PRM.
+ * PRM. {@link #ttrl} instead spends the samples on training: test-time RL on the
+ * unlabelled prompts with majority-vote rewards.
  */
 public final class TestTimeScaling {
 
@@ -131,6 +134,98 @@ public final class TestTimeScaling {
         double m = prompts.size();
         return new Result(single / m, greedy / m, best / m, vote / m, weighted / m, critique / m,
                 critiqueSamples / m, prmBest / m, beam / m, dfs / m);
+    }
+
+    /**
+     * Accuracy of test-time RL against the inference-only ways of spending samples.
+     *
+     * @param greedy greedy accuracy of the fine-tuned generator
+     * @param sample mean accuracy of one sample at the TTRL temperature, before TTRL
+     * @param selfConsistency majority vote of {@code n} samples, before TTRL
+     * @param ttrlGreedy greedy accuracy after TTRL on the unlabelled test prompts
+     * @param ttrlSample mean accuracy of one sample after TTRL
+     * @param ttrlSelfConsistency majority vote of {@code n} samples after TTRL
+     * @param agreementBefore the share of each TTRL group agreeing with its majority, first step
+     * @param agreementAfter the same in the last step
+     */
+    public record TtrlResult(double greedy, double sample, double selfConsistency, double ttrlGreedy,
+            double ttrlSample, double ttrlSelfConsistency, double agreementBefore, double agreementAfter) {
+    }
+
+    /** Greedy accuracy, mean single-sample accuracy and majority-vote accuracy. */
+    private static double[] accuracies(WindowLm lm, ChainTask task, int n, double temperature,
+            SplittableRandom random) {
+        List<int[]> prompts = task.allPrompts();
+        int[][] greedies = lm.sample(prompts.toArray(int[][]::new), task.maxSolutionTokens(), task.eos(), 0, random);
+        int greedy = 0;
+        int single = 0;
+        int vote = 0;
+        for (int i = 0; i < prompts.size(); i++) {
+            int[] p = prompts.get(i);
+            greedy += task.correct(p, greedies[i]) ? 1 : 0;
+            int[][] group = new int[n][];
+            Arrays.fill(group, p);
+            List<Integer> answers = new ArrayList<>();
+            for (int[] o : lm.sample(group, task.maxSolutionTokens(), task.eos(), temperature, random)) {
+                single += task.correct(p, o) ? 1 : 0;
+                answers.add(task.finalAnswer(o));
+            }
+            float[] agree = TestTimeRl.majorityRewards(answers);
+            for (int k = 0; k < n; k++) {
+                if (agree[k] > 0) {
+                    vote += answers.get(k) == task.answer(p) ? 1 : 0;
+                    break;
+                }
+            }
+        }
+        double m = prompts.size();
+        return new double[] {greedy / m, single / (m * n), vote / m};
+    }
+
+    /**
+     * Test-time RL ({@link TestTimeRl}): the same under-trained generator is trained with
+     * GRPO on the unlabelled test prompts, rewarded for agreeing with its own majority vote.
+     *
+     * @param task the puzzles (all of them are the unlabelled test set)
+     * @param sftSteps how long to fine-tune the generator first
+     * @param n samples per vote and group size of TTRL
+     * @param ttrlSteps GRPO steps on the test prompts
+     * @param temperature the sampling temperature of the votes and of the TTRL groups
+     * @param learningRate the Adam learning rate of the GRPO updates
+     * @param seed the seed
+     * @return the accuracies
+     */
+    public static TtrlResult ttrl(ChainTask task, int sftSteps, int n, int ttrlSteps, double temperature,
+            float learningRate, long seed) {
+        SplittableRandom random = new SplittableRandom(seed);
+        List<int[]> prompts = task.allPrompts();
+        WindowLm lm = WindowLm.of(task.vocabSize(), 12, 64, seed);
+        Optimizer opt = Optimizer.adam(3e-3f);
+        List<int[]> sols = new ArrayList<>();
+        for (int[] p : prompts) {
+            sols.add(task.solution(p));
+        }
+        for (int s = 0; s < sftSteps; s++) {
+            lm.supervisedStep(prompts, sols, opt);
+        }
+        double[] before = accuracies(lm, task, n, temperature, new SplittableRandom(seed + 1));
+        GrpoTrainer grpo = GrpoTrainer.of(lm).optimizer(Optimizer.adam(learningRate)).klCoefficient(0.1f)
+                .innerEpochs(2);
+        TestTimeRl<Integer> ttrl = TestTimeRl.of(lm, grpo, task::finalAnswer)
+                .sampling(n, task.maxSolutionTokens(), task.eos(), temperature);
+        double firstAgreement = Double.NaN;
+        double lastAgreement = Double.NaN;
+        for (int s = 0; s < ttrlSteps; s++) {
+            List<int[]> batch = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                batch.add(prompts.get(random.nextInt(prompts.size())));
+            }
+            lastAgreement = ttrl.step(batch, random).agreement();
+            firstAgreement = Double.isNaN(firstAgreement) ? lastAgreement : firstAgreement;
+        }
+        double[] after = accuracies(lm, task, n, temperature, new SplittableRandom(seed + 1));
+        return new TtrlResult(before[0], before[1], before[2], after[0], after[1], after[2], firstAgreement,
+                lastAgreement);
     }
 
     static int[] concat(int[] a, int[] b) {
