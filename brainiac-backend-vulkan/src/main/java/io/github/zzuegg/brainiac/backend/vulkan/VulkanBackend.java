@@ -1011,6 +1011,23 @@ public final class VulkanBackend implements Backend {
         if ((long) batch * m * n == 0) {
             return;
         }
+        // a transposed or otherwise strided operand still pending is read in place by the tiles
+        boolean tiled = k > 0 && !(m <= VEC_ROWS && batch == 1) && !coop(z.dtype, m);
+        Operand va = tiled ? view(vs(a), batch, m, k, z.dtype) : null;
+        Operand vb = tiled ? view(vs(b), batch, k, n, z.dtype) : null;
+        if (va != null || vb != null) {
+            eager(va != null ? va.values() : vs(a), vb != null ? vb.values() : vs(b), z);
+            VkStorage x = va != null ? va.values() : as(vs(a), z.dtype);
+            VkStorage y = vb != null ? vb.values() : as(vs(b), z.dtype);
+            matmul(va != null ? va : Operand.of(x, m, k), vb != null ? vb : Operand.of(y, k, n), batch, m, k, n, z);
+            if (va == null) {
+                done(x, vs(a));
+            }
+            if (vb == null) {
+                done(y, vs(b));
+            }
+            return;
+        }
         eager(vs(a), vs(b), z);
         if (k == 0) {
             vk.fill(z.slot(), 0, (z.bytes() + 3) & ~3L, 0);
@@ -1023,6 +1040,49 @@ public final class VulkanBackend implements Backend {
         done(y, vs(b));
     }
 
+    /** Whether products read transposed and strided operands in place ({@code -Dbrainiac.vulkan.stridedMatmul=false}: never). */
+    private static final boolean STRIDED_MATMUL =
+            !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.stridedMatmul"));
+
+    /**
+     * How the tiled product reads a matrix operand: from {@code values} at {@code offset}, with
+     * the given strides between matrices of the batch, rows and columns.
+     */
+    private record Operand(VkStorage values, long offset, long batch, long row, long col) {
+
+        /** Stored {@code rows x cols} matrices one after another. */
+        static Operand of(VkStorage values, int rows, int cols) {
+            return new Operand(values, 0, (long) rows * cols, cols, 1);
+        }
+    }
+
+    /** A pending strided read of stored values ({@code [batch,] rows, cols}), as an operand; null if none. */
+    private static Operand view(VkStorage s, int batch, int rows, int cols, DType type) {
+        if (!STRIDED_MATMUL || !(s.pending instanceof Fusion.Src src) || src.direct() || src.storage().dtype != type) {
+            return null;
+        }
+        int[] d = src.dims();
+        int[] st = src.strides();
+        for (int x : st) {
+            if (x < 0) {
+                return null;
+            }
+        }
+        if (batch == 1 && d.length == 2 && d[0] == rows && d[1] == cols) {
+            return new Operand(src.storage(), src.offset(), 0, st[0], st[1]);
+        }
+        if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
+            return new Operand(src.storage(), src.offset(), st[0], st[1], st[2]);
+        }
+        return null;
+    }
+
+    /** Whether a float16 product has enough rows for the matrix cores, where the device has them. */
+    private boolean coop(DType type, int m) {
+        return vk.coopMatrix && type == DType.FLOAT16 && m >= COOP_ROWS
+                && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
+    }
+
     /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
     private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
 
@@ -1031,10 +1091,15 @@ public final class VulkanBackend implements Backend {
             matvec(x, y, m, k, n, z);
             return;
         }
+        matmul(new Operand(x, 0, (long) m * k, k, 1), new Operand(y, 0, (long) k * n, n, 1), batch, m, k, n, z);
+    }
+
+    private void matmul(Operand xo, Operand yo, int batch, int m, int k, int n, VkStorage z) {
+        VkStorage x = xo.values();
+        VkStorage y = yo.values();
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
         // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
-        boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
-                && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
+        boolean coop = coop(z.dtype, m);
         int tile = coop ? 128 : big >= BIG_TILES ? 64 : 32;
         long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
         int splits = 1;
@@ -1053,9 +1118,11 @@ public final class VulkanBackend implements Backend {
         for (int first = 0; first < pieces; first += perDispatch) {
             int count = Math.min(perDispatch, pieces - first);
             long firstBatch = first / splits;
-            vk.push().putLong(x.address(firstBatch * m * k)).putLong(y.address(firstBatch * k * n))
-                    .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt(m * k).putInt(k * n)
-                    .putInt((int) mn).putInt(splits).putInt(chunk);
+            vk.push().putLong(x.address(xo.offset() + firstBatch * xo.batch()))
+                    .putLong(y.address(yo.offset() + firstBatch * yo.batch()))
+                    .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt((int) xo.batch())
+                    .putInt((int) yo.batch()).putInt((int) mn).putInt(splits).putInt(chunk).putInt((int) xo.row())
+                    .putInt((int) xo.col()).putInt((int) yo.row()).putInt((int) yo.col());
             vk.dispatch(shader(coop ? "matmul_coop" : tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }
