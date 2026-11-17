@@ -790,7 +790,8 @@ public final class Tensor {
 
     /**
      * Joins tensors along one axis. All other dimensions must match, and all tensors must
-     * be on the same device.
+     * be on the same device. {@linkplain #packed Packed} matrices of the same layout joined
+     * along their columns stay packed.
      *
      * @param axis the axis to join along; negative counts from the end
      * @param parts the tensors, at least one
@@ -817,6 +818,22 @@ public final class Tensor {
             total += d[a];
         }
         dims[a] = total;
+        if (a == 1 && dims.length == 2 && first.storage instanceof PackedStorage && !first.isQuantizedRows()) {
+            PackedMatrix[] host = new PackedMatrix[parts.length];
+            boolean all = true;
+            for (int i = 0; i < parts.length && all; i++) {
+                all = parts[i].storage instanceof PackedStorage p && !parts[i].isQuantizedRows();
+                if (all) {
+                    host[i] = parts[i].backend().unpackToHost((PackedStorage) parts[i].storage);
+                    all = host[i].bits() == host[0].bits() && host[i].group() == host[0].group()
+                            && host[i].nibbles() == host[0].nibbles()
+                            && (host[i].offsets() == null) == (host[0].offsets() == null);
+                }
+            }
+            if (all) {
+                return packed(PackedMatrix.concatColumns(host), first.device);
+            }
+        }
         DType type = first.dtype();
         for (Tensor t : parts) {
             type = DType.promote(type, t.dtype());

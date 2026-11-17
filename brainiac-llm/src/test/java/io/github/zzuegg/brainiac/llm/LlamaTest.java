@@ -337,6 +337,28 @@ class LlamaTest {
     }
 
     @Test
+    void packedProjectionsJoinAndStayPacked() {
+        for (int bits : new int[] {8, 4}) {
+            Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 19, DEVICE, DType.FLOAT32)
+                    .quantizeWeights(bits, 16);
+            int[][] prompt = {{1, 2, 3, 4}, {5, 6, 7, 8}};
+            float[] full = model.forward(prompt).value().toArray();
+            LanguageModel.State s = model.newState(2);
+            model.next(s, prompt, null);
+            float[] step = model.next(s, new int[][] {{9}, {10}}, null).toArray();
+            model.fuseProjections();
+            Map<String, io.github.zzuegg.brainiac.autograd.Var> named = model.namedParameters();
+            assertTrue(named.containsKey("model.layers.0.self_attn.qkv_proj.weight"), "bits " + bits);
+            assertTrue(named.containsKey("model.layers.1.mlp.gate_up_proj.weight"), "bits " + bits);
+            assertTrue(named.get("model.layers.0.self_attn.qkv_proj.weight").value().isPacked());
+            assertArrayEquals(full, model.forward(prompt).value().toArray(), 1e-4f);
+            LanguageModel.State f = model.newState(2);
+            model.next(f, prompt, null);
+            assertArrayEquals(step, model.next(f, new int[][] {{9}, {10}}, null).toArray(), 1e-4f);
+        }
+    }
+
+    @Test
     void hiddenStatesComeWithTheLogits() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 16, DEVICE, DType.FLOAT32);
         int[][] prompt = {{1, 2, 3}, {4, 5, 6}};

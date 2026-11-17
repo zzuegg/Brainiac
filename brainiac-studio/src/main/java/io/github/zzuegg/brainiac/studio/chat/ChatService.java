@@ -36,6 +36,7 @@ public final class ChatService {
     private final UsageLog usage;
     private final ProviderSettings settings;
     private final Conversations conversations;
+    private final PageState page;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
 
     private record Listing(List<ModelInfo> models, String error, long at) {
@@ -55,6 +56,7 @@ public final class ChatService {
         this.usage = new UsageLog(outputs.resolveSibling("usage.jsonl"));
         this.settings = new ProviderSettings(outputs.resolveSibling("providers.properties"));
         this.conversations = new Conversations(outputs.resolveSibling("chats"));
+        this.page = new PageState(outputs.resolveSibling("page.json"));
         for (ChatProvider p : this.providers) {
             if (p instanceof RemoteProvider r) {
                 apply(r);
@@ -125,6 +127,25 @@ public final class ChatService {
      */
     public Conversations conversations() {
         return conversations;
+    }
+
+    /**
+     * Returns what the page remembers between visits, kept next to the outputs folder in
+     * {@code page.json}.
+     *
+     * @return the page state
+     */
+    public PageState page() {
+        return page;
+    }
+
+    /**
+     * Returns the folder everything is kept in: the one that holds the outputs folder.
+     *
+     * @return the folder
+     */
+    public Path folder() {
+        return outputs.toAbsolutePath().getParent();
     }
 
     /**

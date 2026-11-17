@@ -913,3 +913,4 @@ button.linkchip:hover { filter: brightness(1.15); text-decoration: underline; te
   .pane .stage-head { padding: 8px 12px; flex-wrap: wrap; }
   .pane .model-pick { max-width: 100%; flex: 1 1 160px; }
 }
+.pop code.datafolder { display: block; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--bg-sunk); border: 1px solid var(--line-soft); overflow-wrap: anywhere; user-select: all; }

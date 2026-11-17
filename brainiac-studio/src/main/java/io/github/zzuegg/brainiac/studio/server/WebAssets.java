@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Serves the web page from this module's resources. Only files directly inside the web
@@ -28,9 +29,18 @@ final class WebAssets {
             + "img-src 'self' data: blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
     private final String token;
+    private final Supplier<String> state;
+    private final String folder;
 
-    WebAssets(String token) {
+    /**
+     * @param token the session token
+     * @param state the page state as JSON safe inside a script element
+     * @param folder where the studio keeps everything, shown on the page
+     */
+    WebAssets(String token, Supplier<String> state, String folder) {
         this.token = token;
+        this.state = state;
+        this.folder = folder;
     }
 
     void handle(HttpExchange ex) throws IOException {
@@ -70,8 +80,14 @@ final class WebAssets {
         return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n"
                 + "<meta name=\"studio-token\" content=\"" + token + "\">\n"
+                + "<meta name=\"studio-folder\" content=\"" + attr(folder) + "\">\n"
+                + "<script type=\"application/json\" id=\"studio-state\">" + state.get() + "</script>\n"
                 + "<style>[hidden]{display:none!important}</style>\n"
                 + head + "</head>\n<body>\n" + body + "</body>\n</html>\n";
+    }
+
+    private static String attr(String s) {
+        return s.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     static byte[] read(String name) {
