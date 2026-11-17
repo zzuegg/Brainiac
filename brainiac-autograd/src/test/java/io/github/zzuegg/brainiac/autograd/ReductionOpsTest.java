@@ -63,4 +63,13 @@ class ReductionOpsTest {
                 .add(v.get(0).repeatInterleave(2, 1).square().sum()), List.of(A, b));
         assertTrue(r.passed(), r.toString());
     }
+
+    @Test
+    void erfMatchesPyTorch() {
+        Tensor x = Tensor.of(-3f, -1.2f, -0.5f, 0f, 0.3f, 1f, 2.5f);
+        assertArrayEquals(new float[] {-0.999978f, -0.910314f, -0.5205f, 0f, 0.328627f, 0.842701f, 0.999593f},
+                x.erf().toArray(), 1e-6f);
+        GradCheck.Result r = GradCheck.check(v -> v.get(0).erf().square().sum(), List.of(A));
+        assertTrue(r.passed(), r.toString());
+    }
 }
