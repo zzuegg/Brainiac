@@ -7,12 +7,14 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * A language the generated text must belong to, for constrained decoding: at each step the
  * {@link Generator} allows only the tokens whose text keeps the output a prefix of some
  * accepted string, and a stop token only once the output is accepted. Built from a regular
- * expression, a list of choices or a JSON schema; all compile to the same automaton.
+ * expression, a list of choices or a JSON schema; all compile to the same automaton. Any
+ * other language plugs in through {@link #of(Supplier)} with its own {@link Matcher}.
  */
 public final class Constraint {
 
@@ -56,12 +58,33 @@ public final class Constraint {
     private CharSet[] sets = new CharSet[16];
     private int count;
     private final int start;
+    /** The start of a custom language, or {@code null} for a compiled pattern. */
+    private final Supplier<? extends Matcher> custom;
 
     private Constraint(String pattern) {
         this.pattern = pattern;
+        this.custom = null;
         Node ast = new Parser(pattern).parse();
         int match = add(MATCH, -1, -1, null);
         this.start = compile(ast, match);
+    }
+
+    private Constraint(Supplier<? extends Matcher> custom) {
+        this.pattern = null;
+        this.custom = custom;
+        this.start = -1;
+    }
+
+    /**
+     * A language of one's own, such as a grammar a regular expression cannot express: the
+     * generator asks the matcher which characters may follow. Matchers should be immutable,
+     * since a search may branch from one.
+     *
+     * @param start makes the matcher before any text
+     * @return the constraint
+     */
+    public static Constraint of(Supplier<? extends Matcher> start) {
+        return new Constraint(java.util.Objects.requireNonNull(start, "start"));
     }
 
     /**
@@ -118,13 +141,16 @@ public final class Constraint {
         return new Constraint(schemaRegex(schema));
     }
 
-    /** @return the regular expression this constraint compiled */
+    /** @return the regular expression this constraint compiled, or {@code null} for a custom one */
     public String pattern() {
         return pattern;
     }
 
     /** @return a matcher before any text */
     public Matcher start() {
+        if (custom != null) {
+            return java.util.Objects.requireNonNull(custom.get(), "the custom constraint's start matcher");
+        }
         return new State(this, closure(new int[] {start}));
     }
 
