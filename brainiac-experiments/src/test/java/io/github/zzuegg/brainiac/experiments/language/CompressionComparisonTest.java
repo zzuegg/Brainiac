@@ -20,6 +20,7 @@ class CompressionComparisonTest {
             HookedDecoder c = CompressionComparison.compress(base, m, 0.5, 1);
             loss.put(m, CountingTasks.evaluate(c, 12, 8, 1, 2));
         }
+        System.out.printf("LM loss at 50%% compression: dense %.3f, %s%n", dense, loss);
         assertTrue(loss.get(CompressionComparison.Method.SPARSEGPT) < loss.get(CompressionComparison.Method.MAGNITUDE),
                 loss.toString());
         assertTrue(loss.get(CompressionComparison.Method.SPARSEGPT) < dense + 1.0, "dense " + dense + " " + loss);

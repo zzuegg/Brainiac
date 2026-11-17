@@ -70,6 +70,8 @@ class LeniaTest {
         l.soup(16, new SplittableRandom(4));
         List<float[]> frames = new ArrayList<>();
         l.run(30, frames, 3);
+        System.out.printf("Lenia search: %d of 16 settings kept life; first mu %.3f sigma %.4f, mass share after 30 "
+                + "steps %.3f%n", found.size(), found.get(0)[0], found.get(0)[1], l.mass() / (32 * 32));
         assertEquals(10, frames.size());
         assertTrue(l.gif(frames, 2).length > 500);
     }

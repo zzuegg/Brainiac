@@ -24,6 +24,8 @@ class BitNetExperimentTest {
         double qatAcc = BitNetExperiment.accuracy(qat, x, y);
         BitNetExperiment.ternarizeHidden(fp);
         double ptqAcc = BitNetExperiment.accuracy(fp, x, y);
+        System.out.printf("BitNet spirals accuracy: float %.3f, ternary QAT %.3f, post-training ternary %.3f%n", floatAcc,
+                qatAcc, ptqAcc);
         assertTrue(floatAcc > 0.95, "float " + floatAcc);
         assertTrue(qatAcc > 0.9 && qatAcc > ptqAcc, "QAT " + qatAcc + " vs post-training ternary " + ptqAcc);
 
@@ -33,6 +35,7 @@ class BitNetExperimentTest {
         for (int i = 0; i < 1000; i++) {
             agree += (packed[2 * i] > packed[2 * i + 1]) == (fake[2 * i] > fake[2 * i + 1]) ? 1 : 0;
         }
+        System.out.printf("BitNet packed additions-only inference agrees on %d/1000 predictions%n", agree);
         assertEquals(1000, agree, 5, "packed additions-only inference gives the same predictions");
     }
 }

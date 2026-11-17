@@ -28,6 +28,8 @@ class NeuralCellularAutomatonTest {
         float lossDamaged = nca.loss(damaged);
         float lossHealed = nca.loss(nca.run(damaged, 20, 4, null));
         float lossKept = nca.loss(nca.run(grown, 20, 4, null));
+        System.out.printf("NCA: loss untrained %.4f, grown %.4f; damaged %.4f -> regrown %.4f (undamaged %.4f)%n",
+                untrained, lossGrown, lossDamaged, lossHealed, lossKept);
         // at least half of the damage is repaired, relative to an undamaged pattern run as long
         assertTrue(lossHealed - lossKept < 0.5f * (lossDamaged - lossKept),
                 "damaged " + lossDamaged + " -> regrown " + lossHealed + " (undamaged " + lossKept + ")");

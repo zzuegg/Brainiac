@@ -13,12 +13,15 @@ class HyperdimensionalDemoTest {
 
     @Test
     void theDollarOfMexicoIsThePeso() {
-        assertEquals("peso", HyperdimensionalDemo.dollarOfMexico(10_048, 1));
+        String answer = HyperdimensionalDemo.dollarOfMexico(10_048, 1);
+        System.out.printf("HDC analogy at 10048 bits: dollar of Mexico = %s%n", answer);
+        assertEquals("peso", answer);
     }
 
     @Test
     void identifiesLanguagesFromOneExampleEach() {
         double acc = HyperdimensionalDemo.languageId(6, 400, 20, 120, 4096, 2);
+        System.out.printf("HDC one-shot language ID (6 languages): accuracy %.3f (chance %.3f)%n", acc, 1.0 / 6);
         assertTrue(acc > 0.9, "one-shot accuracy " + acc + " (chance 1/6)");
     }
 

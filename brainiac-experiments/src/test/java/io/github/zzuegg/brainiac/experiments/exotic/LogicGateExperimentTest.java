@@ -14,6 +14,8 @@ class LogicGateExperimentTest {
                 LogicGateExperiment.highNibbleGreater(), 4f, 1);
         exp.train(400);
         double[] circuit = exp.circuitAccuracy();
+        System.out.printf("logic-gate net, 8-bit comparator: discrete circuit accuracy %.4f on all 256 inputs%n",
+                circuit[0]);
         assertTrue(circuit[0] > 0.9, "discrete circuit accuracy " + circuit[0]);
 
         // the hardened float network and the bit-op circuit agree on every output bit
