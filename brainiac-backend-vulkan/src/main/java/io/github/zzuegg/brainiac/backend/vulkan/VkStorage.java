@@ -7,34 +7,49 @@ import java.lang.ref.Cleaner;
 
 /**
  * Values of one {@link DType} in Vulkan device memory: a slot carved out of a larger memory block,
- * returned to the pool when this object is released or garbage collected.
+ * taken when the values are first written and returned to the pool when this object is released
+ * or garbage collected. A result that is only ever inlined into fused shaders never takes one.
  */
 final class VkStorage implements Storage {
 
+    /** The slot, or null until it is needed; shared with the cleaner action. */
+    private static final class Holder {
+        volatile VkContext.Slot slot;
+    }
+
     final VulkanBackend owner;
-    final VkContext.Slot slot;
     final long size;
     final DType dtype;
     /** The values as uploaded, kept for small uploads so indices can be checked without a download. */
     final float[] host;
+    /** The element-wise expression not yet computed into the slot, or null once it is. */
+    Fusion.Expr pending;
+    /** The size of {@link #pending} in nodes, inlined inputs included. */
+    int pendingNodes;
+    /** The backend's fusion generation when {@link #pending} was recorded. */
+    long pendingGeneration;
+    private final VkContext context;
+    private final Holder holder = new Holder();
     private final Cleaner.Cleanable cleanable;
     private boolean released;
 
-    VkStorage(VulkanBackend owner, VkContext.Slot slot, long size, DType dtype, float[] host, Cleaner cleaner,
-            VkContext context) {
+    VkStorage(VulkanBackend owner, long size, DType dtype, float[] host, Cleaner cleaner, VkContext context) {
         this.owner = owner;
-        this.slot = slot;
         this.size = size;
         this.dtype = dtype;
         this.host = host;
-        this.cleanable = cleaner.register(this, new Free(context, slot));
+        this.context = context;
+        this.cleanable = cleaner.register(this, new Free(context, holder));
     }
 
     /** The cleaner action; must not reference the storage itself. */
-    private record Free(VkContext context, VkContext.Slot slot) implements Runnable {
+    private record Free(VkContext context, Holder holder) implements Runnable {
         @Override
         public void run() {
-            context.free(slot);
+            VkContext.Slot s = holder.slot;
+            if (s != null) {
+                context.free(s);
+            }
         }
     }
 
@@ -48,12 +63,22 @@ final class VkStorage implements Storage {
         return dtype;
     }
 
-    /** The device address of element {@code index}. */
-    long address(long index) {
+    /** The device memory, taken from the pool on first use. */
+    VkContext.Slot slot() {
         if (released) {
             throw new IllegalStateException("a released tensor was used");
         }
-        return slot.address() + index * dtype.bytes();
+        VkContext.Slot s = holder.slot;
+        if (s == null) {
+            s = context.allocate(bytes());
+            holder.slot = s;
+        }
+        return s;
+    }
+
+    /** The device address of element {@code index}. */
+    long address(long index) {
+        return slot().address() + index * dtype.bytes();
     }
 
     /** The device address of the first element. */

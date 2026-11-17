@@ -9,6 +9,9 @@ module io.github.zzuegg.brainiac.backend.vulkan {
     requires org.lwjgl.vulkan;
     // the shared libraries of the platform's natives jar (the module name is the same on every platform)
     requires org.lwjgl.natives;
+    // compiles the shaders of fused element-wise chains
+    requires org.lwjgl.shaderc;
+    requires org.lwjgl.shaderc.natives;
 
     exports io.github.zzuegg.brainiac.backend.vulkan;
 

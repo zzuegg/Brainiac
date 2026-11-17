@@ -16,12 +16,25 @@ val lwjglNatives: String = run {
 
 dependencies {
     api(project(":brainiac-tensor"))
-    // LWJGL is the one runtime dependency allowed: Vulkan bindings, no other libraries
+    // LWJGL is the one runtime dependency allowed: Vulkan bindings and the shaderc
+    // shader compiler, no other libraries
     implementation(libs.lwjgl)
     implementation(libs.lwjgl.vulkan)
     implementation(variantOf(libs.lwjgl) { classifier(lwjglNatives) })
+    // shaderc compiles the shaders generated for fused element-wise chains at run time
+    implementation(libs.lwjgl.shaderc)
+    implementation(variantOf(libs.lwjgl.shaderc) { classifier(lwjglNatives) })
     testImplementation(project(":brainiac-nn"))
     testRuntimeOnly(project(":brainiac-backend-cpu"))
+}
+
+// The shared GLSL is also read at run time, as the prelude of the shaders generated for fused
+// element-wise chains
+tasks.processResources {
+    from("src/main/glsl") {
+        include("*.glsl")
+        into("io/github/zzuegg/brainiac/backend/vulkan/shaders")
+    }
 }
 
 // The tests compare every operation with the CPU backend. They are skipped where no Vulkan
@@ -36,6 +49,11 @@ tasks.test {
     // -Pbrainiac.vulkan.validate=true runs the tests under the Khronos validation layer
     if (providers.gradleProperty("brainiac.vulkan.validate").orNull == "true") {
         jvmArgs("-Dbrainiac.vulkan.validate=true")
+    }
+    // -Pbrainiac.vulkan.diagnose=<case> compiles test shaders one by one (DriverDiagnosisTest)
+    providers.gradleProperty("brainiac.vulkan.diagnose").orNull?.let {
+        jvmArgs("-Dbrainiac.vulkan.diagnose=$it")
+        testLogging.showStandardStreams = true
     }
 }
 
