@@ -68,15 +68,18 @@ public final class Sac implements Learner {
     private ReplayBuffer buffer;
     private long updates;
     private double lastCriticLoss = Double.NaN;
+    private final HlGaussValue valueHead;
 
-    private Sac(int obsDims, int actDims, RlNetworkFactory factory) {
+    private Sac(int obsDims, int actDims, RlNetworkFactory factory, HlGaussValue valueHead) {
         this.obsDims = obsDims;
         this.actDims = actDims;
+        this.valueHead = valueHead;
+        int qOut = valueHead == null ? 1 : valueHead.bins();
         this.actor = factory.create(obsDims, 2 * actDims, 11);
-        this.q1 = factory.create(obsDims + actDims, 1, 12);
-        this.q2 = factory.create(obsDims + actDims, 1, 13);
-        this.q1Target = factory.create(obsDims + actDims, 1, 12);
-        this.q2Target = factory.create(obsDims + actDims, 1, 13);
+        this.q1 = factory.create(obsDims + actDims, qOut, 12);
+        this.q2 = factory.create(obsDims + actDims, qOut, 13);
+        this.q1Target = factory.create(obsDims + actDims, qOut, 12);
+        this.q2Target = factory.create(obsDims + actDims, qOut, 13);
         RlTensors.copy(q1.parameters(), q1Target.parameters());
         RlTensors.copy(q2.parameters(), q2Target.parameters());
         this.logAlpha = Var.param(Tensor.full(Shape.of(1, 1), (float) Math.log(0.2)));
@@ -92,7 +95,33 @@ public final class Sac implements Learner {
      */
     public static Sac of(int observationDims, int actionDims, RlNetworkFactory networks) {
         Objects.requireNonNull(networks, "networks");
-        return new Sac(observationDims, actionDims, networks);
+        return new Sac(observationDims, actionDims, networks, null);
+    }
+
+    /**
+     * SAC whose critics are trained by classification over value bins (HL-Gauss, see
+     * {@link HlGaussValue}) instead of mean squared error.
+     *
+     * @param observationDims values per observation
+     * @param actionDims values per action
+     * @param networks builds the actor and the critics ({@code obs + action -> bins})
+     * @param valueHead the value bins
+     * @return the learner
+     */
+    public static Sac of(int observationDims, int actionDims, RlNetworkFactory networks, HlGaussValue valueHead) {
+        Objects.requireNonNull(networks, "networks");
+        return new Sac(observationDims, actionDims, networks, Objects.requireNonNull(valueHead, "valueHead"));
+    }
+
+    /** A critic's value: its output, or the expected value of its bins. */
+    private Var q(Model critic, Var input, boolean training) {
+        Var out = critic.forward(input, training);
+        return valueHead == null ? out : valueHead.value(out);
+    }
+
+    private Var criticLoss(Model critic, Var input, Tensor target) {
+        Var out = critic.forward(input, true);
+        return valueHead == null ? out.sub(target).square().mean() : valueHead.loss(out, target);
     }
 
     /** @param lr the learning rate of actor, critics and temperature @return this learner */
@@ -282,15 +311,15 @@ public final class Sac implements Learner {
         Var[] nextSample = sample(actor, next, noise(batchSize));
         Tensor nextA = nextSample[0].value();
         Tensor nextIn = Tensor.concat(1, b.nextObservations(), nextA);
-        Tensor minNext = q1Target.forward(Var.of(nextIn), false).value()
-                .minimum(q2Target.forward(Var.of(nextIn), false).value());
+        Tensor minNext = q(q1Target, Var.of(nextIn), false).value()
+                .minimum(q(q2Target, Var.of(nextIn), false).value());
         Tensor softNext = minNext.sub(nextSample[1].value().mul(alpha));
         Tensor y = b.rewards().add(b.discounts().mul(b.notDone()).mul(softNext));
         RlTensors.zeroGrad(actor.parameters());
 
         Var in = Var.of(Tensor.concat(1, b.observations(), b.actions()));
-        Var l1 = q1.forward(in, true).sub(y).square().mean();
-        Var l2 = q2.forward(in, true).sub(y).square().mean();
+        Var l1 = criticLoss(q1, in, y);
+        Var l2 = criticLoss(q2, in, y);
         Var criticLoss = l1.add(l2);
         criticLoss.backward();
         List<Var> criticParams = new java.util.ArrayList<>(q1.parameters());
@@ -300,7 +329,7 @@ public final class Sac implements Learner {
 
         Var[] cur = sample(actor, obs, noise(batchSize));
         Var curIn = Var.concat(1, obs, cur[0]);
-        Var minQ = q1.forward(curIn, true).minimum(q2.forward(curIn, true));
+        Var minQ = q(q1, curIn, true).minimum(q(q2, curIn, true));
         Var actorLoss = cur[1].mul(alpha).sub(minQ).mean();
         actorLoss.backward();
         actorOpt.step(actor.parameters());
@@ -314,6 +343,8 @@ public final class Sac implements Learner {
         }
         RlTensors.blend(q1.parameters(), q1Target.parameters(), tau);
         RlTensors.blend(q2.parameters(), q2Target.parameters(), tau);
+        RlTensors.copy(q1.buffers(), q1Target.buffers());   // running statistics, if any
+        RlTensors.copy(q2.buffers(), q2Target.buffers());
         updates++;
     }
 

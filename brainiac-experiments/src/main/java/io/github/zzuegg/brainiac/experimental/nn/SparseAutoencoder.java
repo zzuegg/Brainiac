@@ -15,9 +15,9 @@ import java.util.SplittableRandom;
 
 /**
  * A sparse autoencoder that decomposes a layer's activations into many sparsely active,
- * usually interpretable features: {@code z = sparsify(relu(W_enc (x - b_dec) + b_enc))},
+ * usually interpretable features: {@code z = sparsify(W_enc (x - b_dec) + b_enc)},
  * {@code x' = W_dec z + b_dec}, with an overcomplete dictionary (more features than
- * dimensions). Two ways to make {@code z} sparse:
+ * dimensions). Ways to make {@code z} sparse:
  *
  * <ul>
  *   <li>{@link Sparsity#TOP_K}: keep the {@code k} largest pre-activations per sample
@@ -26,14 +26,26 @@ import java.util.SplittableRandom;
  *   <li>{@link Sparsity#L1}: an L1 penalty on {@code z}, with decoder columns kept at
  *       unit norm so the penalty cannot be dodged by shrinking codes (Bricken et al. 2023,
  *       <a href="https://transformer-circuits.pub/2023/monosemantic-features/">Towards
- *       Monosemanticity</a>).</li>
+ *       Monosemanticity</a>);</li>
+ *   <li>{@link Sparsity#BATCH_TOP_K}: keep the {@code k * batch} largest codes of the whole
+ *       batch, so the number of features per sample adapts; at inference a learned
+ *       threshold takes over (Bussmann et al. 2024,
+ *       <a href="https://arxiv.org/abs/2412.06410">arXiv:2412.06410</a>);</li>
+ *   <li>{@link Sparsity#JUMP_RELU}: a learned per-feature threshold, {@code z = pre H(pre -
+ *       theta)}, with an L0 penalty, both trained by straight-through estimation
+ *       (Rajamanoharan et al. 2024, <a href="https://arxiv.org/abs/2407.14435">arXiv:2407.14435</a>);</li>
+ *   <li>{@link Sparsity#MATRYOSHKA}: batch top-k codes, and every nested prefix of the
+ *       dictionary (the first {@code m_1 < m_2 < ...} features) must reconstruct the input
+ *       on its own, so early features learn general concepts and later ones refine them,
+ *       which cuts feature absorption (Bussmann et al. 2025,
+ *       <a href="https://arxiv.org/abs/2503.17547">arXiv:2503.17547</a>).</li>
  * </ul>
  *
- * <p>Training resamples dead features (ones that never fire) toward badly reconstructed
- * inputs. {@link #stats} and {@link #topExamples} make a small feature browser. As a
- * {@link Layer}, the autoencoder returns its reconstruction, so it can be spliced into a
- * model's forward pass with a hook ({@link LayerHooks#at}) to see how much the features
- * explain.
+ * <p>The shared activations live in {@link SparseCoding}. Training resamples dead features
+ * (ones that never fire) toward badly reconstructed inputs. {@link #stats} and
+ * {@link #topExamples} make a small feature browser. As a {@link Layer}, the autoencoder
+ * returns its reconstruction, so it can be spliced into a model's forward pass with a hook
+ * ({@link LayerHooks#at}) to see how much the features explain.
  */
 public final class SparseAutoencoder implements Layer {
 
@@ -42,7 +54,13 @@ public final class SparseAutoencoder implements Layer {
         /** keep the k largest */
         TOP_K,
         /** L1 penalty */
-        L1
+        L1,
+        /** keep the k * batch largest of the batch; a threshold at inference */
+        BATCH_TOP_K,
+        /** learned thresholds with an L0 penalty */
+        JUMP_RELU,
+        /** batch top-k with nested-prefix reconstruction losses */
+        MATRYOSHKA
     }
 
     /**
@@ -65,13 +83,24 @@ public final class SparseAutoencoder implements Layer {
     private final Var encoderBias;
     private final Var decoder;
     private final Var decoderBias;
+    private final Var logThreshold;
+    private final int[] prefixes;
+    private final float bandwidth;
+    private float inferenceThreshold;
+    private boolean training;
 
-    private SparseAutoencoder(int dimension, int features, Sparsity sparsity, int k, float l1, SplittableRandom r) {
+    private SparseAutoencoder(int dimension, int features, Sparsity sparsity, int k, float l1, int[] prefixes,
+            SplittableRandom r) {
         this.dimension = dimension;
         this.features = features;
         this.sparsity = sparsity;
         this.k = k;
         this.l1 = l1;
+        this.prefixes = prefixes;
+        this.bandwidth = 0.05f;
+        float[] theta = new float[features];
+        Arrays.fill(theta, (float) Math.log(0.1));
+        this.logThreshold = sparsity == Sparsity.JUMP_RELU ? Var.param(Tensor.of(Shape.of(features), theta)) : null;
         float[] dec = new float[features * dimension];
         for (int f = 0; f < features; f++) {
             double norm = 0;
@@ -105,7 +134,7 @@ public final class SparseAutoencoder implements Layer {
      * @return the autoencoder
      */
     public static SparseAutoencoder topK(int dimension, int features, int k, long seed) {
-        return new SparseAutoencoder(dimension, features, Sparsity.TOP_K, k, 0, new SplittableRandom(seed));
+        return new SparseAutoencoder(dimension, features, Sparsity.TOP_K, k, 0, null, new SplittableRandom(seed));
     }
 
     /**
@@ -118,7 +147,50 @@ public final class SparseAutoencoder implements Layer {
      * @return the autoencoder
      */
     public static SparseAutoencoder l1(int dimension, int features, float l1, long seed) {
-        return new SparseAutoencoder(dimension, features, Sparsity.L1, 0, l1, new SplittableRandom(seed));
+        return new SparseAutoencoder(dimension, features, Sparsity.L1, 0, l1, null, new SplittableRandom(seed));
+    }
+
+    /**
+     * A batch top-k autoencoder.
+     *
+     * @param dimension the activation width
+     * @param features the dictionary size
+     * @param k the mean number of active features per sample
+     * @param seed the seed
+     * @return the autoencoder
+     */
+    public static SparseAutoencoder batchTopK(int dimension, int features, int k, long seed) {
+        return new SparseAutoencoder(dimension, features, Sparsity.BATCH_TOP_K, k, 0, null, new SplittableRandom(seed));
+    }
+
+    /**
+     * A JumpReLU autoencoder.
+     *
+     * @param dimension the activation width
+     * @param features the dictionary size
+     * @param l0 the weight of the L0 penalty
+     * @param seed the seed
+     * @return the autoencoder
+     */
+    public static SparseAutoencoder jumpRelu(int dimension, int features, float l0, long seed) {
+        return new SparseAutoencoder(dimension, features, Sparsity.JUMP_RELU, 0, l0, null, new SplittableRandom(seed));
+    }
+
+    /**
+     * A Matryoshka autoencoder with batch top-k codes.
+     *
+     * @param dimension the activation width
+     * @param features the dictionary size
+     * @param k the mean number of active features per sample
+     * @param prefixes the nested prefix sizes; the whole dictionary is added if missing
+     * @param seed the seed
+     * @return the autoencoder
+     */
+    public static SparseAutoencoder matryoshka(int dimension, int features, int k, int[] prefixes, long seed) {
+        int[] p = Arrays.stream(prefixes).filter(m -> m > 0 && m < features).sorted().distinct().toArray();
+        p = Arrays.copyOf(p, p.length + 1);
+        p[p.length - 1] = features;
+        return new SparseAutoencoder(dimension, features, Sparsity.MATRYOSHKA, k, 0, p, new SplittableRandom(seed));
     }
 
     /**
@@ -128,31 +200,18 @@ public final class SparseAutoencoder implements Layer {
      * @return codes {@code [batch, features]}
      */
     public Var encode(Var x) {
-        Var z = x.sub(decoderBias).matmul(encoder).add(encoderBias).relu();
-        if (sparsity == Sparsity.TOP_K) {
-            z = z.mul(topKMask(z.value()));
-        }
-        return z;
+        Var pre = preActivation(x);
+        return switch (sparsity) {
+            case TOP_K -> SparseCoding.topK(pre.relu(), k);
+            case L1 -> pre.relu();
+            case BATCH_TOP_K, MATRYOSHKA -> training || inferenceThreshold == 0 ? SparseCoding.batchTopK(pre.relu(), k)
+                    : SparseCoding.threshold(pre.relu(), inferenceThreshold);
+            case JUMP_RELU -> SparseCoding.jumpRelu(pre, logThreshold.exp(), bandwidth);
+        };
     }
 
-    private Tensor topKMask(Tensor z) {
-        int rows = z.shape().dim(0);
-        float[] v = z.to(DType.FLOAT32).toArray();
-        float[] mask = new float[v.length];
-        Integer[] idx = new Integer[features];
-        for (int r = 0; r < rows; r++) {
-            int base = r * features;
-            for (int f = 0; f < features; f++) {
-                idx[f] = f;
-            }
-            Arrays.sort(idx, (a, b) -> Float.compare(v[base + b], v[base + a]));
-            for (int i = 0; i < Math.min(k, features); i++) {
-                if (v[base + idx[i]] > 0) {
-                    mask[base + idx[i]] = 1;
-                }
-            }
-        }
-        return Tensor.of(z.shape(), mask, z.device());
+    private Var preActivation(Var x) {
+        return x.sub(decoderBias).matmul(encoder).add(encoderBias);
     }
 
     /**
@@ -174,20 +233,36 @@ public final class SparseAutoencoder implements Layer {
 
     @Override
     public List<Var> parameters() {
-        return List.of(encoder, encoderBias, decoder, decoderBias);
+        return logThreshold == null ? List.of(encoder, encoderBias, decoder, decoderBias)
+                : List.of(encoder, encoderBias, decoder, decoderBias, logThreshold);
     }
 
     /**
      * The training loss of a batch: mean squared reconstruction error, plus the L1 penalty
-     * for {@link Sparsity#L1}.
+     * for {@link Sparsity#L1} and the L0 penalty for {@link Sparsity#JUMP_RELU}; for
+     * {@link Sparsity#MATRYOSHKA} the mean of the errors of every nested prefix.
      *
      * @param x activations {@code [batch, dimension]}
      * @return the scalar loss
      */
     public Var loss(Var x) {
         Var z = encode(x);
+        if (sparsity == Sparsity.MATRYOSHKA) {
+            Var total = null;
+            for (int m : prefixes) {
+                float[] keep = new float[features];
+                Arrays.fill(keep, 0, m, 1f);
+                Var part = decode(z.mul(Tensor.of(Shape.of(features), keep))).sub(x).square().sum(1, false).mean();
+                total = total == null ? part : total.add(part);
+            }
+            return total.div(prefixes.length);
+        }
         Var mse = decode(z).sub(x).square().sum(1, false).mean();
-        return sparsity == Sparsity.L1 ? mse.add(z.abs().sum(1, false).mean().mul(l1)) : mse;
+        return switch (sparsity) {
+            case L1 -> mse.add(z.abs().sum(1, false).mean().mul(l1));
+            case JUMP_RELU -> mse.add(SparseCoding.jumpL0(preActivation(x), logThreshold.exp(), bandwidth).mul(l1));
+            default -> mse;
+        };
     }
 
     /**
@@ -213,6 +288,8 @@ public final class SparseAutoencoder implements Layer {
         decoderBias.assign(Tensor.of(Shape.of(dimension), mean));
         List<Float> losses = new ArrayList<>();
         long[] fired = new long[features];
+        training = true;
+        double threshold = 0;
         for (int step = 1; step <= steps; step++) {
             float[] rows = new float[batch * dimension];
             for (int b = 0; b < batch; b++) {
@@ -226,7 +303,12 @@ public final class SparseAutoencoder implements Layer {
             if (sparsity == Sparsity.L1) {
                 normalizeDecoder();
             }
-            float[] z = encode(x).value().to(DType.FLOAT32).toArray();
+            Var codes = encode(x);
+            if (sparsity == Sparsity.BATCH_TOP_K || sparsity == Sparsity.MATRYOSHKA) {
+                threshold = step == 1 ? SparseCoding.smallestActive(codes)
+                        : 0.99 * threshold + 0.01 * SparseCoding.smallestActive(codes);
+            }
+            float[] z = codes.value().to(DType.FLOAT32).toArray();
             for (int i = 0; i < z.length; i++) {
                 if (z[i] > 0) {
                     fired[i % features]++;
@@ -237,7 +319,24 @@ public final class SparseAutoencoder implements Layer {
                 Arrays.fill(fired, 0);
             }
         }
+        training = false;
+        inferenceThreshold = (float) threshold;
         return losses;
+    }
+
+    /**
+     * The share of features that never fire on a data set.
+     *
+     * @param data activations, one row per sample
+     * @return the dead fraction
+     */
+    public double deadFraction(float[][] data) {
+        return stats(data).stream().filter(s -> s.frequency() == 0).count() / (double) features;
+    }
+
+    /** @return the sparsity mode */
+    public Sparsity sparsity() {
+        return sparsity;
     }
 
     private void normalizeDecoder() {
@@ -411,6 +510,6 @@ public final class SparseAutoencoder implements Layer {
     @Override
     public String toString() {
         return "SparseAutoencoder(" + dimension + " -> " + features + ", " + sparsity
-                + (sparsity == Sparsity.TOP_K ? " k=" + k : " l1=" + l1) + ")";
+                + (sparsity == Sparsity.L1 || sparsity == Sparsity.JUMP_RELU ? " penalty=" + l1 : " k=" + k) + ")";
     }
 }
