@@ -1,0 +1,10 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+#include "math.glsl"
+layout(push_constant) uniform P { In a; In b; Buf z; uint n; uint op; } p;
+void main() {
+    uint i = gid();
+    if (i < p.n) STORE(p.z, i, binary_op(p.op, LOAD(p.a, i), LOAD(p.b, i)));
+}

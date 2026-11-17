@@ -259,11 +259,30 @@ public final class BenchmarkExample {
     }
 
     /**
+     * Finds a device by name: {@code cpu}, {@code gpu} (the first GPU), {@code best}, or the
+     * start of a device name such as {@code opencl} or {@code vulkan}.
+     *
+     * @param name the name
+     * @return the device
+     * @throws IllegalArgumentException if no available device matches
+     */
+    public static Device device(String name) {
+        return switch (name) {
+            case "cpu" -> Device.cpu();
+            case "gpu" -> Device.gpu();
+            case "best" -> Device.best();
+            default -> Device.available().stream().filter(d -> d.name().startsWith(name)).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("--device takes cpu, gpu, best or the start of"
+                            + " a device name; available: " + Device.available()));
+        };
+    }
+
+    /**
      * Runs the benchmark.
      *
      * @param args a task name, {@code offline} or {@code all}; then model names or files;
      *        then {@code --epochs N}, {@code --limit N} (training samples), {@code --train},
-     *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best},
+     *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best|opencl|vulkan},
      *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
      *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
      *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
@@ -297,12 +316,7 @@ public final class BenchmarkExample {
                 continue;
             }
             switch (args[i]) {
-                case "--device" -> device = switch (args[++i]) {
-                    case "cpu" -> Device.cpu();
-                    case "gpu" -> Device.gpu();
-                    case "best" -> Device.best();
-                    default -> throw new IllegalArgumentException("--device takes cpu, gpu or best");
-                };
+                case "--device" -> device = device(args[++i]);
                 case "--dtype" -> dtype = dtype(args[++i]);
                 case "--mixed" -> mixed = dtype(args[++i]);
                 case "--precisions" -> {
@@ -500,7 +514,7 @@ public final class BenchmarkExample {
                   --train       train a loaded model further before testing it
                   --confusion   print the confusion matrix
                   --quiet       no per-epoch progress
-                  --device D    cpu, gpu (OpenCL) or best
+                  --device D    cpu, gpu (the first GPU), best, opencl or vulkan
                   --dtype T     run the model in f64, f16 or bf16 instead of f32
                   --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
                   --precisions L  train each model once per precision, e.g. f32,bf16,f16

@@ -1,0 +1,9 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P { Buf y; uint n; float value; } p;
+void main() {
+    uint i = gid();
+    if (i < p.n) STORE(p.y, i, ACC(p.value));
+}

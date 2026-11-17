@@ -1,0 +1,20 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P { In x; Buf y; uint rows; uint len; uint inner; } p;
+void main() {
+    uint r = gid();
+    if (r >= p.rows) return;
+    uint base = (r / p.inner) * p.len * p.inner + r % p.inner;
+    uint best = 0;
+    ACC bestValue = LOAD(p.x, base);
+    for (uint i = 1; i < p.len; i++) {
+        ACC v = LOAD(p.x, base + i * p.inner);
+        if (v > bestValue) {
+            best = i;
+            bestValue = v;
+        }
+    }
+    STORE(p.y, r, ACC(best));
+}

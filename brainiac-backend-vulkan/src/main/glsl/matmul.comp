@@ -1,0 +1,76 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// z[b] = a[b] x b[b] for row-major [m, k] x [k, n] matrices, batch index in z. A work group
+// of 16 x 16 invocations computes a tile of TILE x TILE outputs, each invocation W x W of
+// them, 16 apart, so every value loaded from shared memory serves W products. With
+// splits > 1 the batch dimension also splits k into pieces of chunk values summed
+// separately: piece s of batch b goes to z[(b * splits + s) * strideZ], added up afterwards.
+// Compiled twice: W = 4 (64 x 64 tiles) and W = 2 (32 x 32 tiles, for smaller products).
+#ifndef W
+#define W 4
+#endif
+#define TILE (16 * W)
+#define KT 16
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(push_constant) uniform P {
+    In a; In b; Buf z;
+    uint m; uint k; uint n; uint strideA; uint strideB; uint strideZ; uint splits; uint chunk;
+} p;
+shared ACC tileA[KT][TILE + 1];
+shared ACC tileB[KT][TILE];
+void main() {
+    uint lc = gl_LocalInvocationID.x;
+    uint lr = gl_LocalInvocationID.y;
+    uint tid = lr * 16 + lc;
+    uint colBase = gl_WorkGroupID.x * TILE;
+    uint rowBase = gl_WorkGroupID.y * TILE;
+    uint piece = gl_WorkGroupID.z;
+    uint batch = piece / p.splits;
+    uint from = (piece % p.splits) * p.chunk;
+    uint to = min(p.k, from + p.chunk);
+    uint aBase = batch * p.strideA;
+    uint bBase = batch * p.strideB;
+    ACC acc[W][W];
+    for (int i = 0; i < W; i++) {
+        for (int j = 0; j < W; j++) {
+            acc[i][j] = K(0.0);
+        }
+    }
+    for (uint t = from; t < to; t += KT) {
+        // TILE x KT values of a and KT x TILE of b; 256 invocations load W of each
+        for (uint l = 0; l < W; l++) {
+            uint idx = l * 256 + tid;
+            uint row = rowBase + idx / KT;
+            uint ac = t + idx % KT;
+            tileA[idx % KT][idx / KT] = row < p.m && ac < to ? LOAD(p.a, aBase + row * p.k + ac) : K(0.0);
+            uint br = t + idx / TILE;
+            uint col = colBase + idx % TILE;
+            tileB[idx / TILE][idx % TILE] = br < to && col < p.n ? LOAD(p.b, bBase + br * p.n + col) : K(0.0);
+        }
+        barrier();
+        for (uint q = 0; q < KT; q++) {
+            ACC ra[W];
+            ACC rb[W];
+            for (uint w = 0; w < W; w++) {
+                ra[w] = tileA[q][lr + w * 16];
+                rb[w] = tileB[q][lc + w * 16];
+            }
+            for (uint i = 0; i < W; i++) {
+                for (uint j = 0; j < W; j++) {
+                    acc[i][j] = fma(ra[i], rb[j], acc[i][j]);
+                }
+            }
+        }
+        barrier();
+    }
+    for (uint i = 0; i < W; i++) {
+        uint row = rowBase + lr + i * 16;
+        for (uint j = 0; j < W; j++) {
+            uint col = colBase + lc + j * 16;
+            if (row < p.m && col < p.n) {
+                STORE(p.z, piece * p.strideZ + row * p.n + col, acc[i][j]);
+            }
+        }
+    }
+}

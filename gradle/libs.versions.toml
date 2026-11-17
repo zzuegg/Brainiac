@@ -1,10 +1,15 @@
-# Brainiac ships with zero runtime dependencies.
-# Everything listed here is test-only.
+# Brainiac's core ships with zero runtime dependencies. The one exception is LWJGL, used
+# only by the optional brainiac-backend-vulkan module for its Vulkan bindings; everything
+# else listed here is test-only.
 
 [versions]
 junit = "5.13.4"
+lwjgl = "3.4.3"
 
 [libraries]
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+lwjgl = { module = "org.lwjgl:lwjgl", version.ref = "lwjgl" }
+lwjgl-vulkan = { module = "org.lwjgl:lwjgl-vulkan", version.ref = "lwjgl" }
+lwjgl-shaderc = { module = "org.lwjgl:lwjgl-shaderc", version.ref = "lwjgl" }

@@ -1,0 +1,10 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+#include "math.glsl"
+layout(push_constant) uniform P { In x; In g; Buf y; uint n; uint op; float param; } p;
+void main() {
+    uint i = gid();
+    if (i < p.n) STORE(p.y, i, LOAD(p.g, i) * activation_slope(p.op, ACC(p.param), LOAD(p.x, i)));
+}
