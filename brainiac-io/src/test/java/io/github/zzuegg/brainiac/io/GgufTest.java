@@ -87,22 +87,32 @@ class GgufTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"Q8_0", "Q4_0"})
-    void keepsQ8AndQ4Packed(String format) {
+    @ValueSource(strings = {"Q8_0", "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K"})
+    void keepsQuantizedMatricesPacked(String format) {
         try (Gguf g = Gguf.open(file)) {
             String name = "q." + format;
             assertTrue(g.packable(name));
             Tensor packed = g.packedTransposed(name, DEVICE);
             assertTrue(packed.isPacked());
             Tensor dense = g.tensor("expected." + format, DEVICE);
-            assertEquals(dense.transpose().shape(), packed.shape());
-            assertArrayEquals(dense.transpose().toArray(), packed.unpacked().toArray(), 1e-6f);
+            assertEquals(dense.transpose().shape(), packed.shape(), format);
+            if (dense.shape().rank() != 2) {
+                return;
+            }
+            assertArrayEquals(dense.transpose().toArray(), packed.unpacked().toArray(), 1e-6f, format);
             // multiplying by it reads the levels directly
             Tensor x = Tensor.uniform(Shape.of(2, packed.shape().dim(0)), -1, 1, new java.util.SplittableRandom(3))
                     .to(DEVICE);
-            assertArrayEquals(x.matmul(dense.transpose()).toArray(), x.matmul(packed).toArray(), 1e-4f);
-            assertFalse(g.packable("q.Q4_K"));
-            assertThrows(IllegalArgumentException.class, () -> g.packedTransposed("q.Q4_K", DEVICE));
+            float[] expected = x.matmul(dense.transpose()).toArray();
+            float largest = 1;
+            for (float v : expected) {
+                largest = Math.max(largest, Math.abs(v));
+            }
+            // sums in another order: rounding grows with the values
+            assertArrayEquals(expected, x.matmul(packed).toArray(), 1e-5f * largest, format);
+            assertFalse(g.packable("q.Q8_K"));
+            assertFalse(g.packable("plain.f32"));
+            assertThrows(IllegalArgumentException.class, () -> g.packedTransposed("q.Q8_K", DEVICE));
         }
     }
 

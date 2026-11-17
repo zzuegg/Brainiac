@@ -781,8 +781,23 @@ public final class Functional {
         return attention(q, k, v, bias, scale, dropout, random, null);
     }
 
-    /** As above; {@code weights[0]}, when given, receives the attention weights {@code [batch, heads, queries, keys]}. */
-    static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
+    /**
+     * As {@link #attention(Var, Var, Var, Tensor, float, float, java.util.random.RandomGenerator)},
+     * also handing out the attention weights, for interpretability or eviction policies. The
+     * weights are built then, so the fused kernel is not used.
+     *
+     * @param q queries {@code [batch, heads, queries, dk]}
+     * @param k keys {@code [batch, kvHeads, keys, dk]}
+     * @param v values {@code [batch, kvHeads, keys, dv]}
+     * @param bias added to the scores before the softmax, or {@code null}
+     * @param scale the score scale
+     * @param dropout the share of attention weights dropped while training
+     * @param random the random source for dropout, or {@code null}
+     * @param weightsOut when not {@code null}, {@code weightsOut[0]} receives the weights
+     *     {@code [batch, heads, queries, keys]} (after dropout)
+     * @return {@code [batch, heads, queries, dv]}
+     */
+    public static Var attention(Var q, Var k, Var v, Tensor bias, float scale, float dropout,
             java.util.random.RandomGenerator random, Tensor[] weightsOut) {
         int heads = q.shape().dim(1);
         int kvHeads = k.shape().dim(1);

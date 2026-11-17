@@ -261,7 +261,7 @@ public final class BenchmarkExample {
 
     /**
      * Finds a device by name: {@code cpu}, {@code gpu} (the first GPU), {@code best}, or the
-     * start of a device name such as {@code opencl} or {@code vulkan}.
+     * start of a device name such as {@code vulkan} or {@code 9070}.
      *
      * @param name the name
      * @return the device
@@ -283,7 +283,7 @@ public final class BenchmarkExample {
      *
      * @param args a task name, {@code offline} or {@code all}; then model names or files;
      *        then {@code --epochs N}, {@code --limit N} (training samples), {@code --train},
-     *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best|opencl|vulkan},
+     *        {@code --quiet}, {@code --confusion}, {@code --device cpu|gpu|best|vulkan},
      *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
      *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
      *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
@@ -641,7 +641,7 @@ public final class BenchmarkExample {
                   --train       train a loaded model further before testing it
                   --confusion   print the confusion matrix
                   --quiet       no per-epoch progress
-                  --device D    cpu, gpu (the first GPU), best, opencl or vulkan
+                  --device D    cpu, gpu (the first GPU), best or vulkan
                   --dtype T     run the model in f64, f16 or bf16 instead of f32
                   --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
                   --quantize L  after training, test quantized copies: int8, int4, int2, ...;

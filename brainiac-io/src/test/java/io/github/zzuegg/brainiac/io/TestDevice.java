@@ -6,7 +6,7 @@ import java.util.Locale;
 
 /**
  * The device the tests run on: the CPU unless {@code -PtestDevice=...} names another, by a
- * part of its name ({@code vulkan}, {@code opencl}, {@code 9070}, ...).
+ * part of its name ({@code vulkan}, {@code 9070}, ...).
  */
 final class TestDevice {
 

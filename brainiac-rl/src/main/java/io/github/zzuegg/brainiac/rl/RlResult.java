@@ -14,11 +14,21 @@ public final class RlResult {
     public RlResult() {
     }
 
-    void add(Episode e) {
+    /**
+     * Records a finished episode, for learners written outside this module.
+     *
+     * @param e the episode
+     */
+    public void add(Episode e) {
         episodes.add(e);
     }
 
-    void steps(long total) {
+    /**
+     * Sets the environment steps taken so far.
+     *
+     * @param total the steps
+     */
+    public void steps(long total) {
         this.steps = total;
     }
 

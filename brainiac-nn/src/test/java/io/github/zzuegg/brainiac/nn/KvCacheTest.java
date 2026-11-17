@@ -126,6 +126,36 @@ class KvCacheTest {
         assertArrayEquals(b, once.append(ids).toArray(), 1e-5f);
     }
 
+    /** A policy of one's own: here the sinks strategy again, so the two must agree. */
+    record FirstAndLast(int first) implements KvCache.Strategy.Policy {
+        @Override
+        public int[] keep(int total, int fresh, int window, float[] received, Tensor keys) {
+            assertEquals(total, keys.shape().dim(2));
+            assertEquals(total, received.length);
+            int[] kept = new int[window];
+            for (int i = 0; i < window; i++) {
+                kept[i] = i < first ? i : total - window + i;
+            }
+            return kept;
+        }
+
+        @Override
+        public boolean tracksAttention() {
+            return true;
+        }
+    }
+
+    @Test
+    void policiesOfOnesOwnPlugIn() {
+        Model model = lm(4, 1, TransformerBlock.of(2).causal(true).rotary(10000));
+        KvCache sinks = KvCache.of(model, KvCache.Strategy.sinks(1));
+        KvCache own = KvCache.of(model, new FirstAndLast(1));
+        for (int id : new int[] {3, 1, 4, 1, 5, 9, 2, 6}) {
+            assertArrayEquals(sinks.append(id).toArray(), own.append(id).toArray(), 1e-6f);
+        }
+        assertEquals(4, own.size());
+    }
+
     @Test
     void heavyHittersKeepTheWindowFullAndTheRecentTokens() {
         Model model = lm(6, 2, TransformerBlock.of(2).causal(true).rotary(10000));

@@ -18,7 +18,7 @@ import java.util.function.Function;
  * A fixed choice of activation for every single unit; see {@link Activation#perUnit}.
  *
  * <p>Computed as {@code sum_k f_k(x) * mask_k}, one mask per distinct activation, so it is
- * only element-wise operations: a backend that fuses element-wise chains (the OpenCL one)
+ * only element-wise operations: a backend that fuses element-wise chains (the Vulkan one)
  * runs the whole choice as one kernel instead of one launch per activation.
  */
 final class PerUnitActivation implements Activation {

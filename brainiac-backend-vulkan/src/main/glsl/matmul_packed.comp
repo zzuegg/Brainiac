@@ -7,8 +7,9 @@
 // 32-bit word when n is a multiple of 4, so neighbouring invocations read neighbouring
 // words. A work group covers 4 * QUADS columns with SLICES invocations per column quad,
 // each over its own run of rows; the work group's z index picks a piece of `chunk` rows.
-// Sums go to z[piece * m * n + ...], added up afterwards when there are several pieces.
-// Levels are summed per scale group and scaled once per group.
+// With several pieces, the last piece of each column group to finish adds them up (see Parts).
+// Levels are summed per scale group and scaled once per group; with offsets != 0 each group
+// also adds its offset times the sum of a over its rows.
 // Compiled for ROWS = 1, 2, 4 and 8; rows past m repeat row 0 and are not stored.
 #ifndef ROWS
 #define ROWS 1
@@ -16,9 +17,18 @@
 #define QUADS 32
 #define SLICES 8
 layout(local_size_x = QUADS, local_size_y = SLICES) in;
+// with several pieces: each piece's sums, [piece, row, column quad], and a counter per
+// column group that the last piece to finish finds, adds the pieces up and resets to 0
+#if defined(TYPE_F64)
+layout(buffer_reference, std430, buffer_reference_align = 32) coherent buffer Parts { dvec4 v[]; };
+#else
+layout(buffer_reference, std430, buffer_reference_align = 16) coherent buffer Parts { vec4 v[]; };
+#endif
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer Counters { uint v[]; };
+shared bool lastPiece;
 layout(push_constant) uniform P {
-    In a; InWords q; InFloats scales; Buf z;
-    uint m; uint k; uint n; uint group; uint nibbles; uint chunk;
+    In a; InWords q; InFloats scales; InFloats offsets; Buf z; Parts parts; Counters counters;
+    uint m; uint k; uint n; uint group; uint nibbles; uint chunk; uint hasOffsets; uint pieces; uint counter;
 } p;
 shared ACC4 sums[SLICES][QUADS];
 
@@ -46,11 +56,11 @@ ACC4 levels(uint r, uint c, bool words) {
     return v;
 }
 
-ACC4 scalesAt(uint g, uint c) {
+ACC4 perGroup(InFloats f, uint g, uint c) {
     uint s = g * p.n + c;
     ACC4 v = ACC4(0.0);
     for (uint j = 0; j < 4; j++) {
-        if (c + j < p.n) v[j] = ACC(p.scales.v[s + j]);
+        if (c + j < p.n) v[j] = ACC(f.v[s + j]);
     }
     return v;
 }
@@ -81,22 +91,32 @@ void main() {
             uint g = r / p.group;
             uint stop = min(end, (g + 1) * p.group);
             ACC4 part[ROWS];
+            ACC sum[ROWS];
             for (uint i = 0; i < ROWS; i++) {
                 part[i] = ACC4(0.0);
+                sum[i] = ACC(0.0);
             }
             for (; r < stop; r++) {
                 ACC4 l = levels(r, c, words);
                 for (uint i = 0; i < ROWS; i++) {
-                    part[i] = fma(ACC4(LOAD(p.a, rowOf[i] + r)), l, part[i]);
+                    ACC x = ACC(LOAD(p.a, rowOf[i] + r));
+                    part[i] = fma(ACC4(x), l, part[i]);
+                    sum[i] += x;
                 }
             }
-            ACC4 s = scalesAt(g, c);
+            ACC4 s = perGroup(p.scales, g, c);
             for (uint i = 0; i < ROWS; i++) {
                 total[i] = fma(part[i], s, total[i]);
             }
+            if (p.hasOffsets != 0) {
+                ACC4 o = perGroup(p.offsets, g, c);
+                for (uint i = 0; i < ROWS; i++) {
+                    total[i] = fma(ACC4(sum[i]), o, total[i]);
+                }
+            }
         }
     }
-    uint out0 = piece * p.m * p.n;
+    uint quads = (p.n + 3) / 4;
     for (uint i = 0; i < ROWS; i++) {
         sums[slice][quad] = total[i];
         barrier();
@@ -105,11 +125,44 @@ void main() {
             for (uint s = 1; s < SLICES; s++) {
                 t += sums[s][quad];
             }
-            uint o = out0 + i * p.n + c;
+            if (p.pieces > 1) {
+                p.parts.v[(piece * p.m + i) * quads + c / 4] = t;
+            } else {
+                uint o = i * p.n + c;
+                for (uint j = 0; j < 4; j++) {
+                    if (c + j < p.n) STORE(p.z, o + j, t[j]);
+                }
+            }
+        }
+        barrier();
+    }
+    if (p.pieces == 1) {
+        return;
+    }
+    memoryBarrierBuffer();
+    barrier();
+    if (quad == 0 && slice == 0) {
+        uint done = atomicAdd(p.counters.v[p.counter + gl_WorkGroupID.x], 1u);
+        lastPiece = done == p.pieces - 1;
+    }
+    barrier();
+    if (!lastPiece) {
+        return;
+    }
+    memoryBarrierBuffer();
+    if (slice == 0 && c < p.n) {
+        for (uint i = 0; i < p.m; i++) {
+            ACC4 t = ACC4(0.0);
+            for (uint q = 0; q < p.pieces; q++) {
+                t += p.parts.v[(q * p.m + i) * quads + c / 4];
+            }
+            uint o = i * p.n + c;
             for (uint j = 0; j < 4; j++) {
                 if (c + j < p.n) STORE(p.z, o + j, t[j]);
             }
         }
-        barrier();
+    }
+    if (quad == 0 && slice == 0) {
+        p.counters.v[p.counter + gl_WorkGroupID.x] = 0u;   // ready for the next product
     }
 }

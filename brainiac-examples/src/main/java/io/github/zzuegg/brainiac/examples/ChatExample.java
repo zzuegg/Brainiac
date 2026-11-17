@@ -30,8 +30,9 @@ import java.util.Set;
  * </pre>
  *
  * Without {@code --prompt} it reads questions from the console. Options: {@code --device
- * cpu|vulkan|opencl|<part of a name>}, {@code --dtype f32|f16|bf16}, {@code --max N},
- * {@code --temperature T} (0 for greedy), {@code --top-p P}.
+ * cpu|vulkan|<part of a name>}, {@code --dtype f32|f16|bf16}, {@code --max N},
+ * {@code --temperature T} (0 for greedy), {@code --top-p P}, {@code --kv8} (an 8-bit
+ * key/value cache).
  */
 public final class ChatExample {
 
@@ -50,7 +51,7 @@ public final class ChatExample {
                 StandardCharsets.UTF_8));
         if (args.length == 0) {
             System.out.println("Usage: chat <model directory or .gguf> [--prompt text] [--device name] [--dtype f32|f16]"
-                    + " [--max N] [--temperature T] [--top-p P]");
+                    + " [--max N] [--temperature T] [--top-p P] [--kv8]");
             return;
         }
         Path path = Path.of(args[0]);
@@ -60,6 +61,7 @@ public final class ChatExample {
         int max = 256;
         float temperature = 0.7f;
         float topP = 0.9f;
+        boolean kv8 = false;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--prompt" -> prompt = args[++i];
@@ -72,6 +74,7 @@ public final class ChatExample {
                 case "--max" -> max = Integer.parseInt(args[++i]);
                 case "--temperature" -> temperature = Float.parseFloat(args[++i]);
                 case "--top-p" -> topP = Float.parseFloat(args[++i]);
+                case "--kv8" -> kv8 = true;
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -80,7 +83,7 @@ public final class ChatExample {
             dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
         }
         long start = System.nanoTime();
-        Llama model = Llama.load(path, device, dtype);
+        Llama model = Llama.load(path, device, dtype).quantizeCache(kv8);
         PretrainedTokenizer tok = PretrainedTokenizer.load(path);
         System.out.printf("%s on %s as %s, loaded in %.1f s%n", model, device, dtype, (System.nanoTime() - start) / 1e9);
         Set<Integer> stops = Generator.stopTokens(path, tok);

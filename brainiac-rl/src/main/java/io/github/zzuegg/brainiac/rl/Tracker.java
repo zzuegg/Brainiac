@@ -1,7 +1,10 @@
 package io.github.zzuegg.brainiac.rl;
 
-/** Counts steps and rewards and reports finished episodes. */
-final class Tracker {
+/**
+ * Counts steps and rewards and reports finished episodes: the bookkeeping the built-in
+ * learners share, for learners written outside this module.
+ */
+public final class Tracker {
 
     final RlResult result = new RlResult();
     private final RlListener listener;
@@ -9,12 +12,22 @@ final class Tracker {
     private int episodeSteps;
     private double episodeReward;
 
-    Tracker(RlListener listener) {
+    /**
+     * Creates a tracker.
+     *
+     * @param listener told about each finished episode; {@code null} for none
+     */
+    public Tracker(RlListener listener) {
         this.listener = listener == null ? RlListener.NONE : listener;
     }
 
-    /** Records one step; returns whether the episode ended. */
-    boolean step(Environment.Step s) {
+    /**
+     * Records one step.
+     *
+     * @param s the step
+     * @return whether the episode ended
+     */
+    public boolean step(Environment.Step s) {
         steps++;
         episodeSteps++;
         episodeReward += s.reward();
@@ -30,7 +43,13 @@ final class Tracker {
         return false;
     }
 
-    long steps() {
+    /** @return the steps recorded */
+    public long steps() {
         return steps;
+    }
+
+    /** @return the episodes so far; the same object as training goes on */
+    public RlResult result() {
+        return result;
     }
 }

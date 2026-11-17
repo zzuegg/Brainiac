@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.QuantizedRows;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
@@ -127,7 +128,7 @@ public final class CpuBackend implements Backend {
         float[] x = data(in);
         float[] y = data(out);
         long cost = switch (op) {
-            case EXP, LOG, TANH, SIGMOID, ERF, SOFTPLUS -> 20;
+            case EXP, LOG, TANH, SIGMOID, ERF, SOFTPLUS, SIN, COS -> 20;
             case SQRT -> 4;
             default -> 1;
         };
@@ -303,8 +304,16 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void unpack(PackedStorage packed, Storage out) {
-        PackedMatrix m = unpackToHost(packed);
         CpuStorage o = cpu(out);
+        if (packed instanceof QuantizedRows rows) {
+            if (o.data != null) {
+                rows.dequantize(o.data);
+                return;
+            }
+            Backend.super.unpack(packed, out);
+            return;
+        }
+        PackedMatrix m = unpackToHost(packed);
         if (o.data != null) {
             m.dequantize(o.data);
         } else {
@@ -337,6 +346,9 @@ public final class CpuBackend implements Backend {
                     VectorPackedKernels.matmul(x, w, z, m, j0, j1);
                 } else {
                     PackedKernels.matmul(x, w, z, m, j0, j1);
+                }
+                if (w.offsets() != null) {
+                    PackedKernels.addOffsets(x, w, z, m, j0, j1);
                 }
             }
         });
