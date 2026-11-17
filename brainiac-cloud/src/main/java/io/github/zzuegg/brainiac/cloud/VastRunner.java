@@ -94,25 +94,51 @@ public final class VastRunner {
 
     /**
      * Copies the checkout's {@code HEAD} commit to {@link #REMOTE_DIR}, replacing what was there.
-     * Uncommitted changes are not sent.
+     * Uncommitted changes are not sent. The archive is made locally first, uploaded with
+     * {@code cat} (checked by size, up to three tries: Vast's SSH proxy sometimes drops a
+     * connection in the first minutes) and unpacked in a second step.
      *
      * @param i the instance
-     * @throws IOException if git or ssh fails
+     * @throws IOException if git fails or every upload failed
      * @throws InterruptedException if interrupted
      */
     public void ship(VastInstance i) throws IOException, InterruptedException {
-        Process git = new ProcessBuilder("git", "archive", "--format=tar", "HEAD").directory(repo.toFile())
-                .redirectError(ProcessBuilder.Redirect.INHERIT).start();
-        Process ssh = new ProcessBuilder(ssh(i, List.of(), "rm -rf " + REMOTE_DIR + " && mkdir -p " + REMOTE_DIR
-                + " && tar -x -C " + REMOTE_DIR))
-                .redirectOutput(ProcessBuilder.Redirect.INHERIT).redirectError(ProcessBuilder.Redirect.INHERIT).start();
-        try (InputStream in = git.getInputStream(); OutputStream out = ssh.getOutputStream()) {
-            in.transferTo(out);
-        }
-        int g = git.waitFor();
-        int s = ssh.waitFor();
-        if (g != 0 || s != 0) {
-            throw new IOException("copying the checkout failed (git " + g + ", ssh " + s + ")");
+        Path tar = Files.createTempFile("brainiac-src", ".tar");
+        try {
+            Process git = new ProcessBuilder("git", "archive", "--format=tar", "-o", tar.toString(), "HEAD")
+                    .directory(repo.toFile()).redirectErrorStream(true).start();
+            String gitOut = new String(git.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+            if (git.waitFor() != 0) {
+                throw new IOException("git archive failed: " + gitOut);
+            }
+            long size = Files.size(tar);
+            String last = "";
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                long t = System.nanoTime();
+                Process up = new ProcessBuilder(ssh(i, List.of(), "cat > /root/brainiac-src.tar && stat -c %s /root/brainiac-src.tar"))
+                        .redirectInput(tar.toFile()).redirectErrorStream(true).start();
+                String out = new String(up.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+                int code = up.waitFor();
+                if (code == 0 && out.endsWith(String.valueOf(size))) {
+                    System.out.printf(java.util.Locale.ROOT, "  uploaded %.1f MB in %.0f s%n", size / 1e6,
+                            (System.nanoTime() - t) / 1e9);
+                    String unpack = "rm -rf " + REMOTE_DIR + " && mkdir -p " + REMOTE_DIR + " && tar -xf /root/brainiac-src.tar -C "
+                            + REMOTE_DIR + " && rm /root/brainiac-src.tar";
+                    Process x = new ProcessBuilder(ssh(i, List.of(), unpack)).redirectErrorStream(true).start();
+                    String xOut = new String(x.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+                    if (x.waitFor() == 0) {
+                        return;
+                    }
+                    last = "unpacking failed: " + xOut;
+                } else {
+                    last = "upload attempt " + attempt + " failed (ssh exit " + code + ", " + size + " bytes sent): " + out;
+                }
+                System.err.println("  " + last);
+                Thread.sleep(15000);
+            }
+            throw new IOException("copying the checkout failed: " + last);
+        } finally {
+            Files.deleteIfExists(tar);
         }
     }
 

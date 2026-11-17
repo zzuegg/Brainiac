@@ -186,6 +186,7 @@ public final class VastCli {
                 System.out.println("Nothing rented.");
                 return 1;
             }
+            System.out.println("Renting " + offer);
             id = vast.rent(offer.id(), o.launch);
             price = offer.dollarsPerHour();
             System.out.println("Rented instance " + id + (o.keep ? " (--keep: destroy it yourself when done)" : ""));
@@ -230,8 +231,11 @@ public final class VastCli {
             VastRunner runner = new VastRunner(Path.of("").toAbsolutePath(), o.identity);
             System.out.println("Instance " + id + " is running; waiting for SSH at " + ready.sshHost() + ":" + ready.sshPort());
             runner.awaitSsh(ready, Duration.ofMinutes(5));
-            System.out.println("Copying this checkout (HEAD) to the instance");
+            System.out.printf(Locale.ROOT, "SSH works after %.1f minutes. Copying this checkout (HEAD) to the instance%n",
+                    (System.nanoTime() - started) / 6e10);
             runner.ship(ready);
+            System.out.printf(Locale.ROOT, "Copied after %.1f minutes; starting job %s%n", (System.nanoTime() - started) / 6e10,
+                    worker ? "worker" : o.job);
             if (worker) {
                 return worker(runner, ready, o);
             }
