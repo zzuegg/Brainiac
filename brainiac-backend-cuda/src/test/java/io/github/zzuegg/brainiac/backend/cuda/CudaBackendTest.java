@@ -459,7 +459,6 @@ class CudaBackendTest {
         assertTrue(List.of(DType.values()).size() == 4);
     }
 
-    @ParameterizedTest
     /** One kernel for RMSNorm, against the operations Llama builds it from; the input a pending sum. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 576", "5, 2048", "3, 100", "2, 7"})
