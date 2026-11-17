@@ -63,12 +63,86 @@ public final class Var {
     /** The parameters' gradients {@link #backward(Tensor)} computed: never released here. */
     private List<Tensor> backwardGrads;
 
+    /** Whether operations on this thread check for NaN, see {@link #anomalyDetection(boolean)}. */
+    private static final ThreadLocal<Boolean> ANOMALIES = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /** The operation and the code that made this value, when anomaly detection was on. */
+    private String origin;
+
     private Var(Tensor value, boolean requiresGrad, Var[] inputs, Backward backward, Higher higher) {
         this.value = Objects.requireNonNull(value, "value");
         this.requiresGrad = requiresGrad;
         this.inputs = inputs;
         this.backward = backward;
         this.higher = higher;
+    }
+
+    /**
+     * Turns anomaly detection on or off for operations on the calling thread. While it is
+     * on, every operation reads its result back to the host and throws an
+     * {@link ArithmeticException} naming itself and the calling code when the result has a
+     * NaN its inputs did not, and {@link #backward()} does the same for each gradient it
+     * computes. It is slow: a debugging aid for a loss that turned NaN. Infinities pass,
+     * since masks use them on purpose.
+     *
+     * @param on whether to check
+     */
+    public static void anomalyDetection(boolean on) {
+        ANOMALIES.set(on);
+    }
+
+    /** @return whether anomaly detection is on for the calling thread */
+    public static boolean anomalyDetection() {
+        return ANOMALIES.get();
+    }
+
+    /** The public method that created a value and its first caller outside {@code Var}. */
+    private static String describeCaller() {
+        return StackWalker.getInstance(StackWalker.Option.SHOW_HIDDEN_FRAMES).walk(frames -> {
+            String name = null;
+            String where = null;
+            for (StackWalker.StackFrame f : (Iterable<StackWalker.StackFrame>) frames::iterator) {
+                if (f.getClassName().equals(Var.class.getName())) {
+                    String m = f.getMethodName();
+                    if (!m.equals("op") && !m.startsWith("lambda$") && !m.equals("describeCaller")
+                            && !m.equals("checked") && !m.startsWith("<")) {
+                        name = m;
+                    }
+                } else if (!f.getClassName().startsWith(Var.class.getName() + "$")
+                        && !f.getClassName().contains("$$Lambda") && !f.getClassName().startsWith("java.lang.invoke.")) {
+                    where = f.getClassName().substring(f.getClassName().lastIndexOf('.') + 1) + "."
+                            + f.getMethodName() + "(" + f.getFileName() + ":" + f.getLineNumber() + ")";
+                    break;
+                }
+            }
+            return (name == null ? "an operation" : name) + (where == null ? "" : " at " + where);
+        });
+    }
+
+    private static boolean hasNaN(Tensor t) {
+        for (float v : t.to(DType.FLOAT32).toArray()) {
+            if (Float.isNaN(v)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** With anomaly detection on, names the new value and checks it. */
+    private static Var checked(Var v) {
+        if (!ANOMALIES.get()) {
+            return v;
+        }
+        v.origin = describeCaller();
+        if (hasNaN(v.value)) {
+            for (Var in : v.inputs) {
+                if (hasNaN(in.value)) {
+                    return v;   // reported where the input was made, or it came in with NaN
+                }
+            }
+            throw new ArithmeticException(v.origin + " produced NaN from inputs without NaN");
+        }
+        return v;
     }
 
     /**
@@ -226,6 +300,7 @@ public final class Var {
         if (!seed.shape().equals(shape())) {
             throw new IllegalArgumentException("seed shape " + seed.shape() + " does not match " + shape());
         }
+        boolean detect = ANOMALIES.get();
         List<Tensor> created = Tensor.created(() -> {
             Map<Var, Tensor> grads = new IdentityHashMap<>();
             grads.put(this, seed);
@@ -241,8 +316,15 @@ public final class Var {
                     continue;
                 }
                 Tensor[] inputGrads = node.backward.apply(g);
+                boolean nanIn = detect && hasNaN(g);
                 for (int i = 0; i < node.inputs.length; i++) {
                     Var in = node.inputs[i];
+                    if (detect && in.requiresGrad && !nanIn && hasNaN(inputGrads[i])) {
+                        throw new ArithmeticException("the gradient of "
+                                + (node.origin == null ? "an operation made before anomaly detection was on"
+                                        : node.origin)
+                                + " has NaN in input " + i + " from an output gradient without NaN");
+                    }
                     if (in.requiresGrad) {
                         grads.merge(in, inputGrads[i].to(in.value.dtype()), Tensor::add);
                     }
@@ -351,11 +433,11 @@ public final class Var {
     private static Var op(Tensor out, Var[] inputs, Backward backward, Higher higher) {
         for (Var in : inputs) {
             if (in.requiresGrad) {
-                return new Var(out, true, inputs, backward, higher);
+                return checked(new Var(out, true, inputs, backward, higher));
             }
         }
         // a constant, but computed in this step: its inputs say so to release()
-        return new Var(out, false, inputs, null, null);
+        return checked(new Var(out, false, inputs, null, null));
     }
 
     private Var unary(Tensor out, Backward backward, Higher higher) {
