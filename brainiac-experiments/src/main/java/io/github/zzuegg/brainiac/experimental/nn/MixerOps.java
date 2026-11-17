@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
+import io.github.zzuegg.brainiac.autograd.Op;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
@@ -108,5 +109,54 @@ final class MixerOps {
                 return make.apply(input, random);
             }
         };
+    }
+
+    /** Whole-number ids as a float tensor, for gather and scatter. */
+    static Tensor ids(int[] values) {
+        float[] f = new float[values.length];
+        for (int i = 0; i < f.length; i++) {
+            f[i] = values[i];
+        }
+        return Tensor.of(Shape.of(f.length), f);
+    }
+
+    /**
+     * Differentiable scatter-add, the adjoint of {@link Var#gather}: adds rows of {@code values}
+     * into a zero tensor at {@code indices} along {@code axis}.
+     */
+    static Var scatterAdd(Var values, int axis, Tensor indices, int length) {
+        return Var.apply(new Op() {
+            @Override
+            public Tensor forward(Tensor... in) {
+                return in[0].scatterAdd(axis, indices, length);
+            }
+
+            @Override
+            public Tensor[] backward(Tensor grad, Tensor output, Tensor... in) {
+                return new Tensor[] {grad.gather(axis, indices)};
+            }
+
+            @Override
+            public String name() {
+                return "scatterAdd";
+            }
+        }, values);
+    }
+
+    /** Indices of the {@code k} largest entries of {@code row[from, from + n)}, best first. */
+    static int[] topK(float[] row, int from, int n, int k) {
+        int[] best = new int[k];
+        boolean[] taken = new boolean[n];
+        for (int j = 0; j < k; j++) {
+            int arg = -1;
+            for (int i = 0; i < n; i++) {
+                if (!taken[i] && (arg < 0 || row[from + i] > row[from + arg])) {
+                    arg = i;
+                }
+            }
+            taken[arg] = true;
+            best[j] = arg;
+        }
+        return best;
     }
 }
