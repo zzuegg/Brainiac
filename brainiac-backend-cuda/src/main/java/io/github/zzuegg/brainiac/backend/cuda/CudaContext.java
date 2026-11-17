@@ -61,8 +61,11 @@ final class CudaContext {
     final boolean cachedKernels;
     private final long context;
     final long stream;
-    private final long module;
+    /** Modules by part of kernels.cu (see {@link #part}), loaded at first use. */
+    private final Map<String, Long> modules = new HashMap<>();
     private final Map<String, Long> functions = new HashMap<>();
+    /** The source of kernels.cu, read once. */
+    private static String source;
 
     // kernel arguments: values, and the void*[] pointing at each, reused for every launch
     private final MemorySegment argValues;
@@ -145,14 +148,9 @@ final class CudaContext {
         architecture = nvrtc.architecture(computeCapability);
         long start = System.nanoTime();
         boolean[] cached = new boolean[1];
-        byte[] ptx = kernels(cached);
+        module("CORE", cached);
         cachedKernels = cached[0];
         compileNanos = System.nanoTime() - start;
-        try (Arena a = Arena.ofConfined()) {
-            MemorySegment image = a.allocate(ptx.length + 1L);
-            MemorySegment.copy(ptx, 0, image, JAVA_BYTE, 0, ptx.length);
-            module = cu.loadModule(image);
-        }
 
         Arena global = Arena.global();
         argValues = global.allocate(4096, 16);
@@ -189,17 +187,10 @@ final class CudaContext {
      * seconds) and stored there. {@code -Dbrainiac.cuda.cache} names the folder (default
      * {@code ~/.cache/brainiac/cuda}, {@code none} for no cache).
      */
-    private byte[] kernels(boolean[] cached) {
-        String source;
-        try (InputStream in = CudaContext.class.getResourceAsStream("kernels.cu")) {
-            if (in == null) {
-                throw new CudaException("kernels.cu is missing from the brainiac-backend-cuda module", 0);
-            }
-            source = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            throw new CudaException("reading kernels.cu: " + e.getMessage(), e);
-        }
-        List<String> options = new ArrayList<>(List.of("--gpu-architecture=compute_" + architecture, "--std=c++17"));
+    private byte[] kernels(String part, boolean[] cached) {
+        String source = source();
+        List<String> options = new ArrayList<>(List.of("--gpu-architecture=compute_" + architecture, "--std=c++17",
+                "-DBRAINIAC_" + part));
         if (DEBUG) {
             options.add("--generate-line-info");
         }
@@ -253,10 +244,58 @@ final class CudaContext {
         }
     }
 
+    private static synchronized String source() {
+        if (source == null) {
+            try (InputStream in = CudaContext.class.getResourceAsStream("kernels.cu")) {
+                if (in == null) {
+                    throw new CudaException("kernels.cu is missing from the brainiac-backend-cuda module", 0);
+                }
+                source = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                throw new CudaException("reading kernels.cu: " + e.getMessage(), e);
+            }
+        }
+        return source;
+    }
+
+    /**
+     * The part of kernels.cu that defines a kernel: {@code CORE}, {@code FEW_<format>},
+     * {@code ATTENTION_<format>} or {@code FFT}. Compiled separately, so a program only waits
+     * for NVRTC on the kernels it uses.
+     */
+    static String part(String kernel) {
+        String format = kernel.substring(kernel.lastIndexOf('_') + 1).toUpperCase(java.util.Locale.ROOT);
+        if (kernel.startsWith("few_") || kernel.startsWith("unpack_packed_")) {
+            return "FEW_" + format;
+        }
+        if (kernel.startsWith("attention")) {
+            return "ATTENTION_" + format;
+        }
+        if (kernel.equals("fft_rows")) {
+            return "FFT";
+        }
+        return "CORE";
+    }
+
+    /** The module of a part of kernels.cu, compiled (or read from the cache) and loaded at first use. */
+    private long module(String part, boolean[] cached) {
+        Long m = modules.get(part);
+        if (m == null) {
+            byte[] ptx = kernels(part, cached);
+            try (Arena a = Arena.ofConfined()) {
+                MemorySegment image = a.allocate(ptx.length + 1L);
+                MemorySegment.copy(ptx, 0, image, JAVA_BYTE, 0, ptx.length);
+                m = cu.loadModule(image);
+            }
+            modules.put(part, m);
+        }
+        return m;
+    }
+
     long function(String name) {
         Long f = functions.get(name);
         if (f == null) {
-            f = cu.function(module, name);
+            f = cu.function(module(part(name), new boolean[1]), name);
             functions.put(name, f);
         }
         return f;

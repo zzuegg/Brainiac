@@ -50,6 +50,7 @@ class DataParallelTest {
     @Test
     void stepsAcrossDifferentDevicesEqualFullBatchSteps() {
         List<Device> devices = Device.available();
+        System.out.println("data parallel across " + devices);
         SplittableRandom r = new SplittableRandom(3);
         Tensor x = Tensor.normal(Shape.of(13, 3), 0, 1, r);
         Tensor y = Tensor.normal(Shape.of(13, 2), 0, 1, r);

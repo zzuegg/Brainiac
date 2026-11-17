@@ -88,4 +88,24 @@ class CudaHostTest {
         assertTrue(Binder.version(windows, "nvrtc64_130_0.dll") > Binder.version(windows, "nvrtc64_120_0.dll"));
         assertFalse(Binder.toolkitFolders().isEmpty());
     }
+
+    /** Kernels compile in parts, each at first use; every name the backend launches has its part. */
+    @Test
+    void kernelsCompileInParts() throws java.io.IOException {
+        assertEquals("CORE", CudaContext.part("binary_contiguous_f16"));
+        assertEquals("CORE", CudaContext.part("random_values"));
+        assertEquals("FEW_BF16", CudaContext.part("few_dense_bf16"));
+        assertEquals("FEW_F32", CudaContext.part("unpack_packed_f32"));
+        assertEquals("FEW_F16", CudaContext.part("few_sum_f16"));
+        assertEquals("ATTENTION_F16", CudaContext.part("attention_combine_f16"));
+        assertEquals("FFT", CudaContext.part("fft_rows"));
+        String source;
+        try (java.io.InputStream in = CudaContext.class.getResourceAsStream("kernels.cu")) {
+            source = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        for (String part : new String[] {"CORE", "FEW_F32", "FEW_F64", "FEW_F16", "FEW_BF16", "ATTENTION_F32",
+            "ATTENTION_F16", "ATTENTION_BF16", "FFT"}) {
+            assertTrue(source.contains("#ifdef BRAINIAC_" + part + "\n"), part);
+        }
+    }
 }

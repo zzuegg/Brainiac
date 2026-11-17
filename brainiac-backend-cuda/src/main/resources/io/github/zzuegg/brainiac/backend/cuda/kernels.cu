@@ -991,6 +991,7 @@ template <class D> __device__ void attention_dkv_k(const typename D::T* q, const
 
 // A block per row of n complex values (a power of two up to 2048), radix 2 in shared memory,
 // as Fft.radix2 computes it; the inverse uses the conjugate exponent and divides by n
+#ifdef BRAINIAC_FFT
 extern "C" __global__ void fft_rows(const float* in, float* out, i64 rows, int n, int logN, int inverse) {
     __shared__ float re[2048];
     __shared__ float im[2048];
@@ -1030,6 +1031,7 @@ extern "C" __global__ void fft_rows(const float* in, float* out, i64 rows, int n
         __syncthreads();
     }
 }
+#endif
 
 // ---------------------------------------------------------------- entry points, one per format
 
@@ -1088,10 +1090,15 @@ extern "C" __global__ void matmul_##S(const D::T* a, const D::T* b, D::T* c, int
     matmul_k<D>(a, b, c, m, k, n, sa, sb, sc);                                                                    \
 }
 
+// Compiled in parts, each at its first use, with -DBRAINIAC_<PART>: CORE (the kernels above
+// in every format, and random_values), FEW_<format>, ATTENTION_<format> and FFT; all in one
+// program, NVRTC took half a minute.
+#ifdef BRAINIAC_CORE
 KERNELS(f32, F32)
 KERNELS(f64, F64)
 KERNELS(f16, F16)
 KERNELS(bf16, BF16)
+#endif
 
 #define FEW_KERNELS(S, D)                                                                                         \
 extern "C" __global__ void few_dense_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m, int k,     \
@@ -1113,10 +1120,18 @@ extern "C" __global__ void unpack_packed_##S(const signed char* levels, const fl
     unpack_packed_k<D>(pw, out, rows);                                                                            \
 }
 
+#ifdef BRAINIAC_FEW_F32
 FEW_KERNELS(f32, F32)
+#endif
+#ifdef BRAINIAC_FEW_F64
 FEW_KERNELS(f64, F64)
+#endif
+#ifdef BRAINIAC_FEW_F16
 FEW_KERNELS(f16, F16)
+#endif
+#ifdef BRAINIAC_FEW_BF16
 FEW_KERNELS(bf16, BF16)
+#endif
 
 #define ATTENTION_KERNELS(S, D)                                                                                   \
 extern "C" __global__ void attention_##S(const D::T* q, const D::T* k, const D::T* v, D::T* out, D::T* lse,       \
@@ -1141,11 +1156,18 @@ extern "C" __global__ void attention_dkv_##S(const D::T* q, const D::T* k, const
     attention_dkv_k<D>(q, k, v, lse, grad, delta, dk, dv, s, keyRows);                                            \
 }
 
+#ifdef BRAINIAC_ATTENTION_F32
 ATTENTION_KERNELS(f32, F32)
+#endif
+#ifdef BRAINIAC_ATTENTION_F16
 ATTENTION_KERNELS(f16, F16)
+#endif
+#ifdef BRAINIAC_ATTENTION_BF16
 ATTENTION_KERNELS(bf16, BF16)
+#endif
 
 // uniform in [0, 1): CounterRandom.uniform(seed, i), float32 only
+#ifdef BRAINIAC_CORE
 extern "C" __global__ void random_values(float* y, i64 n, i64 seed) {
     FOR_EACH(i, n) {
         unsigned long long z = (unsigned long long) seed + ((unsigned long long) i + 1ull) * 0x9E3779B97F4A7C15ull;
@@ -1155,3 +1177,4 @@ extern "C" __global__ void random_values(float* y, i64 n, i64 seed) {
         y[i] = (float) (unsigned) (z >> 40) * (1.0f / 16777216.0f);
     }
 }
+#endif
