@@ -1139,7 +1139,8 @@ public final class VulkanBackend implements Backend {
     }
 
     // from how many rows matmul_vect sums each column with 32 invocations (8 columns per group) instead of 64
-    private static final int VECT_NARROW = Integer.getInteger("brainiac.vulkan.vectNarrow", 99);
+    // (8: batched decoding 1-5% faster on an RX 9070 XT)
+    private static final int VECT_NARROW = Integer.getInteger("brainiac.vulkan.vectNarrow", 8);
     // the most rows of a product with a transposed matrix read by matmul_vect
     private static final int VECT_ROWS = Integer.getInteger("brainiac.vulkan.vectRows", 8);
     /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
