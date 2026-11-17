@@ -7,6 +7,7 @@ import io.github.zzuegg.brainiac.rl.Learner;
 import io.github.zzuegg.brainiac.rl.RlListener;
 import io.github.zzuegg.brainiac.rl.RlResult;
 import io.github.zzuegg.brainiac.rl.Space;
+import io.github.zzuegg.brainiac.rl.Tracker;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -119,7 +120,7 @@ public final class Gail implements Learner {
             throw new IllegalArgumentException("GAIL needs " + actions + " discrete actions");
         }
         List<OfflineDataset.Step> expertSteps = expert.steps();
-        EpisodeRecorder recorder = new EpisodeRecorder(listener);
+        Tracker recorder = new Tracker(listener);
         while (recorder.steps() < steps) {
             List<float[]> obs = new ArrayList<>();
             List<Integer> acts = new ArrayList<>();

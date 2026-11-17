@@ -104,7 +104,7 @@ public final class MLstmLayer implements Layer {
         int b = input.shape().dim(0);
         int t = input.shape().dim(1);
         Var[] p = project(input);
-        Var cum = p[4].matmul(Var.of(MixerOps.cumsumMatrix(t)));   // F_t
+        Var cum = p[4].cumsum(-1);   // F_t
         Tensor lower = MixerOps.lowerOnes(t);
         Var logD = cum.reshape(b, heads, t, 1).sub(cum.reshape(b, heads, 1, t)).add(p[3].reshape(b, heads, 1, t))
                 .mul(lower).add(lower.sub(1f).mul(1e9f));            // -1e9 above the diagonal

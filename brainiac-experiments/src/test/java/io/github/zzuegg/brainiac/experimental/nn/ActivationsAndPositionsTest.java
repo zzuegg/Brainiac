@@ -28,8 +28,8 @@ class ActivationsAndPositionsTest {
         float[] y = ModernActivations.SQUARED_RELU.forward(Var.of(Tensor.of(-1f, 3f))).value().toArray();
         assertEquals(0f, y[0]);
         assertEquals(9f, y[1]);
-        GradCheck.Result r = GradCheck.check(ModernActivations.SNAKE, 1e-2f, 1e-2f, randn(1, 3, 4),
-                Tensor.of(Shape.of(4), 0.5f, 1f, 1.5f, 2f));
+        GradCheck.Result r = GradCheck.check(v -> ModernActivations.snake(v.get(0), v.get(1)).sum(),
+                List.of(randn(1, 3, 4), Tensor.of(Shape.of(4), 0.5f, 1f, 1.5f, 2f)), 1e-2f, 1e-2f);
         assertTrue(r.passed(), r.toString());
         Activation snake = ModernActivations.snake().bind(4);
         assertEquals(1, snake.parameters().size());

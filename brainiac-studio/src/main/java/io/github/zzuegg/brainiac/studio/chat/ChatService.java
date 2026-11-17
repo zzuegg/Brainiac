@@ -33,6 +33,10 @@ public final class ChatService {
     private final Keys keys;
     private final List<ChatProvider> providers;
     private final Path outputs;
+    private final UsageLog usage;
+    private final ProviderSettings settings;
+    private final Conversations conversations;
+    private final PageState page;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
 
     private record Listing(List<ModelInfo> models, String error, long at) {
@@ -49,6 +53,162 @@ public final class ChatService {
         this.keys = keys;
         this.providers = List.copyOf(providers);
         this.outputs = outputs;
+        this.usage = new UsageLog(outputs.resolveSibling("usage.jsonl"));
+        this.settings = new ProviderSettings(outputs.resolveSibling("providers.properties"));
+        this.conversations = new Conversations(outputs.resolveSibling("chats"));
+        this.page = new PageState(outputs.resolveSibling("page.json"));
+        for (ChatProvider p : this.providers) {
+            if (p instanceof RemoteProvider r) {
+                apply(r);
+            }
+        }
+    }
+
+    private void apply(RemoteProvider r) {
+        r.base(settings.url(r.id()).orElse(null));
+        Map<String, String> o = new LinkedHashMap<>();
+        for (String name : r.optionNames()) {
+            String v = settings.option(r.id(), name);
+            if (!v.isEmpty()) {
+                o.put(name, v);
+            }
+        }
+        r.options = Map.copyOf(o);
+    }
+
+    /**
+     * Changes how a provider is used. Each argument left null stays as it is.
+     *
+     * @param provider the provider id
+     * @param auto whether Auto may pick its models
+     * @param models the model ids to show, an empty optional to show all, or null to leave as is
+     * @param url another address, an empty string for its own, or null to leave as is
+     * @param options options by name, such as {@link ProviderSettings#BILL_TO}; an empty value clears one
+     * @throws IOException if the settings cannot be saved
+     */
+    public void configure(String provider, Boolean auto, java.util.Optional<List<String>> models, String url,
+            Map<String, String> options) throws IOException {
+        if (!(provider(provider) instanceof RemoteProvider r)) {
+            throw new IllegalArgumentException(provider + " has no settings");
+        }
+        if (options != null) {
+            for (String name : options.keySet()) {
+                if (!r.optionNames().contains(name)) {
+                    throw new IllegalArgumentException(r.name() + " has no option " + name);
+                }
+            }
+        }
+        if (auto != null) {
+            settings.auto(provider, auto);
+        }
+        if (models != null) {
+            settings.models(provider, models.orElse(null));
+        }
+        if (url != null) {
+            settings.url(provider, url);
+            listings.remove(provider);
+        }
+        if (options != null) {
+            for (Map.Entry<String, String> e : options.entrySet()) {
+                settings.option(provider, e.getKey(), e.getValue());
+            }
+        }
+        apply(r);
+    }
+
+    private boolean shown(ModelInfo m) {
+        return settings.models(m.provider()).map(ids -> ids.contains(m.id())).orElse(true);
+    }
+
+    /**
+     * Returns the chat conversations, kept next to the outputs folder in {@code chats}.
+     *
+     * @return the conversations
+     */
+    public Conversations conversations() {
+        return conversations;
+    }
+
+    /**
+     * Returns what the page remembers between visits, kept next to the outputs folder in
+     * {@code page.json}.
+     *
+     * @return the page state
+     */
+    public PageState page() {
+        return page;
+    }
+
+    /**
+     * Returns the folder everything is kept in: the one that holds the outputs folder.
+     *
+     * @return the folder
+     */
+    public Path folder() {
+        return outputs.toAbsolutePath().getParent();
+    }
+
+    /**
+     * Returns the log of every call, kept next to the outputs folder in {@code usage.jsonl}.
+     *
+     * @return the log
+     */
+    public UsageLog usage() {
+        return usage;
+    }
+
+    /**
+     * Reads the remaining balance of every key at the providers that report one (DeepSeek,
+     * Kimi, OpenRouter).
+     *
+     * @return per provider id, one entry per key with its balance or error
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public Map<String, Object> balances() throws InterruptedException {
+        Map<String, Future<List<Map<String, Object>>>> pending = new LinkedHashMap<>();
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (ChatProvider p : providers) {
+                if (p instanceof RemoteProvider r && r.ready()) {
+                    pending.put(p.id(), pool.submit(r::balances));
+                }
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Future<List<Map<String, Object>>>> e : pending.entrySet()) {
+            try {
+                List<Map<String, Object>> b = e.getValue().get();
+                if (!b.isEmpty()) {
+                    out.put(e.getKey(), b);
+                }
+            } catch (ExecutionException ex) {
+                out.put(e.getKey(), List.of(Map.of("error", String.valueOf(ex.getCause().getMessage()))));
+            }
+        }
+        return out;
+    }
+
+    /** Runs a call and logs it, whether it works or not. */
+    private <T> T logged(ModelInfo m, String kind, Call<T> call, java.util.function.Function<T, long[]> counts)
+            throws IOException, InterruptedException {
+        long start = System.nanoTime();
+        RemoteProvider.LAST_KEY.remove();
+        boolean ok = false;
+        long[] c = {-1, -1, 0};
+        try {
+            T result = call.run();
+            c = counts.apply(result);
+            ok = true;
+            return result;
+        } finally {
+            String key = RemoteProvider.LAST_KEY.get();
+            usage.add(new UsageLog.Entry(System.currentTimeMillis(), m.provider(), key == null ? "" : key, m.id(), kind,
+                    c[0], c[1], c[2], (System.nanoTime() - start) / 1e9, ok));
+        }
+    }
+
+    @FunctionalInterface
+    private interface Call<T> {
+        T run() throws IOException, InterruptedException;
     }
 
     /**
@@ -62,21 +222,35 @@ public final class ChatService {
     }
 
     /**
-     * Creates the service with this PC's models and the Anthropic, OpenAI and Google APIs at the
-     * given addresses (the public ones, or a proxy or gateway in front of them).
+     * Creates the service with this PC's models and every remote provider: Anthropic, OpenAI,
+     * Google, and the OpenAI-compatible ones in {@link Preset#COMPATIBLE}.
      *
      * @param keys the key store
      * @param modelFolders where to look for local models
-     * @param anthropic the Anthropic API's base address
-     * @param openai the OpenAI API's base address
-     * @param google the Gemini API's base address
+     * @param bases other base addresses by provider id (a gateway, a proxy, or a stand-in for
+     *     tests); providers not named use their public address
      * @param outputs where generated pictures and audio are saved
      * @return the service
      */
-    public static ChatService at(Keys keys, List<Path> modelFolders, URI anthropic, URI openai, URI google,
-            Path outputs) {
-        return new ChatService(keys, List.of(new LocalProvider(modelFolders), new AnthropicProvider(keys, anthropic),
-                new OpenAiProvider(keys, openai), new GoogleProvider(keys, google)), outputs);
+    public static ChatService at(Keys keys, List<Path> modelFolders, Map<String, URI> bases, Path outputs) {
+        List<ChatProvider> ps = new ArrayList<>();
+        ps.add(new LocalProvider(modelFolders));
+        ps.add(new AnthropicProvider(keys, bases.getOrDefault("anthropic", AnthropicProvider.BASE)));
+        ps.add(new OpenAiProvider(keys, bases.getOrDefault("openai", Preset.OPENAI.base())));
+        ps.add(new GoogleProvider(keys, bases.getOrDefault("google", GoogleProvider.BASE)));
+        for (Preset p : Preset.COMPATIBLE) {
+            ps.add(new CompatibleProvider(keys, p.at(bases.getOrDefault(p.id(), p.base()))));
+        }
+        return new ChatService(keys, ps, outputs);
+    }
+
+    /**
+     * Returns the ids of the providers that take API keys.
+     *
+     * @return the ids, in the order Auto tries them
+     */
+    public List<String> remoteIds() {
+        return providers.stream().filter(p -> !p.local()).map(ChatProvider::id).toList();
     }
 
     /**
@@ -136,6 +310,20 @@ public final class ChatService {
             m.put("ready", p.ready());
             if (p instanceof RemoteProvider r) {
                 m.put("keys", r.keyStatus());
+                m.put("note", r.note());
+                m.put("env", Keys.ENV.getOrDefault(p.id(), List.of()));
+                m.put("balance", r.reportsBalance());
+                Map<String, Object> st = new LinkedHashMap<>();
+                st.put("auto", settings.auto(p.id()));
+                st.put("models", settings.models(p.id()).map(List::copyOf).orElse(null));
+                st.put("url", settings.url(p.id()).map(URI::toString).orElse(""));
+                st.put("home", r.home().toString());
+                Map<String, Object> opts = new LinkedHashMap<>();
+                for (String name : r.optionNames()) {
+                    opts.put(name, settings.option(p.id(), name));
+                }
+                st.put("options", opts);
+                m.put("settings", st);
             }
             m.put("models", l == null ? 0 : l.models().size());
             if (l != null && l.error() != null) {
@@ -148,6 +336,7 @@ public final class ChatService {
             if (l != null) {
                 for (ModelInfo x : l.models()) {
                     Map<String, Object> j = x.toJson();
+                    j.put("shown", shown(x));
                     if (x.media().contains("speech") && p instanceof RemoteProvider r) {
                         j.put("speech", r.speechOptions(x.id()).toJson());
                     }
@@ -188,7 +377,8 @@ public final class ChatService {
         ModelInfo target = resolve(model, "text");
         ChatProvider p = provider(target.provider());
         route.accept(target);
-        return p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key), listener);
+        return logged(target, "chat", () -> p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key), listener),
+                r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
     }
 
     /**
@@ -207,7 +397,8 @@ public final class ChatService {
             throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "image");
         ImageRequest request = new ImageRequest(target.id(), prompt, aspect, count, key);
-        List<Media> media = remote(target).images(request);
+        List<Media> media = logged(target, "image", () -> remote(target).images(request),
+                r -> new long[] {-1, -1, r.size()});
         return new Generated(target, media, save(media, "image"));
     }
 
@@ -228,7 +419,9 @@ public final class ChatService {
     public Generated speech(String model, String text, String voice, double speed, String instructions, String format,
             String key) throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "speech");
-        Media audio = remote(target).speech(new SpeechRequest(target.id(), text, voice, speed, instructions, format, key));
+        SpeechRequest request = new SpeechRequest(target.id(), text, voice, speed, instructions, format, key);
+        Media audio = logged(target, "speech", () -> remote(target).speech(request),
+                r -> new long[] {-1, -1, text.length()});
         return new Generated(target, List.of(audio), save(List.of(audio), "speech"));
     }
 
@@ -291,8 +484,8 @@ public final class ChatService {
     private ModelInfo pickAuto(Map<String, Listing> lists, String medium) {
         for (ChatProvider p : providers) {
             Listing l = lists.get(p.id());
-            if (p.ready() && l != null) {
-                ModelInfo m = p.preferredFor(medium, l.models());
+            if (p.ready() && l != null && settings.auto(p.id())) {
+                ModelInfo m = p.preferredFor(medium, l.models().stream().filter(this::shown).toList());
                 if (m != null) {
                     return m;
                 }

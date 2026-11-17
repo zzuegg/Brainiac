@@ -572,6 +572,41 @@ public final class Llama implements LanguageModel {
         return this;
     }
 
+    private volatile int slidingWindow;
+    private volatile int prefillChunk = 1024;
+
+    /**
+     * Sets sliding-window attention, as Mistral and some Qwen models use it: each step sees
+     * only itself and the {@code steps - 1} before it, in {@link #forward}, {@link #loss} and
+     * through a state alike.
+     *
+     * @param steps the window, or 0 for full causal attention
+     * @return this model
+     */
+    public Llama slidingWindow(int steps) {
+        if (steps < 0) {
+            throw new IllegalArgumentException("window must be at least 0, got " + steps);
+        }
+        this.slidingWindow = steps;
+        return this;
+    }
+
+    /**
+     * Sets how many new tokens a state reads at once: a longer prompt is read in pieces of
+     * this many steps, so the attention scores and mask stay {@code chunk x cache} rather than
+     * growing with the square of the prompt. The results are the same.
+     *
+     * @param steps the steps per piece, or 0 to read any prompt at once
+     * @return this model
+     */
+    public Llama prefillChunk(int steps) {
+        if (steps < 0) {
+            throw new IllegalArgumentException("chunk must be at least 0, got " + steps);
+        }
+        this.prefillChunk = steps;
+        return this;
+    }
+
     /**
      * A state that forgets the middle of long sequences, as StreamingLLM does (Xiao et al.,
      * 2024): it keeps the first {@code sinks} steps, which attention leans on, and the last
@@ -690,6 +725,41 @@ public final class Llama implements LanguageModel {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
         int batch = tokens.length;
         int steps = tokens[0].length;
+        int chunk = prefillChunk;
+        if (chunk > 0 && steps > chunk) {
+            List<Tensor> outs = new ArrayList<>();
+            List<Tensor> hiddens = new ArrayList<>();
+            for (int from = 0; from < steps; from += chunk) {
+                int to = Math.min(steps, from + chunk);
+                int[][] part = new int[batch][];
+                boolean[][] pad = padding == null ? null : new boolean[batch][];
+                for (int b = 0; b < batch; b++) {
+                    part[b] = java.util.Arrays.copyOfRange(tokens[b], from, to);
+                    if (pad != null) {
+                        pad[b] = java.util.Arrays.copyOfRange(padding[b], from, to);
+                    }
+                }
+                Tensor[] h = hiddenOut == null ? null : new Tensor[1];
+                Tensor out = readAtOnce(cache, part, pad, everyStep, h);
+                if (everyStep || to == steps) {
+                    outs.add(out);
+                }
+                if (h != null) {
+                    hiddens.add(h[0]);
+                }
+            }
+            if (hiddenOut != null) {
+                hiddenOut[0] = Tensor.concat(1, hiddens.toArray(Tensor[]::new));
+            }
+            return outs.size() == 1 ? outs.getFirst() : Tensor.concat(1, outs.toArray(Tensor[]::new));
+        }
+        return readAtOnce(cache, tokens, padding, everyStep, hiddenOut);
+    }
+
+    private Tensor readAtOnce(Cache cache, int[][] tokens, boolean[][] padding, boolean everyStep,
+            Tensor[] hiddenOut) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
         if (batch != cache.next.length) {
             throw new IllegalArgumentException("the state holds " + cache.next.length + " sequences, got " + batch);
         }
@@ -706,12 +776,14 @@ public final class Llama implements LanguageModel {
         }
         // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]
         int keys = cache.capacity;
+        int window = slidingWindow;
         float[] m = new float[batch * steps * keys];
         for (int b = 0; b < batch; b++) {
             for (int t = 0; t < steps; t++) {
                 int row = (b * steps + t) * keys;
                 for (int k = 0; k < keys; k++) {
-                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]) {
+                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]
+                            || window > 0 && k <= cache.length + t - window) {
                         m[row + k] = -1e9f;
                     }
                 }
@@ -761,6 +833,18 @@ public final class Llama implements LanguageModel {
             System.arraycopy(tokens[b], 0, flat, b * steps, steps);
         }
         Var x = base(embed).gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
+        int window = slidingWindow;
+        if (bias == null && window > 0 && steps > window) {
+            float[] m = new float[steps * steps];
+            for (int t = 0; t < steps; t++) {
+                for (int k = 0; k < steps; k++) {
+                    if (k > t || k <= t - window) {
+                        m[t * steps + k] = -1e9f;
+                    }
+                }
+            }
+            bias = Tensor.of(Shape.of(1, 1, steps, steps), m, device).to(dtype);
+        }
         int hd = config.headDim();
         float scale = (float) (1 / Math.sqrt(hd));
         for (int l = 0; l < blocks.size(); l++) {
@@ -928,8 +1012,8 @@ public final class Llama implements LanguageModel {
      * same results, faster on a GPU, where small products cost more in overhead than in
      * arithmetic. The weights then go by the names {@code self_attn.qkv_proj} and
      * {@code mlp.gate_up_proj} (for {@link #addLora} targets and {@link #namedParameters()}), and
-     * the model can no longer be saved. Projections already packed (GGUF k-quants, {@link
-     * #quantizeWeights}) or with adapters stay as they are.
+     * the model can no longer be saved. Packed projections (GGUF, {@link #quantizeWeights})
+     * join when they share bits and group; projections with adapters stay as they are.
      *
      * @return this model
      */
@@ -954,8 +1038,10 @@ public final class Llama implements LanguageModel {
     /** One projection from several with the same input, or null if they cannot be joined. */
     private Linear join(String prefix, List<String> names, String joined, List<Linear> parts) {
         boolean biased = parts.getFirst().bias != null;
+        boolean packed = parts.getFirst().weight != null && parts.getFirst().weight.value().isPacked();
         for (Linear l : parts) {
-            if (l.weight == null || l.weight.value().isPacked() || l.loraA != null || (l.bias != null) != biased) {
+            if (l.weight == null || l.weight.value().isPacked() != packed || l.loraA != null
+                    || (l.bias != null) != biased) {
                 return null;
             }
         }
@@ -965,7 +1051,12 @@ public final class Llama implements LanguageModel {
             w[i] = parts.get(i).weight.value();
             bias[i] = biased ? parts.get(i).bias.value() : null;
         }
-        Var weight = Var.param(Tensor.concat(1, w));
+        Tensor joinedWeight = Tensor.concat(1, w);
+        if (packed && !joinedWeight.isPacked()) {
+            joinedWeight.release();   // different formats (a k-quant mix): joined only as floats
+            return null;
+        }
+        Var weight = Var.param(joinedWeight);
         Var b = biased ? Var.param(Tensor.concat(0, bias)) : null;
         Tensor.evaluate(b == null ? List.of(weight.value()) : List.of(weight.value(), b.value()));
         for (int i = 0; i < w.length; i++) {

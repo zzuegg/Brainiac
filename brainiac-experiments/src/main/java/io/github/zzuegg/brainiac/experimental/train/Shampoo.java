@@ -1,7 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.tensor.SymmetricEigen;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 /**
@@ -48,8 +48,8 @@ public final class Shampoo extends SlotOptimizer {
             s[0] = s[0] == null ? gg : s[0].add(gg);
             s[1] = s[1] == null ? ggT : s[1].add(ggT);
             if (s[2] == null || (t - 1) % updateEvery == 0) {
-                s[2] = SymmetricEigen.of(s[0]).power(-0.25, epsilon);
-                s[3] = SymmetricEigen.of(s[1]).power(-0.25, epsilon);
+                s[2] = inverseFourthRoot(s[0]);
+                s[3] = inverseFourthRoot(s[1]);
             }
             Tensor pre = s[2].matmul(g).matmul(s[3]);
             float pn = LearningMath.norm(pre);
@@ -58,6 +58,12 @@ public final class Shampoo extends SlotOptimizer {
         Tensor m = s[5] == null || momentum == 0 ? dir : s[5].mul(momentum).add(dir);
         p.assign(p.value().sub(m.mul(learningRate())));
         return new Tensor[] {s[0], s[1], s[2], s[3], diag, momentum == 0 ? null : m};
+    }
+
+    /** {@code (A + epsilon I)^(-1/4)} of a positive semi-definite statistic. */
+    private Tensor inverseFourthRoot(Tensor a) {
+        Tensor damped = a.add(Linalg.identity(a.shape().dim(0), a.dtype(), a.device()).mul(epsilon));
+        return Linalg.symmetricPower(damped, -0.25, epsilon);
     }
 
     @Override

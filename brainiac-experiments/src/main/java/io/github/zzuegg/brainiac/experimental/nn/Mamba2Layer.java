@@ -161,9 +161,9 @@ public final class Mamba2Layer implements Layer {
         Var cc = p[5];
         if (variant == Variant.ROTARY) {
             // cumulative angles; rotate B and C by -phi_t
-            Var phi = p[6].permute(0, 1, 3, 2).matmul(Var.of(MixerOps.cumsumMatrix(t))).permute(0, 1, 3, 2);
-            Var cos = MixerOps.cos(phi);
-            Var sin = MixerOps.sin(phi).neg();
+            Var phi = p[6].cumsum(2);
+            Var cos = phi.cos();
+            Var sin = phi.sin().neg();
             bb = rotate(bb, cos, sin);   // [b, H, t, N]
             cc = rotate(cc, cos, sin);
         }
@@ -173,7 +173,7 @@ public final class Mamba2Layer implements Layer {
         for (int start = 0; start < t; start += chunk) {
             int end = Math.min(t, start + chunk);
             int c = end - start;
-            Var la = p[2].slice(2, start, end).matmul(Var.of(MixerOps.cumsumMatrix(c)));   // [b, H, c]
+            Var la = p[2].slice(2, start, end).cumsum(-1);   // [b, H, c]
             Var bc = bb.slice(2, start, end);
             Var ccC = cc.slice(2, start, end);
             Var dxc = dx.slice(2, start, end);
@@ -205,7 +205,7 @@ public final class Mamba2Layer implements Layer {
             if (variant == Variant.ROTARY) {
                 // rotate the state's N axis by theta_t: transpose so N is last
                 Var th = p[6].slice(2, s, s + 1);   // [b, H, 1, N/2]
-                h = rotate(h.transpose(), MixerOps.cos(th), MixerOps.sin(th)).transpose();
+                h = rotate(h.transpose(), th.cos(), th.sin()).transpose();
             }
             Var bs = p[4].slice(2, s, s + 1);       // [b, 1, 1, N]
             Var cs = p[5].slice(2, s, s + 1);

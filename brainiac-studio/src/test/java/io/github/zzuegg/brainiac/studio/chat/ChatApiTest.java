@@ -126,4 +126,59 @@ class ChatApiTest {
         assertEquals(502, r.statusCode());
         assertTrue(r.body().contains("OpenAI answered 500"), r.body());
     }
+
+    @Test
+    void usageAndBalancesAreReadable() throws Exception {
+        call("POST", "/api/keys", "{\"provider\":\"deepseek\",\"label\":\"lab\",\"key\":\"sk-ds-1\"}");
+        call("POST", "/api/chat", "{\"model\":\"deepseek/deepseek-chat\",\"messages\":[{\"role\":\"user\",\"text\":\"Hi\"}]}");
+        HttpResponse<String> r = call("GET", "/api/usage", null);
+        assertEquals(200, r.statusCode());
+        Map<String, Object> usage = Json.object(Json.parse(r.body()));
+        assertEquals(1L, ((Number) Json.object(Json.object(usage.get("keys")).get("deepseek/lab")).get("calls")).longValue());
+        r = call("GET", "/api/balances", null);
+        assertEquals(200, r.statusCode());
+        assertTrue(r.body().contains("\"label\":\"lab\""), r.body());
+        assertTrue(r.body().contains("\"currency\":\"CNY\""), r.body());
+        assertFalse(r.body().contains("sk-ds-1"));
+    }
+
+    @Test
+    void providerSettingsAreChangedThroughTheApi() throws Exception {
+        call("POST", "/api/keys", "{\"provider\":\"anthropic\",\"key\":\"k\"}");
+        HttpResponse<String> r = call("POST", "/api/providers",
+                "{\"provider\":\"anthropic\",\"models\":[\"claude-haiku-5-5\"],\"auto\":true}");
+        assertEquals(200, r.statusCode(), r.body());
+        Map<String, Object> d = Json.object(Json.parse(r.body()));
+        assertEquals(Map.of("text", "anthropic/claude-haiku-5-5"), d.get("auto"));
+        assertEquals(400, call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"url\":\"file:///etc/\"}").statusCode());
+        assertEquals(400, call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"models\":[1]}").statusCode());
+        r = call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"models\":null}");
+        assertEquals(Map.of("text", "anthropic/claude-opus-5-5"), Json.object(Json.parse(r.body())).get("auto"));
+    }
+
+    @Test
+    void conversationsAreSavedListedAndDeletedThroughTheApi() throws Exception {
+        assertEquals(List.of(), Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
+        HttpResponse<String> r = call("POST", "/api/chats",
+                "{\"id\":\"k3x9a\",\"title\":\"Plan\",\"status\":\"finished\",\"updated\":7,\"messages\":[{\"role\":\"user\",\"text\":\"hi\"}]}");
+        assertEquals(200, r.statusCode(), r.body());
+        List<Object> chats = Json.array(Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
+        assertEquals(1, chats.size());
+        assertEquals("finished", Json.object(chats.getFirst()).get("status"));
+        assertEquals(400, call("POST", "/api/chats", "{\"id\":\"../keys\",\"title\":\"x\",\"messages\":[]}").statusCode());
+        assertEquals(400, call("POST", "/api/chats", "{\"id\":\"k3x9a\",\"title\":\"x\",\"messages\":[],\"status\":\"gone\"}").statusCode());
+        assertEquals(200, call("POST", "/api/chats", "{\"id\":\"k3x9a\",\"delete\":true}").statusCode());
+        assertEquals(List.of(), Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
+    }
+
+    @Test
+    void pageStateIsKeptByTheStudioAndArrivesWithThePage() throws Exception {
+        assertEquals(200, call("POST", "/api/state", "{\"layout\":\"ultra\",\"chatTabs\":[\"k3x9a\"]}").statusCode());
+        assertEquals(200, call("POST", "/api/state", "{\"layout\":null}").statusCode());
+        assertEquals(Map.of("chatTabs", List.of("k3x9a")), Json.object(Json.parse(call("GET", "/api/state", null).body())));
+        assertEquals(400, call("POST", "/api/state", "{\"../x\":1}").statusCode());
+        String page = call("GET", "/", null).body();
+        assertTrue(page.contains("<script type=\"application/json\" id=\"studio-state\">{\"chatTabs\":[\"k3x9a\"]}</script>"), page);
+        assertTrue(page.contains("<meta name=\"studio-folder\" content=\""), page);
+    }
 }

@@ -9,10 +9,54 @@
   const capIcon = { text: "text", image: "image", speech: "speech", vision: "image", train: "train", agent: "agent" };
   const capName = { text: "Text", image: "Image", speech: "Speech", vision: "Vision", train: "Training", agent: "Agents", video: "Video" };
 
-  const store = {
-    get(k, d) { try { const v = localStorage.getItem("studio." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  // What the page remembers. Served by the studio, it lives in page.json in the studio's data
+  // folder (the page arrives with it), so every browser on this PC sees the same tabs, layout and
+  // choices; conversations are files of their own there. Opened as a plain file, it uses this browser.
+  const pageState = (() => {
+    const el = document.getElementById("studio-state");
+    try { return el ? JSON.parse(el.textContent) : null; } catch { return null; }
+  })();
+  const local = {
+    get(k) { try { const v = localStorage.getItem("studio." + k); return v == null ? undefined : JSON.parse(v); } catch { return undefined; } },
     set(k, v) { try { localStorage.setItem("studio." + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+    keys() { try { return Object.keys(localStorage).filter(k => k.startsWith("studio.")).map(k => k.slice(7)); } catch { return []; } },
+    remove(k) { try { localStorage.removeItem("studio." + k); } catch { /* storage unavailable */ } },
   };
+  let stateChanges = {}, stateTimer = 0;
+  function sendState() {
+    const body = stateChanges;
+    stateChanges = {}; stateTimer = 0;
+    const token = document.querySelector('meta[name="studio-token"]')?.content;
+    return fetch("/api/state", { method: "POST", keepalive: true, headers: { "X-Studio-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) console.warn("cannot save the page state", r.status); return r.ok; })
+      .catch(e => { console.warn("cannot save the page state", e); return false; });
+  }
+  const store = {
+    // conversations are not page state: the studio keeps them in its chats folder
+    get(k, d) {
+      if (pageState && k !== "convos" && k in pageState) return pageState[k];
+      if (pageState && k !== "convos") return d;
+      const v = local.get(k); return v === undefined ? d : v;
+    },
+    set(k, v) {
+      if (!pageState) { local.set(k, v); return; }
+      if (k === "convos") return;
+      pageState[k] = v;
+      stateChanges[k] = v === undefined ? null : v;
+      clearTimeout(stateTimer);
+      stateTimer = setTimeout(sendState, 300);
+    },
+  };
+  addEventListener("pagehide", () => { if (stateTimer) { clearTimeout(stateTimer); sendState(); } });
+  // What this browser remembered before the studio kept it moves to the studio once, then is cleared here.
+  if (pageState) {
+    const moved = local.keys().filter(k => k !== "convos" && !(k in pageState));
+    if (moved.length) {
+      moved.forEach(k => { pageState[k] = local.get(k); stateChanges[k] = pageState[k]; });
+      sendState().then(ok => { if (ok) moved.forEach(local.remove); });
+    }
+    local.keys().filter(k => k !== "convos" && !moved.includes(k)).forEach(local.remove);
+  }
 
   const state = {
     view: "chat",
@@ -828,6 +872,7 @@
     </div>`;
   }
 
+  const dataFolder = document.querySelector('meta[name="studio-folder"]')?.content || "";
   // ---------- layout popover ----------
   function layoutPopover() {
     const opt = (k, v, l) => `<button data-${k}="${v}" aria-pressed="${state[k] === v}">${l}</button>`;
@@ -844,6 +889,8 @@
       <div class="field"><label for="ui-scale">Interface size <output>${Math.round(state.scale * 100)}%</output></label>
         <input type="range" id="ui-scale" min="0.8" max="1.6" step="0.05" value="${state.scale}"></div>
       <p class="muted" style="margin:0;font-size:12px">Auto picks Ultrawide from 2200 px: threads, conversation, agent and media side by side.</p>
+      ${dataFolder ? `<div class="field"><label>Kept in</label><code class="datafolder" title="Keys, conversations, these settings and every picture and take. Start the studio with --data to use another folder.">${esc(dataFolder)}</code>
+        <span class="faint" style="font-size:12px">Start with <code>--data &lt;folder&gt;</code> to use another one.</span></div>` : ""}
     </div>`;
   }
 
@@ -869,7 +916,8 @@
     $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
       : liveMedia ? (state.view === "create" ? `Images <span class="muted">· ${G.batches.length} batch${G.batches.length === 1 ? "" : "es"} this session</span>` : `Voice <span class="muted">· ${G.takes.length} take${G.takes.length === 1 ? "" : "s"} this session</span>`)
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>` : crumbs[state.view];
-    const autoModel = (liveChat || liveLib) && L.info ? modelByKey(L.model === "auto" || liveLib ? L.info.auto.text : L.model) : null;
+    const picked = liveChat ? paneModel(L.active) : "auto";
+    const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
     const [c, n] = liveMedia ? [state.view === "create" ? "c-image" : "c-speech", mediaModel ? mediaModel.name : L.info ? "no model yet" : "…"]
       : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"] : routes[state.view];
@@ -981,12 +1029,13 @@
     back.addEventListener("click", e => { if (e.target === back) back.remove(); });
   }
 
-  function go(v) { state.view = v; if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v); render(); }
+  function go(v) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v); render(); }
 
   // ---------- wiring ----------
-  window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { state.view = v; render(); } });
-  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); });
+  window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; render(); } });
+  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
   $("#cmdk-open").addEventListener("click", openCmdk);
   $("#theme-btn").addEventListener("click", () => {
     const root = document.documentElement;
@@ -1014,14 +1063,25 @@
   const L = {
     info: null,                           // GET /api/models: providers, models, what auto picks
     convos: store.get("convos", []),
-    sel: store.get("convo", null),        // a conversation id, "example", or null for a new one
-    model: store.get("chatModel", "auto"),
-    busy: null,                           // the AbortController of the answer being written
+    sel: store.get("convo", null) === "example" ? "example" : null,   // "example" while the design preview shows
+    model: store.get("chatModel", "auto"),  // what a new conversation starts with
+    tabs: store.get("chatTabs", []),      // open conversations, in tab order
+    panes: store.get("chatPanes", [{ id: store.get("convo", null) === "example" ? null : store.get("convo", null) }]),
+    active: store.get("chatActive", 0),   // the pane that has the focus
+    running: {},                          // conversation id: the AbortController of the answer being written
+    drafts: {},                           // conversation id ("#" and the pane for a new one): what is typed but not sent
+    scroll: {},                           // conversation id: where its transcript was scrolled to
+    showFinished: false,
+    convosLoaded: false,                  // true once the studio's conversations are in
+    usage: null,                          // GET /api/usage: calls and tokens by provider, key, model, day
+    balances: null,                       // GET /api/balances: what is left per key, where providers say
+    editing: null,                        // the provider open in the editor, and its unsaved draft
+    draft: null,
+    adding: null,                         // the provider whose key form is open
   };
   const isLive = () => !!document.querySelector('meta[name="studio-token"]');
-  const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
-  const current = () => L.convos.find(c => c.id === L.sel) || null;
-  const chatModels = () => (L.info?.models || []).filter(m => m.media.includes("text"));
+  const current = () => paneConvo(L.active);
+  const chatModels = sel => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === sel));
   const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
   const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
   const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
@@ -1029,13 +1089,37 @@
 
   // A little Markdown: code fences, inline code, bold, paragraphs. Everything is escaped first.
   function md(text) {
-    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
+    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s.,;:!?)]|$)/g, "$1<i>$2</i>").replace(/\n/g, "<br>");
     return text.split("```").map((part, i) => {
       if (i % 2) {
         const nl = part.indexOf("\n");
         return `<pre class="code">${esc((nl >= 0 ? part.slice(nl + 1) : part).replace(/\n$/, ""))}</pre>`;
       }
-      return part.split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${inline(p.trim())}</p>`).join("");
+      // blocks of lines: headings, rules, bullet and numbered lists (which a blank line does not end), paragraphs
+      const out = [];
+      let para = [], list = null;
+      const flushPara = () => { if (para.length) out.push(`<p>${inline(para.join("\n"))}</p>`); para = []; };
+      const flushList = () => {
+        if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map(x => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`);
+        list = null;
+      };
+      for (const raw of part.split("\n")) {
+        const line = raw.trimEnd();
+        const h = /^(#{1,4})\s+(.*)$/.exec(line), ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+        if (!line.trim()) { flushPara(); continue; }
+        if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); flushList(); out.push("<hr>"); }
+        else if (h) { flushPara(); flushList(); out.push(`<p class="mdh mdh${h[1].length}">${inline(h[2])}</p>`); }
+        else if (ul || ol) {
+          flushPara();
+          const tag = ul ? "ul" : "ol";
+          if (!list || list.tag !== tag) { flushList(); list = { tag, start: ol ? +ol[1] : 1, items: [] }; }
+          list.items.push(ul ? ul[1] : ol[2]);
+        } else if (list && /^\s{2,}/.test(raw)) list.items[list.items.length - 1] += "\n" + line.trim();
+        else { flushList(); para.push(line); }
+      }
+      flushPara(); flushList();
+      return out.join("");
     }).join("");
   }
 
@@ -1044,24 +1128,164 @@
     return d.toDateString() === now.toDateString() ? d.toTimeString().slice(0, 5) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
+  // ---------- live chat: tabs, side-by-side panes, finished conversations ----------
+  // Open conversations sit in tabs above one or more panes; each pane shows one conversation
+  // (or a new one) and answers on its own, so several can stream at once. A finished
+  // conversation leaves the tabs and waits under Finished until it is reopened.
+  const convoById = id => L.convos.find(c => c.id === id) || null;
+  const paneConvo = i => convoById((L.panes[i] || {}).id);
+  const running = id => !!L.running[id];
+  const draftKey = i => (paneConvo(i) || {}).id || "#" + i;   // a new conversation's draft belongs to its pane
+  const anyRunning = () => Object.keys(L.running).length > 0;
+  // a model that went away (key removed, provider edited) falls back to Auto
+  const usable = k => !k || (L.info && k !== "auto" && !modelByKey(k)) ? "auto" : k;
+  const paneModel = i => { const c = paneConvo(i); return usable((c ? c.model : (L.panes[i] || {}).model) || L.model); };
+  const maxPanes = () => {
+    if (effectiveLayout() === "focus") return 1;
+    const w = window.innerWidth / state.scale - 64 - 268;
+    return Math.max(1, Math.min(4, Math.floor(w / 480)));
+  };
+  function savePanes() {
+    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null })));
+    store.set("chatTabs", L.tabs);
+    store.set("chatActive", L.active);
+  }
+  function fitPanes() {
+    // until the studio's conversations arrive, tabs and panes naming them are kept as they are
+    if (L.convosLoaded) {
+      L.tabs = L.tabs.filter(id => { const c = convoById(id); return c && c.status !== "finished"; });
+      L.panes = L.panes.filter(p => !p.id || convoById(p.id));
+    }
+    L.panes = L.panes.slice(0, maxPanes());
+    if (!L.panes.length) L.panes = [{ id: L.tabs[0] || null }];
+    L.active = Math.min(Math.max(0, L.active), L.panes.length - 1);
+  }
+  // Shows a conversation: focuses the pane that has it, or puts it in the active pane.
+  function openConvo(id, beside) {
+    const c = convoById(id);
+    if (!c) return;
+    L.sel = null;
+    if (c.status !== "finished" && !L.tabs.includes(id)) L.tabs.push(id);
+    const at = L.panes.findIndex(p => p.id === id);
+    if (at >= 0) L.active = at;
+    else if (beside && L.panes.length < maxPanes()) { L.panes.push({ id }); L.active = L.panes.length - 1; }
+    else L.panes[L.active] = { id };
+    savePanes();
+    render();
+  }
+  function newChat(beside) {
+    L.sel = null; store.set("convo", null);
+    const empty = L.panes.findIndex(p => !p.id);
+    if (beside && L.panes.length < maxPanes()) { L.panes.push({ id: null }); L.active = L.panes.length - 1; }
+    else if (empty >= 0) L.active = empty;
+    else L.panes[L.active] = { id: null };
+    savePanes();
+    render();
+    $(`.pane[data-pane="${L.active}"] textarea`)?.focus();
+  }
+  function closeTab(id) {
+    L.tabs = L.tabs.filter(t => t !== id);
+    const at = L.panes.findIndex(p => p.id === id);
+    if (at >= 0) {
+      if (L.panes.length > 1) { L.panes.splice(at, 1); if (L.active >= at) L.active = Math.max(0, L.active - 1); }
+      else L.panes[0] = { id: L.tabs.find(t => !L.panes.some(p => p.id === t)) || null };
+    }
+    savePanes();
+    render();
+  }
+  function closePane(i) {
+    if (L.panes.length < 2) return;
+    L.panes.splice(i, 1);
+    if (L.active >= i) L.active = Math.max(0, L.active - 1);
+    savePanes();
+    render();
+  }
+  function setFinished(id, done) {
+    const c = convoById(id);
+    if (!c) return;
+    c.status = done ? "finished" : "open";
+    c.finishedAt = done ? Date.now() : undefined;
+    if (done) L.tabs = L.tabs.filter(t => t !== id);
+    else if (!L.tabs.includes(id)) L.tabs.push(id);
+    persist(c);
+    savePanes();
+    render();
+  }
+
+  // Conversations live in the studio (one file each, next to the keys); this browser keeps a copy.
+  const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
+  const pending = new Map();
+  function persist(c) {
+    saveConvos();
+    if (!isLive()) return;
+    clearTimeout(pending.get(c.id));
+    pending.set(c.id, setTimeout(() => { pending.delete(c.id); upload(c); }, 400));
+  }
+  function upload(c) {
+    const body = { ...c, messages: c.messages.map(m => { const { streaming, ...rest } = m; return rest; }) };
+    return fetch("/api/chats", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) console.warn("cannot save the conversation", r.status); return r.ok; })
+      .catch(e => { console.warn("cannot save the conversation", e); return false; });
+  }
+  async function deleteConvo(id) {
+    L.convos = L.convos.filter(c => c.id !== id);
+    L.tabs = L.tabs.filter(t => t !== id);
+    L.panes = L.panes.map(p => p.id === id ? { id: null } : p);
+    saveConvos(); savePanes();
+    render();
+    try {
+      await fetch("/api/chats", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify({ id, delete: true }) });
+    } catch (e) { console.warn("cannot delete the conversation", e); }
+  }
+  // The studio's copy wins; conversations only this browser has (from before) are sent up once.
+  async function loadConvos() {
+    try {
+      const saved = (await api("/api/chats")).chats || [];
+      const known = new Set(saved.map(c => c.id));
+      const onlyHere = L.convos.filter(c => !known.has(c.id) && /^[a-z0-9]{4,40}$/.test(c.id));
+      L.convos = [...saved, ...onlyHere].sort((a, b) => b.updated - a.updated);
+      L.convosLoaded = true;
+      saveConvos();
+      // once the studio has every one, this browser lets go of its copy
+      Promise.all(onlyHere.map(upload)).then(oks => { if (pageState && oks.every(Boolean)) local.remove("convos"); });
+      // a browser that has not opened any tabs yet starts with the open conversations as tabs
+      if (store.get("chatTabs", null) === null) L.tabs = L.convos.filter(c => c.status !== "finished").slice(0, 6).map(c => c.id);
+      fitPanes();
+      if (state.view === "chat" && !anyRunning()) render();
+    } catch (e) { console.warn("cannot read conversations", e); }
+  }
+
   function liveThreadList() {
     const q = (L.search || "").toLowerCase();
-    const list = L.convos.filter(c => !q || c.title.toLowerCase().includes(q)).sort((a, b) => b.updated - a.updated);
+    const match = c => !q || c.title.toLowerCase().includes(q);
+    const open = L.convos.filter(c => c.status !== "finished" && match(c)).sort((a, b) => b.updated - a.updated);
+    const done = L.convos.filter(c => c.status === "finished" && match(c)).sort((a, b) => (b.finishedAt || b.updated) - (a.finishedAt || a.updated));
+    const shownIn = id => L.panes.findIndex(p => p.id === id);
+    const item = c => {
+      const last = c.messages.findLast(m => m.role === "assistant" && m.model);
+      const at = shownIn(c.id), fin = c.status === "finished";
+      return `<div class="titem ${at === L.active && L.sel !== "example" ? "active" : at >= 0 ? "shown" : ""} ${fin ? "done" : ""}" data-convo="${c.id}" tabindex="0">
+        ${running(c.id) ? `<span class="live-dot" title="Answering"></span>` : fin ? `<span class="ic donemark">${icon("check")}</span>` : `<span class="dot ic" style="--c:var(--cap-text)"></span>`}
+        <div style="min-width:0"><div class="t">${esc(c.title)}</div><div class="s">${esc(last ? last.model.name : "no answer yet")}</div></div>
+        <span class="when">${when(fin ? c.finishedAt || c.updated : c.updated)}</span>
+        <span class="tacts">
+          ${!fin && maxPanes() > 1 && at < 0 ? `<button class="iconbtn sm" data-beside="${c.id}" aria-label="Open beside" title="Open beside">${icon("panel")}</button>` : ""}
+          ${fin ? `<button class="iconbtn sm" data-reopen="${c.id}" aria-label="Reopen" title="Reopen">${icon("retry")}</button>
+            <button class="iconbtn sm" data-delete="${c.id}" aria-label="Delete" title="Delete">${icon("stop")}</button>`
+            : `<button class="iconbtn sm" data-finish="${c.id}" aria-label="Mark finished" title="Mark finished">${icon("check")}</button>`}
+        </span></div>`;
+    };
     return `
     <aside class="threads" aria-label="Conversations">
       <div class="col-head"><span class="h3">Threads</span><span class="grow"></span>
-        <button class="iconbtn" id="new-convo" aria-label="New conversation">${icon("plus")}</button></div>
+        <button class="iconbtn" id="new-convo" aria-label="New conversation" title="New conversation">${icon("plus")}</button></div>
       <div class="search">${icon("search")}<input class="input" id="thread-search" placeholder="Search conversations" value="${esc(L.search || "")}"></div>
       <div class="scroll">
-        <div class="tgroup"><span class="eyebrow">Conversations</span>
-          ${list.length ? list.map(c => {
-            const last = c.messages.findLast(m => m.role === "assistant" && m.model);
-            return `<div class="titem ${c.id === L.sel ? "active" : ""}" data-convo="${c.id}" tabindex="0">
-              <span class="dot ic" style="--c:var(--cap-text)"></span>
-              <div style="min-width:0"><div class="t">${esc(c.title)}</div><div class="s">${esc(last ? last.model.name : "no answer yet")}</div></div>
-              <span class="when">${when(c.updated)}</span></div>`;
-          }).join("") : `<div class="muted" style="padding:2px 8px 8px;font-size:12.5px">${q ? "Nothing matches." : "Your conversations appear here."}</div>`}
+        <div class="tgroup"><span class="eyebrow">Open <span class="faint">${open.length || ""}</span></span>
+          ${open.length ? open.map(item).join("") : `<div class="muted" style="padding:2px 8px 8px;font-size:12.5px">${q ? "Nothing matches." : "Your conversations appear here."}</div>`}
         </div>
+        ${done.length ? `<div class="tgroup"><button class="eyebrow fold" id="fold-finished" aria-expanded="${!!(L.showFinished || q)}">${icon("chev")}Finished <span class="faint">${done.length}</span></button>
+          ${L.showFinished || q ? done.map(item).join("") : ""}</div>` : ""}
         <div class="tgroup"><span class="eyebrow">Example</span>
           <div class="titem ${L.sel === "example" ? "active" : ""}" data-convo="example" tabindex="0">
             <span class="dot ic" style="--c:var(--cap-agent)"></span>
@@ -1102,22 +1326,23 @@
       </div></div>`;
   }
 
-  function routeLine() {
+  function routeLine(model) {
     if (!L.info) return `${icon("wand")}<span>Looking for models on this PC and at your providers…</span>`;
-    const key = L.model === "auto" ? L.info.auto.text : L.model;
+    const key = model === "auto" ? L.info.auto.text : model;
     const m = modelByKey(key);
     if (!key) return `${icon("wand")}<span>No chat model yet.</span>`;
     const where = m && m.provider === "local" ? "this PC · nothing leaves it" : `${providerName(m ? m.provider : key.split("/")[0])} · uses your key`;
-    return `${icon("wand")}<span>${L.model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
+    return `${icon("wand")}<span>${model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
   }
 
-  function modelPicker() {
+  function modelPicker(i) {
+    const sel = paneModel(i);
     const groups = {};
-    chatModels().forEach(m => (groups[m.provider] ||= []).push(m));
+    chatModels(sel).forEach(m => (groups[m.provider] ||= []).push(m));
     const auto = L.info && L.info.auto.text ? modelByKey(L.info.auto.text) : null;
-    return `<select class="input model-pick" id="model-pick" aria-label="Model">
-      <option value="auto" ${L.model === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
-      ${Object.entries(groups).map(([p, ms]) => `<optgroup label="${esc(providerName(p))}">${ms.map(m => `<option value="${esc(m.key)}" ${m.key === L.model ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</optgroup>`).join("")}
+    return `<select class="input model-pick" data-pick-model="${i}" aria-label="Model">
+      <option value="auto" ${sel === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
+      ${Object.entries(groups).map(([p, ms]) => `<optgroup label="${esc(providerName(p))}">${ms.map(m => `<option value="${esc(m.key)}" ${m.key === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</optgroup>`).join("")}
     </select>`;
   }
 
@@ -1129,51 +1354,79 @@
     }
     const local = L.info.providers.find(p => p.local);
     return `<div class="empty"><div class="flag">${icon("flask")}<div><b>No chat model yet.</b> Put a Hugging Face model folder or a <code>.gguf</code> file in
-      ${(local?.folders || []).map(f => `<code>${esc(f)}</code>`).join(" or ")}, or add an API key for Anthropic, OpenAI or Google.
+      ${(local?.folders || []).map(f => `<code>${esc(f)}</code>`).join(" or ")}, or add an API key under Models.
       <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
   }
 
-  function liveStage() {
-    const c = current();
+  function paneHtml(i) {
+    const c = paneConvo(i), fin = c && c.status === "finished", busy = c && running(c.id);
+    const key = c ? c.id : "";
     return `
-    <section class="stage" aria-label="Conversation">
+    <section class="stage pane ${i === L.active ? "active" : ""}" data-pane="${i}" data-convo="${key}" aria-label="${esc(c ? c.title : "New conversation")}">
       <div class="stage-head">
         <span class="title">${c ? esc(c.title) : "New conversation"}</span>
+        ${fin ? `<span class="chip c-ok">finished</span>` : ""}
         <span class="grow"></span>
-        ${modelPicker()}
+        ${fin ? "" : modelPicker(i)}
+        ${c ? (fin ? `<button class="btn sm" data-reopen="${c.id}">${icon("retry")}Reopen</button>`
+          : `<button class="btn ghost sm" data-finish="${c.id}" title="Mark finished: it leaves the tabs and waits under Finished">${icon("check")}Finish</button>`) : ""}
+        ${L.panes.length > 1 ? `<button class="iconbtn" data-close-pane="${i}" aria-label="Close this pane" title="Close this pane"><span aria-hidden="true" style="font-size:17px;line-height:1">×</span></button>` : ""}
       </div>
-      <div class="transcript" id="transcript"><div class="lane" id="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
+      <div class="transcript" data-transcript="${i}"><div class="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
       <div class="composer-wrap">
-        <div class="composer">
-          <div class="route-hint" id="route-hint">${routeLine()}</div>
-          <textarea id="prompt" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.draft || "")}</textarea>
+        ${fin ? `<div class="finished-bar">${icon("check")}<span>Finished ${when(c.finishedAt || c.updated)}. Reopen it to keep going.</span><span class="grow"></span>
+            <button class="btn sm" data-reopen="${c.id}">Reopen</button></div>`
+        : `<div class="composer">
+          <div class="route-hint" data-route="${i}">${routeLine(paneModel(i))}</div>
+          <textarea data-prompt="${i}" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.drafts[draftKey(i)] || "")}</textarea>
           <div class="row">
-            <span class="faint" style="font-size:12px;padding-left:6px">Kept in this browser</span>
+            <span class="faint" style="font-size:12px;padding-left:6px">Saved in the studio</span>
             <span class="grow"></span>
-            ${L.busy ? `<button class="send stop" id="stop" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" id="send" aria-label="Send">${icon("send")}</button>`}
+            ${busy ? `<button class="send stop" data-stop="${key}" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" data-send="${i}" aria-label="Send">${icon("send")}</button>`}
           </div>
-        </div>
+        </div>`}
       </div>
     </section>`;
   }
 
-  function liveChatView() {
-    return `<div class="chat lay-${effectiveLayout()} no-inspector">${liveThreadList()}${liveStage()}</div>`;
+  function tabsBar() {
+    const tabs = L.tabs.map(convoById).filter(Boolean);
+    const room = L.panes.length < maxPanes();
+    return `<div class="chattabs" role="tablist" aria-label="Open conversations">
+      <button class="iconbtn sm threads-toggle" id="threads-toggle" aria-label="All conversations" title="All conversations, open and finished" aria-expanded="${!!L.showThreads}">${icon("chat")}</button>
+      ${tabs.map(c => {
+        const at = L.panes.findIndex(p => p.id === c.id);
+        return `<div class="ctab ${at === L.active ? "active" : at >= 0 ? "shown" : ""}" role="tab" aria-selected="${at === L.active}">
+          <button class="ctab-open" data-tab="${c.id}" title="${esc(c.title)}">${running(c.id) ? `<span class="live-dot"></span>` : ""}<span>${esc(c.title)}</span></button>
+          <button class="ctab-x" data-close-tab="${c.id}" aria-label="Close tab ${esc(c.title)}" title="Close tab (the conversation stays under Open)">×</button></div>`;
+      }).join("")}
+      <button class="ctab-new" id="tab-new" aria-label="New conversation" title="New conversation">${icon("plus")}</button>
+      <span class="grow"></span>
+      ${maxPanes() > 1 ? `<button class="btn ghost sm" id="split" ${room ? "" : "disabled"} title="${room ? "Open a new conversation beside this one" : "No room for another pane at this width"}">${icon("panel")}Split</button>` : ""}
+    </div>`;
   }
 
-  // Repaints one message while it streams, at most once a frame, keeping the view at the bottom.
-  let paintQueued = null;
+  function liveChatView() {
+    fitPanes();
+    return `<div class="chat livechat lay-${effectiveLayout()} no-inspector ${L.showThreads ? "show-threads" : ""}">${liveThreadList()}
+      <div class="chatmain">${tabsBar()}<div class="panes" style="--n:${L.panes.length}">${L.panes.map((_, i) => paneHtml(i)).join("")}</div></div></div>`;
+  }
+
+  // Repaints one message while it streams, at most once a frame, in every pane that shows it.
+  const paintQueued = new Map();
   function paintMsg(c, i) {
-    if (paintQueued) return;
-    paintQueued = requestAnimationFrame(() => {
-      paintQueued = null;
-      if (state.view !== "chat" || L.sel !== c.id) return;
-      const el = $(`#lane .msg[data-i="${i}"]`), box = $("#transcript");
-      if (!el || !box) return;
-      const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-      el.outerHTML = msgHtml(c.messages[i], i);
-      if (stick) box.scrollTop = box.scrollHeight;
-    });
+    if (paintQueued.has(c.id)) return;
+    paintQueued.set(c.id, requestAnimationFrame(() => {
+      paintQueued.delete(c.id);
+      if (state.view !== "chat") return;
+      $$(`.pane[data-convo="${c.id}"]`).forEach(pane => {
+        const el = pane.querySelector(`.msg[data-i="${i}"]`), box = pane.querySelector(".transcript");
+        if (!el || !box) return;
+        const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+        el.outerHTML = msgHtml(c.messages[i], i);
+        if (stick) box.scrollTop = box.scrollHeight;
+      });
+    }));
   }
 
   // The provider wants alternating turns: a failed answer is left out and the user's turns around it are joined.
@@ -1193,9 +1446,8 @@
     c.messages.push(a);
     const i = c.messages.length - 1;
     const ctrl = new AbortController();
-    L.busy = ctrl;
+    L.running[c.id] = ctrl;
     render();
-    const box = $("#transcript"); if (box) box.scrollTop = box.scrollHeight;
     const onEvent = (event, d) => {
       if (event === "route") a.model = d;
       else if (event === "text") a.text += d.text;
@@ -1208,7 +1460,7 @@
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal,
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: L.model, messages: history }),
+        body: JSON.stringify({ model: usable(c.model || L.model), messages: history }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
       const reader = r.body.getReader(), dec = new TextDecoder();
@@ -1232,57 +1484,103 @@
       if (e.name === "AbortError") a.stopped = true; else a.error = e.message;
     }
     a.streaming = false;
-    L.busy = null;
+    delete L.running[c.id];
     c.updated = Date.now();
-    saveConvos();
+    persist(c);
     if (state.view === "chat") render();
   }
 
-  function send() {
-    const p = $("#prompt"), text = (p?.value || "").trim();
-    if (!text || L.busy || !L.info) return;
-    let c = current();
+  function send(i) {
+    const p = $(`[data-prompt="${i}"]`), text = (p?.value || "").trim();
+    let c = paneConvo(i);
+    if (!text || !L.info || (c && running(c.id))) return;
     if (!c) {
-      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70), messages: [], updated: Date.now() };
+      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70),
+        messages: [], updated: Date.now(), status: "open", model: L.panes[i].model || L.model };
       L.convos.unshift(c);
-      L.sel = c.id; store.set("convo", c.id);
+      L.panes[i] = { id: c.id };
+      L.tabs.push(c.id);
+      L.drafts["#" + i] = "";
+      savePanes();
     }
+    L.active = i;
+    L.drafts[c.id] = "";
     c.messages.push({ role: "user", text, at: Date.now() });
-    L.draft = "";
+    persist(c);
     answer(c);
   }
 
   function bindLiveChat() {
-    $$("[data-convo]").forEach(el => {
-      const open = () => { if (L.busy) return; L.sel = el.dataset.convo; store.set("convo", L.sel); render(); };
+    $$(".titem[data-convo]").forEach(el => {
+      const open = e => {
+        if (e.target.closest(".tacts")) return;
+        if (el.dataset.convo === "example") { L.sel = "example"; store.set("convo", "example"); render(); return; }
+        store.set("convo", null);
+        L.showThreads = false;
+        openConvo(el.dataset.convo, e.ctrlKey || e.metaKey);
+      };
       el.addEventListener("click", open);
-      el.addEventListener("keydown", e => { if (e.key === "Enter") open(); });
+      el.addEventListener("keydown", e => { if (e.key === "Enter") open(e); });
     });
-    $("#new-convo")?.addEventListener("click", () => { if (L.busy) return; L.sel = null; store.set("convo", null); render(); $("#prompt")?.focus(); });
+    $$("[data-beside]").forEach(b => b.addEventListener("click", () => openConvo(b.dataset.beside, true)));
+    $$("[data-finish]").forEach(b => b.addEventListener("click", () => setFinished(b.dataset.finish, true)));
+    $$("[data-reopen]").forEach(b => b.addEventListener("click", () => { setFinished(b.dataset.reopen, false); openConvo(b.dataset.reopen); }));
+    $$("[data-delete]").forEach(b => b.addEventListener("click", () => {
+      const c = convoById(b.dataset.delete);
+      if (c && confirmDelete(b)) deleteConvo(c.id);
+    }));
+    $("#threads-toggle")?.addEventListener("click", () => { L.showThreads = !L.showThreads; render(); });
+    $("#fold-finished")?.addEventListener("click", () => { L.showFinished = !L.showFinished; render(); });
+    $("#new-convo")?.addEventListener("click", () => newChat(false));
+    $("#tab-new")?.addEventListener("click", () => newChat(false));
+    $("#split")?.addEventListener("click", () => newChat(true));
+    $$("[data-tab]").forEach(b => b.addEventListener("click", () => openConvo(b.dataset.tab)));
+    $$("[data-close-tab]").forEach(b => b.addEventListener("click", () => closeTab(b.dataset.closeTab)));
+    $$("[data-close-pane]").forEach(b => b.addEventListener("click", () => closePane(+b.dataset.closePane)));
     $("#thread-search")?.addEventListener("input", e => {
       L.search = e.target.value; const at = e.target.selectionStart; render();
       const s = $("#thread-search"); s.focus(); s.setSelectionRange(at, at);
     });
-    $("#model-pick")?.addEventListener("change", e => { L.model = e.target.value; store.set("chatModel", L.model); $("#route-hint").innerHTML = routeLine(); });
-    const p = $("#prompt");
-    if (p) {
-      p.addEventListener("input", () => { L.draft = p.value; });
-      p.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
-    }
-    $("#send")?.addEventListener("click", send);
-    $("#stop")?.addEventListener("click", () => L.busy?.abort());
+    $$(".pane").forEach(pane => {
+      const i = +pane.dataset.pane;
+      pane.addEventListener("focusin", () => { if (L.active !== i) { L.active = i; savePanes(); $$(".pane").forEach(x => x.classList.toggle("active", +x.dataset.pane === i)); } });
+      const box = pane.querySelector(".transcript"), key = pane.dataset.convo;
+      if (box) {
+        box.scrollTop = key && L.scroll[key] != null ? L.scroll[key] : box.scrollHeight;
+        box.addEventListener("scroll", () => { if (key) L.scroll[key] = box.scrollHeight - box.scrollTop - box.clientHeight < 80 ? null : box.scrollTop; }, { passive: true });
+      }
+    });
+    $$("[data-pick-model]").forEach(s => s.addEventListener("change", () => {
+      const i = +s.dataset.pickModel, c = paneConvo(i);
+      if (c) { c.model = s.value; persist(c); } else { L.panes[i].model = s.value; L.model = s.value; store.set("chatModel", s.value); savePanes(); }
+      $(`[data-route="${i}"]`).innerHTML = routeLine(s.value);
+    }));
+    $$("[data-prompt]").forEach(p => {
+      const i = +p.dataset.prompt;
+      p.addEventListener("input", () => { L.drafts[draftKey(i)] = p.value; });
+      p.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(i); } });
+    });
+    $$("[data-send]").forEach(b => b.addEventListener("click", () => send(+b.dataset.send)));
+    $$("[data-stop]").forEach(b => b.addEventListener("click", () => L.running[b.dataset.stop]?.abort()));
     $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $$("[data-copy]").forEach(b => b.addEventListener("click", () => {
-      const m = current()?.messages[+b.dataset.copy];
+      const m = convoById(b.closest(".pane")?.dataset.convo)?.messages[+b.dataset.copy];
       if (m) navigator.clipboard?.writeText(m.text).then(() => { b.innerHTML = icon("check"); setTimeout(() => { b.innerHTML = icon("copy"); }, 1200); });
     }));
     $$("[data-retry]").forEach(b => b.addEventListener("click", () => {
-      const c = current(); if (!c || L.busy) return;
+      const c = convoById(b.closest(".pane")?.dataset.convo); if (!c || running(c.id)) return;
       c.messages.splice(+b.dataset.retry);
       answer(c);
     }));
-    const box = $("#transcript"); if (box && !L.busy) box.scrollTop = box.scrollHeight;
-    if (!L.busy) p?.focus({ preventScroll: true });
+    const a = document.activeElement;
+    if (!a || a === document.body) $(`[data-prompt="${L.active}"]`)?.focus({ preventScroll: true });
+  }
+  // Deleting asks twice on the same button: the first press arms it for three seconds.
+  function confirmDelete(b) {
+    if (b.dataset.armed) return true;
+    b.dataset.armed = "1"; b.classList.add("armed"); b.title = "Press again to delete";
+    setTimeout(() => { delete b.dataset.armed; b.classList.remove("armed"); b.title = "Delete"; }, 3000);
+    return false;
   }
 
   // ---------- live images and voice ----------
@@ -1294,7 +1592,7 @@
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
     text: "", takes: [], speaking: false, video: null,
   };
-  const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium));
+  const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium) && m.shown !== false);
   const pickedModel = (sel, medium) => modelByKey(sel === "auto" ? L.info?.auto?.[medium] : sel);
 
   function mediaPicker(id, medium, sel) {
@@ -1495,53 +1793,269 @@
   }
 
   // ---------- live models and providers ----------
+  // Models grouped by provider; each group folds, and remembers whether it was folded.
+  const isFolded = (id, n) => { const f = store.get("libFolded", {}); return id in f ? f[id] : n > 25; };
+  function setFolded(id, v) { const f = store.get("libFolded", {}); f[id] = v; store.set("libFolded", f); }
   function liveModelsTable() {
     const ms = L.info ? L.info.models : [];
-    return `<div class="tablebox"><table class="models">
-      <thead><tr><th>Model</th><th>Can</th><th>Where</th><th>Detail</th></tr></thead>
-      <tbody>${ms.length ? ms.map(m => `<tr>
+    const groups = new Map();
+    ms.forEach(m => { if (!groups.has(m.provider)) groups.set(m.provider, []); groups.get(m.provider).push(m); });
+    const row = m => `<tr data-find="${esc((m.name + " " + m.key).toLowerCase())}" class="mrow ${m.shown === false ? "hidden-model" : ""}">
         <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.key)}</div></td>
         <td>${m.media.map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join(" ")}</td>
-        <td>${m.provider === "local" ? `<span class="chip c-ok">this PC</span>` : `<span class="chip c-agent">${esc(providerName(m.provider))} · your key</span>`}</td>
-        <td class="mono">${esc(m.detail)}</td></tr>`).join("")
-        : `<tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr>`}</tbody></table></div>`;
+        <td>${m.shown === false ? `<span class="chip plain" title="Not offered in the model pickers or by Auto. Change it with Edit on the provider.">hidden</span>` : Object.values(L.info.auto || {}).includes(m.key) ? `<span class="chip c-ok">Auto picks it</span>` : ""}</td>
+        <td class="mono">${esc(m.detail)}</td></tr>`;
+    const body = [...groups].map(([id, list]) => {
+      const folded = isFolded(id, list.length), name = id === "local" ? "This PC" : providerName(id);
+      const hidden = list.filter(m => m.shown === false).length;
+      const p = (L.info.providers || []).find(x => x.id === id);
+      return `<tbody class="mgroup ${folded ? "folded" : ""}" data-group="${esc(id)}">
+        <tr class="ghead"><td colspan="4"><div class="ghead-in">
+          <button class="gtoggle" data-fold="${esc(id)}" aria-expanded="${!folded}">${icon("chev")}<b>${esc(name)}</b>
+            <span class="faint tnum">${list.length} model${list.length === 1 ? "" : "s"}${hidden ? ` · ${hidden} hidden` : ""}</span></button>
+          <span class="grow"></span>
+          ${id === "local" ? `<span class="chip c-ok">free · private</span>` : `<span class="chip c-agent">your key</span>`}
+          ${p && p.settings ? `<button class="btn ghost sm" data-edit-provider="${esc(id)}">${icon("edit")}Edit</button>` : ""}
+        </div></td></tr>
+        ${list.map(row).join("")}</tbody>`;
+    }).join("");
+    return `${ms.length ? `<div class="modelbar">
+        <input class="input" id="model-find" type="search" placeholder="Find a model in every provider" aria-label="Find a model">
+        <span class="grow"></span>
+        ${groups.size > 1 ? `<button class="btn ghost sm" data-fold-all="false">Expand all</button><button class="btn ghost sm" data-fold-all="true">Collapse all</button>` : ""}
+      </div>` : ""}
+      <div class="tablebox models-box"><table class="models">
+      <thead><tr><th>Model</th><th>Can</th><th>Use</th><th>Detail</th></tr></thead>
+      ${body || `<tbody><tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr></tbody>`}</table></div>
+      <div class="muted nofind" hidden style="font-size:13px">No model matches.</div>`;
+  }
+
+  // ---------- usage and balances ----------
+  const compact = n => n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M"
+    : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(Math.round(n));
+  const plural = (n, one, many) => `${compact(n)} ${n === 1 ? one : many || one + "s"}`;
+  const money = b => b.amount === undefined ? "no limit" : `${b.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${b.currency}`;
+  function usageLine(t) {
+    if (!t || !t.calls) return "";
+    const bits = [plural(t.calls, "call")];
+    if (t.in + t.out) bits.push(`${compact(t.in)} in · ${compact(t.out)} out`);
+    if (t.failed) bits.push(`${t.failed} failed`);
+    return bits.join(" · ");
+  }
+  function keyBalance(p, label) {
+    const list = L.balances && L.balances[p.id];
+    const b = list && list.find(x => x.label === label);
+    if (!p.balance) return "";
+    if (!b) return L.balances ? "" : `<span class="chip plain faint">balance…</span>`;
+    if (b.error) return `<span class="chip plain" title="${esc(b.error)}">balance unknown</span>`;
+    const low = b.balance.amount !== undefined && b.balance.amount < 1;
+    return `<span class="chip ${low ? "c-warn" : "c-ok"}" title="${esc(b.balance.detail)}">${esc(money(b.balance))} left</span>`;
+  }
+
+  function liveUsage() {
+    const u = L.usage;
+    if (!u) return `<div class="usage"><span class="muted">Reading the usage log…</span></div>`;
+    const days = u.daily;
+    const sum = (row, f) => Object.values(row.providers).reduce((a, t) => a + f(t), 0);
+    const tot = { calls: 0, in: 0, out: 0, failed: 0, images: 0, chars: 0 };
+    days.forEach(d => Object.values(d.providers).forEach(t => { tot.calls += t.calls; tot.in += t.in; tot.out += t.out; tot.failed += t.failed; }));
+    const kinds = { image: 0, speech: 0 };
+    // pictures and characters come from the per-model totals, split by the model's medium
+    Object.entries(u.models).forEach(([k, t]) => {
+      const m = modelByKey(k);
+      if (m && m.media.includes("image")) kinds.image += t.units;
+      else if (m && m.media.includes("speech")) kinds.speech += t.units;
+    });
+    const tokens = days.map(d => sum(d, t => t.in + t.out));
+    const max = Math.max(1, ...tokens);
+    const bars = days.map((d, i) => {
+      const v = tokens[i];
+      const label = new Date(d.day + "T12:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      const per = Object.entries(d.providers).map(([p, t]) => `${providerName(p)}: ${t.in + t.out ? compact(t.in + t.out) + " tokens, " : ""}${plural(t.calls, "call")}${t.failed ? `, ${t.failed} failed` : ""}`).join("; ");
+      return `<button class="bar" data-tip="${esc(label)}|${esc(per || "no calls")}" aria-label="${esc(label)}: ${esc(per || "no calls")}">${v
+        ? `<i style="height:${Math.max(2, v / max * 100).toFixed(1)}%"></i>` : `<i class="zero"></i>`}</button>`;
+    }).join("");
+    const first = new Date(days[0].day + "T12:00"), last = new Date(days[days.length - 1].day + "T12:00");
+    const fmtDay = d => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const provRows = Object.entries(u.providers).sort((a, b) => (b[1].in + b[1].out) - (a[1].in + a[1].out) || b[1].calls - a[1].calls);
+    const tile = (v, l) => `<div class="tile"><b class="tnum">${v}</b><span>${l}</span></div>`;
+    return `<div class="usage">
+      <div class="usage-head"><span class="h3">Usage</span><span class="muted">every call this studio made, kept on this PC; tokens as the providers count them</span></div>
+      ${provRows.length ? `<div class="tiles">
+        ${tile(compact(tot.calls), "calls, last 30 days")}${tile(compact(tot.in), "tokens in")}${tile(compact(tot.out), "tokens out")}
+        ${kinds.image ? tile(compact(kinds.image), "pictures, all time") : ""}${kinds.speech ? tile(compact(kinds.speech), "characters spoken, all time") : ""}
+        ${tot.failed ? tile(compact(tot.failed), "failed calls") : ""}</div>
+      <figure class="daychart">
+        <figcaption>Tokens per day, last 30 days <span class="faint">· most ${compact(max)}</span></figcaption>
+        <div class="chartwrap"><div class="bars" role="group" aria-label="Tokens per day for the last 30 days">${bars}</div><div class="charttip" hidden></div></div>
+        <div class="axis"><span>${esc(fmtDay(first))}</span><span>today</span></div>
+      </figure>
+      <div class="tablebox"><table class="usage-table">
+        <thead><tr><th>Provider and model</th><th class="r">Calls</th><th class="r">Failed</th><th class="r">Tokens in</th><th class="r">Tokens out</th><th class="r">Pictures or characters</th><th class="r">Avg time</th></tr></thead>
+        <tbody>${provRows.map(([p, t]) => {
+          const ms = Object.entries(u.models).filter(([k]) => k.startsWith(p + "/")).sort((a, b) => b[1].calls - a[1].calls);
+          const row = (name, t, cls) => `<tr class="${cls}"><td>${name}</td><td class="r tnum">${compact(t.calls)}</td><td class="r tnum ${t.failed ? "bad" : "faint"}">${t.failed}</td>
+            <td class="r tnum">${compact(t.in)}</td><td class="r tnum">${compact(t.out)}</td><td class="r tnum">${t.units ? compact(t.units) : "—"}</td><td class="r tnum">${t.calls ? (t.seconds / t.calls).toFixed(1) + " s" : "—"}</td></tr>`;
+          return row(`<b>${esc(p === "local" ? "This PC" : providerName(p))}</b>`, t, "p-total") + ms.map(([k, mt]) => row(`<span class="mono">${esc(k.slice(p.length + 1))}</span>`, mt, "p-model")).join("");
+        }).join("")}</tbody></table></div>`
+      : `<div class="muted" style="font-size:13px">No calls yet. Chats, pictures and speech show up here with their tokens, per provider, key and model.</div>`}
+    </div>`;
   }
 
   function liveProviders() {
     if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
-    return `<div class="providers">${L.info.providers.map(p => {
+    const ready = L.info.providers.filter(p => p.local || p.keys.length);
+    const more = L.info.providers.filter(p => !p.local && !p.keys.length);
+    const keyUse = (p, label) => usageLine(L.usage && L.usage.keys[p.id + "/" + label]);
+    const form = (p, open) => `<form class="keyform" data-provider="${p.id}" ${open ? "" : "hidden"}>
+          <input class="input" name="label" placeholder="Name" value="${p.keys.some(k => k.source === "saved") ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
+          <input class="input mono" name="key" type="password" placeholder="API key" aria-label="${esc(p.name)} API key" required autocomplete="off">
+          <button class="btn" type="submit">${icon("plus")}Add</button>
+        </form>`;
+    const card = p => {
       const head = `<div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
-        ${p.ready ? `<span class="chip c-ok">${p.models} model${p.models === 1 ? "" : "s"}</span>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
+        ${p.ready ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
           <div class="muted" style="font-size:12.5px">Hugging Face model folders (Llama, Qwen2, Mistral) and <code>.gguf</code> files in:</div>
           ${p.folders.map(f => `<div class="mono faint" style="font-size:11.5px;word-break:break-all">${esc(f)}</div>`).join("")}
-          <span class="mono faint" style="font-size:11px">free · private · works offline</span></div>`;
+          <span class="mono faint" style="font-size:11px">free · private · works offline${L.usage && L.usage.providers.local ? " · " + esc(usageLine(L.usage.providers.local)) : ""}</span></div>`;
       }
-      const saved = p.keys.filter(k => k.source === "saved");
+      const total = L.usage && L.usage.providers[p.id];
+      const st = p.settings || {};
+      const flags = [st.auto === false ? "not used by Auto" : "", st.models ? `${st.models.length} of ${p.models} models shown` : "",
+        st.url ? "own address" : "", st.options && st.options.billTo ? `bills ${st.options.billTo}` : ""].filter(Boolean);
       return `<div class="prov ${p.ready ? "on" : "off"}">${head}
+        ${p.note ? `<div class="muted" style="font-size:12.5px">${esc(p.note)}</div>` : ""}
+        <div class="provset">${flags.map(f => `<span class="chip plain">${esc(f)}</span>`).join("")}<span class="grow"></span>
+          <button class="btn sm" data-edit-provider="${p.id}">${icon("edit")}Edit</button></div>
         ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
-        <div class="keys">${p.keys.length ? p.keys.map((k, n) => `<div class="keyrow">
+        <div class="keys">${p.keys.map((k, n) => `<div class="keyrow">
             <span class="dot" style="--c:var(--${k.error ? "bad" : "ok"})"></span>
             <span class="lbl">${esc(k.label)}</span><span class="mono faint">${esc(k.hint)}</span>
             ${n === 0 && p.keys.length > 1 ? `<span class="chip plain">tried first</span>` : ""}
+            ${keyBalance(p, k.label)}
             <span class="grow"></span>
             ${k.source === "saved" ? `${n > 0 ? `<button class="btn ghost sm" data-key-first="${p.id}" data-label="${esc(k.label)}">Try first</button>` : ""}<button class="btn ghost sm" data-key-remove="${p.id}" data-label="${esc(k.label)}" aria-label="Remove key ${esc(k.label)}">Remove</button>` : `<span class="chip plain" title="Set in the environment the studio started from">environment</span>`}
-            ${k.error ? `<div class="keyerr">${esc(k.error)}</div>` : ""}</div>`).join("") : `<div class="muted" style="font-size:12.5px">Add a key to list and use ${esc(p.name)} models.</div>`}</div>
-        <form class="keyform" data-provider="${p.id}">
-          <input class="input" name="label" placeholder="Name" value="${saved.length ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
-          <input class="input mono" name="key" type="password" placeholder="API key" aria-label="${esc(p.name)} API key" required autocomplete="off">
-          <button class="btn" type="submit">${icon("plus")}Add</button>
-        </form>
-        <span class="mono faint" style="font-size:11px">several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
-    }).join("")}
+            ${keyUse(p, k.label) ? `<div class="keyuse mono">${esc(keyUse(p, k.label))}</div>` : ""}
+            ${k.error ? `<div class="keyerr">${esc(k.error)}</div>` : ""}</div>`).join("")}</div>
+        ${form(p, true)}
+        <span class="mono faint" style="font-size:11px">${total && p.keys.length > 1 ? esc(usageLine(total)) + " in all · " : ""}several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
+    };
+    return `<div class="providers">${ready.map(card).join("")}</div>
+      ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
+      <div class="more">${more.map(p => `<div class="prov-row ${L.adding === p.id ? "open" : ""}">
+          <span class="plogo">${esc(p.name[0])}</span>
+          <div class="who"><b>${esc(p.name)}</b><span class="muted">${esc(p.note || "")}</span></div>
+          <span class="mono faint env">${esc((p.env || []).join(" or "))}</span>
+          <button class="btn sm" data-add-key="${p.id}" aria-expanded="${L.adding === p.id}">${icon("plus")}Add key</button>
+          ${form(p, L.adding === p.id)}
+        </div>`).join("")}</div>` : ""}
       <div class="prov routing">
         <b>Routing</b>
-        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then Anthropic, OpenAI and Google, in that order.</span>
+        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then the providers with keys, in the order shown here.</span>
         <button class="btn" id="refresh-models">${icon("retry")}List models again</button>
-        <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters.</span>
+        ${L.info.providers.some(p => p.balance && p.keys.length) ? `<button class="btn" id="refresh-balances">${icon("retry")}Check balances</button>` : ""}
+        <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters. Anthropic, OpenAI and Google report no balance to an API key; DeepSeek, Kimi and OpenRouter do.</span>
       </div>
-    </div>`;
+      ${liveUsage()}
+      ${L.editing ? providerEditor() : ""}`;
+  }
+
+  // ---------- provider editor ----------
+  const optionInfo = {
+    billTo: ["Organization to bill", "my-org", "Hugging Face charges this organization's credits instead of yours (sent as X-HF-Bill-To). Leave empty to pay yourself."],
+  };
+  function startEdit(id) {
+    const p = L.info.providers.find(x => x.id === id);
+    const st = p.settings || {};
+    L.editing = id;
+    L.draft = { auto: st.auto !== false, pick: !!st.models, picked: new Set(st.models || []), url: st.url || "", options: { ...(st.options || {}) }, error: "" };
+    render();
+    $("#ped")?.focus();
+  }
+  function providerEditor() {
+    const p = L.info.providers.find(x => x.id === L.editing);
+    if (!p) return "";
+    const d = L.draft, st = p.settings || {};
+    const ms = L.info.models.filter(m => m.provider === p.id);
+    // ids saved earlier that the provider no longer lists stay visible, so they can be removed
+    const gone = [...d.picked].filter(id => !ms.some(m => m.id === id));
+    const row = (id, name, detail, media) => `<label class="pick" data-find="${esc((name + " " + id).toLowerCase())}">
+        <input type="checkbox" data-pick="${esc(id)}" ${d.picked.has(id) ? "checked" : ""} ${d.pick ? "" : "disabled"}>
+        <span class="who"><b>${esc(name)}</b>${name === id ? "" : `<span class="mono faint">${esc(id)}</span>`}</span>
+        <span class="caps">${(media || []).map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join("")}</span>
+        <span class="mono faint det">${esc(detail || "")}</span></label>`;
+    return `<div class="ped-back" id="ped-back"><aside class="ped" id="ped" role="dialog" aria-modal="true" aria-label="Edit ${esc(p.name)}" tabindex="-1">
+      <header><span class="plogo">${esc(p.name[0])}</span><div><b>${esc(p.name)}</b><div class="muted">${esc(p.note || "")}</div></div>
+        <span class="grow"></span><button class="iconbtn" id="ped-close" aria-label="Close"><span aria-hidden="true" style="font-size:18px;line-height:1">×</span></button></header>
+      <div class="ped-body">
+        <label class="ped-row"><span><b>Use in Auto</b><span class="muted">Auto may pick this provider's models. Off, they can still be chosen by name.</span></span>
+          <span class="switch"><input type="checkbox" id="ped-auto" ${d.auto ? "checked" : ""} aria-label="Use ${esc(p.name)} in Auto"><i></i></span></label>
+        <div class="ped-field"><label for="ped-url"><b>Address</b></label>
+          <input class="input mono" id="ped-url" value="${esc(d.url)}" placeholder="${esc(st.home || "")}" spellcheck="false" autocomplete="off">
+          <span class="muted">Empty uses ${esc(st.home || "the provider's own")}. Set a gateway, a proxy or another region${p.id === "qwen" ? ", such as https://dashscope.aliyuncs.com/compatible-mode/v1/ for mainland China" : ""}.</span></div>
+        ${Object.keys(st.options || {}).map(o => `<div class="ped-field"><label for="ped-opt-${o}"><b>${esc(optionInfo[o] ? optionInfo[o][0] : o)}</b></label>
+          <input class="input" id="ped-opt-${o}" data-option="${o}" value="${esc(d.options[o] || "")}" placeholder="${esc(optionInfo[o] ? optionInfo[o][1] : "")}" spellcheck="false" autocomplete="off">
+          <span class="muted">${esc(optionInfo[o] ? optionInfo[o][2] : "")}</span></div>`).join("")}
+        ${p.id === "huggingface" ? `<div class="flag">${icon("flask")}<div>Hugging Face's plan decides how calls are paid, not which models you may call: Free has no included credits (buy some first), PRO includes $2 a month. Gated models also need their license accepted on the model page. Prices below are each model's cheapest live host.</div></div>` : ""}
+        <div class="ped-field grow-field"><b>Models</b>
+          <div class="seg" role="group" aria-label="Which models to offer">
+            <button data-pick-mode="all" aria-pressed="${!d.pick}">All ${ms.length}</button>
+            <button data-pick-mode="pick" aria-pressed="${d.pick}">Only the ones I pick</button></div>
+          <span class="muted" id="ped-count">${d.pick ? `${d.picked.size} picked. Only these appear in the model pickers and in Auto.` : "Every model the provider lists appears in the pickers, including new ones."}</span>
+          ${ms.length > 8 ? `<div class="ped-tools"><input class="input" id="ped-find" type="search" placeholder="Find a model" aria-label="Find a model">
+            <button class="btn sm" id="ped-all" ${d.pick ? "" : "disabled"}>Pick shown</button><button class="btn sm" id="ped-none" ${d.pick ? "" : "disabled"}>Clear</button></div>` : ""}
+          <div class="picks ${d.pick ? "" : "off"}">${ms.map(m => row(m.id, m.name, m.detail, m.media)).join("")}
+            ${gone.map(id => row(id, id, "no longer listed", [])).join("")}
+            ${ms.length || gone.length ? "" : `<div class="muted" style="padding:10px">${p.ready ? "The provider listed no models. Check its key or address." : "Add a key to list this provider's models."}</div>`}</div>
+        </div>
+      </div>
+      <footer>${d.error ? `<div class="keyerr">${esc(d.error)}</div>` : ""}<span class="grow"></span>
+        <button class="btn ghost" id="ped-cancel">Cancel</button><button class="btn primary" id="ped-save">Save</button></footer>
+    </aside></div>`;
+  }
+  function bindProviderEditor() {
+    if (!L.editing) return;
+    const d = L.draft;
+    const close = () => { L.editing = null; L.draft = null; render(); };
+    $("#ped-close").addEventListener("click", close);
+    $("#ped-cancel").addEventListener("click", close);
+    $("#ped-back").addEventListener("click", e => { if (e.target.id === "ped-back") close(); });
+    if (!document.activeElement || document.activeElement === document.body) $("#ped").focus();
+    $("#ped-auto").addEventListener("change", e => d.auto = e.target.checked);
+    $("#ped-url").addEventListener("input", e => d.url = e.target.value);
+    $$("[data-option]").forEach(i => i.addEventListener("input", () => d.options[i.dataset.option] = i.value));
+    const count = () => { $("#ped-count").textContent = `${d.picked.size} picked. Only these appear in the model pickers and in Auto.`; };
+    $$("[data-pick]").forEach(c => c.addEventListener("change", () => { if (c.checked) d.picked.add(c.dataset.pick); else d.picked.delete(c.dataset.pick); count(); }));
+    $$("[data-pick-mode]").forEach(b => b.addEventListener("click", () => {
+      d.pick = b.dataset.pickMode === "pick";
+      if (d.pick && !d.picked.size) {   // start from what Auto would use, so the list is not empty
+        const auto = Object.values(L.info.auto).find(k => k.startsWith(L.editing + "/"));
+        if (auto) d.picked.add(auto.slice(L.editing.length + 1));
+      }
+      render();
+    }));
+    const find = $("#ped-find");
+    find?.addEventListener("input", () => {
+      const q = find.value.trim().toLowerCase();
+      $$(".picks .pick").forEach(l => l.hidden = !!q && !l.dataset.find.includes(q));
+    });
+    $("#ped-all")?.addEventListener("click", () => { $$(".picks .pick:not([hidden]) input").forEach(c => { c.checked = true; d.picked.add(c.dataset.pick); }); count(); });
+    $("#ped-none")?.addEventListener("click", () => { $$(".picks .pick:not([hidden]) input").forEach(c => { c.checked = false; d.picked.delete(c.dataset.pick); }); count(); });
+    $("#ped-save").addEventListener("click", async () => {
+      if (d.pick && !d.picked.size) { d.error = "Pick at least one model, or choose All."; render(); return; }
+      const btn = $("#ped-save"); btn.disabled = true; btn.textContent = "Saving…";
+      try {
+        const r = await fetch("/api/providers", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: L.editing, auto: d.auto, models: d.pick ? [...d.picked] : null, url: d.url.trim(), options: d.options }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || r.status);
+        L.info = j; L.editing = null; L.draft = null;
+        if (L.model !== "auto" && !modelByKey(L.model)) L.model = "auto";
+        render();
+      } catch (e) { d.error = e.message; render(); }
+    });
   }
 
   async function postKeys(body) {
@@ -1562,13 +2076,78 @@
     $$("[data-key-remove]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyRemove, label: b.dataset.label, remove: true }).catch(e => console.warn(e))));
     $$("[data-key-first]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyFirst, label: b.dataset.label, first: true }).catch(e => console.warn(e))));
     $("#refresh-models")?.addEventListener("click", () => loadModels(true));
+    $("#refresh-balances")?.addEventListener("click", () => loadBalances());
+    $$("[data-edit-provider]").forEach(b => b.addEventListener("click", () => startEdit(b.dataset.editProvider)));
+    bindProviderEditor();
+    $$("[data-add-key]").forEach(b => b.addEventListener("click", () => {
+      L.adding = L.adding === b.dataset.addKey ? null : b.dataset.addKey;
+      render();
+      $(`.keyform[data-provider="${L.adding}"] input[name=key]`)?.focus();
+    }));
+    const fold = (g, v) => {
+      g.classList.toggle("folded", v);
+      g.querySelector("[data-fold]").setAttribute("aria-expanded", String(!v));
+      setFolded(g.dataset.group, v);
+    };
+    $$("[data-fold]").forEach(b => b.addEventListener("click", () => { const g = b.closest(".mgroup"); fold(g, !g.classList.contains("folded")); }));
+    $$("[data-fold-all]").forEach(b => b.addEventListener("click", () => $$(".mgroup").forEach(g => fold(g, b.dataset.foldAll === "true"))));
+    $$("[data-show-models]").forEach(b => b.addEventListener("click", () => {
+      const g = $(`.mgroup[data-group="${b.dataset.showModels}"]`);
+      if (!g) return;
+      fold(g, false);
+      g.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+    // while searching, every group with a match opens and the others step aside; folding comes back after
+    const find = $("#model-find");
+    find?.addEventListener("input", () => {
+      const q = find.value.trim().toLowerCase();
+      let any = false;
+      $$(".mgroup").forEach(g => {
+        let hits = 0;
+        g.querySelectorAll("tr.mrow").forEach(tr => { const hit = !q || tr.dataset.find.includes(q); tr.hidden = !hit; hits += hit ? 1 : 0; });
+        g.classList.toggle("searching", !!q);
+        g.hidden = !!q && !hits;
+        any = any || hits > 0;
+      });
+      const none = $(".nofind"); if (none) none.hidden = !q || any;
+    });
+    const tip = $(".charttip");
+    $$(".daychart .bar").forEach(g => {
+      const show = () => {
+        const [day, per] = g.dataset.tip.split("|");
+        tip.innerHTML = `<b>${esc(day)}</b>${per.split("; ").map(x => `<div>${esc(x)}</div>`).join("")}`;
+        const box = g.closest(".chartwrap").getBoundingClientRect(), r = g.getBoundingClientRect();
+        tip.hidden = false;
+        tip.style.left = Math.min(Math.max(0, r.left - box.left + r.width / 2 - tip.offsetWidth / 2), box.width - tip.offsetWidth) + "px";
+        g.classList.add("on");
+      };
+      const hide = () => { tip.hidden = true; g.classList.remove("on"); };
+      g.addEventListener("mouseenter", show); g.addEventListener("focus", show);
+      g.addEventListener("mouseleave", hide); g.addEventListener("blur", hide);
+    });
+    if (!L.usage) loadUsage();
+    if (!L.balances && L.info && L.info.providers.some(p => p.balance && p.keys.length)) loadBalances();
+  }
+
+  async function loadUsage() {
+    try { L.usage = await api("/api/usage"); } catch (e) { console.warn("cannot read usage", e); L.usage = { providers: {}, keys: {}, models: {}, daily: [], recent: [] }; }
+    if (state.view === "library") render();
+  }
+
+  let balancesBusy = false;
+  async function loadBalances() {
+    if (balancesBusy) return;
+    balancesBusy = true;
+    try { L.balances = await api("/api/balances"); } catch (e) { console.warn("cannot read balances", e); L.balances = {}; }
+    balancesBusy = false;
+    if (state.view === "library") render();
   }
 
   async function loadModels(refresh) {
     try {
       L.info = await api("/api/models" + (refresh ? "?refresh=1" : ""));
       if (L.model !== "auto" && !modelByKey(L.model)) L.model = "auto";
-      if (["chat", "library", "create", "voice"].includes(state.view) && !(state.view === "chat" && L.busy)) render();
+      if (["chat", "library", "create", "voice"].includes(state.view) && !(state.view === "chat" && anyRunning())) render();
     } catch (e) {
       console.warn("cannot list models", e);
     }
@@ -1612,6 +2191,7 @@
       renderDevices();
       render();
       loadModels(false);
+      loadConvos();
     } catch (e) {
       console.warn("studio API not reachable, showing example data", e);
     }

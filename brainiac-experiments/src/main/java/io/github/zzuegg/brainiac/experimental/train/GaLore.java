@@ -1,7 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.tensor.SymmetricEigen;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 /**
@@ -62,7 +62,8 @@ public final class GaLore extends SlotOptimizer {
         Tensor proj = s[2];
         if (lowRank && (proj == null || (t - 1) % updateEvery == 0)) {
             Tensor gram = left ? g.matmul(g.transpose()) : g.transpose().matmul(g);
-            proj = SymmetricEigen.of(gram).leading(rank);   // [m, r] or [n, r]
+            int size = gram.shape().dim(0);
+            proj = Linalg.eigh(gram)[1].slice(1, size - rank, size);   // [m, r] or [n, r], the leading eigenvectors
         }
         Tensor r = !lowRank ? g : left ? proj.transpose().matmul(g) : g.matmul(proj);
         Tensor m = s[0] == null ? r.mul(1 - beta1) : s[0].mul(beta1).add(r.mul(1 - beta1));

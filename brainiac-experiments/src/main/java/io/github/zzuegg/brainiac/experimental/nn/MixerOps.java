@@ -1,6 +1,5 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
-import io.github.zzuegg.brainiac.autograd.Op;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
@@ -72,17 +71,6 @@ final class MixerOps {
         return Functional.causalMask(t, t, Tensor.zeros(Shape.of(1)).device());
     }
 
-    /** Upper-triangular ones {@code U[s, t] = 1 for s <= t}: {@code x.matmul(U)} is a cumulative sum over the last axis. */
-    static Tensor cumsumMatrix(int t) {
-        float[] m = new float[t * t];
-        for (int s = 0; s < t; s++) {
-            for (int j = s; j < t; j++) {
-                m[s * t + j] = 1;
-            }
-        }
-        return Tensor.of(Shape.of(t, t), m);
-    }
-
     /** {@code [b, t, d]} input check. */
     static void requireSequence(Var x, int features, String layer) {
         Shape s = x.shape();
@@ -120,83 +108,14 @@ final class MixerOps {
         return Tensor.of(Shape.of(f.length), f);
     }
 
-    /**
-     * Differentiable scatter-add, the adjoint of {@link Var#gather}: adds rows of {@code values}
-     * into a zero tensor at {@code indices} along {@code axis}.
-     */
-    static Var scatterAdd(Var values, int axis, Tensor indices, int length) {
-        return Var.apply(new Op() {
-            @Override
-            public Tensor forward(Tensor... in) {
-                return in[0].scatterAdd(axis, indices, length);
-            }
-
-            @Override
-            public Tensor[] backward(Tensor grad, Tensor output, Tensor... in) {
-                return new Tensor[] {grad.gather(axis, indices)};
-            }
-
-            @Override
-            public String name() {
-                return "scatterAdd";
-            }
-        }, values);
-    }
-
-    /** Indices of the {@code k} largest entries of {@code row[from, from + n)}, best first. */
+    /** Indices of the {@code k} largest entries of {@code row[from, from + n)}, best first (core {@link Tensor#topk}). */
     static int[] topK(float[] row, int from, int n, int k) {
+        float[] idx = Tensor.of(Shape.of(n), java.util.Arrays.copyOfRange(row, from, from + n)).topk(k)[1].toArray();
         int[] best = new int[k];
-        boolean[] taken = new boolean[n];
         for (int j = 0; j < k; j++) {
-            int arg = -1;
-            for (int i = 0; i < n; i++) {
-                if (!taken[i] && (arg < 0 || row[from + i] > row[from + arg])) {
-                    arg = i;
-                }
-            }
-            taken[arg] = true;
-            best[j] = arg;
+            best[j] = (int) idx[j];
         }
         return best;
-    }
-
-    /** Element-wise sine, computed on the host. */
-    static Var sin(Var x) {
-        return trig(x, true);
-    }
-
-    /** Element-wise cosine, computed on the host. */
-    static Var cos(Var x) {
-        return trig(x, false);
-    }
-
-    private static Var trig(Var x, boolean sine) {
-        return Var.apply(new Op() {
-            @Override
-            public Tensor forward(Tensor... in) {
-                float[] v = in[0].toArray();
-                float[] o = new float[v.length];
-                for (int i = 0; i < v.length; i++) {
-                    o[i] = (float) (sine ? Math.sin(v[i]) : Math.cos(v[i]));
-                }
-                return Tensor.of(in[0].shape(), o);
-            }
-
-            @Override
-            public Tensor[] backward(Tensor grad, Tensor output, Tensor... in) {
-                float[] v = in[0].toArray();
-                float[] d = new float[v.length];
-                for (int i = 0; i < v.length; i++) {
-                    d[i] = (float) (sine ? Math.cos(v[i]) : -Math.sin(v[i]));
-                }
-                return new Tensor[] {grad.mul(Tensor.of(in[0].shape(), d))};
-            }
-
-            @Override
-            public String name() {
-                return sine ? "sin" : "cos";
-            }
-        }, x);
     }
 
     /**

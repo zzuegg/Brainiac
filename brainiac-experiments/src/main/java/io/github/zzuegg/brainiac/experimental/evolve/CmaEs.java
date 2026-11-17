@@ -1,5 +1,11 @@
 package io.github.zzuegg.brainiac.experimental.evolve;
 
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Linalg;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
+
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.SplittableRandom;
@@ -215,7 +221,7 @@ public final class CmaEs {
             if (evaluations - eigenAt > lambda / (c1 + cmu) / n / 10) {
                 eigenAt = evaluations;
                 double[][] vectors = new double[n][n];
-                double[] values = jacobiEigen(c, vectors);
+                double[] values = eigen(c, vectors);
                 for (int i = 0; i < n; i++) {
                     d[i] = Math.sqrt(Math.max(values[i], 1e-20));
                 }
@@ -247,67 +253,23 @@ public final class CmaEs {
     }
 
     /**
-     * Eigen-decomposes a symmetric matrix with cyclic Jacobi rotations.
+     * Eigen-decomposes a symmetric matrix in double precision (core {@link Linalg#eigh}).
      *
      * @param matrix the symmetric matrix (not changed)
      * @param vectors receives the eigenvectors as columns
-     * @return the eigenvalues
+     * @return the eigenvalues, ascending
      */
-    static double[] jacobiEigen(double[][] matrix, double[][] vectors) {
+    static double[] eigen(double[][] matrix, double[][] vectors) {
         int n = matrix.length;
-        double[][] a = new double[n][];
+        double[] m = new double[n * n];
         for (int i = 0; i < n; i++) {
-            a[i] = matrix[i].clone();
-            Arrays.fill(vectors[i], 0);
-            vectors[i][i] = 1;
+            System.arraycopy(matrix[i], 0, m, i * n, n);
         }
-        for (int sweep = 0; sweep < 100; sweep++) {
-            double off = 0;
-            for (int i = 0; i < n; i++) {
-                for (int j = i + 1; j < n; j++) {
-                    off += a[i][j] * a[i][j];
-                }
-            }
-            if (off < 1e-22) {
-                break;
-            }
-            for (int p = 0; p < n; p++) {
-                for (int q = p + 1; q < n; q++) {
-                    if (Math.abs(a[p][q]) < 1e-300) {
-                        continue;
-                    }
-                    double theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
-                    double t = Math.signum(theta) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
-                    if (theta == 0) {
-                        t = 1;
-                    }
-                    double cs = 1 / Math.sqrt(t * t + 1);
-                    double sn = t * cs;
-                    for (int k = 0; k < n; k++) {
-                        double akp = a[k][p];
-                        double akq = a[k][q];
-                        a[k][p] = cs * akp - sn * akq;
-                        a[k][q] = sn * akp + cs * akq;
-                    }
-                    for (int k = 0; k < n; k++) {
-                        double apk = a[p][k];
-                        double aqk = a[q][k];
-                        a[p][k] = cs * apk - sn * aqk;
-                        a[q][k] = sn * apk + cs * aqk;
-                    }
-                    for (int k = 0; k < n; k++) {
-                        double vkp = vectors[k][p];
-                        double vkq = vectors[k][q];
-                        vectors[k][p] = cs * vkp - sn * vkq;
-                        vectors[k][q] = sn * vkp + cs * vkq;
-                    }
-                }
-            }
-        }
-        double[] values = new double[n];
+        Tensor[] eig = Linalg.eigh(Tensor.of(Shape.of(n, n), m, DType.FLOAT64, Device.cpu()));
+        double[] v = eig[1].toDoubleArray();
         for (int i = 0; i < n; i++) {
-            values[i] = a[i][i];
+            System.arraycopy(v, i * n, vectors[i], 0, n);
         }
-        return values;
+        return eig[0].toDoubleArray();
     }
 }

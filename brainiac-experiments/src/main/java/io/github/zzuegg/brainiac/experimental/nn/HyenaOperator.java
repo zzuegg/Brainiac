@@ -105,7 +105,7 @@ public final class HyenaOperator implements Layer {
      */
     public Var filter(int index, int length) {
         Var[] f = filters.get(index);
-        Var h = MixerOps.sin(Var.of(encoding(length)).matmul(f[0]).mul(f[1])).matmul(f[2]);   // [L, d]
+        Var h = Var.of(encoding(length)).matmul(f[0]).mul(f[1]).sin().matmul(f[2]);   // [L, d]
         float[] steps = new float[length];
         for (int t = 0; t < length; t++) {
             steps[t] = t;

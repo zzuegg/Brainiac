@@ -12,7 +12,7 @@ class EpistemicForagingTest {
     @Test
     void agentReadsTheCueAndBelievesIt() {
         ActiveInferenceAgent agent = CuedTMaze.model(0.95, 3).agent(2, 1);
-        agent.beginEpisode();
+        agent.startEpisode();
         assertEquals(3, agent.act(new float[] {1, 0, 0, 0, 0}, false)[0]);
         assertEquals(0.5, agent.belief()[0], 1e-9);
         assertEquals(1, agent.act(new float[] {0, 1, 0, 0, 0}, false)[0]);

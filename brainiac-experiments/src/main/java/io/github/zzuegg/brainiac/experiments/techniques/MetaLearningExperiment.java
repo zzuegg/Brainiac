@@ -37,7 +37,7 @@ public final class MetaLearningExperiment {
         SCRATCH,
         /** First-order MAML. */
         FOMAML,
-        /** MAML through the inner steps (finite-difference Hessian-vector products). */
+        /** MAML through the inner steps (exact Hessian-vector products by nested autograd). */
         MAML,
         /** Reptile. */
         REPTILE

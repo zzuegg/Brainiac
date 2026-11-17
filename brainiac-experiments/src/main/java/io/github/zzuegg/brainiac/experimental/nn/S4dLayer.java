@@ -97,8 +97,8 @@ public final class S4dLayer implements Layer {
         Var aim = aImag;
         Var mag = are.mul(delta).exp();
         Var ang = aim.mul(delta);
-        Var abRe = mag.mul(MixerOps.cos(ang));
-        Var abIm = mag.mul(MixerOps.sin(ang));
+        Var abRe = mag.mul(ang.cos());
+        Var abIm = mag.mul(ang.sin());
         // B_bar = (A_bar - 1) / A  (B = 1): multiply by conj(A) / |A|^2
         Var norm = are.square().add(aim.square());
         Var nr = abRe.sub(1f);
@@ -126,8 +126,8 @@ public final class S4dLayer implements Layer {
         Var re = p[5].reshape(features, modes, 1).mul(dt).mul(ls);     // l delta Re(A)
         Var im = p[6].reshape(features, modes, 1).mul(dt).mul(ls);
         Var mag = re.exp();
-        Var powRe = mag.mul(MixerOps.cos(im));
-        Var powIm = mag.mul(MixerOps.sin(im));
+        Var powRe = mag.mul(im.cos());
+        Var powIm = mag.mul(im.sin());
         Var cbRe = p[2].reshape(features, modes, 1);
         Var cbIm = p[3].reshape(features, modes, 1);
         return cbRe.mul(powRe).sub(cbIm.mul(powIm)).sum(1, false).mul(2f);

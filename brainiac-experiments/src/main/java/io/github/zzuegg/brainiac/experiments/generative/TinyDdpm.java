@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.nn.diffusion.ClippedDenoiser;
 import io.github.zzuegg.brainiac.experimental.nn.diffusion.ConditionalDenoiser;
 import io.github.zzuegg.brainiac.nn.diffusion.Denoiser;
 import io.github.zzuegg.brainiac.nn.diffusion.Diffusion;
@@ -19,7 +18,7 @@ import java.util.SplittableRandom;
  * deterministic DDIM steps (Song et al., <a href="https://arxiv.org/abs/2010.02502">2010.02502</a>,
  * {@code eta = 0}, few steps). A class-conditional network trained with label dropout adds
  * classifier-free guidance ({@link ConditionalDenoiser#guided}). Sampling clips the implied
- * clean image to [-1, 1] ({@link ClippedDenoiser}).
+ * clean image to [-1, 1] (core {@link Diffusion#clipSample}).
  *
  * <p>Samplers can record the predicted clean images at every step, and
  * {@link #denoisingGif} renders that as an animation of noise crystallizing into shapes.
@@ -36,7 +35,8 @@ public final class TinyDdpm {
             long seed) {
         this.net = net;
         this.diffusion = new Diffusion(cosine ? NoiseSchedule.cosine(steps)
-                : NoiseSchedule.linear(steps, 1e-4 * 1000 / steps, 0.02 * 1000 / steps), Diffusion.Prediction.NOISE);
+                : NoiseSchedule.linear(steps, 1e-4 * 1000 / steps, 0.02 * 1000 / steps), Diffusion.Prediction.NOISE)
+                .clipSample(1f);
         this.optimizer = Optimizer.adam(learningRate);
         this.labelDropout = labelDropout;
         this.random = new SplittableRandom(seed);
@@ -124,7 +124,7 @@ public final class TinyDdpm {
     public float[][] sample(int[] labels, int steps, float eta, float guidance, long seed, List<float[][]> trajectory) {
         SplittableRandom r = new SplittableRandom(seed);
         Tensor noise = Nets.gaussian(labels.length, net.dimension(), r);
-        Denoiser model = ClippedDenoiser.wrap(net.guided(labels, guidance), diffusion.schedule(), -1, 1);
+        Denoiser model = net.guided(labels, guidance);
         return Nets.rows(diffusion.sample(recording(model, trajectory), noise, steps, eta, r));
     }
 

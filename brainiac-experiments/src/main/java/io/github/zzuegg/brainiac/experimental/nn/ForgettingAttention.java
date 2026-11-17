@@ -85,7 +85,7 @@ public final class ForgettingAttention implements Layer {
         int t = x.shape().dim(1);
         // log sigmoid(z) = -softplus(-z)
         Var logF = x.matmul(wf).add(bf).neg().softplus().neg().permute(0, 2, 1);   // [b, h, t]
-        Var c = logF.matmul(Var.of(MixerOps.cumsumMatrix(t)));   // c_i = sum_{l <= i} log f_l
+        Var c = logF.cumsum(-1);   // c_i = sum_{l <= i} log f_l
         int b = x.shape().dim(0);
         Var ci = c.reshape(b, heads, t, 1);
         Var cj = c.reshape(b, heads, 1, t);

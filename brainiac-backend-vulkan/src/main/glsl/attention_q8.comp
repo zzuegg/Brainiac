@@ -86,9 +86,9 @@ void main() {
             }
         }
         float mNew = max(m, reduceMax(s, tid));
-        float w = j < last ? exp(s - mNew) : 0.0;
+        float w = j < last && !isinf(s) ? exp(s - mNew) : 0.0;   // as attention.comp
         weights[tid] = j < last ? w * p.vs.v[vBase / p.dv + j] : 0.0;
-        float alpha = exp(m - mNew);
+        float alpha = m == mNew ? 1.0 : exp(m - mNew);
         l = l * alpha + reduceSum(w, tid);   // its barriers also publish weights (scaled by the values')
         if (tid < p.dv) {
             float acc = o * alpha;

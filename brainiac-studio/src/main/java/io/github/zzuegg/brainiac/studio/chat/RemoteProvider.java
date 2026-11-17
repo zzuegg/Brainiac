@@ -23,30 +23,68 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 abstract class RemoteProvider implements ChatProvider {
 
-    /** Answers that mean "this key can't, another might". */
-    private static final Set<Integer> NEXT_KEY = Set.of(401, 403, 429);
+    /** The name of the key the last call on this thread used, for the usage log. */
+    static final ThreadLocal<String> LAST_KEY = new ThreadLocal<>();
+
+    /** Answers that mean another key may do better: refused, unpaid, or rate limited. */
+    private static final Set<Integer> NEXT_KEY = Set.of(401, 402, 403, 429);
+    /** Words that mark an empty balance, which Anthropic and others answer with a plain 400. */
+    private static final java.util.regex.Pattern NO_CREDIT = java.util.regex.Pattern.compile(
+            "credit balance|insufficient (balance|credit|quota|funds)|exceeded your current quota|out of credit",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
 
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
             .followRedirects(HttpClient.Redirect.NEVER).build();
 
     private final Keys keys;
-    private final URI base;
+    private final URI home;
+    private volatile URI base;
+    /** Options from {@link ProviderSettings}, such as the organization to bill. */
+    volatile Map<String, String> options = Map.of();
     private final Map<String, String> keyErrors = new ConcurrentHashMap<>();
 
     /** An error answer from the provider. */
     static final class Failure extends IOException {
         private static final long serialVersionUID = 1L;
         final int status;
+        /** Whether the next key should be tried. */
+        final boolean nextKey;
 
         Failure(int status, String message) {
+            this(status, message, NEXT_KEY.contains(status));
+        }
+
+        Failure(int status, String message, boolean nextKey) {
             super(message);
             this.status = status;
+            this.nextKey = nextKey;
         }
     }
 
     RemoteProvider(Keys keys, URI base) {
         this.keys = keys;
-        this.base = base.toString().endsWith("/") ? base : URI.create(base + "/");
+        this.home = base.toString().endsWith("/") ? base : URI.create(base + "/");
+        this.base = home;
+    }
+
+    /** The address the provider started with: its own, or one set with {@code -Dstudio.<id>.url}. */
+    URI home() {
+        return home;
+    }
+
+    /** The address calls go to now. */
+    URI base() {
+        return base;
+    }
+
+    /** Sends calls to another address, or back to {@link #home()} with null. */
+    void base(URI other) {
+        base = other == null ? home : other.toString().endsWith("/") ? other : URI.create(other + "/");
+    }
+
+    /** The options this provider understands, by name. */
+    List<String> optionNames() {
+        return List.of();
     }
 
     @Override
@@ -131,9 +169,10 @@ abstract class RemoteProvider implements ChatProvider {
         }
         for (int i = 0; ; i++) {
             try {
+                LAST_KEY.set(labels.get(i));
                 return call.call(keys.get(id(), labels.get(i)).orElseThrow());
             } catch (Failure f) {
-                if (!retry.getAsBoolean() || i + 1 == labels.size() || !NEXT_KEY.contains(f.status)) {
+                if (!retry.getAsBoolean() || i + 1 == labels.size() || !f.nextKey) {
                     throw labels.size() == 1 ? f : new IOException(f.getMessage() + " (key " + labels.get(i) + ")", f);
                 }
             }
@@ -191,6 +230,52 @@ abstract class RemoteProvider implements ChatProvider {
     /** Speaks with one key. */
     Media speech(SpeechRequest request, String key) throws IOException, InterruptedException {
         throw new IOException(name() + " has no speech models here");
+    }
+
+    /** A short line on what the provider offers, shown with it. */
+    String note() {
+        return "";
+    }
+
+    /** Whether {@link #balance} reads anything at this provider. */
+    boolean reportsBalance() {
+        return false;
+    }
+
+    /**
+     * Reads what is left on a key, for providers that report it.
+     *
+     * @param key the key
+     * @return the balance, or null if the provider does not report one
+     * @throws IOException if the provider fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    Balance balance(String key) throws IOException, InterruptedException {
+        return null;
+    }
+
+    /**
+     * Reads the balance of each key.
+     *
+     * @return one map per key: label, and balance or error, or nothing when the provider reports none
+     */
+    List<Map<String, Object>> balances() throws InterruptedException {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Keys.Entry e : keys.list(id())) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("label", e.label());
+            try {
+                Balance b = balance(keys.get(id(), e.label()).orElseThrow());
+                if (b == null) {
+                    return List.of();
+                }
+                m.put("balance", b.toJson());
+            } catch (IOException | RuntimeException ex) {
+                m.put("error", String.valueOf(ex.getMessage()));
+            }
+            out.add(m);
+        }
+        return out;
     }
 
     /**
@@ -287,12 +372,15 @@ abstract class RemoteProvider implements ChatProvider {
         } catch (IllegalArgumentException notJson) {
             // keep the status alone
         }
+        boolean broke = message != null && NO_CREDIT.matcher(message).find();
         String hint = switch (status) {
             case 401, 403 -> " (check the API key)";
+            case 402 -> " (out of credit)";
             case 429 -> " (rate limited or out of credit)";
-            default -> "";
+            default -> broke ? " (out of credit)" : "";
         };
-        return new Failure(status, name() + " answered " + status + hint + (message == null ? "" : ": " + message));
+        return new Failure(status, name() + " answered " + status + hint + (message == null ? "" : ": " + message),
+                broke || NEXT_KEY.contains(status));
     }
 
     static Map<String, Object> obj(Object o) {

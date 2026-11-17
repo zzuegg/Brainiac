@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -159,7 +160,7 @@ public final class VectorQuantizer implements Layer {
         Var q = lookup(codes);
         Var codebookLoss = Var.of(x.value()).sub(q).square().mean();
         Var commitment = x.sub(Var.of(q.value())).square().mean().mul(beta);
-        Var out = x.add(Var.of(q.value().sub(x.value())));   // straight-through
+        Var out = Functional.straightThrough(Var.of(q.value()), x);
         return new Result(out, codes, codebookLoss.add(commitment));
     }
 

@@ -1,8 +1,14 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Linalg;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
+
 /**
  * Closed-form ridge (Tikhonov) regression, {@code W = (X^T X + lambda I)^-1 X^T Y}, solved in
- * double precision with a Cholesky factorization. It is the readout of reservoir computing:
+ * double precision with a Cholesky factorization (core {@link Linalg#cholesky}). It is the readout of reservoir computing:
  * echo state networks (Jaeger, 2001) and next generation reservoir computing (Gauthier et
  * al., <a href="https://arxiv.org/abs/2106.07688">2106.07688</a>) train only this linear map.
  *
@@ -89,40 +95,25 @@ public final class RidgeRegression {
      */
     public double[][] solve(double lambda) {
         int n = features;
-        double[][] l = new double[n][n];
+        double[] a = new double[n * n];
+        double[] b = new double[n * outputs];
         for (int i = 0; i < n; i++) {
-            for (int j = 0; j <= i; j++) {
-                double s = xtx[j][i] + (i == j ? lambda : 0);
-                for (int k = 0; k < j; k++) {
-                    s -= l[i][k] * l[j][k];
-                }
-                if (i == j) {
-                    if (!(s > 0)) {
-                        throw new ArithmeticException("matrix not positive definite; raise lambda");
-                    }
-                    l[i][i] = Math.sqrt(s);
-                } else {
-                    l[i][j] = s / l[j][j];
-                }
+            for (int j = 0; j < n; j++) {
+                a[i * n + j] = (j >= i ? xtx[i][j] : xtx[j][i]) + (i == j ? lambda : 0);
             }
+            System.arraycopy(xty[i], 0, b, i * outputs, outputs);
         }
+        Tensor l;
+        try {
+            l = Linalg.cholesky(Tensor.of(Shape.of(n, n), a, DType.FLOAT64, Device.cpu()));
+        } catch (IllegalArgumentException e) {
+            throw new ArithmeticException("matrix not positive definite; raise lambda");
+        }
+        Tensor z = Linalg.solveTriangular(l, Tensor.of(Shape.of(n, outputs), b, DType.FLOAT64, Device.cpu()), true);
+        double[] x = Linalg.solveTriangular(l.transpose(), z, false).toDoubleArray();
         double[][] w = new double[n][outputs];
-        for (int k = 0; k < outputs; k++) {
-            double[] z = new double[n];
-            for (int i = 0; i < n; i++) {
-                double s = xty[i][k];
-                for (int j = 0; j < i; j++) {
-                    s -= l[i][j] * z[j];
-                }
-                z[i] = s / l[i][i];
-            }
-            for (int i = n - 1; i >= 0; i--) {
-                double s = z[i];
-                for (int j = i + 1; j < n; j++) {
-                    s -= l[j][i] * w[j][k];
-                }
-                w[i][k] = s / l[i][i];
-            }
+        for (int i = 0; i < n; i++) {
+            System.arraycopy(x, i * outputs, w[i], 0, outputs);
         }
         return w;
     }

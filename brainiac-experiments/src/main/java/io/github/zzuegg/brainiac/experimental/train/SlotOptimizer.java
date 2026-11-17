@@ -93,6 +93,12 @@ public abstract class SlotOptimizer implements Optimizer {
         afterStep(withGrad, steps);
     }
 
+    /** Drops the slots kept for a parameter, so it starts fresh if it is trained again. */
+    @Override
+    public void forget(Var parameter) {
+        state.remove(parameter);
+    }
+
     /** @return the steps taken */
     protected int steps() {
         return steps;

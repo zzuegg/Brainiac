@@ -27,8 +27,8 @@ import java.util.SplittableRandom;
  * probability that the episode is still going. The actor is trained with REINFORCE on the
  * imagined advantages (as DreamerV3 does for discrete actions) plus an entropy bonus.
  *
- * <p>{@link #fit} returns an {@link RlResult} without episodes (the core keeps its result
- * builder package-private); {@link #episodeReturns} has them and listeners are told as usual.
+ * <p>{@link #fit} returns the episodes as an {@link RlResult}; {@link #episodeReturns} has their
+ * totals and listeners are told as usual.
  */
 public final class DreamerAgent implements Learner {
 
@@ -120,13 +120,16 @@ public final class DreamerAgent implements Learner {
         for (long t = 1; t <= steps; t++) {
             float[] a = t < trainEvery ? new float[] {random.nextInt(actions)} : act(obs, true);
             Environment.Step s = env.step(a);
+            result.steps(t);
             buffer.add(new Transition(obs, a, s.reward(), s.observation(), s.terminated(), gamma));
             episodeReturn += s.reward();
             episodeSteps++;
             if (s.done()) {
                 returns.add(episodeReturn);
+                Episode e = new Episode(returns.size(), episodeSteps, episodeReturn, t);
+                result.add(e);
                 if (listener != null) {
-                    listener.onEpisode(new Episode(returns.size(), episodeSteps, episodeReturn, t), result);
+                    listener.onEpisode(e, result);
                 }
                 episodeReturn = 0;
                 episodeSteps = 0;

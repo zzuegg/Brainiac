@@ -33,6 +33,17 @@ import java.util.Map;
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
  *       Both answer with the model used and each file, base64 encoded, and where it was saved.
+ *   <li>{@code POST /api/providers} with {@code {"provider": "huggingface", "auto": true, "models":
+ *       ["openai/gpt-oss-120b"], "url": "", "options": {"billTo": "my-org"}}} changes how a provider is
+ *       used: whether Auto may pick it, which models to show ({@code null} for all), its address
+ *       ({@code ""} for its own) and its options. Fields left out stay as they are.
+ *   <li>{@code GET /api/chats} lists the saved conversations, newest first; {@code POST /api/chats}
+ *       with a conversation ({@code id}, {@code title}, {@code messages}, {@code status} open or
+ *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it.
+ *   <li>{@code GET /api/state} returns what the page remembers (tabs, layout, chosen models);
+ *       {@code POST /api/state} with {@code {"name": value}} changes those values, null removes one.
+ *   <li>{@code GET /api/usage} sums every call by provider, key, model and day;
+ *       {@code GET /api/balances} asks the providers that report one what is left on each key.
  * </ul>
  */
 final class ChatRoutes {
@@ -51,9 +62,67 @@ final class ChatRoutes {
         server.get("/api/models", ex -> Exchanges.json(ex, 200,
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
         server.post("/api/keys", this::keys);
+        server.post("/api/providers", this::providers);
+        server.get("/api/chats", ex -> Exchanges.json(ex, 200, Map.of("chats", chat.conversations().list())));
+        server.post("/api/chats", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 32 << 20);
+            if (Boolean.TRUE.equals(body.get("delete"))) {
+                chat.conversations().delete(body.get("id"));
+            } else {
+                chat.conversations().save(body);
+            }
+            Exchanges.json(ex, 200, Map.of("ok", true));
+        });
+        server.get("/api/state", ex -> Exchanges.json(ex, 200, chat.page().values()));
+        server.post("/api/state", ex -> {
+            chat.page().merge(Exchanges.body(ex, 2 << 20));
+            Exchanges.json(ex, 200, Map.of("ok", true));
+        });
         server.post("/api/chat", this::chat);
         server.post("/api/images", this::images);
+        server.get("/api/usage", ex -> Exchanges.json(ex, 200, chat.usage().summary(java.time.ZoneId.systemDefault())));
+        server.get("/api/balances", ex -> {
+            try {
+                Exchanges.json(ex, 200, chat.balances());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Exchanges.error(ex, 503, "stopped");
+            }
+        });
         server.post("/api/speech", this::speech);
+    }
+
+    // {"provider": "huggingface", "auto": true, "models": ["a", "b"] or null for all, "url": "" for its own,
+    // "options": {"billTo": "my-org"}}; a field left out stays as it is
+    private void providers(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 1024 * 1024);
+        String provider = Json.string(body, "provider", "");
+        Boolean auto = body.get("auto") instanceof Boolean b ? b : null;
+        java.util.Optional<List<String>> models = null;
+        if (body.containsKey("models")) {
+            if (body.get("models") == null) {
+                models = java.util.Optional.empty();
+            } else {
+                List<String> ids = new ArrayList<>();
+                for (Object o : Json.array(body.get("models"))) {
+                    if (!(o instanceof String id)) {
+                        throw new IllegalArgumentException("models are listed by id");
+                    }
+                    ids.add(id);
+                }
+                models = java.util.Optional.of(ids);
+            }
+        }
+        String url = body.get("url") instanceof String u ? u : null;
+        Map<String, String> options = null;
+        if (body.get("options") != null) {
+            options = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : Json.object(body.get("options")).entrySet()) {
+                options.put(e.getKey(), e.getValue() == null ? "" : String.valueOf(e.getValue()));
+            }
+        }
+        chat.configure(provider, auto, models, url, options);
+        Exchanges.json(ex, 200, chat.describe(url != null));
     }
 
     private void images(HttpExchange ex) throws IOException {

@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.rl.ReplayBuffer;
 import io.github.zzuegg.brainiac.rl.RlListener;
 import io.github.zzuegg.brainiac.rl.RlResult;
 import io.github.zzuegg.brainiac.rl.Space;
+import io.github.zzuegg.brainiac.rl.Tracker;
 import io.github.zzuegg.brainiac.rl.Transition;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -237,7 +238,7 @@ public final class Sac implements Learner {
         if (buffer == null) {
             buffer = new ReplayBuffer(bufferSize, obsDims, actDims);
         }
-        EpisodeRecorder recorder = new EpisodeRecorder(listener);
+        Tracker recorder = new Tracker(listener);
         float[] obs = env.reset(random.split());
         long taken = 0;
         while (recorder.steps() < steps) {
