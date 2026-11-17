@@ -34,7 +34,7 @@ class VastAiTest {
     @BeforeEach
     void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-        server.createContext("/api/v0/", ex -> {
+        server.createContext("/api/", ex -> {
             String a = ex.getRequestHeaders().getFirst("Authorization");
             auth.add(String.valueOf(a));
             String path = ex.getRequestURI().getPath();
@@ -46,6 +46,11 @@ class VastAiTest {
             } else if (path.equals("/api/v0/users/current/")) {
                 body = "{\"balance\": 12.5, \"email\": \"someone@example.com\"}";
             } else if (path.equals("/api/v0/instances/")) {
+                // as Vast.ai answers since it retired v0 instances
+                status = 410;
+                body = "{\"success\": false, \"error\": \"deprecated\", "
+                        + "\"msg\": \"/api/v0/instances/ is deprecated. Use /api/v1/instances/ instead.\"}";
+            } else if (path.equals("/api/v1/instances/")) {
                 body = "{\"instances\": [{\"id\": 7, \"actual_status\": \"running\", \"gpu_name\": \"RTX_4090\", "
                         + "\"num_gpus\": 1, \"dph_total\": 0.41, \"geolocation\": \"Sweden, SE\"}]}";
             } else if (path.equals("/api/v0/bundles/") && ex.getRequestMethod().equals("POST")) {

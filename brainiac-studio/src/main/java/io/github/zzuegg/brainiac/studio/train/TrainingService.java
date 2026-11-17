@@ -727,5 +727,13 @@ public final class TrainingService implements AutoCloseable {
     public void close() {
         runs.values().forEach(TrainingRun::askToStop);
         worker.shutdownNow();
+        // a run marks itself ended a moment before its file is written; let that write finish
+        try {
+            if (!worker.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                LOG.log(System.Logger.Level.WARNING, "training runs were still ending when the studio closed");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
