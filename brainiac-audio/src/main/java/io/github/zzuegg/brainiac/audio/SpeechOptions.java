@@ -5,14 +5,21 @@ import java.util.function.BooleanSupplier;
 /**
  * How to speak.
  *
- * @param voice a {@link Voice#id()}, or {@code null} for the model's first voice
+ * @param voice a {@link Voice#id()}, or {@code null} for the model's first voice. Models that
+ *     {@linkplain TextToSpeech#canMixVoices() mix voices} also take a blend such as
+ *     {@code "af_heart*0.7+am_adam*0.3"} (weights are normalized) or {@code "af_bella,af_sarah"}
+ *     (equal parts)
  * @param speed the speaking rate, 1 for normal, 2 for twice as fast
  * @param seed the seed of the model's randomness (VITS samples durations and pitch), so the
  *     same text sounds the same
  * @param cancelled polled between sentences: when it returns {@code true}, synthesis stops
  *     with a {@link java.util.concurrent.CancellationException}
+ * @param reference a few seconds of a voice to imitate, for models that {@linkplain
+ *     TextToSpeech#canClone() clone voices}, or {@code null}
+ * @param referenceText what is said in {@code reference}, or {@code null} to transcribe it
  */
-public record SpeechOptions(String voice, float speed, long seed, BooleanSupplier cancelled) {
+public record SpeechOptions(String voice, float speed, long seed, BooleanSupplier cancelled, Audio reference,
+        String referenceText) {
 
     /**
      * Checks the values.
@@ -21,6 +28,8 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @param speed the rate, positive
      * @param seed the seed
      * @param cancelled the cancellation check, or {@code null} for never
+     * @param reference a voice sample, or {@code null}
+     * @param referenceText its transcript, or {@code null}
      */
     public SpeechOptions {
         if (!(speed > 0) || speed > 10) {
@@ -32,6 +41,21 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
         if (voice != null && voice.isBlank()) {
             voice = null;
         }
+        if (referenceText != null && referenceText.isBlank()) {
+            referenceText = null;
+        }
+    }
+
+    /**
+     * Options without a voice sample.
+     *
+     * @param voice the voice or {@code null}
+     * @param speed the rate, positive
+     * @param seed the seed
+     * @param cancelled the cancellation check, or {@code null} for never
+     */
+    public SpeechOptions(String voice, float speed, long seed, BooleanSupplier cancelled) {
+        this(voice, speed, seed, cancelled, null, null);
     }
 
     /**
@@ -50,7 +74,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions voice(String id) {
-        return new SpeechOptions(id, speed, seed, cancelled);
+        return new SpeechOptions(id, speed, seed, cancelled, reference, referenceText);
     }
 
     /**
@@ -60,7 +84,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions speed(float rate) {
-        return new SpeechOptions(voice, rate, seed, cancelled);
+        return new SpeechOptions(voice, rate, seed, cancelled, reference, referenceText);
     }
 
     /**
@@ -70,7 +94,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions seed(long s) {
-        return new SpeechOptions(voice, speed, s, cancelled);
+        return new SpeechOptions(voice, speed, s, cancelled, reference, referenceText);
     }
 
     /**
@@ -80,6 +104,17 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions cancelled(BooleanSupplier check) {
-        return new SpeechOptions(voice, speed, seed, check);
+        return new SpeechOptions(voice, speed, seed, check, reference, referenceText);
+    }
+
+    /**
+     * Sets the voice to imitate, for models that clone voices.
+     *
+     * @param sample a few seconds (about 5 to 15) of clean speech, or {@code null}
+     * @param transcript what the sample says, or {@code null} to have it transcribed
+     * @return new options
+     */
+    public SpeechOptions reference(Audio sample, String transcript) {
+        return new SpeechOptions(voice, speed, seed, cancelled, sample, transcript);
     }
 }

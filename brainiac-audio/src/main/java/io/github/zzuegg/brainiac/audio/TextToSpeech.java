@@ -53,6 +53,34 @@ public interface TextToSpeech extends AutoCloseable {
         return synthesize(text, SpeechOptions.defaults(), null);
     }
 
+    /**
+     * Whether {@link SpeechOptions#voice()} may blend voices, such as
+     * {@code "af_heart*0.7+am_adam*0.3"}.
+     *
+     * @return {@code true} if voices mix
+     */
+    default boolean canMixVoices() {
+        return false;
+    }
+
+    /**
+     * Whether the model imitates the voice of {@link SpeechOptions#reference()}.
+     *
+     * @return {@code true} if it clones voices
+     */
+    default boolean canClone() {
+        return false;
+    }
+
+    /**
+     * The expression tags the model understands inside the text, such as {@code <laugh>}.
+     *
+     * @return the tags, empty if none
+     */
+    default List<String> tags() {
+        return List.of();
+    }
+
     /** Frees the model's memory. */
     @Override
     void close();

@@ -25,7 +25,7 @@ public final class SpeechModels {
     public enum Kind {
         /** A Whisper model: speech to text. */
         SPEECH_TO_TEXT,
-        /** A VITS model (MMS-TTS and others): text to speech. */
+        /** A text-to-speech model: Kokoro, or VITS (MMS-TTS and others). */
         TEXT_TO_SPEECH
     }
 
@@ -40,6 +40,9 @@ public final class SpeechModels {
      * @return the kind, or empty if it is not a speech model Brainiac can load
      */
     public static Optional<Kind> kind(Path dir) {
+        if (Kokoro.isKokoro(dir)) {
+            return Optional.of(Kind.TEXT_TO_SPEECH);
+        }
         return switch (modelType(dir)) {
             case "whisper" -> Optional.of(Kind.SPEECH_TO_TEXT);
             case "vits" -> Optional.of(Kind.TEXT_TO_SPEECH);
@@ -80,7 +83,7 @@ public final class SpeechModels {
     /**
      * Loads a text-to-speech model.
      *
-     * @param dir a Hugging Face VITS folder, such as facebook/mms-tts-eng
+     * @param dir a Kokoro folder (hexgrad/Kokoro-82M) or a Hugging Face VITS folder, such as facebook/mms-tts-eng
      * @param device where it runs
      * @param dtype the type of its weights
      * @return the model, loaded until closed
@@ -88,8 +91,12 @@ public final class SpeechModels {
      */
     public static TextToSpeech textToSpeech(Path dir, Device device, DType dtype) {
         if (kind(dir).orElse(null) != Kind.TEXT_TO_SPEECH) {
-            throw new IllegalArgumentException(dir + " is not a text-to-speech model; expected a Hugging Face"
-                    + " VITS folder (config.json with model_type vits), such as facebook/mms-tts-eng");
+            throw new IllegalArgumentException(dir + " is not a text-to-speech model; expected a Kokoro folder"
+                    + " (hexgrad/Kokoro-82M) or a Hugging Face VITS folder (config.json with model_type vits), such"
+                    + " as facebook/mms-tts-eng");
+        }
+        if (Kokoro.isKokoro(dir)) {
+            return KokoroSpeech.load(dir, device, dtype);
         }
         return VitsSpeech.load(dir, device, dtype);
     }

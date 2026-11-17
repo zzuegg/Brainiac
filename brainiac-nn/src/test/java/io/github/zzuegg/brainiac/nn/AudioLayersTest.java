@@ -53,6 +53,46 @@ class AudioLayersTest {
     }
 
     @Test
+    void styleConditionedLayersBuildTrainAndRoundTrip() throws Exception {
+        Node in = Node.input(4, 16);
+        Node style = in.globalAvgPool().dense(6, Activation.TANH);
+        Node x = in.merge(StyleNorm.instance(6), style)
+                .merge(AdainResBlock.of(8, 6, true), style)      // [8, 32]
+                .merge(AdainSnakeBlock.of(3, 6, 1, 3), style)
+                .merge(StyleNorm.layer(6), style)
+                .flatten()
+                .dense(2);
+        Model m = Model.graph(in, x).seed(3).build();
+        Tensor batch = Tensor.uniform(Shape.of(3, 4, 16), -1, 1, new SplittableRandom(5));
+        Tensor out = m.predict(batch);
+        assertEquals(Shape.of(3, 2), out.shape());
+        m.forward(Var.of(batch), true).sum().backward();
+        for (Var p : m.parameters()) {
+            assertTrue(p.grad() != null, "no gradient for a parameter of shape " + p.shape());
+        }
+        Path file = dir.resolve("style.brainiac");
+        m.save(file);
+        Model loaded = Model.load(file);
+        assertEquals(m.summary(), loaded.summary());
+        assertArrayEquals(out.toArray(), loaded.predict(batch).toArray(), 1e-5f);
+    }
+
+    @Test
+    void lstmFromWeightsMatchesTheCell() {
+        // one step of a one-unit LSTM: h = o * tanh(i * g) with c0 = 0
+        Recurrent.Settings s = new Recurrent.Settings(Recurrent.Cell.LSTM, 1, 1, true, false, null,
+                io.github.zzuegg.brainiac.tensor.spi.ActivationOp.TANH,
+                io.github.zzuegg.brainiac.tensor.spi.ActivationOp.SIGMOID, false, true, false);
+        Recurrent r = Recurrent.of(s, new Var[] {Var.of(Tensor.of(Shape.of(1, 4), 1, 2, 3, 4))},
+                new Var[] {Var.of(Tensor.zeros(Shape.of(1, 4)))}, new Var[] {Var.of(Tensor.zeros(Shape.of(4)))});
+        float y = r.forward(Var.of(Tensor.of(Shape.of(1, 1, 1), 0.5f))).value().toArray()[0];
+        double i = 1 / (1 + Math.exp(-0.5));
+        double g = Math.tanh(1.5);
+        double o = 1 / (1 + Math.exp(-2));
+        assertEquals(o * Math.tanh(i * g), y, 1e-6);
+    }
+
+    @Test
     void whisperMelLayerShape() {
         MelSpectrogram w = MelSpectrogram.whisper(80);
         assertEquals(Shape.of(80, 100), w.outputShape(Shape.of(16_000)));

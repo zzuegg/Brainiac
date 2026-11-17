@@ -536,7 +536,7 @@ public final class Kokoro implements AutoCloseable {
             } else {
                 xs = conv1d(har, noiseConvs[i], 1, 0, 0);
             }
-            xs = noiseRes[i].forward(xs, style);
+            xs = settle(noiseRes[i].forward(xs, style));
             int u = config.upsampleRates()[i];
             int k = config.upsampleKernels()[i];
             int p = (k - u) / 2;
@@ -545,11 +545,11 @@ public final class Kokoro implements AutoCloseable {
             if (i == stages - 1) {
                 x = Functional.padAxis(x, 2, 1, 0, PadMode.REFLECT, 0);
             }
-            x = x.add(xs);
+            x = settle(x.add(xs));
             Var sum = null;
             for (int j = 0; j < kernels; j++) {
-                Var r = resblocks[i * kernels + j].forward(x, style);
-                sum = sum == null ? r : sum.add(r);
+                Var r = settle(resblocks[i * kernels + j].forward(x, style));
+                sum = sum == null ? r : settle(sum.add(r));
             }
             x = settle(sum.mul(1f / kernels));
         }

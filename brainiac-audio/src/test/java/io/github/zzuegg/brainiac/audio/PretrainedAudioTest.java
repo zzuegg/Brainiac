@@ -15,8 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Published models, when {@code -PtestModels=<folder>} names a folder holding
- * {@code mms-tts-eng} and {@code whisper-*} folders: speech made by MMS-TTS is transcribed
- * back by each Whisper.
+ * {@code mms-tts-eng}, {@code kokoro-82m} and {@code whisper-*} folders: speech made by each
+ * text-to-speech model is transcribed back by Whisper.
  */
 class PretrainedAudioTest {
 
@@ -32,21 +32,33 @@ class PretrainedAudioTest {
 
     @Test
     void speechRoundTrip() throws Exception {
+        roundTrip("mms-tts-eng", SpeechOptions.defaults().seed(1),
+                "The weather is nice today. Let us go for a walk in the park.");
+    }
+
+    @Test
+    void kokoroRoundTrip() throws Exception {
+        roundTrip("kokoro-82m", SpeechOptions.defaults().seed(1),
+                "The weather is nice today. Let us go for a walk in the park.");
+        roundTrip("kokoro-82m", SpeechOptions.defaults().voice("bm_george*0.6+af_bella*0.4").speed(1.2f),
+                "On the 21st of March, tickets cost $5.50 each.");
+    }
+
+    private static void roundTrip(String model, SpeechOptions options, String text) throws Exception {
         Path models = models();
-        Path tts = models.resolve("mms-tts-eng");
-        Assumptions.assumeTrue(Files.isDirectory(tts), "no mms-tts-eng");
-        String text = "The weather is nice today. Let us go for a walk in the park.";
+        Path tts = models.resolve(model);
+        Assumptions.assumeTrue(Files.isDirectory(tts), "no " + model);
         Audio speech;
         try (TextToSpeech t = SpeechModels.textToSpeech(tts, TestDevice.get(), DType.FLOAT32)) {
             long t0 = System.nanoTime();
             List<Audio> chunks = new ArrayList<>();
-            speech = t.synthesize(text, SpeechOptions.defaults().seed(1), chunks::add);
-            System.out.printf("mms-tts-eng: %.2f s of speech in %.2f s, %d chunks%n", speech.seconds(),
+            speech = t.synthesize(text, options, chunks::add);
+            System.out.printf("%s: %.2f s of speech in %.2f s, %d chunks%n", model, speech.seconds(),
                     (System.nanoTime() - t0) / 1e9, chunks.size());
-            assertEquals(2, chunks.size());
-            assertTrue(speech.seconds() > 2 && speech.seconds() < 10, "seconds " + speech.seconds());
+            assertEquals(text.split("[.!?](\\s|$)").length, chunks.size());
+            assertTrue(speech.seconds() > 1.5 && speech.seconds() < 10, "seconds " + speech.seconds());
         }
-        Wav.write(speech, Path.of(System.getProperty("java.io.tmpdir"), "brainiac-tts.wav"));
+        Wav.write(speech, Path.of(System.getProperty("java.io.tmpdir"), "brainiac-" + model + ".wav"));
         try (var dirs = Files.list(models)) {
             for (Path dir : dirs.filter(Whisper::isWhisper).sorted().toList()) {
                 try (SpeechToText stt = SpeechModels.speechToText(dir, TestDevice.get(), DType.FLOAT32)) {
