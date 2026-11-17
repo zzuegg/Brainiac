@@ -304,13 +304,16 @@ final class Fusion {
      * values at {@code (r / inner) * len * inner + r % inner + t * inner} for t below len.
      * {@code op}: 0 sum, 1 mean, 2 max, 3 min. {@code group}: one work group per output, for
      * long rows; otherwise one invocation per output. The table's first two words are len and
-     * inner, so one shader serves every shape.
+     * inner, so one shader serves every shape. The expression's values are stored in
+     * {@code values} as well (the reduction reads each index once), so they are computed only
+     * once even if something else reads them later.
      */
     static Kernel generateReduce(Expr root, io.github.zzuegg.brainiac.tensor.DType type, int op, boolean group,
-            int len, int inner) {
+            int len, int inner, VkStorage values) {
         Gen g = new Gen(type);
         g.words.add(len);
         g.words.add(inner);
+        g.pointers.add(values);
         String v = g.eval(root, "i0");
         StringBuilder src = new StringBuilder();
         boolean inPush = prelude(g, src);
@@ -336,6 +339,7 @@ final class Fusion {
                         : "    for (uint t_ = 0; t_ < len_; t_++) {\n")
                 .append("    uint i0 = base_ + t_ * inner_;\n")
                 .append(g.body)
+                .append("    STORE(Buf(m.p[0]), i0, ").append(v).append(");\n")
                 .append("    acc_ = combine_(acc_, ").append(v).append(");\n    }\n");
         String result = op == 1 ? "acc_ / ACC(len_)" : "acc_";
         if (group) {

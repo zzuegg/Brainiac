@@ -310,6 +310,8 @@ class VulkanBackendTest {
         same(type, "max and min of a chain", t -> t.tanh().max(1, true).sub(t.abs().neg().min(0, true)), x);
         same(type, "sum of a view's chain", t -> t.transpose().mul(2).sum(1, true), x);
         same(type, "sum of a chain over long rows", t -> t.reshape(1, 54).expand(Shape.of(300, 54)).sigmoid().mul(0.01f).sum(0, true), x);
+        same(type, "sum of a chain along long rows", t -> t.reshape(54, 1).expand(Shape.of(54, 300)).sigmoid()
+                .mul(0.01f).sum(1, true), x);
         same(type, "constants", t -> Tensor.full(Shape.of(6, 9), 0.25f, type, t.device()).mul(t)
                 .add(Tensor.zeros(Shape.of(9), type, t.device())), x);
         if (type == DType.FLOAT32) {
@@ -381,7 +383,7 @@ class VulkanBackendTest {
         Tensor x = random(25, 64, 64).to(gpu);
         x.toArray();
         long before = vk.dispatchCount();
-        x.mul(x).add(1).sum(1, true).toArray();
+        x.mul(x).add(1).sum(0, true).toArray();
         assertEquals(1, vk.dispatchCount() - before, vk.statistics());
     }
 

@@ -938,9 +938,8 @@ public final class VulkanBackend implements Backend {
 
     /**
      * Reduces a pending element-wise input in one generated shader that evaluates its
-     * expression where the reduction reads it, so the input is neither computed into memory
-     * nor read back. The input stays pending (cheap to compute again if anything else reads it).
-     * Returns false where that does not apply.
+     * expression where the reduction reads it and stores the values too, so they are not read
+     * back from memory. Returns false where that does not apply.
      */
     private boolean reducePending(int op, VkStorage x, VkStorage y, long rows, long length, long inner) {
         Fusion.Expr e = x.pending;
@@ -948,9 +947,16 @@ public final class VulkanBackend implements Backend {
                 || inner > Integer.MAX_VALUE || Fusion.reads(e, y)) {
             return false;
         }
-        eager(y);
         boolean group = rows < 1024 && length > 256;
-        Fusion.Kernel k = Fusion.generateReduce(e, y.dtype, op, group, (int) length, (int) inner);
+        // only where neighbouring invocations read neighbouring values: rows of one work group
+        // (contiguous rows), or one invocation per output across an inner axis
+        if (group ? inner != 1 : inner == 1) {
+            return false;
+        }
+        eager(y);
+        x.pending = null;   // stored by the reduction
+        x.pendingNodes = 0;
+        Fusion.Kernel k = Fusion.generateReduce(e, y.dtype, op, group, (int) length, (int) inner, x);
         String name = fusedPipeline(k.source(), y.dtype);
         VkContext.Slot[] reads = new VkContext.Slot[k.loads().size()];
         for (int i = 0; i < reads.length; i++) {
@@ -964,7 +970,7 @@ public final class VulkanBackend implements Backend {
             long meta = vk.hostData(k.metaBytes(), k::writeMeta);
             vk.push().putLong(meta).putLong(y.address()).putInt((int) rows);
         }
-        vk.dispatch(name, group ? rows : groups(rows), y.slot(), reads);
+        vk.dispatch(name, group ? rows : groups(rows), new VkContext.Slot[] {y.slot(), x.slot()}, reads);
         fusedDispatches++;
         return true;
     }
