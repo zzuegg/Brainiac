@@ -32,8 +32,10 @@ import java.util.function.Supplier;
  *   <li>{@link Adopt}: final loss over a {@code beta2} sweep against Adam.</li>
  *   <li>{@link AdamMini}: loss and optimizer-state bytes against AdamW and the core
  *       8-bit Adam.</li>
- *   <li>{@link StableAdamW} and Adam-atan2: divergence across seeds at a learning rate
- *       where AdamW blows up ({@link #divergedRuns}).</li>
+ *   <li>{@link StableAdamW} and Adam-atan2: loss and divergence across seeds after a sudden
+ *       jump in gradient size, at a moderate and a too-high learning rate ({@link #stress}).</li>
+ *   <li>{@link Adopt} also on the online counterexample where Adam fails
+ *       ({@link #counterexample}).</li>
  *   <li>{@link PsgdKron}: loss per step and per second against the Shampoo, SOAP and Muon
  *       baselines.</li>
  * </ul>
