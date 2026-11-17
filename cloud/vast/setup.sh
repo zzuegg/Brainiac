@@ -33,6 +33,11 @@ packages() {
     command -v vulkaninfo >/dev/null || need+=(vulkan-tools)
     ldconfig -p | grep -q 'libvulkan.so.1' || need+=(libvulkan1)
     command -v tar >/dev/null || need+=(tar)
+    # NVIDIA's Vulkan driver (libGLX_nvidia) links against X11 and GLVND client libraries,
+    # which slim CUDA images leave out; without them the loader drops the driver
+    for pkg in libx11-6 libxext6 libxcb1 libglvnd0 libegl1 libgl1; do
+        dpkg -s "$pkg" >/dev/null 2>&1 || need+=("$pkg")
+    done
     if ((${#need[@]})); then
         apt-get update -qq
         apt-get install -y -qq --no-install-recommends "${need[@]}" >/dev/null
@@ -62,6 +67,12 @@ EOF
         echo "wrote $icd for $lib"
     fi
     echo "ICD: $icd"
+    # a driver library that still misses a dependency: say which one
+    local drv
+    drv=$(ldconfig -p | grep -m1 -oE '/[^ ]*libGLX_nvidia.so.0' || true)
+    if [[ -n "$drv" ]] && ldd "$drv" | grep -q 'not found'; then
+        echo "missing libraries of $drv:"; ldd "$drv" | grep 'not found'
+    fi
     local summary
     summary=$(vulkaninfo --summary 2>&1) || { echo "$summary" | tail -n 30; fail "vulkaninfo failed"; }
     echo "$summary" | sed -n '/^Devices:/,$p'
