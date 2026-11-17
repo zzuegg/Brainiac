@@ -25,7 +25,8 @@ import java.util.concurrent.Executors;
  * can talk to a local model: {@code GET /v1/models}, {@code POST /v1/completions} and
  * {@code POST /v1/chat/completions}, each with {@code "stream": true} as server-sent events.
  * A chat's {@code response_format} of type {@code json_schema} or {@code json_object}
- * constrains the answer. Requests are answered one at a time.
+ * constrains the answer. Requests are answered one at a time, or, with a batch size above
+ * one, decoded together by {@link Generator#batcher continuous batching}.
  *
  * <pre>{@code
  * try (OpenAiServer server = OpenAiServer.start(new InetSocketAddress(8080), "qwen", generator, tokenizer,
@@ -42,19 +43,22 @@ public final class OpenAiServer implements AutoCloseable {
     private final Generator generator;
     private final PretrainedTokenizer tokenizer;
     private final Set<Integer> stopTokens;
+    private final Generator.Batcher batcher;
 
     private OpenAiServer(HttpServer http, String model, Generator generator, PretrainedTokenizer tokenizer,
-            Set<Integer> stopTokens) {
+            Set<Integer> stopTokens, int maxBatch) {
         this.http = http;
         this.model = model;
         this.generator = generator;
         this.tokenizer = tokenizer;
         this.stopTokens = stopTokens;
-        this.worker = Executors.newSingleThreadExecutor(r -> {
+        this.batcher = maxBatch > 1 ? generator.batcher(maxBatch) : null;
+        java.util.concurrent.ThreadFactory threads = r -> {
             Thread t = new Thread(r, "brainiac-openai-server");
             t.setDaemon(true);
             return t;
-        });
+        };
+        this.worker = maxBatch > 1 ? Executors.newCachedThreadPool(threads) : Executors.newSingleThreadExecutor(threads);
     }
 
     /**
@@ -69,11 +73,27 @@ public final class OpenAiServer implements AutoCloseable {
      */
     public static OpenAiServer start(InetSocketAddress address, String model, Generator generator,
             PretrainedTokenizer tokenizer, Set<Integer> stopTokens) {
+        return start(address, model, generator, tokenizer, stopTokens, 1);
+    }
+
+    /**
+     * Starts serving, decoding up to {@code maxBatch} requests together.
+     *
+     * @param address where to listen; port 0 picks a free one
+     * @param model the name clients use for the model
+     * @param generator generates the text; its model's states must join when {@code maxBatch > 1}
+     * @param tokenizer renders chats with its template and counts tokens
+     * @param stopTokens the tokens that end an answer, or {@code null} for the end-of-sequence token
+     * @param maxBatch the most requests decoded side by side; 1 answers one at a time
+     * @return the running server
+     */
+    public static OpenAiServer start(InetSocketAddress address, String model, Generator generator,
+            PretrainedTokenizer tokenizer, Set<Integer> stopTokens, int maxBatch) {
         try {
             HttpServer http = HttpServer.create(address, 0);
             OpenAiServer s = new OpenAiServer(http, Objects.requireNonNull(model, "model"),
                     Objects.requireNonNull(generator, "generator"), Objects.requireNonNull(tokenizer, "tokenizer"),
-                    stopTokens);
+                    stopTokens, maxBatch);
             http.createContext("/v1/models", s::models);
             http.createContext("/v1/completions", e -> s.complete(e, false));
             http.createContext("/v1/chat/completions", e -> s.complete(e, true));
@@ -94,6 +114,9 @@ public final class OpenAiServer implements AutoCloseable {
     @Override
     public void close() {
         http.stop(0);
+        if (batcher != null) {
+            batcher.close();
+        }
         worker.shutdownNow();
     }
 
@@ -152,19 +175,19 @@ public final class OpenAiServer implements AutoCloseable {
                 if (chat) {
                     event(out, chunk(id, created, true, Map.of("role", "assistant", "content", ""), null));
                 }
-                Generator.Output o = generator.generate(List.of(prompt), options, (row, text) -> {
+                Generator.Output o = run(prompt, options, (row, text) -> {
                     try {
                         event(out, chunk(id, created, chat, chat ? Map.of("content", text) : text, null));
                     } catch (IOException ex) {
                         throw new UncheckedIOException(ex);
                     }
-                }).getFirst();
+                });
                 event(out, chunk(id, created, chat, chat ? Map.of() : "", finish(o)));
                 out.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
                 out.flush();
                 return;
             }
-            Generator.Output o = generator.generate(List.of(prompt), options, null).getFirst();
+            Generator.Output o = run(prompt, options, null);
             Map<String, Object> choice = new LinkedHashMap<>();
             choice.put("index", 0);
             if (chat) {
@@ -185,6 +208,20 @@ public final class OpenAiServer implements AutoCloseable {
             res.put("choices", List.of(choice));
             res.put("usage", usage);
             json(e, 200, res);
+        }
+    }
+
+    private Generator.Output run(String prompt, Generator.Options options, Generator.Listener listener) {
+        if (batcher == null) {
+            return generator.generate(List.of(prompt), options, listener).getFirst();
+        }
+        try {
+            return batcher.submit(prompt, options, listener).get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", ex);
+        } catch (java.util.concurrent.ExecutionException ex) {
+            throw ex.getCause() instanceof RuntimeException r ? r : new IllegalStateException(ex.getCause());
         }
     }
 

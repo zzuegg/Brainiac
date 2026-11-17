@@ -541,6 +541,66 @@ public final class Llama implements LanguageModel {
             return c;
         }
 
+        @Override
+        public State join(State other) {
+            if (!(other instanceof Cache o) || o.keys.length != keys.length) {
+                throw new IllegalArgumentException("only states of the same model join");
+            }
+            if (quantized || o.quantized || window > 0 || o.window > 0) {
+                throw new UnsupportedOperationException("8-bit and windowed caches do not join");
+            }
+            int batch = next.length + o.next.length;
+            Cache c = new Cache(keys.length, batch, false);
+            int len = Math.max(length, o.length);
+            Tensor any = capacity > 0 ? keys[0] : o.capacity > 0 ? o.keys[0] : null;
+            if (any != null) {
+                int cap = Math.max(len, Math.max(capacity, o.capacity));
+                for (int l = 0; l < keys.length; l++) {
+                    c.keys[l] = Tensor.concat(0, padded(keys[l], next.length, length, len, cap, any),
+                            padded(o.keys[l], o.next.length, o.length, len, cap, any));
+                    c.values[l] = Tensor.concat(0, padded(values[l], next.length, length, len, cap, any),
+                            padded(o.values[l], o.next.length, o.length, len, cap, any));
+                }
+                Tensor.evaluate(java.util.Arrays.asList(c.keys));
+                Tensor.evaluate(java.util.Arrays.asList(c.values));
+                c.capacity = cap;
+                release(this);
+                release(o);
+            }
+            for (int b = 0; b < batch; b++) {
+                Cache from = b < next.length ? this : o;
+                int row = b < next.length ? b : b - next.length;
+                boolean[] p = new boolean[len];
+                int shift = len - from.length;
+                java.util.Arrays.fill(p, 0, shift, true);
+                System.arraycopy(from.padding[row], 0, p, shift, from.length);
+                c.padding[b] = p;
+                c.next[b] = from.next[row];
+            }
+            c.length = len;
+            return c;
+        }
+
+        private static void release(Cache c) {
+            for (int l = 0; l < c.keys.length; l++) {
+                if (c.keys[l] != null) {
+                    c.keys[l].release();
+                    c.values[l].release();
+                }
+            }
+        }
+
+        /** {@code rows} sequences of {@code length} cached steps moved to end at {@code len} in a buffer of {@code cap}. */
+        private static Tensor padded(Tensor t, int rows, int length, int len, int cap, Tensor like) {
+            Shape s = Shape.of(rows, like.shape().dim(1), cap, like.shape().dim(3));
+            Tensor out = Tensor.zeros(s, like.dtype(), like.device());
+            Tensor.evaluate(List.of(out));
+            if (t != null && length > 0) {
+                out.write(2, len - length, t.slice(2, 0, length));
+            }
+            return out;
+        }
+
         /** Gathered values kept as 8-bit rows again, when this cache keeps them so. */
         private Tensor requantized(Tensor values) {
             if (!quantized) {
