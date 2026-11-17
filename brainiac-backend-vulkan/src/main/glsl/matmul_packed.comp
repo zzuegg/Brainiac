@@ -32,7 +32,12 @@ layout(push_constant) uniform P {
     uint m; uint k; uint n; uint group; uint flags; uint chunk; uint pieces; uint counter; uint perSuper; float shift;
 } p;
 shared ACC4 sums[SLICES][QUADS];
+shared int table[16];
 #include "packed_layout.glsl"
+
+// adds row r's levels l of the four columns, times each row of a, to part (and a to sum)
+#define ACCUMULATE(r, l) { ACC4 lv = (l); for (uint i = 0; i < ROWS; i++) { \
+    ACC x = ACC(LOAD(p.a, rowOf[i] + (r))); part[i] = fma(ACC4(x), lv, part[i]); sum[i] += x; } }
 
 // the levels of columns c .. c + 3 at row r (columns past n read as 0)
 ACC4 levels(uint r, uint c, bool words) {
@@ -46,8 +51,26 @@ ACC4 levels(uint r, uint c, bool words) {
     return v;
 }
 
+// the super values (at i, a multiple of 4) and, with codes, the codes (at j) of four columns, multiplied
+vec4 factors4(InWords supers, InWords codes, bool hasCodes, uint i, uint j) {
+    vec4 v;
+    if ((p.flags & 16u) != 0) {
+        v = vec4(unpackHalf2x16(supers.v[i >> 1]), unpackHalf2x16(supers.v[(i >> 1) + 1]));
+    } else {
+        v = uintBitsToFloat(uvec4(supers.v[i], supers.v[i + 1], supers.v[i + 2], supers.v[i + 3]));
+    }
+    if (hasCodes) {
+        int w = int(codes.v[j >> 2]);
+        v *= vec4(bitfieldExtract(w, 0, 8), bitfieldExtract(w, 8, 8), bitfieldExtract(w, 16, 8), bitfieldExtract(w, 24, 8));
+    }
+    return v;
+}
+
 // the scales of group g in columns c .. c + 3
-vec4 scales4(uint g, uint c) {
+vec4 scales4(uint g, uint c, bool words) {
+    if (words) {
+        return factors4(p.scales, p.scaleCodes, (p.flags & 4u) != 0, (g / p.perSuper) * p.n + c, g * p.n + c);
+    }
     vec4 v = vec4(0.0);
     for (uint j = 0; j < 4; j++) {
         if (c + j < p.n) v[j] = scaleAt(g, c + j);
@@ -55,7 +78,11 @@ vec4 scales4(uint g, uint c) {
     return v;
 }
 
-vec4 offsets4(uint g, uint c, vec4 s) {
+vec4 offsets4(uint g, uint c, vec4 s, bool words) {
+    if (words) {
+        return factors4(p.offsets, p.offsetCodes, (p.flags & 8u) != 0, (g / p.perSuper) * p.n + c, g * p.n + c)
+                + s * p.shift;
+    }
     vec4 v = vec4(0.0);
     for (uint j = 0; j < 4; j++) {
         if (c + j < p.n) v[j] = offsetAt(g, c + j, s[j]);
@@ -83,6 +110,13 @@ void main() {
     for (uint i = 0; i < ROWS; i++) {
         total[i] = ACC4(0.0);
     }
+    uint planeBits = (p.flags >> 8) & 15u;
+    uint mode = (p.flags & 32u) != 0 ? 3u : planeBits != 0 ? 2u : (p.flags & 1u) != 0 ? 1u : 0u;
+    int bias = 1 << (int((p.flags >> 12) & 15u) - 1);
+    if (mode == 3u && quad < 16 && slice == 0) {
+        table[quad] = tableAt(quad);
+    }
+    barrier();
     if (c < p.n) {
         uint r = start;
         while (r < end) {
@@ -94,21 +128,61 @@ void main() {
                 part[i] = ACC4(0.0);
                 sum[i] = ACC(0.0);
             }
-            for (; r < stop; r++) {
-                ACC4 l = levels(r, c, words);
-                for (uint i = 0; i < ROWS; i++) {
-                    ACC x = ACC(LOAD(p.a, rowOf[i] + r));
-                    part[i] = fma(ACC4(x), l, part[i]);
-                    sum[i] += x;
+            // a loop per layout, each reading a word of levels once for the rows it holds
+            // (r and stop are even: groups and runs have an even number of rows)
+            if (words && mode == 1u) {
+                for (; r < stop; r += 2) {
+                    int w = int(p.q.v[((r >> 1) * p.n + c) >> 2]);
+                    ACCUMULATE(r, ACC4(bitfieldExtract(w, 0, 4), bitfieldExtract(w, 8, 4),
+                                       bitfieldExtract(w, 16, 4), bitfieldExtract(w, 24, 4)));
+                    ACCUMULATE(r + 1, ACC4(bitfieldExtract(w, 4, 4), bitfieldExtract(w, 12, 4),
+                                           bitfieldExtract(w, 20, 4), bitfieldExtract(w, 28, 4)));
+                }
+            } else if (words && mode == 2u) {
+                uint perByte = 8u / planeBits;
+                int pb = int(planeBits);
+                for (; r < stop; r += 2) {
+                    uint lw = p.q.v[((r >> 1) * p.n + c) >> 2];
+                    uint hw = p.hi.v[((r / perByte) * p.n + c) >> 2];
+                    int hs = int((r % perByte) * planeBits);
+                    ivec4 u0 = ivec4(bitfieldExtract(lw, 0, 4) | (bitfieldExtract(hw, hs, pb) << 4),
+                                     bitfieldExtract(lw, 8, 4) | (bitfieldExtract(hw, 8 + hs, pb) << 4),
+                                     bitfieldExtract(lw, 16, 4) | (bitfieldExtract(hw, 16 + hs, pb) << 4),
+                                     bitfieldExtract(lw, 24, 4) | (bitfieldExtract(hw, 24 + hs, pb) << 4));
+                    hs += pb;
+                    ivec4 u1 = ivec4(bitfieldExtract(lw, 4, 4) | (bitfieldExtract(hw, hs, pb) << 4),
+                                     bitfieldExtract(lw, 12, 4) | (bitfieldExtract(hw, 8 + hs, pb) << 4),
+                                     bitfieldExtract(lw, 20, 4) | (bitfieldExtract(hw, 16 + hs, pb) << 4),
+                                     bitfieldExtract(lw, 28, 4) | (bitfieldExtract(hw, 24 + hs, pb) << 4));
+                    ACCUMULATE(r, ACC4(u0 - bias));
+                    ACCUMULATE(r + 1, ACC4(u1 - bias));
+                }
+            } else if (words && mode == 3u) {
+                for (; r < stop; r += 2) {
+                    uint w = p.q.v[((r >> 1) * p.n + c) >> 2];
+                    ACCUMULATE(r, ACC4(table[bitfieldExtract(w, 0, 4)], table[bitfieldExtract(w, 8, 4)],
+                                       table[bitfieldExtract(w, 16, 4)], table[bitfieldExtract(w, 24, 4)]));
+                    ACCUMULATE(r + 1, ACC4(table[bitfieldExtract(w, 4, 4)], table[bitfieldExtract(w, 12, 4)],
+                                           table[bitfieldExtract(w, 20, 4)], table[bitfieldExtract(w, 28, 4)]));
+                }
+            } else if (words) {
+                for (; r < stop; r++) {
+                    int w = int(p.q.v[(r * p.n + c) >> 2]);
+                    ACCUMULATE(r, ACC4(bitfieldExtract(w, 0, 8), bitfieldExtract(w, 8, 8),
+                                       bitfieldExtract(w, 16, 8), bitfieldExtract(w, 24, 8)));
+                }
+            } else {
+                for (; r < stop; r++) {
+                    ACCUMULATE(r, levels(r, c, false));
                 }
             }
-            vec4 sf = scales4(g, c);
+            vec4 sf = scales4(g, c, words);
             ACC4 s = ACC4(sf);
             for (uint i = 0; i < ROWS; i++) {
                 total[i] = fma(part[i], s, total[i]);
             }
             if ((p.flags & 2u) != 0) {
-                ACC4 o = ACC4(offsets4(g, c, sf));
+                ACC4 o = ACC4(offsets4(g, c, sf, words));
                 for (uint i = 0; i < ROWS; i++) {
                     total[i] = fma(ACC4(sum[i]), o, total[i]);
                 }
