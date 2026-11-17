@@ -334,6 +334,7 @@ public final class Generator {
                 logits = model.next(state, next, active < batch ? skip : null);
             }
         }
+        state.close();
         List<Output> out = new ArrayList<>(batch);
         for (Row r : rows) {
             out.add(r.finish());
@@ -735,6 +736,7 @@ public final class Generator {
                         }
                         if (kept.isEmpty()) {
                             active.clear();
+                            state.close();
                             state = null;
                             continue;
                         }
@@ -941,6 +943,8 @@ public final class Generator {
                 q = draft.next(small, new int[][] {missing}, null).toArray();
             }
         }
+        target.close();
+        small.close();
         return new Speculation(row.finish(), proposed, accepted, targetSteps);
     }
 

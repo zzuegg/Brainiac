@@ -531,6 +531,7 @@ public final class Llama implements LanguageModel {
                 }
                 Tensor.evaluate(java.util.Arrays.asList(c.keys));
                 Tensor.evaluate(java.util.Arrays.asList(c.values));
+                release(this);
             }
             for (int i = 0; i < rows.length; i++) {
                 c.padding[i] = padding[rows[i]].clone();
@@ -579,6 +580,14 @@ public final class Llama implements LanguageModel {
             }
             c.length = len;
             return c;
+        }
+
+        @Override
+        public void close() {
+            release(this);
+            java.util.Arrays.fill(keys, null);
+            java.util.Arrays.fill(values, null);
+            capacity = 0;
         }
 
         private static void release(Cache c) {
