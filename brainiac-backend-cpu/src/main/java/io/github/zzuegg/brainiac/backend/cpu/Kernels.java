@@ -222,11 +222,6 @@ final class Kernels {
     // ------------------------------------------------------------------ matmul
 
     /**
-     * Rows {@code [from, to)} of {@code z = x * y}, with {@code x} of shape {@code [m, k]}
-     * and {@code y} of shape {@code [k, n]}. {@code z} must be zero in those rows. Each
-     * output value is summed over {@code p} in increasing order, whatever the blocking.
-     */
-    /**
      * Columns {@code [j0, j1)} of {@code z += x * y} for every row, accumulating each value
      * in the same order as {@link #matmulRows}; see {@code VectorKernels.matmulColumns}.
      */
@@ -243,6 +238,11 @@ final class Kernels {
         }
     }
 
+    /**
+     * Rows {@code [from, to)} of {@code z = x * y}, with {@code x} of shape {@code [m, k]}
+     * and {@code y} of shape {@code [k, n]}. {@code z} must be zero in those rows. Each
+     * output value is summed over {@code p} in increasing order, whatever the blocking.
+     */
     static void matmulRows(float[] x, float[] y, float[] z, int k, int n, int from, int to) {
         for (int p0 = 0; p0 < k; p0 += MATMUL_DEPTH) {
             int p1 = Math.min(k, p0 + MATMUL_DEPTH);
