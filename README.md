@@ -36,6 +36,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
+| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and VITS / MMS-TTS text-to-speech, from Hugging Face folders, behind `SpeechToText` and `TextToSpeech` |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -491,6 +492,47 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `model.saveGguf(file, tok, true)` writes a GGUF file (float16 matrices) that llama.cpp and
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
+
+## Speech: speech-to-text and text-to-speech
+
+`brainiac-audio` reads WAV files and runs two published speech models from Hugging Face
+folders: OpenAI's Whisper (`openai/whisper-tiny` up to `large-v3`) for speech-to-text and
+VITS (Meta's MMS-TTS voices, `facebook/mms-tts-eng` and other languages) for text-to-speech.
+Both match transformers' outputs.
+
+```java
+try (TextToSpeech tts = SpeechModels.textToSpeech(Path.of("mms-tts-eng"), Device.cpu(), DType.FLOAT32);
+     SpeechToText stt = SpeechModels.speechToText(Path.of("whisper-base"), Device.cpu(), DType.FLOAT32)) {
+    Audio speech = tts.synthesize("The weather is nice today.", SpeechOptions.defaults(), chunk -> play(chunk));
+    Wav.write(speech, Path.of("weather.wav"));
+
+    Transcription t = stt.transcribe(Wav.read(Path.of("talk.wav")),           // any length, any sample rate
+            TranscriptionOptions.defaults().language(null),                    // detect the language
+            segment -> System.out.printf("%.1f-%.1f %s%n", segment.start(), segment.end(), segment.text()));
+}
+```
+
+Whisper decodes long audio 30 seconds at a time with timestamps, falls back to higher
+temperatures when a window repeats itself, skips silence, and can translate to English
+(`Task.TRANSLATE`). `SpeechModels.kind(folder)` tells which kind of model a folder holds
+without loading it. Both take a cancellation check.
+
+The building blocks are ordinary layers, so self-built models can use them too:
+`MelSpectrogram` (raw audio to log-mel, including `MelSpectrogram.whisper(80)`),
+`RelativeAttention` (windowed relative positions), `HifiGanBlock` (vocoder residual block),
+`WaveNet` (gated dilated stack with optional conditioning) and
+`Flows.rationalQuadraticSpline` (neural spline flows), with Slaney mel filters in `Signal`.
+
+```java
+Model keywordSpotter = Model.sequential()
+        .input(16_000)                          // one second of 16 kHz audio
+        .melSpectrogram(16_000, 400, 160, 40)   // [40 mels, 101 frames]
+        .conv1d(64, 3, Activation.GELU)
+        .hifiGanBlock(3, 1, 3, 5)
+        .globalAvgPool()
+        .dense(12, Activation.SOFTMAX)
+        .build();
+```
 
 ## Reinforcement learning
 

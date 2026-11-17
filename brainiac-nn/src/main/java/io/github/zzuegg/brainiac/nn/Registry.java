@@ -118,6 +118,10 @@ final class Registry {
         simple("padding_mask", PaddingMask.class, PaddingMask::write, PaddingMask::read);
         simple("masked_pool", MaskedPool.class, MaskedPool::write, MaskedPool::read);
         simple("brain", Brain.class, Brain::write, Brain::read);
+        simple("mel_spectrogram", MelSpectrogram.class, MelSpectrogram::write, MelSpectrogram::read);
+        simple("relative_attention", RelativeAttention.class, RelativeAttention::write, RelativeAttention::read);
+        simple("hifigan_block", HifiGanBlock.class, HifiGanBlock::write, HifiGanBlock::read);
+        simple("wavenet", WaveNet.class, WaveNet::write, WaveNet::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
                 Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,

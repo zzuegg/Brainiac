@@ -1099,6 +1099,70 @@ public final class Model {
         }
 
         /**
+         * Adds a log-mel spectrogram: raw audio {@code [samples]} to {@code [mels, frames]};
+         * see {@link MelSpectrogram}. Use {@code layer(MelSpectrogram.whisper(80))} for
+         * Whisper's front end.
+         *
+         * @param sampleRate the audio's sample rate
+         * @param nFft the frame length
+         * @param hop the step between frames
+         * @param mels the number of mel bands
+         * @return this builder
+         */
+        public Builder melSpectrogram(int sampleRate, int nFft, int hop, int mels) {
+            return layer(MelSpectrogram.of(sampleRate, nFft, hop, mels));
+        }
+
+        /**
+         * Adds self-attention with relative positions over {@code [steps, features]}; see
+         * {@link RelativeAttention}.
+         *
+         * @param heads the number of heads
+         * @param window the largest offset with its own embedding
+         * @return this builder
+         */
+        public Builder relativeAttention(int heads, int window) {
+            return add(spec(in -> in, (in, r) -> new RelativeAttention(in.dim(-1), heads, window, Init.XAVIER, r)));
+        }
+
+        /**
+         * Adds a HiFi-GAN residual block over {@code [channels, length]}; see {@link HifiGanBlock}.
+         *
+         * @param kernel the kernel length (odd)
+         * @param dilations the dilations, such as {@code 1, 3, 5}
+         * @return this builder
+         */
+        public Builder hifiGanBlock(int kernel, int... dilations) {
+            return add(spec(in -> in, (in, r) -> new HifiGanBlock(in.dim(0), kernel, dilations, 0.1f, r)));
+        }
+
+        /**
+         * Adds a gated WaveNet stack over {@code [channels, length]}; see {@link WaveNet}.
+         *
+         * @param kernel the kernel length (odd)
+         * @param layers the number of layers
+         * @return this builder
+         */
+        public Builder waveNet(int kernel, int layers) {
+            return add(spec(in -> in, (in, r) -> new WaveNet(in.dim(0), kernel, 1, layers, 0, r)));
+        }
+
+        private static LayerSpec spec(java.util.function.UnaryOperator<Shape> shape,
+                java.util.function.BiFunction<Shape, SplittableRandom, Layer> create) {
+            return new LayerSpec() {
+                @Override
+                public Shape outputShape(Shape input) {
+                    return shape.apply(input);
+                }
+
+                @Override
+                public Layer create(Shape input, SplittableRandom random) {
+                    return create.apply(input, random);
+                }
+            };
+        }
+
+        /**
          * Fixes the random seed for weight initialization, so builds are reproducible.
          * Without it every build gets different starting weights.
          *
