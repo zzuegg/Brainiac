@@ -8,7 +8,7 @@ import java.util.SplittableRandom;
 
 /**
  * Action-chunk helpers shared by the chunked robot policies ({@link DiffusionPolicy},
- * {@link FlowActionPolicy}, {@link FastActionTokenizer}-based policies): cutting
+ * {@link FlowActionPolicy}, {@code FastActionTokenizer}-based policies): cutting
  * demonstrations into (observation, next {@code H} actions) pairs, and the plain
  * receding-horizon executor that runs the first few actions of each chunk and then asks
  * again (Diffusion Policy, Chi et al., <a href="https://arxiv.org/abs/2303.04137">2303.04137</a>).
