@@ -452,7 +452,11 @@ public final class Benchmark {
             }
             // read at once: one wait for the device rather than one per batch
             float[] all = Tensor.concat(0, outputs.toArray(Tensor[]::new)).toArray();
+            float[] targets = classify && pass == 0
+                    ? Tensor.concat(0, batches.stream().map(Batch::targets).toArray(Tensor[]::new)).toArray()
+                    : null;
             int offset = 0;
+            int targetOffset = 0;
             for (int b = 0; b < batches.size(); b++) {
                 Batch batch = batches.get(b);
                 int n = Math.toIntExact(outputs.get(b).shape().size());
@@ -462,7 +466,9 @@ public final class Benchmark {
                 if (!classify || pass > 0) {
                     continue;
                 }
-                float[] actual = batch.targets().toArray();
+                int m = Math.toIntExact(batch.targets().size());
+                float[] actual = java.util.Arrays.copyOfRange(targets, targetOffset, targetOffset + m);
+                targetOffset += m;
                 for (int row = 0; row < predicted.length / last; row++) {
                     int a = actual.length == predicted.length ? choice(actual, row, last) : (int) actual[row];
                     int p = choice(predicted, row, last);
