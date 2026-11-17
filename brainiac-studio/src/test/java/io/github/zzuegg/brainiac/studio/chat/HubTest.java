@@ -227,9 +227,9 @@ class HubTest {
     void searchKeepsOnlyWhatTheCoreRuns() throws Exception {
         Map<String, Object> found = hub().search("1b");
         List<Map<String, Object>> models = Json.array(found.get("models")).stream().map(Json::object).toList();
-        assertEquals(List.of("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "Qwen/Qwen2.5-0.5B-Instruct", "meta-llama/Llama-3.2-1B"),
-                models.stream().map(m -> m.get("id")).toList());
-        assertEquals(3, found.get("hidden"), "the two gemma3 ones, and ONNX weights the core does not load");
+        assertEquals(List.of("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "Qwen/Qwen2.5-0.5B-Instruct", "google/gemma-3-1b-it-GGUF",
+                "meta-llama/Llama-3.2-1B"), models.stream().map(m -> m.get("id")).toList());
+        assertEquals(2, found.get("hidden"), "the multimodal gemma3 type, and ONNX weights the core does not load");
         assertEquals(true, models.getFirst().get("gguf"));
         assertEquals(630_167_424L, models.getFirst().get("parameters"));
         assertEquals(true, models.get(1).get("safetensors"));
