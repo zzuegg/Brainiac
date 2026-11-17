@@ -104,19 +104,44 @@ abstract class RemoteProvider implements ChatProvider {
         return out;
     }
 
-    @Override
-    public ChatResult chat(ChatRequest request, ChatListener listener) throws IOException, InterruptedException {
+    /** One call made with one key. */
+    @FunctionalInterface
+    interface KeyCall<T> {
+        T call(String key) throws IOException, InterruptedException;
+    }
+
+    /**
+     * Makes a call with the named key, or with each key in turn until one is not refused, rate
+     * limited or out of credit.
+     *
+     * @param label the key's name, or null for any
+     * @param retry false once the call has passed something on, so it is not made twice
+     */
+    <T> T withKeys(String label, java.util.function.BooleanSupplier retry, KeyCall<T> call)
+            throws IOException, InterruptedException {
         List<String> labels = new ArrayList<>();
-        if (request.key() != null) {
-            keys.get(id(), request.key()).orElseThrow(() -> new IOException("no " + name() + " key named "
-                    + request.key()));
-            labels.add(request.key());
+        if (label != null) {
+            keys.get(id(), label).orElseThrow(() -> new IOException("no " + name() + " key named " + label));
+            labels.add(label);
         } else {
             keys.list(id()).forEach(e -> labels.add(e.label()));
         }
         if (labels.isEmpty()) {
             throw new IOException("no API key for " + name() + ": add one under Models, Providers");
         }
+        for (int i = 0; ; i++) {
+            try {
+                return call.call(keys.get(id(), labels.get(i)).orElseThrow());
+            } catch (Failure f) {
+                if (!retry.getAsBoolean() || i + 1 == labels.size() || !NEXT_KEY.contains(f.status)) {
+                    throw labels.size() == 1 ? f : new IOException(f.getMessage() + " (key " + labels.get(i) + ")", f);
+                }
+            }
+        }
+    }
+
+    @Override
+    public ChatResult chat(ChatRequest request, ChatListener listener) throws IOException, InterruptedException {
         boolean[] started = {false};
         ChatListener watched = new ChatListener() {
             @Override
@@ -131,15 +156,51 @@ abstract class RemoteProvider implements ChatProvider {
                 listener.thinking(text);
             }
         };
-        for (int i = 0; ; i++) {
-            try {
-                return chat(request, watched, keys.get(id(), labels.get(i)).orElseThrow());
-            } catch (Failure f) {
-                if (started[0] || i + 1 == labels.size() || !NEXT_KEY.contains(f.status)) {
-                    throw labels.size() == 1 ? f : new IOException(f.getMessage() + " (key " + labels.get(i) + ")", f);
-                }
-            }
-        }
+        return withKeys(request.key(), () -> !started[0], key -> chat(request, watched, key));
+    }
+
+    /**
+     * Draws pictures.
+     *
+     * @param request what to draw
+     * @return the pictures
+     * @throws IOException if the provider fails or has no image models
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public List<Media> images(ImageRequest request) throws IOException, InterruptedException {
+        return withKeys(request.key(), () -> true, key -> images(request, key));
+    }
+
+    /**
+     * Speaks text.
+     *
+     * @param request what to say
+     * @return the audio
+     * @throws IOException if the provider fails or has no speech models
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public Media speech(SpeechRequest request) throws IOException, InterruptedException {
+        return withKeys(request.key(), () -> true, key -> speech(request, key));
+    }
+
+    /** Draws pictures with one key. */
+    List<Media> images(ImageRequest request, String key) throws IOException, InterruptedException {
+        throw new IOException(name() + " has no image models here");
+    }
+
+    /** Speaks with one key. */
+    Media speech(SpeechRequest request, String key) throws IOException, InterruptedException {
+        throw new IOException(name() + " has no speech models here");
+    }
+
+    /**
+     * Says what a speech model offers.
+     *
+     * @param model the provider's own model id
+     * @return its voices and settings
+     */
+    SpeechOptions speechOptions(String model) {
+        return new SpeechOptions(List.of(), false, false, List.of());
     }
 
     /** The headers that carry the key, as name, value pairs. */
@@ -165,6 +226,29 @@ abstract class RemoteProvider implements ChatProvider {
             throw failure(r.statusCode(), r.body());
         }
         return Json.object(Json.parse(r.body()));
+    }
+
+    Map<String, Object> postJson(URI uri, String key, Map<String, Object> body)
+            throws IOException, InterruptedException {
+        HttpRequest req = request(uri, key).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body), StandardCharsets.UTF_8)).build();
+        HttpResponse<String> r = HTTP.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (r.statusCode() / 100 != 2) {
+            throw failure(r.statusCode(), r.body());
+        }
+        return Json.object(Json.parse(r.body()));
+    }
+
+    Media postForBytes(URI uri, String key, Map<String, Object> body) throws IOException, InterruptedException {
+        HttpRequest req = request(uri, key).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body), StandardCharsets.UTF_8)).build();
+        HttpResponse<byte[]> r = HTTP.send(req, HttpResponse.BodyHandlers.ofByteArray());
+        if (r.statusCode() / 100 != 2) {
+            throw failure(r.statusCode(), new String(r.body(), StandardCharsets.UTF_8));
+        }
+        String type = r.headers().firstValue("Content-Type").orElse("application/octet-stream");
+        int semi = type.indexOf(';');
+        return new Media(r.body(), (semi < 0 ? type : type.substring(0, semi)).trim());
     }
 
     void stream(URI uri, String key, Map<String, Object> body, Sse.Handler handler)
