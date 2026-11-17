@@ -201,6 +201,37 @@ class GeneratorTest {
         assertTrue(same.modelSteps() <= 1 + Math.ceilDiv(25, lookahead + 1), same.toString());
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {1, 4})
+    void promptLookupDraftsKeepGreedyDecodingExact(int lookahead) {
+        Llama model = letters(1);
+        Generator gen = new Generator(model, new CharacterTokenizer(LETTERS));
+        int[] prompt = gen.encode("abcabcabcabc");
+        Generator.Options o = Generator.Options.greedy(30).withStopTokens(Set.of());
+        int[] expected = gen.generate(new int[][] {prompt}, o, null).getFirst().tokens();
+        Generator.Speculation s = gen.speculative(prompt, new PromptLookup(model.vocabSize()), lookahead, o, null);
+        assertArrayEquals(expected, s.output().tokens());
+    }
+
+    @Test
+    void promptLookupGuessesWholeRunsOfCopiedText() {
+        // a model that always continues the cycle 0 1 2 3 4 0 1 ...
+        int v = 5;
+        float[][] table = new float[v][v];
+        for (int i = 0; i < v; i++) {
+            java.util.Arrays.fill(table[i], -5);
+            table[i][(i + 1) % v] = 5;
+        }
+        Generator gen = new Generator(new Bigram(table), null);
+        Generator.Options o = Generator.Options.greedy(40).withStopTokens(Set.of());
+        int[] prompt = {0, 1, 2, 3, 4, 0};
+        int[] expected = gen.generate(new int[][] {prompt}, o, null).getFirst().tokens();
+        Generator.Speculation s = gen.speculative(prompt, new PromptLookup(v), 7, o, null);
+        assertArrayEquals(expected, s.output().tokens());
+        assertEquals(1.0, s.acceptance(), 1e-9);
+        assertTrue(s.modelSteps() <= 1 + Math.ceilDiv(40, 8), s.toString());
+    }
+
     /** Next-token logits from the last token alone; goes back by forgetting tokens. */
     record Bigram(float[][] table) implements LanguageModel {
         @Override

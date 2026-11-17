@@ -824,6 +824,8 @@ public final class Generator {
             float[] p = model.next(target, new int[][] {prompt}, null).toArray();
             float[] q = draft.next(small, new int[][] {prompt}, null).toArray();
             targetSteps++;
+            int vocab = model.vocabSize();
+            int pending = -1;   // the model's last token, which the model has not read yet
             boolean done = false;
             while (!done) {
                 int base = target.length();
@@ -837,14 +839,21 @@ public final class Generator {
                         q = draft.next(small, new int[][] {{guess[i]}}, null).toArray();
                     }
                 }
-                // the model's distributions after the prompt so far and after each guess
-                float[] all = model.nextAll(target, new int[][] {guess}).toArray();
+                // one step of the model reads its pending token and every guess, and gives
+                // its distribution before each guess and after the last one
+                int skip = pending < 0 ? 0 : 1;
+                int[] read = new int[skip + lookahead];
+                if (skip == 1) {
+                    read[0] = pending;
+                }
+                System.arraycopy(guess, 0, read, skip, lookahead);
+                float[] all = model.nextAll(target, new int[][] {read}).toArray();
                 targetSteps++;
-                int vocab = model.vocabSize();
                 int keep = 0;
                 int extra = -1;
                 for (int i = 0; i < lookahead; i++) {
-                    float[] logits = i == 0 ? p : Arrays.copyOfRange(all, (i - 1) * vocab, i * vocab);
+                    int at = skip + i - 1;
+                    float[] logits = at < 0 ? p : Arrays.copyOfRange(all, at * vocab, (at + 1) * vocab);
                     double[] ps = sampling.probabilities(logits);
                     int x = guess[i];
                     if (random.nextDouble() * qs[i][x] < ps[x]) {
@@ -863,8 +872,9 @@ public final class Generator {
                 accepted += keep;
                 if (extra < 0) {
                     // every guess kept: one more token from the model's last distribution
-                    extra = draw(sampling.probabilities(Arrays.copyOfRange(all, (lookahead - 1) * vocab,
-                            lookahead * vocab)), random);
+                    int at = skip + lookahead - 1;
+                    extra = draw(sampling.probabilities(Arrays.copyOfRange(all, at * vocab, (at + 1) * vocab)),
+                            random);
                 }
                 for (int i = 0; i < keep && !done; i++) {
                     done = row.add(guess[i], stops);
@@ -875,11 +885,14 @@ public final class Generator {
                 if (done) {
                     break;
                 }
-                // both states keep the accepted guesses, then read the new token
-                target = target.truncate(base + keep);
-                p = model.next(target, new int[][] {{extra}}, null).toArray();
+                // the model keeps its pending token and the accepted guesses; the new token
+                // waits for the next step
+                target = target.truncate(base + skip + keep);
+                pending = extra;
+                // the draft keeps the accepted guesses, then reads the new token
+                int draftBase = base + skip;
                 int drafted = Math.min(keep, lookahead - 1);   // the draft never read its last guess
-                small = small.truncate(base + drafted);
+                small = small.truncate(draftBase + drafted);
                 int[] missing = new int[keep - drafted + 1];
                 for (int i = drafted; i < keep; i++) {
                     missing[i - drafted] = guess[i];
