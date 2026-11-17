@@ -1197,6 +1197,38 @@ public final class Llama implements LanguageModel {
         return loss(batch.tokens(), next, positions, masks, Math.max(1, (1 << 24) / config.vocabSize()));
     }
 
+    /**
+     * The log-probability of each row's marked tokens, summed: {@code sum log p(target)} over
+     * the steps whose target is not -1, as preference losses such as DPO need (see
+     * {@link PreferenceTraining}). Unlike {@link #loss(InstructionData.Batch)} it holds the
+     * {@code [tokens, vocab]} log-probabilities, so it suits short rows.
+     *
+     * @param batch padded rows, one example each (see {@link InstructionData#pad})
+     * @return {@code [rows]}
+     */
+    public Var sequenceLogProbs(InstructionData.Batch batch) {
+        int rows = batch.tokens().length;
+        int steps = batch.tokens()[0].length;
+        int[][] positions = new int[rows][steps];
+        float[] next = new float[rows * steps];
+        for (int b = 0; b < rows; b++) {
+            int[] seg = batch.segments()[b];
+            for (int t = 0; t < steps; t++) {
+                if (t > 0 && seg[t] != seg[t - 1] && seg[t] != 0) {
+                    throw new IllegalArgumentException("sequenceLogProbs needs one example per row, not packed rows");
+                }
+                positions[b][t] = t;
+                next[b * steps + t] = batch.targets()[b][t];
+            }
+        }
+        Var h = hidden(batch.tokens(), positions, null, null).reshape(rows * steps, config.hidden());
+        Var logits = softcap(head(h, false));
+        Tensor ids = Tensor.of(Shape.of(rows * steps, 1), next, headDevice());
+        Tensor pick = ids.equalTo(Tensor.arange(config.vocabSize()).to(headDevice())).to(logits.value().dtype());
+        Var logp = logits.sub(logits.logsumexp(-1, true));
+        return logp.mul(pick).sum(-1, false).reshape(rows, steps).sum(1, false);
+    }
+
     /** Causal within each segment, optionally windowed: {@code [rows, 1, steps, steps]}. */
     private Tensor segmentMask(int[][] segments, int window, Device device, DType dtype) {
         int rows = segments.length;
@@ -1979,7 +2011,8 @@ public final class Llama implements LanguageModel {
      * arithmetic. The weights then go by the names {@code self_attn.qkv_proj} and
      * {@code mlp.gate_up_proj} (for {@link #addLora} targets and {@link #namedParameters()}), and
      * the model can no longer be saved. Packed projections (GGUF, {@link #quantizeWeights})
-     * join when they share bits and group; projections with adapters stay as they are.
+     * join when they share bits and group; projections with adapters stay as they are, and a
+     * mixture of experts joins only q, k and v.
      *
      * @return this model
      */
@@ -1994,7 +2027,7 @@ public final class Llama implements LanguageModel {
             Linear qkv = f.qkv() != null ? f.qkv()
                     : join(p + "self_attn.", List.of("q_proj", "k_proj", "v_proj"), "qkv_proj",
                             List.of(b.q, b.k, b.v));
-            Linear gateUp = f.gateUp() != null ? f.gateUp()
+            Linear gateUp = f.gateUp() != null || b.gate == null ? f.gateUp()   // experts have no single gate
                     : join(p + "mlp.", List.of("gate_proj", "up_proj"), "gate_up_proj", List.of(b.gate, b.up));
             fused[i] = new Fused(qkv, gateUp);
         }
@@ -2123,13 +2156,12 @@ public final class Llama implements LanguageModel {
         if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
         }
-        if (config.extras().moe().present()) {
-            throw new IllegalStateException("mixtures of experts cannot be written as GGUF yet");
-        }
         String a = switch (config.architecture()) {
             case "qwen2", "qwen3", "phi3", "gemma", "gemma2" -> config.architecture();
             case "gemma3_text" -> "gemma3";
-            default -> "llama";
+            case "qwen2_moe" -> "qwen2moe";
+            case "qwen3_moe" -> "qwen3moe";
+            default -> "llama";   // Mixtral too
         };
         LlamaConfig.Extras x = config.extras();
         Map<String, Object> m = new LinkedHashMap<>();
@@ -2164,6 +2196,18 @@ public final class Llama implements LanguageModel {
         }
         if (x.finalSoftcap() > 0) {
             m.put(a + ".final_logit_softcapping", x.finalSoftcap());
+        }
+        LlamaConfig.Moe moe = x.moe();
+        if (moe.present()) {
+            m.put(a + ".expert_count", (long) moe.experts());
+            m.put(a + ".expert_used_count", (long) moe.perToken());
+            m.put(a + ".expert_feed_forward_length", (long) moe.ffn());
+            if (moe.sharedFfn() > 0) {
+                m.put(a + ".expert_shared_feed_forward_length", (long) moe.sharedFfn());
+            }
+            if (!a.equals("llama")) {
+                m.put(a + ".expert_weights_norm", moe.normalize());
+            }
         }
         Rope.Settings r = config.rope();
         Map<String, Tensor> t = new LinkedHashMap<>();
@@ -2232,6 +2276,27 @@ public final class Llama implements LanguageModel {
                 t.put(g + e.getValue() + ".weight", w);
                 if (bias != null) {
                     t.put(g + e.getValue() + ".bias", bias);
+                }
+            }
+            Experts ex = blocks.get(i).experts;
+            if (ex != null) {
+                // as llama.cpp: the router, then each projection's experts in one [experts, out, in] stack
+                t.put(g + "ffn_gate_inp.weight", plain(ex.router.weight.value()).transpose());
+                Linear[][] all = {ex.gate, ex.up, ex.down};
+                String[] stored = {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"};
+                for (int k = 0; k < 3; k++) {
+                    Tensor[] each = new Tensor[all[k].length];
+                    for (int e = 0; e < each.length; e++) {
+                        Tensor w = plain(all[k][e].weight.value()).transpose();
+                        each[e] = w.reshape(1, w.shape().dim(0), w.shape().dim(1));
+                    }
+                    t.put(g + stored[k] + ".weight", Tensor.concat(0, each));
+                }
+                if (ex.sharedGate != null) {
+                    t.put(g + "ffn_gate_shexp.weight", plain(ex.sharedGate.weight.value()).transpose());
+                    t.put(g + "ffn_up_shexp.weight", plain(ex.sharedUp.weight.value()).transpose());
+                    t.put(g + "ffn_down_shexp.weight", plain(ex.sharedDown.weight.value()).transpose());
+                    t.put(g + "ffn_gate_inp_shexp.weight", plain(ex.sharedScale.weight.value()).reshape(config.hidden()));
                 }
             }
         }

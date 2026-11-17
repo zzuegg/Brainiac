@@ -154,6 +154,9 @@ class GgufWriterTest {
             "<s>[INST] Hi [/INST] Ok</s>[INST] Again[/INST]"}) {
             assertArrayEquals(tok.encode(text), back.encode(text), text);
         }
+        int[] withBos = back.encode("<s>[INST] Hi[/INST]", true);
+        assertEquals(1, withBos[0]);
+        assertEquals(314, withBos[1], "no second BOS");
         // transformers' ids for the same tokenizer
         assertArrayEquals(new int[] {355, 295, 321, 466, 331}, back.encode(" Hello"));
         assertArrayEquals(new int[] {1, 314, 627, 306, 307, 315, 355, 295, 325, 314, 272, 627, 306, 307, 315},

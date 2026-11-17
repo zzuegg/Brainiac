@@ -103,6 +103,9 @@ class LlamaTest {
         Llama model = Llama.load(resource(name + ".gguf"), DEVICE, DType.FLOAT32);
         float[] logits = model.forward(new int[][] {ints(e.get("ids"))}).value().toArray();
         assertArrayEquals(rows(e.get("logits")), logits, 2e-3f, name);
+        // a mixture of experts joins only q, k and v
+        model.fuseProjections();
+        assertArrayEquals(logits, model.forward(new int[][] {ints(e.get("ids"))}).value().toArray(), 1e-4f, name);
     }
 
     @ParameterizedTest
@@ -453,9 +456,6 @@ class LlamaTest {
     void ggufExportLoadsBackWithTheSameLogits(@TempDir Path dir) throws IOException {
         int[][] prompt = {{1, 2, 3, 4, 5}};
         for (String name : new String[] {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3", "mixtral", "qwen3moe", "qwen2moe"}) {
-            if (name.contains("moe") || name.equals("mixtral")) {
-                continue;   // experts are not written as GGUF yet
-            }
             Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
             float[] expected = model.forward(prompt).value().toArray();
             Path f = dir.resolve(name + ".gguf");

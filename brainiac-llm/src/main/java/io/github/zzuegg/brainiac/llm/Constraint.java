@@ -88,6 +88,16 @@ public final class Constraint {
     }
 
     /**
+     * Text in the language of a GBNF grammar, as llama.cpp's {@code --grammar}; see {@link Grammar}.
+     *
+     * @param gbnf the rules, starting at {@code root}
+     * @return the constraint
+     */
+    public static Constraint grammar(String gbnf) {
+        return Grammar.parse(gbnf).constraint();
+    }
+
+    /**
      * Text matching a regular expression as a whole. Supported: literals, {@code .}, classes
      * such as {@code [a-z_]} and {@code [^"]}, {@code \d \w \s \D \W \S}, escapes, groups
      * {@code ( )} and {@code (?: )}, {@code |}, and {@code * + ? {m} {m,} {m,n}}.

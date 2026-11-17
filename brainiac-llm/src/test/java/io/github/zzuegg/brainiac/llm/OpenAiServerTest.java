@@ -177,6 +177,18 @@ class OpenAiServerTest {
     }
 
     @Test
+    void grammarConstrainsTheAnswer() throws IOException {
+        String r = call("POST", "/v1/completions", "{\"prompt\":\"x\",\"max_tokens\":30,\"temperature\":0,"
+                + "\"grammar\":\"root ::= \\\"(\\\" [a-c]+ \\\")\\\"\"}");
+        assertTrue(r.startsWith("200 "), r);
+        String text = (String) Json.object(Json.array(Json.object(Json.parse(r.substring(4))).get("choices"))
+                .getFirst()).get("text");
+        assertTrue(Grammar.parse("root ::= \"(\" [a-c]+ \")\"").start().feed(text) != null, text);
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"grammar\":\"root ::= nothing\"}")
+                .startsWith("400 "));
+    }
+
+    @Test
     void badRequestsGet400() throws IOException {
         assertTrue(call("POST", "/v1/completions", "not json").startsWith("400 "));
         assertTrue(call("POST", "/v1/chat/completions", "{\"messages\":[]}").startsWith("400 "));
