@@ -18,6 +18,7 @@ import java.util.Map;
  * <pre>{@code
  * ./gradlew :brainiac-studio:run                    # http://127.0.0.1:7860/
  * ./gradlew :brainiac-studio:run --args="--port 0"  # any free port
+ * ./gradlew :brainiac-studio:run --args="--data D:/BrainiacData"  # keep everything there
  * }</pre>
  *
  * <p>Or embedded: {@code try (Studio studio = Studio.start(7860)) { ... }}.
@@ -35,30 +36,51 @@ public final class Studio implements AutoCloseable {
         this.capabilities = capabilities;
     }
 
+    /** The environment variable that chooses the data folder when {@code --data} is not given. */
+    public static final String DATA_VARIABLE = "BRAINIAC_STUDIO_DATA";
+
     /**
      * Where the studio looks for things.
      *
      * @param port the port, or 0 for any free port
      * @param modelFolders folders holding local models: Hugging Face model folders and {@code .gguf} files
-     * @param keyFile the file API keys saved in the studio go to, readable only by this account
+     * @param data the folder everything the studio keeps goes to: API keys ({@code keys.properties},
+     *     readable only by this account), provider choices, conversations ({@code chats}), what the
+     *     page remembers ({@code page.json}), the usage log, and pictures and audio ({@code outputs})
      * @param environment where API keys not saved in the studio are looked up, such as
      *     {@code ANTHROPIC_API_KEY}, {@code OPENAI_API_KEY} and {@code GEMINI_API_KEY}
-     * @param outputs where generated pictures and audio are saved
      */
-    public record Settings(int port, List<Path> modelFolders, Path keyFile, Map<String, String> environment,
-            Path outputs) {
+    public record Settings(int port, List<Path> modelFolders, Path data, Map<String, String> environment) {
 
-        /** Copies the lists. */
+        /** Copies the lists and makes the data folder absolute. */
         public Settings {
             modelFolders = List.copyOf(modelFolders);
             environment = Map.copyOf(environment);
+            data = data.toAbsolutePath().normalize();
+        }
+
+        /**
+         * Returns the file saved API keys go to.
+         *
+         * @return {@code keys.properties} in the data folder
+         */
+        public Path keyFile() {
+            return data.resolve("keys.properties");
+        }
+
+        /**
+         * Returns the folder generated pictures and audio go to.
+         *
+         * @return {@code outputs} in the data folder
+         */
+        public Path outputs() {
+            return data.resolve("outputs");
         }
 
         /**
          * Returns the usual settings: port {@value Studio#DEFAULT_PORT}; models in {@code ./models},
-         * {@code ~/.brainiac/models} and {@code $BRAINIAC_MODELS}; keys in
-         * {@code ~/.brainiac/studio/keys.properties} or the environment; pictures and audio in
-         * {@code ~/.brainiac/studio/outputs}.
+         * {@code ~/.brainiac/models} and {@code $BRAINIAC_MODELS}; everything the studio keeps in
+         * {@code $BRAINIAC_STUDIO_DATA}, or else {@code ~/.brainiac/studio}; keys also from the environment.
          *
          * @return the settings
          */
@@ -69,8 +91,9 @@ public final class Studio implements AutoCloseable {
             if (env != null && !env.isBlank()) {
                 folders.add(0, Path.of(env).toAbsolutePath());
             }
-            return new Settings(DEFAULT_PORT, folders, home.resolve("studio").resolve("keys.properties"),
-                    System.getenv(), home.resolve("studio").resolve("outputs"));
+            String data = System.getenv(DATA_VARIABLE);
+            return new Settings(DEFAULT_PORT, folders,
+                    data == null || data.isBlank() ? home.resolve("studio") : Path.of(data), System.getenv());
         }
 
         /**
@@ -80,7 +103,17 @@ public final class Studio implements AutoCloseable {
          * @return the settings
          */
         public Settings withPort(int port) {
-            return new Settings(port, modelFolders, keyFile, environment, outputs);
+            return new Settings(port, modelFolders, data, environment);
+        }
+
+        /**
+         * Returns these settings with another data folder.
+         *
+         * @param folder where everything the studio keeps goes
+         * @return the settings
+         */
+        public Settings withData(Path folder) {
+            return new Settings(port, modelFolders, folder, environment);
         }
 
         /**
@@ -90,7 +123,7 @@ public final class Studio implements AutoCloseable {
          * @return the settings
          */
         public Settings withModelFolders(List<Path> folders) {
-            return new Settings(port, folders, keyFile, environment, outputs);
+            return new Settings(port, folders, data, environment);
         }
     }
 
@@ -164,13 +197,15 @@ public final class Studio implements AutoCloseable {
     /**
      * Starts the studio and keeps it running until the process ends.
      *
-     * @param args {@code --port <n>} to choose the port (0 for any free port), and
-     *     {@code --models <folder>} (repeatable) to look for models there instead of the usual folders
+     * @param args {@code --port <n>} to choose the port (0 for any free port),
+     *     {@code --models <folder>} (repeatable) to look for models there instead of the usual folders,
+     *     and {@code --data <folder>} to keep keys, conversations and everything else there
      * @throws IOException if the port cannot be opened
      */
     public static void main(String[] args) throws IOException {
         int port = DEFAULT_PORT;
         List<Path> folders = new ArrayList<>();
+        Path data = null;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--port" -> {
@@ -185,10 +220,18 @@ public final class Studio implements AutoCloseable {
                     }
                     folders.add(Path.of(args[++i]).toAbsolutePath());
                 }
+                case "--data" -> {
+                    if (i + 1 >= args.length) {
+                        throw new IllegalArgumentException("--data needs a folder");
+                    }
+                    data = Path.of(args[++i]);
+                }
                 case "--help", "-h" -> {
-                    System.out.println("Usage: studio [--port <n>] [--models <folder>]...");
+                    System.out.println("Usage: studio [--port <n>] [--models <folder>]... [--data <folder>]");
                     System.out.println("  --port    default " + DEFAULT_PORT + ", 0 = any free port");
                     System.out.println("  --models  where local models are (default ./models and ~/.brainiac/models)");
+                    System.out.println("  --data    where keys, conversations, settings and outputs are kept");
+                    System.out.println("            (default $" + DATA_VARIABLE + ", else ~/.brainiac/studio)");
                     return;
                 }
                 default -> throw new IllegalArgumentException("unknown option: " + args[i] + " (try --help)");
@@ -198,10 +241,14 @@ public final class Studio implements AutoCloseable {
         if (!folders.isEmpty()) {
             settings = settings.withModelFolders(folders);
         }
+        if (data != null) {
+            settings = settings.withData(data);
+        }
         Studio studio = start(settings);
         Runtime.getRuntime().addShutdownHook(new Thread(studio::close));
         long available = studio.capabilities().stream().filter(c -> c.status() == Capability.Status.AVAILABLE).count();
         System.out.println("Brainiac Studio is running at " + studio.uri());
+        System.out.println("Keeping keys, conversations and settings in " + settings.data());
         System.out.println(available + " capabilities available, " + (studio.capabilities().size() - available)
                 + " planned. Only this machine can connect. Press Ctrl+C to stop.");
     }

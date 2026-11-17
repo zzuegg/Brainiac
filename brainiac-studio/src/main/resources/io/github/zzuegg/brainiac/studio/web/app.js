@@ -9,10 +9,54 @@
   const capIcon = { text: "text", image: "image", speech: "speech", vision: "image", train: "train", agent: "agent" };
   const capName = { text: "Text", image: "Image", speech: "Speech", vision: "Vision", train: "Training", agent: "Agents", video: "Video" };
 
-  const store = {
-    get(k, d) { try { const v = localStorage.getItem("studio." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  // What the page remembers. Served by the studio, it lives in page.json in the studio's data
+  // folder (the page arrives with it), so every browser on this PC sees the same tabs, layout and
+  // choices; conversations are files of their own there. Opened as a plain file, it uses this browser.
+  const pageState = (() => {
+    const el = document.getElementById("studio-state");
+    try { return el ? JSON.parse(el.textContent) : null; } catch { return null; }
+  })();
+  const local = {
+    get(k) { try { const v = localStorage.getItem("studio." + k); return v == null ? undefined : JSON.parse(v); } catch { return undefined; } },
     set(k, v) { try { localStorage.setItem("studio." + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+    keys() { try { return Object.keys(localStorage).filter(k => k.startsWith("studio.")).map(k => k.slice(7)); } catch { return []; } },
+    remove(k) { try { localStorage.removeItem("studio." + k); } catch { /* storage unavailable */ } },
   };
+  let stateChanges = {}, stateTimer = 0;
+  function sendState() {
+    const body = stateChanges;
+    stateChanges = {}; stateTimer = 0;
+    const token = document.querySelector('meta[name="studio-token"]')?.content;
+    return fetch("/api/state", { method: "POST", keepalive: true, headers: { "X-Studio-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) console.warn("cannot save the page state", r.status); return r.ok; })
+      .catch(e => { console.warn("cannot save the page state", e); return false; });
+  }
+  const store = {
+    // conversations are not page state: the studio keeps them in its chats folder
+    get(k, d) {
+      if (pageState && k !== "convos" && k in pageState) return pageState[k];
+      if (pageState && k !== "convos") return d;
+      const v = local.get(k); return v === undefined ? d : v;
+    },
+    set(k, v) {
+      if (!pageState) { local.set(k, v); return; }
+      if (k === "convos") return;
+      pageState[k] = v;
+      stateChanges[k] = v === undefined ? null : v;
+      clearTimeout(stateTimer);
+      stateTimer = setTimeout(sendState, 300);
+    },
+  };
+  addEventListener("pagehide", () => { if (stateTimer) { clearTimeout(stateTimer); sendState(); } });
+  // What this browser remembered before the studio kept it moves to the studio once, then is cleared here.
+  if (pageState) {
+    const moved = local.keys().filter(k => k !== "convos" && !(k in pageState));
+    if (moved.length) {
+      moved.forEach(k => { pageState[k] = local.get(k); stateChanges[k] = pageState[k]; });
+      sendState().then(ok => { if (ok) moved.forEach(local.remove); });
+    }
+    local.keys().filter(k => k !== "convos" && !moved.includes(k)).forEach(local.remove);
+  }
 
   const state = {
     view: "chat",
@@ -828,6 +872,7 @@
     </div>`;
   }
 
+  const dataFolder = document.querySelector('meta[name="studio-folder"]')?.content || "";
   // ---------- layout popover ----------
   function layoutPopover() {
     const opt = (k, v, l) => `<button data-${k}="${v}" aria-pressed="${state[k] === v}">${l}</button>`;
@@ -844,6 +889,8 @@
       <div class="field"><label for="ui-scale">Interface size <output>${Math.round(state.scale * 100)}%</output></label>
         <input type="range" id="ui-scale" min="0.8" max="1.6" step="0.05" value="${state.scale}"></div>
       <p class="muted" style="margin:0;font-size:12px">Auto picks Ultrawide from 2200 px: threads, conversation, agent and media side by side.</p>
+      ${dataFolder ? `<div class="field"><label>Kept in</label><code class="datafolder" title="Keys, conversations, these settings and every picture and take. Start the studio with --data to use another folder.">${esc(dataFolder)}</code>
+        <span class="faint" style="font-size:12px">Start with <code>--data &lt;folder&gt;</code> to use another one.</span></div>` : ""}
     </div>`;
   }
 
@@ -1025,6 +1072,7 @@
     drafts: {},                           // conversation id ("#" and the pane for a new one): what is typed but not sent
     scroll: {},                           // conversation id: where its transcript was scrolled to
     showFinished: false,
+    convosLoaded: false,                  // true once the studio's conversations are in
     usage: null,                          // GET /api/usage: calls and tokens by provider, key, model, day
     balances: null,                       // GET /api/balances: what is left per key, where providers say
     editing: null,                        // the provider open in the editor, and its unsaved draft
@@ -1103,8 +1151,12 @@
     store.set("chatActive", L.active);
   }
   function fitPanes() {
-    L.tabs = L.tabs.filter(id => { const c = convoById(id); return c && c.status !== "finished"; });
-    L.panes = L.panes.filter(p => !p.id || convoById(p.id)).slice(0, maxPanes());
+    // until the studio's conversations arrive, tabs and panes naming them are kept as they are
+    if (L.convosLoaded) {
+      L.tabs = L.tabs.filter(id => { const c = convoById(id); return c && c.status !== "finished"; });
+      L.panes = L.panes.filter(p => !p.id || convoById(p.id));
+    }
+    L.panes = L.panes.slice(0, maxPanes());
     if (!L.panes.length) L.panes = [{ id: L.tabs[0] || null }];
     L.active = Math.min(Math.max(0, L.active), L.panes.length - 1);
   }
@@ -1167,13 +1219,13 @@
     saveConvos();
     if (!isLive()) return;
     clearTimeout(pending.get(c.id));
-    pending.set(c.id, setTimeout(() => {
-      pending.delete(c.id);
-      const body = { ...c, messages: c.messages.map(m => { const { streaming, ...rest } = m; return rest; }) };
-      fetch("/api/chats", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) })
-        .then(r => { if (!r.ok) console.warn("cannot save the conversation", r.status); })
-        .catch(e => console.warn("cannot save the conversation", e));
-    }, 400));
+    pending.set(c.id, setTimeout(() => { pending.delete(c.id); upload(c); }, 400));
+  }
+  function upload(c) {
+    const body = { ...c, messages: c.messages.map(m => { const { streaming, ...rest } = m; return rest; }) };
+    return fetch("/api/chats", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) console.warn("cannot save the conversation", r.status); return r.ok; })
+      .catch(e => { console.warn("cannot save the conversation", e); return false; });
   }
   async function deleteConvo(id) {
     L.convos = L.convos.filter(c => c.id !== id);
@@ -1192,8 +1244,10 @@
       const known = new Set(saved.map(c => c.id));
       const onlyHere = L.convos.filter(c => !known.has(c.id) && /^[a-z0-9]{4,40}$/.test(c.id));
       L.convos = [...saved, ...onlyHere].sort((a, b) => b.updated - a.updated);
-      onlyHere.forEach(persist);
+      L.convosLoaded = true;
       saveConvos();
+      // once the studio has every one, this browser lets go of its copy
+      Promise.all(onlyHere.map(upload)).then(oks => { if (pageState && oks.every(Boolean)) local.remove("convos"); });
       // a browser that has not opened any tabs yet starts with the open conversations as tabs
       if (store.get("chatTabs", null) === null) L.tabs = L.convos.filter(c => c.status !== "finished").slice(0, 6).map(c => c.id);
       fitPanes();
