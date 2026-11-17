@@ -21,8 +21,8 @@ import org.junit.jupiter.api.Test;
 class GpuEvolutionTest {
 
     private static Device gpu() {
-        Optional<Device> d = Device.available().stream().filter(x -> x.name().startsWith("opencl")).findFirst();
-        assumeTrue(d.isPresent(), "no OpenCL device");
+        Optional<Device> d = Device.available().stream().filter(x -> x.name().startsWith("vulkan")).findFirst();
+        assumeTrue(d.isPresent(), "no Vulkan device");
         return d.get();
     }
 
