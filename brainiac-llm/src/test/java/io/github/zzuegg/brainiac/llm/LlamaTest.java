@@ -115,6 +115,40 @@ class LlamaTest {
         assertArrayEquals(model.forward(ids).value().toArray(), back.forward(ids).value().toArray(), 1e-5f, name);
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"qwen2", "gemma2", "qwen3moe"})
+    void checkpointedTrainingGivesTheSameGradients(String name) {
+        int[][] ids = {{1, 5, 9, 3, 7, 2, 11, 4}};
+        Llama plain = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+        Llama saved = Llama.load(resource(name), DEVICE, DType.FLOAT32).checkpointActivations(true);
+        io.github.zzuegg.brainiac.autograd.Var a = plain.loss(ids);
+        io.github.zzuegg.brainiac.autograd.Var b = saved.loss(ids);
+        assertEquals(a.value().item(), b.value().item(), 1e-5f);
+        a.backward();
+        b.backward();
+        for (String p : plain.namedParameters().keySet()) {
+            // an expert no token chose has no gradient, or a zero one
+            Tensor ga = plain.namedParameters().get(p).grad();
+            Tensor gb = saved.namedParameters().get(p).grad();
+            float[] fa = ga != null ? ga.toArray() : new float[gb == null ? 0 : (int) gb.shape().size()];
+            float[] fb = gb != null ? gb.toArray() : new float[fa.length];
+            assertArrayEquals(fa, fb, 1e-4f, p);
+        }
+        // with adapters: only they learn
+        Llama lora = Llama.load(resource(name), DEVICE, DType.FLOAT32).checkpointActivations(true);
+        java.util.List<io.github.zzuegg.brainiac.autograd.Var> adapters = lora.addLora(4, 8, Llama.attentionAndMlp(), 1);
+        Llama loraPlain = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+        java.util.List<io.github.zzuegg.brainiac.autograd.Var> adaptersPlain = loraPlain.addLora(4, 8,
+                Llama.attentionAndMlp(), 1);
+        lora.loss(ids).backward();
+        loraPlain.loss(ids).backward();
+        for (int i = 0; i < adapters.size(); i++) {
+            if (adaptersPlain.get(i).grad() != null) {
+                assertArrayEquals(adaptersPlain.get(i).grad().toArray(), adapters.get(i).grad().toArray(), 1e-4f);
+            }
+        }
+    }
+
     @Test
     void readsQuantizedGguf() throws IOException {
         Map<String, Object> e = expected("llama.gguf.expected.json");

@@ -1297,94 +1297,146 @@ public final class Llama implements LanguageModel {
                 }
             }
         }
+        boolean decoding = cache != null;
+        boolean recompute = checkpointing && !decoding;
+        for (int l = 0; l < blocks.size(); l++) {
+            x = x.to(deviceOf(l)).to(typeOf(l));   // crossing a device split
+            int layer = l;
+            Tensor[] m = masks;
+            if (recompute) {
+                // activation checkpointing: the block runs again for its gradients
+                x = io.github.zzuegg.brainiac.autograd.Recompute.apply(in -> block(layer, in, positions, null, m, false), x,
+                        blockParameters(l));
+            } else {
+                x = block(layer, x, positions, cache, m, decoding);
+            }
+        }
+        x = x.to(headDevice()).to(headType());
+        return rmsNorm(x, norm, decoding);
+    }
+
+    /** Block {@code l} on the hidden states {@code x} {@code [batch, steps, hidden]}. */
+    private Var block(int l, Var x, int[][] positions, Cache cache, Tensor[] masks, boolean decoding) {
+        LlamaConfig.Extras e = config.extras();
+        int batch = x.shape().dim(0);
+        int steps = x.shape().dim(1);
         int hd = config.headDim();
         int rotary = config.rope().dim();
         float scale = e.queryScale() > 0 ? e.queryScale() : (float) (1 / Math.sqrt(hd));
-        boolean decoding = cache != null;
-        for (int l = 0; l < blocks.size(); l++) {
-            Block blk = blocks.get(l);
-            Device layerDev = deviceOf(l);
-            x = x.to(layerDev).to(typeOf(l));   // crossing a device split
-            Var h = rmsNorm(x, blk.attnNorm, decoding);
-            Fused f = fused == null ? null : fused[l];
-            Var qOut;
-            Var kOut;
-            Var vOut;
-            if (f != null && f.qkv() != null) {
-                Var all = f.qkv().apply(h);
-                int qs = config.heads() * hd;
-                int ks = config.kvHeads() * hd;
-                qOut = all.slice(-1, 0, qs);
-                kOut = all.slice(-1, qs, qs + ks);
-                vOut = all.slice(-1, qs + ks, qs + 2 * ks);
-            } else {
-                qOut = blk.q.apply(h);
-                kOut = blk.k.apply(h);
-                vOut = blk.v.apply(h);
-            }
-            Var q = qOut.reshape(batch, steps, config.heads(), hd);
-            Var k = kOut.reshape(batch, steps, config.kvHeads(), hd);
-            if (blk.qNorm != null) {
-                q = rmsNorm(q, blk.qNorm, decoding);
-                k = rmsNorm(k, blk.kNorm, decoding);
-            }
-            q = q.permute(0, 2, 1, 3);
-            k = k.permute(0, 2, 1, 3);
-            Var v = vOut.reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
-            Rope r = localRope != null && e.local(l) ? localRope : rope;
-            q = rotate(r, q, positions, rotary, hd);
-            k = rotate(r, k, positions, rotary, hd);
-            boolean causal = steps > 1;
-            if (cache != null) {
-                cache.keys[l].write(2, cache.length, k.value());
-                cache.values[l].write(2, cache.length, v.value());
-                k = Var.of(cache.keys[l]);
-                v = Var.of(cache.values[l]);
-                q = Var.of(q.value());   // decoding has no gradients: lets the fused kernel take the mask
-            }
-            Tensor bias = masks[l];
-            if (bias == null && e.attentionSoftcap() > 0 && causal) {
-                bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
-            }
-            Var a = e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
-                    : bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
-                    : Functional.attention(q, k, v, causal, scale);
-            a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
-            Var attn = blk.o.apply(a);
-            if (blk.postAttnNorm != null) {
-                attn = rmsNorm(attn, blk.postAttnNorm, decoding);
-            }
-            x = x.add(attn);
-            h = rmsNorm(x, blk.ffnNorm, decoding);
-            // both products first: the activation and the product then run as one chain
-            if (blk.experts != null) {
-                Var ffnOut = experts(blk.experts, h);
-                if (blk.postFfnNorm != null) {
-                    ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
-                }
-                x = x.add(ffnOut);
-                continue;
-            }
-            Var gate;
-            Var up;
-            if (f != null && f.gateUp() != null) {
-                Var both = f.gateUp().apply(h);
-                int ffn = config.intermediate();
-                gate = both.slice(-1, 0, ffn);
-                up = both.slice(-1, ffn, 2 * ffn);
-            } else {
-                gate = blk.gate.apply(h);
-                up = blk.up.apply(h);
-            }
-            Var gated = gate.activation(e.activation(), 0).mul(up);
-            Var ffnOut = blk.down.apply(gated);
+        Block blk = blocks.get(l);
+        Device layerDev = deviceOf(l);
+        Var h = rmsNorm(x, blk.attnNorm, decoding);
+        Fused f = fused == null ? null : fused[l];
+        Var qOut;
+        Var kOut;
+        Var vOut;
+        if (f != null && f.qkv() != null) {
+            Var all = f.qkv().apply(h);
+            int qs = config.heads() * hd;
+            int ks = config.kvHeads() * hd;
+            qOut = all.slice(-1, 0, qs);
+            kOut = all.slice(-1, qs, qs + ks);
+            vOut = all.slice(-1, qs + ks, qs + 2 * ks);
+        } else {
+            qOut = blk.q.apply(h);
+            kOut = blk.k.apply(h);
+            vOut = blk.v.apply(h);
+        }
+        Var q = qOut.reshape(batch, steps, config.heads(), hd);
+        Var k = kOut.reshape(batch, steps, config.kvHeads(), hd);
+        if (blk.qNorm != null) {
+            q = rmsNorm(q, blk.qNorm, decoding);
+            k = rmsNorm(k, blk.kNorm, decoding);
+        }
+        q = q.permute(0, 2, 1, 3);
+        k = k.permute(0, 2, 1, 3);
+        Var v = vOut.reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
+        Rope r = localRope != null && e.local(l) ? localRope : rope;
+        q = rotate(r, q, positions, rotary, hd);
+        k = rotate(r, k, positions, rotary, hd);
+        boolean causal = steps > 1;
+        if (cache != null) {
+            cache.keys[l].write(2, cache.length, k.value());
+            cache.values[l].write(2, cache.length, v.value());
+            k = Var.of(cache.keys[l]);
+            v = Var.of(cache.values[l]);
+            q = Var.of(q.value());   // decoding has no gradients: lets the fused kernel take the mask
+        }
+        Tensor bias = masks[l];
+        if (bias == null && e.attentionSoftcap() > 0 && causal) {
+            bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
+        }
+        Var a = e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
+                : bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
+                : Functional.attention(q, k, v, causal, scale);
+        a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
+        Var attn = blk.o.apply(a);
+        if (blk.postAttnNorm != null) {
+            attn = rmsNorm(attn, blk.postAttnNorm, decoding);
+        }
+        x = x.add(attn);
+        h = rmsNorm(x, blk.ffnNorm, decoding);
+        // both products first: the activation and the product then run as one chain
+        if (blk.experts != null) {
+            Var ffnOut = experts(blk.experts, h);
             if (blk.postFfnNorm != null) {
                 ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
             }
             x = x.add(ffnOut);
+            return x;
         }
-        x = x.to(headDevice()).to(headType());
-        return rmsNorm(x, norm, decoding);
+        Var gate;
+        Var up;
+        if (f != null && f.gateUp() != null) {
+            Var both = f.gateUp().apply(h);
+            int ffn = config.intermediate();
+            gate = both.slice(-1, 0, ffn);
+            up = both.slice(-1, ffn, 2 * ffn);
+        } else {
+            gate = blk.gate.apply(h);
+            up = blk.up.apply(h);
+        }
+        Var gated = gate.activation(e.activation(), 0).mul(up);
+        Var ffnOut = blk.down.apply(gated);
+        if (blk.postFfnNorm != null) {
+            ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
+        }
+        x = x.add(ffnOut);
+        return x;
+    }
+
+    /** The values block {@code l} learns: its weights unless frozen, and its adapters. */
+    private List<Var> blockParameters(int l) {
+        String prefix = "model.layers." + l + ".";
+        List<Var> out = new ArrayList<>();
+        for (Map.Entry<String, Var> en : named.entrySet()) {
+            if (en.getKey().startsWith(prefix) && en.getValue().requiresGrad() && !frozen) {
+                out.add(en.getValue());
+            }
+        }
+        for (Map.Entry<String, Linear> en : linears.entrySet()) {
+            if (en.getKey().startsWith(prefix) && en.getValue().loraA != null) {
+                out.add(en.getValue().loraA);
+                out.add(en.getValue().loraB);
+            }
+        }
+        return out;
+    }
+
+    private volatile boolean checkpointing;
+
+    /**
+     * Sets activation checkpointing for training ({@link #forward}, {@link #loss}): each block
+     * keeps only its input and runs again during the backward pass, so memory for activations
+     * grows with the number of blocks instead of with everything inside them, for about a
+     * third more compute. The results are the same.
+     *
+     * @param on whether to checkpoint
+     * @return this model
+     */
+    public Llama checkpointActivations(boolean on) {
+        this.checkpointing = on;
+        return this;
     }
 
     /**
