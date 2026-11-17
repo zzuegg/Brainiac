@@ -73,7 +73,7 @@ public final class StudioServer implements AutoCloseable {
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         http.setExecutor(executor);
         StudioServer server = new StudioServer(http, executor, token);
-        WebAssets web = new WebAssets(token);
+        WebAssets web = new WebAssets(token, chat.page()::json, chat.folder().toString());
         http.createContext("/", ex -> server.guard(ex, false, web::handle));
         http.createContext("/api/", ex -> server.guard(ex, true, server::routeApi));
         server.get("/api/health", ex -> Exchanges.json(ex, 200, Map.of("status", "ok", "name", "Brainiac Studio")));

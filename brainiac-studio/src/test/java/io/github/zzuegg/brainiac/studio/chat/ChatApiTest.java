@@ -170,4 +170,15 @@ class ChatApiTest {
         assertEquals(200, call("POST", "/api/chats", "{\"id\":\"k3x9a\",\"delete\":true}").statusCode());
         assertEquals(List.of(), Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
     }
+
+    @Test
+    void pageStateIsKeptByTheStudioAndArrivesWithThePage() throws Exception {
+        assertEquals(200, call("POST", "/api/state", "{\"layout\":\"ultra\",\"chatTabs\":[\"k3x9a\"]}").statusCode());
+        assertEquals(200, call("POST", "/api/state", "{\"layout\":null}").statusCode());
+        assertEquals(Map.of("chatTabs", List.of("k3x9a")), Json.object(Json.parse(call("GET", "/api/state", null).body())));
+        assertEquals(400, call("POST", "/api/state", "{\"../x\":1}").statusCode());
+        String page = call("GET", "/", null).body();
+        assertTrue(page.contains("<script type=\"application/json\" id=\"studio-state\">{\"chatTabs\":[\"k3x9a\"]}</script>"), page);
+        assertTrue(page.contains("<meta name=\"studio-folder\" content=\""), page);
+    }
 }

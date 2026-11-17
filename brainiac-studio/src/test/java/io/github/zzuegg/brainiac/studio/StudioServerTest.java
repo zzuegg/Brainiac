@@ -33,8 +33,7 @@ class StudioServerTest {
     @BeforeAll
     static void start() throws IOException {
         Path home = Files.createTempDirectory("studio-test");
-        studio = Studio.start(new Studio.Settings(0, List.of(home.resolve("models")), home.resolve("keys.properties"),
-                Map.of(), home.resolve("outputs")));
+        studio = Studio.start(new Studio.Settings(0, List.of(home.resolve("models")), home.resolve("data"), Map.of()));
     }
 
     @AfterAll
@@ -61,6 +60,15 @@ class StudioServerTest {
         HttpResponse<String> css = get("/app.css", false);
         assertEquals(200, css.statusCode());
         assertTrue(css.headers().firstValue("Content-Type").orElse("").startsWith("text/css"));
+    }
+
+    @Test
+    void everythingIsKeptInTheDataFolder() {
+        Path data = Path.of("some", "data").toAbsolutePath();
+        Studio.Settings s = Studio.Settings.defaults().withData(Path.of("some", "data"));
+        assertEquals(data, s.data());
+        assertEquals(data.resolve("keys.properties"), s.keyFile());
+        assertEquals(data.resolve("outputs"), s.outputs());
     }
 
     @Test
