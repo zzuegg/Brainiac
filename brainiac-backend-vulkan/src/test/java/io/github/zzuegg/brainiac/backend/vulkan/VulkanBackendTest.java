@@ -593,11 +593,18 @@ class VulkanBackendTest {
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
         "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
-        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77);
-        packedMatches(bits, group, m, 768, 256);
+        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77, false);
+        packedMatches(bits, group, m, 768, 256, false);
     }
 
-    private static void packedMatches(int bits, int group, int m, int rows, int cols) {
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4, 32, 1", "5, 32, 3", "6, 16, 8", "2, 16, 2", "8, 32, 12"})
+    void packedMatricesWithOffsetsMatchTheCpu(int bits, int group, int m) {
+        packedMatches(bits, group, m, 192, 77, true);
+        packedMatches(bits, group, m, 768, 256, true);
+    }
+
+    private static void packedMatches(int bits, int group, int m, int rows, int cols, boolean withOffsets) {
         if (rows % group != 0) {
             return;
         }
@@ -611,7 +618,14 @@ class VulkanBackendTest {
         for (int i = 0; i < scales.length; i++) {
             scales[i] = (float) r.nextDouble(0.001, 0.05);
         }
-        PackedMatrix w = PackedMatrix.of(levels, scales, rows, cols, bits, group);
+        float[] offsets = null;
+        if (withOffsets) {
+            offsets = new float[scales.length];
+            for (int i = 0; i < offsets.length; i++) {
+                offsets[i] = (float) r.nextDouble(-0.2, 0.2);
+            }
+        }
+        PackedMatrix w = PackedMatrix.of(levels, scales, offsets, rows, cols, bits, group);
         Tensor x = random(3, m, rows);
         Tensor onCpu = Tensor.packed(w, CPU);
         Tensor onGpu = onCpu.to(gpu);
@@ -631,7 +645,9 @@ class VulkanBackendTest {
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {
                 // inputs rounded to 16 bits: errors relative to the largest output
-                float[] actual = x.to(type).to(gpu).matmul(onGpu).toArray();
+                Tensor product = x.to(type).to(gpu).matmul(onGpu);
+                assertEquals(type, product.dtype(), "packed weights multiply in the activations' type");
+                float[] actual = product.toArray();
                 double tolerance = (type == DType.FLOAT64 ? 1e-5 : type == DType.FLOAT16 ? 4e-3 : 3e-2) * scale;
                 for (int i = 0; i < expected.length; i++) {
                     assertEquals(expected[i], actual[i], tolerance, what + ", " + type + " at " + i);

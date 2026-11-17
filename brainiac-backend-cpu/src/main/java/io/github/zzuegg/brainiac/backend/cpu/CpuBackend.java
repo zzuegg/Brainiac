@@ -338,6 +338,9 @@ public final class CpuBackend implements Backend {
                 } else {
                     PackedKernels.matmul(x, w, z, m, j0, j1);
                 }
+                if (w.offsets() != null) {
+                    PackedKernels.addOffsets(x, w, z, m, j0, j1);
+                }
             }
         });
     }
