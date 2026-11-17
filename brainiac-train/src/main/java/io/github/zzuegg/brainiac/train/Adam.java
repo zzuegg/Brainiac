@@ -3,93 +3,43 @@ package io.github.zzuegg.brainiac.train;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
-import java.util.ArrayList;
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Map;
-
-/** The Adam optimizer. */
-final class Adam implements Optimizer {
-    private float learningRate;
+/** Adam, and AdamW when it has a (decoupled) weight decay. */
+final class Adam extends StatefulOptimizer {
     private final float beta1;
     private final float beta2;
     private final float epsilon;
-    private final Map<Var, Tensor> m = new IdentityHashMap<>();
-    private final Map<Var, Tensor> v = new IdentityHashMap<>();
-    private int t;
+    private final float weightDecay;
 
     Adam(float learningRate, float beta1, float beta2, float epsilon) {
-        if (learningRate <= 0) {
-            throw new IllegalArgumentException("learningRate must be positive, got " + learningRate);
+        this(learningRate, beta1, beta2, epsilon, 0);
+    }
+
+    Adam(float learningRate, float beta1, float beta2, float epsilon, float weightDecay) {
+        super(learningRate, "m", "v");
+        if (beta1 < 0 || beta1 >= 1 || beta2 < 0 || beta2 >= 1 || epsilon < 0 || weightDecay < 0) {
+            throw new IllegalArgumentException("bad Adam settings");
         }
-        this.learningRate = learningRate;
         this.beta1 = beta1;
         this.beta2 = beta2;
         this.epsilon = epsilon;
+        this.weightDecay = weightDecay;
     }
 
     @Override
-    public void step(List<Var> parameters) {
-        t++;
+    Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
+        float lr = learningRate();
         float correction1 = 1 - (float) Math.pow(beta1, t);
         float correction2 = 1 - (float) Math.pow(beta2, t);
-        List<Tensor> updated = new ArrayList<>(3 * parameters.size());
-        List<Tensor> previous = new ArrayList<>(2 * parameters.size());
-        List<Tensor> grads = new ArrayList<>(parameters.size());
-        for (Var p : parameters) {
-            if (p.grad() != null) {
-                grads.add(p.grad());
-            }
-        }
-        Tensor.evaluate(grads);   // the gradients' last steps together, rather than one by one
-        List<Tensor> created = Tensor.created(() -> {
-            for (Var p : parameters) {
-                Tensor g = p.grad();
-                if (g == null) {
-                    continue;
-                }
-                Tensor mPrev = m.get(p);
-                Tensor vPrev = v.get(p);
-                Tensor mNew = (mPrev == null ? g.mul(1 - beta1) : mPrev.mul(beta1).add(g.mul(1 - beta1)));
-                Tensor vNew = (vPrev == null ? g.square().mul(1 - beta2) : vPrev.mul(beta2).add(g.square().mul(1 - beta2)));
-                m.put(p, mNew);
-                v.put(p, vNew);
-                if (mPrev != null) {
-                    previous.add(mPrev);
-                    previous.add(vPrev);
-                }
-                Tensor mHat = mNew.div(correction1);
-                Tensor vHat = vNew.div(correction2);
-                p.assign(p.value().sub(mHat.div(vHat.sqrt().add(epsilon)).mul(learningRate)));
-                p.zeroGrad();
-                updated.add(p.value());
-                updated.add(mNew);
-                updated.add(vNew);
-            }
-        });
-        Tensor.evaluate(updated);   // on a GPU, the whole step as one kernel
-        // Only this optimizer saw its old state, the gradients it used and the values on the
-        // way: their memory is free now.
-        previous.addAll(created);
-        previous.addAll(grads);
-        Tensor.release(previous, updated);
-    }
-
-    @Override
-    public float learningRate() {
-        return learningRate;
-    }
-
-    @Override
-    public void learningRate(float learningRate) {
-        if (learningRate <= 0) {
-            throw new IllegalArgumentException("learningRate must be positive, got " + learningRate);
-        }
-        this.learningRate = learningRate;
+        Tensor m = s[0] == null ? g.mul(1 - beta1) : s[0].mul(beta1).add(g.mul(1 - beta1));
+        Tensor v = s[1] == null ? g.square().mul(1 - beta2) : s[1].mul(beta2).add(g.square().mul(1 - beta2));
+        Tensor w = weightDecay > 0 ? p.value().mul(1 - lr * weightDecay) : p.value();
+        p.assign(w.sub(m.div(correction1).div(v.div(correction2).sqrt().add(epsilon)).mul(lr)));
+        return new Tensor[] {m, v};
     }
 
     @Override
     public String toString() {
-        return "Adam(lr=" + learningRate + ")";
+        return (weightDecay > 0 ? "AdamW(lr=" + learningRate() + ", weightDecay=" + weightDecay : "Adam(lr="
+                + learningRate()) + ")";
     }
 }
