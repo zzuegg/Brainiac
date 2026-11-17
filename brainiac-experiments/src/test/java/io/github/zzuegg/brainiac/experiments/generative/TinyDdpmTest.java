@@ -62,6 +62,8 @@ class TinyDdpmTest {
         double[] ddim = score(ddpm.sampleDdim(labels, 20, 3f, 7, trajectory), labels);
         double[] ddpmScore = score(ddpm.sampleDdpm(labels, 3f, 7, null), labels);
         double[] base = score(untrained.sampleDdim(labels, 20, 3f, 7, null), labels);
+        System.out.printf("DDPM toy shapes: nearest-real distance DDIM %.3f, DDPM %.3f, untrained %.3f; class match "
+                + "DDIM %.3f, DDPM %.3f (chance 0.25)%n", ddim[0], ddpmScore[0], base[0], ddim[1], ddpmScore[1]);
         assertEquals(20, trajectory.size());
         byte[] gif = TinyDdpm.denoisingGif(trajectory, ToyImages.SIDE, 4);
         assertEquals('G', gif[0]);

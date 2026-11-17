@@ -19,6 +19,7 @@ class PeftShootoutTest {
 
     private static PeftShootout.Result adapts(PeftShootout.Method m) {
         PeftShootout.Result r = PeftShootout.run(base(), m, 40, 9);
+        System.out.printf("PEFT %-14s loss %.3f -> %.3f, trainable %d%n", m, r.before(), r.after(), r.trainable());
         assertTrue(r.after() < 0.75f * r.before(), m + ": " + r.before() + " -> " + r.after());
         return r;
     }

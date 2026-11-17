@@ -16,6 +16,7 @@ class AttentionShootoutTest {
     void everyVariantTrainsThroughItsSpec() {
         List<MixerShootout.Result> results = MixerShootout.run(AttentionShootout.lineup(),
                 List.of(MixerShootout.recall(4, 4, 2)), 16, 2, 0.01f, 1);
+        System.out.println("attention lineup, 2 training steps (smoke run):\n" + MixerShootout.table(results));
         assertEquals(AttentionShootout.lineup().size(), results.size());
         for (MixerShootout.Result r : results) {
             assertTrue(r.parameters() > 0, r.mixer());

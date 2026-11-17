@@ -64,10 +64,13 @@ class RectifiedFlowExperimentTest {
         assertTrue(quality > 0.6 && quality > 3 * untrained, "near a blob: " + quality + " vs untrained " + untrained);
         double euler = gap(fm.sampleEuler(z, none, 4, 1, null), reference);
         double heun = gap(fm.sampleHeun(z, none, 4, 1, null), reference);
+        System.out.printf("rectified flow: near a blob %.3f (untrained %.3f), 4-step error Euler %.4f, Heun %.4f%n",
+                quality, untrained, euler, heun);
         assertTrue(heun < euler, "Heun error " + heun + " should be below Euler " + euler);
 
         int[] l = labels(60);
         double hit = RING.score(fm.sampleHeun(fm.noise(60, 6), l, 16, 3f, null), l)[1];
+        System.out.printf("rectified flow: guided samples in their blob %.3f%n", hit);
         assertTrue(hit > 0.8, "guided samples land in their blob: " + hit);
     }
 
@@ -84,6 +87,7 @@ class RectifiedFlowExperimentTest {
             fm.reflowStep(z, x, none);
         }
         double after = gap(fm.sampleEuler(probe, none, 1, 1, null), fm.sampleHeun(probe, none, 32, 1, null));
+        System.out.printf("reflow: one-step error %.4f -> %.4f%n", before, after);
         assertTrue(after < before * 0.6, "one-step error " + before + " -> " + after);
     }
 }

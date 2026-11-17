@@ -35,6 +35,7 @@ class AlignmentTest {
         HookedDecoder base = PeftShootoutTest.base();
         for (PreferenceTuning.Objective o : PreferenceTuning.Objective.values()) {
             PreferenceTuning.Result res = PreferenceTuning.run(base, o, 25, 4);
+            System.out.printf("%-6s chosen margin %.3f -> %.3f%n", o, res.marginBefore(), res.marginAfter());
             assertTrue(res.marginAfter() > res.marginBefore() + 2, o + ": " + res);
         }
     }
@@ -53,6 +54,7 @@ class AlignmentTest {
             rm.zeroGrad();
         }
         int[][][] test = PreferenceTuning.pairs(new SplittableRandom(77), 64, 12);
+        System.out.printf("reward model preference accuracy %.3f%n", rm.accuracy(test[0], test[1]));
         assertTrue(rm.accuracy(test[0], test[1]) > 0.9, "reward model accuracy " + rm.accuracy(test[0], test[1]));
 
         HookedDecoder policy = PeftShootoutTest.base().copy();
@@ -68,6 +70,8 @@ class AlignmentTest {
                 p[1] = (p[0] + 1) % 12;
             }
             RejectionSamplingFineTuning.Round res = rft.round(prompts, 4, 4, Double.NEGATIVE_INFINITY, 5, pr);
+            System.out.printf("rejection sampling round %d: mean reward %.3f, kept reward %.3f, kept %d%n", round,
+                    res.meanReward(), res.keptReward(), res.kept());
             first = Double.isNaN(first) ? res.meanReward() : first;
             last = res.meanReward();
             assertTrue(res.keptReward() >= res.meanReward());

@@ -25,6 +25,7 @@ class ToyAudioCodecTest {
         for (int s = 1; s <= 4; s++) {
             snr[s - 1] = codec.snr(probe, s);
         }
+        System.out.printf("audio codec SNR dB by RVQ stages 1-4: %.2f %.2f %.2f %.2f%n", snr[0], snr[1], snr[2], snr[3]);
         assertEquals(4, codec.encode(probe, 4).length);
         assertTrue(snr[3] > snr[0] + 3, "SNR by stages " + java.util.Arrays.toString(snr));
         assertTrue(snr[3] > 6, "4 stages (20 bits per 32 samples) SNR " + snr[3]);
