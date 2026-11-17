@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.llm;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.Gguf;
+import io.github.zzuegg.brainiac.io.GgufWriter;
 import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.io.SafeTensors;
@@ -2153,6 +2154,35 @@ public final class Llama implements LanguageModel {
      * @param half whether matrices are stored as float16
      */
     public void saveGguf(Path file, PretrainedTokenizer tokenizer, boolean half) {
+        GgufWriter.Type t = half ? GgufWriter.Type.F16 : GgufWriter.Type.F32;
+        saveGguf(file, tokenizer, name -> t);
+    }
+
+    /**
+     * Writes the model as a quantized GGUF file, as {@code llama-quantize} would: matrices in
+     * {@code type}, norms and biases in float32, and the expert router in float32. With
+     * {@link GgufWriter.Type#Q4_K Q4_K} the output layer, the value projections and the
+     * down projections go in Q6_K, after llama.cpp's Q4_K_M mix.
+     *
+     * @param file the {@code .gguf} file to write
+     * @param tokenizer the model's tokenizer, or {@code null}
+     * @param type the storage type of the matrices
+     */
+    public void saveGguf(Path file, PretrainedTokenizer tokenizer, GgufWriter.Type type) {
+        saveGguf(file, tokenizer, name -> {
+            if (name.contains("ffn_gate_inp")) {
+                return GgufWriter.Type.F32;
+            }
+            if (type == GgufWriter.Type.Q4_K && (name.equals("output.weight") || name.contains("attn_v.")
+                    || name.contains("ffn_down"))) {
+                return GgufWriter.Type.Q6_K;
+            }
+            return type;
+        });
+    }
+
+    private void saveGguf(Path file, PretrainedTokenizer tokenizer,
+            java.util.function.Function<String, GgufWriter.Type> types) {
         if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
         }
@@ -2300,7 +2330,7 @@ public final class Llama implements LanguageModel {
                 }
             }
         }
-        io.github.zzuegg.brainiac.io.GgufWriter.write(file, m, t, half);
+        GgufWriter.write(file, m, t, types);
     }
 
     /** Values a writer can read: packed matrices unpacked. */
