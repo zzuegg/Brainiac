@@ -35,7 +35,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
-| `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping |
+| `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -346,6 +346,21 @@ try (Gguf g = Gguf.open(Path.of("qwen2.5-0.5b-instruct-q8_0.gguf"))) {
     long layers = (Long) g.metadata().get(arch + ".block_count");
     Tensor wq = g.packedTransposed("blk.0.attn_q.weight", Device.gpu());   // [in, out], 8-bit
 }
+```
+
+### Pretrained tokenizers
+
+`PretrainedTokenizer` reads a Hugging Face `tokenizer.json`, a SentencePiece `.model` or the
+vocabulary inside a GGUF file, and produces the same ids as the library the model was
+trained with (checked against Hugging Face tokenizers and sentencepiece). It covers
+byte-level BPE (GPT-2, Llama 3, Qwen), SentencePiece BPE with byte fallback (Llama 2,
+Mistral), Unigram (T5) and WordPiece (BERT).
+
+```java
+PretrainedTokenizer tok = PretrainedTokenizer.load(Path.of("Qwen2.5-0.5B-Instruct"));
+int[] ids = tok.encode("<|im_start|>user\nHi<|im_end|>\n");   // special tokens in text are recognized
+String text = tok.decode(ids, true);                           // skipping special tokens
+int eos = tok.eos().orElseThrow();
 ```
 
 ## Reinforcement learning
