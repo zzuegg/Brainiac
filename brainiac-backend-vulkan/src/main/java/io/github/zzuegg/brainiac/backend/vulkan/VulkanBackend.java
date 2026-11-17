@@ -111,19 +111,12 @@ public final class VulkanBackend implements Backend {
                         first = this;
                     }
                 }
-                boolean stats = Boolean.getBoolean("brainiac.vulkan.statistics");
-                boolean close = !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.closeOnExit"));
-                if (stats || close) {
+                if (Boolean.getBoolean("brainiac.vulkan.statistics")) {
                     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                        synchronized (this) {
-                            if (stats && vk != null && vk.dispatches > 0) {
-                                System.err.println(name() + ": " + statistics());
-                            }
-                            if (close) {
-                                close();
-                            }
+                        if (vk.dispatches > 0) {
+                            System.err.println(name() + ": " + statistics());
                         }
-                    }, "vulkan-exit"));
+                    }, "vulkan-statistics"));
                 }
             } catch (RuntimeException | LinkageError e) {
                 unavailable = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -229,22 +222,6 @@ public final class VulkanBackend implements Backend {
     public synchronized void finish() {
         if (vk != null) {
             vk.finish();
-        }
-    }
-
-    /**
-     * Releases the device: waits for its work, frees its memory and destroys it. Tensors on it
-     * are unusable afterwards and the backend reports itself unavailable. Runs at exit unless
-     * {@code -Dbrainiac.vulkan.closeOnExit=false}, since some drivers (NVIDIA's on Linux) crash
-     * in their own exit handlers when a device is still alive.
-     */
-    public synchronized void close() {
-        if (vk != null) {
-            VkContext c = vk;
-            vk = null;
-            unavailable = "closed";
-            tables.clear();
-            c.close();
         }
     }
 

@@ -166,12 +166,6 @@ final class VkContext {
     private final Map<Long, ArrayDeque<Slot>> free = new HashMap<>();
     private final ConcurrentLinkedQueue<Slot> released = new ConcurrentLinkedQueue<>();
     private final List<Block> dedicated = new ArrayList<>();
-    /** Every live block, for {@link #close}. */
-    private final Set<Block> blocks = new HashSet<>();
-    /** Every batch ever created, for {@link #close}. */
-    private final List<Batch> batches = new ArrayList<>();
-    private long messenger;
-    private boolean closed;
     private Block chunk;
     private long allocated;
     private long inUse;
@@ -265,7 +259,6 @@ final class VkContext {
                 LongBuffer lp = st.mallocLong(1);
                 check(EXTDebugUtils.vkCreateDebugUtilsMessengerEXT(instance, mci, null, lp),
                         "vkCreateDebugUtilsMessengerEXT");
-                messenger = lp.get(0);
             }
         }
         try {
@@ -570,7 +563,6 @@ final class VkContext {
 
     /** A device-local slot of at least {@code bytes}. Contents are undefined. */
     Slot allocate(long bytes) {
-        open();
         long size = bucket(bytes);
         drainReleased();
         ArrayDeque<Slot> list = free.get(size);
@@ -634,7 +626,6 @@ final class VkContext {
 
     /** Frees unused dedicated blocks after collecting garbage, to stay within the budget. */
     void reclaim() {
-        open();
         reclaims++;
         finish();
         System.gc();
@@ -756,7 +747,6 @@ final class VkContext {
             } else if (type == deviceLocalType) {
                 allocated += size;
             }
-            blocks.add(b);
             return b;
         }
     }
@@ -767,7 +757,6 @@ final class VkContext {
         }
         vkDestroyBuffer(device, b.buffer, null);
         vkFreeMemory(device, b.memory, null);
-        blocks.remove(b);
         if (b.spill) {
             spilled -= b.size;
         } else if (b.type == deviceLocalType) {
@@ -777,48 +766,6 @@ final class VkContext {
 
     long allocated() {
         return allocated;
-    }
-
-    /**
-     * Waits for the device and destroys everything made on it, then the device and the
-     * instance. Some drivers crash at exit when a device is still alive as their own
-     * destructors run, so the backend calls this from a shutdown hook. Nothing may use the
-     * context afterwards; a second call does nothing.
-     */
-    void close() {
-        if (closed) {
-            return;
-        }
-        closed = true;
-        vkDeviceWaitIdle(device);
-        for (Block b : List.copyOf(blocks)) {
-            destroy(b);
-        }
-        for (long p : pipelines.values()) {
-            vkDestroyPipeline(device, p, null);
-        }
-        pipelines.clear();
-        for (Batch b : batches) {
-            vkDestroyFence(device, b.fence, null);
-            if (b.queries != 0) {
-                vkDestroyQueryPool(device, b.queries, null);
-            }
-        }
-        batches.clear();
-        vkDestroyCommandPool(device, commandPool, null);
-        vkDestroyPipelineLayout(device, pipelineLayout, null);
-        vkDestroyDevice(device, null);
-        if (messenger != 0) {
-            EXTDebugUtils.vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
-        }
-        vkDestroyInstance(instance, null);
-        MemoryUtil.memFree(inline);
-    }
-
-    private void open() {
-        if (closed) {
-            throw new IllegalStateException("the Vulkan device was closed");
-        }
     }
 
     long peakInUse() {
@@ -864,7 +811,6 @@ final class VkContext {
 
     /** Makes SPIR-V compiled at run time (a fused shader) available to {@link #dispatch} by name. */
     void register(String name, byte[] code) {
-        open();
         pipelines.put(name, createPipeline(code, false));
     }
 
@@ -934,7 +880,6 @@ final class VkContext {
                                 "vkCreateQueryPool");
                         b.queries = lp.get(0);
                     }
-                    batches.add(b);
                 }
                 check(vkBeginCommandBuffer(b.commands, VkCommandBufferBeginInfo.calloc(st).sType$Default()
                         .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "vkBeginCommandBuffer");
@@ -1009,7 +954,6 @@ final class VkContext {
     final java.util.Map<String, Long> perShader = new java.util.HashMap<>();
 
     void dispatch(String shader, int x, int y, int z, Slot[] writes, Slot... reads) {
-        open();
         perShader.merge(shader, 1L, Long::sum);
         long p = pipeline(shader);
         boolean timed = PROFILE && recording().timed.size() < SUBMIT_EVERY;
@@ -1055,7 +999,6 @@ final class VkContext {
 
     /** Sets {@code bytes} bytes at {@code offset} of a slot to a 32-bit pattern. */
     void fill(Slot s, long offset, long bytes, int pattern) {
-        open();
         if (bytes == 0) {
             return;
         }
@@ -1067,7 +1010,6 @@ final class VkContext {
 
     /** Copies bytes between slots. */
     void copy(Slot from, long fromOffset, Slot to, long toOffset, long bytes) {
-        open();
         if (bytes == 0) {
             return;
         }
@@ -1085,7 +1027,6 @@ final class VkContext {
      * through a staging buffer. {@code writer} fills a direct buffer of {@code bytes} bytes.
      */
     void upload(Slot s, long bytes, java.util.function.Consumer<ByteBuffer> writer) {
-        open();
         if (bytes == 0) {
             return;
         }
@@ -1127,7 +1068,6 @@ final class VkContext {
      * each submitted once full, so the device copies one while the next is written.
      */
     void upload(Slot s, MemorySegment src) {
-        open();
         long bytes = src.byteSize();
         if (bytes <= STAGING_CHUNK / 2) {
             upload(s, bytes, b -> MemorySegment.ofBuffer(b).copyFrom(src));
@@ -1185,7 +1125,6 @@ final class VkContext {
      * @return the device address of the data
      */
     long hostData(int bytes, java.util.function.Consumer<ByteBuffer> writer) {
-        open();
         Batch b = recording();
         long at = stage(b, bytes);
         writer.accept(MemoryUtil.memByteBuffer(staging.mapped + at, bytes).order(ByteOrder.nativeOrder()));
@@ -1194,7 +1133,6 @@ final class VkContext {
 
     /** Copies a slot's first {@code bytes} bytes to the host, waiting for all work before it. */
     ByteBuffer download(Slot s, long bytes) {
-        open();
         if (readback == null || readback.size < bytes) {
             if (readback != null) {
                 finish();
@@ -1232,7 +1170,6 @@ final class VkContext {
 
     /** Submits the recorded commands without waiting. */
     void submit() {
-        open();
         Batch b = current;
         if (b == null) {
             return;
@@ -1294,7 +1231,6 @@ final class VkContext {
 
     /** Submits everything recorded and waits until the device has run it. */
     void finish() {
-        open();
         finishes++;
         if (TRACE_FINISH) {
             finishCallers.merge(caller(), 1L, Long::sum);
