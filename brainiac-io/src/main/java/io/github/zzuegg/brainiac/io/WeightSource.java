@@ -132,7 +132,8 @@ public interface WeightSource extends AutoCloseable {
     /**
      * Opens weights at a path: a {@code .safetensors} file, a sharded model's {@code
      * *.safetensors.index.json}, or a directory holding either (a Hugging Face model
-     * download), or a {@code .gguf} file.
+     * download, or one with {@code pytorch_model.bin}), a {@code .gguf} file, or a PyTorch
+     * checkpoint ({@code .pt}, {@code .pth}, {@code .bin}, read by {@link TorchCheckpoint}).
      *
      * @param path the file or directory
      * @return the weights
@@ -155,6 +156,10 @@ public interface WeightSource extends AutoCloseable {
                     files = list.filter(p -> p.getFileName().toString().endsWith(".safetensors")).sorted().toList();
                 }
                 if (files.isEmpty()) {
+                    Path bin = path.resolve("pytorch_model.bin");
+                    if (Files.isRegularFile(bin)) {
+                        return TorchCheckpoint.open(bin);
+                    }
                     throw new IllegalArgumentException("no .safetensors files in " + path);
                 }
                 return of(files.stream().map(SafeTensors::open).map(WeightSource.class::cast).toList());
@@ -178,6 +183,9 @@ public interface WeightSource extends AutoCloseable {
             }
             if (file.endsWith(".gguf")) {
                 return Gguf.open(path);
+            }
+            if (file.endsWith(".pt") || file.endsWith(".pth") || file.endsWith(".bin") || file.endsWith(".ckpt")) {
+                return TorchCheckpoint.open(path);
             }
             return SafeTensors.open(path);
         } catch (IOException e) {
