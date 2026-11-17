@@ -406,8 +406,15 @@ public final class OpenAiServer implements AutoCloseable {
                     continue;
                 }
                 Object params = f.get("parameters") instanceof Map<?, ?> m ? m : Map.of("type", "object");
-                any.add(Map.of("type", "object", "properties", Map.of("name", Map.of("const", f.get("name")),
-                        "arguments", params), "required", List.of("name", "arguments")));
+                // ordered: the name first, then the arguments (Map.of would shuffle them)
+                Map<String, Object> properties = new LinkedHashMap<>();
+                properties.put("name", Map.of("const", f.get("name")));
+                properties.put("arguments", params);
+                Map<String, Object> call = new LinkedHashMap<>();
+                call.put("type", "object");
+                call.put("properties", properties);
+                call.put("required", List.of("name", "arguments"));
+                any.add(call);
             }
             if (any.isEmpty()) {
                 throw new BadRequest("tool_choice names " + wanted + ", which is not among the tools");
