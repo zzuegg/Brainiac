@@ -20,7 +20,9 @@ import java.util.SplittableRandom;
  * hide {@code b}, either with the single-turn reward (a response is worth its outcome only if
  * it ends the conversation) or with CollabLLM's multiturn-aware reward
  * ({@link MultiturnRewardTrainer}: the mean outcome of simulated futures minus 0.1 per
- * assistant turn). Task success and assistant turns are measured on every request, greedily.
+ * assistant turn). Candidates are sampled at temperature 2 during training, because the
+ * supervised model rarely asks. Task success and assistant turns are measured on every
+ * request, greedily.
  */
 public final class ClarifyingQuestions {
 
