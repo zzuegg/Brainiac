@@ -493,6 +493,55 @@ public final class Brain implements Layer {
 
     @Override
     public Var forward(Var input, boolean training) {
+        Var[] state = run(input, training);
+        List<Var> outs = new ArrayList<>();
+        for (String o : outputs) {
+            outs.add(state[regionIndex(o)]);
+        }
+        return outs.size() == 1 ? outs.get(0) : Var.concat(1, outs.toArray(Var[]::new));
+    }
+
+    /**
+     * Runs the brain like {@link #forward(Var, boolean)} and returns what every region
+     * outputs after the last tick, not only the output regions: for reading activity,
+     * probing representations, or losses on hidden regions.
+     *
+     * @param input a batch {@code [batch, inputs]}
+     * @param training whether training
+     * @return each region's activity {@code [batch, capacity]} by name, in region order;
+     *     dormant neurons are 0
+     */
+    public Map<String, Var> forwardRegions(Var input, boolean training) {
+        Var[] state = run(input, training);
+        Map<String, Var> out = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < state.length; i++) {
+            out.put(regionSpecs.get(i).name(), state[i]);
+        }
+        return out;
+    }
+
+    /**
+     * Which of a region's neurons are active; the rest are dormant and output 0.
+     *
+     * @param region the region's name
+     * @return one flag per neuron of its capacity
+     */
+    public boolean[] activeNeurons(String region) {
+        return active(regionIndex(region));
+    }
+
+    /**
+     * The running mean of each neuron's absolute output over training batches, kept while
+     * {@link #track(boolean) tracking}; {@link #removeDeadNeurons} reads it.
+     *
+     * @param region the region's name
+     * @return a copy, one value per neuron of its capacity
+     */
+    public double[] activity(String region) {
+        return activity[regionIndex(region)].clone();
+    }
+
+    private Var[] run(Var input, boolean training) {
         int r = regionSpecs.size();
         Var[] state = new Var[r];
         for (int t = 0; t < ticks; t++) {
@@ -555,11 +604,7 @@ public final class Brain implements Layer {
                 }
             }
         }
-        List<Var> outs = new ArrayList<>();
-        for (String o : outputs) {
-            outs.add(state[regionIndex(o)]);
-        }
-        return outs.size() == 1 ? outs.get(0) : Var.concat(1, outs.toArray(Var[]::new));
+        return state;
     }
 
     private Var probe(int j) {
