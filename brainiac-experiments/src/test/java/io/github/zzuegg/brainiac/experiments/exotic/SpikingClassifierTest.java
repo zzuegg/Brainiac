@@ -54,6 +54,8 @@ class SpikingClassifierTest {
                 net.trainStep(32);
             }
             double acc = net.accuracy(200, 7);
+            System.out.printf("spiking classifier, %s coding: accuracy %.3f, hidden spike rate %.3f%n",
+                    latency ? "latency" : "rate", acc, net.hiddenSpikeRate());
             assertTrue(acc > 0.9, (latency ? "latency" : "rate") + " coding accuracy " + acc);
             assertTrue(net.hiddenSpikeRate() < 0.5, "sparse activity " + net.hiddenSpikeRate());
         }

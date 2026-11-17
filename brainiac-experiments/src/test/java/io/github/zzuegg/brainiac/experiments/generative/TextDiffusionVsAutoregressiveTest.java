@@ -22,6 +22,7 @@ class TextDiffusionVsAutoregressiveTest {
         List<String> ar = exp.sampleAutoregressive(20, 0.5f, 3);
         double d = exp.validShare(diffusion);
         double a = exp.validShare(ar);
+        System.out.printf("valid-word share: diffusion %.3f (untrained %.3f), autoregressive %.3f%n", d, untrained, a);
         assertTrue(d > 0.6 && d > untrained, "diffusion samples that are words: " + d + " " + diffusion);
         assertTrue(a > 0.6, "autoregressive samples that are words: " + a + " " + ar);
 

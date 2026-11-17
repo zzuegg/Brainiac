@@ -56,6 +56,9 @@ class ProbabilisticBitsTest {
         gate.release();
         gate.clamp(2, -1);
         double[] no = ProbabilisticBits.histogram(gate, 2, 6000, 10, 5);
+        System.out.printf("p-bit AND gate: valid states %.4f (exact), forward P(111) %.3f, backward P(111) %.3f, "
+                + "C=0 -> P(000) %.3f P(001) %.3f P(010) %.3f%n", valid, fwd[0b111], back[0b111], no[0b000], no[0b001],
+                no[0b010]);
         for (int c : new int[] {0b000, 0b001, 0b010}) {
             assertEquals(1.0 / 3, no[c], 0.05, "state " + c);
         }
