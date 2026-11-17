@@ -130,7 +130,22 @@ void main() {
             }
             // a loop per layout, each reading a word of levels once for the rows it holds
             // (r and stop are even: groups and runs have an even number of rows)
+            uint stride = p.n >> 2;   // words per row (per two rows with 4-bit levels)
             if (words && mode == 1u) {
+                // two words of levels read before either is used, so more loads are in flight
+                for (; r + 4 <= stop; r += 4) {
+                    uint at = ((r >> 1) * p.n + c) >> 2;
+                    int w = int(p.q.v[at]);
+                    int v = int(p.q.v[at + stride]);
+                    ACCUMULATE(r, ACC4(bitfieldExtract(w, 0, 4), bitfieldExtract(w, 8, 4),
+                                       bitfieldExtract(w, 16, 4), bitfieldExtract(w, 24, 4)));
+                    ACCUMULATE(r + 1, ACC4(bitfieldExtract(w, 4, 4), bitfieldExtract(w, 12, 4),
+                                           bitfieldExtract(w, 20, 4), bitfieldExtract(w, 28, 4)));
+                    ACCUMULATE(r + 2, ACC4(bitfieldExtract(v, 0, 4), bitfieldExtract(v, 8, 4),
+                                           bitfieldExtract(v, 16, 4), bitfieldExtract(v, 24, 4)));
+                    ACCUMULATE(r + 3, ACC4(bitfieldExtract(v, 4, 4), bitfieldExtract(v, 12, 4),
+                                           bitfieldExtract(v, 20, 4), bitfieldExtract(v, 28, 4)));
+                }
                 for (; r < stop; r += 2) {
                     int w = int(p.q.v[((r >> 1) * p.n + c) >> 2]);
                     ACCUMULATE(r, ACC4(bitfieldExtract(w, 0, 4), bitfieldExtract(w, 8, 4),
@@ -166,6 +181,22 @@ void main() {
                                            table[bitfieldExtract(w, 20, 4)], table[bitfieldExtract(w, 28, 4)]));
                 }
             } else if (words) {
+                // four rows' words read before any is used, so more loads are in flight
+                for (; r + 4 <= stop; r += 4) {
+                    uint at = (r * p.n + c) >> 2;
+                    int w0 = int(p.q.v[at]);
+                    int w1 = int(p.q.v[at + stride]);
+                    int w2 = int(p.q.v[at + 2 * stride]);
+                    int w3 = int(p.q.v[at + 3 * stride]);
+                    ACCUMULATE(r, ACC4(bitfieldExtract(w0, 0, 8), bitfieldExtract(w0, 8, 8),
+                                       bitfieldExtract(w0, 16, 8), bitfieldExtract(w0, 24, 8)));
+                    ACCUMULATE(r + 1, ACC4(bitfieldExtract(w1, 0, 8), bitfieldExtract(w1, 8, 8),
+                                           bitfieldExtract(w1, 16, 8), bitfieldExtract(w1, 24, 8)));
+                    ACCUMULATE(r + 2, ACC4(bitfieldExtract(w2, 0, 8), bitfieldExtract(w2, 8, 8),
+                                           bitfieldExtract(w2, 16, 8), bitfieldExtract(w2, 24, 8)));
+                    ACCUMULATE(r + 3, ACC4(bitfieldExtract(w3, 0, 8), bitfieldExtract(w3, 8, 8),
+                                           bitfieldExtract(w3, 16, 8), bitfieldExtract(w3, 24, 8)));
+                }
                 for (; r < stop; r++) {
                     int w = int(p.q.v[(r * p.n + c) >> 2]);
                     ACCUMULATE(r, ACC4(bitfieldExtract(w, 0, 8), bitfieldExtract(w, 8, 8),
