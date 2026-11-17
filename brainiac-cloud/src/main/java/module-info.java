@@ -5,7 +5,7 @@
  */
 module io.github.zzuegg.brainiac.cloud {
     requires transitive io.github.zzuegg.brainiac.io;
-    requires java.net.http;
+    requires transitive java.net.http;
 
     exports io.github.zzuegg.brainiac.cloud;
 }
