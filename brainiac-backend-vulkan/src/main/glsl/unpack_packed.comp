@@ -2,26 +2,22 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 #include "packed.glsl"
-// z = the values of a packed [k, n] matrix: level times its scale, plus its offset when
-// hasOffsets != 0, in z's format.
+// z = the values of a packed [k, n] matrix: level times its scale, plus its offset when it
+// has offsets, in z's format.
 layout(local_size_x = GROUP) in;
 layout(push_constant) uniform P {
-    InWords q; InFloats scales; InFloats offsets; Buf z; uint k; uint n; uint group; uint nibbles; uint hasOffsets;
+    InWords q; InWords hi; InWords scaleCodes; InWords offsetCodes; InWords scales; InWords offsets; Buf z;
+    uint k; uint n; uint group; uint flags; uint perSuper; float shift;
 } p;
+#include "packed_layout.glsl"
 void main() {
     uint i = gid();
     if (i >= p.k * p.n) return;
     uint r = i / p.n;
     uint c = i % p.n;
-    int level;
-    if (p.nibbles != 0) {
-        uint b = (r >> 1) * p.n + c;
-        level = bitfieldExtract(int(p.q.v[b >> 2]), int((b & 3u) * 8u + (r & 1u) * 4u), 4);
-    } else {
-        level = packed_byte(p.q, i);
-    }
-    uint g = (r / p.group) * p.n + c;
-    ACC v = ACC(level) * ACC(p.scales.v[g]);
-    if (p.hasOffsets != 0) v += ACC(p.offsets.v[g]);
+    uint g = r / p.group;
+    float s = scaleAt(g, c);
+    ACC v = ACC(levelAt(r, c)) * ACC(s);
+    if ((p.flags & 2u) != 0) v += ACC(offsetAt(g, c, s));
     STORE(p.z, i, v);
 }

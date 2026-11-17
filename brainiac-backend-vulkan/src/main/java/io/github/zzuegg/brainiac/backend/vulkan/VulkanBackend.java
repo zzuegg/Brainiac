@@ -1560,13 +1560,26 @@ public final class VulkanBackend implements Backend {
     // ------------------------------------------------------------------ packed weights
 
     /**
-     * A packed matrix on the device: levels as raw bytes (read as 32-bit words), scales and
-     * offsets (null for none).
+     * A packed matrix on the device. {@code levels} holds one signed byte per value, or with
+     * {@link #NIBBLES} two per byte (see PackedMatrix); with {@code planeBits} (5- and 6-bit
+     * levels) it holds the low four bits of {@code level + 2^(bits-1)} as nibbles and {@code hi}
+     * the rest, {@code 8 / planeBits} rows of a column per byte at {@code (r / (8 / planeBits)) * cols + c}.
+     * The scale of group {@code g} in column {@code c} is its code (or 1) times
+     * {@code scales[(g / perSuper) * cols + c]}, float32 or with {@link #HALF} float16; the
+     * offset likewise from {@code offsets}, plus the scale times {@code shift}.
      * {@code host} is the matrix it was uploaded from, or null for one quantized on the device,
      * which {@link #release} frees.
      */
-    private record Packed(int rows, int cols, int bits, int group, boolean nibbles, PackedMatrix host, VkStorage levels,
+    private record Packed(int rows, int cols, int bits, int group, int flags, int perSuper, float shift,
+            PackedMatrix host, VkStorage levels, VkStorage hi, VkStorage scaleCodes, VkStorage offsetCodes,
             VkStorage scales, VkStorage offsets) implements PackedStorage {
+
+        static final int NIBBLES = 1;
+        static final int OFFSETS = 2;
+        static final int SCALE_CODES = 4;
+        static final int OFFSET_CODES = 8;
+        static final int HALF = 16;
+        static final int CODEBOOK = 32;
 
         @Override
         public long size() {
@@ -1575,12 +1588,26 @@ public final class VulkanBackend implements Backend {
 
         @Override
         public long bytes() {
-            return levels.bytes() + scales.bytes() + (offsets == null ? 0 : offsets.bytes());
+            long b = 0;
+            for (VkStorage s : new VkStorage[] {levels, hi, scaleCodes, offsetCodes, scales, offsets}) {
+                b += s == null ? 0 : s.bytes();
+            }
+            return b;
         }
 
-        /** @return the offsets' address, or the scales' when there are none (never read then) */
-        long offsetsAddress() {
-            return (offsets == null ? scales : offsets).address();
+        /** @return the flags the shaders read: the above, the plane bits from bit 8 and the level bits from bit 12 */
+        int layout() {
+            int planeBits = hi == null || (flags & CODEBOOK) != 0 ? 0 : bits - 4;
+            return flags | planeBits << 8 | bits << 12;
+        }
+
+        /** Pushes the addresses of levels, high bits, scale codes, offset codes, scales and offsets. */
+        void push(java.nio.ByteBuffer b) {
+            long any = levels.address();
+            b.putLong(any).putLong(hi == null ? any : hi.address())
+                    .putLong(scaleCodes == null ? any : scaleCodes.address())
+                    .putLong(offsetCodes == null ? any : offsetCodes.address()).putLong(scales.address())
+                    .putLong(offsets == null ? any : offsets.address());
         }
 
         /** @return the storages a product reads */
@@ -1589,10 +1616,10 @@ public final class VulkanBackend implements Backend {
             for (VkStorage s : more) {
                 slots.add(s.slot());
             }
-            slots.add(levels.slot());
-            slots.add(scales.slot());
-            if (offsets != null) {
-                slots.add(offsets.slot());
+            for (VkStorage s : new VkStorage[] {levels, hi, scaleCodes, offsetCodes, scales, offsets}) {
+                if (s != null) {
+                    slots.add(s.slot());
+                }
             }
             return slots.toArray(VkContext.Slot[]::new);
         }
@@ -1608,13 +1635,126 @@ public final class VulkanBackend implements Backend {
     /** The fewest rows a piece of a product by packed weights takes. */
     private static final int PACKED_PIECE = Integer.getInteger("brainiac.vulkan.packedPiece", 64);
 
+    /** Whether 5- and 6-bit levels are kept as nibbles plus high-bit planes ({@code -Dbrainiac.vulkan.packedPlanes=false}: a byte each). */
+    private static final boolean PACKED_PLANES = !"false".equals(System.getProperty("brainiac.vulkan.packedPlanes"));
+    /** Whether levels of at most 16 distinct values go as 4-bit indices into a table ({@code -Dbrainiac.vulkan.packedCodebook=false}: never). */
+    private static final boolean PACKED_CODEBOOK = !"false".equals(System.getProperty("brainiac.vulkan.packedCodebook"));
+    /** Whether factored scales stay factored on the device ({@code -Dbrainiac.vulkan.packedFactors=false}: float32 per group). */
+    private static final boolean PACKED_FACTORS = !"false".equals(System.getProperty("brainiac.vulkan.packedFactors"));
+
     @Override
     public synchronized PackedStorage pack(PackedMatrix matrix) {
-        byte[] data = matrix.data();
-        VkStorage levels = raw(Math.max(1, (data.length + 3) / 4), null);
-        vk.upload(levels.slot(), levels.bytes(), b -> b.put(data));
-        return new Packed(matrix.rows(), matrix.cols(), matrix.bits(), matrix.group(), matrix.nibbles(), matrix, levels,
+        int rows = matrix.rows();
+        int cols = matrix.cols();
+        int bits = matrix.bits();
+        int flags = matrix.nibbles() ? Packed.NIBBLES : 0;
+        VkStorage levels;
+        VkStorage hi = null;
+        if (PACKED_PLANES && !matrix.nibbles() && (bits == 5 || bits == 6) && rows % 8 == 0) {
+            int planeBits = bits - 4;
+            int perByte = 8 / planeBits;
+            byte[] data = matrix.data();
+            byte[] low = new byte[rows / 2 * cols];
+            byte[] high = new byte[rows / perByte * cols];
+            int half = 1 << (bits - 1);
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    int u = data[r * cols + c] + half;
+                    low[r / 2 * cols + c] |= (byte) ((u & 15) << ((r & 1) * 4));
+                    high[r / perByte * cols + c] |= (byte) ((u >> 4) << ((r % perByte) * planeBits));
+                }
+            }
+            levels = uploadBytes(low);
+            hi = uploadBytes(high);
+        } else if (PACKED_CODEBOOK && !matrix.nibbles() && rows % 2 == 0 && codebook(matrix.data()) != null) {
+            // at most 16 distinct levels (IQ4_NL, IQ4_XS, MXFP4): a 4-bit index each into a table
+            byte[] table = codebook(matrix.data());
+            int[] index = new int[256];
+            for (int i = 0; i < table.length; i++) {
+                index[table[i] & 0xFF] = i;
+            }
+            byte[] data = matrix.data();
+            byte[] packed = new byte[rows / 2 * cols];
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    packed[r / 2 * cols + c] |= (byte) (index[data[r * cols + c] & 0xFF] << ((r & 1) * 4));
+                }
+            }
+            levels = uploadBytes(packed);
+            hi = uploadBytes(java.util.Arrays.copyOf(table, 16));
+            flags |= Packed.CODEBOOK;
+        } else {
+            levels = uploadBytes(matrix.data());
+        }
+        PackedMatrix.Factors f = matrix.factors();
+        if (PACKED_FACTORS && f != null && halves(f.superScales()) && (f.superOffsets() == null || halves(f.superOffsets()))) {
+            flags |= Packed.HALF | (f.scaleCodes() != null ? Packed.SCALE_CODES : 0)
+                    | (f.superOffsets() != null ? Packed.OFFSETS : 0) | (f.offsetCodes() != null ? Packed.OFFSET_CODES : 0);
+            return new Packed(rows, cols, bits, matrix.group(), flags, f.superGroup() / matrix.group(), f.shift(), matrix,
+                    levels, hi, f.scaleCodes() == null ? null : uploadBytes(f.scaleCodes()),
+                    f.offsetCodes() == null ? null : uploadBytes(f.offsetCodes()), uploadHalves(f.superScales()),
+                    f.superOffsets() == null ? null : uploadHalves(f.superOffsets()));
+        }
+        flags |= matrix.offsets() != null ? Packed.OFFSETS : 0;
+        if (PACKED_FACTORS && halves(matrix.scales()) && (matrix.offsets() == null || halves(matrix.offsets()))) {
+            // float16 values per group, as IQ4_NL and MXFP4 store them
+            return new Packed(rows, cols, bits, matrix.group(), flags | Packed.HALF, 1, 0, matrix, levels, hi, null, null,
+                    uploadHalves(matrix.scales()), matrix.offsets() == null ? null : uploadHalves(matrix.offsets()));
+        }
+        return new Packed(rows, cols, bits, matrix.group(), flags, 1, 0, matrix, levels, hi, null, null,
                 vs(upload(matrix.scales())), matrix.offsets() == null ? null : vs(upload(matrix.offsets())));
+    }
+
+    /** @return the distinct levels in increasing order if there are at most 16, else null */
+    private static byte[] codebook(byte[] levels) {
+        boolean[] seen = new boolean[256];
+        int count = 0;
+        for (byte b : levels) {
+            if (!seen[b & 0xFF]) {
+                seen[b & 0xFF] = true;
+                if (++count > 16) {
+                    return null;
+                }
+            }
+        }
+        byte[] table = new byte[count];
+        int at = 0;
+        for (int v = -128; v < 128; v++) {
+            if (seen[v & 0xFF]) {
+                table[at++] = (byte) v;
+            }
+        }
+        return table;
+    }
+
+    /** Whether every value is exactly a float16. */
+    private static boolean halves(float[] values) {
+        for (float v : values) {
+            if (Float.float16ToFloat(Float.floatToFloat16(v)) != v) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private VkStorage uploadBytes(byte[] data) {
+        VkStorage s = raw(Math.max(1, (data.length + 3) / 4), null);
+        vk.upload(s.slot(), java.lang.foreign.MemorySegment.ofArray(data));
+        return s;
+    }
+
+    private VkStorage uploadHalves(float[] values) {
+        short[] h = new short[values.length];
+        for (int i = 0; i < h.length; i++) {
+            h[i] = Float.floatToFloat16(values[i]);
+        }
+        VkStorage s = raw(Math.max(1, (h.length + 1) / 2), null);
+        if (java.nio.ByteOrder.nativeOrder() == java.nio.ByteOrder.LITTLE_ENDIAN) {
+            vk.upload(s.slot(), java.lang.foreign.MemorySegment.ofArray(h));
+        } else {
+            vk.upload(s.slot(), 2L * h.length, b -> b.asShortBuffer().put(h));
+        }
+        return s;
     }
 
     @Override
@@ -1631,7 +1771,7 @@ public final class VulkanBackend implements Backend {
                 .putInt(group).putInt((int) work);
         vk.dispatch(shader("quantize8", DType.FLOAT32), groups(work), new VkContext.Slot[] {levels.slot(), scales.slot()},
                 x.slot());
-        return new Packed(rows, cols, bits, group, false, null, levels, scales, null);
+        return new Packed(rows, cols, bits, group, 0, 1, 0, null, levels, null, null, null, scales, null);
     }
 
     @Override
@@ -1672,14 +1812,25 @@ public final class VulkanBackend implements Backend {
         Packed p = packed(packed);
         VkStorage z = vs(out);
         eager(z);
-        vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(p.offsetsAddress())
-                .putLong(z.address()).putInt(p.rows()).putInt(p.cols()).putInt(p.group()).putInt(p.nibbles() ? 1 : 0)
-                .putInt(p.offsets() == null ? 0 : 1);
+        java.nio.ByteBuffer b = vk.push();
+        p.push(b);
+        b.putLong(z.address()).putInt(p.rows()).putInt(p.cols()).putInt(p.group()).putInt(p.layout())
+                .putInt(p.perSuper()).putFloat(p.shift());
         vk.dispatch(shader("unpack_packed", z.dtype), groups(p.size()), z.slot(), p.reads());
     }
 
     @Override
     public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0) {
+            // unpacked into a temporary, freed as soon as the product is recorded: its slot
+            // goes back to the pool, and the hazard tracking orders any reuse after this read.
+            // Left to the garbage collector, a prefill held one per layer at once.
+            VkStorage w = raw((long) k * n, vs(out).dtype, null);
+            unpack(b, w);
+            matmulBatched(a, w, 1, m, k, n, out);
+            w.release();
+            return;
+        }
         if (m > PACKED_ROWS || m == 0 || k == 0) {
             Backend.super.matmulPacked(a, b, m, k, n, out);
             return;
@@ -1696,11 +1847,11 @@ public final class VulkanBackend implements Backend {
         pieces = ceil(k, chunk);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         Pieces split = pieces(pieces, m, n, columnGroups, z.dtype);
-        vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
-                .putLong(p.offsetsAddress()).putLong(z.address()).putLong(split.partsAddress())
-                .putLong(counters.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
-                .putInt(p.nibbles() ? 1 : 0).putInt(chunk).putInt(p.offsets() == null ? 0 : 1).putInt(pieces)
-                .putInt(split.counter());
+        java.nio.ByteBuffer push = vk.push().putLong(x.address());
+        p.push(push);
+        push.putLong(z.address()).putLong(split.partsAddress()).putLong(counters.address()).putInt(m).putInt(k)
+                .putInt(n).putInt(p.group()).putInt(p.layout()).putInt(chunk).putInt(pieces).putInt(split.counter())
+                .putInt(p.perSuper()).putFloat(p.shift());
         vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
         split.release();
         done(x, vs(a));

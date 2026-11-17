@@ -18,13 +18,32 @@ final class GgmlQuants {
     /** Receives value {@code i} as {@code q * scale + offset}, q a whole number. */
     interface Sink {
         void put(int i, int q, float scale, float offset);
+
+        /**
+         * Says, before the values of a group starting at {@code i}, how its scale and offset
+         * factor: {@code scale = scaleCode * d} and {@code offset = offsetCode * m}, products in float.
+         */
+        default void factors(int i, int scaleCode, int offsetCode, float d, float m) {
+        }
     }
 
     /** A sink that keeps the levels of a row and the scale and offset of each of its groups. */
-    record Row(byte[] levels, float[] scales, float[] offsets, int group) implements Sink {
+    record Row(byte[] levels, float[] scales, float[] offsets, int group, byte[] scaleCodes, byte[] offsetCodes,
+            float[] d, float[] m) implements Sink {
 
         Row(int length, int group) {
-            this(new byte[length], new float[length / group], new float[length / group], group);
+            this(new byte[length], new float[length / group], new float[length / group], group,
+                    new byte[length / group], new byte[length / group], new float[length / group],
+                    new float[length / group]);
+        }
+
+        @Override
+        public void factors(int i, int scaleCode, int offsetCode, float d, float m) {
+            int g = i / group;
+            scaleCodes[g] = (byte) scaleCode;
+            offsetCodes[g] = (byte) offsetCode;
+            this.d[g] = d;
+            this.m[g] = m;
         }
 
         @Override
@@ -99,6 +118,14 @@ final class GgmlQuants {
         };
     }
 
+    /** Whether {@link #levels} reports the format's scales and offsets as {@linkplain Sink#factors factors}. */
+    static boolean factored(Gguf.Format format) {
+        return switch (format) {
+            case Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K -> true;
+            default -> false;
+        };
+    }
+
     /** Whether the format adds an offset per group (its levels are then unsigned). */
     static boolean offsets(Gguf.Format format) {
         return format == Gguf.Format.Q4_1 || format == Gguf.Format.Q5_1 || format == Gguf.Format.Q2_K
@@ -118,6 +145,7 @@ final class GgmlQuants {
                 case Q5_1 -> q5(m, at, y, o, true);
                 case Q8_0 -> {
                     float d = f16(m, at);
+                    y.factors(o, 1, 0, d, 0);
                     for (int j = 0; j < 32; j++) {
                         y.put(o + j, i8(m, at + 2 + j), d, 0);
                     }
@@ -358,6 +386,7 @@ final class GgmlQuants {
     private static void q4(MemorySegment m, long at, Sink y, int o, boolean min) {
         float d = f16(m, at);
         float mn = min ? f16(m, at + 2) : 0;
+        y.factors(o, 1, min ? 1 : 0, d, mn);
         long qs = at + (min ? 4 : 2);
         for (int j = 0; j < 16; j++) {
             int q = u8(m, qs + j);
@@ -374,6 +403,7 @@ final class GgmlQuants {
     private static void q5(MemorySegment m, long at, Sink y, int o, boolean min) {
         float d = f16(m, at);
         float mn = min ? f16(m, at + 2) : 0;
+        y.factors(o, 1, min ? 1 : 0, d, mn);
         long hAt = at + (min ? 4 : 2);
         int qh = m.get(INT, hAt);
         long qs = hAt + 4;
@@ -404,12 +434,14 @@ final class GgmlQuants {
                 int sc = u8(m, scales + is++);
                 float dl = d * (sc & 0xF);
                 float ml = min * (sc >>> 4);
+                y.factors(out, sc & 0xF, sc >>> 4, d, -min);
                 for (int l = 0; l < 16; l++) {
                     y.put(out++, (u8(m, qs + l) >>> shift) & 3, dl, -ml);
                 }
                 sc = u8(m, scales + is++);
                 dl = d * (sc & 0xF);
                 ml = min * (sc >>> 4);
+                y.factors(out, sc & 0xF, sc >>> 4, d, -min);
                 for (int l = 0; l < 16; l++) {
                     y.put(out++, (u8(m, qs + l + 16) >>> shift) & 3, dl, -ml);
                 }
@@ -442,11 +474,13 @@ final class GgmlQuants {
         for (int n = 0; n < 256; n += 128) {
             int shift = 0;
             for (int j = 0; j < 4; j++) {
+                y.factors(out, scales[is] - 32, 0, d, 0);
                 float dl = d * (scales[is++] - 32);
                 for (int l = 0; l < 16; l++) {
                     int q = (u8(m, qs + l) >>> shift) & 3;
                     y.put(out++, q - ((u8(m, hm + l) & bit) != 0 ? 0 : 4), dl, 0);
                 }
+                y.factors(out, scales[is] - 32, 0, d, 0);
                 dl = d * (scales[is++] - 32);
                 for (int l = 0; l < 16; l++) {
                     int q = (u8(m, qs + l + 16) >>> shift) & 3;
@@ -482,9 +516,11 @@ final class GgmlQuants {
             float m1 = min * a[1];
             float d2 = d * b[0];
             float m2 = min * b[1];
+            y.factors(out, a[0], a[1], d, -min);
             for (int l = 0; l < 32; l++) {
                 y.put(out++, u8(m, q + l) & 0xF, d1, -m1);
             }
+            y.factors(out, b[0], b[1], d, -min);
             for (int l = 0; l < 32; l++) {
                 y.put(out++, u8(m, q + l) >>> 4, d2, -m2);
             }
@@ -510,9 +546,11 @@ final class GgmlQuants {
             float m1 = min * a[1];
             float d2 = d * b[0];
             float m2 = min * b[1];
+            y.factors(out, a[0], a[1], d, -min);
             for (int l = 0; l < 32; l++) {
                 y.put(out++, (u8(m, ql + l) & 0xF) + ((u8(m, qh + l) & u1) != 0 ? 16 : 0), d1, -m1);
             }
+            y.factors(out, b[0], b[1], d, -min);
             for (int l = 0; l < 32; l++) {
                 y.put(out++, (u8(m, ql + l) >>> 4) + ((u8(m, qh + l) & u2) != 0 ? 16 : 0), d2, -m2);
             }
@@ -530,6 +568,9 @@ final class GgmlQuants {
         float d = f16(m, at + 208);
         int out = o;
         for (int n = 0; n < 256; n += 128) {
+            for (int g = 0; g < 8; g++) {
+                y.factors(out + g * 16, i8(m, sc + (g % 2) + (g / 2) * 2), 0, d, 0);
+            }
             for (int l = 0; l < 32; l++) {
                 int is = l / 16;
                 int h = u8(m, qh + l);
