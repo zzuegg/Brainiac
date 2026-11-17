@@ -136,8 +136,10 @@ public final class Functional {
         int cg = c / groups;
         int fg = f / groups;
         if (r == 2 && groups == 1 && (long) p * n * c * k > MAX_COLUMNS
-                && !(x.requiresGrad() || weight.requiresGrad() || (bias != null && bias.requiresGrad()))) {
-            // inference on a large image: unroll a band of output rows at a time
+                && (!Var.gradEnabled()
+                        || !(x.requiresGrad() || weight.requiresGrad() || (bias != null && bias.requiresGrad())))) {
+            // inference on a large image (constants, or parameters inside Var.noGrad): unroll a band
+            // of output rows at a time
             Tensor w = weight.value().reshape(f, c * k).transpose();
             Tensor y = bandedConv2d(x.value(), w, g);
             return Var.of(bias == null ? y : y.add(bias.value().reshape(f, 1, 1)));

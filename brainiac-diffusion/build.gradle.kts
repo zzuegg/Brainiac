@@ -16,6 +16,10 @@ tasks.test {
     // -PtestModels=<folder of Stable Diffusion models> runs PretrainedDiffusionTest
     systemProperty("brainiac.test.models", providers.gradleProperty("testModels").getOrElse(""))
     systemProperty("brainiac.test.dtype", providers.gradleProperty("testDtype").getOrElse("f16"))
+    if (!providers.gradleProperty("testModels").isPresent) {
+        // the tiny reference models then run their convolutions in bands, as 1024px images do
+        systemProperty("brainiac.conv.maxColumns", "4096")
+    }
     providers.gradleProperty("testModels").orNull?.let {
         maxHeapSize = "8g"
         testLogging.showStandardStreams = true
