@@ -83,12 +83,15 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
         val types = listOf("f32", "f64", "f16", "bf16")
         val variants = mapOf(
             "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2"),
+                // times a packed matrix, staged from its levels
+                "matmul64p" to listOf("-DW=4", "-DPACKED"), "matmul32p" to listOf("-DW=2", "-DPACKED"),
                 // operands read through strides: a transposed matrix in place
                 *listOf("" to emptyList(), "a" to listOf("-DA_T"), "b" to listOf("-DB_T"),
                         "ab" to listOf("-DA_T", "-DB_T")).flatMap { (t, flags) ->
                     listOf("matmul64s$t" to listOf("-DW=4", "-DSTRIDED") + flags,
                             "matmul32s$t" to listOf("-DW=2", "-DSTRIDED") + flags)
                 }.toTypedArray()),
+            "matmul_coop" to listOf("matmul_coop" to emptyList(), "matmul_coop_packed" to listOf("-DPACKED")),
             "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
             "matmul_vec" to listOf(1, 2, 4, 8).map { "matmul_vec$it" to listOf("-DROWS=$it") },
             "matmul_vect" to listOf(1, 2, 4, 8).flatMap { listOf("matmul_vect$it" to listOf("-DROWS=$it"), "matmul_vect${it}n" to listOf("-DROWS=$it", "-DLANES=32")) },

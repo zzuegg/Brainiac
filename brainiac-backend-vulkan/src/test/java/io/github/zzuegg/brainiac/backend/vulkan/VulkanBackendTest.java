@@ -749,7 +749,7 @@ class VulkanBackendTest {
 
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
-        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
+        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4", "4, 32, 70", "8, 1536, 40", "4, 3, 130"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
         packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77, false);
         packedMatches(bits, group, m, 768, 256, false);
@@ -765,7 +765,8 @@ class VulkanBackendTest {
     /** Scales and offsets factored as GGUF's k-quants store them, kept factored on the device. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"4, 32, 1, true", "5, 32, 3, true", "6, 16, 8, false",
-            "2, 16, 2, true", "3, 16, 4, false", "8, 32, 12, false", "4, 32, 2, false", "5, 32, 1, false"})
+            "2, 16, 2, true", "3, 16, 4, false", "8, 32, 12, false", "4, 32, 2, false", "5, 32, 1, false",
+            "4, 32, 70, true", "6, 16, 33, false"})
     void packedMatricesWithFactoredScalesMatchTheCpu(int bits, int group, int m, boolean withOffsets) {
         packedMatches(bits, group, m, 192, 77, withOffsets, true);
         packedMatches(bits, group, m, 768, 256, withOffsets, true);
@@ -773,7 +774,7 @@ class VulkanBackendTest {
 
     /** 8-bit levels of at most 16 values (IQ4_NL's table), kept as 4-bit indices on the device. */
     @ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 8, 12})
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 8, 12, 70})
     void packedMatricesOfFewLevelsMatchTheCpu(int m) {
         int[] table = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
         for (int[] dims : new int[][] {{192, 77}, {768, 256}}) {

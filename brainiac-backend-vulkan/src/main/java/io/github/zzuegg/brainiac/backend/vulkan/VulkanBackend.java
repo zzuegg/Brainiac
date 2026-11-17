@@ -1821,6 +1821,15 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0 && n > 0 && PACKED_TILES) {
+            Packed p = packed(b);
+            VkStorage z = vs(out);
+            eager(vs(a), z);
+            VkStorage x = as(vs(a), z.dtype);
+            matmulPackedTiled(x, p, m, k, n, z);
+            done(x, vs(a));
+            return;
+        }
         if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0) {
             // unpacked into a temporary, freed as soon as the product is recorded: its slot
             // goes back to the pool, and the hazard tracking orders any reuse after this read.
@@ -1855,6 +1864,39 @@ public final class VulkanBackend implements Backend {
         vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
         split.release();
         done(x, vs(a));
+    }
+
+    /**
+     * Whether products of more rows than {@link #PACKED_ROWS} stage a packed matrix's values in
+     * the tiles from its levels ({@code -Dbrainiac.vulkan.packedTiles=false}: unpack it first).
+     */
+    private static final boolean PACKED_TILES =
+            !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.packedTiles"));
+
+    /** matmul's tiles over a packed matrix: no unpacked copy of it, read as levels. */
+    private void matmulPackedTiled(VkStorage x, Packed p, int m, int k, int n, VkStorage z) {
+        boolean coop = coop(z.dtype, m);
+        int tile = coop ? 128 : (long) ceil(m, 64) * ceil(n, 64) >= BIG_TILES ? 64 : 32;
+        long tiles = (long) ceil(m, tile) * ceil(n, tile);
+        int splits = 1;
+        int chunk = k;
+        if (tiles < SPLIT_BELOW && k >= 1024) {
+            splits = (int) Math.min(ceil(k, 256), Math.max(2, 2 * SPLIT_BELOW / tiles));
+            chunk = ceil(ceil(k, splits), 32) * 32;
+            splits = ceil(k, chunk);
+        }
+        long mn = (long) m * n;
+        VkStorage target = splits == 1 ? z : raw(splits * mn, z.dtype, null);
+        java.nio.ByteBuffer push = vk.push().putLong(x.address());
+        p.push(push);
+        push.putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt((int) mn).putInt(splits).putInt(chunk)
+                .putInt(p.group()).putInt(p.layout()).putInt(p.perSuper()).putFloat(p.shift());
+        String name = coop ? "matmul_coop_packed" : tile == 64 ? "matmul64p" : "matmul32p";
+        vk.dispatch(shader(name, z.dtype), ceil(n, tile), ceil(m, tile), splits, target.slot(), p.reads(x));
+        if (splits > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, mn, splits, mn);
+            target.release();
+        }
     }
 
     // ------------------------------------------------------------------ windows and indices
