@@ -3,11 +3,14 @@ package io.github.zzuegg.brainiac.nn;
 import io.github.zzuegg.brainiac.autograd.Op;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.ConvGeometry;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * The math behind the image layers as plain functions on {@link Var}s, for building
@@ -612,6 +615,146 @@ public final class Functional {
         return x.reshape(split).permute(perm).reshape(out);
     }
 
+    // ---------------------------------------------------------------- cross-entropy
+
+    /**
+     * Cross-entropy from logits: the mean over rows of {@code logsumexp(logits) - logits[id]},
+     * skipping rows whose id is negative (padding, as PyTorch's {@code ignore_index}).
+     *
+     * @param logits {@code [rows, classes]}
+     * @param ids {@code [rows]} class ids, negative to skip a row
+     * @return a scalar
+     */
+    public static Var crossEntropy(Var logits, Tensor ids) {
+        int rows = logits.shape().dim(0);
+        int classes = logits.shape().dim(1);
+        Tensor valid = ids.greater(Tensor.full(Shape.of(), -0.5f, ids.device()));
+        float count = Math.max(1, valid.sum().item());
+        Tensor target = ids.reshape(rows, 1).equalTo(Tensor.arange(classes).to(ids.device()));
+        Var logp = Activation.LOG_SOFTMAX.forward(logits);
+        return logp.mul(target).sum().mul(-1f / count);
+    }
+
+    /**
+     * Cross-entropy of a linear output layer, {@code crossEntropy(hidden x weight, ids)}, that
+     * never holds the {@code [rows, classes]} logits: it computes them {@code chunk} rows at a
+     * time and again for the gradient. For language models, whose vocabularies make the
+     * logits the largest array of a training step.
+     *
+     * @param hidden {@code [rows, size]}
+     * @param weight {@code [size, classes]}
+     * @param ids {@code [rows]} class ids, negative to skip a row
+     * @param chunk the rows of logits computed at a time
+     * @return a scalar, the mean over the rows that count
+     */
+    public static Var linearCrossEntropy(Var hidden, Var weight, Tensor ids, int chunk) {
+        if (hidden.shape().rank() != 2 || weight.shape().rank() != 2 || hidden.shape().dim(1) != weight.shape().dim(0)
+                || ids.size() != hidden.shape().dim(0)) {
+            throw new IllegalArgumentException("linearCrossEntropy takes [rows, size], [size, classes] and [rows] ids, "
+                    + "got " + hidden.shape() + ", " + weight.shape() + " and " + ids.shape());
+        }
+        if (chunk < 1) {
+            throw new IllegalArgumentException("chunk < 1");
+        }
+        return Var.apply(new LinearCrossEntropy(ids.reshape(Math.toIntExact(ids.size())).to(DType.FLOAT32), chunk),
+                hidden, weight);
+    }
+
+    /** Keeps each row's log-sum-exp between the passes; recomputes the logits. */
+    private static final class LinearCrossEntropy implements Op {
+        private final Tensor ids;
+        private final int chunk;
+        private Tensor lse;
+        private float count;
+
+        LinearCrossEntropy(Tensor ids, int chunk) {
+            this.ids = ids;
+            this.chunk = chunk;
+        }
+
+        @Override
+        public Tensor forward(Tensor... in) {
+            Tensor h = in[0];
+            Tensor w = in[1];
+            int rows = h.shape().dim(0);
+            Tensor valid = ids.greater(Tensor.full(Shape.of(), -0.5f, ids.device()));
+            count = Math.max(1, valid.sum().item());
+            List<Tensor> lses = new ArrayList<>();
+            List<Tensor> losses = new ArrayList<>();
+            for (int start = 0; start < rows; start += chunk) {
+                int from = start;
+                int to = Math.min(rows, from + chunk);
+                Tensor[] kept = new Tensor[2];
+                List<Tensor> made = Tensor.created(() -> {
+                    Tensor logits = h.slice(0, from, to).matmul(w).to(DType.FLOAT32);
+                    Tensor max = logits.max(1, true);
+                    Tensor l = logits.sub(max).exp().sum(1, true).log().add(max);   // [n, 1]
+                    Tensor picked = logits.mul(target(from, to, logits.shape().dim(1))).sum(1, true);
+                    kept[0] = l.reshape(to - from);
+                    kept[1] = l.sub(picked).mul(valid.slice(0, from, to).reshape(to - from, 1)).sum();
+                    Tensor.evaluate(List.of(kept[0], kept[1]));
+                });
+                Tensor.release(made, List.of(kept));
+                lses.add(kept[0]);
+                losses.add(kept[1]);
+            }
+            lse = lses.size() == 1 ? lses.getFirst() : Tensor.concat(0, lses.toArray(Tensor[]::new));
+            Tensor total = losses.getFirst();
+            for (int i = 1; i < losses.size(); i++) {
+                total = total.add(losses.get(i));
+            }
+            return total.mul(1 / count).to(h.dtype());
+        }
+
+        private Tensor target(int from, int to, int classes) {
+            return ids.slice(0, from, to).reshape(to - from, 1).equalTo(Tensor.arange(classes).to(ids.device()));
+        }
+
+        @Override
+        public Tensor[] backward(Tensor grad, Tensor output, Tensor... in) {
+            Tensor h = in[0];
+            Tensor w = in[1];
+            int rows = h.shape().dim(0);
+            Tensor scale = grad.to(DType.FLOAT32).reshape(1, 1).mul(1 / count);
+            Tensor valid = ids.greater(Tensor.full(Shape.of(), -0.5f, ids.device()));
+            Tensor wt = w.transpose();
+            List<Tensor> dh = new ArrayList<>();
+            Tensor dw = null;
+            for (int start = 0; start < rows; start += chunk) {
+                int from = start;
+                int to = Math.min(rows, from + chunk);
+                Tensor before = dw;
+                Tensor[] kept = new Tensor[2];
+                List<Tensor> made = Tensor.created(() -> {
+                    Tensor hc = h.slice(0, from, to);
+                    Tensor logits = hc.matmul(w).to(DType.FLOAT32);
+                    Tensor p = logits.sub(lse.slice(0, from, to).reshape(to - from, 1)).exp();
+                    // d loss / d logits = (softmax - one-hot) for the rows that count
+                    Tensor g = p.sub(target(from, to, logits.shape().dim(1)))
+                            .mul(valid.slice(0, from, to).reshape(to - from, 1)).mul(scale).to(h.dtype());
+                    kept[0] = g.matmul(wt);
+                    Tensor part = hc.transpose().matmul(g);
+                    kept[1] = before == null ? part : before.add(part);
+                    Tensor.evaluate(List.of(kept[0], kept[1]));
+                });
+                List<Tensor> dead = new ArrayList<>(made);
+                if (before != null) {
+                    dead.add(before);
+                }
+                Tensor.release(dead, List.of(kept));
+                dh.add(kept[0]);
+                dw = kept[1];
+            }
+            Tensor dhAll = dh.size() == 1 ? dh.getFirst() : Tensor.concat(0, dh.toArray(Tensor[]::new));
+            return new Tensor[] {dhAll, dw};
+        }
+
+        @Override
+        public String name() {
+            return "linearCrossEntropy";
+        }
+    }
+
     // ---------------------------------------------------------------- attention
 
     /** Large enough to zero a softmax weight, small enough to stay finite. */
@@ -646,6 +789,17 @@ public final class Functional {
         if (heads % kvHeads != 0 || v.shape().dim(1) != kvHeads) {
             throw new IllegalArgumentException("query heads " + heads + " must be a multiple of key/value heads "
                     + kvHeads + " (and keys and values need the same heads)");
+        }
+        if (FUSED && bias != null && weightsOut == null && (dropout == 0 || random == null)
+                && !(q.requiresGrad() || k.requiresGrad() || v.requiresGrad())
+                && q.value().dtype() == k.value().dtype() && q.value().dtype() == v.value().dtype()
+                && Tensor.hasAttentionWithBias(q.value(), k.value(), v.value())) {
+            try {
+                // inference: the fused kernel adds the bias itself and never builds the weights
+                return Var.of(Tensor.attention(q.value(), k.value(), v.value(), bias, scale, false)[0]);
+            } catch (UnsupportedOperationException | IllegalArgumentException e) {
+                // this backend, type, size or bias shape has no fused kernel
+            }
         }
         if (kvHeads != heads) {
             k = repeatHeads(k, heads / kvHeads);

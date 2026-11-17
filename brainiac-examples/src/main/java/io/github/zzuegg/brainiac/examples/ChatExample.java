@@ -44,6 +44,10 @@ public final class ChatExample {
      * @param args the model path and options
      */
     public static void main(String[] args) {
+        // UTF-8 whatever the console's code page (Windows: Cp1252), so "Rhône" survives Gradle
+        // and terminals that read UTF-8
+        System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true,
+                StandardCharsets.UTF_8));
         if (args.length == 0) {
             System.out.println("Usage: chat <model directory or .gguf> [--prompt text] [--device name] [--dtype f32|f16]"
                     + " [--max N] [--temperature T] [--top-p P]");
