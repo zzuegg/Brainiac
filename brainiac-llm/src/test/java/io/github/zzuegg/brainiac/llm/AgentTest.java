@@ -20,13 +20,13 @@ class AgentTest {
 
     /** Printable ASCII and a newline, then an end token. */
     private static final int VOCAB = 96 + 1;
-    private static final int END = 96;
+    static final int END = 96;
 
     private static int id(char c) {
         return c == '\n' ? 95 : c - 32;
     }
 
-    private static PretrainedTokenizer tokenizer() {
+    static PretrainedTokenizer tokenizer() {
         Map<String, Object> vocab = new LinkedHashMap<>();
         for (char c = 32; c < 127; c++) {
             vocab.put(String.valueOf(c), id(c));
@@ -40,7 +40,7 @@ class AgentTest {
     }
 
     /** Writes scripted turns, one per reading from scratch, and remembers the prompts. */
-    private static final class Scripted implements LanguageModel {
+    static final class Scripted implements LanguageModel {
         final List<String> turns;
         final List<Integer> promptLengths = new ArrayList<>();
         int turn;

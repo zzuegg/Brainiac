@@ -154,7 +154,7 @@ public final class Agent {
     }
 
     /** The text outside the tool calls. */
-    private static String content(String text) {
+    static String content(String text) {
         return HERMES.matcher(text).replaceAll("").strip();
     }
 
