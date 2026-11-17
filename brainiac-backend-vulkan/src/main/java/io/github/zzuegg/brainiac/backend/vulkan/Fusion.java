@@ -248,7 +248,10 @@ final class Fusion {
      * it reads), and the table it reads its pointers, constants and views from.
      */
     record Kernel(String source, List<VkStorage> loads, List<Object> pointers, List<Float> constants,
-            List<Integer> words) {
+            List<Integer> words, boolean inPush) {
+
+        /** Where the table starts in the push constants when it is passed there. */
+        static final int PUSH_TABLE = 16;
 
         /** The table's size: pointers, then floats, then ints (std430, as the shader declares it). */
         int metaBytes() {
@@ -258,17 +261,22 @@ final class Fusion {
 
         /** Writes the table; the loaded storages must be stored by now. */
         void writeMeta(ByteBuffer b) {
-            int at = 0;
+            writeMeta(b, 0);
+        }
+
+        /** Writes the table at {@code base}. */
+        void writeMeta(ByteBuffer b, int base) {
+            int at = base;
             for (Object p : pointers) {
                 b.putLong(at, p instanceof VkStorage s ? s.address() : (Long) p);
                 at += 8;
             }
-            at = 8 * Math.max(1, pointers.size());
+            at = base + 8 * Math.max(1, pointers.size());
             for (Float c : constants) {
                 b.putFloat(at, c);
                 at += 4;
             }
-            at = 8 * Math.max(1, pointers.size()) + 4 * Math.max(1, constants.size());
+            at = base + 8 * Math.max(1, pointers.size()) + 4 * Math.max(1, constants.size());
             for (Integer w : words) {
                 b.putInt(at, w);
                 at += 4;
@@ -282,11 +290,21 @@ final class Fusion {
         String v = g.eval(root, "i0");
         StringBuilder src = new StringBuilder();
         src.append("layout(local_size_x = GROUP) in;\n");
-        src.append("layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer Meta {"
-                + " uint64_t p[").append(Math.max(1, g.pointers.size())).append("]; float c[")
-                .append(Math.max(1, g.constants.size())).append("]; int w[").append(Math.max(1, g.words.size()))
-                .append("]; };\n");
-        src.append("layout(push_constant) uniform P { Meta m; Buf out_; uint n; } pc;\n");
+        String table = " uint64_t p[" + Math.max(1, g.pointers.size()) + "]; float c["
+                + Math.max(1, g.constants.size()) + "]; int w[" + Math.max(1, g.words.size()) + "];";
+        int tableBytes = 8 * Math.max(1, g.pointers.size()) + 4 * Math.max(1, g.constants.size())
+                + 4 * Math.max(1, g.words.size());
+        // a small table goes in the push constants: on a discrete GPU, a table in host memory
+        // costs a trip over the bus before the first load, which small dispatches feel
+        boolean inPush = Kernel.PUSH_TABLE + tableBytes <= VkContext.PUSH_BYTES;
+        if (inPush) {
+            src.append("layout(push_constant) uniform P { Buf out_; uint n; uint pad_;").append(table)
+                    .append(" } pc;\n");
+        } else {
+            src.append("layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer Meta {")
+                    .append(table).append(" };\n");
+            src.append("layout(push_constant) uniform P { Meta m; Buf out_; uint n; } pc;\n");
+        }
         if (g.random) {
             src.append("""
                     // CounterRandom.uniform(seed, i), as random.comp computes it
@@ -299,11 +317,12 @@ final class Fusion {
                     }
                     """);
         }
-        src.append("void main() {\n    uint i0 = gid();\n    if (i0 >= pc.n) return;\n    Meta m = pc.m;\n");
+        src.append("void main() {\n    uint i0 = gid();\n    if (i0 >= pc.n) return;\n");
+        src.append(inPush ? "#define m pc\n" : "    Meta m = pc.m;\n");
         src.append(g.body);
         src.append("    STORE(pc.out_, i0, ").append(v).append(");\n}\n");
         return new Kernel(src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
-                List.copyOf(g.words));
+                List.copyOf(g.words), inPush);
     }
 
     private static final class Gen {

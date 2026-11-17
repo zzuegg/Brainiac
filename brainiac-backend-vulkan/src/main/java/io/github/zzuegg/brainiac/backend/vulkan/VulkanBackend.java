@@ -264,8 +264,14 @@ public final class VulkanBackend implements Backend {
         for (int i = 0; i < reads.length; i++) {
             reads[i] = k.loads().get(i).slot();
         }
-        long meta = vk.hostData(k.metaBytes(), k::writeMeta);
-        vk.push().putLong(meta).putLong(s.address()).putInt((int) s.size);
+        if (k.inPush()) {
+            ByteBuffer p = vk.push().putLong(s.address()).putInt((int) s.size).putInt(0);
+            k.writeMeta(p, Fusion.Kernel.PUSH_TABLE);
+            p.position(Fusion.Kernel.PUSH_TABLE + k.metaBytes());
+        } else {
+            long meta = vk.hostData(k.metaBytes(), k::writeMeta);
+            vk.push().putLong(meta).putLong(s.address()).putInt((int) s.size);
+        }
         vk.dispatch(name, groups(s.size), s.slot(), reads);
         fusedDispatches++;
     }
