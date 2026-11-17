@@ -59,6 +59,18 @@ public final class VastCli {
         Path identity;
         List<Long> ids = new ArrayList<>();
         List<Long> skipped = new ArrayList<>();
+        int minDriver;
+    }
+
+    /** The driver's major version, such as 595 for 595.91.07; 0 when unknown. */
+    static int driverMajor(VastOffer f) {
+        String v = f.driverVersion();
+        int dot = v.indexOf('.');
+        try {
+            return Integer.parseInt(dot < 0 ? v.strip() : v.substring(0, dot).strip());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     /**
@@ -98,7 +110,7 @@ public final class VastCli {
 
     private static void usage() {
         System.out.println("""
-                usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--gpus N] [--min-gpu-ram GB] [--limit N]
+                usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--gpus N] [--min-gpu-ram GB] [--min-driver MAJOR] [--limit N]
                        vast run (--offer ID | --cheapest | --instance ID) [--job check|smoke|tests|bench|run]
                                 [--image IMAGE] [--disk GB] [--max-minutes N] [--keep] [--yes] [--identity KEY]
                                 [-- ARGS for the job, e.g. the command for --job run]
@@ -119,6 +131,7 @@ public final class VastCli {
                 case "--cheapest" -> o.cheapest = true;
                 case "--job" -> o.job = args[++i];
                 case "--gpu" -> o.query = o.query.withGpus(List.of(args[++i].split("\\s*,\\s*")));
+                case "--min-driver" -> o.minDriver = Integer.parseInt(args[++i]);
                 case "--gpus" -> o.query = o.query.withGpuCount(Integer.parseInt(args[++i]));
                 case "--min-gpu-ram" -> o.query = o.query.withMinGpuMemory(Double.parseDouble(args[++i]));
                 case "--max-price" -> o.query = o.query.withMaxPrice(Double.parseDouble(args[++i]));
@@ -149,7 +162,8 @@ public final class VastCli {
     }
 
     private static void offers(VastClient vast, Options o) throws IOException {
-        List<VastOffer> list = vast.offers(o.query);
+        List<VastOffer> list = new ArrayList<>(vast.offers(o.query));
+        list.removeIf(f -> driverMajor(f) < o.minDriver);
         if (list.isEmpty()) {
             System.out.println("No offers match. Try --max-price higher or other --gpu names.");
         }
@@ -336,7 +350,7 @@ public final class VastCli {
         }
         if (o.cheapest) {
             List<VastOffer> list = new ArrayList<>(vast.offers(o.query));
-            list.removeIf(f -> o.skipped.contains(f.id()));
+            list.removeIf(f -> o.skipped.contains(f.id()) || driverMajor(f) < o.minDriver);
             if (list.isEmpty()) {
                 System.out.println("No offers match.");
                 return null;
