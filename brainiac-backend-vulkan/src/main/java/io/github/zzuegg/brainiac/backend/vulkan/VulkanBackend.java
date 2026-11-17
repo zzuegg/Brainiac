@@ -1096,6 +1096,23 @@ public final class VulkanBackend implements Backend {
         done(xv, vs(v));
     }
 
+    /** The longest power-of-two transform one work group computes in shared memory (fft.comp). */
+    private static final int FFT_MAX = 2048;
+
+    @Override
+    public synchronized Storage fft(Storage in, long rows, int n, boolean inverse) {
+        VkStorage x = vs(in);
+        if (Integer.bitCount(n) != 1 || n > FFT_MAX || x.dtype == DType.FLOAT64) {
+            return Backend.super.fft(in, rows, n, inverse);   // on the host: Bluestein, or long rows
+        }
+        eager(x);
+        VkStorage z = raw(rows * n * 2, DType.FLOAT32, null);
+        vk.push().putLong(x.address()).putLong(z.address()).putInt(Math.toIntExact(rows)).putInt(n)
+                .putInt(Integer.numberOfTrailingZeros(n)).putInt(inverse ? 1 : 0);
+        vk.dispatch(shader("fft", x.dtype), rows, z.slot(), x.slot());
+        return z;
+    }
+
     @Override
     public boolean hasRmsNorm(DType type) {
         return type != DType.FLOAT64 && supports(type);

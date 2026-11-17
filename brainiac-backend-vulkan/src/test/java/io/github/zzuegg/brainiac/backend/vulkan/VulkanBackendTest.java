@@ -516,6 +516,23 @@ class VulkanBackendTest {
         }
     }
 
+    /** Fourier transforms in shared memory for powers of two up to 2048, on the host otherwise. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2, 8, 64, 2048, 12, 4096})
+    void fourierTransformsMatchTheCpu(int n) {
+        Tensor x = random(71, 3, n, 2);
+        for (boolean inverse : new boolean[] {false, true}) {
+            float[] expected = x.fft(inverse).toArray();
+            float[] actual = x.to(gpu).fft(inverse).toArray();
+            float tolerance = (inverse ? 1e-5f : 1e-5f * n) * (float) Math.log(n + 1) + 1e-5f;
+            assertArrayEquals(expected, actual, tolerance, (inverse ? "inverse " : "") + n);
+        }
+        if (supported(DType.FLOAT16)) {
+            Tensor h = x.to(DType.FLOAT16);
+            assertArrayEquals(h.fft(false).toArray(), h.to(gpu).fft(false).toArray(), 2e-3f * n + 1e-2f, "f16 " + n);
+        }
+    }
+
     /** Float16 products: on cooperative matrices where the device has them (see the status). */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 16, 16, 16", "1, 64, 64, 64", "1, 17, 33, 70", "3, 100, 48, 130",

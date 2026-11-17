@@ -493,6 +493,23 @@ public interface Backend {
     }
 
     /**
+     * Discrete Fourier transforms of rows of complex values stored as (real, imaginary)
+     * pairs: {@code X[k] = sum_j x[j] e^(-2 pi i jk / n)}; the inverse uses the conjugate
+     * exponent and divides by {@code n}. By default computed on the host with {@link Fft}.
+     *
+     * @param in {@code rows * n * 2} contiguous values
+     * @param rows the number of rows
+     * @param n the complex values per row
+     * @param inverse whether to compute the inverse transform
+     * @return new float32 storage of the same size
+     */
+    default Storage fft(Storage in, long rows, int n, boolean inverse) {
+        float[] data = download(in);
+        Fft.transform(data, rows, n, inverse);
+        return upload(data);
+    }
+
+    /**
      * Whether {@link #rmsNorm} has a kernel for this type.
      *
      * @param type the element type

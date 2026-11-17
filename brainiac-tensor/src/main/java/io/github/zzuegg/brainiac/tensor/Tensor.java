@@ -1313,6 +1313,97 @@ public final class Tensor {
     }
 
     /**
+     * The discrete Fourier transform along the second-to-last axis, of complex values stored as
+     * (real, imaginary) pairs in a last axis of size 2:
+     * {@code X[k] = sum_j x[j] e^(-2 pi i jk / n)}. Any length; powers of two are fastest.
+     *
+     * @param inverse whether to compute the inverse, {@code x[j] = 1/n sum_k X[k] e^(2 pi i jk / n)}
+     * @return the transform, of this shape and type
+     */
+    public Tensor fft(boolean inverse) {
+        int rank = shape.rank();
+        if (rank < 2 || shape.dim(rank - 1) != 2) {
+            throw new IllegalArgumentException("fft needs complex values [..., n, 2], got " + shape);
+        }
+        int n = shape.dim(rank - 2);
+        if (size() == 0) {
+            return this;
+        }
+        Tensor out = new Tensor(shape, device, backend().fft(storage(), size() / (2L * n), n, inverse));
+        return out.dtype() == dtype() ? out : out.to(dtype());
+    }
+
+    /**
+     * The transform of real values along the last axis, keeping the {@code n / 2 + 1}
+     * frequencies that determine the rest.
+     *
+     * @return complex values {@code [..., n / 2 + 1, 2]}
+     */
+    public Tensor rfft() {
+        int rank = shape.rank();
+        int n = shape.dim(rank - 1);
+        int[] dims = java.util.Arrays.copyOf(shape.toArray(), rank + 1);
+        dims[rank] = 1;
+        Tensor re = reshape(dims);
+        Tensor complex = concat(rank, re, zeros(Shape.of(dims), dtype(), device));
+        return complex.fft(false).slice(rank - 1, 0, n / 2 + 1);
+    }
+
+    /**
+     * The inverse of {@link #rfft}: real values of length {@code n} from their
+     * {@code n / 2 + 1} lowest frequencies, the others being their complex conjugates.
+     *
+     * @param n the length of the result
+     * @return real values {@code [..., n]}
+     */
+    public Tensor irfft(int n) {
+        return fullSpectrum(this, n).fft(true)
+                .slice(shape.rank() - 1, 0, 1).reshape(realShape(shape, n));
+    }
+
+    /** Indices of the full spectrum's frequencies in the half one: k, then n - k mirrored. */
+    static int[] mirrored(int n) {
+        int[] idx = new int[n];
+        for (int k = 0; k < n; k++) {
+            idx[k] = k <= n / 2 ? k : n - k;
+        }
+        return idx;
+    }
+
+    /** +1 for frequencies kept, -1 (conjugated imaginary parts) for the mirrored ones: [n, 2]. */
+    static float[] conjugation(int n) {
+        float[] c = new float[2 * n];
+        for (int k = 0; k < n; k++) {
+            c[2 * k] = 1;
+            c[2 * k + 1] = k <= n / 2 ? 1 : -1;
+        }
+        return c;
+    }
+
+    private static Tensor fullSpectrum(Tensor half, int n) {
+        int rank = half.shape.rank();
+        if (rank < 2 || half.shape.dim(rank - 1) != 2 || half.shape.dim(rank - 2) != n / 2 + 1) {
+            throw new IllegalArgumentException("irfft of length " + n + " needs [..., " + (n / 2 + 1) + ", 2], got "
+                    + half.shape);
+        }
+        int[] idx = mirrored(n);
+        float[] f = new float[n];
+        for (int i = 0; i < n; i++) {
+            f[i] = idx[i];
+        }
+        Tensor indices = Tensor.of(Shape.of(n), f, half.device);
+        return half.gather(rank - 2, indices).mul(Tensor.of(Shape.of(n, 2), conjugation(n), half.device)
+                .to(half.dtype()));
+    }
+
+    private static int[] realShape(Shape complex, int n) {
+        int rank = complex.rank();
+        int[] dims = java.util.Arrays.copyOf(complex.toArray(), rank - 1);
+        dims[rank - 2] = n;
+        return dims;
+    }
+
+    /**
      * Whether {@link #rmsNorm} runs as one kernel on this tensor's backend.
      *
      * @return whether to call it
