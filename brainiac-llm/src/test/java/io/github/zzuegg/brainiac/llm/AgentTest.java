@@ -68,7 +68,7 @@ class AgentTest {
             s.length += tokens[0].length;
             s.at++;
             float[] logits = new float[VOCAB];
-            logits[s.at < s.text.length() ? id(s.text.charAt(s.at)) : END] = 10;
+            logits[s.at < s.text.length() ? id(s.text.charAt(s.at)) : END] = 60;   // certain at any temperature
             return Tensor.of(Shape.of(1, VOCAB), logits);
         }
     }
