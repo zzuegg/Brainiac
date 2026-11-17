@@ -753,7 +753,7 @@ Without a Vulkan driver the backend reports itself unavailable and its tests are
 
 On an RX 9070 XT: the MLP trains 2 epochs of MNIST in 1.7 s; a 4096 x 4096 matmul reaches
 6.5 TFLOP/s in float32 and up to 25 TFLOP/s in float16 on cooperative matrices; a
-transformer on Shakespeare trains 3 epochs in 10.7 s; Qwen2.5-0.5B generates 85-95 tokens/s
+transformer on Shakespeare trains 3 epochs in 10.7 s; Qwen2.5-0.5B loads in 0.7 s and generates about 165 tokens/s
 in float16. (An OpenCL backend existed until it was retired in favour of this one, which
 was faster on every measure.)
 
