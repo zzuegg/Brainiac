@@ -9,8 +9,10 @@
 #ifndef ROWS
 #define ROWS 1
 #endif
+#ifndef LANES
 #define LANES 64
-#define COLS 4
+#endif
+#define COLS (256 / LANES)
 #if defined(TYPE_F64)
 #define ACC4 dvec4
 layout(buffer_reference, std430, buffer_reference_align = 32) restrict readonly buffer In4 { dvec4 v[]; };
