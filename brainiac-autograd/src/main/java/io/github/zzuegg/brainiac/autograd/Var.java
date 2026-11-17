@@ -732,13 +732,17 @@ public final class Var {
     public Var matmul(Var other) {
         Tensor a = value;
         Tensor b = other.value;
+        // only the gradients needed: a frozen weight (LoRA, QLoRA) costs no product of its own
+        boolean da = requiresGrad;
+        boolean db = other.requiresGrad;
         if (a.rank() == 2 && b.rank() == 2) {
-            return binary(other, a.matmul(b),
-                    g -> new Tensor[] {g.matmul(b.transpose()), a.transpose().matmul(g)});
+            return binary(other, a.matmul(b), g -> new Tensor[] {da ? g.matmul(b.transpose()) : null,
+                db ? a.transpose().matmul(g) : null});
         }
         return binary(other, a.matmul(b), g -> new Tensor[] {
-            g.matmul(b.transpose()).sumTo(a.shape()),
-            a.rank() > 2 && b.rank() == 2
+            da ? g.matmul(b.transpose()).sumTo(a.shape()) : null,
+            !db ? null
+                    : a.rank() > 2 && b.rank() == 2
                     ? a.reshape(Math.toIntExact(a.size() / a.shape().dim(-1)), a.shape().dim(-1)).transpose()
                             .matmul(g.reshape(Math.toIntExact(g.size() / g.shape().dim(-1)), g.shape().dim(-1)))
                     : a.transpose().matmul(g).sumTo(b.shape())
@@ -783,6 +787,62 @@ public final class Var {
         int a = axis < 0 ? shape().rank() + axis : axis;
         int length = shape().dim(a);
         return unary(value.gather(a, indices), g -> new Tensor[] {g.scatterAdd(a, indices, length)});
+    }
+
+    /**
+     * The discrete Fourier transform of complex values {@code [..., n, 2]}; see
+     * {@link Tensor#fft(boolean)}. The gradient is the conjugate transform.
+     *
+     * @param inverse whether to compute the inverse transform
+     * @return the transform
+     */
+    public Var fft(boolean inverse) {
+        int n = shape().dim(shape().rank() - 2);
+        // forward F: the gradient is F^H g = n ifft(g); inverse F^H / n: it is F g / n
+        return unary(value.fft(inverse), g -> new Tensor[] {inverse ? g.fft(false).mul(1f / n) : g.fft(true).mul(n)});
+    }
+
+    /**
+     * The transform of real values along the last axis; see {@link Tensor#rfft()}.
+     *
+     * @return complex values {@code [..., n / 2 + 1, 2]}
+     */
+    public Var rfft() {
+        int rank = shape().rank();
+        int n = shape().dim(rank - 1);
+        int[] dims = java.util.Arrays.copyOf(shape().toArray(), rank + 1);
+        dims[rank] = 1;
+        Var zeros = Var.of(Tensor.zeros(io.github.zzuegg.brainiac.tensor.Shape.of(dims), value.dtype(), value.device()));
+        return concat(rank, reshape(dims), zeros).fft(false).slice(rank - 1, 0, n / 2 + 1);
+    }
+
+    /**
+     * Real values of length {@code n} from their lowest {@code n / 2 + 1} frequencies; see
+     * {@link Tensor#irfft(int)}.
+     *
+     * @param n the length of the result
+     * @return real values {@code [..., n]}
+     */
+    public Var irfft(int n) {
+        int rank = shape().rank();
+        if (rank < 2 || shape().dim(rank - 1) != 2 || shape().dim(rank - 2) != n / 2 + 1) {
+            throw new IllegalArgumentException("irfft of length " + n + " needs [..., " + (n / 2 + 1) + ", 2], got "
+                    + shape());
+        }
+        float[] idx = new float[n];
+        float[] conj = new float[2 * n];
+        for (int k = 0; k < n; k++) {
+            idx[k] = k <= n / 2 ? k : n - k;
+            conj[2 * k] = 1;
+            conj[2 * k + 1] = k <= n / 2 ? 1 : -1;
+        }
+        var device = value.device();
+        Tensor sign = Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(n, 2), conj, device).to(value.dtype());
+        Var full = gather(rank - 2, Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(n), idx, device))
+                .mul(Var.of(sign));
+        int[] dims = java.util.Arrays.copyOf(shape().toArray(), rank - 1);
+        dims[rank - 2] = n;
+        return full.fft(true).slice(rank - 1, 0, 1).reshape(dims);
     }
 
     /**

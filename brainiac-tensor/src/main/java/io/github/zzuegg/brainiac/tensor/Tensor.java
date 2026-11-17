@@ -1180,7 +1180,9 @@ public final class Tensor {
      */
     public Tensor matmul(Tensor other) {
         sameDevice(other);
-        if (other.dtype() != dtype()) {
+        // packed weights multiply in the type of what they multiply: their levels have none
+        boolean packedRight = other.storage instanceof PackedStorage && rank() >= 2 && other.rank() == 2;
+        if (other.dtype() != dtype() && !packedRight) {
             DType type = DType.promote(dtype(), other.dtype());
             return to(type).matmul(other.to(type));
         }
@@ -1310,6 +1312,128 @@ public final class Tensor {
         backend.attention(q.storage(), k.storage(), v.storage(), d, scale, causal, out, lse);
         return new Tensor[] {new Tensor(Shape.of(d[0], d[1], d[3], d[6]), q.device, out),
                 new Tensor(Shape.of(d[0], d[1], d[3]), q.device, lse)};
+    }
+
+    /**
+     * The discrete Fourier transform along the second-to-last axis, of complex values stored as
+     * (real, imaginary) pairs in a last axis of size 2:
+     * {@code X[k] = sum_j x[j] e^(-2 pi i jk / n)}. Any length; powers of two are fastest.
+     *
+     * @param inverse whether to compute the inverse, {@code x[j] = 1/n sum_k X[k] e^(2 pi i jk / n)}
+     * @return the transform, of this shape and type
+     */
+    public Tensor fft(boolean inverse) {
+        int rank = shape.rank();
+        if (rank < 2 || shape.dim(rank - 1) != 2) {
+            throw new IllegalArgumentException("fft needs complex values [..., n, 2], got " + shape);
+        }
+        int n = shape.dim(rank - 2);
+        if (size() == 0) {
+            return this;
+        }
+        Tensor out = new Tensor(shape, device, backend().fft(storage(), size() / (2L * n), n, inverse));
+        return out.dtype() == dtype() ? out : out.to(dtype());
+    }
+
+    /**
+     * The transform of real values along the last axis, keeping the {@code n / 2 + 1}
+     * frequencies that determine the rest.
+     *
+     * @return complex values {@code [..., n / 2 + 1, 2]}
+     */
+    public Tensor rfft() {
+        int rank = shape.rank();
+        int n = shape.dim(rank - 1);
+        int[] dims = java.util.Arrays.copyOf(shape.toArray(), rank + 1);
+        dims[rank] = 1;
+        Tensor re = reshape(dims);
+        Tensor complex = concat(rank, re, zeros(Shape.of(dims), dtype(), device));
+        return complex.fft(false).slice(rank - 1, 0, n / 2 + 1);
+    }
+
+    /**
+     * The inverse of {@link #rfft}: real values of length {@code n} from their
+     * {@code n / 2 + 1} lowest frequencies, the others being their complex conjugates.
+     *
+     * @param n the length of the result
+     * @return real values {@code [..., n]}
+     */
+    public Tensor irfft(int n) {
+        return fullSpectrum(this, n).fft(true)
+                .slice(shape.rank() - 1, 0, 1).reshape(realShape(shape, n));
+    }
+
+    /** Indices of the full spectrum's frequencies in the half one: k, then n - k mirrored. */
+    static int[] mirrored(int n) {
+        int[] idx = new int[n];
+        for (int k = 0; k < n; k++) {
+            idx[k] = k <= n / 2 ? k : n - k;
+        }
+        return idx;
+    }
+
+    /** +1 for frequencies kept, -1 (conjugated imaginary parts) for the mirrored ones: [n, 2]. */
+    static float[] conjugation(int n) {
+        float[] c = new float[2 * n];
+        for (int k = 0; k < n; k++) {
+            c[2 * k] = 1;
+            c[2 * k + 1] = k <= n / 2 ? 1 : -1;
+        }
+        return c;
+    }
+
+    private static Tensor fullSpectrum(Tensor half, int n) {
+        int rank = half.shape.rank();
+        if (rank < 2 || half.shape.dim(rank - 1) != 2 || half.shape.dim(rank - 2) != n / 2 + 1) {
+            throw new IllegalArgumentException("irfft of length " + n + " needs [..., " + (n / 2 + 1) + ", 2], got "
+                    + half.shape);
+        }
+        int[] idx = mirrored(n);
+        float[] f = new float[n];
+        for (int i = 0; i < n; i++) {
+            f[i] = idx[i];
+        }
+        Tensor indices = Tensor.of(Shape.of(n), f, half.device);
+        return half.gather(rank - 2, indices).mul(Tensor.of(Shape.of(n, 2), conjugation(n), half.device)
+                .to(half.dtype()));
+    }
+
+    private static int[] realShape(Shape complex, int n) {
+        int rank = complex.rank();
+        int[] dims = java.util.Arrays.copyOf(complex.toArray(), rank - 1);
+        dims[rank - 2] = n;
+        return dims;
+    }
+
+    /**
+     * Whether {@link #rmsNorm} runs as one kernel on this tensor's backend.
+     *
+     * @return whether to call it
+     */
+    public boolean hasRmsNorm() {
+        return backend().hasRmsNorm(dtype());
+    }
+
+    /**
+     * RMSNorm over the last axis in one kernel, for inference:
+     * {@code (x / sqrt(mean(x^2) + eps)) * weight}, computed in float32 and rounded to this
+     * tensor's type before the scale, as the unfused operations do.
+     *
+     * @param weight the scale {@code [last]}, converted to this tensor's type if needed
+     * @param eps added to the mean square
+     * @return the normalized tensor, of this shape and type
+     * @throws UnsupportedOperationException if the backend has no such kernel
+     */
+    public Tensor rmsNorm(Tensor weight, float eps) {
+        sameDevice(weight);
+        int cols = shape.dim(shape.rank() - 1);
+        if (weight.size() != cols) {
+            throw new IllegalArgumentException("weight " + weight.shape + " for rows of " + cols);
+        }
+        Tensor w = weight.dtype() == dtype() ? weight : weight.to(dtype());
+        Storage out = backend().allocateUninitialized(size(), dtype());
+        backend().rmsNorm(storage(), w.storage(), size() / cols, cols, eps, out);
+        return new Tensor(shape, device, out);
     }
 
     /**

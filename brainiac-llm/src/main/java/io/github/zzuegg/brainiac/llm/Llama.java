@@ -47,10 +47,42 @@ public final class Llama implements LanguageModel {
      * A projection {@code x W + b} with {@code W} stored {@code [in, out]}: transposed once
      * from Hugging Face's {@code [out, in]} when loading, so no step copies it.
      */
-    private record Linear(Var weight, Var bias) {
+    private static final class Linear {
+        private Var weight;
+        private final Var bias;
+        /** Low-rank adapter {@code [in, rank]} and {@code [rank, out]}, or null. */
+        private Var loraA;
+        private Var loraB;
+        private float loraScale;
+        /** Whether the weight and bias are constants: only the adapter learns. */
+        private boolean frozen;
+
+        Linear(Var weight, Var bias) {
+            this.weight = weight;
+            this.bias = bias;
+        }
+
+        Var weight() {
+            return weight;
+        }
+
+        Var base() {
+            return frozen ? Var.of(weight.value()) : weight;
+        }
+
+        Var bias() {
+            return bias;
+        }
+
         Var apply(Var x) {
-            Var y = x.matmul(weight);
-            return bias == null ? y : y.add(bias);
+            Var y = x.matmul(frozen ? Var.of(weight.value()) : weight);
+            if (bias != null) {
+                y = y.add(frozen ? Var.of(bias.value()) : bias);
+            }
+            if (loraA != null) {
+                y = y.add(x.matmul(loraA).matmul(loraB).mul(loraScale));
+            }
+            return y;
         }
     }
 
@@ -75,6 +107,9 @@ public final class Llama implements LanguageModel {
     private final Var norm;
     private final List<Block> blocks;
     private final Map<String, Var> named;
+    private final Map<String, Linear> linears;
+    /** Whether the embeddings and norms are constants (see {@link #addLora}). */
+    private boolean frozen;
 
     private Llama(LlamaConfig config, Device device, DType dtype, Map<String, Var> named, Map<String, Linear> linears) {
         this.config = config;
@@ -82,6 +117,7 @@ public final class Llama implements LanguageModel {
         this.dtype = dtype;
         this.rope = new Rope(config.rope());
         this.named = named;
+        this.linears = linears;
         this.embed = need(named, "model.embed_tokens.weight");
         this.norm = need(named, "model.norm.weight");
         this.lmHead = config.tieEmbeddings() ? null : linears.get("lm_head");
@@ -357,7 +393,15 @@ public final class Llama implements LanguageModel {
         return List.copyOf(named.values());
     }
 
-    private Var rmsNorm(Var x, Var weight) {
+    /** {@code -Dbrainiac.llm.fusedNorm=false}: RMSNorm from separate operations while decoding too. */
+    private static final boolean FUSED_NORM = !"false".equals(System.getProperty("brainiac.llm.fusedNorm"));
+
+    private Var rmsNorm(Var x, Var weight, boolean decoding) {
+        if (decoding && FUSED_NORM && x.value().hasRmsNorm()) {
+            // no gradients while decoding: one kernel instead of a reduction and its chains
+            return Var.of(x.value().rmsNorm(weight.value(), config.rmsEps()));
+        }
+        weight = base(weight);
         Var x32 = x.to(DType.FLOAT32);
         int last = x.shape().rank() - 1;
         Var y = x32.div(x32.square().mean(last, true).add(config.rmsEps()).sqrt());
@@ -378,6 +422,9 @@ public final class Llama implements LanguageModel {
         int[] next;
         int length;
         int capacity;
+        /** Eviction: the first steps and the latest steps kept, or window 0 to keep all. */
+        int sinks;
+        int window;
 
         Cache(int layers, int batch) {
             keys = new Tensor[layers];
@@ -415,9 +462,56 @@ public final class Llama implements LanguageModel {
             capacity = grown;
         }
 
+        /**
+         * Drops the middle once it is a quarter window long, so the copy happens every
+         * {@code window / 4} steps rather than at every one.
+         */
+        void evict() {
+            int keep = sinks + window;
+            if (window == 0 || length <= keep + Math.max(1, window / 4)) {
+                return;
+            }
+            int from = length - window;
+            for (int l = 0; l < keys.length; l++) {
+                Tensor k = keys[l].slice(2, from, length);
+                Tensor v = values[l].slice(2, from, length);
+                Tensor.evaluate(List.of(k, v));   // read before the buffers are written
+                keys[l].write(2, sinks, k);
+                values[l].write(2, sinks, v);
+            }
+            for (int b = 0; b < padding.length; b++) {
+                boolean[] p = java.util.Arrays.copyOf(padding[b], keep);
+                System.arraycopy(padding[b], from, p, sinks, window);
+                padding[b] = p;
+            }
+            length = keep;
+        }
+
+        @Override
+        public State truncate(int keep) {
+            if (window > 0) {
+                throw new UnsupportedOperationException("a state that forgets cannot go back");
+            }
+            if (keep < 0 || keep > length) {
+                throw new IllegalArgumentException("cannot keep " + keep + " of " + length + " steps");
+            }
+            for (int b = 0; b < next.length; b++) {
+                for (int t = keep; t < length; t++) {
+                    if (!padding[b][t]) {
+                        next[b]--;
+                    }
+                }
+                padding[b] = java.util.Arrays.copyOf(padding[b], keep);
+            }
+            length = keep;   // what follows is overwritten and masked until then
+            return this;
+        }
+
         @Override
         public State select(int[] rows) {
             Cache c = new Cache(keys.length, rows.length);
+            c.sinks = sinks;
+            c.window = window;
             if (capacity > 0) {
                 Tensor index = indices(rows, keys[0].device());
                 for (int l = 0; l < keys.length; l++) {
@@ -440,6 +534,28 @@ public final class Llama implements LanguageModel {
     @Override
     public State newState(int batch) {
         return new Cache(config.layers(), batch);
+    }
+
+    /**
+     * A state that forgets the middle of long sequences, as StreamingLLM does (Xiao et al.,
+     * 2024): it keeps the first {@code sinks} steps, which attention leans on, and the last
+     * {@code window}, so memory and time per token stay bounded however long the text. Keys
+     * keep the positions they were read at. It cannot {@linkplain State#truncate go back}.
+     *
+     * @param batch the number of sequences
+     * @param sinks the first steps always kept
+     * @param window the latest steps kept
+     * @return an empty state
+     */
+    public State newState(int batch, int sinks, int window) {
+        if (sinks < 0 || window < 1) {
+            throw new IllegalArgumentException("sinks must be at least 0 and window at least 1, got " + sinks + ", "
+                    + window);
+        }
+        Cache c = new Cache(config.layers(), batch);
+        c.sinks = sinks;
+        c.window = window;
+        return c;
     }
 
     /**
@@ -496,12 +612,24 @@ public final class Llama implements LanguageModel {
         if (lmHead != null && lmHead.bias() != null) {
             return Functional.crossEntropy(lmHead.apply(h).reshape(batch * steps, config.vocabSize()), ids);
         }
-        Var weight = lmHead != null ? lmHead.weight() : embed.transpose();
+        if (lmHead != null && lmHead.loraA != null) {
+            return Functional.crossEntropy(lmHead.apply(h).reshape(batch * steps, config.vocabSize()), ids);
+        }
+        Var weight = lmHead != null ? lmHead.base() : base(embed).transpose();
         return Functional.linearCrossEntropy(h, weight, ids, chunk);
     }
 
     @Override
     public Tensor next(State state, int[][] tokens, boolean[][] padding) {
+        return read(state, tokens, padding, false);
+    }
+
+    @Override
+    public Tensor nextAll(State state, int[][] tokens) {
+        return read(state, tokens, null, true);
+    }
+
+    private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep) {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
         int batch = tokens.length;
         int steps = tokens[0].length;
@@ -536,9 +664,11 @@ public final class Llama implements LanguageModel {
         Var logits = run(tokens, positions, cache, bias);
         cache.padding = keysPad;
         cache.length += steps;
-        Tensor out = logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
+        Tensor out = everyStep ? logits.value().to(DType.FLOAT32)
+                : logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
         // computed before the next step writes into the cache it read
         Tensor.evaluate(List.of(out));
+        cache.evict();
         return out;
     }
 
@@ -549,7 +679,7 @@ public final class Llama implements LanguageModel {
         }
         // tied: while decoding, a transposed copy of the embeddings made once; while
         // training, through the embeddings so they get the gradient
-        return x.matmul(cache != null ? Var.of(tiedHead()) : embed.transpose());
+        return x.matmul(cache != null ? Var.of(tiedHead()) : base(embed).transpose());
     }
 
     /** The final normalized hidden states {@code [batch, steps, hidden]}. */
@@ -560,12 +690,12 @@ public final class Llama implements LanguageModel {
         for (int b = 0; b < batch; b++) {
             System.arraycopy(tokens[b], 0, flat, b * steps, steps);
         }
-        Var x = embed.gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
+        Var x = base(embed).gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
         int hd = config.headDim();
         float scale = (float) (1 / Math.sqrt(hd));
         for (int l = 0; l < blocks.size(); l++) {
             Block blk = blocks.get(l);
-            Var h = rmsNorm(x, blk.attnNorm);
+            Var h = rmsNorm(x, blk.attnNorm, cache != null);
             Var q = blk.q.apply(h).reshape(batch, steps, config.heads(), hd).permute(0, 2, 1, 3);
             Var k = blk.k.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
             Var v = blk.v.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
@@ -583,11 +713,14 @@ public final class Llama implements LanguageModel {
                     : Functional.attention(q, k, v, causal, scale);
             a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
             x = x.add(blk.o.apply(a));
-            h = rmsNorm(x, blk.ffnNorm);
-            Var gated = blk.gate.apply(h).activation(ActivationOp.SILU, 0).mul(blk.up.apply(h));
+            h = rmsNorm(x, blk.ffnNorm, cache != null);
+            // both products first: the activation and the product then run as one chain
+            Var gate = blk.gate.apply(h);
+            Var up = blk.up.apply(h);
+            Var gated = gate.activation(ActivationOp.SILU, 0).mul(up);
             x = x.add(blk.down.apply(gated));
         }
-        return rmsNorm(x, norm);
+        return rmsNorm(x, norm, cache != null);
     }
 
     private Tensor headSource;
@@ -604,6 +737,118 @@ public final class Llama implements LanguageModel {
             Tensor.evaluate(List.of(head));
         }
         return head;
+    }
+
+    // ---------------------------------------------------------------- adapters
+
+    /** A weight as the computation uses it: a constant once the model is frozen. */
+    private Var base(Var v) {
+        return frozen ? Var.of(v.value()) : v;
+    }
+
+    /**
+     * Adds LoRA adapters (Hu et al., 2021) to the projections {@code target} accepts, by
+     * Hugging Face module name such as {@code model.layers.3.self_attn.q_proj}: each computes
+     * {@code x W + (alpha / rank) x A B}, with {@code A} random and {@code B} zero, so the model
+     * starts unchanged. Every other weight becomes a constant: train the returned adapters
+     * alone. On {@linkplain #quantizeWeights quantized} weights this is QLoRA.
+     *
+     * @param rank the adapters' inner size
+     * @param alpha their scale numerator
+     * @param target which projections get one; see {@link #attentionAndMlp()}
+     * @param seed the seed for {@code A}
+     * @return the new adapter parameters
+     */
+    public List<Var> addLora(int rank, float alpha, java.util.function.Predicate<String> target, long seed) {
+        if (rank <= 0) {
+            throw new IllegalArgumentException("rank must be positive, got " + rank);
+        }
+        SplittableRandom random = new SplittableRandom(seed);
+        List<Var> added = new ArrayList<>();
+        frozen = true;
+        for (Map.Entry<String, Linear> e : linears.entrySet()) {
+            Linear l = e.getValue();
+            l.frozen = true;
+            if (!target.test(e.getKey()) || l.loraA != null) {
+                continue;
+            }
+            int in = l.weight.shape().dim(0);
+            int out = l.weight.shape().dim(1);
+            // as PEFT: A uniform in +-1/sqrt(in) (Kaiming with a = sqrt(5)), B zero
+            float bound = (float) (1 / Math.sqrt(in));
+            l.loraA = Var.param(Tensor.uniform(Shape.of(in, rank), -bound, bound, random).to(device).to(dtype));
+            l.loraB = Var.param(Tensor.zeros(Shape.of(rank, out), dtype, device));
+            l.loraScale = alpha / rank;
+            added.add(l.loraA);
+            added.add(l.loraB);
+        }
+        if (added.isEmpty()) {
+            throw new IllegalArgumentException("no projection matches the target");
+        }
+        return added;
+    }
+
+    /** @return a target for {@link #addLora}: every attention and MLP projection, not the output layer */
+    public static java.util.function.Predicate<String> attentionAndMlp() {
+        return name -> name.contains(".self_attn.") || name.contains(".mlp.");
+    }
+
+    /** @return the adapters by name ({@code <module>.lora_A}, {@code <module>.lora_B}), in model order */
+    public Map<String, Var> loraParameters() {
+        Map<String, Var> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Linear> e : linears.entrySet()) {
+            if (e.getValue().loraA != null) {
+                out.put(e.getKey() + ".lora_A", e.getValue().loraA);
+                out.put(e.getKey() + ".lora_B", e.getValue().loraB);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Adds every adapter into its weight ({@code W + (alpha / rank) A B}) and removes it, so
+     * the model runs as fast as without adapters. Quantized weights cannot take them.
+     */
+    public void mergeLora() {
+        for (Map.Entry<String, Linear> e : linears.entrySet()) {
+            Linear l = e.getValue();
+            if (l.loraA == null) {
+                continue;
+            }
+            if (l.weight.value().isPacked()) {
+                throw new IllegalStateException(e.getKey() + " is quantized: adapters cannot be merged into it");
+            }
+            Tensor delta = l.loraA.value().matmul(l.loraB.value()).mul(l.loraScale);
+            l.weight = Var.param(l.weight.value().add(delta.to(l.weight.value().dtype())));
+            named.put(e.getKey() + ".weight", l.weight);
+            l.loraA = null;
+            l.loraB = null;
+        }
+        headSource = null;
+    }
+
+    /**
+     * Quantizes every projection's weight in place to {@code bits} bits with one scale per
+     * {@code group} input rows (see {@link Tensor#quantized}), for inference or QLoRA. The
+     * model can then no longer be saved as safetensors, and those weights no longer train.
+     *
+     * @param bits the bits per weight, 2 to 8
+     * @param group the input rows per scale; must divide every projection's input size
+     * @return this model
+     */
+    public Llama quantizeWeights(int bits, int group) {
+        for (Map.Entry<String, Linear> e : linears.entrySet()) {
+            Linear l = e.getValue();
+            Tensor w = l.weight.value();
+            if (w.isPacked()) {
+                continue;
+            }
+            Tensor q = w.to(DType.FLOAT32).quantized(bits, group);
+            w.release();
+            l.weight = Var.of(q);
+            named.remove(e.getKey() + ".weight");
+        }
+        return this;
     }
 
     // ---------------------------------------------------------------- saving
