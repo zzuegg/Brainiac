@@ -67,4 +67,31 @@ final class PackedKernels {
             }
         }
     }
+
+    /**
+     * Adds a matrix's offsets to columns {@code [j0, j1)} of {@code z = x * w}: each
+     * offset times the sum of the {@code x} values of its group.
+     */
+    static void addOffsets(float[] x, PackedMatrix w, float[] z, int m, int j0, int j1) {
+        float[] offsets = w.offsets();
+        int k = w.rows();
+        int n = w.cols();
+        int group = w.group();
+        for (int i = 0; i < m; i++) {
+            int o = i * n;
+            for (int g0 = 0; g0 < k; g0 += group) {
+                float sum = 0;
+                for (int r = g0; r < g0 + group; r++) {
+                    sum += x[i * k + r];
+                }
+                if (sum == 0f) {
+                    continue;
+                }
+                int s = g0 / group * n;
+                for (int j = j0; j < j1; j++) {
+                    z[o + j] += sum * offsets[s + j];
+                }
+            }
+        }
+    }
 }

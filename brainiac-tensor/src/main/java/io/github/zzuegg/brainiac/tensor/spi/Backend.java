@@ -218,7 +218,7 @@ public interface Backend {
 
     /**
      * Says that the values of these storages are about to be needed. A backend that records
-     * operations instead of running them (such as the OpenCL backend's fused kernels) can
+     * operations instead of running them (such as the Vulkan backend's fused shaders) can
      * compute them all together, for example in one kernel; others ignore it, which is the
      * default.
      *
