@@ -123,6 +123,27 @@ public final class Tensor {
     }
 
     /**
+     * Creates a tensor from raw values laid out as {@code dtype} stores them, little-endian
+     * (see {@link Backend#upload(java.lang.foreign.MemorySegment, DType)}). The values go
+     * straight from {@code data} to the device, so a tensor read from a memory-mapped file
+     * never passes through the Java heap on a backend that supports it.
+     *
+     * @param shape the shape
+     * @param data {@code shape.size() * dtype.bytes()} bytes; only read during this call
+     * @param dtype the type of the values, and of the tensor
+     * @param device where the tensor lives
+     * @return the tensor
+     */
+    public static Tensor of(Shape shape, java.lang.foreign.MemorySegment data, DType dtype, Device device) {
+        Objects.requireNonNull(shape, "shape");
+        if (data.byteSize() != shape.size() * dtype.bytes()) {
+            throw new IllegalArgumentException("shape " + shape + " of " + dtype + " needs "
+                    + shape.size() * dtype.bytes() + " bytes, got " + data.byteSize());
+        }
+        return new Tensor(shape, device, device.backend().upload(data, dtype));
+    }
+
+    /**
      * Creates a one-dimensional tensor on the default device.
      *
      * @param values the values

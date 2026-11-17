@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
@@ -460,6 +461,18 @@ public final class VulkanBackend implements Backend {
                 }
             }
         });
+        return s;
+    }
+
+    @Override
+    public synchronized Storage upload(java.lang.foreign.MemorySegment data, DType dtype) {
+        if (!RawValues.nativeLittleEndian()) {
+            return Backend.super.upload(data, dtype);
+        }
+        long n = data.byteSize() / dtype.bytes();
+        VkStorage s = raw(n, dtype, null);
+        vk.upload(s.slot(), data.byteSize(), b -> java.lang.foreign.MemorySegment.ofBuffer(b)
+                .copyFrom(data));
         return s;
     }
 

@@ -1619,6 +1619,15 @@ public final class OpenClBackend implements Backend {
     }
 
     @Override
+    public synchronized Storage upload(MemorySegment data, DType dtype) {
+        long n = data.byteSize() / dtype.bytes();
+        if (n == 0 || !data.isNative() || !io.github.zzuegg.brainiac.tensor.spi.RawValues.nativeLittleEndian()) {
+            return n == 0 ? raw(0, dtype) : Backend.super.upload(data, dtype);
+        }
+        return uploaded(data, n, dtype);
+    }
+
+    @Override
     public synchronized Storage upload(double[] data, DType dtype) {
         if (data.length == 0) {
             return raw(0, dtype);

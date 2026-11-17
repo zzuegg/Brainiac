@@ -35,6 +35,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
+| `brainiac-io` | File formats: JSON, memory-mapped safetensors weights (single or sharded), weight-name mapping |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -312,6 +313,27 @@ p = cache.append(nextToken);
 `bench shakespeare --tokenizers char,bpe:1024,unigram:1024` trains the same small GPT on
 Shakespeare with each tokenizer and reports the loss in nats per character, so they
 compare fairly (char-level nanoGPT reaches about 1.47).
+
+## Pretrained weights: safetensors
+
+`WeightSource.open` reads a `.safetensors` file, a sharded model's `*.index.json`, or a
+directory downloaded from Hugging Face. Files are memory-mapped, so opening a 40 GB model
+takes almost no memory, and on the GPU backends each tensor's bytes go straight from the
+mapping to the device without passing through the Java heap. Conversions such as
+bfloat16 to float32 run on the device. `NameMap` renames weights with regex rules.
+
+```java
+NameMap names = NameMap.create()
+        .rule("model\\.layers\\.(\\d+)\\.self_attn\\.q_proj\\.weight", "block$1.query")
+        .drop(".*rotary_emb\\.inv_freq");
+try (WeightSource w = WeightSource.open(Path.of("Qwen2.5-0.5B")).renamed(names)) {
+    for (String name : w.names()) {
+        System.out.println(name + " " + w.format(name) + " " + w.shape(name));
+    }
+    Tensor q0 = w.tensor("block0.query", Device.gpu(), DType.FLOAT16);
+}
+SafeTensors.write(Path.of("mine.safetensors"), Map.of("w", q0));   // each tensor in its own type
+```
 
 ## Reinforcement learning
 

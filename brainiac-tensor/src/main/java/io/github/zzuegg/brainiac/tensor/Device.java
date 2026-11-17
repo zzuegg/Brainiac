@@ -125,6 +125,16 @@ public final class Device {
         return backend.kind();
     }
 
+    /**
+     * Returns whether tensors of a type can live on this device.
+     *
+     * @param dtype the type
+     * @return {@code true} if they can
+     */
+    public boolean supports(DType dtype) {
+        return backend().supports(dtype);
+    }
+
     Backend backend() {
         return backend;
     }
