@@ -21,6 +21,7 @@ include(
     "brainiac-data",
     "brainiac-io",
     "brainiac-llm",
+    "brainiac-diffusion",
     "brainiac-rl",
     "brainiac-evolve",
     "brainiac",

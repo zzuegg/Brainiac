@@ -36,6 +36,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
+| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -491,6 +492,48 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `model.saveGguf(file, tok, true)` writes a GGUF file (float16 matrices) that llama.cpp and
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
+
+## Image generation: Stable Diffusion
+
+`brainiac-diffusion` runs pretrained Stable Diffusion 1.x, 2.x and XL models. It loads a
+Hugging Face diffusers folder (`model_index.json` with `unet`, `vae`, `text_encoder` and
+`tokenizer` folders) or a single `.safetensors` checkpoint as image tools share them:
+
+```java
+try (StableDiffusion sd = StableDiffusion.load(Path.of("models/stable-diffusion-xl-base-1.0"),
+        Device.best(), DType.FLOAT16)) {
+    ImageRequest request = ImageRequest.of("a red fox in snow, golden hour")
+            .negativePrompt("blurry")
+            .size(1152, 896)           // or sd.size(AspectRatio.LANDSCAPE_4_3)
+            .steps(30)
+            .seed(7)
+            .build();
+    List<GeneratedImage> images = sd.generate(request, Progress.withPreviews(5, (step, total, preview) -> {
+        System.out.println(step + " / " + total);
+        return true;                   // false stops the run (CancellationException)
+    }));
+    Files.write(Path.of("fox.png"), images.get(0).png());
+}
+```
+
+- `StableDiffusion.detect(path)` says whether a folder or file is SD1, SD2 or SDXL without loading it.
+- Samplers: Euler, Euler ancestral, DPM++ 2M, and the Karras-spaced variants (DPM++ 2M Karras is the default).
+- Classifier-free guidance batches the prompt and negative prompt together; guidance 1 or less skips it.
+- The UNet and text encoders run in the type you load them in (float16 on a GPU); the VAE runs
+  in float32. Large convolutions are unrolled in bands of rows so a 1024 x 1024 decode stays
+  within GPU memory.
+- Previews are a cheap linear map of the latents, not a VAE decode.
+- Single-file checkpoints carry no tokenizer: put `vocab.json` and `merges.txt` of
+  `openai/clip-vit-large-patch14` in a `tokenizer` folder next to the file or in
+  `~/.cache/brainiac/clip-tokenizer` (`StableDiffusion.downloadTokenizer` fetches them).
+
+Each part was checked against diffusers and transformers on small random models: the CLIP
+encoders, both UNet layouts, the VAE, the tokenizer, the noise schedules and whole runs of
+the SD 1.x and SDXL pipelines (`brainiac-diffusion/src/test/python` makes the fixtures).
+
+```sh
+./gradlew :brainiac-examples:run --args="image models/stable-diffusion-v1-5 'a lighthouse at dusk' --steps 25"
+```
 
 ## Reinforcement learning
 
