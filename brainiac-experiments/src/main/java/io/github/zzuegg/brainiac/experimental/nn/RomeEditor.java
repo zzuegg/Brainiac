@@ -75,9 +75,6 @@ public final class RomeEditor {
 
     private static Dense dense(Model model, int layer) {
         Layer l = model.layers().get(layer);
-        if (l instanceof HookedLayer h) {
-            l = h.inner();
-        }
         if (!(l instanceof Dense d)) {
             throw new IllegalArgumentException("layer " + layer + " is not a dense layer: " + l);
         }

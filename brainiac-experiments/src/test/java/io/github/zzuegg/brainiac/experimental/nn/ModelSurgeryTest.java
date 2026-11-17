@@ -57,16 +57,14 @@ class ModelSurgeryTest {
         float[][] x1 = new float[100][];
         Model m = blobClassifier(x0, x1);
         SteeringVector v = SteeringVector.fromContrast(m, 1, Tensor.of(x1), Tensor.of(x0));
-        Model steered = v.apply(m, 1.0f);
         int flipped = 0;
         for (float[] x : x0) {
             assertEquals(0, argmax(m.predict(x)));
-            flipped += argmax(steered.predict(x)) == 1 ? 1 : 0;
+            flipped += argmax(v.apply(m, Tensor.of(new float[][] {x}), 1.0f).toArray()) == 1 ? 1 : 0;
         }
         assertTrue(flipped > 90, "flipped " + flipped);
-        // the steered model shares weights; the original is unchanged
+        // steering is a hook on the forward pass; the model itself is unchanged
         assertEquals(0, argmax(m.predict(x0[0])));
-        assertEquals(m.parameters().size(), steered.parameters().size());
     }
 
     @Test

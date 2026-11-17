@@ -42,7 +42,7 @@ class BrainMovieTest {
     }
 
     @Test
-    void recomputedActivityMatchesTheBrain() {
+    void activityIsTheMeanAbsoluteOutputOfEachRegion() {
         Model m = brainModel();
         Brain brain = (Brain) m.layers().getFirst();
         int[] y = new int[20];
