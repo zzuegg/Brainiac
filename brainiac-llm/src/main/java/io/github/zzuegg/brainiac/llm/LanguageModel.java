@@ -94,6 +94,17 @@ public interface LanguageModel {
         }
 
         /**
+         * An independent copy of this state, which reads on separately while this one stays as
+         * it is, as a prefix cache needs to continue a shared prompt in several ways.
+         *
+         * @return the copy
+         * @throws UnsupportedOperationException if the model cannot copy states
+         */
+        default State fork() {
+            throw new UnsupportedOperationException("this model's states cannot be copied");
+        }
+
+        /**
          * Frees what this state holds (on a GPU, the key/value cache) now instead of when it
          * is garbage collected. The state is not used afterwards. By default nothing.
          */

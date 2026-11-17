@@ -158,4 +158,35 @@ class OpenAiServerTest {
             }
         }
     }
+
+    @Test
+    void logprobsMatchTheModel() throws IOException {
+        Generator.Output o = generator.generate(new int[][] {tokenizer.encode("hello", false)},
+                Generator.Options.greedy(4).withLogprobs(3), null).getFirst();
+        List<Generator.TokenLogprob> lps = o.logprobs();
+        assertEquals(o.tokens().length, lps.size());
+        for (Generator.TokenLogprob t : lps) {
+            // greedy: the written token is the most likely one
+            assertEquals(t.token(), t.top()[0]);
+            assertEquals(t.logprob(), t.topLogprobs()[0], 0);
+            assertTrue(t.topLogprobs()[0] >= t.topLogprobs()[1] && t.topLogprobs()[1] >= t.topLogprobs()[2]);
+            assertTrue(t.logprob() <= 0);
+        }
+
+        String r = call("POST", "/v1/chat/completions", "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+                + "\"max_tokens\":4,\"temperature\":0,\"logprobs\":true,\"top_logprobs\":2}");
+        assertTrue(r.startsWith("200 "), r);
+        Map<String, Object> choice = Json.object(Json.array(Json.object(Json.parse(r.substring(4))).get("choices")).getFirst());
+        List<Object> content = Json.array(Json.object(choice.get("logprobs")).get("content"));
+        assertEquals(4, content.size());
+        Map<String, Object> first = Json.object(content.getFirst());
+        assertTrue(first.get("token") instanceof String);
+        assertEquals(2, Json.array(first.get("top_logprobs")).size());
+
+        r = call("POST", "/v1/completions", "{\"prompt\":\"hello\",\"max_tokens\":3,\"temperature\":0,\"logprobs\":1}");
+        choice = Json.object(Json.array(Json.object(Json.parse(r.substring(4))).get("choices")).getFirst());
+        Map<String, Object> lp = Json.object(choice.get("logprobs"));
+        assertEquals(3, Json.array(lp.get("token_logprobs")).size());
+        assertEquals(choice.get("text"), String.join("", Json.array(lp.get("tokens")).stream().map(String::valueOf).toList()));
+    }
 }
