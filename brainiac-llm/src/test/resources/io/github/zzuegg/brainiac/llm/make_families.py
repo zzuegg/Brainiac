@@ -63,6 +63,15 @@ gemma3 = save("gemma3", init(tf.Gemma3ForCausalLM(tf.Gemma3TextConfig(**g3, head
         "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
         "full_attention": {"rope_type": "linear", "rope_theta": 1000.0, "factor": 2.0}}))))
 
+moe = dict(base, num_hidden_layers=2)
+save("mixtral", init(tf.MixtralForCausalLM(tf.MixtralConfig(**moe, num_local_experts=4, num_experts_per_tok=2,
+                                                            tie_word_embeddings=False))))
+save("qwen3moe", init(tf.Qwen3MoeForCausalLM(tf.Qwen3MoeConfig(**moe, head_dim=8, num_experts=4, num_experts_per_tok=2,
+                                                               moe_intermediate_size=16, norm_topk_prob=True,
+                                                               tie_word_embeddings=False))))
+save("qwen2moe", init(tf.Qwen2MoeForCausalLM(tf.Qwen2MoeConfig(**moe, num_experts=4, num_experts_per_tok=2,
+                                                               moe_intermediate_size=16, shared_expert_intermediate_size=24,
+                                                               norm_topk_prob=False, tie_word_embeddings=False))))
 
 # ---------------------------------------------------------------- GGUF copies
 

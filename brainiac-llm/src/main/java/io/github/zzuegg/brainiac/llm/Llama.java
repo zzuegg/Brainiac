@@ -6,6 +6,7 @@ import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.io.SafeTensors;
 import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -100,7 +101,45 @@ public final class Llama implements LanguageModel {
      * ({@link Fused}); the q/k and post norms are null where the family has none.
      */
     private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
-            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm) {
+            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts) {
+    }
+
+    /**
+     * A block's mixture of experts: the router, each expert's gate, up and down projections,
+     * and an optional shared expert with its sigmoid gate.
+     */
+    private record Experts(Linear router, Linear[] gate, Linear[] up, Linear[] down, Linear sharedGate,
+            Linear sharedUp, Linear sharedDown, Linear sharedScale) {
+    }
+
+    /** The module prefix of a block's experts, and its names for gate, up and down. */
+    private static String[] expertNames(LlamaConfig c) {
+        return c.architecture().equals("mixtral")
+                ? new String[] {"block_sparse_moe.", "w1", "w3", "w2"}
+                : new String[] {"mlp.", "gate_proj", "up_proj", "down_proj"};
+    }
+
+    private static Experts experts(LlamaConfig c, Map<String, Linear> linears, String p) {
+        LlamaConfig.Moe moe = c.extras().moe();
+        if (!moe.present()) {
+            return null;
+        }
+        String[] n = expertNames(c);
+        Linear[] gate = new Linear[moe.experts()];
+        Linear[] up = new Linear[moe.experts()];
+        Linear[] down = new Linear[moe.experts()];
+        for (int e = 0; e < moe.experts(); e++) {
+            String x = p + n[0] + "experts." + e + ".";
+            gate[e] = linears.get(x + n[1]);
+            up[e] = linears.get(x + n[2]);
+            down[e] = linears.get(x + n[3]);
+        }
+        boolean shared = moe.sharedFfn() > 0;
+        return new Experts(linears.get(p + n[0] + "gate"), gate, up, down,
+                shared ? linears.get(p + "mlp.shared_expert.gate_proj") : null,
+                shared ? linears.get(p + "mlp.shared_expert.up_proj") : null,
+                shared ? linears.get(p + "mlp.shared_expert.down_proj") : null,
+                shared ? linears.get(p + "mlp.shared_expert_gate") : null);
     }
 
     private final LlamaConfig config;
@@ -160,7 +199,7 @@ public final class Llama implements LanguageModel {
                     e.qkNorm() ? need(named, p + "self_attn.q_norm.weight") : null,
                     e.qkNorm() ? need(named, p + "self_attn.k_norm.weight") : null,
                     post ? need(named, p + "post_attention_layernorm.weight") : null,
-                    post ? need(named, p + "post_feedforward_layernorm.weight") : null));
+                    post ? need(named, p + "post_feedforward_layernorm.weight") : null, experts(config, linears, p)));
             if (e.fused()) {
                 fused[i] = new Fused(linears.get(p + "self_attn.qkv_proj"), linears.get(p + "mlp.gate_up_proj"));
             }
@@ -195,10 +234,26 @@ public final class Llama implements LanguageModel {
         List<String> names = new ArrayList<>();
         for (int i = 0; i < c.layers(); i++) {
             String p = "model.layers." + i + ".";
-            for (String s : c.extras().fused()
+            List<String> modules = new ArrayList<>(c.extras().fused()
                     ? List.of("self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj")
                     : List.of("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
-                            "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")) {
+                            "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"));
+            LlamaConfig.Moe moe = c.extras().moe();
+            if (moe.present()) {
+                modules.removeIf(m -> m.startsWith("mlp."));
+                String[] n = expertNames(c);
+                modules.add(n[0] + "gate");
+                for (int e = 0; e < moe.experts(); e++) {
+                    for (int k = 1; k <= 3; k++) {
+                        modules.add(n[0] + "experts." + e + "." + n[k]);
+                    }
+                }
+                if (moe.sharedFfn() > 0) {
+                    modules.addAll(List.of("mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj",
+                            "mlp.shared_expert.down_proj", "mlp.shared_expert_gate"));
+                }
+            }
+            for (String s : modules) {
                 names.add(p + s);
             }
         }
@@ -431,7 +486,15 @@ public final class Llama implements LanguageModel {
         // residual projections scaled down by depth, as GPT-2 does
         float residual = (float) (std / Math.sqrt(2.0 * config.layers()));
         for (String l : linearNames(config)) {
-            int[] shape = l.endsWith("qkv_proj") ? new int[] {qOut + 2 * kvOut, config.hidden()}
+            LlamaConfig.Moe moe = config.extras().moe();
+            boolean expert = l.contains(".experts.");
+            boolean shared = l.contains(".shared_expert.");
+            int ffn = expert ? moe.ffn() : shared ? moe.sharedFfn() : config.intermediate();
+            int[] shape = l.endsWith(".gate") ? new int[] {moe.experts(), config.hidden()}
+                    : l.endsWith("shared_expert_gate") ? new int[] {1, config.hidden()}
+                    : expert || shared ? (l.endsWith("down_proj") || l.endsWith("w2") ? new int[] {config.hidden(), ffn}
+                            : new int[] {ffn, config.hidden()})
+                    : l.endsWith("qkv_proj") ? new int[] {qOut + 2 * kvOut, config.hidden()}
                     : l.endsWith("gate_up_proj") ? new int[] {2 * config.intermediate(), config.hidden()}
                     : l.endsWith("q_proj") ? new int[] {qOut, config.hidden()}
                     : l.endsWith("k_proj") || l.endsWith("v_proj") ? new int[] {kvOut, config.hidden()}
@@ -500,7 +563,8 @@ public final class Llama implements LanguageModel {
                     named.get(prefix + post + ".weight"), b.gate, b.up, b.down,
                     named.get(prefix + "self_attn.q_norm.weight"), named.get(prefix + "self_attn.k_norm.weight"),
                     config.extras().postNorms() ? named.get(prefix + "post_attention_layernorm.weight") : null,
-                    config.extras().postNorms() ? named.get(prefix + "post_feedforward_layernorm.weight") : null));
+                    config.extras().postNorms() ? named.get(prefix + "post_feedforward_layernorm.weight") : null,
+                    b.experts));
         }
         headDevice = target;
         headType = dtype;
@@ -1293,6 +1357,14 @@ public final class Llama implements LanguageModel {
             x = x.add(attn);
             h = rmsNorm(x, blk.ffnNorm, decoding);
             // both products first: the activation and the product then run as one chain
+            if (blk.experts != null) {
+                Var ffnOut = experts(blk.experts, h);
+                if (blk.postFfnNorm != null) {
+                    ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
+                }
+                x = x.add(ffnOut);
+                continue;
+            }
             Var gate;
             Var up;
             if (f != null && f.gateUp() != null) {
@@ -1313,6 +1385,84 @@ public final class Llama implements LanguageModel {
         }
         x = x.to(headDevice()).to(headType());
         return rmsNorm(x, norm, decoding);
+    }
+
+    /**
+     * A mixture of experts over {@code h} {@code [batch, steps, hidden]}: the router's softmax
+     * picks each token's experts on the host, each expert runs once on its tokens, and a
+     * gather sums every token's outputs. The weights stay differentiable.
+     */
+    private Var experts(Experts m, Var h) {
+        LlamaConfig.Moe moe = config.extras().moe();
+        int[] s = h.shape().toArray();
+        int n = s[0] * s[1];
+        int hidden = config.hidden();
+        int count = moe.experts();
+        int k = moe.perToken();
+        Device dev = h.value().device();
+        Var flat = h.reshape(n, hidden);
+        Var probs = Activation.SOFTMAX.forward(m.router().apply(flat).to(DType.FLOAT32));   // [n, experts]
+        float[] p = probs.value().toArray();
+        // each token's experts, largest weight first
+        int[] chosen = new int[n * k];
+        for (int t = 0; t < n; t++) {
+            boolean[] taken = new boolean[count];
+            for (int j = 0; j < k; j++) {
+                int best = -1;
+                for (int e = 0; e < count; e++) {
+                    if (!taken[e] && (best < 0 || p[t * count + e] > p[t * count + best])) {
+                        best = e;
+                    }
+                }
+                taken[best] = true;
+                chosen[t * k + j] = best;
+            }
+        }
+        int[] picked = new int[n * k];
+        for (int i = 0; i < picked.length; i++) {
+            picked[i] = i / k * count + chosen[i];
+        }
+        Var weights = probs.reshape(n * count).gather(0, indices(picked, dev));   // [n * k]
+        if (moe.normalize()) {
+            Var w2 = weights.reshape(n, k);
+            weights = w2.div(w2.sum(1, true)).reshape(n * k);
+        }
+        // the rows of each expert, in expert order; then where each (token, slot) landed
+        List<Var> outs = new ArrayList<>();
+        int[] place = new int[n * k];
+        int rows = 0;
+        for (int e = 0; e < count; e++) {
+            List<Integer> slots = new ArrayList<>();
+            for (int i = 0; i < chosen.length; i++) {
+                if (chosen[i] == e) {
+                    slots.add(i);
+                }
+            }
+            if (slots.isEmpty()) {
+                continue;
+            }
+            int[] tokens = new int[slots.size()];
+            int[] slotIds = new int[slots.size()];
+            for (int i = 0; i < tokens.length; i++) {
+                slotIds[i] = slots.get(i);
+                tokens[i] = slotIds[i] / k;
+                place[slotIds[i]] = rows + i;
+            }
+            rows += tokens.length;
+            Var xe = flat.gather(0, indices(tokens, dev));
+            Var y = m.down()[e].apply(m.gate()[e].apply(xe).activation(config.extras().activation(), 0)
+                    .mul(m.up()[e].apply(xe)));
+            Var w = weights.gather(0, indices(slotIds, dev)).reshape(tokens.length, 1).to(y.dtype());
+            outs.add(y.mul(w));
+        }
+        Var all = outs.size() == 1 ? outs.getFirst() : Var.concat(0, outs.toArray(Var[]::new));
+        Var out = all.gather(0, indices(place, dev)).reshape(n, k, hidden).sum(1, false);
+        if (m.sharedGate() != null) {
+            Var shared = m.sharedDown().apply(m.sharedGate().apply(flat).activation(config.extras().activation(), 0)
+                    .mul(m.sharedUp().apply(flat)));
+            out = out.add(shared.mul(m.sharedScale().apply(flat).activation(ActivationOp.SIGMOID, 0)));
+        }
+        return out.reshape(s[0], s[1], hidden);
     }
 
     /** Rotates the first {@code rotary} features of each head; the rest pass (partial rotary, Phi). */
@@ -1599,6 +1749,9 @@ public final class Llama implements LanguageModel {
     public void saveGguf(Path file, PretrainedTokenizer tokenizer, boolean half) {
         if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
+        }
+        if (config.extras().moe().present()) {
+            throw new IllegalStateException("mixtures of experts cannot be written as GGUF yet");
         }
         String a = switch (config.architecture()) {
             case "qwen2", "qwen3", "phi3", "gemma", "gemma2" -> config.architecture();
