@@ -1,8 +1,11 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.evolve.Evolution;
 import io.github.zzuegg.brainiac.evolve.Genome;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Benchmark;
 
 import java.util.ArrayList;
@@ -12,7 +15,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 
 /**
  * Several classifiers evaluated together, with their disagreement as a measure of
@@ -172,6 +177,56 @@ public final class PopulationEnsemble {
             f.add(x -> toDouble(m.predict(x)));
         }
         return new PopulationEnsemble(f);
+    }
+
+    /**
+     * Monte Carlo dropout: one trained model with dropout kept on at prediction time; each
+     * member is a fresh dropout mask, so the members' disagreement approximates the
+     * posterior uncertainty of a Bayesian network (Gal and Ghahramani 2016, "Dropout as a
+     * Bayesian Approximation", <a href="https://arxiv.org/abs/1506.02142">arXiv:1506.02142</a>).
+     * Layers that update state in training mode (batch norm) should not be used with it.
+     *
+     * @param model a trained model with dropout layers
+     * @param samples the number of dropout masks
+     * @return the ensemble
+     */
+    public static PopulationEnsemble mcDropout(Model model, int samples) {
+        Objects.requireNonNull(model);
+        List<Function<float[][], double[][]>> f = new ArrayList<>();
+        for (int s = 0; s < samples; s++) {
+            f.add(x -> toDouble(toRows(model.forward(Var.of(Tensor.of(x)), true).value(), x.length)));
+        }
+        return new PopulationEnsemble(f);
+    }
+
+    /**
+     * A deep ensemble: the same architecture trained several times from different random
+     * starts (Lakshminarayanan et al. 2017, "Simple and Scalable Predictive Uncertainty
+     * Estimation using Deep Ensembles", <a href="https://arxiv.org/abs/1612.01474">arXiv:1612.01474</a>).
+     *
+     * @param build builds member {@code i} (use {@code i} in its seed)
+     * @param members the number of members
+     * @param train trains one member in place
+     * @return the ensemble
+     */
+    public static PopulationEnsemble deepEnsemble(IntFunction<Model> build, int members, Consumer<Model> train) {
+        List<Model> models = new ArrayList<>();
+        for (int i = 0; i < members; i++) {
+            Model m = build.apply(i);
+            train.accept(m);
+            models.add(m);
+        }
+        return of(models);
+    }
+
+    private static float[][] toRows(Tensor t, int n) {
+        float[] a = t.to(DType.FLOAT32).toArray();
+        int c = a.length / n;
+        float[][] out = new float[n][c];
+        for (int i = 0; i < n; i++) {
+            System.arraycopy(a, i * c, out[i], 0, c);
+        }
+        return out;
     }
 
     /**
