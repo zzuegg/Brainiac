@@ -28,7 +28,8 @@ import java.util.concurrent.Executors;
  * constrains the answer. A chat's {@code tools} go to the chat template, and a reply that calls
  * them (Hermes {@code <tool_call>} blocks or a bare JSON call, see {@link Agent}) comes back as
  * {@code tool_calls} with {@code finish_reason} "tool_calls"; earlier calls and {@code tool}
- * messages in the request are rendered for the model. Requests are answered one at a time, or, with a batch size above
+ * messages in the request are rendered for the model. {@code logprobs} (chat: with
+ * {@code top_logprobs}) adds token log-probabilities to answers that are not streamed. Requests are answered one at a time, or, with a batch size above
  * one, decoded together by {@link Generator#batcher continuous batching}.
  *
  * <pre>{@code
@@ -215,6 +216,9 @@ public final class OpenAiServer implements AutoCloseable {
                 choice.put("text", o.text());
             }
             choice.put("finish_reason", message != null && message.containsKey("tool_calls") ? "tool_calls" : finish(o));
+            if (o.logprobs() != null) {
+                choice.put("logprobs", chat ? chatLogprobs(o.logprobs()) : completionLogprobs(o.logprobs()));
+            }
             Map<String, Object> usage = new LinkedHashMap<>();
             usage.put("prompt_tokens", promptTokens);
             usage.put("completion_tokens", o.tokens().length);
@@ -365,6 +369,15 @@ public final class OpenAiServer implements AutoCloseable {
         }
         Generator.Options options = new Generator.Options((int) Math.min(max, Integer.MAX_VALUE), sampling, seed,
                 stopTokens, stop);
+        // chat: "logprobs": true with "top_logprobs": n; completions: "logprobs": n
+        Object lp = req.get("logprobs");
+        if (chat ? Boolean.TRUE.equals(lp) : lp instanceof Number) {
+            long top = chat ? Json.integer(req, "top_logprobs", 0) : ((Number) lp).longValue();
+            if (top < 0 || top > 20) {
+                throw new BadRequest("top_logprobs must be 0 to 20");
+            }
+            options = options.withLogprobs((int) top);
+        }
         if (req.get("response_format") instanceof Map<?, ?> format) {
             Object type = format.get("type");
             if ("json_schema".equals(type)) {
@@ -380,6 +393,67 @@ public final class OpenAiServer implements AutoCloseable {
             }
         }
         return options;
+    }
+
+    private String token(int id) {
+        return tokenizer.decode(new int[] {id});
+    }
+
+    private static List<Object> bytes(String token) {
+        List<Object> out = new ArrayList<>();
+        for (byte b : token.getBytes(StandardCharsets.UTF_8)) {
+            out.add((long) (b & 0xff));
+        }
+        return out;
+    }
+
+    private Map<String, Object> chatLogprobs(List<Generator.TokenLogprob> logprobs) {
+        List<Object> content = new ArrayList<>();
+        for (Generator.TokenLogprob t : logprobs) {
+            Map<String, Object> e = entry(t.token(), t.logprob());
+            List<Object> top = new ArrayList<>();
+            for (int i = 0; i < t.top().length; i++) {
+                top.add(entry(t.top()[i], t.topLogprobs()[i]));
+            }
+            e.put("top_logprobs", top);
+            content.add(e);
+        }
+        return Map.of("content", content);
+    }
+
+    private Map<String, Object> entry(int id, float logprob) {
+        String text = token(id);
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("token", text);
+        e.put("logprob", (double) logprob);
+        e.put("bytes", bytes(text));
+        return e;
+    }
+
+    private Map<String, Object> completionLogprobs(List<Generator.TokenLogprob> logprobs) {
+        List<Object> tokens = new ArrayList<>();
+        List<Object> values = new ArrayList<>();
+        List<Object> tops = new ArrayList<>();
+        List<Object> offsets = new ArrayList<>();
+        long offset = 0;
+        for (Generator.TokenLogprob t : logprobs) {
+            String text = token(t.token());
+            tokens.add(text);
+            values.add((double) t.logprob());
+            Map<String, Object> top = new LinkedHashMap<>();
+            for (int i = 0; i < t.top().length; i++) {
+                top.putIfAbsent(token(t.top()[i]), (double) t.topLogprobs()[i]);
+            }
+            tops.add(top);
+            offsets.add(offset);
+            offset += text.length();
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("tokens", tokens);
+        out.put("token_logprobs", values);
+        out.put("top_logprobs", tops);
+        out.put("text_offset", offsets);
+        return out;
     }
 
     private Map<String, Object> chunk(String id, long created, boolean chat, Object delta, String finish) {
