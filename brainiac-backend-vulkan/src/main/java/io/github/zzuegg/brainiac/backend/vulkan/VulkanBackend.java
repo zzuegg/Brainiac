@@ -1821,6 +1821,16 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0) {
+            // unpacked into a temporary, freed as soon as the product is recorded: its slot
+            // goes back to the pool, and the hazard tracking orders any reuse after this read.
+            // Left to the garbage collector, a prefill held one per layer at once.
+            VkStorage w = raw((long) k * n, vs(out).dtype, null);
+            unpack(b, w);
+            matmulBatched(a, w, 1, m, k, n, out);
+            w.release();
+            return;
+        }
         if (m > PACKED_ROWS || m == 0 || k == 0) {
             Backend.super.matmulPacked(a, b, m, k, n, out);
             return;
