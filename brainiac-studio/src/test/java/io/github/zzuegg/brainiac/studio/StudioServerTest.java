@@ -34,7 +34,7 @@ class StudioServerTest {
     static void start() throws IOException {
         Path home = Files.createTempDirectory("studio-test");
         studio = Studio.start(new Studio.Settings(0, List.of(home.resolve("models")), home.resolve("keys.properties"),
-                Map.of()));
+                Map.of(), home.resolve("outputs")));
     }
 
     @AfterAll

@@ -101,4 +101,29 @@ class ChatApiTest {
         assertEquals(405, call("GET", "/api/chat", null).statusCode());
         assertEquals(null, apis.bodies.get("a POST"));
     }
+
+    @Test
+    void picturesAndSpeechComeBackAsBase64WithTheirFiles() throws Exception {
+        call("POST", "/api/keys", "{\"provider\":\"openai\",\"key\":\"k\"}");
+        HttpResponse<String> r = call("POST", "/api/images",
+                "{\"model\":\"auto\",\"prompt\":\"a lighthouse\",\"aspect\":\"1:1\",\"count\":2}");
+        assertEquals(200, r.statusCode(), r.body());
+        Map<String, Object> answer = Json.object(Json.parse(r.body()));
+        assertEquals("openai/gpt-image-1", Json.object(answer.get("model")).get("key"));
+        List<Object> items = Json.array(answer.get("items"));
+        assertEquals(2, items.size());
+        Map<String, Object> first = Json.object(items.getFirst());
+        assertEquals("PNG0", new String(java.util.Base64.getDecoder().decode((String) first.get("data"))));
+        assertTrue(java.nio.file.Files.exists(Path.of((String) first.get("file"))));
+
+        r = call("POST", "/api/speech", "{\"text\":\"Hello\",\"voice\":\"coral\"}");
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("audio/mpeg", Json.object(Json.array(Json.object(Json.parse(r.body())).get("items")).getFirst()).get("mime"));
+
+        assertEquals(400, call("POST", "/api/images", "{\"prompt\":\"x\",\"aspect\":\"2:1\"}").statusCode());
+        apis.failWith = 500;
+        r = call("POST", "/api/images", "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"x\"}");
+        assertEquals(502, r.statusCode());
+        assertTrue(r.body().contains("OpenAI answered 500"), r.body());
+    }
 }
