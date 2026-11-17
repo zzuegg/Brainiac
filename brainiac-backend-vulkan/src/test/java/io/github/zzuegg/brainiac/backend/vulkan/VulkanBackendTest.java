@@ -239,6 +239,63 @@ class VulkanBackendTest {
         same(DType.FLOAT32, "embedding model", t -> (t.device().equals(gpu) ? device : cpu).predict(t), x);
     }
 
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64"})
+    void fusedChainsAndViewsMatchTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        Tensor x = random(21, 6, 9);
+        Tensor y = random(22, 9, 6);
+        UnaryOperator<Tensor> longChain = t -> {
+            Tensor r = t;
+            for (int i = 0; i < 70; i++) {
+                r = i % 7 == 0 ? r.tanh() : r.mul(0.9f).add(t);   // beyond one shader's limit
+            }
+            return r;
+        };
+        same(type, "long chain", longChain, x);
+        same(type, "shared values", t -> {
+            Tensor a = t.exp();
+            Tensor b = a.mul(a).add(a.sigmoid());
+            return b.sub(a).div(a.add(1));
+        }, x);
+        same(type, "transposed result", t -> t.exp().add(1).transpose().mul(2), x);
+        same(type, "result read in place by a matmul", t -> t.mul(2).add(1).transpose().matmul(t.relu()), x);
+        same(type, "permuted chain", t -> t.reshape(2, 3, 9).permute(2, 0, 1).tanh().permute(1, 2, 0)
+                .reshape(6, 9).add(t), x);
+        same(type, "slice of a result", t -> t.square().slice(1, 2, 5).add(t.slice(1, 4, 7).exp()), x);
+        same(type, "broadcast of a result", t -> t.add(t.sum(1, true).exp().mul(0.1f)), x);
+        same(type, "broadcast of a pending row", t -> t.mul(t.slice(0, 1, 2).abs().add(1)), x);
+        same(type, "two results of one chain", t -> {
+            Tensor a = t.mul(3).sub(1);
+            Tensor b = a.relu();
+            Tensor c = a.neg().relu();
+            Tensor.evaluate(List.of(b, c));
+            return b.sub(c).matmul(y.to(type).to(t.device()));
+        }, x);
+        same(type, "constants", t -> Tensor.full(Shape.of(6, 9), 0.25f, type, t.device()).mul(t)
+                .add(Tensor.zeros(Shape.of(9), type, t.device())), x);
+        if (type == DType.FLOAT32) {
+            // the mask is generated inside the shader that uses it
+            same(type, "random mask", t -> t.mul(Tensor.random(t.shape(), 77, t.device()).greater(
+                    Tensor.full(t.shape(), 0.5f, type, t.device()))), x);
+        }
+    }
+
+    @Test
+    void elementWiseChainsRunAsOneDispatch() {
+        VulkanBackend vk = VulkanBackend.loaded().orElseThrow();
+        assumeTrue(vk.status().contains("fusion on"), vk.status());
+        Tensor x = random(23, 64, 64).to(gpu);
+        x.toArray();
+        long before = vk.dispatchCount();
+        Tensor r = x;
+        for (int i = 0; i < 6; i++) {
+            r = r.mul(1.01f).add(x).tanh();
+        }
+        r.transpose().toArray();
+        assertEquals(1, vk.dispatchCount() - before, vk.statistics());
+    }
+
     @Test
     void manyTemporaryTensorsAreFreed() {
         Tensor t = Tensor.zeros(Shape.of(1 << 18), gpu);

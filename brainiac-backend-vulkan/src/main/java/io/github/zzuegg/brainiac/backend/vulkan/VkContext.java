@@ -574,6 +574,22 @@ final class VkContext {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+        long p2 = createPipeline(code);
+        pipelines.put(name, p2);
+        return p2;
+    }
+
+    /** Whether a pipeline is known by this name, precompiled or {@link #register registered}. */
+    boolean hasPipeline(String name) {
+        return pipelines.containsKey(name);
+    }
+
+    /** Makes SPIR-V compiled at run time (a fused shader) available to {@link #dispatch} by name. */
+    void register(String name, byte[] code) {
+        pipelines.put(name, createPipeline(code));
+    }
+
+    private long createPipeline(byte[] code) {
         ByteBuffer spirv = MemoryUtil.memAlloc(code.length);
         try (MemoryStack st = stackPush()) {
             spirv.put(code).flip();
@@ -587,7 +603,6 @@ final class VkContext {
                     .stage(stage).layout(pipelineLayout);
             check(vkCreateComputePipelines(device, VK_NULL_HANDLE, ci, null, lp), "vkCreateComputePipelines");
             vkDestroyShaderModule(device, module, null);
-            pipelines.put(name, lp.get(0));
             return lp.get(0);
         } finally {
             MemoryUtil.memFree(spirv);
@@ -745,16 +760,8 @@ final class VkContext {
                 at = 0;
                 b.done.add(() -> destroy(from));
             } else {
-                if (staging == null || staging.used + bytes > staging.size) {
-                    Block fresh = stagingPool.poll();
-                    staging = fresh != null ? fresh : block(STAGING_CHUNK, uploadType, true);
-                    staging.used = 0;
-                    Block mine = staging;
-                    b.done.add(() -> stagingPool.add(mine));
-                }
+                at = stage(b, bytes);
                 from = staging;
-                at = staging.used;
-                staging.used += (bytes + 255) & ~255L;
             }
             writer.accept(MemoryUtil.memByteBuffer(from.mapped + at, (int) bytes).order(ByteOrder.nativeOrder()));
             try (MemoryStack st = stackPush()) {
@@ -763,6 +770,35 @@ final class VkContext {
             }
         }
         recorded(b);
+    }
+
+    /** Room for {@code bytes} bytes in the staging chunk, for commands recorded into {@code b}. */
+    private long stage(Batch b, long bytes) {
+        if (staging == null || staging.used + bytes > staging.size) {
+            // a staging chunk serves one batch (submit lets go of it) and returns when it is done
+            Block fresh = stagingPool.poll();
+            staging = fresh != null ? fresh : block(STAGING_CHUNK, uploadType, true);
+            staging.used = 0;
+            Block mine = staging;
+            b.done.add(() -> stagingPool.add(mine));
+        }
+        long at = staging.used;
+        staging.used += (bytes + 255) & ~255L;
+        return at;
+    }
+
+    /**
+     * Host data that commands recorded next read by device address, such as the pointers and
+     * shapes of a fused shader: written into host-visible staging memory now (coherent, so
+     * visible at submit) instead of copied by a command. {@code writer} fills {@code bytes} bytes.
+     *
+     * @return the device address of the data
+     */
+    long hostData(int bytes, java.util.function.Consumer<ByteBuffer> writer) {
+        Batch b = recording();
+        long at = stage(b, bytes);
+        writer.accept(MemoryUtil.memByteBuffer(staging.mapped + at, bytes).order(ByteOrder.nativeOrder()));
+        return staging.address + at;
     }
 
     /** Copies a slot's first {@code bytes} bytes to the host, waiting for all work before it. */
