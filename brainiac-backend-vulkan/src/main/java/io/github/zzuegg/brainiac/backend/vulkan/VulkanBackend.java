@@ -1244,7 +1244,7 @@ public final class VulkanBackend implements Backend {
         // flash decoding: few rows (one query per head while generating) and many keys share
         // each row's keys out among work groups, enough to fill the device
         int parts = (int) Math.max(1, Math.min(ceil(shape[4], ATTENTION_PIECE), ATTENTION_GROUPS / rows));
-        int chunk = ceil(ceil(shape[4], parts), GROUP_SIZE) * GROUP_SIZE;
+        int chunk = ceil(shape[4], parts);   // short pieces too: a 100-key cache over 14 heads still splits
         parts = ceil(shape[4], chunk);
         VkStorage pieces = parts > 1 ? raw(rows * parts * (shape[6] + 2), null) : null;
         var push = vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(z.address())
@@ -1455,7 +1455,7 @@ public final class VulkanBackend implements Backend {
     private static final int PACKED_ROWS = 8;
     /** Work groups a split attention aims for, and the fewest keys a piece takes. */
     private static final int ATTENTION_GROUPS = Integer.getInteger("brainiac.vulkan.attentionGroups", 256);
-    private static final int ATTENTION_PIECE = Integer.getInteger("brainiac.vulkan.attentionPiece", 256);
+    private static final int ATTENTION_PIECE = Integer.getInteger("brainiac.vulkan.attentionPiece", 32);
     /** Products by packed weights split their rows into pieces until about this many work groups run. */
     private static final int PACKED_GROUPS = Integer.getInteger("brainiac.vulkan.packedGroups", 256);
     /** The fewest rows a piece of a product by packed weights takes. */

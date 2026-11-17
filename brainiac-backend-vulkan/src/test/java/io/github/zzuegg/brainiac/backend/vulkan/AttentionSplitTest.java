@@ -30,6 +30,8 @@ class AttentionSplitTest {
     @ParameterizedTest
     @CsvSource({
         "1, 4, 2, 1, 1000, 64, 64, true, false",
+        "1, 14, 2, 1, 100, 64, 64, false, true",
+        "1, 14, 2, 1, 37, 64, 64, true, false",
         "1, 4, 2, 1, 1000, 64, 64, false, true",
         "2, 2, 2, 3, 700, 32, 16, true, false",
         "1, 2, 1, 1, 257, 128, 128, false, false",
