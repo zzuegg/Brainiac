@@ -47,6 +47,7 @@ public final class VulkanBackend implements Backend {
     private static final int GROUP = 256;
 
     private VkContext vk;
+    private long initNanos;
     private boolean initialized;
     private String unavailable;
     private final Map<String, Tables> tables = new LinkedHashMap<>(16, 0.75f, true) {
@@ -92,7 +93,9 @@ public final class VulkanBackend implements Backend {
         if (!initialized) {
             initialized = true;
             try {
+                long start = System.nanoTime();
                 vk = new VkContext();
+                initNanos = System.nanoTime() - start;
                 if (FUSION) {
                     try {
                         compiler = new ShaderCompiler();
@@ -144,11 +147,27 @@ public final class VulkanBackend implements Backend {
         if (vk == null) {
             return "not initialized";
         }
-        return vk.dispatches + " dispatches (" + fusedDispatches + " fused, " + fusedShaders.size()
+        return "init " + initNanos / 1_000_000 + " ms, " + (vk.uploaded >> 20) + " MB uploaded in "
+                + vk.uploadNanos / 1_000_000 + " ms, allocating " + vk.allocNanos / 1_000_000 + " ms, pipelines "
+                + vk.pipelineNanos / 1_000_000 + " ms, waiting " + vk.waitNanos / 1_000_000 + " ms; "
+                + vk.dispatches + " dispatches (" + fusedDispatches + " fused, " + fusedShaders.size()
                 + " shaders generated in " + compileNanos / 1_000_000 + " ms), " + vk.barriers + " barriers, " + vk.submits + " submits, " + vk.waits
-                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
+                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.spilled() >> 20) + " MB spilled, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
                 + vk.perShader.entrySet().stream().sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
                         .limit(12).map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    /** Tests: new device-local blocks fail from now on, so memory spills; false lifts that. */
+    synchronized void simulateFullDevice(boolean full) {
+        if (full) {
+            vk.reclaim();   // pooled blocks freed, so new tensors need new blocks
+        }
+        vk.simulatedLimit = full ? Math.max(1, vk.allocated()) : 0;
+    }
+
+    /** @return bytes spilled from device-local memory; for tests */
+    synchronized long spilled() {
+        return vk == null ? 0 : vk.spilled();
     }
 
     /** Commands recorded so far, fused or not; for tests. */
@@ -442,7 +461,11 @@ public final class VulkanBackend implements Backend {
     @Override
     public synchronized Storage upload(float[] data) {
         VkStorage s = raw(data.length, data.length <= 4096 ? data.clone() : null);
-        vk.upload(s.slot(), s.bytes(), b -> b.asFloatBuffer().put(data));
+        if (java.nio.ByteOrder.nativeOrder() == java.nio.ByteOrder.LITTLE_ENDIAN) {
+            vk.upload(s.slot(), java.lang.foreign.MemorySegment.ofArray(data));
+        } else {
+            vk.upload(s.slot(), s.bytes(), b -> b.asFloatBuffer().put(data));
+        }
         return s;
     }
 
@@ -483,8 +506,7 @@ public final class VulkanBackend implements Backend {
         }
         long n = data.byteSize() / dtype.bytes();
         VkStorage s = raw(n, dtype, null);
-        vk.upload(s.slot(), data.byteSize(), b -> java.lang.foreign.MemorySegment.ofBuffer(b)
-                .copyFrom(data));
+        vk.upload(s.slot(), data);
         return s;
     }
 
@@ -948,7 +970,14 @@ public final class VulkanBackend implements Backend {
         done(y, vs(b));
     }
 
+    /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
+    private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
+
     private void matmul(VkStorage x, VkStorage y, int batch, int m, int k, int n, VkStorage z) {
+        if (m <= VEC_ROWS && batch == 1) {
+            matvec(x, y, m, k, n, z);
+            return;
+        }
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
         // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
         boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
@@ -983,6 +1012,28 @@ public final class VulkanBackend implements Backend {
         }
     }
 
+    /** Few rows times a matrix, limited by reading the matrix: see matmul_vec.comp. */
+    private void matvec(VkStorage x, VkStorage y, int m, int k, int n, VkStorage z) {
+        int columnGroups = ceil(n, 128);
+        // enough pieces to fill the device, of at least 64 rows each
+        int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
+        int chunk = ceil(k, pieces);
+        pieces = ceil(k, chunk);
+        long mn = (long) m * n;
+        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
+        int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        // the vector loads need four aligned columns
+        boolean vectors = n % 4 == 0 && y.address() % (4L * y.dtype.bytes()) == 0;
+        vk.push().putLong(x.address()).putLong(y.address()).putLong(y.address()).putLong(target.address())
+                .putInt(m).putInt(k).putInt(n).putInt(chunk).putInt(vectors ? 1 : 0);
+        vk.dispatch(shader("matmul_vec" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
+                y.slot());
+        if (pieces > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
+            target.release();
+        }
+    }
+
     private static int ceil(long a, int b) {
         return (int) ((a + b - 1) / b);
     }
@@ -996,10 +1047,65 @@ public final class VulkanBackend implements Backend {
      */
     private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.vulkan.fusedAttention"));
 
+    /**
+     * {@code -Dbrainiac.vulkan.fusedAttention=true} also uses it for training, with the
+     * backward shaders (heads up to {@link #BACKWARD_SIZE}): they keep a row in registers, one
+     * invocation per row, so they pay off only where the [queries, keys] weights would not fit.
+     */
+    private static final boolean FUSED_TRAINING = "true".equals(System.getProperty("brainiac.vulkan.fusedAttention"));
+
+    /** The largest head size of the backward shaders ({@code ATT_D} in attention_dq.comp). */
+    private static final int BACKWARD_SIZE = 64;
+
     @Override
     public boolean hasAttention(int[] shape, DType type, boolean backward) {
-        return FUSED_ATTENTION && !backward && type != DType.FLOAT64 && shape[5] <= GROUP_SIZE
-                && shape[6] <= GROUP_SIZE && supports(type);
+        if (backward && (!FUSED_TRAINING || shape[5] > BACKWARD_SIZE || shape[6] > BACKWARD_SIZE)) {
+            return false;
+        }
+        return FUSED_ATTENTION && type != DType.FLOAT64 && shape[5] <= GROUP_SIZE && shape[6] <= GROUP_SIZE
+                && supports(type);
+    }
+
+    @Override
+    public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
+            Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        VkStorage gq = vs(dq);
+        DType type = gq.dtype;
+        if (type == DType.FLOAT64 || shape[5] > BACKWARD_SIZE || shape[6] > BACKWARD_SIZE) {
+            throw new UnsupportedOperationException("fused attention backward: " + type + ", heads of " + shape[5]
+                    + " and " + shape[6]);
+        }
+        VkStorage gk = vs(dk);
+        VkStorage gv = vs(dv);
+        eager(vs(q), vs(k), vs(v), vs(out), vs(lse), vs(grad), gq, gk, gv);
+        VkStorage xq = as(vs(q), type);
+        VkStorage xk = as(vs(k), type);
+        VkStorage xv = as(vs(v), type);
+        VkStorage xo = as(vs(out), type);
+        VkStorage xl = as(vs(lse), type);
+        VkStorage xg = as(vs(grad), type);
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        long keys = (long) shape[0] * shape[2] * shape[4];
+        VkStorage dsum = raw(rows, type, null);
+        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(xo.address())
+                .putLong(xl.address()).putLong(xg.address()).putLong(gq.address()).putLong(dsum.address())
+                .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
+                .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(rows));
+        vk.dispatch(shader("attention_dq", type), groups(rows), new VkContext.Slot[] {gq.slot(), dsum.slot()},
+                xq.slot(), xk.slot(), xv.slot(), xo.slot(), xl.slot(), xg.slot());
+        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(xl.address())
+                .putLong(xg.address()).putLong(dsum.address()).putLong(gk.address()).putLong(gv.address())
+                .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
+                .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(keys));
+        vk.dispatch(shader("attention_dkv", type), groups(keys), new VkContext.Slot[] {gk.slot(), gv.slot()},
+                xq.slot(), xk.slot(), xv.slot(), xl.slot(), xg.slot(), dsum.slot());
+        dsum.release();
+        done(xq, vs(q));
+        done(xk, vs(k));
+        done(xv, vs(v));
+        done(xo, vs(out));
+        done(xl, vs(lse));
+        done(xg, vs(grad));
     }
 
     @Override
@@ -1049,6 +1155,44 @@ public final class VulkanBackend implements Backend {
         done(xq, vs(q));
         done(xk, vs(k));
         done(xv, vs(v));
+    }
+
+    /** The longest power-of-two transform one work group computes in shared memory (fft.comp). */
+    private static final int FFT_MAX = 2048;
+
+    @Override
+    public synchronized Storage fft(Storage in, long rows, int n, boolean inverse) {
+        VkStorage x = vs(in);
+        if (Integer.bitCount(n) != 1 || n > FFT_MAX || x.dtype == DType.FLOAT64) {
+            return Backend.super.fft(in, rows, n, inverse);   // on the host: Bluestein, or long rows
+        }
+        eager(x);
+        VkStorage z = raw(rows * n * 2, DType.FLOAT32, null);
+        vk.push().putLong(x.address()).putLong(z.address()).putInt(Math.toIntExact(rows)).putInt(n)
+                .putInt(Integer.numberOfTrailingZeros(n)).putInt(inverse ? 1 : 0);
+        vk.dispatch(shader("fft", x.dtype), rows, z.slot(), x.slot());
+        return z;
+    }
+
+    @Override
+    public boolean hasRmsNorm(DType type) {
+        return type != DType.FLOAT64 && supports(type);
+    }
+
+    @Override
+    public synchronized void rmsNorm(Storage x, Storage weight, long rows, int cols, float eps, Storage out) {
+        VkStorage z = vs(out);
+        if (!hasRmsNorm(z.dtype)) {
+            throw new UnsupportedOperationException("fused RMSNorm: " + z.dtype);
+        }
+        eager(vs(x), vs(weight), z);
+        VkStorage xx = as(vs(x), z.dtype);
+        VkStorage xw = as(vs(weight), z.dtype);
+        vk.push().putLong(xx.address()).putLong(xw.address()).putLong(z.address()).putInt(Math.toIntExact(rows))
+                .putInt(cols).putFloat(eps);
+        vk.dispatch(shader("rms_norm", z.dtype), rows, z.slot(), xx.slot(), xw.slot());
+        done(xx, vs(x));
+        done(xw, vs(weight));
     }
 
     /** The work group size of the shaders ({@code GROUP} in common.glsl). */
