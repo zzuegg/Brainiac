@@ -1244,6 +1244,8 @@ public final class VulkanBackend implements Backend {
     private static final int PACKED_ROWS = 8;
     /** Products by packed weights split their rows into pieces until about this many work groups run. */
     private static final int PACKED_GROUPS = Integer.getInteger("brainiac.vulkan.packedGroups", 256);
+    /** The fewest rows a piece of a product by packed weights takes. */
+    private static final int PACKED_PIECE = Integer.getInteger("brainiac.vulkan.packedPiece", 64);
 
     @Override
     public synchronized PackedStorage pack(PackedMatrix matrix) {
@@ -1318,9 +1320,9 @@ public final class VulkanBackend implements Backend {
         eager(vs(a), z);
         VkStorage x = as(vs(a), z.dtype);
         int columnGroups = ceil(n, 128);
-        // enough pieces to fill the device, of at least 256 rows each: every piece costs a pass
-        // that adds them up, which small products would mostly spend waiting
-        int pieces = Math.max(1, Math.min(ceil(k, 256), PACKED_GROUPS / columnGroups));
+        // enough pieces to fill the device, of at least PACKED_PIECE rows each, as matvec does:
+        // with 256 a 896-wide model ran only 28 work groups and decoded at half f16's speed
+        int pieces = Math.max(1, Math.min(ceil(k, PACKED_PIECE), PACKED_GROUPS / columnGroups));
         int chunk = ceil(ceil(k, pieces), 2) * 2;
         pieces = ceil(k, chunk);
         long mn = (long) m * n;
