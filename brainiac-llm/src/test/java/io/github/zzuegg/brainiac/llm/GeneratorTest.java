@@ -168,6 +168,18 @@ class GeneratorTest {
     }
 
     @Test
+    void presenceFrequencyAndBiasFollowOpenAi() {
+        float[] logits = {2, -2, 1, 0};
+        Sampling s = Sampling.GREEDY.withPenalties(0.5f, 0.25f).withLogitBias(java.util.Map.of(3, 5f, 9, 1f));
+        assertTrue(s.usesHistory() && !s.plain());
+        // the prompt is {0, 1}; tokens 0, 2, 0 were written
+        s.penalize(logits, new int[] {0, 1, 0, 2, 0}, 3);
+        assertArrayEquals(new float[] {2 - 0.5f - 0.5f, -2, 1 - 0.5f - 0.25f, 5}, logits);
+        assertEquals(3, s.sample(new float[] {2, -2, 1, 0}, new int[] {0}, 0, null));
+        assertTrue(Sampling.GREEDY.plain());
+    }
+
+    @Test
     void samplesFollowTheProbabilities() {
         float[] logits = {1, 0, -1};
         Sampling s = Sampling.temperature(1);

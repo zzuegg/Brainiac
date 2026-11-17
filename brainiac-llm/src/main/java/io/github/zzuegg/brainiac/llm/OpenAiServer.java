@@ -11,6 +11,7 @@ import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -474,6 +475,29 @@ public final class OpenAiServer implements AutoCloseable {
         double penalty = Json.number(req, "repetition_penalty", 1);
         if (penalty != 1) {
             sampling = sampling.withRepetitionPenalty((float) penalty);
+        }
+        double presence = Json.number(req, "presence_penalty", 0);
+        double frequency = Json.number(req, "frequency_penalty", 0);
+        if (Math.abs(presence) > 2 || Math.abs(frequency) > 2) {
+            throw new BadRequest("presence_penalty and frequency_penalty must be between -2 and 2");
+        }
+        sampling = sampling.withPenalties((float) presence, (float) frequency);
+        if (req.get("logit_bias") instanceof Map<?, ?> bias && !bias.isEmpty()) {
+            Map<Integer, Float> b = new HashMap<>();
+            for (Map.Entry<?, ?> e : bias.entrySet()) {
+                int token;
+                try {
+                    token = Integer.parseInt(String.valueOf(e.getKey()));
+                } catch (NumberFormatException x) {
+                    throw new BadRequest("logit_bias keys must be token ids, got " + e.getKey());
+                }
+                if (token < 0 || !(e.getValue() instanceof Number n)
+                        || Math.abs(n.doubleValue()) > 100) {
+                    throw new BadRequest("logit_bias needs token ids and biases from -100 to 100");
+                }
+                b.put(token, n.floatValue());
+            }
+            sampling = sampling.withLogitBias(b);
         }
         List<String> stop = new ArrayList<>();
         Object s = req.get("stop");

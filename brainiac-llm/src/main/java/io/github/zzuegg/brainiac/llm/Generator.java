@@ -418,7 +418,7 @@ public final class Generator {
             // plain greedy decoding reads back only the chosen tokens, which the device finds
             Sampling sampling = options.sampling();
             boolean onDevice = options.constraint() == null && sampling.temperature() == 0
-                    && sampling.repetitionPenalty() == 1 && options.logprobs() < 0;
+                    && sampling.plain() && options.logprobs() < 0;
             for (int step = 0; active > 0; step++) {
                 float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;
@@ -445,7 +445,7 @@ public final class Generator {
                         skip[b][0] = true;
                         continue;
                     }
-                    int token = options.sampling().sample(row, r.seen(), random);
+                    int token = options.sampling().sample(row, r.seen(), r.count, random);
                     r.score(row, token);
                     next[b][0] = token;
                     if (r.matcher != null && !stops.contains(token)) {
@@ -563,7 +563,7 @@ public final class Generator {
         }
 
         int[] seen() {
-            if (options.sampling().repetitionPenalty() == 1) {
+            if (!options.sampling().usesHistory()) {
                 return prompt;
             }
             int[] s = Arrays.copyOf(prompt, prompt.length + count);
@@ -864,7 +864,7 @@ public final class Generator {
                                 done[i] = true;
                                 continue;
                             }
-                            int token = r.options.sampling().sample(row, r.seen(), j.random);
+                            int token = r.options.sampling().sample(row, r.seen(), r.count, j.random);
                             r.score(row, token);
                             next[i] = token;
                             if (r.matcher != null && !j.stops.contains(token)) {
@@ -955,14 +955,14 @@ public final class Generator {
 
         /**
          * Hands each job its logits. When every job decodes greedily without constraints or
-         * a repetition penalty, only the chosen tokens are read back: the device finds them,
+         * a penalty or bias, only the chosen tokens are read back: the device finds them,
          * so the whole vocabulary per row is neither downloaded nor copied.
          */
         private void spread(Tensor logits, List<Job> jobs) {
             boolean greedy = true;
             for (Job j : jobs) {
                 Sampling s = j.row.options.sampling();
-                greedy &= j.row.matcher == null && s.temperature() == 0 && s.repetitionPenalty() == 1
+                greedy &= j.row.matcher == null && s.temperature() == 0 && s.plain()
                         && j.row.options.logprobs() < 0;
             }
             if (greedy) {
@@ -996,7 +996,7 @@ public final class Generator {
      * @param prompt the token ids to continue, one sequence
      * @param draft the small model
      * @param lookahead the tokens guessed per step
-     * @param options as for {@link #generate}; the repetition penalty is not supported
+     * @param options as for {@link #generate}; penalties and a logit bias are not supported
      * @param listener receives the text as it is written, or {@code null}
      * @return the result, with {@link Output#tokens()} and the number of tokens accepted
      */
@@ -1013,8 +1013,8 @@ public final class Generator {
                     + ") differs from the model's (" + model.vocabSize() + ")");
         }
         Sampling sampling = options.sampling();
-        if (sampling.repetitionPenalty() != 1) {
-            throw new IllegalArgumentException("speculative decoding does not support a repetition penalty");
+        if (!sampling.plain()) {
+            throw new IllegalArgumentException("speculative decoding does not support penalties or a logit bias");
         }
         Set<Integer> stops = stopTokens(options);
         Row row = new Row(0, prompt, options, listener);

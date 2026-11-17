@@ -83,6 +83,17 @@ class OpenAiServerTest {
         assertEquals(2L, ((Number) Json.object(choices.get(2)).get("index")).longValue());
         assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"n\":2,\"stream\":true}").startsWith("400 "));
 
+        // a bias of 100 on one token makes greedy decoding write only it
+        int first = ((Number) Json.array(Json.object(Json.parse(t.substring(4))).get("tokens")).getFirst()).intValue();
+        String biased = call("POST", "/v1/completions", "{\"prompt\":\"hello\",\"max_tokens\":3,\"temperature\":0,"
+                + "\"logit_bias\":{\"" + first + "\":100},\"presence_penalty\":0.5,\"frequency_penalty\":0.1}");
+        assertTrue(biased.startsWith("200 "), biased);
+        String three = call("POST", "/detokenize", "{\"tokens\":[" + first + "," + first + "," + first + "]}");
+        assertEquals(Json.object(Json.parse(three.substring(4))).get("content"),
+                Json.object(Json.array(Json.object(Json.parse(biased.substring(4))).get("choices")).getFirst()).get("text"));
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"presence_penalty\":3}").startsWith("400 "));
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"logit_bias\":{\"a\":1}}").startsWith("400 "));
+
         server.requireApiKey("secret");
         try {
             assertTrue(call("GET", "/v1/models", null).startsWith("401 "));
