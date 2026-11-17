@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.QuantizedRows;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
@@ -303,8 +304,16 @@ public final class CpuBackend implements Backend {
 
     @Override
     public void unpack(PackedStorage packed, Storage out) {
-        PackedMatrix m = unpackToHost(packed);
         CpuStorage o = cpu(out);
+        if (packed instanceof QuantizedRows rows) {
+            if (o.data != null) {
+                rows.dequantize(o.data);
+                return;
+            }
+            Backend.super.unpack(packed, out);
+            return;
+        }
+        PackedMatrix m = unpackToHost(packed);
         if (o.data != null) {
             m.dequantize(o.data);
         } else {

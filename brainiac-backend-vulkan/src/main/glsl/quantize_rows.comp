@@ -1,0 +1,42 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// Quantizes rows into 8-bit rows (see QuantizedRows): one work group per source row, each
+// invocation four columns; the scale is the row's largest magnitude over 127. Source row
+// r of block o = r / sourceRows goes to row o * blockRows + start + r % sourceRows.
+layout(local_size_x = GROUP) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) restrict writeonly buffer OutWords { uint v[]; };
+layout(push_constant) uniform P {
+    In x; OutWords q; Floats scales; uint cols4; uint blockRows; uint sourceRows; uint start; uint rows;
+} p;
+shared float red[GROUP];
+void main() {
+    uint r = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (r >= p.rows) return;   // whole work groups: barriers stay uniform
+    uint tid = gl_LocalInvocationID.x;
+    uint cols = p.cols4 * 4u;
+    vec4 v = vec4(0);
+    if (tid < p.cols4) {
+        uint at = r * cols + tid * 4u;
+        v = vec4(float(LOAD(p.x, at)), float(LOAD(p.x, at + 1)), float(LOAD(p.x, at + 2)), float(LOAD(p.x, at + 3)));
+    }
+    vec4 a = abs(v);
+    red[tid] = max(max(a.x, a.y), max(a.z, a.w));
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red[tid] = max(red[tid], red[tid + s]);
+        }
+        barrier();
+    }
+    float scale = red[0] / 127.0;
+    uint dst = (r / p.sourceRows) * p.blockRows + p.start + r % p.sourceRows;
+    if (tid == 0) {
+        p.scales.v[dst] = scale;
+    }
+    if (tid < p.cols4) {
+        ivec4 l = scale == 0.0 ? ivec4(0) : clamp(ivec4(roundEven(v / scale)), ivec4(-127), ivec4(127));
+        p.q.v[dst * p.cols4 + tid] = uint(l.x & 0xFF) | (uint(l.y & 0xFF) << 8) | (uint(l.z & 0xFF) << 16)
+                | (uint(l.w & 0xFF) << 24);
+    }
+}
