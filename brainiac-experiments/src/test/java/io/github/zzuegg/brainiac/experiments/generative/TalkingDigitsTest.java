@@ -28,6 +28,7 @@ class TalkingDigitsTest {
             correct += Arrays.equals(heard[i], digits.get(i)) ? 1 : 0;
         }
         double accuracy = correct / 60.0;
+        System.out.printf("talking digits: whole strings recognized %.3f%n", accuracy);
         assertTrue(accuracy > 0.7, "whole strings recognized: " + accuracy);
     }
 }

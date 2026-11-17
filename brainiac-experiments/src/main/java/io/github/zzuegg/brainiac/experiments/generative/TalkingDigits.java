@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.nn.CtcLoss;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.nn.Signal;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -17,7 +18,7 @@ import java.util.SplittableRandom;
  * formant-like tone sequences, and a recognizer trained with {@code CtcLoss} that hears
  * them back. Each digit is two vowel-like segments, each a mix of two formant tones whose
  * frequencies depend on the digit; durations, loudness, pauses and noise vary. Audio is
- * cut into frames, turned into log band energies with the core real FFT, stacked with
+ * cut into frames, turned into log band energies with the core STFT, stacked with
  * neighbouring frames for context and classified per frame into blank or a digit; CTC
  * trains this without any frame-level alignment, and best-path decoding reads the string.
  */
@@ -96,29 +97,22 @@ public final class TalkingDigits {
     }
 
     /**
-     * Log band energies per frame, from a Hann-windowed real FFT.
+     * Log band energies per frame, from the power of the core short-time Fourier transform
+     * ({@code Signal.stft}: Hann window, one frame every {@code FRAME} samples, centred on it).
      *
      * @param wave the waveform
      * @param frames the number of frames to produce (silence pads, the rest is cut)
      * @return {@code [frames][BANDS]}
      */
     public static float[][] features(float[] wave, int frames) {
-        float[] windowed = new float[frames * FRAME];
-        for (int f = 0; f < frames; f++) {
-            for (int s = 0; s < FRAME; s++) {
-                int i = f * FRAME + s;
-                double hann = 0.5 - 0.5 * Math.cos(2 * Math.PI * s / (FRAME - 1));
-                windowed[i] = i < wave.length ? (float) (wave[i] * hann) : 0;
-            }
-        }
-        float[] spec = Tensor.of(Shape.of(frames, FRAME), windowed).rfft().toArray();   // [frames, 65, 2]
+        float[] samples = java.util.Arrays.copyOf(wave, frames * FRAME);
+        float[] power = Signal.power(Signal.stft(Var.of(Tensor.of(Shape.of(samples.length), samples)), FRAME, FRAME))
+                .value().toArray();   // [frames + 1, FRAME / 2 + 1]
         int bins = FRAME / 2 + 1;
         float[][] out = new float[frames][BANDS];
         for (int f = 0; f < frames; f++) {
             for (int k = 1; k < bins; k++) {
-                double re = spec[(f * bins + k) * 2];
-                double im = spec[(f * bins + k) * 2 + 1];
-                out[f][Math.min(BANDS - 1, (k - 1) * BANDS / (bins - 1))] += (float) (re * re + im * im);
+                out[f][Math.min(BANDS - 1, (k - 1) * BANDS / (bins - 1))] += power[f * bins + k];
             }
             for (int b = 0; b < BANDS; b++) {
                 out[f][b] = (float) (Math.log(out[f][b] + 1e-3) / 5);
