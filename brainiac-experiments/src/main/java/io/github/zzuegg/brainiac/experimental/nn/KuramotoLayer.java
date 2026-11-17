@@ -19,7 +19,7 @@ import java.util.random.RandomGenerator;
  * scalar activations; they evolve for a number of steps by a generalized Kuramoto model,
  *
  * <pre>
- * x_i <- normalize( x_i + gamma ( Omega_i x_i + P_(x_i)( c_i + sum_j J_ij x_j ) ) ),
+ * x_i &lt;- normalize( x_i + gamma ( Omega_i x_i + P_(x_i)( c_i + sum_j J_ij x_j ) ) ),
  * P_x(y) = y - (y . x) x
  * </pre>
  *
