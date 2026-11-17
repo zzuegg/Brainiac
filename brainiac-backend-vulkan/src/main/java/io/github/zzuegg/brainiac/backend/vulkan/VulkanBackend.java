@@ -1138,9 +1138,9 @@ public final class VulkanBackend implements Backend {
                 && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
     }
 
-    // the most rows of a product with a transposed matrix read by matmul_vect
     // from how many rows matmul_vect sums each column with 32 invocations (8 columns per group) instead of 64
     private static final int VECT_NARROW = Integer.getInteger("brainiac.vulkan.vectNarrow", 99);
+    // the most rows of a product with a transposed matrix read by matmul_vect
     private static final int VECT_ROWS = Integer.getInteger("brainiac.vulkan.vectRows", 8);
     /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
     private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
