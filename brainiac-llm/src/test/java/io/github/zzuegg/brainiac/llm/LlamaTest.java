@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.llm;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.io.Json;
@@ -307,6 +308,32 @@ class LlamaTest {
             b = model.next(small, next, null).toArray();
         }
         assertEquals(full.length(), small.length());
+    }
+
+    @Test
+    void fusedProjectionsGiveTheSameResults() {
+        LlamaConfig small = LlamaConfig.small(40, 32, 2, 4, 2);
+        for (boolean bias : new boolean[] {false, true}) {
+            LlamaConfig c = new LlamaConfig(small.architecture(), small.vocabSize(), small.hidden(), small.intermediate(),
+                    small.layers(), small.heads(), small.kvHeads(), small.headDim(), small.rmsEps(), small.rope(),
+                    small.tieEmbeddings(), bias, small.maxPositions());
+            Llama model = Llama.random(c, 18, DEVICE, DType.FLOAT32);
+            int[][] prompt = {{1, 2, 3, 4}, {5, 6, 7, 8}};
+            float[] full = model.forward(prompt).value().toArray();
+            LanguageModel.State s = model.newState(2);
+            model.next(s, prompt, null);
+            float[] step = model.next(s, new int[][] {{9}, {10}}, null).toArray();
+            int names = model.namedParameters().size();
+            model.fuseProjections();
+            // per layer: q, k, v become one, gate and up become one (and so their biases)
+            assertEquals(names - 2 * 3 - (bias ? 2 * 2 : 0), model.namedParameters().size());
+            assertTrue(model.namedParameters().containsKey("model.layers.1.self_attn.qkv_proj.weight"));
+            assertArrayEquals(full, model.forward(prompt).value().toArray(), 1e-5f);
+            LanguageModel.State f = model.newState(2);
+            model.next(f, prompt, null);
+            assertArrayEquals(step, model.next(f, new int[][] {{9}, {10}}, null).toArray(), 1e-5f);
+            assertThrows(IllegalStateException.class, () -> model.save(java.nio.file.Path.of("unused")));
+        }
     }
 
     @Test

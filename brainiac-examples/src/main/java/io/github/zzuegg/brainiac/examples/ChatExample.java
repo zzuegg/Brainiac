@@ -32,7 +32,7 @@ import java.util.Set;
  * Without {@code --prompt} it reads questions from the console. Options: {@code --device
  * cpu|vulkan|<part of a name>}, {@code --dtype f32|f16|bf16}, {@code --max N},
  * {@code --temperature T} (0 for greedy), {@code --top-p P}, {@code --kv8} (an 8-bit
- * key/value cache).
+ * key/value cache), {@code --no-fuse} (keep q, k, v and gate, up as separate products).
  */
 public final class ChatExample {
 
@@ -51,7 +51,7 @@ public final class ChatExample {
                 StandardCharsets.UTF_8));
         if (args.length == 0) {
             System.out.println("Usage: chat <model directory or .gguf> [--prompt text] [--device name] [--dtype f32|f16]"
-                    + " [--max N] [--temperature T] [--top-p P] [--kv8]");
+                    + " [--max N] [--temperature T] [--top-p P] [--kv8] [--no-fuse]");
             return;
         }
         Path path = Path.of(args[0]);
@@ -62,6 +62,7 @@ public final class ChatExample {
         float temperature = 0.7f;
         float topP = 0.9f;
         boolean kv8 = false;
+        boolean fuse = true;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--prompt" -> prompt = args[++i];
@@ -75,6 +76,7 @@ public final class ChatExample {
                 case "--temperature" -> temperature = Float.parseFloat(args[++i]);
                 case "--top-p" -> topP = Float.parseFloat(args[++i]);
                 case "--kv8" -> kv8 = true;
+                case "--no-fuse" -> fuse = false;
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -84,6 +86,9 @@ public final class ChatExample {
         }
         long start = System.nanoTime();
         Llama model = Llama.load(path, device, dtype).quantizeCache(kv8);
+        if (fuse) {
+            model.fuseProjections();
+        }
         PretrainedTokenizer tok = PretrainedTokenizer.load(path);
         System.out.printf("%s on %s as %s, loaded in %.1f s%n", model, device, dtype, (System.nanoTime() - start) / 1e9);
         Set<Integer> stops = Generator.stopTokens(path, tok);
