@@ -82,6 +82,28 @@ class PagedServingTest {
     }
 
     @Test
+    void coreBatcherDrivesThePagedModelThroughJoin() throws Exception {
+        Llama core = llama(8);
+        PagedLlama paged = PagedLlama.of(core, 4, 256);
+        Generator plain = new Generator(core, null);
+        int[][] prompts = {tokens(5, 1), tokens(9, 2), tokens(3, 3), tokens(12, 4), tokens(6, 5)};
+        int[] lengths = {7, 3, 11, 5, 9};
+        try (Generator.Batcher batcher = new Generator(paged, null).batcher(3)) {
+            List<java.util.concurrent.CompletableFuture<Generator.Output>> futures = new java.util.ArrayList<>();
+            for (int i = 0; i < prompts.length; i++) {
+                futures.add(batcher.submit(prompts[i], Generator.Options.greedy(lengths[i])
+                        .withStopTokens(java.util.Set.of()), null));
+            }
+            for (int i = 0; i < prompts.length; i++) {
+                int[] want = plain.generate(new int[][] {prompts[i]}, Generator.Options.greedy(lengths[i])
+                        .withStopTokens(java.util.Set.of()), null).getFirst().tokens();
+                assertArrayEquals(want, futures.get(i).get().tokens(), "request " + i);
+            }
+            assertTrue(batcher.largestBatch() > 1);
+        }
+    }
+
+    @Test
     void raggedBatchAndTreePassesMatchSeparateRuns() {
         Llama core = llama(5);
         PagedLlama paged = PagedLlama.of(core, 4, 64);

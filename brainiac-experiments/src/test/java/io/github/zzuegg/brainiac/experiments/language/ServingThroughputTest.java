@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.experimental.llm.ChunkedPrefillScheduler;
 
+import java.util.Map;
+
 import org.junit.jupiter.api.Test;
 
 class ServingThroughputTest {
@@ -28,6 +30,20 @@ class ServingThroughputTest {
         assertTrue(r.identical(), "paged serving must give the core greedy tokens");
         assertTrue(r.pagedPeakBytes() < 0.8 * r.contiguousBytes());
         assertTrue(r.pagedFit() > 1.2 * r.contiguousFit());
+    }
+
+    @Test
+    void continuousBatchingCutsTailLatency() {
+        Map<String, ServingThroughput.Latency> r = ServingThroughput.continuousBatching(32, 4, 8, 5);
+        StringBuilder line = new StringBuilder("Batching under Poisson arrivals (tok/pass, p50/p95 passes, tok/s):");
+        r.forEach((k, v) -> line.append(String.format(" %s %.2f, %.0f/%.0f, %.0f;", k, v.tokensPerPass(),
+                v.p50Passes(), v.p95Passes(), v.tokensPerSecond())));
+        System.out.println(line);
+        ServingThroughput.Latency fixed = r.get("static batching");
+        for (String k : new String[] {"continuous (core Llama)", "continuous (PagedLlama)"}) {
+            assertTrue(r.get(k).p95Passes() < 0.8 * fixed.p95Passes(), line.toString());
+            assertTrue(r.get(k).tokensPerPass() > fixed.tokensPerPass(), line.toString());
+        }
     }
 
     @Test

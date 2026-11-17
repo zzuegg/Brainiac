@@ -341,6 +341,32 @@ public final class PagedLlama implements LanguageModel {
             return new Rows(seqs, pad, l);
         }
 
+        /**
+         * Joins another state's sequences, for continuous batching. Each sequence keeps its
+         * own block table, so nothing is copied or padded in the store; only the step
+         * bookkeeping of the shorter side is padded on the left, as the core contract says.
+         */
+        @Override
+        public State join(State other) {
+            Rows o = (Rows) other;
+            int len = Math.max(length(), o.length());
+            int n = sequences.length + o.sequences.length;
+            int[] seqs = Arrays.copyOf(sequences, n);
+            System.arraycopy(o.sequences, 0, seqs, sequences.length, o.sequences.length);
+            boolean[][] pad = new boolean[n][];
+            float[][] l = new float[n][];
+            for (int b = 0; b < n; b++) {
+                Rows from = b < sequences.length ? this : o;
+                int row = b < sequences.length ? b : b - sequences.length;
+                boolean[] own = from.padding[row];
+                pad[b] = new boolean[len];
+                Arrays.fill(pad[b], 0, len - own.length, true);
+                System.arraycopy(own, 0, pad[b], len - own.length, own.length);
+                l[b] = from.last[row];
+            }
+            return new Rows(seqs, pad, l);
+        }
+
         @Override
         public State truncate(int length) {
             for (int b = 0; b < sequences.length; b++) {

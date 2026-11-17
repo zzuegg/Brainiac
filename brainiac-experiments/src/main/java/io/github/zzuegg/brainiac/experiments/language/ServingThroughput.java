@@ -15,6 +15,7 @@ import io.github.zzuegg.brainiac.tensor.Device;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SplittableRandom;
@@ -27,15 +28,17 @@ import java.util.SplittableRandom;
  *     token against reading every prompt whole;</li>
  * <li>{@link #pagedMemory}: {@link PagedKvCache} peak memory and how many sequences fit a
  *     memory budget, against the core cache's contiguous buffers that grow by doubling;</li>
+ * <li>{@link #continuousBatching}: the core {@code Generator.batcher} (continuous batching,
+ *     over the core {@code Llama} and over {@link PagedLlama}) against static batching under
+ *     a Poisson arrival trace, tokens per model pass and p95 latency in passes;</li>
  * <li>{@link #chunkedPrefill}: {@link ChunkedPrefillScheduler} with long prompts arriving
  *     among running decodes, decode-latency jitter against monolithic prefill;</li>
  * <li>{@link #offload}: {@link OffloadingKvCache}, bytes kept on the device and output error
  *     against device-only full KV, the core {@code Llama.slidingWindow} and the core
  *     StreamingLLM state at the same device budget.</li>
  * </ul>
- * Continuous batching itself (sequences joining and leaving the decode batch) is a core
- * feature in progress ({@code LanguageModel.State.join}, {@code Generator.batcher}); the
- * chunked-prefill scheduler batches at iteration level too.
+ * Wall-clock numbers are measured on a shared CPU and vary from run to run; the token counts
+ * are exact.
  */
 public final class ServingThroughput {
 
@@ -240,6 +243,157 @@ public final class ServingThroughput {
         }
         PagedKvCache pool = (PagedKvCache) paged.store();
         return new MemoryResult(pool.peakResidentBytes(), contiguous, batched, pagedFit, contiguousFit, same);
+    }
+
+    // ---------------------------------------------------------------- 4.3 continuous batching
+
+    /**
+     * One serving policy under the arrival trace, on a clock that counts model passes (calls of
+     * {@code LanguageModel.next}), so the comparison does not depend on how busy the CPU is.
+     *
+     * @param tokensPerPass requested tokens delivered per model pass, first arrival to last answer
+     * @param p50Passes the median passes from arrival to complete answer
+     * @param p95Passes the 95th percentile of that
+     * @param tokensPerSecond requested tokens per second of wall time (noisy on a shared CPU)
+     */
+    public record Latency(double tokensPerPass, double p50Passes, double p95Passes, double tokensPerSecond) {
+    }
+
+    /** Counts the passes of a model, the clock of {@link #continuousBatching}. */
+    private static final class CountingModel implements LanguageModel {
+        final LanguageModel model;
+        final java.util.concurrent.atomic.AtomicLong passes = new java.util.concurrent.atomic.AtomicLong();
+
+        CountingModel(LanguageModel model) {
+            this.model = model;
+        }
+
+        @Override
+        public int vocabSize() {
+            return model.vocabSize();
+        }
+
+        @Override
+        public State newState(int batch) {
+            return model.newState(batch);
+        }
+
+        @Override
+        public io.github.zzuegg.brainiac.tensor.Tensor next(State state, int[][] tokens, boolean[][] padding) {
+            io.github.zzuegg.brainiac.tensor.Tensor out = model.next(state, tokens, padding);
+            passes.incrementAndGet();
+            return out;
+        }
+    }
+
+    /**
+     * Requests with Poisson arrivals (in model passes) and mixed answer lengths, served by
+     * static batching (batches of {@code maxBatch} in arrival order, started once full, each
+     * decoded by the core {@code Generator} to its longest answer) and by the core continuous
+     * {@code Generator.batcher}, over the core {@code Llama} and over {@link PagedLlama}.
+     *
+     * @param requests the requests
+     * @param maxBatch the most sequences decoded together
+     * @param meanGap the mean passes between arrivals
+     * @param seed the seed
+     * @return policy name to measurements
+     */
+    public static Map<String, Latency> continuousBatching(int requests, int maxBatch, double meanGap, long seed) {
+        Llama core = model(64, 64, seed);
+        SplittableRandom r = new SplittableRandom(seed);
+        int[][] prompts = new int[requests][];
+        int[] lengths = new int[requests];
+        double[] arrival = new double[requests];
+        double t = 0;
+        long useful = 0;
+        for (int i = 0; i < requests; i++) {
+            prompts[i] = randomTokens(r, 8 + r.nextInt(16), 64);
+            lengths[i] = 4 + r.nextInt(60);
+            useful += lengths[i];
+            t += -Math.log(1 - r.nextDouble()) * meanGap;
+            arrival[i] = Math.floor(t);
+        }
+        Map<String, Latency> out = new LinkedHashMap<>();
+        out.put("static batching", staticBatching(new CountingModel(core), prompts, lengths, arrival, maxBatch,
+                useful));
+        out.put("continuous (core Llama)", continuous(new CountingModel(core), prompts, lengths, arrival, maxBatch,
+                useful));
+        out.put("continuous (PagedLlama)", continuous(new CountingModel(PagedLlama.of(core, 16, 8192)), prompts,
+                lengths, arrival, maxBatch, useful));
+        return out;
+    }
+
+    private static io.github.zzuegg.brainiac.llm.Generator.Options greedy(int n) {
+        return io.github.zzuegg.brainiac.llm.Generator.Options.greedy(n).withStopTokens(java.util.Set.of());
+    }
+
+    private static Latency staticBatching(CountingModel model, int[][] prompts, int[] lengths, double[] arrival,
+            int maxBatch, long useful) {
+        io.github.zzuegg.brainiac.llm.Generator gen = new io.github.zzuegg.brainiac.llm.Generator(model, null);
+        int n = prompts.length;
+        double[] latency = new double[n];
+        double clock = 0;
+        long start = System.nanoTime();
+        for (int i = 0; i < n; i += maxBatch) {
+            int end = Math.min(n, i + maxBatch);
+            clock = Math.max(clock, arrival[end - 1]);   // a static batch starts once it is full
+            int longest = 0;
+            for (int j = i; j < end; j++) {
+                longest = Math.max(longest, lengths[j]);
+            }
+            long before = model.passes.get();
+            gen.generate(Arrays.copyOfRange(prompts, i, end), greedy(longest), null);
+            clock += model.passes.get() - before;
+            for (int j = i; j < end; j++) {
+                latency[j] = clock - arrival[j];
+            }
+        }
+        return latency(latency, useful, clock - arrival[0], (System.nanoTime() - start) / 1e6);
+    }
+
+    private static Latency continuous(CountingModel model, int[][] prompts, int[] lengths, double[] arrival,
+            int maxBatch, long useful) {
+        int n = prompts.length;
+        double[] latency = new double[n];
+        double[] finish = new double[n];
+        io.github.zzuegg.brainiac.llm.Generator gen = new io.github.zzuegg.brainiac.llm.Generator(model, null);
+        java.util.concurrent.atomic.AtomicInteger open = new java.util.concurrent.atomic.AtomicInteger();
+        long start = System.nanoTime();
+        try (io.github.zzuegg.brainiac.llm.Generator.Batcher batcher = gen.batcher(maxBatch)) {
+            List<java.util.concurrent.CompletableFuture<?>> futures = new ArrayList<>();
+            double offset = 0;   // idle time skipped while nothing runs
+            for (int i = 0; i < n; i++) {
+                while (model.passes.get() + offset < arrival[i]) {
+                    if (open.get() == 0) {
+                        offset = arrival[i] - model.passes.get();
+                    } else {
+                        Thread.onSpinWait();
+                    }
+                }
+                final int request = i;
+                final double skipped = offset;
+                open.incrementAndGet();
+                futures.add(batcher.submit(prompts[i], greedy(lengths[i]), null).thenRun(() -> {
+                    finish[request] = model.passes.get() + skipped;
+                    latency[request] = finish[request] - arrival[request];
+                    open.decrementAndGet();
+                }));
+            }
+            java.util.concurrent.CompletableFuture.allOf(futures.toArray(java.util.concurrent.CompletableFuture[]::new))
+                    .join();
+        }
+        double last = 0;
+        for (double f : finish) {
+            last = Math.max(last, f);
+        }
+        return latency(latency, useful, last - arrival[0], (System.nanoTime() - start) / 1e6);
+    }
+
+    private static Latency latency(double[] latency, long useful, double passes, double millis) {
+        double[] sorted = latency.clone();
+        Arrays.sort(sorted);
+        return new Latency(useful / passes, ChunkedPrefillScheduler.Report.quantile(sorted, 0.5),
+                ChunkedPrefillScheduler.Report.quantile(sorted, 0.95), useful / (millis / 1000));
     }
 
     // ---------------------------------------------------------------- 4.4 chunked prefill
