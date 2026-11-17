@@ -1,7 +1,9 @@
 package io.github.zzuegg.brainiac.experiments.reasoning;
 
+import io.github.zzuegg.brainiac.experimental.llm.ConstitutionalLoop;
 import io.github.zzuegg.brainiac.experimental.llm.DpoTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.SelfRewardingTrainer;
+import io.github.zzuegg.brainiac.experimental.llm.SequenceScorer;
 import io.github.zzuegg.brainiac.experimental.llm.SpinTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.StarTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.WindowLm;
@@ -15,7 +17,8 @@ import java.util.SplittableRandom;
  * Preference and self-improvement experiments on arithmetic: DPO (and IPO, SimPO) from
  * labelled pairs, SPIN from the supervised data alone, and a self-rewarding loop where the
  * model judges its own answers, and STaR bootstrapping chain-of-thought from a few worked
- * examples (with and without rationalization). Each returns the greedy accuracy before and
+ * examples (with and without rationalization), and Constitutional AI against a toy safety
+ * rule. Each returns the greedy accuracy before and
  * after.
  */
 public final class SelfImprovement {
@@ -186,6 +189,98 @@ public final class SelfImprovement {
             star.iterate(prompts, random);
         }
         return new Result(before, chainAccuracy(lm, task));
+    }
+
+    /**
+     * Rule-violation rate and task accuracy before and after.
+     *
+     * @param violationBefore share of multiplication ("harmful") prompts answered instead of refused
+     * @param violationAfter the same after the loop
+     * @param accuracyBefore greedy accuracy on the addition prompts
+     * @param accuracyAfter the same after the loop
+     */
+    public record ConstitutionResult(double violationBefore, double violationAfter, double accuracyBefore,
+            double accuracyAfter) {
+    }
+
+    private static double[] violationAndAccuracy(WindowLm lm, ArithmeticTask add, ArithmeticTask mul) {
+        int[] refusal = add.tokenizer().encode("?#");
+        List<int[]> mp = mul.allPrompts();
+        int[][] mo = lm.sample(mp.toArray(int[][]::new), mul.maxAnswerTokens(), mul.eos(), 0, new SplittableRandom(0));
+        int violations = 0;
+        for (int[] o : mo) {
+            violations += Arrays.equals(o, refusal) ? 0 : 1;
+        }
+        return new double[] {(double) violations / mp.size(), ArithmeticRl.accuracy(lm, add)};
+    }
+
+    /**
+     * Constitutional AI against self-rewarding on a toy safety rule. The prompts are
+     * additions and multiplications; the constitution's one principle says multiplication
+     * requests must be refused with {@code ?#} and additions must not be. The seed model
+     * answers most multiplications (it saw only a quarter of them refused). Both loops start
+     * from the same answer fine-tuning and a few labelled judgments: of the principle for
+     * {@link ConstitutionalLoop}, of correctness for {@link SelfRewardingTrainer}.
+     *
+     * @param sftSteps supervised steps on answers and judgments
+     * @param iterations loop iterations
+     * @param constitutional {@code true} for the constitutional loop, {@code false} for the
+     *     self-rewarding baseline
+     * @param seed the seed
+     * @return violation rate and addition accuracy before and after
+     */
+    public static ConstitutionResult constitution(int sftSteps, int iterations, boolean constitutional, long seed) {
+        ArithmeticTask add = ArithmeticTask.addition(4);
+        ArithmeticTask mul = ArithmeticTask.multiplication(4);
+        var tok = add.tokenizer();
+        int[] refusal = tok.encode("?#");
+        int principle = tok.encode("[")[0];
+        int judge = tok.encode("]")[0];
+        int yes = tok.encode("1")[0];
+        int no = tok.encode("0")[0];
+        WindowLm lm = WindowLm.of(add.vocabSize(), 8, 128, seed);
+        ConstitutionalLoop cai = ConstitutionalLoop.of(lm, new int[] {principle}, judge, yes, no,
+                SequenceScorer.of(add.vocabSize(), 8, 64, seed + 3))
+                .generation(mul.maxAnswerTokens(), add.eos(), 8).training(Optimizer.adam(1e-3f), 0.5f, 5);
+        SelfRewardingTrainer srt = SelfRewardingTrainer.of(lm, judge, yes, no)
+                .generation(mul.maxAnswerTokens(), add.eos()).beta(0.5f).candidates(8).stepsPerIteration(5)
+                .optimizer(Optimizer.adam(1e-3f)).chosenNll(1f);
+        SplittableRandom random = new SplittableRandom(seed);
+        List<int[]> prompts = new ArrayList<>(add.allPrompts());
+        prompts.addAll(mul.allPrompts());
+        List<int[]> ps = new ArrayList<>();
+        List<int[]> cs = new ArrayList<>();
+        int k = 0;
+        for (int[] p : prompts) {
+            boolean harmful = k >= add.allPrompts().size();
+            ps.add(p);
+            cs.add(harmful && k % 4 == 0 ? refusal : (harmful ? mul : add).solution(p));
+            int right = (harmful ? mul : add).answer(p);
+            int[][] candidates = {(harmful ? mul : add).solution(p), refusal, tok.encode((right + 1) % 10 + "#")};
+            for (int[] c : candidates) {
+                boolean refused = Arrays.equals(c, refusal);
+                int[][] ex = constitutional
+                        ? cai.critiqueExample(principle, p, c, harmful == refused)
+                        : srt.judgeExample(p, c, Arrays.equals(c, (harmful ? mul : add).solution(p)));
+                ps.add(ex[0]);
+                cs.add(ex[1]);
+            }
+            k++;
+        }
+        Optimizer opt = Optimizer.adam(5e-3f);
+        for (int s = 0; s < sftSteps; s++) {
+            lm.supervisedStep(ps, cs, opt);
+        }
+        double[] before = violationAndAccuracy(lm, add, mul);
+        for (int i = 0; i < iterations; i++) {
+            if (constitutional) {
+                cai.iterate(prompts, random);
+            } else {
+                srt.iterate(prompts, random);
+            }
+        }
+        double[] after = violationAndAccuracy(lm, add, mul);
+        return new ConstitutionResult(before[0], after[0], before[1], after[1]);
     }
 
     /**
