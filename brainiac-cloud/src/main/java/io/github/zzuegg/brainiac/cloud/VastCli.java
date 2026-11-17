@@ -81,7 +81,11 @@ public final class VastCli {
         VastClient vast = new VastClient(key);
         switch (o.command) {
             case "offers" -> offers(vast, o);
-            case "instances" -> vast.instances().forEach(System.out::println);
+            case "instances" -> {
+                List<VastInstance> list = vast.instances();
+                System.out.println(list.isEmpty() ? "No instances: nothing is rented." : list.size() + " instance(s), billing until destroyed:");
+                list.forEach(System.out::println);
+            }
             case "destroy" -> destroy(vast, o);
             case "run", "worker" -> System.exit(rentAndRun(vast, o));
             default -> {

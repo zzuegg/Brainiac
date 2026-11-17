@@ -128,7 +128,11 @@ public final class VastClient {
     }
 
     /** Reads instances from {"instances": [...]} or {"instances": {...}} (API v0 and v1). */
-    private static List<VastInstance> list(Map<String, Object> r) {
+    private static List<VastInstance> list(Map<String, Object> r) throws IOException {
+        if (!r.containsKey("instances") && !r.containsKey("results") && !r.containsKey("id")) {
+            // a changed response shape must not read as "nothing rented"
+            throw new IOException("unexpected instance list from Vast, with fields " + r.keySet());
+        }
         Object v = r.containsKey("instances") ? r.get("instances") : r.containsKey("results") ? r.get("results") : r;
         List<VastInstance> out = new ArrayList<>();
         if (v instanceof List<?> l) {
