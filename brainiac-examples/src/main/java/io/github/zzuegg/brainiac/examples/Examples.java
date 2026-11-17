@@ -33,6 +33,7 @@ public final class Examples {
             case "gpu" -> GpuExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "bench" -> BenchmarkExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "evolve" -> EvolveExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+            case "chat" -> ChatExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
                       xor     learn XOR with a tiny network
@@ -46,7 +47,9 @@ public final class Examples {
                       gpu     list devices, compare CPU and GPU speed
                       bench   run any model on any task: bench <task> [model...] [--epochs N]
                       evolve  evolve a network design with a genetic algorithm: evolve <task> [--population N]
-                              [--generations G] [--mutate connections,neurons,activations,...]""");
+                              [--generations G] [--mutate connections,neurons,activations,...]
+                      chat    chat with a model downloaded from Hugging Face: chat <model dir or .gguf>
+                              [--prompt text] [--device vulkan] [--dtype f16] [--max N] [--temperature T]""");
         }
     }
 }

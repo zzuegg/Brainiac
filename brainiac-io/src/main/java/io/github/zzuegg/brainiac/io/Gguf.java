@@ -364,6 +364,20 @@ public final class Gguf implements WeightSource {
      * @throws IllegalArgumentException if the tensor is not packable
      */
     public Tensor packedTransposed(String name, Device device) {
+        return packedTransposed(name, device, null);
+    }
+
+    /**
+     * As {@link #packedTransposed(String, Device)}, with the outputs reordered: output
+     * {@code c} of the result is row {@code order[c]} of the stored matrix. Used to undo the
+     * row permutation llama.cpp's converter applies to Llama's query and key weights.
+     *
+     * @param name the name of a {@linkplain #packable packable} matrix
+     * @param device where to put it
+     * @param order the stored row for each output, or {@code null} to keep the order
+     * @return the packed {@code [in, out]} matrix
+     */
+    public Tensor packedTransposed(String name, Device device, int[] order) {
         if (!packable(name)) {
             throw new IllegalArgumentException(name + " is " + format(name) + " " + shape(name)
                     + "; only Q8_0 and Q4_0 matrices can stay packed");
@@ -376,10 +390,14 @@ public final class Gguf implements WeightSource {
         float[] scales = new float[groups * out];
         MemorySegment m = raw(name);
         boolean eight = e.format == Format.Q8_0;
-        for (int o = 0; o < out; o++) {
+        if (order != null && order.length != out) {
+            throw new IllegalArgumentException("order has " + order.length + " entries for " + out + " outputs");
+        }
+        for (int c = 0; c < out; c++) {
+            int o = order == null ? c : order[c];
             for (int g = 0; g < groups; g++) {
                 long b = ((long) o * groups + g) * e.format.bytes;
-                scales[g * out + o] = Float.float16ToFloat(m.get(RawValues.SHORT, b));
+                scales[g * out + c] = Float.float16ToFloat(m.get(RawValues.SHORT, b));
                 for (int j = 0; j < 32; j++) {
                     int level;
                     if (eight) {
@@ -388,7 +406,7 @@ public final class Gguf implements WeightSource {
                         int q = Byte.toUnsignedInt(m.get(ValueLayout.JAVA_BYTE, b + 2 + (j & 15)));
                         level = (j < 16 ? q & 0xF : q >>> 4) - 8;
                     }
-                    levels[(g * 32 + j) * out + o] = (byte) level;
+                    levels[(g * 32 + j) * out + c] = (byte) level;
                 }
             }
         }

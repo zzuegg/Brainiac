@@ -29,6 +29,10 @@ jobs:
       - name: Build and test
         run: ./gradlew build -Porg.gradle.java.installations.fromEnv=JAVA_HOME_27_X64
 
+      # The model-loading and language-model tests again, on lavapipe through the Vulkan backend
+      - name: Test models on Vulkan
+        run: ./gradlew :brainiac-io:test :brainiac-llm:test --rerun-tasks -PtestDevice=vulkan -Porg.gradle.java.installations.fromEnv=JAVA_HOME_27_X64
+
       # A crash in native code (such as the OpenCL driver) leaves a JVM error report.
       - name: Show JVM crash reports
         if: failure()

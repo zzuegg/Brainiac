@@ -1,0 +1,538 @@
+package io.github.zzuegg.brainiac.llm;
+
+import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.io.Gguf;
+import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.io.SafeTensors;
+import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.SplittableRandom;
+
+/**
+ * A Llama-family decoder: token embeddings, then blocks of RMSNorm, grouped-query
+ * self-attention with rotary positions and a SwiGLU feed-forward network, each added to a
+ * residual stream, then a final RMSNorm and the output projection.
+ *
+ * <p>It loads published weights: a Hugging Face model directory ({@code config.json} and
+ * safetensors, Llama 2 and 3, Mistral, Qwen 2 and their fine-tunes) or a GGUF file, where
+ * {@code Q8_0} and {@code Q4_0} matrices stay packed. Its outputs match transformers'.
+ * Weights loaded as tensors are trainable {@link Var}s, named as in the Hugging Face files.
+ *
+ * <pre>{@code
+ * Llama model = Llama.load(Path.of("Qwen2.5-0.5B-Instruct"), Device.gpu(), DType.BFLOAT16);
+ * PretrainedTokenizer tok = PretrainedTokenizer.load(Path.of("Qwen2.5-0.5B-Instruct"));
+ * String reply = Generator.of(model, tok).generate(tok.applyChatTemplate(messages, true),
+ *         Sampling.defaults().temperature(0.7f).maxTokens(200));
+ * }</pre>
+ */
+public final class Llama implements LanguageModel {
+
+    /**
+     * A projection {@code x W^T + b} with {@code W} stored {@code [out, in]} as Hugging Face
+     * stores it, or {@code x W} with a packed {@code [in, out]} matrix.
+     */
+    private record Linear(Var weight, boolean outIn, Var bias) {
+        Var apply(Var x) {
+            Var y = x.matmul(outIn ? weight.transpose() : weight);
+            return bias == null ? y : y.add(bias);
+        }
+    }
+
+    private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
+            Linear down) {
+    }
+
+    private final LlamaConfig config;
+    private final Device device;
+    private final DType dtype;
+    private final Rope rope;
+    private final Var embed;
+    private final Linear lmHead;
+    private final Var norm;
+    private final List<Block> blocks;
+    private final Map<String, Var> named;
+
+    private Llama(LlamaConfig config, Device device, DType dtype, Map<String, Var> named, Map<String, Linear> linears) {
+        this.config = config;
+        this.device = device;
+        this.dtype = dtype;
+        this.rope = new Rope(config.rope());
+        this.named = named;
+        this.embed = need(named, "model.embed_tokens.weight");
+        this.norm = need(named, "model.norm.weight");
+        this.lmHead = config.tieEmbeddings() ? null : linears.get("lm_head");
+        this.blocks = new ArrayList<>();
+        for (int i = 0; i < config.layers(); i++) {
+            String p = "model.layers." + i + ".";
+            blocks.add(new Block(need(named, p + "input_layernorm.weight"), linears.get(p + "self_attn.q_proj"),
+                    linears.get(p + "self_attn.k_proj"), linears.get(p + "self_attn.v_proj"),
+                    linears.get(p + "self_attn.o_proj"), need(named, p + "post_attention_layernorm.weight"),
+                    linears.get(p + "mlp.gate_proj"), linears.get(p + "mlp.up_proj"), linears.get(p + "mlp.down_proj")));
+        }
+    }
+
+    private static Var need(Map<String, Var> named, String name) {
+        Var v = named.get(name);
+        if (v == null) {
+            throw new IllegalArgumentException("the weights have no " + name);
+        }
+        return v;
+    }
+
+    /** The projections of a model, by Hugging Face module name, with their weight and bias names. */
+    private static List<String> linearNames(LlamaConfig c) {
+        List<String> names = new ArrayList<>();
+        for (int i = 0; i < c.layers(); i++) {
+            String p = "model.layers." + i + ".";
+            for (String s : List.of("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+                    "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")) {
+                names.add(p + s);
+            }
+        }
+        if (!c.tieEmbeddings()) {
+            names.add("lm_head");
+        }
+        return names;
+    }
+
+    private static boolean hasBias(LlamaConfig c, String linear) {
+        return c.attentionBias() && (linear.endsWith("q_proj") || linear.endsWith("k_proj")
+                || linear.endsWith("v_proj"));
+    }
+
+    // ---------------------------------------------------------------- loading
+
+    /**
+     * Loads a model: a Hugging Face model directory ({@code config.json} with safetensors
+     * weights) or a {@code .gguf} file.
+     *
+     * @param path the directory or file
+     * @param device where to put the weights
+     * @param dtype the type of the weights and activations (packed GGUF matrices stay packed)
+     * @return the model
+     */
+    public static Llama load(Path path, Device device, DType dtype) {
+        if (path.getFileName().toString().endsWith(".gguf")) {
+            try (Gguf g = Gguf.open(path)) {
+                return load(g, device, dtype);
+            }
+        }
+        try {
+            LlamaConfig config = LlamaConfig.fromHuggingFace(Json.object(Json.read(path.resolve("config.json"))));
+            try (WeightSource w = WeightSource.open(path)) {
+                return load(w, config, device, dtype);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Loads a model from weights named as in Hugging Face files.
+     *
+     * @param weights the weights
+     * @param config the model shape
+     * @param device where to put them
+     * @param dtype their type
+     * @return the model
+     */
+    public static Llama load(WeightSource weights, LlamaConfig config, Device device, DType dtype) {
+        Map<String, Var> named = new LinkedHashMap<>();
+        Map<String, Linear> linears = new LinkedHashMap<>();
+        java.util.function.Function<String, Var> read = n -> {
+            Var v = Var.param(weights.tensor(n, device, dtype));
+            named.put(n, v);
+            return v;
+        };
+        read.apply("model.embed_tokens.weight");
+        read.apply("model.norm.weight");
+        for (int i = 0; i < config.layers(); i++) {
+            read.apply("model.layers." + i + ".input_layernorm.weight");
+            read.apply("model.layers." + i + ".post_attention_layernorm.weight");
+        }
+        for (String l : linearNames(config)) {
+            Var bias = hasBias(config, l) ? read.apply(l + ".bias") : null;
+            linears.put(l, new Linear(read.apply(l + ".weight"), true, bias));
+        }
+        return new Llama(config, device, dtype, named, linears);
+    }
+
+    /**
+     * Loads a model from a GGUF file. {@code Q8_0} and {@code Q4_0} matrices stay packed
+     * (and are not trained); every other tensor is decoded into {@code dtype}.
+     *
+     * @param gguf the opened file
+     * @param device where to put the weights
+     * @param dtype the type of the other weights and of the activations
+     * @return the model
+     */
+    public static Llama load(Gguf gguf, Device device, DType dtype) {
+        LlamaConfig config = LlamaConfig.fromGguf(gguf);
+        if (gguf.contains("rope_freqs.weight")) {
+            float[] f = gguf.tensor("rope_freqs.weight", Device.cpu(), DType.FLOAT32).toArray();
+            config = new LlamaConfig(config.architecture(), config.vocabSize(), config.hidden(),
+                    config.intermediate(), config.layers(), config.heads(), config.kvHeads(), config.headDim(),
+                    config.rmsEps(), config.rope().withFreqFactors(f), config.tieEmbeddings(),
+                    config.attentionBias(), config.maxPositions());
+        }
+        // llama.cpp's converter interleaves the two rotary halves of Llama's query and key rows
+        boolean permuted = config.architecture().equals("llama");
+        Map<String, Var> named = new LinkedHashMap<>();
+        Map<String, Linear> linears = new LinkedHashMap<>();
+        named.put("model.embed_tokens.weight", Var.param(gguf.tensor("token_embd.weight", device, dtype)));
+        named.put("model.norm.weight", Var.param(gguf.tensor("output_norm.weight", device, dtype)));
+        Map<String, String> parts = Map.of("self_attn.q_proj", "attn_q", "self_attn.k_proj", "attn_k",
+                "self_attn.v_proj", "attn_v", "self_attn.o_proj", "attn_output", "mlp.gate_proj", "ffn_gate",
+                "mlp.up_proj", "ffn_up", "mlp.down_proj", "ffn_down");
+        for (int i = 0; i < config.layers(); i++) {
+            String p = "model.layers." + i + ".";
+            String g = "blk." + i + ".";
+            named.put(p + "input_layernorm.weight", Var.param(gguf.tensor(g + "attn_norm.weight", device, dtype)));
+            named.put(p + "post_attention_layernorm.weight",
+                    Var.param(gguf.tensor(g + "ffn_norm.weight", device, dtype)));
+            for (Map.Entry<String, String> e : parts.entrySet()) {
+                String l = p + e.getKey();
+                int heads = e.getValue().equals("attn_q") ? config.heads()
+                        : e.getValue().equals("attn_k") ? config.kvHeads() : 0;
+                int[] order = permuted && heads > 0 ? unpermute(heads, config.headDim()) : null;
+                Var bias = null;
+                if (gguf.contains(g + e.getValue() + ".bias")) {
+                    Tensor b = gguf.tensor(g + e.getValue() + ".bias", device, dtype);
+                    bias = Var.param(order == null ? b : b.gather(0, indices(order, device)));
+                    named.put(l + ".bias", bias);
+                }
+                linears.put(l, linear(gguf, g + e.getValue() + ".weight", l, order, device, dtype, named, bias));
+            }
+        }
+        if (!config.tieEmbeddings()) {
+            linears.put("lm_head", linear(gguf, "output.weight", "lm_head", null, device, dtype, named, null));
+        }
+        return new Llama(config, device, dtype, named, linears);
+    }
+
+    private static Linear linear(Gguf gguf, String name, String hfName, int[] order, Device device, DType dtype,
+            Map<String, Var> named, Var bias) {
+        if (gguf.packable(name)) {
+            return new Linear(Var.of(gguf.packedTransposed(name, device, order)), false, bias);
+        }
+        Tensor w = gguf.tensor(name, device, dtype);
+        if (order != null) {
+            w = w.gather(0, indices(order, device));
+        }
+        Var v = Var.param(w);
+        named.put(hfName + ".weight", v);
+        return new Linear(v, true, bias);
+    }
+
+    /** For each Hugging Face output row, the row llama.cpp's converter moved it to. */
+    private static int[] unpermute(int heads, int headDim) {
+        int half = headDim / 2;
+        int[] order = new int[heads * headDim];
+        for (int h = 0; h < heads; h++) {
+            for (int a = 0; a < 2; a++) {
+                for (int j = 0; j < half; j++) {
+                    order[h * headDim + a * half + j] = h * headDim + j * 2 + a;
+                }
+            }
+        }
+        return order;
+    }
+
+    private static Tensor indices(int[] ids, Device device) {
+        float[] f = new float[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            f[i] = ids[i];
+        }
+        return Tensor.of(Shape.of(ids.length), f, device);
+    }
+
+    /**
+     * Creates a model with random weights, for training from scratch.
+     *
+     * @param config the shape
+     * @param seed the random seed
+     * @param device where to put the weights
+     * @param dtype their type
+     * @return the model
+     */
+    public static Llama random(LlamaConfig config, long seed, Device device, DType dtype) {
+        SplittableRandom random = new SplittableRandom(seed);
+        Map<String, Var> named = new LinkedHashMap<>();
+        Map<String, Linear> linears = new LinkedHashMap<>();
+        float std = 0.02f;
+        named.put("model.embed_tokens.weight", Var.param(Tensor.normal(Shape.of(config.vocabSize(), config.hidden()),
+                0, std, random).to(device).to(dtype)));
+        named.put("model.norm.weight", Var.param(Tensor.ones(Shape.of(config.hidden())).to(device).to(dtype)));
+        for (int i = 0; i < config.layers(); i++) {
+            for (String n : List.of("input_layernorm", "post_attention_layernorm")) {
+                named.put("model.layers." + i + "." + n + ".weight",
+                        Var.param(Tensor.ones(Shape.of(config.hidden())).to(device).to(dtype)));
+            }
+        }
+        int qOut = config.heads() * config.headDim();
+        int kvOut = config.kvHeads() * config.headDim();
+        // residual projections scaled down by depth, as GPT-2 does
+        float residual = (float) (std / Math.sqrt(2.0 * config.layers()));
+        for (String l : linearNames(config)) {
+            int[] shape = l.endsWith("q_proj") ? new int[] {qOut, config.hidden()}
+                    : l.endsWith("k_proj") || l.endsWith("v_proj") ? new int[] {kvOut, config.hidden()}
+                    : l.endsWith("o_proj") ? new int[] {config.hidden(), qOut}
+                    : l.endsWith("down_proj") ? new int[] {config.hidden(), config.intermediate()}
+                    : l.equals("lm_head") ? new int[] {config.vocabSize(), config.hidden()}
+                    : new int[] {config.intermediate(), config.hidden()};
+            float s = l.endsWith("o_proj") || l.endsWith("down_proj") ? residual : std;
+            Var w = Var.param(Tensor.normal(Shape.of(shape), 0, s, random).to(device).to(dtype));
+            named.put(l + ".weight", w);
+            Var b = null;
+            if (hasBias(config, l)) {
+                b = Var.param(Tensor.zeros(Shape.of(shape[0]), dtype, device));
+                named.put(l + ".bias", b);
+            }
+            linears.put(l, new Linear(w, true, b));
+        }
+        return new Llama(config, device, dtype, named, linears);
+    }
+
+    // ---------------------------------------------------------------- the model
+
+    /** @return the model's shape */
+    public LlamaConfig config() {
+        return config;
+    }
+
+    /** @return where the weights are */
+    public Device device() {
+        return device;
+    }
+
+    /** @return the type of the weights and activations */
+    public DType dtype() {
+        return dtype;
+    }
+
+    @Override
+    public int vocabSize() {
+        return config.vocabSize();
+    }
+
+    /**
+     * Returns the trainable weights by their Hugging Face names. Packed GGUF matrices are
+     * not among them.
+     *
+     * @return the weights, in a stable order
+     */
+    public Map<String, Var> namedParameters() {
+        return java.util.Collections.unmodifiableMap(named);
+    }
+
+    /** @return the trainable weights */
+    public List<Var> parameters() {
+        return List.copyOf(named.values());
+    }
+
+    private Var rmsNorm(Var x, Var weight) {
+        Var x32 = x.to(DType.FLOAT32);
+        int last = x.shape().rank() - 1;
+        Var y = x32.div(x32.square().mean(last, true).add(config.rmsEps()).sqrt());
+        return y.to(x.dtype()).mul(weight);
+    }
+
+    /** The cached keys and values of each block. */
+    private static final class Cache implements State {
+        final Tensor[] keys;
+        final Tensor[] values;
+        /** Per sequence: whether each cached step is padding. */
+        boolean[][] padding;
+        /** Per sequence: the position of the next real token. */
+        int[] next;
+        int length;
+
+        Cache(int layers, int batch) {
+            keys = new Tensor[layers];
+            values = new Tensor[layers];
+            padding = new boolean[batch][0];
+            next = new int[batch];
+        }
+
+        @Override
+        public int length() {
+            return length;
+        }
+
+        @Override
+        public State select(int[] rows) {
+            Cache c = new Cache(keys.length, rows.length);
+            if (length > 0) {
+                Tensor index = indices(rows, keys[0].device());
+                for (int l = 0; l < keys.length; l++) {
+                    c.keys[l] = keys[l].gather(0, index);
+                    c.values[l] = values[l].gather(0, index);
+                }
+            }
+            for (int i = 0; i < rows.length; i++) {
+                c.padding[i] = padding[rows[i]].clone();
+                c.next[i] = next[rows[i]];
+            }
+            c.length = length;
+            return c;
+        }
+    }
+
+    @Override
+    public State newState(int batch) {
+        return new Cache(config.layers(), batch);
+    }
+
+    /**
+     * Runs the whole model over sequences, for training and scoring: logits for every step.
+     *
+     * @param tokens {@code [batch][steps]} token ids, all sequences the same length
+     * @return logits {@code [batch, steps, vocab]} in the model's type
+     */
+    public Var forward(int[][] tokens) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        int[][] positions = new int[batch][steps];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                positions[b][t] = t;
+            }
+        }
+        return run(tokens, positions, null, null);
+    }
+
+    @Override
+    public Tensor next(State state, int[][] tokens, boolean[][] padding) {
+        Cache cache = (Cache) Objects.requireNonNull(state, "state");
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        if (batch != cache.next.length) {
+            throw new IllegalArgumentException("the state holds " + cache.next.length + " sequences, got " + batch);
+        }
+        int[][] positions = new int[batch][steps];
+        boolean anyPad = padding != null;
+        for (boolean[] p : cache.padding) {
+            for (boolean x : p) {
+                anyPad |= x;
+            }
+        }
+        boolean[][] keysPad = new boolean[batch][];
+        for (int b = 0; b < batch; b++) {
+            keysPad[b] = java.util.Arrays.copyOf(cache.padding[b], cache.length + steps);
+            for (int t = 0; t < steps; t++) {
+                boolean pad = padding != null && padding[b][t];
+                keysPad[b][cache.length + t] = pad;
+                positions[b][t] = pad ? 1 : cache.next[b]++;
+            }
+        }
+        Tensor bias = null;
+        if (anyPad) {
+            // causal and padding together: [batch, 1, steps, keys]
+            int keys = cache.length + steps;
+            float[] m = new float[batch * steps * keys];
+            for (int b = 0; b < batch; b++) {
+                for (int t = 0; t < steps; t++) {
+                    for (int k = 0; k < keys; k++) {
+                        if (k > cache.length + t || keysPad[b][k]) {
+                            m[(b * steps + t) * keys + k] = -1e9f;
+                        }
+                    }
+                }
+            }
+            bias = Tensor.of(Shape.of(batch, 1, steps, keys), m, device).to(dtype);
+        }
+        Var logits = run(tokens, positions, cache, bias);
+        cache.padding = keysPad;
+        cache.length += steps;
+        return logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
+    }
+
+    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        int[] flat = new int[batch * steps];
+        for (int b = 0; b < batch; b++) {
+            System.arraycopy(tokens[b], 0, flat, b * steps, steps);
+        }
+        Var x = embed.gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
+        int hd = config.headDim();
+        float scale = (float) (1 / Math.sqrt(hd));
+        for (int l = 0; l < blocks.size(); l++) {
+            Block blk = blocks.get(l);
+            Var h = rmsNorm(x, blk.attnNorm);
+            Var q = blk.q.apply(h).reshape(batch, steps, config.heads(), hd).permute(0, 2, 1, 3);
+            Var k = blk.k.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
+            Var v = blk.v.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
+            q = rope.apply(q, positions);
+            k = rope.apply(k, positions);
+            boolean causal = steps > 1;
+            if (cache != null) {
+                if (cache.keys[l] != null) {
+                    k = Var.concat(2, Var.of(cache.keys[l]), k);
+                    v = Var.concat(2, Var.of(cache.values[l]), v);
+                }
+                cache.keys[l] = k.value();
+                cache.values[l] = v.value();
+            }
+            Var a = bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
+                    : Functional.attention(q, k, v, causal, scale);
+            a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
+            x = x.add(blk.o.apply(a));
+            h = rmsNorm(x, blk.ffnNorm);
+            Var gated = blk.gate.apply(h).activation(ActivationOp.SILU, 0).mul(blk.up.apply(h));
+            x = x.add(blk.down.apply(gated));
+        }
+        x = rmsNorm(x, norm);
+        return lmHead != null ? lmHead.apply(x) : x.matmul(embed.transpose());
+    }
+
+    // ---------------------------------------------------------------- saving
+
+    /**
+     * Saves the model as a Hugging Face model directory: {@code config.json} and {@code
+     * model.safetensors}, readable by {@link #load} and by transformers. Models with packed
+     * GGUF matrices cannot be saved this way.
+     *
+     * @param dir the directory, created if needed
+     */
+    public void save(Path dir) {
+        int expected = 2 + 2 * config.layers() + linearNames(config).size()
+                + (config.attentionBias() ? 3 * config.layers() : 0);
+        if (named.size() != expected) {
+            throw new IllegalStateException("packed weights cannot be saved as safetensors");
+        }
+        try {
+            Files.createDirectories(dir);
+            Files.writeString(dir.resolve("config.json"), Json.write(config.toHuggingFace()), StandardCharsets.UTF_8);
+            Map<String, Tensor> tensors = new LinkedHashMap<>();
+            for (Map.Entry<String, Var> e : named.entrySet()) {
+                tensors.put(e.getKey(), e.getValue().value());
+            }
+            SafeTensors.write(dir.resolve("model.safetensors"), tensors, Map.of("format", "pt"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Override
+    public String toString() {
+        return "Llama[" + config.architecture() + ", " + config.layers() + " layers, " + config.hidden() + " hidden, "
+                + config.heads() + "/" + config.kvHeads() + " heads, " + dtype + " on " + device + "]";
+    }
+}

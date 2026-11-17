@@ -33,7 +33,7 @@ class GgufTest {
     static Path dir;
 
     private static Path file;
-    private static final Device CPU = Device.cpu();
+    private static final Device DEVICE = TestDevice.get();
 
     @BeforeAll
     static void copyFixture() throws IOException {
@@ -65,8 +65,8 @@ class GgufTest {
         try (WeightSource g = WeightSource.open(file)) {
             String name = "q." + format;
             assertEquals(format, g.format(name));
-            Tensor expected = g.tensor("expected." + format, CPU);
-            Tensor actual = g.tensor(name, CPU);
+            Tensor expected = g.tensor("expected." + format, DEVICE);
+            Tensor actual = g.tensor(name, DEVICE);
             assertEquals(expected.shape(), actual.shape());
             assertArrayEquals(expected.toArray(), actual.toArray(), 1e-6f, format);
         }
@@ -77,12 +77,12 @@ class GgufTest {
         try (Gguf g = Gguf.open(file)) {
             assertEquals(Shape.of(2, 3, 4), g.shape("plain.f32"));
             assertEquals(DType.FLOAT16, g.naturalType("plain.f16"));
-            float[] f32 = g.tensor("plain.f32", CPU).toArray();
-            float[] f16 = g.tensor("plain.f16", CPU, DType.FLOAT32).toArray();
+            float[] f32 = g.tensor("plain.f32", DEVICE).toArray();
+            float[] f16 = g.tensor("plain.f16", DEVICE, DType.FLOAT32).toArray();
             assertArrayEquals(f32, f16, 1e-3f);
-            assertArrayEquals(g.tensor("expected.bf16", CPU).toArray(), g.tensor("plain.bf16", CPU, DType.FLOAT32)
+            assertArrayEquals(g.tensor("expected.bf16", DEVICE).toArray(), g.tensor("plain.bf16", DEVICE, DType.FLOAT32)
                     .toArray());
-            assertArrayEquals(new float[] {0, 1, 2, 3, 4}, g.tensor("plain.i32", CPU).toArray());
+            assertArrayEquals(new float[] {0, 1, 2, 3, 4}, g.tensor("plain.i32", DEVICE).toArray());
         }
     }
 
@@ -92,16 +92,17 @@ class GgufTest {
         try (Gguf g = Gguf.open(file)) {
             String name = "q." + format;
             assertTrue(g.packable(name));
-            Tensor packed = g.packedTransposed(name, CPU);
+            Tensor packed = g.packedTransposed(name, DEVICE);
             assertTrue(packed.isPacked());
-            Tensor dense = g.tensor("expected." + format, CPU);
+            Tensor dense = g.tensor("expected." + format, DEVICE);
             assertEquals(dense.transpose().shape(), packed.shape());
             assertArrayEquals(dense.transpose().toArray(), packed.unpacked().toArray(), 1e-6f);
             // multiplying by it reads the levels directly
-            Tensor x = Tensor.uniform(Shape.of(2, packed.shape().dim(0)), -1, 1, new java.util.SplittableRandom(3));
+            Tensor x = Tensor.uniform(Shape.of(2, packed.shape().dim(0)), -1, 1, new java.util.SplittableRandom(3))
+                    .to(DEVICE);
             assertArrayEquals(x.matmul(dense.transpose()).toArray(), x.matmul(packed).toArray(), 1e-4f);
             assertFalse(g.packable("q.Q4_K"));
-            assertThrows(IllegalArgumentException.class, () -> g.packedTransposed("q.Q4_K", CPU));
+            assertThrows(IllegalArgumentException.class, () -> g.packedTransposed("q.Q4_K", DEVICE));
         }
     }
 
