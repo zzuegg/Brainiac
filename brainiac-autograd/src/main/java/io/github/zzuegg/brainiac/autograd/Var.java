@@ -96,6 +96,34 @@ public final class Var {
         return ANOMALIES.get();
     }
 
+    /** Whether operations on this thread record a graph, see {@link #noGrad}. */
+    private static final ThreadLocal<Boolean> NO_GRAD = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /**
+     * Runs work without recording a graph, as PyTorch's {@code torch.no_grad()}: every value
+     * computed on this thread meanwhile is a constant that remembers no inputs, so the
+     * intermediate values of a long evaluation are freed as soon as they are unused instead
+     * of staying reachable from the result. Calls nest.
+     *
+     * @param work the computation, such as an evaluation or a reference model's forward pass
+     * @param <T> its result
+     * @return what {@code work} returned
+     */
+    public static <T> T noGrad(java.util.function.Supplier<T> work) {
+        boolean was = NO_GRAD.get();
+        NO_GRAD.set(Boolean.TRUE);
+        try {
+            return work.get();
+        } finally {
+            NO_GRAD.set(was);
+        }
+    }
+
+    /** @return whether operations on the calling thread record a graph, false inside {@link #noGrad} */
+    public static boolean gradEnabled() {
+        return !NO_GRAD.get();
+    }
+
     /** The public method that created a value and its first caller outside {@code Var}. */
     private static String describeCaller() {
         return StackWalker.getInstance(StackWalker.Option.SHOW_HIDDEN_FRAMES).walk(frames -> {
@@ -446,6 +474,9 @@ public final class Var {
     }
 
     private static Var op(Tensor out, Var[] inputs, Backward backward, Higher higher) {
+        if (NO_GRAD.get()) {
+            return checked(new Var(out, false, NO_INPUTS, null, null));
+        }
         for (Var in : inputs) {
             if (in.requiresGrad) {
                 return checked(new Var(out, true, inputs, backward, higher));
