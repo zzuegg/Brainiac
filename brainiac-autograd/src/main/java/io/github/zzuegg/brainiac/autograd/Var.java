@@ -1432,6 +1432,55 @@ public final class Var {
                 g -> new Var[] {of(x.equalTo(keptMax)).mul(g.reshape(kept.toArray()))});
     }
 
+    /**
+     * {@code log(sum(exp(x)))} along one axis, computed stably; its gradient is the softmax.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return the log of the summed exponentials
+     */
+    public Var logsumexp(int axis, boolean keepDims) {
+        Tensor m = value.max(axis, true);
+        Var s = sub(m).exp().sum(axis, keepDims).log();
+        return s.add(m.reshape(s.shape()));
+    }
+
+    /**
+     * The variance along one axis, as {@link Tensor#variance}.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param correction subtracted from the count, usually 0 or 1
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return the variances
+     */
+    public Var variance(int axis, int correction, boolean keepDims) {
+        float n = shape().dim(axis) - correction;
+        return sub(mean(axis, true)).square().sum(axis, keepDims).div(n);
+    }
+
+    /**
+     * The standard deviation along one axis, as {@link Tensor#std}.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param correction subtracted from the count, usually 0 or 1
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return the standard deviations
+     */
+    public Var std(int axis, int correction, boolean keepDims) {
+        return variance(axis, correction, keepDims).sqrt();
+    }
+
+    /**
+     * Repeats each entry along an axis, as {@link Tensor#repeatInterleave}.
+     *
+     * @param repeats how often each entry appears, at least 1
+     * @param axis the axis; negative values count from the end
+     * @return the variable with that axis {@code repeats} times longer
+     */
+    public Var repeatInterleave(int repeats, int axis) {
+        return gather(axis, Tensor.repeatIndices(shape().dim(axis), repeats, value.device()));
+    }
+
     /** Removes a size-1 axis that a keepDims reduction left, unless it should stay. */
     private static Tensor squeeze(Tensor kept, int axis, boolean keepDims) {
         if (keepDims) {
