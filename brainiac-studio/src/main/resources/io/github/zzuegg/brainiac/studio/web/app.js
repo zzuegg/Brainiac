@@ -1939,7 +1939,7 @@
   }
 
   // ---------- render ----------
-  const views = { chat: chatView, agents: agentsView, create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView };
+  const views = { chat: chatView, agents: () => isLive() ? liveAgentsView() : agentsView(), create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView };
   const crumbs = {
     chat: `Chat <span class="muted">· Voiceover for the builder demo</span>`, agents: `Agents <span class="muted">· 4 running · 2 waiting for you</span>`, create: `Images <span class="muted">· thumb-dit-64</span>`,
     voice: `Voice <span class="muted">· Builder demo voiceover</span>`, builder: `Model builder <span class="muted">· resnet-s</span>`,
@@ -1959,19 +1959,22 @@
     const liveMedia = isLive() && (state.view === "create" || state.view === "voice");
     const liveBuilder = isLive() && state.view === "builder";
     const liveTrain = isLive() && state.view === "train";
+    const liveAgents = isLive() && state.view === "agents";
     const ready = (L.info?.providers || []).filter(p => p.ready).length;
     $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
       : liveMedia ? (state.view === "create" ? `Images <span class="muted">· ${G.batches.length} batch${G.batches.length === 1 ? "" : "es"} this session</span>` : `Voice <span class="muted">· ${G.takes.length} take${G.takes.length === 1 ? "" : "s"} this session</span>`)
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>`
       : liveBuilder ? `Model builder <span class="muted">· ${esc(B.graph.name || "Untitled")}</span>`
-      : liveTrain ? `Training <span class="muted">· ${T.loaded ? `${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}` : "looking…"}</span>` : crumbs[state.view];
+      : liveTrain ? `Training <span class="muted">· ${T.loaded ? `${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}` : "looking…"}</span>`
+      : liveAgents ? agentCrumb() : crumbs[state.view];
     const picked = liveChat ? paneModel(L.active) : "auto";
     const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
     const [c, n] = liveMedia ? [state.view === "create" ? "c-image" : "c-speech", mediaModel ? mediaModel.name : L.info ? "no model yet" : "…"]
       : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"]
       : liveBuilder ? ["c-train", B.catalog ? `${B.catalog.entries.length} layers found` : "…"]
-      : liveTrain ? ["c-train", T.options ? `${T.options.optimizers.length} optimizers found` : "…"] : routes[state.view];
+      : liveTrain ? ["c-train", T.options ? `${T.options.optimizers.length} optimizers found` : "…"]
+      : liveAgents ? ["c-agent", A.model === "auto" ? (L.info?.auto?.text ? modelByKey(L.info.auto.text)?.name || "auto" : "no chat model yet") : modelByKey(A.model)?.name || A.model] : routes[state.view];
     $("#router .chip").className = "chip " + c; $("#router .chip").textContent = n;
     $$(".rail a").forEach(a => { if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     paintAll();
@@ -1986,7 +1989,8 @@
     if (state.view === "library" && isLive()) bindLiveLibrary();
     if (state.view === "create" && isLive()) bindLiveCreate();
     if (state.view === "voice" && isLive()) bindLiveVoice();
-    if (state.view === "agents") document.querySelectorAll(".agent[data-agent]").forEach(el => el.addEventListener("click", () => { if (["script", "voice", "thumb"].includes(el.dataset.agent)) { state.agent = el.dataset.agent; state.inspectorOpen = true; go("chat"); } }));
+    if (liveAgents) { if (A.loaded) bindLiveAgents(); if (!A.loading && !A.timer) loadAgents(); }
+    if (state.view === "agents" && !isLive()) document.querySelectorAll(".agent[data-agent]").forEach(el => el.addEventListener("click", () => { if (["script", "voice", "thumb"].includes(el.dataset.agent)) { state.agent = el.dataset.agent; state.inspectorOpen = true; go("chat"); } }));
   }
 
   function paintAll() {
@@ -2061,12 +2065,14 @@
       { label: "Go to Chat", icon: "chat", run: () => go("chat") }, { label: "Go to Images", icon: "image", run: () => go("create") },
       { label: "Go to Voice", icon: "speech", run: () => go("voice") }, { label: "Go to Model builder", icon: "build", run: () => go("builder") },
       { label: "Go to Training", icon: "train", run: () => go("train") }, { label: "Go to Models", icon: "library", run: () => go("library") },
+      { label: "Go to Agents", icon: "agent", run: () => go("agents") },
     ];
-    if (!isLive()) return [...out, { label: "Go to Agents", icon: "agent", run: () => go("agents") }, { label: "Go to MCP server", icon: "plug", run: () => go("mcp") },
+    if (!isLive()) return [...out, { label: "Go to MCP server", icon: "plug", run: () => go("mcp") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide")];
     out.push(
       { label: "New conversation", icon: "plus", run: () => { if (state.view !== "chat") go("chat"); newChat(false); } },
       { label: "New model in the builder", icon: "build", run: newModel },
+      { label: "Start an agent", icon: "agent", run: () => { go("agents"); setTimeout(() => $("#ag-goal")?.focus(), 300); } },
       { label: "Add models from a folder or GGUF file…", icon: "folder", run: () => { P.open = true; P.error = null; go("library"); $("#place-path")?.focus(); if (!P.list) browsePlace(""); } },
       { label: "Download a model from Hugging Face…", icon: "download", run: () => { H.open = true; go("library"); $("#hub-q")?.focus(); pollHub(); } },
       { label: "Add an API key…", icon: "lock", run: () => { go("library"); $("[data-add-key]")?.scrollIntoView({ block: "center" }); } },
@@ -3221,6 +3227,21 @@
   const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
   const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
   const hubActive = d => d.state === "queued" || d.state === "downloading" || d.state === "checking";
+  // The token the downloader sends to huggingface.co, shown only by its last four characters.
+  function hubToken() {
+    const t = H.token;
+    const where = !t ? "" : t.source === "saved" ? `saved as key “${esc(t.label)}” under Hugging Face`
+      : t.managed ? "in <code>~/.brainiac/hf_token</code>, which the core's downloader reads too"
+      : t.source === "environment" ? `from <code>${esc(t.label)}</code> in the environment` : "from <code>huggingface-cli login</code>";
+    if (t && !H.tokenEdit) return `<div class="hub-token">${icon("lock")}<span>Token <code>${esc(t.hint)}</code> ${where}.</span><span class="grow"></span>
+      <button type="button" class="btn ghost sm" id="hub-token-change">Change</button>${t.managed ? `<button type="button" class="btn ghost sm" id="hub-token-forget">${H.tokenForget ? "Click again to forget" : "Forget"}</button>` : ""}</div>`;
+    return `<form class="hub-token edit" id="hub-token-form" autocomplete="off">${icon("lock")}
+      <span>${t ? "A new token replaces the one " + where + "." : `Gated models such as Llama or Gemma need a token. <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">Make a read token</a>, accept the model's license on its page, and paste the token here.`}</span>
+      <input class="input mono" id="hub-token" type="password" placeholder="hf_…" spellcheck="false" aria-label="Hugging Face token">
+      <button class="btn" type="submit">Save</button>${t ? `<button type="button" class="btn ghost" id="hub-token-cancel">Cancel</button>` : ""}
+      ${H.tokenError ? `<div class="flag bad">${icon("alert")}<span>${esc(H.tokenError)}</span></div>` : ""}</form>`;
+  }
+
   function hubPanel() {
     const res = H.results;
     const list = H.searching ? `<div class="faint pad">Searching…</div>`
@@ -3229,12 +3250,13 @@
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
           <span class="meta">${r.family ? `<span class="chip c-ok">${esc(r.family)}</span>` : ""}${r.gguf ? `<span class="chip c-text">GGUF</span>` : ""}${r.safetensors ? `<span class="chip c-text">safetensors</span>` : ""}
-            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add a Hugging Face key first">gated</span>` : ""}
+            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add your token above">gated</span>` : ""}
             <span class="faint tnum" title="downloads">${icon("download")}${fmtCount(r.downloads)}</span></span></button>`).join("")
         + (H.hidden ? `<div class="faint pad">${H.hidden} more found that the studio cannot run yet.</div>` : "");
     return `<section class="placebox hubbox" id="hub-box" aria-label="Download from Hugging Face">
       <div class="place-head"><div><b>Download from Hugging Face</b> <span class="muted">Shows only models the studio runs${H.runs ? `: ${esc(H.runs.families.join(", "))} model folders, and ${esc(H.runs.architectures.join(" and "))} GGUF files` : ""}. When the core learns more, more show up. Downloads go to <code>${esc(H.folder || "downloads")}</code>.</span></div>
         <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
+      <div id="hub-token-box">${hubToken()}</div>
       <form class="place-path" id="hub-search" autocomplete="off">
         <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
         <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
@@ -3308,6 +3330,7 @@
       const j = await api("/api/hub/downloads");
       const before = new Map(H.downloads.map(d => [d.id, d.state]));
       H.downloads = j.downloads || []; H.folder = j.folder || H.folder; H.runs = j.runs || H.runs;
+      if ("token" in j && JSON.stringify(j.token) !== JSON.stringify(H.token)) { H.token = j.token; if (!H.tokenEdit && $("#hub-token-box")) { $("#hub-token-box").innerHTML = hubToken(); bindHubToken(); } }
       const finished = H.downloads.some(d => d.state === "done" && before.has(d.id) && before.get(d.id) !== "done");
       if (finished) {
         if (H.listing) H.listing.options.forEach(o => { if (H.downloads.some(d => d.state === "done" && d.repo === H.repo && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name))) o.have = true; });
@@ -3321,7 +3344,34 @@
     L.panes[L.active].model = key; L.model = key; store.set("chatModel", key); savePanes(); render();
     $(`.pane[data-pane="${L.active}"] textarea`)?.focus();
   }
+  function bindHubToken() {
+    const redraw = () => { $("#hub-token-box").innerHTML = hubToken(); bindHubToken(); };
+    $("#hub-token-change")?.addEventListener("click", () => { H.tokenEdit = true; H.tokenError = null; redraw(); $("#hub-token")?.focus(); });
+    $("#hub-token-cancel")?.addEventListener("click", () => { H.tokenEdit = false; H.tokenError = null; redraw(); });
+    $("#hub-token-forget")?.addEventListener("click", async () => {
+      if (!H.tokenForget) { H.tokenForget = true; redraw(); setTimeout(() => { if (H.tokenForget) { H.tokenForget = false; redraw(); } }, 4000); return; }
+      H.tokenForget = false;
+      try { H.token = (await postJson("/api/hub/token", { remove: true })).token; } catch (e) { H.tokenError = e.message; }
+      redraw(); loadModels(false);
+    });
+    $("#hub-token-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const input = $("#hub-token"), token = input.value.trim();
+      if (!token) { H.tokenError = "Paste the token first."; redraw(); return; }
+      try {
+        // a token saved as a key comes first, so a new one replaces that key
+        if (H.token?.source === "saved") { await postJson("/api/keys", { provider: "huggingface", label: H.token.label, key: token }); H.token = (await api("/api/hub/downloads")).token; }
+        else H.token = (await postJson("/api/hub/token", { token })).token;
+        H.tokenEdit = false; H.tokenError = null;
+        if (H.repo) hubRepo(H.repo);
+      } catch (err) { H.tokenError = err.message; }
+      input.value = "";
+      redraw(); loadModels(false);
+    });
+  }
+
   function bindHub() {
+    bindHubToken();
     $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
     $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
     $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });
@@ -3458,13 +3508,265 @@
     }
   }
 
+  // ---------- AGENTS, live ----------
+  // Agents the user starts: a goal, a chat model and the studio's tools. In Ask mode a tool
+  // that acts (downloads, training, asking a paid model) waits here for Allow or Deny.
+  const A = { loaded: false, loading: false, error: null, runs: [], tools: [], maxSteps: 30, sel: null, detail: null,
+    model: "auto", mode: "ask", steps: 12, goal: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
+    open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "" };
+  const agentStates = { running: ["working", "c-text"], waiting: ["needs you", "c-warn"], done: ["done", "c-ok"], failed: ["failed", "c-bad"],
+    stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"] };
+  const agentActive = r => r.state === "running" || r.state === "waiting";
+  const shortDur = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + " s" : s < 3600 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h"; };
+  const agentTitle = g => { const t = g.split("\n")[0]; return t.length > 90 ? t.slice(0, 87) + "…" : t; };
+  const argText = a => { const s = JSON.stringify(a || {}); return s === "{}" ? "" : s; };
+
+  function liveAgentCard(r) {
+    const st = agentStates[r.state] || [r.state, "c-text"];
+    const time = shortDur((r.ended || Date.now()) - r.created);
+    const tok = (r.inputTokens || 0) + (r.outputTokens || 0);
+    return `<div class="agent ${A.sel === r.id ? "selected" : ""}" data-run="${esc(r.id)}" style="--c:var(--cap-agent)" tabindex="0" role="button" aria-label="Open agent: ${esc(agentTitle(r.goal))}">
+      <div class="glyph">${icon("agent")}</div>
+      <div style="min-width:0">
+        <div class="name"><span class="agent-goal" title="${esc(r.goal)}">${esc(agentTitle(r.goal))}</span></div>
+        <div class="doing"><span class="chip ${st[1]}">${st[0]}</span> ${esc((r.state === "waiting" && r.pending ? "wants to call " + r.pending.tool : r.error || r.doing || "").replace(/[*`]/g, ""))}</div>
+      </div>
+      <div class="stats"><span>${time}</span><span>${tok ? fmtCount(tok) + " tok" : r.calls + " call" + (r.calls === 1 ? "" : "s")}</span></div>
+      ${agentActive(r) ? `<span class="bar" style="width:${Math.min(100, Math.max(4, r.turns / r.maxSteps * 100))}%"></span>` : ""}
+    </div>`;
+  }
+
+  function agentAsk(r, inline) {
+    const p = r.pending;
+    return `<div class="ask" style="--c:var(--cap-agent)">
+      ${inline ? "" : `<div style="display:flex;gap:8px;align-items:center;min-width:0"><span class="dot pulse" style="--c:var(--warn)"></span><b class="agent-goal">${esc(agentTitle(r.goal))}</b></div>`}
+      <div>Wants to call <code>${esc(p.tool)}</code>: ${esc(p.acts)}.</div>
+      ${argText(p.arguments) ? `<div class="mono muted ask-args">${esc(argText(p.arguments))}</div>` : ""}
+      <input class="input" data-ag-note="${esc(r.id)}" placeholder="Note for the agent (optional)" value="${esc(A.notes[r.id] || "")}">
+      <div class="approve"><button class="btn primary" data-ag-allow="${esc(r.id)}">Allow</button><button class="btn ghost" data-ag-deny="${esc(r.id)}">Deny</button>
+        ${inline ? "" : `<span class="grow"></span><button class="btn ghost" data-run="${esc(r.id)}">Open</button>`}</div>
+    </div>`;
+  }
+
+  function agentAsks() {
+    const xs = A.runs.filter(r => r.state === "waiting" && r.pending);
+    return `<div class="col-head"><span class="h3">Waiting for you</span>${xs.length ? `<span class="chip c-warn">${xs.length}</span>` : ""}</div>
+      ${xs.length ? xs.map(r => agentAsk(r, false)).join("") : `<p class="muted ag-none">Nothing waits for you. In Ask mode an agent stops here before it downloads, trains or asks a model that may cost money.</p>`}`;
+  }
+
+  function agentForm() {
+    return `<form class="ag-form" id="ag-form" autocomplete="off">
+      <div class="col-head" style="padding:14px 0 8px"><span class="h3">Start an agent</span></div>
+      <textarea class="input" id="ag-goal" rows="3" placeholder="What should it do? For example: find a small Qwen model on Hugging Face that runs here, and download it.">${esc(A.goal)}</textarea>
+      <div class="field"><label for="ag-model">Thinks with</label>${mediaPicker("ag-model", "text", A.model)}</div>
+      <div class="ag-row">
+        <div class="seg" role="group" aria-label="How much it may do alone">
+          <button type="button" data-ag-mode="ask" aria-pressed="${A.mode === "ask"}" title="It waits for you before a tool that acts">Ask first</button>
+          <button type="button" data-ag-mode="auto" aria-pressed="${A.mode === "auto"}" title="It calls every tool itself">Auto</button></div>
+        <label class="muted ag-steps">Steps <input class="input mono" id="ag-steps" type="number" min="1" max="${A.maxSteps}" value="${A.steps}"></label>
+      </div>
+      ${A.formError ? `<div class="flag bad">${icon("alert")}<span>${esc(A.formError)}</span></div>` : ""}
+      <button class="btn primary" type="submit" ${A.busy ? "disabled" : ""}>${icon("play")}${A.busy ? "Starting…" : "Start"}</button>
+    </form>`;
+  }
+
+  function agentTools() {
+    return `<div class="col-head" style="padding-top:18px"><span class="h3">Tools agents can call</span><span class="grow"></span>
+        <button class="btn ghost sm" id="ag-tools-toggle" aria-expanded="${A.toolsOpen}">${A.toolsOpen ? "Hide" : A.tools.length + " tools"}</button></div>
+      ${A.toolsOpen ? `<ul class="ag-tools">${A.tools.map(t => `<li><code>${esc(t.name)}</code>${t.acts ? `<span class="chip c-warn" title="${esc(t.acts)}">asks first</span>` : ""}<div class="muted">${esc(t.description)}</div></li>`).join("")}</ul>
+        <p class="muted ag-none">Generated from the studio's own methods. Programs holding the studio's token can call them too, at <code>/api/tools</code>.</p>` : ""}`;
+  }
+
+  function agentLanes() {
+    const lane = (title, xs) => `<div class="lane-col"><div class="col-head" style="padding:0 2px 8px"><span class="h3">${title}</span><span class="mono faint">${xs.length}</span></div>
+      <div style="display:grid;gap:8px">${xs.map(liveAgentCard).join("") || `<p class="muted ag-none" style="padding:0 2px">None.</p>`}</div></div>`;
+    if (!A.runs.length) return `<div class="empty ag-empty">${icon("agent")}<div><b>No agents yet.</b></div>
+      <div class="muted">Say what you want done on the left. The agent picks from the studio's tools, such as searching Hugging Face, downloading a model, or starting a training run, and tells you what it did.</div></div>`;
+    return lane("Working", A.runs.filter(r => r.state === "running"))
+      + lane("Needs you", A.runs.filter(r => r.state === "waiting"))
+      + lane("Finished", A.runs.filter(r => !agentActive(r)));
+  }
+
+  function agentStep(s, i) {
+    switch (s.kind) {
+      case "goal": return `<div class="st st-goal"><span class="eyebrow">You</span><div>${md(s.text || "")}</div></div>`;
+      case "say": return `<div class="st st-say">${md(s.text || "")}</div>`;
+      case "call": return `<div class="st st-call">${icon("plug")}<span>Calls <code>${esc(s.tool)}</code>${argText(s.arguments) ? ` <span class="mono muted">${esc(argText(s.arguments))}</span>` : ""}</span></div>`;
+      case "result": return `<details class="st st-result ${s.ok ? "" : "bad"}" data-ag-open="${i}" ${A.open.has(i) ? "open" : ""}><summary>${s.ok ? icon("check") : icon("alert")}<span><code>${esc(s.tool)}</code> ${s.ok ? "answered" : "failed"}</span><span class="mono faint">${fmtCount((s.text || "").length)} chars</span></summary><pre>${esc(s.text || "")}</pre></details>`;
+      case "decision": return `<div class="st st-decision">${icon(s.allow ? "check" : "x")}<span>You ${s.allow ? "allowed" : "did not allow"} <code>${esc(s.tool)}</code>${s.note ? `: “${esc(s.note)}”` : ""}</span></div>`;
+      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div>${md(s.text || "")}</div></div>`;
+      case "error": return `<div class="flag bad">${icon("alert")}<span>${esc(s.text || "")}</span></div>`;
+      default: return "";
+    }
+  }
+
+  function agentDetailBody() {
+    const r = A.detail;
+    if (!r) return `<div class="empty" style="padding:40px"><span class="typing"><i></i><i></i><i></i></span></div>`;
+    const st = agentStates[r.state] || [r.state, "c-text"];
+    const by = r.by ? modelByKey(r.by)?.name || r.by : r.model === "auto" ? "Auto" : modelByKey(r.model)?.name || r.model;
+    const tok = (r.inputTokens || 0) + (r.outputTokens || 0);
+    return `<div class="ag-meta"><span class="chip ${st[1]}">${st[0]}</span><span class="mono faint">${esc(by)} · ${r.mode === "ask" ? "asks first" : "auto"} · step ${r.turns} of ${r.maxSteps}${tok ? " · " + fmtCount(tok) + " tok" : ""}</span>
+        <span class="grow"></span>${agentActive(r) ? `<button class="btn" data-ag-stop="${esc(r.id)}">${icon("stop")}Stop</button>`
+          : `<button class="btn ghost" data-ag-remove="${esc(r.id)}">${icon("trash")}${A.removing === r.id ? "Click again to remove" : "Remove"}</button>`}</div>
+      <div class="ag-steps-list" id="ag-steps-list">${(r.steps || []).map(agentStep).join("")}
+        ${r.state === "waiting" && r.pending ? agentAsk(r, true) : ""}
+        ${r.state === "running" ? `<div class="st st-say"><span class="typing"><i></i><i></i><i></i></span></div>` : ""}</div>
+      ${agentActive(r) ? "" : `<form class="ag-reply" id="ag-reply"><textarea class="input" id="ag-reply-text" rows="2" placeholder="Tell it more and let it go on">${esc(A.reply)}</textarea><button class="btn primary" type="submit">${icon("send")}Send</button></form>`}`;
+  }
+
+  function liveAgentsView() {
+    if (!A.loaded) return `<div class="empty" style="padding:60px"><span class="typing"><i></i><i></i><i></i></span><div class="muted">${A.error ? esc(A.error) : "Looking for agents and tools…"}</div></div>`;
+    const sel = A.sel && A.runs.find(r => r.id === A.sel);
+    return `<div class="mission live-agents ${sel ? "with-detail" : ""}">
+      <aside class="inbox" aria-label="Start an agent and what waits for you">
+        <div style="padding:0 16px">${agentForm()}</div>
+        <div id="ag-asks">${agentAsks()}</div>
+        <div id="ag-tools">${agentTools()}</div>
+      </aside>
+      <section class="lanes" id="ag-lanes">${agentLanes()}</section>
+      ${sel ? `<aside class="agent-detail" id="ag-detail" aria-label="Agent">
+        <div class="col-head"><span class="h3 agent-goal" title="${esc(sel.goal)}">${esc(agentTitle(sel.goal))}</span><span class="grow"></span><button class="iconbtn sm" id="ag-close" aria-label="Close">${icon("x")}</button></div>
+        <div id="ag-detail-body">${agentDetailBody()}</div></aside>` : ""}
+    </div>`;
+  }
+
+  const agentCrumb = () => `Agents <span class="muted">· ${A.loaded ? `${A.runs.filter(r => r.state === "running").length} working · ${A.runs.filter(r => r.state === "waiting").length} waiting for you` : "looking…"}</span>`;
+
+  function agentBadge() {
+    const n = A.runs.filter(r => r.state === "waiting").length;
+    const a = $('.rail a[data-view="agents"]');
+    if (!a) return;
+    let b = a.querySelector(".badge");
+    if (!n) { b?.remove(); return; }
+    if (!b) { b = document.createElement("span"); b.className = "badge"; a.appendChild(b); }
+    b.textContent = n;
+  }
+
+  // Redraw what changed without touching what the user is typing in.
+  function refreshAgents() {
+    agentBadge();
+    if (state.view !== "agents" || !isLive()) return;
+    if (!$(".live-agents") || !!A.sel !== !!$("#ag-detail")) { render(); return; }
+    $("#ag-lanes").innerHTML = agentLanes();
+    $("#crumb").innerHTML = agentCrumb();
+    const asksKey = A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",");
+    if (asksKey !== A.asksKey) { A.asksKey = asksKey; $("#ag-asks").innerHTML = agentAsks(); }
+    const d = A.detail;
+    const detailKey = d ? [d.id, d.state, (d.steps || []).length, d.turns, A.removing].join(":") : "";
+    if (detailKey !== A.detailKey && $("#ag-detail-body")) {
+      A.detailKey = detailKey;
+      const list = $("#ag-steps-list"), atEnd = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 40, top = list?.scrollTop;
+      const focused = document.activeElement?.id === "ag-reply-text";
+      $("#ag-detail-body").innerHTML = agentDetailBody();
+      const nl = $("#ag-steps-list");
+      if (nl) nl.scrollTop = atEnd ? nl.scrollHeight : top;
+      if (focused) $("#ag-reply-text")?.focus();
+    }
+    bindAgentParts();
+  }
+
+  async function loadAgents() {
+    if (A.loading) return;
+    A.loading = true;
+    try {
+      if (!L.info) await loadModels(false);
+      const j = await api("/api/agents");
+      A.runs = j.runs; A.tools = j.tools; A.maxSteps = j.maxSteps; A.loaded = true; A.error = null;
+      if (A.sel && !A.runs.some(r => r.id === A.sel)) { A.sel = null; A.detail = null; }
+      if (A.sel) A.detail = await postJson("/api/agents/get", { id: A.sel });
+    } catch (e) {
+      A.error = String(e.message || e);
+    } finally {
+      A.loading = false;
+    }
+    clearTimeout(A.timer);
+    A.timer = 0;
+    const active = A.runs.some(agentActive);
+    if (active || state.view === "agents") A.timer = setTimeout(loadAgents, active ? (state.view === "agents" ? 1000 : 3000) : 5000);
+    if (state.view === "agents" && !$(".live-agents")) render(); else refreshAgents();
+  }
+
+  async function agentDo(path, body) {
+    try { await postJson(path, body); } catch (e) { A.formError = String(e.message || e); render(); }
+    loadAgents();
+  }
+
+  function openAgent(id) {
+    A.sel = id; A.detail = A.runs.find(r => r.id === id) ? null : A.detail; A.open = new Set(); A.reply = ""; A.removing = null; A.detailKey = "";
+    render();
+    loadAgents();
+    if (innerWidth < 1080) setTimeout(() => $("#ag-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  function bindAgentParts() {
+    $$("[data-run]").forEach(el => {
+      if (el.dataset.bound) return; el.dataset.bound = "1";
+      el.addEventListener("click", () => openAgent(el.dataset.run));
+      el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(el.dataset.run); } });
+    });
+    $$("[data-ag-note]").forEach(el => el.oninput = () => { A.notes[el.dataset.agNote] = el.value; });
+    const decide = (id, allow) => { const note = A.notes[id] || ""; delete A.notes[id]; A.asksKey = null; A.detailKey = null; agentDo("/api/agents/answer", { id, allow, note }); };
+    $$("[data-ag-allow]").forEach(el => el.onclick = () => decide(el.dataset.agAllow, true));
+    $$("[data-ag-deny]").forEach(el => el.onclick = () => decide(el.dataset.agDeny, false));
+    $$("[data-ag-stop]").forEach(el => el.onclick = () => agentDo("/api/agents/stop", { id: el.dataset.agStop }));
+    $$("[data-ag-remove]").forEach(el => el.onclick = () => {
+      const id = el.dataset.agRemove;
+      if (A.removing !== id) { A.removing = id; A.detailKey = null; refreshAgents(); return; }
+      A.removing = null; A.sel = null; A.detail = null; agentDo("/api/agents/delete", { id });
+    });
+    $$("details[data-ag-open]").forEach(el => el.ontoggle = () => { const i = +el.dataset.agOpen; if (el.open) A.open.add(i); else A.open.delete(i); });
+    const reply = $("#ag-reply");
+    if (reply) {
+      $("#ag-reply-text").oninput = e => { A.reply = e.target.value; };
+      reply.onsubmit = e => {
+        e.preventDefault();
+        const text = A.reply.trim();
+        if (!text) return;
+        A.reply = ""; A.detailKey = null;
+        agentDo("/api/agents/reply", { id: A.sel, text });
+      };
+      $("#ag-reply-text").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) reply.requestSubmit(); };
+    }
+  }
+
+  function bindLiveAgents() {
+    A.asksKey = A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",");
+    A.detailKey = "";
+    const goal = $("#ag-goal");
+    if (!goal) return;
+    goal.oninput = () => { A.goal = goal.value; };
+    goal.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#ag-form").requestSubmit(); };
+    $("#ag-model").onchange = e => { A.model = e.target.value; };
+    $("#ag-steps").oninput = e => { A.steps = Math.max(1, Math.min(A.maxSteps, +e.target.value || 12)); };
+    $$("[data-ag-mode]").forEach(b => b.onclick = () => { A.mode = b.dataset.agMode; $$("[data-ag-mode]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
+    $("#ag-form").onsubmit = async e => {
+      e.preventDefault();
+      if (!A.goal.trim()) { A.formError = "Say what the agent should do."; render(); return; }
+      A.busy = true; A.formError = null; render();
+      try {
+        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps });
+        A.goal = ""; A.sel = r.id; A.detail = null; A.open = new Set();
+      } catch (err) {
+        A.formError = String(err.message || err);
+      }
+      A.busy = false;
+      render();
+      loadAgents();
+    };
+    $("#ag-tools-toggle").onclick = () => { A.toolsOpen = !A.toolsOpen; $("#ag-tools").innerHTML = agentTools(); bindLiveAgents(); };
+    $("#ag-close")?.addEventListener("click", () => { A.sel = null; A.detail = null; render(); });
+    bindAgentParts();
+    if (A.detail) { const nl = $("#ag-steps-list"); if (nl) nl.scrollTop = nl.scrollHeight; }
+  }
+
   // ---------- live data ----------
   // Served by the studio, the page carries a token and reads real data from the API. Opened
   // as a plain file or preview, it shows the example data in mock.js and says so.
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
   // screens that show only real data
-  const showsLiveData = () => ["library", "create", "voice", "builder", "train"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
+  const showsLiveData = () => ["library", "create", "voice", "builder", "train", "agents"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });
@@ -3497,6 +3799,7 @@
       render();
       loadModels(false);
       loadConvos();
+      loadAgents();
     } catch (e) {
       console.warn("studio API not reachable, showing example data", e);
     }
@@ -3504,7 +3807,7 @@
 
   const start = location.hash.slice(1);
   state.view = views[start] ? start : "chat";
-  // the agents screen is still a design preview, so its example count is not shown as real
+  // the badge counts real agents waiting for the user
   if (isLive()) $('.rail a[data-view="agents"] .badge')?.remove();
   render();
   loadLive();
