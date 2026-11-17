@@ -1,0 +1,161 @@
+package io.github.zzuegg.brainiac.llm;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
+import io.github.zzuegg.brainiac.tensor.DType;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+class OpenAiServerTest {
+
+    private static final String CHARS = "abcdefghijklmnopqrstuvwxyz :{}\"0123456789,\n";
+    private static OpenAiServer server;
+    private static Generator generator;
+    private static PretrainedTokenizer tokenizer;
+
+    @BeforeAll
+    static void start() {
+        Map<String, Object> vocab = new LinkedHashMap<>();
+        for (int i = 0; i < CHARS.length(); i++) {
+            vocab.put(String.valueOf(CHARS.charAt(i)), i);
+        }
+        Map<String, Object> root = Map.of("model", Map.of("type", "BPE", "vocab", vocab, "merges", List.of()),
+                "added_tokens", List.of(Map.of("id", CHARS.length(), "content", "<end>", "special", true)));
+        PretrainedTokenizer tok = PretrainedTokenizer.fromJson(Json.write(root), Map.of("eos_token", "<end>",
+                "chat_template", "{% for m in messages %}{{ m['role'] }}: {{ m['content'] }}\n{% endfor %}"
+                        + "{% if add_generation_prompt %}assistant: {% endif %}"));
+        Llama model = Llama.random(LlamaConfig.small(CHARS.length() + 1, 32, 2, 4, 2), 5, GeneratorTest.DEVICE,
+                DType.FLOAT32);
+        generator = new Generator(model, tok);
+        tokenizer = tok;
+        server = OpenAiServer.start(new InetSocketAddress("127.0.0.1", 0), "tiny", generator, tok, null);
+    }
+
+    @AfterAll
+    static void stop() {
+        server.close();
+    }
+
+    private static String call(String method, String path, String body) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + path).toURL()
+                .openConnection();
+        c.setRequestMethod(method);
+        if (body != null) {
+            c.setDoOutput(true);
+            try (OutputStream out = c.getOutputStream()) {
+                out.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        int status = c.getResponseCode();
+        try (InputStream in = status < 400 ? c.getInputStream() : c.getErrorStream()) {
+            return status + " " + new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void listsTheModel() throws IOException {
+        String r = call("GET", "/v1/models", null);
+        assertTrue(r.startsWith("200 "), r);
+        assertTrue(r.contains("\"id\":\"tiny\""), r);
+    }
+
+    @Test
+    void completesLikeTheGenerator() throws IOException {
+        String r = call("POST", "/v1/completions", "{\"prompt\":\"hello\",\"max_tokens\":6,\"temperature\":0}");
+        assertTrue(r.startsWith("200 "), r);
+        Map<String, Object> res = Json.object(Json.parse(r.substring(4)));
+        Map<String, Object> choice = Json.object(Json.array(res.get("choices")).getFirst());
+        assertEquals(generator.generate("hello", Generator.Options.greedy(6)), choice.get("text"));
+        Map<String, Object> usage = Json.object(res.get("usage"));
+        assertEquals(5L, ((Number) usage.get("prompt_tokens")).longValue());
+    }
+
+    @Test
+    void chatStreamsTheSameTextInPieces() throws IOException {
+        String body = "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8,\"temperature\":0";
+        String whole = call("POST", "/v1/chat/completions", body + "}");
+        assertTrue(whole.startsWith("200 "), whole);
+        Map<String, Object> msg = Json.object(Json.object(Json.array(Json.object(Json.parse(whole.substring(4)))
+                .get("choices")).getFirst()).get("message"));
+        String expected = generator.generate("user: hi\nassistant: ", Generator.Options.greedy(8));
+        assertEquals(expected, msg.get("content"));
+
+        String stream = call("POST", "/v1/chat/completions", body + ",\"stream\":true}");
+        assertTrue(stream.startsWith("200 "), stream);
+        assertTrue(stream.strip().endsWith("data: [DONE]"), stream);
+        StringBuilder text = new StringBuilder();
+        for (String line : stream.substring(4).split("\n")) {
+            if (line.startsWith("data: {")) {
+                Map<String, Object> delta = Json.object(Json.object(Json.array(Json.object(Json.parse(line.substring(6)))
+                        .get("choices")).getFirst()).get("delta"));
+                if (delta.get("content") instanceof String s) {
+                    text.append(s);
+                }
+            }
+        }
+        assertEquals(expected, text.toString());
+    }
+
+    @Test
+    void jsonSchemaConstrainsTheAnswer() throws IOException {
+        String r = call("POST", "/v1/chat/completions", "{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}],"
+                + "\"max_tokens\":60,\"temperature\":0,\"response_format\":{\"type\":\"json_schema\",\"json_schema\":"
+                + "{\"name\":\"n\",\"schema\":{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"integer\"}},"
+                + "\"required\":[\"a\"]}}}}");
+        assertTrue(r.startsWith("200 "), r);
+        String content = (String) Json.object(Json.object(Json.array(Json.object(Json.parse(r.substring(4)))
+                .get("choices")).getFirst()).get("message")).get("content");
+        assertTrue(Json.object(Json.parse(content)).get("a") instanceof Number, content);
+    }
+
+    @Test
+    void badRequestsGet400() throws IOException {
+        assertTrue(call("POST", "/v1/completions", "not json").startsWith("400 "));
+        assertTrue(call("POST", "/v1/chat/completions", "{\"messages\":[]}").startsWith("400 "));
+        assertTrue(call("GET", "/v1/completions", null).startsWith("405 "));
+    }
+
+    @Test
+    void batchedServerAnswersConcurrentRequestsLikeTheGenerator() throws Exception {
+        try (OpenAiServer batched = OpenAiServer.start(new InetSocketAddress("127.0.0.1", 0), "tiny", generator,
+                tokenizer, null, 4)) {
+            OpenAiServer saved = server;
+            server = batched;
+            try {
+                String[] prompts = {"abc", "hello world", "q", "zebra"};
+                java.util.List<java.util.concurrent.Future<String>> answers = new java.util.ArrayList<>();
+                java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+                for (String p : prompts) {
+                    answers.add(pool.submit(() -> call("POST", "/v1/completions", "{\"prompt\":\"" + p
+                            + "\",\"max_tokens\":10,\"temperature\":0}")));
+                }
+                for (int i = 0; i < prompts.length; i++) {
+                    String r = answers.get(i).get();
+                    assertTrue(r.startsWith("200 "), r);
+                    Map<String, Object> choice = Json.object(Json.array(Json.object(Json.parse(r.substring(4)))
+                            .get("choices")).getFirst());
+                    assertEquals(generator.generate(prompts[i], Generator.Options.greedy(10)), choice.get("text"));
+                }
+                pool.shutdown();
+            } finally {
+                server = saved;
+            }
+        }
+    }
+}

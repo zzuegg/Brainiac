@@ -32,6 +32,17 @@ class GgufWriterTest {
         return p;
     }
 
+    /** A SentencePiece-style BPE tokenizer.json (as TinyLlama's) with its tokenizer_config.json. */
+    private Path folder(String name) throws IOException {
+        Path d = Files.createDirectories(dir.resolve(name));
+        for (String file : new String[] {"tokenizer.json", "tokenizer_config.json"}) {
+            try (InputStream in = getClass().getResourceAsStream("tokenizers/" + name + "/" + file)) {
+                Files.copy(in, d.resolve(file));
+            }
+        }
+        return d;
+    }
+
     @Test
     void metadataAndTensorsReadBack() {
         Map<String, Object> m = new LinkedHashMap<>();
@@ -68,9 +79,10 @@ class GgufWriterTest {
     @ParameterizedTest
     // not gpt2-bpe.json: GGUF has no add_prefix_space; and texts without leading or doubled
     // spaces, which GGUF SentencePiece models keep (sp-bpe.model removes them)
-    @ValueSource(strings = {"bytelevel-bpe.json", "sp-bpe.model", "vocab.gguf", "vocab-llama.gguf"})
+    @ValueSource(strings = {"bytelevel-bpe.json", "sp-bpe.model", "vocab.gguf", "vocab-llama.gguf", "metaspace-bpe.json",
+        "llama-legacy-true"})
     void tokenizersSurviveAGgufRoundTrip(String name) throws IOException {
-        PretrainedTokenizer tok = PretrainedTokenizer.load(fixture(name));
+        PretrainedTokenizer tok = PretrainedTokenizer.load(name.contains(".") ? fixture(name) : folder(name));
         Path f = dir.resolve("tok.gguf");
         GgufWriter.write(f, tok.ggufMetadata(), Map.of(), false);
         PretrainedTokenizer back;
@@ -79,7 +91,7 @@ class GgufWriterTest {
         }
         assertEquals(tok.size(), back.size());
         for (String text : new String[] {"Hello world", "The quick brown fox, 1234!", "naïve café spaces\n\nnew",
-            "<|im_start|>user hi"}) {
+            "<|im_start|>user hi", "Why? Because 🙂 works."}) {
             assertArrayEquals(tok.encode(text), back.encode(text), name + ": " + text);
             assertArrayEquals(tok.encode(text, false), back.encode(text, false), name + ": " + text);
             assertEquals(tok.decode(tok.encode(text)), back.decode(back.encode(text)), name + ": " + text);

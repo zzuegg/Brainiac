@@ -536,6 +536,227 @@ public final class Generator {
         return any;
     }
 
+    // ---------------------------------------------------------------- continuous batching
+
+    /**
+     * Starts a background decoder that batches requests as they come: a new request is read
+     * on its own and then {@linkplain LanguageModel.State#join joins} the sequences being
+     * decoded, and a finished one leaves at once, so short answers never wait for long ones.
+     * Each request keeps its own options and draws, so alone it writes what {@link #generate}
+     * writes. The model's states must support joining.
+     *
+     * @param maxBatch the most sequences decoded side by side
+     * @return the batcher; close it to stop
+     */
+    public Batcher batcher(int maxBatch) {
+        return new Batcher(maxBatch);
+    }
+
+    /** Decodes submitted requests together; see {@link #batcher(int)}. */
+    public final class Batcher implements AutoCloseable {
+
+        private final int maxBatch;
+        private final java.util.concurrent.LinkedBlockingQueue<Job> queue = new java.util.concurrent.LinkedBlockingQueue<>();
+        private final Thread thread;
+        private volatile boolean closed;
+        private volatile int largest;
+
+        private final class Job {
+            final Row row;
+            final Set<Integer> stops;
+            final SplittableRandom random;
+            final java.util.concurrent.CompletableFuture<Output> future = new java.util.concurrent.CompletableFuture<>();
+            float[] logits;
+
+            Job(int[] prompt, Options options, Listener listener) {
+                row = new Row(0, prompt, options, listener);
+                stops = stopTokens(options);
+                random = new SplittableRandom(options.seed());
+            }
+        }
+
+        private Batcher(int maxBatch) {
+            if (maxBatch < 1) {
+                throw new IllegalArgumentException("maxBatch must be at least 1, got " + maxBatch);
+            }
+            this.maxBatch = maxBatch;
+            thread = new Thread(this::loop, "brainiac-batcher");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        /**
+         * @param prompt the text to continue
+         * @param options what to generate
+         * @param listener receives the text as it is written (row 0), or {@code null}
+         * @return the output once it is done
+         */
+        public java.util.concurrent.CompletableFuture<Output> submit(String prompt, Options options,
+                Listener listener) {
+            return submit(encode(prompt), options, listener);
+        }
+
+        /**
+         * @param prompt the token ids to continue, at least one
+         * @param options what to generate
+         * @param listener receives the text as it is written (row 0), or {@code null}
+         * @return the output once it is done
+         */
+        public java.util.concurrent.CompletableFuture<Output> submit(int[] prompt, Options options,
+                Listener listener) {
+            if (prompt.length == 0) {
+                throw new IllegalArgumentException("empty prompt");
+            }
+            if (closed) {
+                throw new IllegalStateException("the batcher is closed");
+            }
+            Job j = new Job(prompt.clone(), Objects.requireNonNull(options, "options"), listener);
+            queue.add(j);
+            return j.future;
+        }
+
+        /** @return the most sequences decoded side by side so far */
+        public int largestBatch() {
+            return largest;
+        }
+
+        /** Stops decoding; unfinished requests fail. */
+        @Override
+        public void close() {
+            closed = true;
+            thread.interrupt();
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            for (Job j; (j = queue.poll()) != null;) {
+                j.future.completeExceptionally(new java.util.concurrent.CancellationException("batcher closed"));
+            }
+        }
+
+        private void loop() {
+            List<Job> active = new ArrayList<>();
+            LanguageModel.State state = null;
+            try {
+                while (!closed) {
+                    List<Job> joining = new ArrayList<>();
+                    if (active.isEmpty()) {
+                        joining.add(queue.take());
+                    }
+                    queue.drainTo(joining, maxBatch - active.size() - joining.size());
+                    joining.removeIf(j -> {
+                        if (j.row.options.maxNewTokens() == 0) {
+                            j.future.complete(j.row.finish());
+                            return true;
+                        }
+                        return false;
+                    });
+                    try {
+                        if (!joining.isEmpty()) {
+                            LanguageModel.State fresh = prefill(joining);
+                            state = state == null ? fresh : state.join(fresh);
+                            active.addAll(joining);
+                            largest = Math.max(largest, active.size());
+                        }
+                        if (active.isEmpty()) {
+                            state = null;
+                            continue;
+                        }
+                        int[] next = new int[active.size()];
+                        boolean[] done = new boolean[active.size()];
+                        for (int i = 0; i < active.size(); i++) {
+                            Job j = active.get(i);
+                            Row r = j.row;
+                            float[] row = j.logits;
+                            if (r.matcher != null && !constrain(row, r.matcher, j.stops)) {
+                                r.end();
+                                done[i] = true;
+                                continue;
+                            }
+                            int token = r.options.sampling().sample(row, r.seen(), j.random);
+                            next[i] = token;
+                            if (r.matcher != null && !j.stops.contains(token)) {
+                                r.matcher = vocabulary(row.length).advance(r.matcher, token);
+                            }
+                            done[i] = r.add(token, j.stops);
+                        }
+                        List<Job> kept = new ArrayList<>();
+                        List<Integer> rows = new ArrayList<>();
+                        for (int i = 0; i < active.size(); i++) {
+                            if (done[i]) {
+                                active.get(i).future.complete(active.get(i).row.finish());
+                            } else {
+                                kept.add(active.get(i));
+                                rows.add(i);
+                            }
+                        }
+                        if (kept.isEmpty()) {
+                            active.clear();
+                            state = null;
+                            continue;
+                        }
+                        if (kept.size() < active.size()) {
+                            state = state.select(rows.stream().mapToInt(Integer::intValue).toArray());
+                        }
+                        active = kept;
+                        int[][] tokens = new int[active.size()][1];
+                        for (int i = 0; i < active.size(); i++) {
+                            tokens[i][0] = next[rows.get(i)];
+                        }
+                        spread(model.next(state, tokens, null), active);
+                    } catch (RuntimeException e) {
+                        for (Job j : active) {
+                            j.future.completeExceptionally(e);
+                        }
+                        for (Job j : joining) {
+                            j.future.completeExceptionally(e);
+                        }
+                        active.clear();
+                        state = null;
+                    }
+                }
+            } catch (InterruptedException e) {
+                // closed
+            }
+            for (Job j : active) {
+                j.future.completeExceptionally(new java.util.concurrent.CancellationException("batcher closed"));
+            }
+        }
+
+        /** Reads new prompts side by side, padded on the left, and keeps each one's logits. */
+        private LanguageModel.State prefill(List<Job> jobs) {
+            int n = jobs.size();
+            int longest = 0;
+            for (Job j : jobs) {
+                longest = Math.max(longest, j.row.prompt.length);
+            }
+            int[][] first = new int[n][longest];
+            boolean[][] pad = new boolean[n][longest];
+            boolean padded = false;
+            for (int b = 0; b < n; b++) {
+                int[] p = jobs.get(b).row.prompt;
+                int off = longest - p.length;
+                System.arraycopy(p, 0, first[b], off, p.length);
+                for (int t = 0; t < off; t++) {
+                    pad[b][t] = true;
+                    padded = true;
+                }
+            }
+            LanguageModel.State s = model.newState(n);
+            spread(model.next(s, first, padded ? pad : null), jobs);
+            return s;
+        }
+
+        private void spread(Tensor logits, List<Job> jobs) {
+            float[] all = logits.toArray();
+            int vocab = all.length / jobs.size();
+            for (int i = 0; i < jobs.size(); i++) {
+                jobs.get(i).logits = Arrays.copyOfRange(all, i * vocab, (i + 1) * vocab);
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- speculative decoding
 
     /**
