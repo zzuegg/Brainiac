@@ -28,7 +28,7 @@ import java.util.stream.Stream;
 
 /**
  * The speech models on this PC, found in the same places as the language models: Whisper, which
- * writes down what is said, and VITS (MMS-TTS), which speaks. One of each is kept loaded.
+ * writes down what is said, and VITS (MMS-TTS), which speaks. One of each is kept loaded, on the best device, with 32-bit weights.
  */
 public final class LocalSpeech {
 
@@ -145,8 +145,9 @@ public final class LocalSpeech {
         return Device.best();
     }
 
+    // speech models are small, and 16-bit weights are not checked for them yet, so full precision everywhere
     private static DType dtype(Device d) {
-        return d.kind() == Device.Kind.GPU && d.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
+        return DType.FLOAT32;
     }
 
     /**
