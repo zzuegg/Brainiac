@@ -460,6 +460,23 @@ public final class Llama implements LanguageModel {
         }
 
         @Override
+        public State truncate(int keep) {
+            if (keep < 0 || keep > length) {
+                throw new IllegalArgumentException("cannot keep " + keep + " of " + length + " steps");
+            }
+            for (int b = 0; b < next.length; b++) {
+                for (int t = keep; t < length; t++) {
+                    if (!padding[b][t]) {
+                        next[b]--;
+                    }
+                }
+                padding[b] = java.util.Arrays.copyOf(padding[b], keep);
+            }
+            length = keep;   // what follows is overwritten and masked until then
+            return this;
+        }
+
+        @Override
         public State select(int[] rows) {
             Cache c = new Cache(keys.length, rows.length);
             if (capacity > 0) {
@@ -549,6 +566,15 @@ public final class Llama implements LanguageModel {
 
     @Override
     public Tensor next(State state, int[][] tokens, boolean[][] padding) {
+        return read(state, tokens, padding, false);
+    }
+
+    @Override
+    public Tensor nextAll(State state, int[][] tokens) {
+        return read(state, tokens, null, true);
+    }
+
+    private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep) {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
         int batch = tokens.length;
         int steps = tokens[0].length;
@@ -583,7 +609,8 @@ public final class Llama implements LanguageModel {
         Var logits = run(tokens, positions, cache, bias);
         cache.padding = keysPad;
         cache.length += steps;
-        Tensor out = logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
+        Tensor out = everyStep ? logits.value().to(DType.FLOAT32)
+                : logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
         // computed before the next step writes into the cache it read
         Tensor.evaluate(List.of(out));
         return out;
