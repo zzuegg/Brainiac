@@ -830,3 +830,18 @@ button.linkchip:hover { filter: brightness(1.15); text-decoration: underline; te
 .ped footer { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 18px; border-top: 1px solid var(--line-soft); background: var(--panel-2); }
 .ped footer .keyerr { flex-basis: auto; flex: 1 1 100%; }
 .ped .flag { font-size: 12.5px; }
+
+/* ---------- model groups ---------- */
+.models .ghead td { padding: 0; background: var(--panel-2); border-top: 1px solid var(--line); }
+.models .mgroup:first-of-type .ghead td { border-top: 0; }
+.ghead-in { display: flex; gap: 8px; align-items: center; padding: 6px 10px 6px 6px; }
+.gtoggle { display: inline-flex; gap: 8px; align-items: center; border: 0; background: transparent; color: var(--fg); padding: 6px 8px; border-radius: 8px; font: inherit; font-size: 13.5px; cursor: pointer; }
+.gtoggle:hover { background: var(--raise); }
+.gtoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gtoggle svg { width: 14px; height: 14px; color: var(--muted); transition: transform .15s; }
+.gtoggle .faint { font-size: 12px; }
+.mgroup:not(.folded) .gtoggle svg, .mgroup.searching .gtoggle svg { transform: rotate(90deg); }
+.mgroup.folded:not(.searching) tr.mrow { display: none; }
+@media (prefers-reduced-motion: reduce) { .gtoggle svg { transition: none; } }
+.ghead-in .grow, .modelbar .grow { flex: 1; }
+.modelbar #model-find { margin-left: 0; width: min(360px, 100%); }

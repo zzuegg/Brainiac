@@ -1020,7 +1020,6 @@
     busy: null,                           // the AbortController of the answer being written
     usage: null,                          // GET /api/usage: calls and tokens by provider, key, model, day
     balances: null,                       // GET /api/balances: what is left per key, where providers say
-    libProvider: "all",                   // which provider's models the table shows
     editing: null,                        // the provider open in the editor, and its unsaved draft
     draft: null,
     adding: null,                         // the provider whose key form is open
@@ -1526,28 +1525,41 @@
   }
 
   // ---------- live models and providers ----------
+  // Models grouped by provider; each group folds, and remembers whether it was folded.
+  const isFolded = (id, n) => { const f = store.get("libFolded", {}); return id in f ? f[id] : n > 25; };
+  function setFolded(id, v) { const f = store.get("libFolded", {}); f[id] = v; store.set("libFolded", f); }
   function liveModelsTable() {
     const ms = L.info ? L.info.models : [];
-    const counts = {};
-    ms.forEach(m => counts[m.provider] = (counts[m.provider] || 0) + 1);
-    const ids = Object.keys(counts);
-    if (L.libProvider !== "all" && !counts[L.libProvider]) L.libProvider = "all";
-    const shown = ms.filter(m => L.libProvider === "all" || m.provider === L.libProvider);
-    return `${ids.length > 1 || ms.length > 12 ? `<div class="modelbar">
-        <div class="seg" role="group" aria-label="Show models from">
-          <button data-lib-provider="all" aria-pressed="${L.libProvider === "all"}">All <span class="faint tnum">${ms.length}</span></button>
-          ${ids.map(id => `<button data-lib-provider="${esc(id)}" aria-pressed="${L.libProvider === id}">${esc(id === "local" ? "This PC" : providerName(id))} <span class="faint tnum">${counts[id]}</span></button>`).join("")}
-        </div>
-        <input class="input" id="model-find" type="search" placeholder="Find a model" aria-label="Find a model">
-      </div>` : ""}
-      <div class="tablebox models-box"><table class="models">
-      <thead><tr><th>Model</th><th>Can</th><th>Where</th><th>Detail</th></tr></thead>
-      <tbody>${shown.length ? shown.map(m => `<tr data-find="${esc((m.name + " " + m.key).toLowerCase())}" class="${m.shown === false ? "hidden-model" : ""}">
+    const groups = new Map();
+    ms.forEach(m => { if (!groups.has(m.provider)) groups.set(m.provider, []); groups.get(m.provider).push(m); });
+    const row = m => `<tr data-find="${esc((m.name + " " + m.key).toLowerCase())}" class="mrow ${m.shown === false ? "hidden-model" : ""}">
         <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.key)}</div></td>
         <td>${m.media.map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join(" ")}</td>
-        <td>${m.provider === "local" ? `<span class="chip c-ok">this PC</span>` : `<span class="chip c-agent">${esc(providerName(m.provider))} · your key</span>`}${m.shown === false ? ` <span class="chip plain" title="Not offered in the model pickers or by Auto. Change it with Edit on the provider.">hidden</span>` : ""}</td>
-        <td class="mono">${esc(m.detail)}</td></tr>`).join("")
-        : `<tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr>`}</tbody></table></div>`;
+        <td>${m.shown === false ? `<span class="chip plain" title="Not offered in the model pickers or by Auto. Change it with Edit on the provider.">hidden</span>` : Object.values(L.info.auto || {}).includes(m.key) ? `<span class="chip c-ok">Auto picks it</span>` : ""}</td>
+        <td class="mono">${esc(m.detail)}</td></tr>`;
+    const body = [...groups].map(([id, list]) => {
+      const folded = isFolded(id, list.length), name = id === "local" ? "This PC" : providerName(id);
+      const hidden = list.filter(m => m.shown === false).length;
+      const p = (L.info.providers || []).find(x => x.id === id);
+      return `<tbody class="mgroup ${folded ? "folded" : ""}" data-group="${esc(id)}">
+        <tr class="ghead"><td colspan="4"><div class="ghead-in">
+          <button class="gtoggle" data-fold="${esc(id)}" aria-expanded="${!folded}">${icon("chev")}<b>${esc(name)}</b>
+            <span class="faint tnum">${list.length} model${list.length === 1 ? "" : "s"}${hidden ? ` · ${hidden} hidden` : ""}</span></button>
+          <span class="grow"></span>
+          ${id === "local" ? `<span class="chip c-ok">free · private</span>` : `<span class="chip c-agent">your key</span>`}
+          ${p && p.settings ? `<button class="btn ghost sm" data-edit-provider="${esc(id)}">${icon("edit")}Edit</button>` : ""}
+        </div></td></tr>
+        ${list.map(row).join("")}</tbody>`;
+    }).join("");
+    return `${ms.length ? `<div class="modelbar">
+        <input class="input" id="model-find" type="search" placeholder="Find a model in every provider" aria-label="Find a model">
+        <span class="grow"></span>
+        ${groups.size > 1 ? `<button class="btn ghost sm" data-fold-all="false">Expand all</button><button class="btn ghost sm" data-fold-all="true">Collapse all</button>` : ""}
+      </div>` : ""}
+      <div class="tablebox models-box"><table class="models">
+      <thead><tr><th>Model</th><th>Can</th><th>Use</th><th>Detail</th></tr></thead>
+      ${body || `<tbody><tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr></tbody>`}</table></div>
+      <div class="muted nofind" hidden style="font-size:13px">No model matches.</div>`;
   }
 
   // ---------- usage and balances ----------
@@ -1804,15 +1816,32 @@
       render();
       $(`.keyform[data-provider="${L.adding}"] input[name=key]`)?.focus();
     }));
-    $$("[data-lib-provider]").forEach(b => b.addEventListener("click", () => { L.libProvider = b.dataset.libProvider; render(); }));
+    const fold = (g, v) => {
+      g.classList.toggle("folded", v);
+      g.querySelector("[data-fold]").setAttribute("aria-expanded", String(!v));
+      setFolded(g.dataset.group, v);
+    };
+    $$("[data-fold]").forEach(b => b.addEventListener("click", () => { const g = b.closest(".mgroup"); fold(g, !g.classList.contains("folded")); }));
+    $$("[data-fold-all]").forEach(b => b.addEventListener("click", () => $$(".mgroup").forEach(g => fold(g, b.dataset.foldAll === "true"))));
     $$("[data-show-models]").forEach(b => b.addEventListener("click", () => {
-      L.libProvider = b.dataset.showModels; render();
-      $(".models-box")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const g = $(`.mgroup[data-group="${b.dataset.showModels}"]`);
+      if (!g) return;
+      fold(g, false);
+      g.scrollIntoView({ behavior: "smooth", block: "start" });
     }));
+    // while searching, every group with a match opens and the others step aside; folding comes back after
     const find = $("#model-find");
     find?.addEventListener("input", () => {
       const q = find.value.trim().toLowerCase();
-      $$(".models-box tr[data-find]").forEach(tr => tr.hidden = !!q && !tr.dataset.find.includes(q));
+      let any = false;
+      $$(".mgroup").forEach(g => {
+        let hits = 0;
+        g.querySelectorAll("tr.mrow").forEach(tr => { const hit = !q || tr.dataset.find.includes(q); tr.hidden = !hit; hits += hit ? 1 : 0; });
+        g.classList.toggle("searching", !!q);
+        g.hidden = !!q && !hits;
+        any = any || hits > 0;
+      });
+      const none = $(".nofind"); if (none) none.hidden = !q || any;
     });
     const tip = $(".charttip");
     $$(".daychart .bar").forEach(g => {
