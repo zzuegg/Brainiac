@@ -1,0 +1,20 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P { Floats x; Floats y; uint rows; uint len; uint inner; } p;
+void main() {
+    uint r = gid();
+    if (r >= p.rows) return;
+    uint base = (r / p.inner) * p.len * p.inner + r % p.inner;
+    uint best = 0;
+    float bestValue = p.x.v[base];
+    for (uint i = 1; i < p.len; i++) {
+        float v = p.x.v[base + i * p.inner];
+        if (v > bestValue) {
+            best = i;
+            bestValue = v;
+        }
+    }
+    p.y.v[r] = float(best);
+}

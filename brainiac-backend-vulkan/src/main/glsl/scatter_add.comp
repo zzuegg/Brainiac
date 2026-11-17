@@ -1,0 +1,22 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// For every target l, offsets/entries list the source rows i with indices[i] == l.
+layout(push_constant) uniform P {
+    Floats src; Ints offsets; Ints entries; Floats z; uint len; uint inner; uint count; uint total;
+} p;
+void main() {
+    uint idx = gid();
+    if (idx >= p.total) return;
+    uint o = idx / (p.len * p.inner);
+    uint rest = idx % (p.len * p.inner);
+    uint l = rest / p.inner;
+    uint j = rest % p.inner;
+    float acc = 0.0;
+    int end = p.offsets.v[l + 1];
+    for (int e = p.offsets.v[l]; e < end; e++) {
+        acc += p.src.v[(o * p.count + uint(p.entries.v[e])) * p.inner + j];
+    }
+    p.z.v[idx] = acc;
+}

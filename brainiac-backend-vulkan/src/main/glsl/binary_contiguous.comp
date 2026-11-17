@@ -1,0 +1,10 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+#include "math.glsl"
+layout(push_constant) uniform P { Floats a; Floats b; Floats z; uint n; uint op; } p;
+void main() {
+    uint i = gid();
+    if (i < p.n) p.z.v[i] = binary_op(p.op, p.a.v[i], p.b.v[i]);
+}

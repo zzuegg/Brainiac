@@ -1,0 +1,30 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// One work group per output, for long rows.
+layout(push_constant) uniform P { Floats x; Floats y; uint rows; uint len; uint inner; uint op; } p;
+shared float part[GROUP];
+float combine(uint op, float a, float b) {
+    if (op == 2) return isnan(a) || isnan(b) ? a + b : max(a, b);
+    if (op == 3) return isnan(a) || isnan(b) ? a + b : min(a, b);
+    return a + b;
+}
+void main() {
+    uint r = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+    uint base = (r / p.inner) * p.len * p.inner + r % p.inner;
+    float acc = p.op == 2 ? NEG_INF : p.op == 3 ? POS_INF : 0.0;
+    for (uint t = lid; t < p.len; t += GROUP) {
+        acc = combine(p.op, acc, p.x.v[base + t * p.inner]);
+    }
+    part[lid] = acc;
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (lid < s) part[lid] = combine(p.op, part[lid], part[lid + s]);
+        barrier();
+    }
+    if (lid == 0) {
+        p.y.v[r] = p.op == 1 ? part[0] / float(p.len) : part[0];
+    }
+}

@@ -30,6 +30,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-tensor` | Shapes, tensors (float32, float64, float16, bfloat16), tensor math, and the `Backend` SPI |
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
 | `brainiac-backend-opencl` | Optional GPU backend: OpenCL through the Foreign Function and Memory API |
+| `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |

@@ -21,10 +21,10 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # PoCL is an OpenCL driver that runs on the CPU, so the OpenCL backend's tests run
-      # here too. Without any OpenCL driver they are skipped.
-      - name: Install an OpenCL driver
-        run: sudo apt-get update -q && sudo apt-get install -y -q pocl-opencl-icd ocl-icd-libopencl1
+      # PoCL is an OpenCL driver and lavapipe (in mesa-vulkan-drivers) a Vulkan driver that
+      # run on the CPU, so the GPU backends' tests run here too. Without drivers they are skipped.
+      - name: Install OpenCL and Vulkan drivers
+        run: sudo apt-get update -q && sudo apt-get install -y -q pocl-opencl-icd ocl-icd-libopencl1 mesa-vulkan-drivers libvulkan1
 
       - name: Build and test
         run: ./gradlew build -Porg.gradle.java.installations.fromEnv=JAVA_HOME_27_X64

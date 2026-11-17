@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.examples;
 
 import io.github.zzuegg.brainiac.backend.opencl.OpenClBackend;
+import io.github.zzuegg.brainiac.backend.vulkan.VulkanBackend;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -16,7 +17,8 @@ import java.util.SplittableRandom;
  * Lists the devices, then compares them: a large matrix multiplication, and training the
  * same CNN on the synthetic shapes task. Run with
  * {@code ./gradlew :brainiac-examples:run --args=gpu}; add
- * {@code -Dbrainiac.opencl.devices=all} to the JVM to also try OpenCL CPU drivers.
+ * {@code -Dbrainiac.opencl.devices=all} or {@code -Dbrainiac.vulkan.devices=all} to the JVM to also
+ * try OpenCL or Vulkan CPU drivers.
  */
 public final class GpuExample {
 
@@ -32,6 +34,7 @@ public final class GpuExample {
         int size = args.length > 0 ? Integer.parseInt(args[0]) : 1024;
         System.out.println("devices: " + Device.available());
         System.out.println("OpenCL: " + new OpenClBackend().status());
+        System.out.println("Vulkan: " + new VulkanBackend().status());
         Tensor a = Tensor.uniform(Shape.of(size, size), -1, 1, new SplittableRandom(1));
         Tensor b = Tensor.uniform(Shape.of(size, size), -1, 1, new SplittableRandom(2));
         for (Device d : Device.available()) {
@@ -50,7 +53,7 @@ public final class GpuExample {
         Task task = Tasks.shapes();
         List<Report> reports = new ArrayList<>();
         for (Device d : Device.available()) {
-            reports.add(Benchmark.run(task, "cnn on " + d.kind(), BenchmarkExample.model("cnn", task).to(d),
+            reports.add(Benchmark.run(task, "cnn on " + d, BenchmarkExample.model("cnn", task).to(d),
                     t -> t.epochs(3)));
         }
         System.out.println();

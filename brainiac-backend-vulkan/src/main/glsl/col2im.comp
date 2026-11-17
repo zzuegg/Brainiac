@@ -1,0 +1,27 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// For every image cell, offsets/entries list the (pos * ks + k) that read it.
+layout(push_constant) uniform P {
+    Floats cols; Ints offsets; Ints entries; Floats z;
+    uint channels; uint positions; uint ks; uint img; uint total;
+} p;
+void main() {
+    uint idx = gid();
+    if (idx >= p.total) return;
+    uint plane = idx / p.img;
+    uint cell = idx % p.img;
+    uint nb = plane / p.channels;
+    uint ch = plane % p.channels;
+    uint width = p.channels * p.ks;
+    float acc = 0.0;
+    int end = p.offsets.v[cell + 1];
+    for (int e = p.offsets.v[cell]; e < end; e++) {
+        uint en = uint(p.entries.v[e]);
+        uint pos = en / p.ks;
+        uint k = en % p.ks;
+        acc += p.cols.v[(nb * p.positions + pos) * width + ch * p.ks + k];
+    }
+    p.z.v[idx] = acc;
+}

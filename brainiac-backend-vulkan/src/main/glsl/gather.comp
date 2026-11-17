@@ -1,0 +1,15 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// Indices are whole numbers stored as floats, checked on the host.
+layout(push_constant) uniform P { Floats x; Floats indices; Floats z; uint len; uint inner; uint count; uint total; } p;
+void main() {
+    uint idx = gid();
+    if (idx >= p.total) return;
+    uint o = idx / (p.count * p.inner);
+    uint rest = idx % (p.count * p.inner);
+    uint i = rest / p.inner;
+    uint j = rest % p.inner;
+    p.z.v[idx] = p.x.v[(o * p.len + uint(p.indices.v[i])) * p.inner + j];
+}
