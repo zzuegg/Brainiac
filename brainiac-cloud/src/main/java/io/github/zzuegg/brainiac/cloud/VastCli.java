@@ -146,10 +146,10 @@ public final class VastCli {
         if (list.isEmpty()) {
             System.out.println("No offers match. Try --max-price higher or other --gpu names.");
         }
-        System.out.printf(Locale.ROOT, "%-10s %-14s %6s %9s %8s %7s %6s  %s%n",
+        System.out.printf(Locale.ROOT, "%-10s %-14s %6s %9s %-12s %7s %6s  %s%n",
                 "offer", "gpu", "GB", "$/hour", "driver", "reliab", "Mbps", "location");
         for (VastOffer f : list) {
-            System.out.printf(Locale.ROOT, "%-10d %-14s %6.0f %9.3f %8s %7.3f %6.0f  %s%n", f.id(),
+            System.out.printf(Locale.ROOT, "%-10d %-14s %6.0f %9.3f %-12s %7.3f %6.0f  %s%n", f.id(),
                     (f.gpus() > 1 ? f.gpus() + "x " : "") + f.gpuName(), f.gpuMemoryGb(), f.dollarsPerHour(),
                     f.driverVersion(), f.reliability(), f.downloadMbps(), f.location());
         }

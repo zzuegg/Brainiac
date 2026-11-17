@@ -109,11 +109,12 @@ public final class VastClient {
      */
     public VastInstance instance(long id) throws IOException {
         Map<String, Object> r = call("GET", "instances/" + id + "/", null);
-        Object i = r.get("instances");
-        if (!(i instanceof Map<?, ?>)) {
-            throw new IOException("no instance " + id);
+        for (VastInstance i : list(r)) {
+            if (i.id() == id) {
+                return i;
+            }
         }
-        return VastInstance.from(Json.object(i));
+        throw new IOException("no instance " + id);
     }
 
     /**
@@ -123,10 +124,19 @@ public final class VastClient {
      * @throws IOException if the request fails
      */
     public List<VastInstance> instances() throws IOException {
-        Map<String, Object> r = call("GET", "instances/", null);
+        return list(call("GET", "instances/", null));
+    }
+
+    /** Reads instances from {"instances": [...]} or {"instances": {...}} (API v0 and v1). */
+    private static List<VastInstance> list(Map<String, Object> r) {
+        Object v = r.containsKey("instances") ? r.get("instances") : r.containsKey("results") ? r.get("results") : r;
         List<VastInstance> out = new ArrayList<>();
-        for (Object o : Json.array(r.getOrDefault("instances", List.of()))) {
-            out.add(VastInstance.from(Json.object(o)));
+        if (v instanceof List<?> l) {
+            for (Object o : l) {
+                out.add(VastInstance.from(Json.object(o)));
+            }
+        } else if (v instanceof Map<?, ?> m && m.get("id") != null) {
+            out.add(VastInstance.from(Json.object(m)));
         }
         return out;
     }
@@ -175,7 +185,15 @@ public final class VastClient {
     }
 
     private Map<String, Object> call(String method, String path, Map<String, Object> body) throws IOException {
-        HttpRequest.Builder b = HttpRequest.newBuilder(base.resolve(path))
+        return call(method, base.resolve(path), body, true);
+    }
+
+    /** Vast retires endpoints with HTTP 410 and names the new one: "Use /api/v1/instances/ instead." */
+    private static final java.util.regex.Pattern MOVED = java.util.regex.Pattern.compile("Use (/api/v\\d+/[^\\s\"]*) instead");
+
+    private Map<String, Object> call(String method, URI uri, Map<String, Object> body, boolean follow) throws IOException {
+        String path = uri.getPath();
+        HttpRequest.Builder b = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(60))
                 .header("Authorization", "Bearer " + key)
                 .header("Accept", "application/json");
@@ -193,6 +211,12 @@ public final class VastClient {
             throw new IOException("interrupted", e);
         }
         String text = r.body() == null ? "" : r.body().strip();
+        java.util.regex.Matcher moved = MOVED.matcher(text);
+        if (r.statusCode() == 410 && follow && moved.find()) {
+            // the same path under the API version the message names: /api/v1/instances/123/
+            String target = moved.group(1).replaceFirst("^(/api/v\\d+/).*", "$1") + path.replaceFirst("^/api/v\\d+/", "");
+            return call(method, uri.resolve(target + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery())), body, false);
+        }
         if (r.statusCode() / 100 != 2) {
             throw new IOException(method + " " + path + " failed: HTTP " + r.statusCode() + " "
                     + scrub(text.length() > 500 ? text.substring(0, 500) + "..." : text));
