@@ -190,6 +190,13 @@ public final class WorkerServer implements AutoCloseable {
      */
     public List<URI> addresses() {
         List<URI> out = new ArrayList<>();
+        InetAddress bound = http.getAddress().getAddress();
+        if (!bound.isAnyLocalAddress()) {
+            // listening on one address only, such as 127.0.0.1 behind an SSH tunnel
+            String host = bound.getHostAddress();
+            out.add(URI.create("http://" + (host.contains(":") ? "[" + host + "]" : host) + ":" + port() + "/"));
+            return out;
+        }
         try {
             for (var ni : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
                 if (!ni.isUp() || ni.isLoopback() || ni.isVirtual()) {

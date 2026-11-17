@@ -860,7 +860,8 @@ tunnel (`ssh -L 7870:127.0.0.1:7870 ...` with the worker on `--listen 127.0.0.1`
 
 A worker also **serves its chat models**: the ones in its model folders (`--models`, else the
 usual ones) and in `<data>/worker/downloads` and `<data>/worker/models`. Every host added on the
-Train screen shows up under Models as a provider named after the host, right after this PC, and
+Train screen shows up on the Models screen under **Compute**, next to this PC and Vast.ai (the
+hosted APIs are under **Model APIs**), as a provider named after the host, right after this PC, and
 its models answer in Chat and for agents through the worker's own engine, streamed back as they
 are written. Setting `BRAINIAC_WORKER_TOKEN` (32 characters or more) gives the worker that token
 instead of the one it makes and keeps in `worker.token`, for machines that are set up by a script.
