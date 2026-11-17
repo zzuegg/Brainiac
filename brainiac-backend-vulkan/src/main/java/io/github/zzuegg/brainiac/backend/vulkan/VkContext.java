@@ -157,7 +157,12 @@ final class VkContext {
      * {@code -Dbrainiac.vulkan.spill=false} turns spilling off.
      */
     private final int spillType;
-    /** Bytes spilled to {@link #spillType}. */
+    /**
+     * Every host-visible type outside the device-local heap, {@link #spillType} first: when one
+     * runs out (AMD's Windows driver refused type 1 after 948 MB of 45 GB), the next is tried.
+     */
+    private final int[] spillTypes;
+    /** Bytes spilled to {@link #spillTypes}. */
     private long spilled;
     /** Tests: device-local allocations fail once this many bytes are allocated (0: never). */
     long simulatedLimit;
@@ -338,6 +343,7 @@ final class VkContext {
                 deviceMemory = mp.memoryHeaps(mp.memoryTypes(deviceLocalType).heapIndex()).size();
                 spillType = "false".equals(System.getProperty("brainiac.vulkan.spill")) ? -1
                         : spillType(mp, mp.memoryTypes(deviceLocalType).heapIndex());
+                spillTypes = spillType < 0 ? new int[0] : spillTypes(mp, mp.memoryTypes(deviceLocalType).heapIndex(), spillType);
                 Integer mb = Integer.getInteger("brainiac.vulkan.memory");
                 budget = mb != null ? (long) mb << 20 : deviceMemory / 10 * 8;
             }
@@ -537,6 +543,19 @@ final class VkContext {
         return best;
     }
 
+    /** {@code first}, then the other host-visible types outside the device heap, in order. */
+    private static int[] spillTypes(VkPhysicalDeviceMemoryProperties mp, int deviceHeap, int first) {
+        List<Integer> types = new ArrayList<>(List.of(first));
+        for (int i = 0; i < mp.memoryTypeCount(); i++) {
+            int flags = mp.memoryTypes(i).propertyFlags();
+            if (i != first && mp.memoryTypes(i).heapIndex() != deviceHeap
+                    && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                types.add(i);
+            }
+        }
+        return types.stream().mapToInt(Integer::intValue).toArray();
+    }
+
     private static int memoryType(VkPhysicalDeviceMemoryProperties mp, int required, int preferred) {
         int fallback = -1;
         for (int i = 0; i < mp.memoryTypeCount(); i++) {
@@ -661,11 +680,23 @@ final class VkContext {
             } catch (OutOfDeviceMemory again) {
                 fullAt = allocated;
                 // the device's own memory is full: slower memory the device reads over the bus
-                int spill = spillType >= 0 ? spillType : simulatedLimit > 0 ? uploadType : -1;
-                if (spill < 0) {
+                if (spillType < 0) {
+                    if (simulatedLimit > 0) {
+                        return tryBlock(size, uploadType, map, true);
+                    }
                     throw again;
                 }
-                return tryBlock(size, spill, map, true);
+                OutOfDeviceMemory last = again;
+                for (int i = spillFrom; i < spillTypes.length; i++) {
+                    try {
+                        Block b = tryBlock(size, spillTypes[i], map, true);
+                        spillFrom = i;   // the types before it are full: start here next time
+                        return b;
+                    } catch (OutOfDeviceMemory full) {
+                        last = full;
+                    }
+                }
+                throw last;
             }
         }
     }
@@ -675,6 +706,8 @@ final class VkContext {
      * while no more than that is allocated again, new blocks spill without reclaiming first.
      */
     private long fullAt = -1;
+    /** The first of {@link #spillTypes} that still had room. */
+    private int spillFrom;
 
     private boolean deviceFull() {
         if (fullAt >= 0 && allocated < fullAt) {
@@ -760,6 +793,7 @@ final class VkContext {
         vkFreeMemory(device, b.memory, null);
         if (b.spill) {
             spilled -= b.size;
+            spillFrom = 0;
         } else if (b.type == deviceLocalType) {
             allocated -= b.size;
         }
