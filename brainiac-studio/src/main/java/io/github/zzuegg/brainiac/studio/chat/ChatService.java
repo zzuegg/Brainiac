@@ -222,6 +222,84 @@ public final class ChatService {
     }
 
     /**
+     * Adds a place to find models on this PC: a {@code .gguf} file, a Hugging Face model folder, or
+     * a folder holding them. It is kept in {@code local-models.txt} in the data folder.
+     *
+     * @param place the file or folder
+     * @return how many models it holds
+     * @throws IOException if it holds no kind of model the studio reads, or cannot be saved
+     */
+    public int addLocal(Path place) throws IOException {
+        return local().add(place);
+    }
+
+    /**
+     * Forgets a place added with {@link #addLocal}; the files stay where they are.
+     *
+     * @param place the file or folder
+     * @return whether it had been added
+     * @throws IOException if the list cannot be saved
+     */
+    public boolean removeLocal(Path place) throws IOException {
+        return local().remove(place);
+    }
+
+    /**
+     * Lists a folder for picking a model place: its subfolders, {@code .gguf} files and model
+     * folders. With no folder, lists the home folder, the model folders and the file system roots.
+     *
+     * @param folder the folder, or null
+     * @return {@code {path, parent, entries: [{name, path, kind}]}}, kind being "folder", "gguf" or "model"
+     * @throws IOException if the folder cannot be read
+     */
+    public Map<String, Object> browse(Path folder) throws IOException {
+        Map<String, Object> out = new LinkedHashMap<>();
+        List<Map<String, Object>> entries = new ArrayList<>();
+        if (folder == null) {
+            out.put("path", "");
+            out.put("parent", null);
+            List<Path> starts = new ArrayList<>();
+            starts.add(Path.of(System.getProperty("user.home")));
+            starts.addAll(local().folders());
+            for (Path r : java.nio.file.FileSystems.getDefault().getRootDirectories()) {
+                starts.add(r);
+            }
+            for (Path p : starts) {
+                if (Files.isDirectory(p) && entries.stream().noneMatch(e -> e.get("path").equals(p.toString()))) {
+                    entries.add(Map.of("name", p.toString(), "path", p.toString(), "kind", LocalProvider.kind(p)));
+                }
+            }
+        } else {
+            Path dir = folder.toAbsolutePath().normalize();
+            if (!Files.isDirectory(dir)) {
+                throw new IOException("no folder at " + dir);
+            }
+            out.put("path", dir.toString());
+            out.put("parent", dir.getParent() == null ? "" : dir.getParent().toString());
+            out.put("kind", LocalProvider.kind(dir));
+            try (java.util.stream.Stream<Path> s = Files.list(dir)) {
+                for (Path p : s.sorted().limit(2000).toList()) {
+                    String name = p.getFileName().toString();
+                    if (name.startsWith(".") || !Files.isReadable(p)) {
+                        continue;
+                    }
+                    String kind = LocalProvider.kind(p);
+                    if (!kind.equals("other")) {
+                        entries.add(Map.of("name", name, "path", p.toString(), "kind", kind));
+                    }
+                }
+            }
+        }
+        out.put("entries", entries);
+        return out;
+    }
+
+    private LocalProvider local() {
+        return providers.stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
+                .orElseThrow(() -> new IllegalStateException("no local provider"));
+    }
+
+    /**
      * Creates the service with this PC's models and every remote provider: Anthropic, OpenAI,
      * Google, and the OpenAI-compatible ones in {@link Preset#COMPATIBLE}.
      *
@@ -234,7 +312,7 @@ public final class ChatService {
      */
     public static ChatService at(Keys keys, List<Path> modelFolders, Map<String, URI> bases, Path outputs) {
         List<ChatProvider> ps = new ArrayList<>();
-        ps.add(new LocalProvider(modelFolders));
+        ps.add(new LocalProvider(modelFolders, outputs.resolveSibling("local-models.txt")));
         ps.add(new AnthropicProvider(keys, bases.getOrDefault("anthropic", AnthropicProvider.BASE)));
         ps.add(new OpenAiProvider(keys, bases.getOrDefault("openai", Preset.OPENAI.base())));
         ps.add(new GoogleProvider(keys, bases.getOrDefault("google", GoogleProvider.BASE)));
@@ -331,6 +409,7 @@ public final class ChatService {
             }
             if (p instanceof LocalProvider local) {
                 m.put("folders", local.folders().stream().map(Path::toString).toList());
+                m.put("added", local.added().stream().map(Path::toString).toList());
             }
             ps.add(m);
             if (l != null) {

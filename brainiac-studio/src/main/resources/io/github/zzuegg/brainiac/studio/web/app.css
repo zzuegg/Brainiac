@@ -998,3 +998,30 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .live-train .host.add-form { gap: 8px; align-content: start; }
 .live-train .host.add-form code { font: 11.5px var(--font-mono); }
 .live-train .host-head .iconbtn.sm { margin: -4px -6px -4px 0; color: var(--muted); }
+
+/* ---------- adding model files and folders ---------- */
+.placebox { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px; display: grid; gap: 10px; min-width: 0; }
+.place-head { display: flex; gap: 12px; align-items: flex-start; }
+.place-head > div { flex: 1; min-width: 0; line-height: 1.5; }
+.place-head .muted { font-size: 12.5px; margin-left: 6px; }
+.place-path { display: flex; gap: 8px; min-width: 0; }
+.place-path .input { flex: 1; min-width: 0; }
+.place-browse { border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-sunk); overflow: hidden; min-width: 0; }
+.place-crumb { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); font-size: 12px; min-width: 0; }
+.place-crumb code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.place-crumb .up svg { transform: rotate(180deg); }
+.place-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 2px; padding: 6px; max-height: 300px; overflow: auto; }
+.place-list > .faint { padding: 6px 8px; font-size: 12.5px; }
+.place-item { display: flex; gap: 8px; align-items: center; min-width: 0; padding: 6px 8px; border: 0; border-radius: 7px; background: none; color: var(--fg-2); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.place-item svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.place-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-item:hover { background: var(--raise); color: var(--fg); }
+.place-item.on { background: var(--accent-soft); color: var(--fg); box-shadow: inset 0 0 0 1px var(--accent); }
+.place-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.placerow { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.placerow .mono { flex: 1; min-width: 0; font-size: 11.5px; word-break: break-all; }
+@media (max-width: 640px) { .place-crumb .here { display: none; } }
+.cmdk li { cursor: pointer; }
+.cmdk li .faint { font-size: 12px; white-space: nowrap; }
+.cmdk li svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.cmdk li.none { cursor: default; }

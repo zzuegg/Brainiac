@@ -717,6 +717,7 @@ Everything the studio keeps goes to one **data folder**: `--data <folder>`, or e
 | `graphs/`, `models/` | models drawn in the builder, and the `.brainiac` files built and trained from them |
 | `runs/` | every training run: its settings, each epoch and the loss curve |
 | `datasets/` | your data for training: CSV files, MNIST-style IDX files and image folders |
+| `local-models.txt` | model files and folders added on the Models screen |
 | `hosts.properties` | other machines to train on, with their tokens, readable only by your account |
 
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
@@ -743,7 +744,9 @@ public final class MyTts implements CapabilityProvider {
 Qwen (Alibaba Cloud), Kimi (Moonshot), GLM (Zhipu), MiniMax, Mistral, xAI, Groq and OpenRouter.
 Local models are Hugging Face model folders (Llama, Qwen2, Mistral) and `.gguf` files in
 `./models`, `~/.brainiac/models`, `$BRAINIAC_MODELS`, or the folders given with
-`--models <folder>`. Remote providers list their own models live; add API keys under Models,
+`--models <folder>`. **Add folder or GGUF** on the Models screen adds any other file or folder,
+picked by browsing this PC or typed; the files stay where they are, and the list is kept in
+`local-models.txt` in the data folder. Remote providers list their own models live; add API keys under Models,
 Providers. Each provider can hold several named keys: they are tried in order, and the next one
 takes over when a key is refused, rate limited or out of credit. Saved keys go to
 `keys.properties` in the data folder, readable only by your account. A key in the provider's
@@ -837,6 +840,9 @@ worker trains only on files it was sent, keeps them in `<data>/worker`, and trai
 time. The token is kept in `hosts.properties` and never sent to the page. The connection is
 plain HTTP with the token, so use workers on your own network or over a VPN.
 
+**Ctrl K** finds anything: a screen, a conversation, a chat model, a saved model in the
+builder, a training run, or a command such as a new conversation, a new model or another layout.
+
 **Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
 `gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
 with its 30 voices), with the same keys. The screens only show settings the chosen model has.
@@ -852,6 +858,8 @@ POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","coun
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
 POST /api/providers         {"provider":"huggingface","auto":true,"models":["openai/gpt-oss-120b"],
                             "url":"","options":{"billTo":"my-org"}} (models null shows all)
+POST /api/local             {"path":"D:/Models/qwen2.5-7b.gguf"} adds a model file or folder ("remove": true forgets it)
+POST /api/local/browse      {"path":"D:/Models"} -> its subfolders and models to pick from (no path: where to start)
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
 GET  /api/balances          what is left on each key, at providers that report it
 GET  /api/chats             the saved conversations, newest first
