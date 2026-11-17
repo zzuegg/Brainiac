@@ -540,6 +540,44 @@ public interface Backend {
     }
 
     /**
+     * Sorts each row of {@code [rows, length]} values, stably: equal values keep their
+     * order, and NaN counts as larger than every number. The default sorts on the host;
+     * backends override it to sort on the device.
+     *
+     * @param in the values, row-major
+     * @param rows the rows
+     * @param length the values per row
+     * @param descending largest first instead of smallest first
+     * @param values the sorted values, of {@code in}'s type
+     * @param indices where each sorted value was in its row, as float32 whole numbers
+     */
+    default void sort(Storage in, long rows, int length, boolean descending, Storage values, Storage indices) {
+        double[] x = downloadDouble(in);
+        double[] v = new double[x.length];
+        float[] at = new float[x.length];
+        Integer[] order = new Integer[length];
+        for (long r = 0; r < rows; r++) {
+            int base = Math.toIntExact(r * length);
+            for (int i = 0; i < length; i++) {
+                order[i] = i;
+            }
+            java.util.Comparator<Integer> c = (a, b) -> x[base + a] == x[base + b] ? 0   // -0 equals 0
+                    : Double.compare(x[base + a], x[base + b]);
+            java.util.Arrays.sort(order, descending ? c.reversed() : c);   // merge sort: stable
+            for (int i = 0; i < length; i++) {
+                v[base + i] = x[base + order[i]];
+                at[base + i] = order[i];
+            }
+        }
+        Storage hv = upload(v, in.dtype());
+        convert(hv, values);
+        release(hv);
+        Storage hi = upload(at);
+        convert(hi, indices);
+        release(hi);
+    }
+
+    /**
      * Picks slices along one axis by index. The input is viewed as
      * {@code [outer, length, inner]}, the output as {@code [outer, count, inner]}, and
      * {@code out[o, i, j] = in[o, indices[i], j]}. Indices are stored as floats holding

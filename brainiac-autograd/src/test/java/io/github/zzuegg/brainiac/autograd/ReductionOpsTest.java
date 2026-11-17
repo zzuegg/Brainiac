@@ -72,4 +72,15 @@ class ReductionOpsTest {
         GradCheck.Result r = GradCheck.check(v -> v.get(0).erf().square().sum(), List.of(A));
         assertTrue(r.passed(), r.toString());
     }
+
+    @Test
+    void sortSendsGradientsBackToWhereValuesCameFrom() {
+        Var v = Var.param(Tensor.of(Shape.of(2, 3), 3f, 1f, 2f, 0f, 9f, 4f));
+        v.sort(-1, true).mul(Tensor.of(Shape.of(3), 1f, 10f, 100f)).sum().backward();
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[] {1f, 100f, 10f, 100f, 1f, 10f},
+                v.grad().toArray());
+        Var w = Var.param(Tensor.of(Shape.of(2, 2), 5f, 1f, 2f, 7f));
+        w.sort(0, false).mul(Tensor.of(Shape.of(2, 1), 1f, 10f)).sum().backward();
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[] {10f, 1f, 1f, 10f}, w.grad().toArray());
+    }
 }

@@ -1190,6 +1190,30 @@ public final class Var {
     }
 
     /**
+     * Sorts along one axis (see {@link Tensor#sort}); the gradient goes back to where each
+     * value came from.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the sorted values
+     */
+    public Var sort(int axis, boolean descending) {
+        int rank = shape().rank();
+        int a = axis < 0 ? axis + rank : axis;
+        Tensor indices = value.argsort(a, descending);
+        if (a == rank - 1) {
+            return takeAlong(indices);
+        }
+        int[] swap = new int[rank];
+        for (int i = 0; i < rank; i++) {
+            swap[i] = i;
+        }
+        swap[a] = rank - 1;
+        swap[rank - 1] = a;
+        return permute(swap).takeAlong(indices.permute(swap)).permute(swap);
+    }
+
+    /**
      * Running sums along one axis (see {@link Tensor#cumsum}); the gradient is the running
      * sum from the other end.
      *

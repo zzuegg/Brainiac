@@ -1994,6 +1994,54 @@ public final class Tensor {
     }
 
     /**
+     * Sorts along one axis, stably: equal values keep their order, and NaN counts as larger
+     * than every number (last ascending, first descending).
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the sorted values and where each was along the axis (as floats), both of this
+     *     shape
+     */
+    public Tensor[] sort(int axis, boolean descending) {
+        if (rank() == 0) {
+            Tensor[] one = reshape(1).sort(0, descending);
+            return new Tensor[] {one[0].reshape(shape), one[1].reshape(shape)};
+        }
+        int a = axis(axis);
+        int last = rank() - 1;
+        int[] swap = new int[rank()];
+        for (int i = 0; i < swap.length; i++) {
+            swap[i] = i;
+        }
+        swap[a] = last;
+        swap[last] = a;
+        Tensor x = a == last ? this : permute(swap);
+        int n = x.shape.dim(last);
+        if (n > 1 << 24) {
+            throw new IllegalArgumentException("sort supports axes of up to 2^24 values, got " + n);
+        }
+        Storage values = backend().allocateUninitialized(x.size(), dtype());
+        Storage indices = backend().allocateUninitialized(x.size(), DType.FLOAT32);
+        if (n > 0 && x.size() > 0) {
+            backend().sort(x.storage(), x.size() / n, n, descending, values, indices);
+        }
+        Tensor v = new Tensor(x.shape, device, values);
+        Tensor i = new Tensor(x.shape, device, indices);
+        return a == last ? new Tensor[] {v, i} : new Tensor[] {v.permute(swap), i.permute(swap)};
+    }
+
+    /**
+     * Where each entry of the {@linkplain #sort sorted} axis comes from.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the indices along the axis, as floats, of this shape
+     */
+    public Tensor argsort(int axis, boolean descending) {
+        return sort(axis, descending)[1];
+    }
+
+    /**
      * Running sums along one axis: entry {@code i} is the sum of entries {@code 0 .. i}.
      * Computed as a product with a triangle of ones, so the work grows with the square of
      * the axis' length.

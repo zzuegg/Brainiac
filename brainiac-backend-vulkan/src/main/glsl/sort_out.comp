@@ -1,0 +1,14 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// Copies the sorted work rows (sort_step) back to len-long rows of values and indices.
+layout(push_constant) uniform P { In key; InFloats idx; Buf values; Floats indices; uint total; uint len; uint width; } p;
+void main() {
+    uint t = gid();
+    if (t >= p.total) return;
+    uint r = t / p.len;
+    uint i = t % p.len;
+    p.values.v[t] = p.key.v[r * p.width + i];
+    p.indices.v[t] = p.idx.v[r * p.width + i];
+}
