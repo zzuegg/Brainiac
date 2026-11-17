@@ -233,7 +233,7 @@ class HubTest {
         assertEquals(true, models.getFirst().get("gguf"));
         assertEquals(630_167_424L, models.getFirst().get("parameters"));
         assertEquals(true, models.get(1).get("safetensors"));
-        assertEquals(true, models.get(2).get("gated"));
+        assertEquals(true, models.get(3).get("gated"));
         assertEquals(false, models.get(1).get("gated"));
         // what runs comes from the core
         assertEquals(io.github.zzuegg.brainiac.llm.LlamaConfig.GGUF_ARCHITECTURES.stream().sorted().toList(),
@@ -258,8 +258,9 @@ class HubTest {
         assertTrue(((String) split.get("reason")).contains("split into 2 parts"), split.toString());
 
         Map<String, Object> gemma = option(hub().files("google/gemma-3-1b-it-GGUF"), "gemma-3-1b-it-Q4_K_M.gguf");
-        assertEquals(false, gemma.get("supported"));
-        assertTrue(((String) gemma.get("reason")).contains("gemma3"), gemma.toString());
+        // gemma3 GGUF files run since the core reads that architecture
+        assertEquals(io.github.zzuegg.brainiac.llm.LlamaConfig.GGUF_ARCHITECTURES.contains("gemma3"),
+                gemma.get("supported"), gemma.toString());
 
         Map<String, Object> folder = option(hub().files("Qwen/Qwen2.5-0.5B-Instruct"), "Qwen2.5-0.5B-Instruct");
         assertEquals(true, folder.get("supported"), folder.toString());
