@@ -767,6 +767,17 @@
     try { const r = await runCheck(B.graph); if (r) { B.check = r; renderBuilder(); } } catch (e) { console.warn("cannot check the graph", e); }
   }
 
+  // Opens a saved drawing on the builder screen.
+  async function openGraph(name) {
+    const g = B.graphs.find(x => x.name === name);
+    if (!g) return;
+    B.graph = { name: g.name, output: g.output, nodes: g.nodes.map((n, i) => ({ x: 40 + i * 250, y: 120, ...n, options: Array.isArray(n.options) ? Object.fromEntries(n.options.map(o => [o.key, o.args])) : n.options || {} })) };
+    B.sel = null; B.built = null; B.refusal = null;
+    saveDraft();
+    if (state.view !== "builder") go("builder");
+    await recheck(); renderBuilder();
+  }
+
   async function loadBuilder() {
     try {
       const [cat, gs] = await Promise.all([api("/api/builder/layers"), api("/api/builder/graphs")]);
@@ -1085,12 +1096,9 @@
     $("#zoom-fit")?.addEventListener("click", fitLive);
     $("#arrange")?.addEventListener("click", arrange);
     $("#graph-name")?.addEventListener("change", e => { B.graph.name = e.target.value.trim() || "my-model"; saveDraft(); });
-    $("#graph-open")?.addEventListener("change", async e => {
+    $("#graph-open")?.addEventListener("change", e => {
       const v = e.target.value; if (!v) return;
-      if (v === "__new") B.graph = { name: "my-model", nodes: [{ id: "in", op: "input", shape: [3, 32, 32], x: 40, y: 120 }] };
-      else { const g = B.graphs.find(x => x.name === v); if (g) B.graph = { name: g.name, output: g.output, nodes: g.nodes.map((n, i) => ({ x: 40 + i * 250, y: 120, ...n, options: Array.isArray(n.options) ? Object.fromEntries(n.options.map(o => [o.key, o.args])) : n.options || {} })) }; }
-      B.sel = null; B.built = null; B.refusal = null;
-      saveDraft(); await recheck(); renderBuilder();
+      if (v === "__new") newModel(); else openGraph(v);
     });
     // blocks: select and move; wires from an output socket to an input socket
     $$(".gnode.live").forEach(el => {
@@ -1430,7 +1438,7 @@
       </div>`;
     }).join("");
     const add = T.addingHost ? `<form class="host add-form" id="host-form" autocomplete="off">
-        <div class="host-head"><b>Add a host</b><span class="grow"></span><button type="button" class="iconbtn sm" id="host-cancel" aria-label="Cancel">${icon("stop")}</button></div>
+        <div class="host-head"><b>Add a host</b><span class="grow"></span><button type="button" class="iconbtn sm" id="host-cancel" aria-label="Cancel">${icon("x")}</button></div>
         <span class="muted" style="font-size:12px">On the other machine run <code>brainiac-studio --worker</code>. It prints its addresses and a token.</span>
         <input class="input" id="host-url" placeholder="Address, such as 192.168.1.20:7870" value="${esc(T.hostDraft.url)}" spellcheck="false">
         <input class="input mono" id="host-token" placeholder="Token" value="${esc(T.hostDraft.token)}" spellcheck="false" type="password">
@@ -1812,8 +1820,10 @@
   function libraryView() {
     return `
     <div class="library"><div class="lib-inner">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span><span class="grow"></span>
-        <button class="btn">${icon("plus")}Add folder or GGUF</button><button class="btn primary">${icon("build")}New model</button></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+      ${isLive() && H.open ? hubPanel() : isLive() && H.downloads.length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
+      ${isLive() && P.open ? placePanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
@@ -2043,35 +2053,64 @@
   }
 
   // ---------- command palette ----------
-  const commands = [
-    ["Go to Chat", "chat", "chat"], ["Go to Images", "image", "create"], ["Go to Voice", "speech", "voice"], ["Go to Model builder", "build", "builder"],
-    ["Go to Training", "train", "train"], ["Go to Models", "library", "library"], ["Go to MCP server", "plug", "mcp"],
-    ["Load a model from a folder or GGUF…", "plus", null], ["New thread", "chat", "chat"], ["Switch layout: Ultrawide", "layout", "ultra"], ["Switch layout: Focus", "layout", "focus"],
-  ];
+  // Every screen, the conversations, the chat models, the saved models in the builder and the
+  // runs, so anything can be reached from the keyboard.
+  function commandList() {
+    const layout = (v, l) => ({ label: `Layout: ${l}`, icon: "layout", run: () => { state.layout = v; store.set("layout", v); render(); } });
+    const out = [
+      { label: "Go to Chat", icon: "chat", run: () => go("chat") }, { label: "Go to Images", icon: "image", run: () => go("create") },
+      { label: "Go to Voice", icon: "speech", run: () => go("voice") }, { label: "Go to Model builder", icon: "build", run: () => go("builder") },
+      { label: "Go to Training", icon: "train", run: () => go("train") }, { label: "Go to Models", icon: "library", run: () => go("library") },
+    ];
+    if (!isLive()) return [...out, { label: "Go to Agents", icon: "agent", run: () => go("agents") }, { label: "Go to MCP server", icon: "plug", run: () => go("mcp") },
+      layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide")];
+    out.push(
+      { label: "New conversation", icon: "plus", run: () => { if (state.view !== "chat") go("chat"); newChat(false); } },
+      { label: "New model in the builder", icon: "build", run: newModel },
+      { label: "Add models from a folder or GGUF file…", icon: "folder", run: () => { P.open = true; P.error = null; go("library"); $("#place-path")?.focus(); if (!P.list) browsePlace(""); } },
+      { label: "Download a model from Hugging Face…", icon: "download", run: () => { H.open = true; go("library"); $("#hub-q")?.focus(); pollHub(); } },
+      { label: "Add an API key…", icon: "lock", run: () => { go("library"); $("[data-add-key]")?.scrollIntoView({ block: "center" }); } },
+      { label: "Start a training run…", icon: "train", run: () => go("train") },
+      layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide"),
+      { label: "Switch light or dark", icon: "sun", run: () => $("#theme-btn").click() },
+    );
+    [...L.convos].sort((x, y) => (y.updated || 0) - (x.updated || 0)).slice(0, 60).forEach(c =>
+      out.push({ label: c.title || "New conversation", hint: c.status === "finished" ? "finished conversation" : "conversation", icon: "chat",
+        run: () => { if (state.view !== "chat") go("chat"); openConvo(c.id); } }));
+    chatModels().forEach(m => out.push({ label: `Chat with ${m.name}`, hint: m.provider === "local" ? "This PC" : providerName(m.provider), icon: "text",
+      run: () => { if (state.view !== "chat") go("chat"); newChat(false); L.panes[L.active].model = m.key; L.model = m.key; store.set("chatModel", m.key); savePanes(); render(); } }));
+    B.graphs.forEach(g => out.push({ label: `Open ${g.name} in the builder`, hint: g.built ? "built" : "drawing", icon: "build", run: () => openGraph(g.name) }));
+    T.runs.slice(0, 30).forEach(r => out.push({ label: `Run ${r.id}: ${r.name}`, hint: r.state, icon: "train", run: () => { T.sel = r.id; store.set("trainSel", r.id); go("train"); } }));
+    return out;
+  }
   function openCmdk() {
+    if (document.querySelector(".cmdk-back")) { $("#cmdk-in")?.focus(); return; }
     const back = document.createElement("div");
     back.className = "cmdk-back";
-    back.innerHTML = `<div class="cmdk" role="dialog" aria-label="Commands"><input id="cmdk-in" placeholder="Type a command, a model or a thread"><ul id="cmdk-list"></ul></div>`;
+    back.innerHTML = `<div class="cmdk" role="dialog" aria-label="Commands"><input id="cmdk-in" placeholder="Type a command, a model, a conversation or a run" aria-controls="cmdk-list" aria-autocomplete="list"><ul id="cmdk-list" role="listbox"></ul></div>`;
     document.body.appendChild(back);
-    let sel = 0;
+    const all = commandList();
+    let sel = 0, items = all;
     const list = () => {
-      const q = $("#cmdk-in").value.toLowerCase();
-      const items = commands.filter(c => c[0].toLowerCase().includes(q));
+      const words = $("#cmdk-in").value.toLowerCase().split(/\s+/).filter(Boolean);
+      items = all.filter(c => words.every(w => (c.label + " " + (c.hint || "")).toLowerCase().includes(w))).slice(0, 80);
       sel = Math.min(sel, Math.max(0, items.length - 1));
-      $("#cmdk-list").innerHTML = items.map((c, i) => `<li class="${i === sel ? "on" : ""}">${icon(c[1])}<span class="grow">${c[0]}</span></li>`).join("");
-      return items;
+      $("#cmdk-list").innerHTML = items.length ? items.map((c, i) => `<li role="option" data-i="${i}" class="${i === sel ? "on" : ""}" aria-selected="${i === sel}">${icon(c.icon)}<span class="grow">${esc(c.label)}</span>${c.hint ? `<span class="faint">${esc(c.hint)}</span>` : ""}</li>`).join("")
+        : `<li class="none faint">Nothing matches.</li>`;
+      $("#cmdk-list li.on")?.scrollIntoView({ block: "nearest" });
     };
-    const run = c => { back.remove(); if (!c || !c[2]) return; if (views[c[2]]) go(c[2]); else { state.layout = c[2]; store.set("layout", c[2]); render(); } };
+    const run = c => { back.remove(); if (c) c.run(); };
     list();
     $("#cmdk-in").focus();
-    $("#cmdk-in").addEventListener("input", list);
+    $("#cmdk-in").addEventListener("input", () => { sel = 0; list(); });
     back.addEventListener("keydown", e => {
-      const items = list();
       if (e.key === "Escape") back.remove();
       if (e.key === "ArrowDown") { sel = Math.min(items.length - 1, sel + 1); list(); e.preventDefault(); }
       if (e.key === "ArrowUp") { sel = Math.max(0, sel - 1); list(); e.preventDefault(); }
-      if (e.key === "Enter") run(items[sel]);
+      if (e.key === "Enter") { e.preventDefault(); run(items[sel]); }
     });
+    $("#cmdk-list").addEventListener("mousemove", e => { const li = e.target.closest("li[data-i]"); if (li && +li.dataset.i !== sel) { sel = +li.dataset.i; $$("#cmdk-list li").forEach(x => { x.classList.toggle("on", x === li); x.setAttribute("aria-selected", String(x === li)); }); } });
+    $("#cmdk-list").addEventListener("click", e => { const li = e.target.closest("li[data-i]"); if (li) run(items[+li.dataset.i]); });
     back.addEventListener("click", e => { if (e.target === back) back.remove(); });
   }
 
@@ -2872,7 +2911,7 @@
       </div>` : ""}
       <div class="tablebox models-box"><table class="models">
       <thead><tr><th>Model</th><th>Can</th><th>Use</th><th>Detail</th></tr></thead>
-      ${body || `<tbody><tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr></tbody>`}</table></div>
+      ${body || `<tbody><tr><td colspan="4" class="muted">${L.info ? "No models yet: use Add folder or GGUF for models on this PC, or add an API key below." : "Looking for models…"}</td></tr></tbody>`}</table></div>
       <div class="muted nofind" hidden style="font-size:13px">No model matches.</div>`;
   }
 
@@ -2963,8 +3002,11 @@
         ${p.ready ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
-          <div class="muted" style="font-size:12.5px">Hugging Face model folders (Llama, Qwen2, Mistral) and <code>.gguf</code> files in:</div>
+          <div class="muted" style="font-size:12.5px">Hugging Face model folders (${esc((p.families || ["llama", "mistral", "qwen2"]).join(", "))}) and <code>.gguf</code> files in:</div>
           ${p.folders.map(f => `<div class="mono faint" style="font-size:11.5px;word-break:break-all">${esc(f)}</div>`).join("")}
+          ${(p.added || []).length ? `<div class="muted" style="font-size:12.5px">and the ones you added:</div>
+            ${p.added.map(f => `<div class="placerow"><span class="mono faint">${esc(f)}</span>
+              <button class="iconbtn sm" data-place-remove="${esc(f)}" aria-label="Forget ${esc(f)}" title="${P.removing === f ? "Click again to forget it (the files stay)" : "Forget this place (the files stay)"}">${icon(P.removing === f ? "check" : "trash")}</button></div>`).join("")}` : ""}
           <span class="mono faint" style="font-size:11px">free · private · works offline${L.usage && L.usage.providers.local ? " · " + esc(usageLine(L.usage.providers.local)) : ""}</span></div>`;
       }
       const total = L.usage && L.usage.providers[p.id];
@@ -3112,7 +3154,224 @@
     render();
   }
 
+  // ---------- adding model files and folders from this PC ----------
+  const P = { open: false, path: "", list: null, error: null, busy: false, removing: null, note: null };
+  function placePanel() {
+    const l = P.list;
+    const kindChip = k => k === "gguf" ? `<span class="chip c-text">GGUF</span>` : k === "model" ? `<span class="chip c-text">model folder</span>` : "";
+    const inside = l ? l.entries.filter(e => e.kind !== "folder").length : 0;
+    const here = l && l.path ? (l.kind === "model" ? "This folder is a model." : `${inside || "No"} model${inside === 1 ? "" : "s"} directly in this folder.`) : "";
+    return `<form class="placebox" id="place-form" autocomplete="off">
+      <div class="place-head"><div><b>Add models from this PC</b> <span class="muted">A <code>.gguf</code> file, a Hugging Face model folder (Llama, Qwen2, Mistral), or a folder holding them. The files stay where they are.</span></div>
+        <button type="button" class="iconbtn sm" id="place-close" aria-label="Close">${icon("x")}</button></div>
+      <div class="place-path"><input class="input mono" id="place-path" placeholder="A file or folder, such as D:/Models" value="${esc(P.path)}" spellcheck="false" aria-label="File or folder">
+        <button class="btn primary" type="submit" ${P.busy || !P.path.trim() ? "disabled" : ""}>${P.busy ? "Adding…" : "Add"}</button></div>
+      ${P.error ? `<div class="flag bad">${icon("alert")}<span>${esc(P.error)}</span></div>` : ""}
+      <div class="place-browse" aria-label="Folders on this PC">
+        <div class="place-crumb">${l && l.path ? `<button type="button" class="btn ghost sm up" data-browse="${esc(l.parent ?? "")}">${icon("chev")}Up</button><code>${esc(l.path)}</code><span class="grow"></span><span class="faint here">${esc(here)}</span>` : `<span class="faint">Start from</span>`}</div>
+        <div class="place-list">${!l ? `<div class="faint">Looking…</div>` : l.entries.length ? l.entries.map(e => `<button type="button" class="place-item ${e.path === P.path ? "on" : ""}" data-${e.kind === "folder" ? "browse" : "pick"}="${esc(e.path)}" title="${esc(e.path)}">
+            ${icon(e.kind === "folder" ? "folder" : "library")}<span class="nm">${esc(e.name)}</span>${kindChip(e.kind)}</button>`).join("") : `<div class="faint">No folders or models here.</div>`}</div>
+      </div>
+    </form>`;
+  }
+  async function browsePlace(path) {
+    try { P.list = await postJson("/api/local/browse", { path: path || "" }); P.error = null; if (path) P.path = P.list.path; }
+    catch (e) { P.error = e.message; }
+    if (state.view === "library") renderPlace();
+  }
+  function renderPlace() {
+    const box = $("#place-form");
+    if (!box) { render(); return; }
+    const focus = document.activeElement?.id === "place-path", caret = focus ? $("#place-path").selectionStart : 0;
+    box.outerHTML = placePanel();
+    bindPlace();
+    if (focus) { const i = $("#place-path"); i.focus(); i.setSelectionRange(caret, caret); }
+  }
+  function bindPlace() {
+    $("#place-close")?.addEventListener("click", () => { P.open = false; P.error = null; render(); });
+    $("#place-path")?.addEventListener("input", e => { P.path = e.target.value; const b = $("#place-form button[type=submit]"); if (b) b.disabled = P.busy || !P.path.trim(); });
+    $$("#place-form [data-browse]").forEach(b => b.addEventListener("click", () => browsePlace(b.dataset.browse)));
+    $$("#place-form [data-pick]").forEach(b => b.addEventListener("click", () => { P.path = b.dataset.pick; renderPlace(); }));
+    $("#place-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      P.busy = true; P.error = null; renderPlace();
+      try {
+        const r = await postJson("/api/local", { path: P.path.trim() });
+        P.open = false; P.busy = false; P.path = ""; P.list = null;
+        P.note = r.models ? `Added ${r.models} model${r.models === 1 ? "" : "s"}; they are under This PC below.` : "Added. Models put there later show up too.";
+        setTimeout(() => { P.note = null; if (state.view === "library") render(); }, 8000);
+        await loadModels(false);
+      } catch (err) { P.busy = false; P.error = err.message; renderPlace(); }
+    });
+  }
+  function newModel() {
+    const taken = new Set(B.graphs.map(g => g.name));
+    let name = "my-model";
+    for (let i = 2; taken.has(name); i++) name = "my-model-" + i;
+    B.graph = { name, nodes: [{ id: "in", op: "input", shape: [3, 32, 32], x: 40, y: 120 }] };
+    B.sel = null; B.built = null; B.refusal = null; B.check = null;
+    saveDraft();
+    if (state.view !== "builder") go("builder"); else renderBuilder();
+    recheck();
+  }
+
+  // ---------- downloading models from Hugging Face ----------
+  const H = { open: false, query: "", results: null, hidden: 0, runs: null, searching: false, error: null,
+    repo: null, listing: null, loadingRepo: false, repoError: null, downloads: [], folder: "", timer: 0, deleting: null };
+  const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
+  const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
+  const hubActive = d => d.state === "queued" || d.state === "downloading" || d.state === "checking";
+  function hubPanel() {
+    const res = H.results;
+    const list = H.searching ? `<div class="faint pad">Searching…</div>`
+      : !res ? `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`
+      : !res.length ? `<div class="faint pad">Nothing found that the studio runs${H.hidden ? ` (${H.hidden} other model${H.hidden === 1 ? "" : "s"} found)` : ""}.</div>`
+      : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
+          <span class="nm">${esc(r.id)}</span>
+          <span class="meta">${r.family ? `<span class="chip c-ok">${esc(r.family)}</span>` : ""}${r.gguf ? `<span class="chip c-text">GGUF</span>` : ""}${r.safetensors ? `<span class="chip c-text">safetensors</span>` : ""}
+            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add a Hugging Face key first">gated</span>` : ""}
+            <span class="faint tnum" title="downloads">${icon("download")}${fmtCount(r.downloads)}</span></span></button>`).join("")
+        + (H.hidden ? `<div class="faint pad">${H.hidden} more found that the studio cannot run yet.</div>` : "");
+    return `<section class="placebox hubbox" id="hub-box" aria-label="Download from Hugging Face">
+      <div class="place-head"><div><b>Download from Hugging Face</b> <span class="muted">Shows only models the studio runs${H.runs ? `: ${esc(H.runs.families.join(", "))} model folders, and ${esc(H.runs.architectures.join(" and "))} GGUF files` : ""}. When the core learns more, more show up. Downloads go to <code>${esc(H.folder || "downloads")}</code>.</span></div>
+        <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
+      <form class="place-path" id="hub-search" autocomplete="off">
+        <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
+        <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
+      ${H.error ? `<div class="flag bad">${icon("alert")}<span>${esc(H.error)}</span></div>` : ""}
+      <div class="hub-cols">
+        <div class="place-browse"><div class="hub-list">${list}</div></div>
+        <div class="place-browse hub-files">${hubFiles()}</div>
+      </div>
+      ${hubDownloads()}
+    </section>`;
+  }
+  function hubFiles() {
+    if (!H.repo) return `<div class="faint pad">Pick a model to see its files and which ones the studio runs.</div>`;
+    const head = `<div class="place-crumb"><code>${esc(H.repo)}</code><span class="grow"></span><a class="faint" href="https://huggingface.co/${esc(H.repo)}" target="_blank" rel="noopener">Model page</a></div>`;
+    if (H.loadingRepo) return head + `<div class="faint pad">Reading its files…</div>`;
+    if (H.repoError) return head + `<div class="flag bad">${icon("alert")}<span>${esc(H.repoError)}</span></div>`;
+    const opts = (H.listing?.options || []).slice().sort((a, b) => (b.supported - a.supported) || (a.size - b.size));
+    if (!opts.length) return head + `<div class="faint pad">No GGUF file or model folder here.</div>`;
+    const busy = o => H.downloads.find(d => d.repo === H.repo && hubActive(d) && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name));
+    return head + `<div class="hub-opts">${opts.map(o => `<div class="hub-opt ${o.supported ? "" : "off"}">
+        <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}</div>
+        <span class="mono faint tnum">${o.size ? fmtBytes(o.size) : ""}</span>
+        ${o.have ? `<span class="chip c-ok">on this PC</span>` : busy(o) ? `<span class="chip c-text">downloading</span>`
+          : o.supported ? `<button class="btn sm" data-download="${esc(o.id)}">${icon("download")}Download</button>` : `<span class="chip c-warn">won’t run</span>`}
+        ${o.reason ? `<div class="why">${esc(o.reason)}</div>` : ""}</div>`).join("")}</div>`;
+  }
+  function hubDownloads() {
+    if (!H.downloads.length) return "";
+    return `<div class="hub-downs" aria-label="Downloads">${H.downloads.map(d => {
+      const pct = d.total ? Math.min(100, d.done / d.total * 100) : 0;
+      const status = d.state === "done" ? "on this PC" : d.state === "checking" ? "checking…" : d.state === "queued" ? "starting…"
+        : d.state === "downloading" ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}${d.speed ? ` · ${fmtBytes(d.speed)}/s · ${fmtWait((d.total - d.done) / d.speed)}` : ""}`
+        : d.state === "stopped" ? `stopped at ${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "failed";
+      return `<div class="hub-down ${d.state}">
+        <div class="nm"><b>${esc(d.name)}</b><span class="faint">${esc(d.repo)}</span></div>
+        <div class="meter wide"><i style="width:${pct.toFixed(1)}%;${d.state === "failed" ? "background:var(--bad)" : d.state === "done" ? "background:var(--ok)" : ""}"></i></div>
+        <span class="mono faint tnum st">${esc(status)}</span>
+        <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}">${icon("stop")}Stop</button>`
+          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button><button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
+          : `<button class="btn sm" data-hub-retry="${esc(d.id)}">${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
+        ${d.error ? `<div class="why bad">${esc(d.error)}</div>` : ""}
+      </div>`;
+    }).join("")}</div>`;
+  }
+  function renderHub() {
+    const box = $("#hub-box");
+    if (!box || state.view !== "library") return;
+    const focus = document.activeElement?.id === "hub-q", caret = focus ? $("#hub-q").selectionStart : 0;
+    const scroll = $(".hub-list")?.scrollTop || 0, fscroll = $(".hub-opts")?.scrollTop || 0;
+    box.outerHTML = H.open ? hubPanel() : `<div id="hub-box">${hubDownloads()}</div>`;
+    bindHub();
+    if ($(".hub-list")) $(".hub-list").scrollTop = scroll;
+    if ($(".hub-opts")) $(".hub-opts").scrollTop = fscroll;
+    if (focus) { const i = $("#hub-q"); i.focus(); i.setSelectionRange(caret, caret); }
+  }
+  async function hubSearch() {
+    H.searching = true; H.error = null; renderHub();
+    try { const r = await postJson("/api/hub/search", { query: H.query }); H.results = r.models || []; H.hidden = r.hidden || 0; }
+    catch (e) { H.error = e.message; H.results = null; }
+    H.searching = false; renderHub();
+  }
+  async function hubRepo(repo) {
+    H.repo = repo; H.listing = null; H.repoError = null; H.loadingRepo = true; renderHub();
+    try { const l = await postJson("/api/hub/files", { repo }); if (H.repo === repo) H.listing = l; }
+    catch (e) { if (H.repo === repo) H.repoError = e.message; }
+    if (H.repo === repo) { H.loadingRepo = false; renderHub(); }
+  }
+  async function pollHub() {
+    clearTimeout(H.timer);
+    try {
+      const j = await api("/api/hub/downloads");
+      const before = new Map(H.downloads.map(d => [d.id, d.state]));
+      H.downloads = j.downloads || []; H.folder = j.folder || H.folder; H.runs = j.runs || H.runs;
+      const finished = H.downloads.some(d => d.state === "done" && before.has(d.id) && before.get(d.id) !== "done");
+      if (finished) {
+        if (H.listing) H.listing.options.forEach(o => { if (H.downloads.some(d => d.state === "done" && d.repo === H.repo && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name))) o.have = true; });
+        await loadModels(false);
+      } else renderHub();
+    } catch (e) { console.warn("cannot read the downloads", e); }
+    if (H.downloads.some(hubActive)) H.timer = setTimeout(pollHub, 1000);
+  }
+  function chatWith(key) {
+    go("chat"); newChat(false);
+    L.panes[L.active].model = key; L.model = key; store.set("chatModel", key); savePanes(); render();
+    $(`.pane[data-pane="${L.active}"] textarea`)?.focus();
+  }
+  function bindHub() {
+    $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
+    $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
+    $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });
+    $$("[data-repo]").forEach(b => b.addEventListener("click", () => hubRepo(b.dataset.repo)));
+    $$("[data-download]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await postJson("/api/hub/download", { repo: H.repo, option: b.dataset.download }); H.repoError = null; }
+      catch (e) { H.repoError = e.message; }
+      await pollHub(); renderHub();
+    }));
+    $$("[data-hub-cancel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/hub/cancel", { id: b.dataset.hubCancel }).catch(() => {}); setTimeout(pollHub, 300); }));
+    $$("[data-hub-retry]").forEach(b => b.addEventListener("click", async () => {
+      const d = H.downloads.find(x => x.id === b.dataset.hubRetry); if (!d) return;
+      b.disabled = true;
+      try { await postJson("/api/hub/download", { repo: d.repo, option: d.option }); }
+      catch (e) { d.error = e.message; }
+      await pollHub(); renderHub();
+    }));
+    $$("[data-chat-with]").forEach(b => b.addEventListener("click", () => chatWith(b.dataset.chatWith)));
+    $$("[data-hub-delete]").forEach(b => b.addEventListener("click", async () => {
+      const n = b.dataset.hubDelete;
+      if (H.deleting !== n) { H.deleting = n; renderHub(); setTimeout(() => { if (H.deleting === n) { H.deleting = null; renderHub(); } }, 4000); return; }
+      H.deleting = null;
+      try { await postJson("/api/hub/delete", { name: n }); } catch (e) { console.warn(e); }
+      H.downloads = H.downloads.filter(d => d.name !== n || d.state !== "done");
+      if (H.listing) H.listing.options.forEach(o => { if (o.name === n || (o.kind === "folder" && o.name === n)) o.have = false; });
+      await loadModels(false);
+    }));
+  }
+
   function bindLiveLibrary() {
+    $("#hub-open")?.addEventListener("click", () => {
+      H.open = !H.open; render();
+      if (H.open) { $("#hub-q")?.focus(); pollHub(); if (!H.results) hubSearch(); }
+    });
+    bindHub();
+    if (!H.loaded) { H.loaded = true; pollHub(); }
+    $("#add-place")?.addEventListener("click", () => {
+      P.open = !P.open; P.error = null; render();
+      if (P.open) { $("#place-path")?.focus(); if (!P.list) browsePlace(""); }
+    });
+    $("#new-model")?.addEventListener("click", newModel);
+    bindPlace();
+    $$("[data-place-remove]").forEach(b => b.addEventListener("click", async () => {
+      const f = b.dataset.placeRemove;
+      if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); } }, 4000); return; }
+      P.removing = null;
+      try { await postJson("/api/local", { path: f, remove: true }); } catch (e) { console.warn(e); }
+      await loadModels(false);
+    }));
     $$(".keyform").forEach(f => f.addEventListener("submit", async e => {
       e.preventDefault();
       const btn = f.querySelector("button"); btn.disabled = true;
@@ -3245,6 +3504,8 @@
 
   const start = location.hash.slice(1);
   state.view = views[start] ? start : "chat";
+  // the agents screen is still a design preview, so its example count is not shown as real
+  if (isLive()) $('.rail a[data-view="agents"] .badge')?.remove();
   render();
   loadLive();
   if (document.fonts) document.fonts.ready.then(paintAll);
