@@ -717,6 +717,7 @@ Everything the studio keeps goes to one **data folder**: `--data <folder>`, or e
 | `graphs/`, `models/` | models drawn in the builder, and the `.brainiac` files built and trained from them |
 | `runs/` | every training run: its settings, each epoch and the loss curve |
 | `datasets/` | your data for training: CSV files, MNIST-style IDX files and image folders |
+| `hosts.properties` | other machines to train on, with their tokens, readable only by your account |
 
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that
@@ -820,6 +821,22 @@ a time on this machine, with the loss of every step drawn live; a learning rate 
 run per rate. Stopping a run keeps what it learned. Each run saves its model as
 `models/<model>-run<N>.brainiac`, which can be trained further.
 
+Runs can also train on **another machine**. Start the studio there as a worker:
+
+```sh
+brainiac-studio --worker                          # port 7870 on every network address
+brainiac-studio --worker --listen 192.168.1.20 --port 7900 --data D:/BrainiacWorker
+```
+
+It prints its addresses and a token. On the Train screen, **Add a host** takes the address and
+the token, checks that the worker answers, and shows its devices and what it is training. Pick
+it under **Train on** and the run is sent there: the model and the data files go over once (by
+their SHA-256, so a file the worker already has is not sent again), the progress and the loss
+curve come back live, and the trained model is saved to `models/` here as for a local run. A
+worker trains only on files it was sent, keeps them in `<data>/worker`, and trains one run at a
+time. The token is kept in `hosts.properties` and never sent to the page. The connection is
+plain HTTP with the token, so use workers on your own network or over a VPN.
+
 **Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
 `gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
 with its 30 voices), with the same keys. The screens only show settings the chosen model has.
@@ -855,6 +872,20 @@ POST /api/train/start       {"spec":{"model":"resnet-s","data":{"kind":"builtin"
 POST /api/train/stop        {"id":"3"} stops a run after its current step and saves what it learned
 POST /api/train/delete      {"id":"3"} removes an ended run from the list (its model stays)
 GET  /api/train/runs        every run with its progress, epochs and loss curve
+GET  /api/hosts             the other machines to train on: online, devices, what each is training
+POST /api/hosts             {"name":"Lab box","url":"192.168.1.20:7870","token":"..."} adds one after
+                            checking it answers; {"id":"h1","remove":true} forgets one
+```
+
+A worker answers only requests that carry its token (`Authorization: Bearer <token>`):
+
+```
+GET  /worker/info           name, devices, cores, memory, and what it is training and has queued
+GET  /worker/files/<sha256> whether it has a file; PUT with ?name= sends one (checked against the hash)
+POST /worker/runs           {"spec":{...},"model":"sha:<sha256>/net.brainiac"} starts a run on files it was sent
+GET  /worker/runs?id=1      the run's progress, epochs and loss curve
+POST /worker/stop           {"id":"1"}
+GET  /worker/result?id=1    the trained model
 ```
 
 The other surfaces are being connected one at a time; until a surface reads real data it

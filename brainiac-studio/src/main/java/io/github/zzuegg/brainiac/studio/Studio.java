@@ -4,8 +4,10 @@ import io.github.zzuegg.brainiac.studio.chat.ChatService;
 import io.github.zzuegg.brainiac.studio.chat.Keys;
 import io.github.zzuegg.brainiac.studio.server.CapabilityRegistry;
 import io.github.zzuegg.brainiac.studio.server.StudioServer;
+import io.github.zzuegg.brainiac.studio.server.WorkerServer;
 import io.github.zzuegg.brainiac.studio.spi.Capability;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -199,13 +201,16 @@ public final class Studio implements AutoCloseable {
      *
      * @param args {@code --port <n>} to choose the port (0 for any free port),
      *     {@code --models <folder>} (repeatable) to look for models there instead of the usual folders,
-     *     and {@code --data <folder>} to keep keys, conversations and everything else there
+     *     {@code --data <folder>} to keep keys, conversations and everything else there, and
+     *     {@code --worker} (with {@code --listen <address>}) to train runs another studio sends instead
      * @throws IOException if the port cannot be opened
      */
     public static void main(String[] args) throws IOException {
-        int port = DEFAULT_PORT;
+        int port = -1;
         List<Path> folders = new ArrayList<>();
         Path data = null;
+        boolean worker = false;
+        String listen = "0.0.0.0";
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--port" -> {
@@ -226,18 +231,39 @@ public final class Studio implements AutoCloseable {
                     }
                     data = Path.of(args[++i]);
                 }
+                case "--worker" -> worker = true;
+                case "--listen" -> {
+                    if (i + 1 >= args.length) {
+                        throw new IllegalArgumentException("--listen needs an address, such as 0.0.0.0 or 192.168.1.20");
+                    }
+                    listen = args[++i];
+                }
                 case "--help", "-h" -> {
                     System.out.println("Usage: studio [--port <n>] [--models <folder>]... [--data <folder>]");
+                    System.out.println("       studio --worker [--port <n>] [--listen <address>] [--data <folder>]");
                     System.out.println("  --port    default " + DEFAULT_PORT + ", 0 = any free port");
                     System.out.println("  --models  where local models are (default ./models and ~/.brainiac/models)");
                     System.out.println("  --data    where keys, conversations, settings and outputs are kept");
                     System.out.println("            (default $" + DATA_VARIABLE + ", else ~/.brainiac/studio)");
+                    System.out.println("  --worker  train runs sent by another studio on this machine (port " + WorkerServer.DEFAULT_PORT + ")");
+                    System.out.println("  --listen  the address a worker listens on (default 0.0.0.0, every network)");
                     return;
                 }
                 default -> throw new IllegalArgumentException("unknown option: " + args[i] + " (try --help)");
             }
         }
-        Settings settings = Settings.defaults().withPort(port);
+        if (worker) {
+            Path folder = (data != null ? data : Settings.defaults().data()).toAbsolutePath().resolve("worker");
+            WorkerServer w = WorkerServer.start(new InetSocketAddress(listen, port < 0 ? WorkerServer.DEFAULT_PORT : port), folder);
+            Runtime.getRuntime().addShutdownHook(new Thread(w::close));
+            System.out.println("Brainiac Studio worker is listening on port " + w.port() + ".");
+            System.out.println("On your studio's Train screen, choose Add a host and enter one of these addresses:");
+            w.addresses().forEach(a -> System.out.println("  " + a));
+            System.out.println("and this token: " + w.token());
+            System.out.println("Keeping what it is sent and trains in " + folder + ". Press Ctrl+C to stop.");
+            return;
+        }
+        Settings settings = Settings.defaults().withPort(port < 0 ? DEFAULT_PORT : port);
         if (!folders.isEmpty()) {
             settings = settings.withModelFolders(folders);
         }

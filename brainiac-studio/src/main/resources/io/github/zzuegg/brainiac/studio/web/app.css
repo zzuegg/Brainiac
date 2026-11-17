@@ -995,3 +995,6 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
   .live-train .run-detail { grid-column: auto; }
   .live-train .runs-table th:nth-child(5), .live-train .runs-table td:nth-child(5) { display: none; }
 }
+.live-train .host.add-form { gap: 8px; align-content: start; }
+.live-train .host.add-form code { font: 11.5px var(--font-mono); }
+.live-train .host-head .iconbtn.sm { margin: -4px -6px -4px 0; color: var(--muted); }

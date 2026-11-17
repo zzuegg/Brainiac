@@ -181,6 +181,16 @@ public final class DataSources {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("the data source needs " + key);
         }
+        return resolve(name);
+    }
+
+    /**
+     * Finds a data file or folder: a relative name is looked up in the data folder.
+     *
+     * @param name the name or path
+     * @return the file or folder
+     */
+    public Path resolve(String name) {
         Path p = Path.of(name);
         Path resolved = p.isAbsolute() ? p : folder.resolve(p).normalize();
         if (!Files.exists(resolved)) {

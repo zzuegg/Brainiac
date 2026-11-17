@@ -50,6 +50,7 @@ public final class TrainingService implements AutoCloseable {
     private final Path models;
     private final Path runsFolder;
     private final DataSources data;
+    private final Hosts hosts;
     private final Map<String, TrainingRun> runs = new ConcurrentHashMap<>();
     private final ExecutorService worker = Executors.newSingleThreadExecutor(
             Thread.ofPlatform().name("studio-training").daemon(true).factory());
@@ -66,6 +67,7 @@ public final class TrainingService implements AutoCloseable {
         this.models = folder.resolve("models");
         this.runsFolder = folder.resolve("runs");
         this.data = new DataSources(folder.resolve("datasets"));
+        this.hosts = new Hosts(folder.resolve("hosts.properties"));
         loadRuns();
     }
 
@@ -76,6 +78,45 @@ public final class TrainingService implements AutoCloseable {
      */
     public DataSources data() {
         return data;
+    }
+
+    /**
+     * Returns the other machines runs can train on.
+     *
+     * @return the hosts
+     */
+    public Hosts hosts() {
+        return hosts;
+    }
+
+    /**
+     * Returns the folder models are read from and saved to.
+     *
+     * @return {@code models} in the data folder
+     */
+    public Path modelsFolder() {
+        return models;
+    }
+
+    /**
+     * Finds a run.
+     *
+     * @param id its id
+     * @return the run
+     */
+    public java.util.Optional<TrainingRun> run(String id) {
+        return java.util.Optional.ofNullable(runs.get(id));
+    }
+
+    /**
+     * Returns the model a run saved.
+     *
+     * @param id the run
+     * @return the file, if the run saved one
+     */
+    public java.util.Optional<Path> output(String id) {
+        return run(id).map(r -> r.toJson(false).get("output")).map(o -> models.resolve(o + ".brainiac"))
+                .filter(Files::isRegularFile);
     }
 
     /** What a type is for training: {@code optimizer}, {@code loss}, {@code schedule}, {@code metric}, or null. */
@@ -270,16 +311,23 @@ public final class TrainingService implements AutoCloseable {
             throw new IllegalArgumentException("the batch size must be at least 1");
         }
         validationFraction(spec);
+        String hostId = Json.string(spec, "host", "");
+        Hosts.Host host = hostId.isEmpty() || hostId.equals("local") ? null : hosts.find(hostId)
+                .orElseThrow(() -> new IllegalArgumentException("there is no host " + hostId));
         String id = String.valueOf(++counter);
         String model = Json.string(spec, "model", "");
         String name = Json.string(spec, "name", "");
         if (name.isBlank()) {
             name = model + " · " + optimizerLabel(spec);
         }
-        TrainingRun run = new TrainingRun(id, name.strip(), spec, THIS_PC);
+        TrainingRun run = new TrainingRun(id, name.strip(), spec, host == null ? THIS_PC : host.name());
         runs.put(id, run);
         save(run);
-        worker.submit(() -> execute(run));
+        if (host == null) {
+            worker.submit(() -> execute(run));
+        } else {
+            Thread.ofVirtual().name("studio-remote-run-" + id).start(() -> executeRemote(run, host));
+        }
         return run;
     }
 
@@ -452,6 +500,109 @@ public final class TrainingService implements AutoCloseable {
         save(run);
     }
 
+    // ---------------------------------------------------------------- runs on other machines
+
+    /** How long a host may not answer before its run is given up. */
+    private static final long LOST_MILLIS = 120_000;
+
+    private void executeRemote(TrainingRun run, Hosts.Host host) {
+        WorkerClient c = hosts.client(host);
+        Map<String, Object> spec = run.spec();
+        Map<String, Object> last = Map.of();
+        try {
+            if (run.remoteId() == null) {
+                if (run.stopAsked()) {
+                    run.finish(TrainingRun.State.STOPPED, null, null, 0, false);
+                    save(run);
+                    return;
+                }
+                run.loading();
+                save(run);
+                String model = c.upload(modelFile(spec));
+                Map<String, Object> there = new LinkedHashMap<>(spec);
+                there.remove("host");
+                there.put("name", run.name());
+                there.put("data", remoteData(Json.object(spec.getOrDefault("data", Map.of())), c));
+                Map<String, Object> started = c.start(there, model);
+                run.remoteId(Json.string(started, "id", null));
+                save(run);
+            }
+            boolean stopSent = false;
+            long lastAnswer = System.currentTimeMillis();
+            long lastSave = 0;
+            while (true) {
+                if (run.stopAsked() && !stopSent) {
+                    try {
+                        c.stop(run.remoteId());
+                        stopSent = true;
+                    } catch (IOException e) {
+                        // asked again on the next round
+                    }
+                }
+                try {
+                    last = c.run(run.remoteId());
+                    lastAnswer = System.currentTimeMillis();
+                } catch (IOException e) {
+                    if (System.currentTimeMillis() - lastAnswer > LOST_MILLIS) {
+                        throw new IOException(host.name() + " has not answered for two minutes: " + e.getMessage(), e);
+                    }
+                }
+                run.mirror(last);
+                String state = Json.string(last, "state", "running");
+                boolean ended = !List.of("queued", "loading", "running").contains(state) && !last.isEmpty();
+                long now = System.currentTimeMillis();
+                if (ended) {
+                    break;
+                }
+                if (now - lastSave > 2000) {
+                    save(run);
+                    lastSave = now;
+                }
+                Thread.sleep(1000);
+            }
+            String state = Json.string(last, "state", "failed");
+            String out = null;
+            String error = Json.string(last, "error", null);
+            if (last.get("output") != null) {
+                String name = outputName(spec, run);
+                Files.createDirectories(models);
+                c.download(run.remoteId(), models.resolve(name + ".brainiac"));
+                out = name;
+            }
+            TrainingRun.State end = switch (state) {
+                case "finished" -> TrainingRun.State.FINISHED;
+                case "stopped" -> TrainingRun.State.STOPPED;
+                case "interrupted" -> TrainingRun.State.INTERRUPTED;
+                default -> TrainingRun.State.FAILED;
+            };
+            run.finish(end, out, error, (int) Json.integer(last, "bestEpoch", 0), Boolean.TRUE.equals(last.get("stoppedEarly")));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;   // the studio is closing; the run carries on there and is picked up again at the next start
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.INFO, "training run " + run.id() + " on " + host.name() + " failed", e);
+            run.finish(TrainingRun.State.FAILED, null, message(e), 0, false);
+        }
+        save(run);
+    }
+
+    /** The data settings with each file sent to the host and referred to by its hash. */
+    private Map<String, Object> remoteData(Map<String, Object> d, WorkerClient c) throws IOException {
+        Map<String, Object> out = new LinkedHashMap<>(d);
+        switch (Json.string(d, "kind", "builtin")) {
+            case "csv" -> out.put("file", c.upload(data.resolve(Json.string(d, "file", ""))));
+            case "idx" -> {
+                out.put("images", c.upload(data.resolve(Json.string(d, "images", ""))));
+                out.put("labels", c.upload(data.resolve(Json.string(d, "labels", ""))));
+            }
+            case "images" -> out.put("folder", c.uploadFolder(data.resolve(Json.string(d, "folder", ""))));
+            default -> {
+                // built-in sets are made on the host
+            }
+        }
+        return out;
+    }
+
     private static String message(Throwable e) {
         if (e instanceof OutOfMemoryError) {
             return "ran out of memory; try a smaller batch, a smaller model or less data";
@@ -516,10 +667,13 @@ public final class TrainingService implements AutoCloseable {
         };
     }
 
-    private String saveModel(Model model, Map<String, Object> spec, TrainingRun run) throws IOException {
+    private static String outputName(Map<String, Object> spec, TrainingRun run) {
         String base = Json.string(spec, "model", "model");
-        String name = base.length() > 50 ? base.substring(0, 50) : base;
-        name = name + "-run" + run.id();
+        return (base.length() > 50 ? base.substring(0, 50) : base) + "-run" + run.id();
+    }
+
+    private String saveModel(Model model, Map<String, Object> spec, TrainingRun run) throws IOException {
+        String name = outputName(spec, run);
         Files.createDirectories(models);
         Path tmp = models.resolve(name + ".brainiac.tmp");
         model.save(tmp);
@@ -557,7 +711,16 @@ public final class TrainingService implements AutoCloseable {
         } catch (IOException e) {
             LOG.log(System.Logger.Level.WARNING, "cannot list " + runsFolder, e);
         }
-        runs.values().forEach(this::save);
+        for (TrainingRun r : runs.values()) {
+            Hosts.Host host = r.host().equals(THIS_PC) || r.remoteId() == null ? null
+                    : hosts.list().stream().filter(h -> h.name().equals(r.host())).findFirst().orElse(null);
+            if (r.state().active() && host != null) {
+                Thread.ofVirtual().name("studio-remote-run-" + r.id()).start(() -> executeRemote(r, host));   // still training there
+            } else {
+                r.interrupted();
+                save(r);
+            }
+        }
     }
 
     @Override
