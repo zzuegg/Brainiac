@@ -13,6 +13,8 @@ dependencies {
 // The tests compare every operation with the CPU backend. Without an NVIDIA driver (as on
 // CI) the device tests are skipped and only the host-side ones run.
 tasks.test {
+    // the benchmark compares 8192 x 8192 products with the CPU's arrays
+    maxHeapSize = "8g"
     jvmArgs("--enable-native-access=ALL-UNNAMED", "--add-modules", "jdk.incubator.vector")
     // -Pbrainiac.cuda.debug=true waits after every operation, so errors name their operation
     if (providers.gradleProperty("brainiac.cuda.debug").orNull == "true") {

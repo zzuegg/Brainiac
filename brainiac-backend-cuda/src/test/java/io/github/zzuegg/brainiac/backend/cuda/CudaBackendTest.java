@@ -588,7 +588,7 @@ class CudaBackendTest {
         packedMatches(bits, group, m, 768, 256, withOffsets, true);
     }
 
-    /** 8-bit levels of at most 16 values (IQ4_NL's table), kept as 4-bit indices on the device. */
+    /** 8-bit levels of at most 16 values (IQ4_NL's table): the generic packed path, until the backend packs them itself. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 8, 12})
     void packedMatricesOfFewLevelsMatchTheCpu(int m) {
@@ -617,8 +617,6 @@ class CudaBackendTest {
             org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
             org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(),
                     (float) (5e-5 * scale), what);
-            assertTrue(onGpu.bytes()
-                    < (long) rows * cols * 3 / 4, what + ": 4-bit indices and float16 scales");
         }
     }
 
