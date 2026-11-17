@@ -983,6 +983,94 @@ public final class Llama implements LanguageModel {
     }
 
     /**
+     * Saves a state to a file, as llama.cpp's prompt cache does: a long document or chat read
+     * once can be picked up again later without reading it again. The keys and values go in
+     * as safetensors with the positions and padding in the metadata.
+     *
+     * @param state a state of this model
+     * @param file the file to write
+     */
+    public void saveState(State state, Path file) {
+        Cache c = (Cache) Objects.requireNonNull(state, "state");
+        if (c.next.length == 0) {
+            throw new IllegalArgumentException("an empty state");
+        }
+        Map<String, Tensor> tensors = new LinkedHashMap<>();
+        if (c.length > 0) {
+            for (int l = 0; l < c.keys.length; l++) {
+                tensors.put("keys." + l, plain(c.keys[l].slice(2, 0, c.length)));
+                tensors.put("values." + l, plain(c.values[l].slice(2, 0, c.length)));
+            }
+        }
+        Map<String, Object> meta = new LinkedHashMap<>();
+        meta.put("layers", (long) c.keys.length);
+        meta.put("length", (long) c.length);
+        meta.put("sinks", (long) c.sinks);
+        meta.put("window", (long) c.window);
+        meta.put("quantized", c.quantized);
+        List<Object> next = new ArrayList<>();
+        List<Object> padding = new ArrayList<>();
+        for (int b = 0; b < c.next.length; b++) {
+            next.add((long) c.next[b]);
+            StringBuilder p = new StringBuilder();
+            for (int t = 0; t < c.length; t++) {
+                p.append(c.padding[b][t] ? '1' : '0');
+            }
+            padding.add(p.toString());
+        }
+        meta.put("next", next);
+        meta.put("padding", padding);
+        io.github.zzuegg.brainiac.io.SafeTensors.write(file, tensors,
+                Map.of("brainiac.state", Json.write(meta), "model", config.architecture()));
+    }
+
+    /**
+     * Reads a state {@link #saveState saved} from this model (or one of the same shape).
+     *
+     * @param file the file
+     * @return the state, ready to read more tokens
+     */
+    public State loadState(Path file) {
+        try (io.github.zzuegg.brainiac.io.SafeTensors st = io.github.zzuegg.brainiac.io.SafeTensors.open(file)) {
+            String text = st.metadata().get("brainiac.state");
+            if (text == null) {
+                throw new IllegalArgumentException(file + " is not a saved state");
+            }
+            Map<String, Object> meta = Json.object(Json.parse(text));
+            if (Json.integer(meta, "layers") != blocks.size()) {
+                throw new IllegalArgumentException(file + " is a state of a model with " + meta.get("layers")
+                        + " blocks, not " + blocks.size());
+            }
+            List<Object> next = Json.array(meta.get("next"));
+            List<Object> padding = Json.array(meta.get("padding"));
+            int length = (int) Json.integer(meta, "length");
+            Cache c = new Cache(blocks.size(), next.size(), Boolean.TRUE.equals(meta.get("quantized")));
+            c.sinks = (int) Json.integer(meta, "sinks");
+            c.window = (int) Json.integer(meta, "window");
+            for (int b = 0; b < next.size(); b++) {
+                c.next[b] = ((Number) next.get(b)).intValue();
+                String p = (String) padding.get(b);
+                c.padding[b] = new boolean[length];
+                for (int t = 0; t < length; t++) {
+                    c.padding[b][t] = p.charAt(t) == '1';
+                }
+            }
+            if (length > 0) {
+                c.reserve(length, config.kvHeads(), config.headDim(), this::typeOf, this::deviceOf);
+                for (int l = 0; l < blocks.size(); l++) {
+                    if (!st.shape("keys." + l).equals(Shape.of(next.size(), config.kvHeads(), length, config.headDim()))) {
+                        throw new IllegalArgumentException(file + " does not fit this model's keys");
+                    }
+                    c.keys[l].write(2, 0, st.tensor("keys." + l, deviceOf(l), typeOf(l)));
+                    c.values[l].write(2, 0, st.tensor("values." + l, deviceOf(l), typeOf(l)));
+                }
+                c.length = length;
+            }
+            return c;
+        }
+    }
+
+    /**
      * Runs the whole model over sequences, for training and scoring: logits for every step.
      *
      * @param tokens {@code [batch][steps]} token ids, all sequences the same length

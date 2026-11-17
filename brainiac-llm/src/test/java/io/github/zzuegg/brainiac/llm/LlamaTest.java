@@ -167,6 +167,27 @@ class LlamaTest {
     }
 
     @Test
+    void statesSaveAndLoad(@TempDir Path dir) {
+        Llama model = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
+        LanguageModel.State s = model.newState(2);
+        model.next(s, new int[][] {{0, 5, 9, 3}, {2, 4, 6, 8}}, new boolean[][] {{true, false, false, false},
+            {false, false, false, false}});
+        Path f = dir.resolve("state.safetensors");
+        model.saveState(s, f);
+        LanguageModel.State back = model.loadState(f);
+        assertEquals(s.length(), back.length());
+        int[][] step = {{7}, {7}};
+        assertArrayEquals(model.next(s, step, null).toArray(), model.next(back, step, null).toArray(), 1e-6f);
+        Llama q = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32).quantizeCache(true);
+        LanguageModel.State qs = q.newState(1);
+        q.next(qs, new int[][] {{1, 2, 3}}, null);
+        q.saveState(qs, f);
+        LanguageModel.State qb = q.loadState(f);
+        assertArrayEquals(q.next(qs, new int[][] {{4}}, null).toArray(), q.next(qb, new int[][] {{4}}, null).toArray(),
+                1e-3f);
+    }
+
+    @Test
     void readsQuantizedGguf() throws IOException {
         Map<String, Object> e = expected("llama.gguf.expected.json");
         Llama model = Llama.load(resource("llama.gguf"), DEVICE, DType.FLOAT32);
