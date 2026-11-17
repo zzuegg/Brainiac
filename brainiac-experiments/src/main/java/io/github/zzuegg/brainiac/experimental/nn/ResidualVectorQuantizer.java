@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -114,7 +115,7 @@ public final class ResidualVectorQuantizer implements Layer {
         // the commitment of the encoder to the total code
         float beta = 0.25f;
         Var commitment = x.sub(Var.of(sum)).square().mean().mul(beta);
-        Var out = x.add(Var.of(sum.sub(x.value())));
+        Var out = Functional.straightThrough(Var.of(sum), x);
         return new Result(out, codes, loss.add(commitment));
     }
 

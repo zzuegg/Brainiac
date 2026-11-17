@@ -29,7 +29,8 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
  *     {@code -log sigmoid(beta (mean log pi(y_w) - mean log pi(y_l)) - gamma)}: length-normalized,
  *     reference-free, with a target margin {@code gamma}.</li>
  * </ul>
- * All return the mean over the batch. DPO itself is in the reasoning experiments.
+ * All return the mean over the batch. DPO itself, and trainers for DPO, IPO and SimPO on
+ * small language models, are in {@code experimental.llm.DpoTrainer}.
  */
 public final class PreferenceLosses {
 

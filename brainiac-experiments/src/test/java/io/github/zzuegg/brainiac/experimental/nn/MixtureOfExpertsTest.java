@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.autograd.Var;
@@ -96,6 +97,9 @@ class MixtureOfExpertsTest {
         int after = Arrays.stream(moe.expertLoad()).max().getAsInt();
         assertTrue(after < before * 0.7 && after < 64, "max load " + before + " -> " + after);
         assertNotNull(moe.balanceLoss());
+        assertNull(moe.auxiliaryLoss());
+        assertEquals(0.01f * moe.balanceLoss().value().item(), moe.balanceWeight(0.01f).auxiliaryLoss().value().item(),
+                1e-6f);
     }
 
     @Test
@@ -210,13 +214,13 @@ class MixtureOfExpertsTest {
         assertEquals(4, changed);
         assertEquals(2, mod.lastSelected()[0].length);
         Optimizer opt = Optimizer.adam(0.05f);
-        float first = mod.predictorLoss().value().item();
+        float first = mod.auxiliaryLoss().value().item();
         for (int i = 0; i < 100; i++) {
             mod.forward(Var.of(x), true);
-            mod.predictorLoss().backward();
+            mod.auxiliaryLoss().backward();
             opt.step(mod.parameters());
         }
-        float last = mod.predictorLoss().value().item();
+        float last = mod.auxiliaryLoss().value().item();
         assertTrue(last < first * 0.5, "predictor loss " + first + " -> " + last);
         mod.useCausalPredictor(true);
         assertEquals(Shape.of(2, 8, 8), mod.forward(Var.of(x)).shape());

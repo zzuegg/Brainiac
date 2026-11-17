@@ -119,6 +119,11 @@ public final class SwitchingNeuronMoe implements Layer {
     }
 
     @Override
+    public Var auxiliaryLoss() {
+        return moe.auxiliaryLoss();
+    }
+
+    @Override
     public List<Var> parameters() {
         return moe.parameters();
     }

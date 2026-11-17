@@ -32,7 +32,8 @@ import java.util.SplittableRandom;
  * <p>Training resamples dead features (ones that never fire) toward badly reconstructed
  * inputs. {@link #stats} and {@link #topExamples} make a small feature browser. As a
  * {@link Layer}, the autoencoder returns its reconstruction, so it can be spliced into a
- * model with a {@link HookedLayer} to see how much the features explain.
+ * model's forward pass with a hook ({@link LayerHooks#at}) to see how much the features
+ * explain.
  */
 public final class SparseAutoencoder implements Layer {
 

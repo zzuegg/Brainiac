@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.llm;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.train.PreferenceLosses;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
@@ -158,17 +159,17 @@ public final class DpoTrainer {
         Var seq = Var.of(sum).matmul(tokens);
         Var chosen = seq.slice(0, 0, n);
         Var rejected = seq.slice(0, n, 2 * n);
-        Var diff = chosen.sub(rejected);
         Var loss;
         if (objective == Objective.SIMPO) {
-            loss = diff.mul(beta).sub(gamma).neg().softplus().mean();
+            loss = PreferenceLosses.simpo(chosen, rejected, beta, gamma);
         } else {
             Tensor ref = sum.matmul(reference.logProbs(prompts, completions).value());
-            Tensor refDiff = ref.slice(0, 0, n).sub(ref.slice(0, n, 2 * n));
-            Var margin = diff.sub(refDiff);
+            Var refChosen = Var.of(ref.slice(0, 0, n));
+            Var refRejected = Var.of(ref.slice(0, n, 2 * n));
             loss = objective == Objective.IPO
-                    ? margin.sub(1f / (2 * beta)).square().mean()
-                    : margin.mul(beta).neg().softplus().mean();
+                    ? PreferenceLosses.ipo(chosen, rejected, refChosen, refRejected, beta)
+                    : PreferenceLosses.logSigmoid(chosen.sub(rejected).sub(refChosen.sub(refRejected)).mul(beta))
+                            .mean().neg();
         }
         if (nll > 0) {
             Var mean = Var.of(WindowLm.sequenceSum(completions, true)).matmul(tokens).slice(0, 0, n);

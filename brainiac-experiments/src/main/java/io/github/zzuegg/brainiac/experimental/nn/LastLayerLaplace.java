@@ -154,7 +154,7 @@ public final class LastLayerLaplace {
             h[i] = ggn[i].clone();
             h[i][i] += precision;
         }
-        covariance = invert(h);
+        covariance = QuantMath.inverse(h);
     }
 
     /** @return the prior precision */
@@ -228,46 +228,6 @@ public final class LastLayerLaplace {
                 z[c] = mu[c] / Math.sqrt(1 + Math.PI / 8 * Math.max(var, 0));
             }
             out[s] = softmax(z);
-        }
-        return out;
-    }
-
-    /** Inverts a symmetric positive definite matrix with Gauss-Jordan elimination. */
-    static double[][] invert(double[][] a) {
-        int n = a.length;
-        double[][] m = new double[n][2 * n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m[i], 0, n);
-            m[i][n + i] = 1;
-        }
-        for (int c = 0; c < n; c++) {
-            int p = c;
-            for (int r = c + 1; r < n; r++) {
-                if (Math.abs(m[r][c]) > Math.abs(m[p][c])) {
-                    p = r;
-                }
-            }
-            double[] t = m[c];
-            m[c] = m[p];
-            m[p] = t;
-            double piv = m[c][c];
-            for (int j = 0; j < 2 * n; j++) {
-                m[c][j] /= piv;
-            }
-            for (int r = 0; r < n; r++) {
-                if (r != c) {
-                    double f = m[r][c];
-                    if (f != 0) {
-                        for (int j = 0; j < 2 * n; j++) {
-                            m[r][j] -= f * m[c][j];
-                        }
-                    }
-                }
-            }
-        }
-        double[][] out = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(m[i], n, out[i], 0, n);
         }
         return out;
     }

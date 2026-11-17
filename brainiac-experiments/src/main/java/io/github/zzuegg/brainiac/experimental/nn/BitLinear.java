@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.tensor.TernaryMatrix;
+import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Init;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
@@ -99,8 +100,8 @@ public final class BitLinear implements Layer {
         if (input.shape().dim(-1) != inputs) {
             throw new IllegalArgumentException("BitLinear expects [*, " + inputs + "], got " + input.shape());
         }
-        Var w = weight.add(Var.of(quantizeWeights(weight.value()).sub(weight.value())));   // straight-through
-        Var x = input.add(Var.of(quantizeActivations(input.value()).sub(input.value())));
+        Var w = Functional.straightThrough(Var.of(quantizeWeights(weight.value())), weight);
+        Var x = Functional.straightThrough(Var.of(quantizeActivations(input.value())), input);
         return x.matmul(w);
     }
 

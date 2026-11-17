@@ -72,6 +72,7 @@ public final class FineGrainedMoe implements Layer {
     private final Var router;
     private final float[] bias;
     private Var lastBalanceLoss;
+    private float balanceWeight;
     private int[] lastLoad;
 
     /**
@@ -232,13 +233,31 @@ public final class FineGrainedMoe implements Layer {
 
     /**
      * The expert-level balance loss {@code sum_i f_i P_i} of the last forward pass; it is 1
-     * for perfectly even loads and grows with imbalance. Multiply by a small factor and add
-     * it to the training loss.
+     * for perfectly even loads and grows with imbalance. With a {@link #balanceWeight} it is
+     * also this layer's {@link #auxiliaryLoss()}, which the core trainer adds to the loss.
      *
      * @return a scalar, or {@code null} before the first forward pass
      */
     public Var balanceLoss() {
         return lastBalanceLoss;
+    }
+
+    /**
+     * Sets how much of the balance loss the layer reports as its auxiliary loss.
+     *
+     * @param weight the factor, for example {@code 0.01}; 0 (the default) reports none, for
+     *     purely bias-based balancing ({@link #updateBalanceBias})
+     * @return this layer
+     */
+    public FineGrainedMoe balanceWeight(float weight) {
+        this.balanceWeight = weight;
+        return this;
+    }
+
+    /** @return {@code balanceWeight * balanceLoss()}, or {@code null} with no weight or no pass yet */
+    @Override
+    public Var auxiliaryLoss() {
+        return balanceWeight == 0 || lastBalanceLoss == null ? null : lastBalanceLoss.mul(balanceWeight);
     }
 
     /** @return how many (row, slot) assignments each routed expert got in the last forward pass */

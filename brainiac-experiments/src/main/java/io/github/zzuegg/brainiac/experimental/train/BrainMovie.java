@@ -7,7 +7,6 @@ import io.github.zzuegg.brainiac.nn.Brain;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
-import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.EpochResult;
 import io.github.zzuegg.brainiac.train.TrainingListener;
@@ -16,6 +15,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -32,11 +32,9 @@ import java.util.Objects;
  *   <li>the training-loss curve so far (log scale).</li>
  * </ul>
  *
- * <p>The activity is recomputed from the brain's public weights, biases and masks with the
- * same update order as {@code Brain.forward}: regions in declaration order, feed-forward
- * projections from this tick, recurrent ones from the previous tick. Regions with
- * activation switching are drawn with their base activation, and a neuron counts as active
- * when it has a connection, since the brain does not expose its per-neuron state.
+ * <p>The activity is the brain's own per-region output on the probe
+ * ({@link Brain#forwardRegions}) and dormancy its per-neuron state
+ * ({@link Brain#activeNeurons(String)}).
  *
  * <p>Visualising network activity and structure over training follows the spirit of
  * Yosinski et al. 2015, "Understanding Neural Networks Through Deep Visualization",
@@ -178,7 +176,7 @@ public final class BrainMovie implements TrainingListener {
         for (int j = 0; j < masks.length; j++) {
             masks[j] = brain.connectionMask(j);
         }
-        boolean[][] active = activeNeurons(masks);
+        boolean[][] active = activeNeurons();
         for (int i = 0; i < regionAt.length; i++) {
             int[] at = regionAt[i];
             fill(px, at[0], at[1], at[2], at[3], PANEL);
@@ -251,59 +249,27 @@ public final class BrainMovie implements TrainingListener {
     }
 
     /**
-     * The mean absolute activity of every neuron on the probe batch, recomputed from the
-     * brain's current weights.
+     * The mean absolute activity of every neuron on the probe batch, from the brain's own
+     * per-region outputs ({@link Brain#forwardRegions}).
      *
      * @return per region, one value per neuron (capacity)
      */
     public double[][] activity() {
         float[][] in = brainInput();
         int n = in.length;
-        int r = spec.regions().size();
-        int p = spec.projections().size();
-        Var input = Var.of(Tensor.of(in));
-        Var[] state = new Var[r];
-        Var[] weights = new Var[p];
-        for (int j = 0; j < p; j++) {
-            float[] w = brain.weightValues(j);
-            boolean[] m = brain.connectionMask(j);
-            for (int k = 0; k < w.length; k++) {
-                w[k] = m[k] ? w[k] : 0;
-            }
-            weights[j] = Var.of(Tensor.of(Shape.of(sourceSize(j), capacity(spec.projections().get(j).to())), w));
-        }
-        for (int t = 0; t < spec.ticks(); t++) {
-            Var[] next = new Var[r];
-            for (int i = 0; i < r; i++) {
-                Brain.RegionSpec rs = spec.regions().get(i);
-                float[] bias = brain.biasValues(rs.name());
-                Var pre = Var.of(Tensor.of(Shape.of(n, rs.capacity()), new float[n * rs.capacity()]))
-                        .add(Var.of(Tensor.of(Shape.of(1, rs.capacity()), bias)));
-                for (int j = 0; j < p; j++) {
-                    Brain.ProjectionSpec ps = spec.projections().get(j);
-                    if (!ps.to().equals(rs.name())) {
-                        continue;
-                    }
-                    int src = ps.from().equals(Brain.INPUT) ? -1 : regionIndex(ps.from());
-                    Var s = src < 0 ? input : src < i ? next[src] : state[src];
-                    if (s != null) {
-                        pre = pre.add(s.matmul(weights[j]));
-                    }
-                }
-                next[i] = rs.activation().forward(pre);
-            }
-            state = next;
-        }
-        double[][] out = new double[r][];
-        for (int i = 0; i < r; i++) {
-            float[] a = state[i].value().to(DType.FLOAT32).toArray();
-            int cap = spec.regions().get(i).capacity();
+        Map<String, Var> regions = brain.forwardRegions(Var.of(Tensor.of(in)), false);
+        double[][] out = new double[regions.size()][];
+        int i = 0;
+        for (Var region : regions.values()) {
+            float[] a = region.value().to(DType.FLOAT32).toArray();
+            int cap = a.length / n;
             out[i] = new double[cap];
             for (int s = 0; s < n; s++) {
                 for (int k = 0; k < cap; k++) {
                     out[i][k] += Math.abs(a[s * cap + k]) / n;
                 }
             }
+            i++;
         }
         return out;
     }
@@ -323,24 +289,10 @@ public final class BrainMovie implements TrainingListener {
         return out;
     }
 
-    private boolean[][] activeNeurons(boolean[][] masks) {
+    private boolean[][] activeNeurons() {
         boolean[][] active = new boolean[spec.regions().size()][];
         for (int i = 0; i < active.length; i++) {
-            active[i] = new boolean[spec.regions().get(i).capacity()];
-        }
-        for (int j = 0; j < masks.length; j++) {
-            Brain.ProjectionSpec ps = spec.projections().get(j);
-            int to = regionIndex(ps.to());
-            int from = ps.from().equals(Brain.INPUT) ? -1 : regionIndex(ps.from());
-            int cols = active[to].length;
-            for (int k = 0; k < masks[j].length; k++) {
-                if (masks[j][k]) {
-                    active[to][k % cols] = true;
-                    if (from >= 0) {
-                        active[from][k / cols] = true;
-                    }
-                }
-            }
+            active[i] = brain.activeNeurons(spec.regions().get(i).name());
         }
         return active;
     }

@@ -2,7 +2,9 @@ package io.github.zzuegg.brainiac.experimental.rl;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.rl.Environment;
 import io.github.zzuegg.brainiac.rl.Schedule;
+import io.github.zzuegg.brainiac.rl.Tracker;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -150,7 +152,7 @@ public final class ValueDecomposition {
      * @return the mean team return of the last 50 episodes
      */
     public double fit(MultiAgentEnvironment env, long totalSteps) {
-        EpisodeRecorder rec = new EpisodeRecorder(null);
+        Tracker rec = new Tracker(null);
         float[][] obs = env.reset(random.split());
         float[] state = env.state();
         while (rec.steps() < totalSteps) {
@@ -165,7 +167,7 @@ public final class ValueDecomposition {
                 buffer.set(position, sample);
                 position = (position + 1) % bufferSize;
             }
-            if (rec.step(s.reward(), s.done())) {
+            if (rec.step(new Environment.Step(new float[0], s.reward(), s.terminated(), s.truncated()))) {
                 obs = env.reset(random.split());
                 state = env.state();
             } else {
@@ -176,7 +178,7 @@ public final class ValueDecomposition {
                 learn();
             }
         }
-        return rec.meanReturn(50);
+        return rec.result().meanReturn(50);
     }
 
     /** Team value from agent values {@code [b, agents]} and states {@code [b, stateSize]}. */

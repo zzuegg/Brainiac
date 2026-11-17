@@ -23,9 +23,9 @@ import java.util.function.Supplier;
  *   <li><b>First order</b> (FOMAML): the query gradient at the adapted weights, ignoring how
  *       the adaptation depends on the start. Cheap and usually almost as good.</li>
  *   <li><b>Second order</b> (full MAML): the query gradient back-propagated through the
- *       inner steps, {@code (I - a H_k) ... (I - a H_1) g}. Brainiac's autograd is first order,
- *       so each Hessian-vector product {@code H v} is computed exactly up to {@code O(eps^2)}
- *       as a central difference of two gradients, {@code (grad(w + eps v) - grad(w - eps v)) / 2 eps}.</li>
+ *       inner steps, {@code (I - a H_k) ... (I - a H_1) g}, with each Hessian-vector product
+ *       {@code H v} exact from nested autograd ({@link Var#gradients(Var, List, boolean)}: the
+ *       gradient of {@code grad . v}). The losses' operations need second derivatives.</li>
  * </ul>
  *
  * <p>Paper: Finn, Abbeel, Levine, "Model-Agnostic Meta-Learning for Fast Adaptation of Deep
@@ -56,7 +56,6 @@ public final class Maml {
     private final float innerRate;
     private final int innerSteps;
     private final boolean secondOrder;
-    private float finiteDifference = 1e-3f;
 
     /**
      * Creates the meta-learner.
@@ -73,17 +72,6 @@ public final class Maml {
         this.innerRate = innerRate;
         this.innerSteps = innerSteps;
         this.secondOrder = secondOrder;
-    }
-
-    /**
-     * Sets the step of the finite-difference Hessian-vector products (second order only).
-     *
-     * @param eps the step, relative to the vector's norm
-     * @return this
-     */
-    public Maml finiteDifference(float eps) {
-        this.finiteDifference = eps;
-        return this;
     }
 
     /**
@@ -183,28 +171,19 @@ public final class Maml {
         return g;
     }
 
-    /** {@code H(at) v} by a central difference of gradients. */
+    /** {@code H(at) v}, exactly, by differentiating {@code grad . v} (core nested autograd). */
     private Tensor[] hessianVector(List<Tensor> at, Tensor[] v, Supplier<Var> loss) {
-        double norm = 0;
-        for (Tensor t : v) {
-            norm += t.square().sum().item();
+        assign(at);
+        List<Var> g = Var.gradients(loss.get(), parameters, true);
+        Var dot = null;
+        for (int i = 0; i < v.length; i++) {
+            Var term = g.get(i).mul(Var.of(v[i])).sum();
+            dot = dot == null ? term : dot.add(term);
         }
-        norm = Math.sqrt(norm);
-        if (norm == 0) {
-            return v;
-        }
-        float eps = (float) (finiteDifference / norm);
-        List<Tensor> plus = new ArrayList<>();
-        List<Tensor> minus = new ArrayList<>();
-        for (int i = 0; i < at.size(); i++) {
-            plus.add(at.get(i).add(v[i].mul(eps)));
-            minus.add(at.get(i).sub(v[i].mul(eps)));
-        }
-        Tensor[] gp = gradient(plus, loss);
-        Tensor[] gm = gradient(minus, loss);
+        List<Var> hv = Var.gradients(dot, parameters, false);
         Tensor[] out = new Tensor[v.length];
         for (int i = 0; i < v.length; i++) {
-            out[i] = gp[i].sub(gm[i]).div(2 * eps);
+            out[i] = hv.get(i).value();
         }
         return out;
     }

@@ -95,6 +95,11 @@ public interface GradientTransform {
             }
 
             @Override
+            public void forget(Var parameter) {
+                inner.forget(parameter);
+            }
+
+            @Override
             public float learningRate() {
                 return inner.learningRate();
             }
