@@ -33,7 +33,7 @@ layout(buffer_reference, std430, buffer_reference_align = 16) restrict readonly 
 #define LOAD4(b, i) (b.v[i])
 #endif
 layout(local_size_x = LANES, local_size_y = COLS) in;
-layout(push_constant) uniform P { In a; In b; In4 b4; Buf z; uint m; uint k; uint n; uint bRow; uint vectors; } p;
+layout(push_constant) uniform P { In a; In4 a4; In b; In4 b4; Buf z; uint m; uint k; uint n; uint bRow; uint vectors; } p;
 shared ACC part[ROWS][COLS][LANES];
 void main() {
     uint lane = gl_LocalInvocationID.x;
@@ -50,9 +50,7 @@ void main() {
             for (uint q = lane; q < quads; q += LANES) {
                 ACC4 bv = LOAD4(p.b4, (base >> 2) + q);
                 for (uint i = 0; i < ROWS; i++) {
-                    uint at = (i < p.m ? i : 0) * p.k + q * 4;
-                    ACC4 av = ACC4(LOAD(p.a, at), LOAD(p.a, at + 1), LOAD(p.a, at + 2), LOAD(p.a, at + 3));
-                    total[i] += dot(av, bv);
+                    total[i] += dot(LOAD4(p.a4, (i < p.m ? i : 0) * quads + q), bv);
                 }
             }
         } else {
