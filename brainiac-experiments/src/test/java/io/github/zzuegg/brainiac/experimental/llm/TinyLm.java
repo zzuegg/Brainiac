@@ -53,6 +53,42 @@ final class TinyLm {
         return trained;
     }
 
+    private static HookedDecoder deep;
+
+    /** A 4-block decoder trained with an exit loss at every block (shared; do not modify). */
+    static synchronized HookedDecoder deeplySupervised() {
+        if (deep == null) {
+            HookedDecoder m = HookedDecoder.create(HookedDecoder.Settings.tiny(VOCAB).withLayers(4), 11);
+            Optimizer opt = Optimizer.adam(0.01f);
+            SplittableRandom r = new SplittableRandom(2);
+            float[] w = {0.25f, 0.5f, 0.75f, 1f};
+            for (int s = 0; s < 150; s++) {
+                Var loss = EarlyExit.deepSupervisionLoss(m, counting(r, 16, 12), w);
+                loss.backward();
+                opt.step(m.parameters());
+                m.zeroGrad();
+            }
+            deep = m;
+        }
+        return deep;
+    }
+
+    static int[] greedy(io.github.zzuegg.brainiac.llm.LanguageModel model, int[] prompt, int n) {
+        return DecodingPipeline.of(model).generate(prompt, n, new SplittableRandom(0));
+    }
+
+    /** The share of tokens that continue the counting pattern set by the last two context tokens. */
+    static double countingAccuracy(int[] prompt, int[] out) {
+        int stride = Math.floorMod(prompt[prompt.length - 1] - prompt[prompt.length - 2], VOCAB);
+        int prev = prompt[prompt.length - 1];
+        int ok = 0;
+        for (int t : out) {
+            ok += t == (prev + stride) % VOCAB ? 1 : 0;
+            prev = (prev + stride) % VOCAB;
+        }
+        return (double) ok / out.length;
+    }
+
     static float meanLoss(HookedDecoder model, int length, long seed) {
         return model.loss(counting(new SplittableRandom(seed), 32, length), false).value().item();
     }
