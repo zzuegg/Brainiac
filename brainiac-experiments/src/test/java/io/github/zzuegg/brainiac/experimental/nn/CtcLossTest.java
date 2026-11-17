@@ -18,7 +18,8 @@ class CtcLossTest {
     void gradientMatchesFiniteDifferences() {
         Tensor logits = Tensor.normal(Shape.of(2, 6, 4), 0, 1, new SplittableRandom(1));
         // a repeated label needs a blank between its copies
-        GradCheck.Result r = GradCheck.check(CtcLoss.op(new int[][] {{1, 1, 2}, {3}}), 1e-2f, 1e-2f, logits);
+        GradCheck.Result r = GradCheck.check(v -> CtcLoss.loss(v.get(0), new int[][] {{1, 1, 2}, {3}}),
+                java.util.List.of(logits), 1e-2f, 1e-2f);
         assertTrue(r.passed(), r.toString());
     }
 

@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
+import io.github.zzuegg.brainiac.autograd.Complex;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
@@ -90,23 +91,6 @@ public final class DiffractiveLayer implements Layer {
     }
 
     /**
-     * Multiplies complex fields {@code [..., 2]}.
-     *
-     * @param a the first factor
-     * @param b the second factor, broadcast against the first
-     * @return {@code a b}
-     */
-    public static Var complexMultiply(Var a, Var b) {
-        int last = a.shape().rank() - 1;
-        int lastB = b.shape().rank() - 1;
-        Var ar = a.slice(last, 0, 1);
-        Var ai = a.slice(last, 1, 2);
-        Var br = b.slice(lastB, 0, 1);
-        Var bi = b.slice(lastB, 1, 2);
-        return Var.concat(last, ar.mul(br).sub(ai.mul(bi)), ar.mul(bi).add(ai.mul(br)));
-    }
-
-    /**
      * The 2-D discrete Fourier transform of fields {@code [batch, n, n, 2]}, as two 1-D core
      * FFTs with a transpose between them.
      *
@@ -129,7 +113,7 @@ public final class DiffractiveLayer implements Layer {
      */
     public static Var propagate(Var field, double wavelength, double distance) {
         Tensor h = transfer(field.shape().dim(1), wavelength, distance).to(field.value().device());
-        return fft2(complexMultiply(fft2(field, false), Var.of(h)), true);
+        return fft2(Complex.mul(fft2(field, false), Var.of(h)), true);
     }
 
     /**
@@ -150,8 +134,8 @@ public final class DiffractiveLayer implements Layer {
             throw new IllegalArgumentException("DiffractiveLayer expects [batch, " + size + ", " + size + ", 2], got " + s);
         }
         Var mask = Var.concat(2, phase.cos(), phase.sin());
-        Var modulated = complexMultiply(field, mask);
-        return fft2(complexMultiply(fft2(modulated, false), Var.of(transfer.to(field.value().device()))), true);
+        Var modulated = Complex.mul(field, mask);
+        return fft2(Complex.mul(fft2(modulated, false), Var.of(transfer.to(field.value().device()))), true);
     }
 
     /** @return the learnable phases {@code [n, n, 1]} */

@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
+import io.github.zzuegg.brainiac.nn.Graphs;
 import io.github.zzuegg.brainiac.nn.MultiInputLayer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -18,7 +19,9 @@ import java.util.SplittableRandom;
  * {@code k} layers mixes information from {@code k} hops away. The workhorse of
  * semi-supervised node classification.
  *
- * <p>Inputs: node features {@code [n, in]} and the adjacency {@code [n, n]} (a constant).
+ * <p>Inputs: node features {@code [n, in]} and the adjacency {@code [n, n]} (a constant,
+ * read as 0/1: non-zero entries are edges). A {@link MultiInputLayer} around the core
+ * {@link Graphs#gcn}, so it drops into {@code Node.merge} graphs.
  */
 public final class GcnLayer implements MultiInputLayer {
 
@@ -69,8 +72,10 @@ public final class GcnLayer implements MultiInputLayer {
         if (inputs.size() != 2) {
             throw new IllegalArgumentException("GcnLayer takes node features and an adjacency matrix");
         }
-        Tensor propagate = GraphOps.gcnNormalize(inputs.get(1).value());
-        Var h = Var.of(propagate).matmul(inputs.get(0).matmul(weight)).add(bias);
+        Var x = inputs.get(0);
+        Graphs.Graph g = GraphOps.toGraph(x.value(), inputs.get(1).value(), false);
+        // without edges, the normalized A + I is the identity
+        Var h = g == null ? x.matmul(weight).add(bias) : Graphs.gcn(g, x, weight, bias);
         return activation.forward(h, training);
     }
 

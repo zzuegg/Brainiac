@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.rl;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.rl.Agent;
 import io.github.zzuegg.brainiac.rl.ReplayBuffer;
@@ -109,7 +110,7 @@ public final class Cql implements Agent {
             Tensor y = b.rewards().add(b.discounts().mul(b.notDone()).mul(next));
             Var q = online.forward(Var.of(b.observations()), true);
             Var chosen = q.mul(RlTensors.oneHot(b.actions().toArray(), actions, device)).sum(1, true);
-            Var loss = RlTensors.huber(chosen.sub(y), 1f).mean();
+            Var loss = Loss.huber(1f).compute(chosen, y);
             if (alpha > 0) {
                 Var logSumExp = q.sub(q.value().max(1, true)).exp().sum(1, true).log().add(q.value().max(1, true));
                 loss = loss.add(logSumExp.sub(chosen).mean().mul(alpha));
