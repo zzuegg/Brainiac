@@ -942,6 +942,49 @@ Compare schemes on any benchmark task:
 ./gradlew :brainiac-examples:run --args="bench shakespeare --quantize int8,int4/g32 --pack"   # + generation speed
 ```
 
+## Experiments
+
+`brainiac-experiments` is a lab for research ideas: new layers, optimizers, learning
+rules, memory and context tricks, decoding methods, RL algorithms, generative toys and
+more. Nothing in it is guaranteed to stay.
+
+It is split in two:
+
+- **`io.github.zzuegg.brainiac.experimental.*`** holds reusable building blocks
+  (`experimental.nn`, `experimental.train`, `experimental.rl`, `experimental.llm`,
+  `experimental.data`, `experimental.evolve`, `experimental.tensor`,
+  `experimental.autograd`, `experimental.nn.diffusion`). Each package mirrors the core
+  package of the same name. The blocks implement the core interfaces (`Layer` and
+  `LayerSpec`, `Optimizer`, `Loss`, `Environment`, `Agent`, `Tokenizer`,
+  `LanguageModel`, `TrainingListener`), so they drop into existing code. When a block
+  proves itself, it moves to core by dropping `.experimental` from its package.
+- **`io.github.zzuegg.brainiac.experiments.<theme>`** holds the experiments: small
+  synthetic tasks that compare a technique against a baseline. Themes include agents,
+  attention, context, control, evolution, exotic, generative, graphs, interp, language,
+  learning, memory, optim, reasoning, selfsupervised, sequence, techniques, timeseries
+  and vision.
+
+Trying an experimental block is a one-line change:
+
+```java
+Model model = Model.sequential()
+        .input(64)
+        .dense(128, Activation.GELU)
+        .add(DynamicTanh.spec(0.5f))          // experimental.nn: normalization-free LayerNorm
+        .dense(10, Activation.SOFTMAX)
+        .build();
+
+Trainer.of(model)
+        .loss(Loss.CROSS_ENTROPY)
+        .optimizer(Sophia.of(1e-3f))          // experimental.train: second-order optimizer
+        .fit(data);
+```
+
+Each experiment is a JUnit test that prints what it measured. Run them all with
+`./gradlew :brainiac-experiments:test`. The measured results, grouped by theme, are in
+[brainiac-experiments/RESULTS.md](brainiac-experiments/RESULTS.md). They come from
+CPU-sized toy tasks, so treat them as directional, not as benchmarks.
+
 ## Performance
 
 The CPU backend splits large operations across all cores (limit with
