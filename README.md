@@ -668,7 +668,24 @@ server, no dependencies) and the page is plain HTML, CSS and JavaScript.
 ```sh
 ./gradlew :brainiac-studio:run                     # then open http://127.0.0.1:7860/
 ./gradlew :brainiac-studio:run --args="--port 0"   # any free port
+./gradlew :brainiac-studio:run --args="--data D:/BrainiacData"   # keep everything there
 ```
+
+Everything the studio keeps goes to one **data folder**: `--data <folder>`, or else
+`$BRAINIAC_STUDIO_DATA`, or else `~/.brainiac/studio`. The layout menu shows which one is in use.
+
+| in the data folder | what |
+|---|---|
+| `keys.properties` | API keys, readable only by your account |
+| `providers.properties` | models shown, Auto and addresses per provider (no keys) |
+| `chats/` | one JSON file per conversation |
+| `page.json` | what the page remembers: open tabs and panes, layout, density, size, chosen models, folded groups |
+| `usage.jsonl` | the usage log |
+| `outputs/` | every picture and take |
+
+Nothing is kept in the browser, so every browser on the PC shows the same conversations and
+tabs; what an older version kept in a browser moves to the data folder the first time that
+browser opens the studio.
 
 It listens on this machine only, answers only requests addressed to `127.0.0.1` or
 `localhost`, and its API needs the token it creates at launch (the page it serves carries
@@ -693,7 +710,7 @@ Local models are Hugging Face model folders (Llama, Qwen2, Mistral) and `.gguf` 
 `--models <folder>`. Remote providers list their own models live; add API keys under Models,
 Providers. Each provider can hold several named keys: they are tried in order, and the next one
 takes over when a key is refused, rate limited or out of credit. Saved keys go to
-`~/.brainiac/studio/keys.properties`, readable only by your account. A key in the provider's
+`keys.properties` in the data folder, readable only by your account. A key in the provider's
 environment variable counts as one more key:
 
 | provider | environment variable | balance shown |
@@ -721,7 +738,7 @@ China region.
 **Conversations** open in tabs. On a wide screen, Split (or Ctrl+click on a conversation) puts
 two to four side by side, each with its own model, and each answers on its own, so several
 can be written at once. Finish moves a conversation out of the tabs to the Finished list,
-where Reopen brings it back. Conversations are saved in `~/.brainiac/studio/chats`, one JSON
+where Reopen brings it back. Conversations are saved in `chats` in the data folder, one JSON
 file each, so they show up in any browser on this PC; the newest 1000 are kept.
 
 **Edit** on a provider chooses which of its models appear in the model pickers and in Auto
@@ -729,11 +746,11 @@ file each, so they show up in any browser on this PC; the newest 1000 are kept.
 another address (a gateway, a proxy, or another region such as Qwen's mainland China endpoint),
 and for Hugging Face the organization whose credits pay (`X-HF-Bill-To`). Hugging Face models
 show how many hosts serve them and the cheapest host's price; models no host serves are left
-out. The choices are saved in `~/.brainiac/studio/providers.properties`, which holds no keys.
+out. The choices are saved in `providers.properties`, which holds no keys.
 A model hidden from the pickers can still be asked for by name.
 
 **Usage** is logged for every call, by provider, key, model and day, in
-`~/.brainiac/studio/usage.jsonl`: tokens as the provider counts them, pictures made,
+`usage.jsonl`: tokens as the provider counts them, pictures made,
 characters spoken, time taken and failures. Prompts are not kept, and keys appear by name only.
 Models, Providers shows the totals, a chart of the last 30 days and, where the provider
 reports one, what is left on each key. Anthropic, OpenAI and Google only report spend to
@@ -743,7 +760,7 @@ turn tokens into money.
 **Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
 `gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
 with its 30 voices), with the same keys. The screens only show settings the chosen model has.
-Every picture and take is also saved to `~/.brainiac/studio/outputs`. A video added to the
+Every picture and take is also saved to `outputs` in the data folder. A video added to the
 Voice screen plays in the browser under each take and is never uploaded.
 
 ```
@@ -760,6 +777,7 @@ GET  /api/balances          what is left on each key, at providers that report i
 GET  /api/chats             the saved conversations, newest first
 POST /api/chats             {"id":"k3x9a","title":"...","status":"open","messages":[...]} saves one;
                             {"id":"k3x9a","delete":true} deletes it
+GET  /api/state             what the page remembers; POST {"layout":"ultra"} changes it (null removes)
 ```
 
 The other surfaces are being connected one at a time; until a surface reads real data it
@@ -856,7 +874,7 @@ System properties: `brainiac.vulkan.devices`
 validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
 `brainiac.vulkan.statistics` (`true` prints the counts below at exit), `brainiac.vulkan.profile` (`true` runs
 every dispatch alone between GPU timestamps and adds the device time per shader to the statistics; the
-generated shaders are written to `brainiac-fused` in the temp folder).
+generated shaders are written to `brainiac-fused` in the temp folder; `shapes` keeps times per work-group grid).
 `VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
 barriers and submits. The examples take `--device vulkan` (or `gpu`) to run there. CI runs the tests on lavapipe.
 Without a Vulkan driver the backend reports itself unavailable and its tests are skipped.

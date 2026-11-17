@@ -215,11 +215,16 @@ final class VkContext {
      * between two timestamps, and the device time per shader is counted. Slower, as nothing
      * overlaps, but shows which shaders the time goes to.
      */
-    static final boolean PROFILE = Boolean.getBoolean("brainiac.vulkan.profile");
+    static final boolean PROFILE = "true".equals(System.getProperty("brainiac.vulkan.profile"))
+            || "shapes".equals(System.getProperty("brainiac.vulkan.profile"));
+    /** {@code -Dbrainiac.vulkan.profile=shapes}: times are kept per shader and work-group grid. */
+    private static final boolean PROFILE_SHAPES = "shapes".equals(System.getProperty("brainiac.vulkan.profile"));
     /** Nanoseconds per timestamp tick. */
     private float timestampPeriod = 1;
     /** Device nanoseconds per shader, with {@link #PROFILE}. */
     final Map<String, Long> shaderNanos = new HashMap<>();
+    /** Timed dispatches per key of {@link #shaderNanos}. */
+    final Map<String, Long> shaderCalls = new HashMap<>();
 
     VkContext() {
         try (MemoryStack st = stackPush()) {
@@ -963,7 +968,7 @@ final class VkContext {
         vkCmdDispatch(b.commands, x, y, z);
         if (timed) {
             vkCmdWriteTimestamp(b.commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, b.queries, 2 * b.timed.size() + 1);
-            b.timed.add(shader);
+            b.timed.add(PROFILE_SHAPES ? shader + "[" + x + "x" + y + "x" + z + "]" : shader);
         }
         dispatches++;
         recorded(b);
@@ -1195,6 +1200,7 @@ final class VkContext {
                 for (int i = 0; i < b.timed.size(); i++) {
                     long ns = (long) ((ticks.get(2 * i + 1) - ticks.get(2 * i)) * (double) timestampPeriod);
                     shaderNanos.merge(b.timed.get(i), Math.max(0, ns), Long::sum);
+                    shaderCalls.merge(b.timed.get(i), 1L, Long::sum);
                 }
             }
             b.timed.clear();

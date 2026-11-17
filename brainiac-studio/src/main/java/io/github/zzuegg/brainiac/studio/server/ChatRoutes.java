@@ -40,6 +40,8 @@ import java.util.Map;
  *   <li>{@code GET /api/chats} lists the saved conversations, newest first; {@code POST /api/chats}
  *       with a conversation ({@code id}, {@code title}, {@code messages}, {@code status} open or
  *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it.
+ *   <li>{@code GET /api/state} returns what the page remembers (tabs, layout, chosen models);
+ *       {@code POST /api/state} with {@code {"name": value}} changes those values, null removes one.
  *   <li>{@code GET /api/usage} sums every call by provider, key, model and day;
  *       {@code GET /api/balances} asks the providers that report one what is left on each key.
  * </ul>
@@ -69,6 +71,11 @@ final class ChatRoutes {
             } else {
                 chat.conversations().save(body);
             }
+            Exchanges.json(ex, 200, Map.of("ok", true));
+        });
+        server.get("/api/state", ex -> Exchanges.json(ex, 200, chat.page().values()));
+        server.post("/api/state", ex -> {
+            chat.page().merge(Exchanges.body(ex, 2 << 20));
             Exchanges.json(ex, 200, Map.of("ok", true));
         });
         server.post("/api/chat", this::chat);
