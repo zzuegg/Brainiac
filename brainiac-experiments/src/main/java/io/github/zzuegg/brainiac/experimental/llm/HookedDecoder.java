@@ -124,9 +124,11 @@ public final class HookedDecoder implements LanguageModel {
     private float positionScale = 1;
     private float embeddingNoise;
     private final SplittableRandom noise;
+    private final long seed;
 
     private HookedDecoder(Settings s, long seed) {
         this.settings = s;
+        this.seed = seed;
         SplittableRandom r = new SplittableRandom(seed);
         this.noise = r.split();
         this.embed = Var.param(Tensor.normal(Shape.of(s.vocab(), s.dim()), 0, 0.5f, r));
@@ -156,6 +158,25 @@ public final class HookedDecoder implements LanguageModel {
      */
     public static HookedDecoder create(Settings settings, long seed) {
         return new HookedDecoder(settings, seed);
+    }
+
+    /**
+     * A copy of the base model (embedding, norms, projections, head) with its own weights,
+     * without hooks. The projections must still be the original {@code Dense} layers.
+     *
+     * @return the copy
+     */
+    public HookedDecoder copy() {
+        HookedDecoder c = new HookedDecoder(settings, seed);
+        List<Var> from = baseParameters();
+        List<Var> to = c.baseParameters();
+        if (from.size() != to.size()) {
+            throw new IllegalStateException("replaced projections cannot be copied");
+        }
+        for (int i = 0; i < from.size(); i++) {
+            to.get(i).assign(from.get(i).value().add(0f));
+        }
+        return c;
     }
 
     /** @return the shape */
