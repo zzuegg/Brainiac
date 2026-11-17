@@ -453,7 +453,7 @@ public final class OpenClBackend implements Backend {
         MemorySegment program = build(source);
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
-                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "matmul_mid", "matmul_big_i", "matmul_mid_i", "im2col",
+                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "matmul_mid", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
                 "attention_dkv")) {
             kernels.put(name, cl.createKernel(program, name));
@@ -2186,12 +2186,6 @@ public final class OpenClBackend implements Backend {
         int chunk = (k + splits - 1) / splits;
         chunk = (chunk + tile - 1) / tile * tile;
         splits = (k + chunk - 1) / chunk;
-        if (first == 0 && (name.equals("matmul_big") || name.equals("matmul_mid"))
-                && fitsInt(args[0]) && fitsInt(args[1])
-                && Math.max(out.size, splits > 1 ? batch * splits * m * n : 0) < Integer.MAX_VALUE) {
-            name = name + "_i";   // every position fits in 32 bits
-            kernel = program(out.dtype).kernels().get(name);
-        }
         if (splits <= 1) {
             launch(name, kernel, global, local, args);
             return;
@@ -2211,11 +2205,6 @@ public final class OpenClBackend implements Backend {
         quietRun(out.dtype, "reduce_rows", new long[] {batch * count}, null, ReduceOp.SUM.ordinal(), parts, out,
                 batch * count, (long) splits, count);
         release(parts);
-    }
-
-    /** Whether every element of a matmul operand has a 32-bit position. */
-    private static boolean fitsInt(Object operand) {
-        return operand instanceof ClStorage c && c.size < Integer.MAX_VALUE;
     }
 
     /** Runs a recorded matrix product with the precompiled kernel. */

@@ -305,7 +305,7 @@ __kernel void matmul(__global const T* a, __global const T* b, __global T* z, in
 // from local memory serves MW products instead of 1 (and the k loop is shared by MW * MW
 // outputs). Each output still sums k in order, as matmul does. matmul_big has 64 x 64 tiles
 // (MW 4), matmul_mid 32 x 32 (MW 2), for products with too few big tiles to fill the device.
-#define TILED_MATMUL(NAME, MW, IDX) \
+#define TILED_MATMUL(NAME, MW) \
 __kernel void NAME(__global const T* a, __global const T* b, __global T* z, int m, int k, int n, \
                    long strideA, long strideB, long strideZ, long aOff, long aRow, long aCol, \
                    long bOff, long bRow, long bCol, int splits, int chunk) { \
@@ -320,10 +320,8 @@ __kernel void NAME(__global const T* a, __global const T* b, __global T* z, int 
     int to = min(k, from + chunk); \
     __local ACC tileA[16][16 * MW + 1]; \
     __local ACC tileB[16][16 * MW]; \
-    IDX aBase = (IDX) (aOff + batch * strideA); \
-    IDX bBase = (IDX) (bOff + batch * strideB); \
-    IDX zBase = (IDX) (piece * strideZ); \
-    IDX ar = (IDX) aRow, acl = (IDX) aCol, brw = (IDX) bRow, bcl = (IDX) bCol; \
+    long aBase = aOff + batch * strideA; \
+    long bBase = bOff + batch * strideB; \
     ACC acc[MW][MW]; \
     for (int wm = 0; wm < MW; wm++) { \
         for (int wn = 0; wn < MW; wn++) { \
@@ -335,12 +333,12 @@ __kernel void NAME(__global const T* a, __global const T* b, __global T* z, int 
             int idx = l * 256 + tid; \
             int row = rowBase + (idx >> 4); \
             int ac = t + (idx & 15); \
-            tileA[idx & 15][idx >> 4] = row < m && ac < k ? LOAD(a, aBase + (IDX) row * ar + (IDX) ac * acl) \
+            tileA[idx & 15][idx >> 4] = row < m && ac < k ? LOAD(a, aBase + (long) row * aRow + (long) ac * aCol) \
                     : (ACC) 0; \
             int br = t + idx / (16 * MW); \
             int col = colBase + idx % (16 * MW); \
             tileB[idx / (16 * MW)][idx % (16 * MW)] = br < k && col < n \
-                    ? LOAD(b, bBase + (IDX) br * brw + (IDX) col * bcl) : (ACC) 0; \
+                    ? LOAD(b, bBase + (long) br * bRow + (long) col * bCol) : (ACC) 0; \
         } \
         barrier(CLK_LOCAL_MEM_FENCE); \
         for (int q = 0; q < 16; q++) { \
@@ -363,17 +361,13 @@ __kernel void NAME(__global const T* a, __global const T* b, __global T* z, int 
         for (int wn = 0; wn < MW; wn++) { \
             int col = colBase + lc + wn * 16; \
             if (row < m && col < n) { \
-                STORE(z, zBase + (IDX) row * n + col, acc[wm][wn]); \
+                STORE(z, piece * strideZ + (long) row * n + col, acc[wm][wn]); \
             } \
         } \
     } \
 }
-// IDX: positions in 64-bit, or in 32-bit (_i) when every position the product reads or
-// writes fits, which saves the device's slow 64-bit multiplies
-TILED_MATMUL(matmul_big, 4, long)
-TILED_MATMUL(matmul_mid, 2, long)
-TILED_MATMUL(matmul_big_i, 4, int)
-TILED_MATMUL(matmul_mid_i, 2, int)
+TILED_MATMUL(matmul_big, 4)
+TILED_MATMUL(matmul_mid, 2)
 
 // Attention in one pass per query row, without storing the [queries, keys] weights: the
 // softmax is computed online (running maximum and sum), as in FlashAttention. q is
