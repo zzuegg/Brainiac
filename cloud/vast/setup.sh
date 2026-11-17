@@ -165,7 +165,14 @@ worker() {
           sleep 1
       done ) &
     export JAVA_HOME="$JDK27"
-    exec brainiac-studio/build/install/brainiac-studio/bin/brainiac-studio "${args[@]}"
+    brainiac-studio/build/install/brainiac-studio/bin/brainiac-studio "${args[@]}" </dev/null &
+    local pid=$!
+    if [[ -n "${BRAINIAC_WORKER_UNTIL_EOF:-}" ]]; then
+        # the launcher keeps this input open while it runs: when it goes away (even killed),
+        # the input ends and the worker stops with it instead of holding the GPU
+        ( cat >/dev/null; kill "$pid" 2>/dev/null ) &
+    fi
+    wait "$pid"
 }
 
 case "$JOB" in
