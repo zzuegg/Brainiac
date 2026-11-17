@@ -31,6 +31,9 @@ import java.util.Map;
  * <p>System properties: {@code brainiac.vulkan.device} picks a device by index (the list is
  * in {@link #status()}); {@code brainiac.vulkan.devices=all} also allows CPU drivers such as
  * lavapipe; {@code brainiac.vulkan.memory} sets the memory budget in MB;
+ * {@code brainiac.vulkan.fusion=false} runs element-wise steps one by one instead of fusing them
+ * ({@link Fusion}); {@code brainiac.vulkan.cache} is where generated shaders are kept between runs
+ * (default {@code ~/.cache/brainiac/vulkan}, {@code none} for nowhere);
  * {@code brainiac.vulkan.statistics=true} prints {@link #statistics()} at exit.
  */
 public final class VulkanBackend implements Backend {
@@ -335,6 +338,14 @@ public final class VulkanBackend implements Backend {
     }
 
     /**
+     * The shader for one operation of a family: float64 has one per operation, as AMD's LLPC
+     * compiler crashes on a float64 shader that switches over all of them.
+     */
+    private static String perOp(String name, DType dtype, int op) {
+        return dtype == DType.FLOAT64 ? shader(name, dtype) + "_" + op : shader(name, dtype);
+    }
+
+    /**
      * {@code s} in another format: itself if it already is, else a converted copy that the
      * caller releases (with {@link #done}) once the command that reads it is recorded.
      */
@@ -579,7 +590,7 @@ public final class VulkanBackend implements Backend {
         eager(vs(in), y);
         VkStorage x = as(vs(in), y.dtype);
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) y.size).putInt(op.ordinal());
-        vk.dispatch(shader("unary", y.dtype), groups(y.size), y.slot(), x.slot());
+        vk.dispatch(perOp("unary", y.dtype, op.ordinal()), groups(y.size), y.slot(), x.slot());
         done(x, vs(in));
     }
 
@@ -593,7 +604,7 @@ public final class VulkanBackend implements Backend {
         eager(vs(in), y);
         VkStorage x = as(vs(in), y.dtype);
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) y.size).putInt(op.ordinal()).putFloat(param);
-        vk.dispatch(shader("activation", y.dtype), groups(y.size), y.slot(), x.slot());
+        vk.dispatch(perOp("activation", y.dtype, op.ordinal()), groups(y.size), y.slot(), x.slot());
         done(x, vs(in));
     }
 

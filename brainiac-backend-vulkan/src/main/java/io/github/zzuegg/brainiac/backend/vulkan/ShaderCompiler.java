@@ -7,6 +7,14 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+
+import org.lwjgl.util.shaderc.Shaderc;
 
 import static org.lwjgl.util.shaderc.Shaderc.shaderc_compilation_status_success;
 import static org.lwjgl.util.shaderc.Shaderc.shaderc_compile_into_spv;
@@ -72,9 +80,58 @@ final class ShaderCompiler {
         return "#version 460\n#define " + define + "\n" + prelude + body;
     }
 
-    /** Compiles a full source; throws with the compiler's message if it does not compile. */
+    /**
+     * Where compiled shaders are kept between runs ({@code brainiac.vulkan.cache}, default
+     * {@code ~/.cache/brainiac/vulkan}; {@code none} keeps nothing), named by a hash of their source.
+     */
+    private static final Path CACHE = cacheDirectory();
+
+    private static Path cacheDirectory() {
+        String dir = System.getProperty("brainiac.vulkan.cache");
+        if ("none".equals(dir)) {
+            return null;
+        }
+        try {
+            return dir != null ? Path.of(dir) : Path.of(System.getProperty("user.home"), ".cache", "brainiac", "vulkan");
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Compiles a full source, or reads it from the cache of earlier runs; throws with the
+     * compiler's message if it does not compile.
+     */
     byte[] compile(String source) {
-        return compile(source, true);
+        Path file = null;
+        if (CACHE != null) {
+            try {
+                byte[] hash = MessageDigest.getInstance("SHA-256").digest(
+                        (Shaderc.class.getPackage().getImplementationVersion() + "\n" + source)
+                                .getBytes(StandardCharsets.UTF_8));
+                file = CACHE.resolve(HexFormat.of().formatHex(hash, 0, 16) + ".spv");
+                if (Files.isRegularFile(file)) {
+                    byte[] code = Files.readAllBytes(file);
+                    if (code.length >= 20 && code.length % 4 == 0) {
+                        return code;
+                    }
+                }
+            } catch (IOException | NoSuchAlgorithmException | RuntimeException e) {
+                file = null;   // compiled without the cache
+            }
+        }
+        byte[] code = compile(source, true);
+        if (file != null) {
+            try {
+                Files.createDirectories(file.getParent());
+                Path tmp = Files.createTempFile(file.getParent(), "shader", ".tmp");
+                Files.write(tmp, code);
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException | RuntimeException e) {
+                // not cached; compiled again next run
+            }
+        }
+        return code;
     }
 
     /** As {@link #compile(String)}, optimized for speed or not optimized at all. */

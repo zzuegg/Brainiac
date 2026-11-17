@@ -86,6 +86,20 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
                         commandLine(listOf("glslangValidator", "-V", "--target-env", "vulkan1.2") + defines
                                 + typeDefine + listOf("-o", output.file(file).get().asFile.absolutePath, src.name))
                     }
+                    // float64 unary and activation once more per operation: AMD's LLPC compiler
+                    // crashes on the switch over all of them (counts: UnaryOp, ActivationOp); optimized, so
+                    // the switch is gone from the SPIR-V
+                    val ops = mapOf("unary" to 13, "activation" to 15)[base]
+                    if (type == "f64" && ops != null) {
+                        for (op in 0 until ops) {
+                            exec.exec {
+                                workingDir = dir
+                                commandLine(listOf("glslangValidator", "-V", "--target-env", "vulkan1.2", "-Os", "-DOP=$op")
+                                        + typeDefine + listOf("-o",
+                                        output.file("${name}_${type}_$op.spv").get().asFile.absolutePath, src.name))
+                            }
+                        }
+                    }
                 }
             }
         }
