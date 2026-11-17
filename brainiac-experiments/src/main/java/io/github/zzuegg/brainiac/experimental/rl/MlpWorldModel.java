@@ -17,7 +17,7 @@ import java.util.SplittableRandom;
  * cross-entropy). Agents can then plan or learn in imagined rollouts instead of the real
  * environment, as {@link DreamerAgent} does.
  */
-public final class MlpWorldModel {
+public final class MlpWorldModel implements DiscreteWorldModel {
 
     private final int observations;
     private final int actions;
@@ -65,6 +65,7 @@ public final class MlpWorldModel {
      * @param batch the transitions
      * @return the loss
      */
+    @Override
     public float train(List<Transition> batch) {
         List<float[]> obs = new ArrayList<>();
         int[] acts = new int[batch.size()];
@@ -102,6 +103,7 @@ public final class MlpWorldModel {
      * @param acts the actions
      * @return the prediction
      */
+    @Override
     public Prediction predict(Tensor obs, int[] acts) {
         Tensor out = net.forward(input(obs, acts), false).value();
         Tensor next = obs.add(out.slice(1, 0, observations));
