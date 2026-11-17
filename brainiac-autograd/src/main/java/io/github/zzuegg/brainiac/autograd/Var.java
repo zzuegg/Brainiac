@@ -802,6 +802,57 @@ public final class Var {
     }
 
     /**
+     * Adds entries at the given indices along an axis (see {@link Tensor#scatterAdd}); the
+     * gradient gathers them back.
+     *
+     * @param axis the axis of the result that is indexed
+     * @param indices whole-number indices; not differentiated
+     * @param length the size of that axis in the result
+     * @return the sums
+     */
+    public Var scatterAdd(int axis, Tensor indices, int length) {
+        Tensor out = value.scatterAdd(axis, indices, length);
+        int a = axis < 0 ? out.shape().rank() + axis : axis;
+        return unary(out, g -> new Tensor[] {g.gather(a, indices)});
+    }
+
+    /**
+     * The {@code k} largest values along the last axis, largest first (see
+     * {@link Tensor#topk}, which also gives their indices); the gradient goes to the entries
+     * picked.
+     *
+     * @param k how many
+     * @return the values, with the last axis {@code k} long
+     */
+    public Var topk(int k) {
+        int last = shape().rank() - 1;
+        Tensor indices = value.topk(k)[1];
+        Tensor positions = Tensor.arange(shape().dim(last)).to(value.device());
+        Var[] picked = new Var[k];
+        for (int i = 0; i < k; i++) {
+            Tensor one = indices.slice(last, i, i + 1).equalTo(positions).to(dtype());
+            picked[i] = mul(one).sum(last, true);
+        }
+        return k == 1 ? picked[0] : concat(last, picked);
+    }
+
+    /**
+     * Running sums along one axis (see {@link Tensor#cumsum}); the gradient is the running
+     * sum from the other end.
+     *
+     * @param axis the axis; negative values count from the end
+     * @return the running sums
+     */
+    public Var cumsum(int axis) {
+        int rank = shape().rank();
+        int a = axis < 0 ? rank + axis : axis;
+        int[] order = Tensor.moveLast(rank, a);
+        Var moved = a == rank - 1 ? this : permute(order);
+        Var sums = moved.matmul(Tensor.upperTriangle(shape().dim(a), dtype(), value.device()));
+        return a == rank - 1 ? sums : sums.permute(Tensor.inverse(order));
+    }
+
+    /**
      * The discrete Fourier transform of complex values {@code [..., n, 2]}; see
      * {@link Tensor#fft(boolean)}. The gradient is the conjugate transform.
      *
