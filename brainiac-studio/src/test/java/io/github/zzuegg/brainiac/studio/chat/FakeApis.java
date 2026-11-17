@@ -77,7 +77,8 @@ final class FakeApis implements AutoCloseable {
         switch (p + " " + path) {
             case "a /v1/models" -> send(ex, 200, "application/json", """
                     {"data":[{"id":"claude-opus-5-5","display_name":"Claude Opus 5.5","created_at":"2026-09-01T00:00:00Z",
-                      "max_input_tokens":1000000,"capabilities":{"image_input":{"supported":true}}},
+                      "max_input_tokens":1000000,"capabilities":{"image_input":{"supported":true},
+                      "thinking":{"supported":true,"types":{"adaptive":{"supported":true}}}}},
                      {"id":"claude-haiku-5-5","display_name":"Claude Haiku 5.5","created_at":"2026-09-01T00:00:00Z"}],
                      "has_more":false}""");
             case "a /v1/messages" -> send(ex, 200, "text/event-stream", """
@@ -86,6 +87,9 @@ final class FakeApis implements AutoCloseable {
 
                     event: ping
                     data: {"type":"ping"}
+
+                    event: content_block_delta
+                    data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
 
                     event: content_block_delta
                     data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Hmm."}}

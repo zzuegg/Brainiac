@@ -1033,13 +1033,37 @@
 
   // A little Markdown: code fences, inline code, bold, paragraphs. Everything is escaped first.
   function md(text) {
-    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
+    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+      .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s.,;:!?)]|$)/g, "$1<i>$2</i>").replace(/\n/g, "<br>");
     return text.split("```").map((part, i) => {
       if (i % 2) {
         const nl = part.indexOf("\n");
         return `<pre class="code">${esc((nl >= 0 ? part.slice(nl + 1) : part).replace(/\n$/, ""))}</pre>`;
       }
-      return part.split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${inline(p.trim())}</p>`).join("");
+      // blocks of lines: headings, rules, bullet and numbered lists (which a blank line does not end), paragraphs
+      const out = [];
+      let para = [], list = null;
+      const flushPara = () => { if (para.length) out.push(`<p>${inline(para.join("\n"))}</p>`); para = []; };
+      const flushList = () => {
+        if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map(x => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`);
+        list = null;
+      };
+      for (const raw of part.split("\n")) {
+        const line = raw.trimEnd();
+        const h = /^(#{1,4})\s+(.*)$/.exec(line), ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
+        if (!line.trim()) { flushPara(); continue; }
+        if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); flushList(); out.push("<hr>"); }
+        else if (h) { flushPara(); flushList(); out.push(`<p class="mdh mdh${h[1].length}">${inline(h[2])}</p>`); }
+        else if (ul || ol) {
+          flushPara();
+          const tag = ul ? "ul" : "ol";
+          if (!list || list.tag !== tag) { flushList(); list = { tag, start: ol ? +ol[1] : 1, items: [] }; }
+          list.items.push(ul ? ul[1] : ol[2]);
+        } else if (list && /^\s{2,}/.test(raw)) list.items[list.items.length - 1] += "\n" + line.trim();
+        else { flushList(); para.push(line); }
+      }
+      flushPara(); flushList();
+      return out.join("");
     }).join("");
   }
 

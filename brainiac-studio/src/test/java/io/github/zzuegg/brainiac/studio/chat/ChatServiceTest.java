@@ -73,6 +73,12 @@ class ChatServiceTest {
         assertEquals("Be brief.", body.get("system"));
         assertEquals(true, body.get("stream"));
         assertFalse(body.containsKey("temperature"), "the current API version rejects sampling parameters");
+        assertEquals(Map.of("type", "adaptive", "display", "summarized"), body.get("thinking"),
+                "without a display the thinking blocks arrive empty");
+        chat.describe(true);   // the list says only Opus takes adaptive thinking
+        chat.chat("anthropic/claude-haiku-5-5", "", HELLO, 100, null, m -> { }, new Heard());
+        assertFalse(Json.object(Json.parse(apis.bodies.get("a POST"))).containsKey("thinking"),
+                "a model the list does not mark as adaptive gets no thinking setting");
     }
 
     @Test

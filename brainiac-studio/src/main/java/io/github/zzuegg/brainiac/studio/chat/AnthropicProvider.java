@@ -18,6 +18,12 @@ final class AnthropicProvider extends RemoteProvider {
     static final String DEFAULT_MODEL = "claude-opus-5-5";
     // On Fable models a policy decline is retried on a fallback model inside the same call.
     private static final String FALLBACK_BETA = "server-side-fallback-2026-07-01";
+    /** Models that take adaptive thinking, from the model list; their reasoning is asked for as a summary to show. */
+    private final java.util.Set<String> adaptive = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile boolean listed;
+    /** Before the list is read: the models from Claude 4.6 on take adaptive thinking. */
+    private static final java.util.regex.Pattern ADAPTIVE = java.util.regex.Pattern.compile(
+            "claude-(opus|sonnet)-4-[6-9].*|claude-[a-z]+-[5-9].*");
 
     AnthropicProvider(Keys keys, URI base) {
         super(keys, base);
@@ -57,6 +63,10 @@ final class AnthropicProvider extends RemoteProvider {
                     continue;
                 }
                 boolean vision = obj(obj(m.get("capabilities")).get("image_input")).get("supported") != Boolean.FALSE;
+                if (Boolean.TRUE.equals(obj(obj(obj(obj(m.get("capabilities")).get("thinking")).get("types"))
+                        .get("adaptive")).get("supported"))) {
+                    adaptive.add(id);
+                }
                 long context = num(m.get("max_input_tokens"));
                 out.add(new ModelInfo(id(), id, Json.string(m, "display_name", id),
                         vision ? List.of("text", "vision") : List.of("text"), created(m.get("created_at")),
@@ -64,6 +74,7 @@ final class AnthropicProvider extends RemoteProvider {
             }
             after = Boolean.TRUE.equals(page.get("has_more")) ? Json.string(page, "last_id", null) : null;
         } while (after != null);
+        listed = true;
         return out;
     }
 
@@ -87,6 +98,10 @@ final class AnthropicProvider extends RemoteProvider {
             messages.add(Map.of("role", m.role(), "content", m.text()));
         }
         body.put("messages", messages);
+        if (listed ? adaptive.contains(request.model()) : ADAPTIVE.matcher(request.model()).matches()) {
+            // the default display leaves thinking blocks empty; the chat shows a summary instead
+            body.put("thinking", Map.of("type", "adaptive", "display", "summarized"));
+        }
         List<String> headers = List.of();
         if (request.model().startsWith("claude-fable-")) {
             body.put("fallbacks", "default");
@@ -102,7 +117,12 @@ final class AnthropicProvider extends RemoteProvider {
                     Map<String, Object> d = obj(e.get("delta"));
                     switch (Json.string(d, "type", "")) {
                         case "text_delta" -> listener.text(Json.string(d, "text", ""));
-                        case "thinking_delta" -> listener.thinking(Json.string(d, "thinking", ""));
+                        case "thinking_delta" -> {
+                            String t = Json.string(d, "thinking", "");
+                            if (!t.isEmpty()) {
+                                listener.thinking(t);
+                            }
+                        }
                         default -> { }
                     }
                 }
