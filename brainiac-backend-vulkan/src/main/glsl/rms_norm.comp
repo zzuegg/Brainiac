@@ -1,0 +1,37 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// RMSNorm, one work group per row: y = round(x / sqrt(mean(x^2) + eps)) * w, the
+// normalized value rounded to the storage type before the scale, as the unfused ops do.
+layout(push_constant) uniform P { In x; In w; Buf y; uint rows; uint cols; float eps; } p;
+shared float part[GROUP];
+#if defined(TYPE_F16)
+#define ROUND(v) float(float16_t(v))
+#elif defined(TYPE_BF16)
+#define ROUND(v) uintBitsToFloat(uint(to_bf16(v)) << 16)
+#else
+#define ROUND(v) (v)
+#endif
+void main() {
+    uint r = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (r >= p.rows) return;
+    uint lid = gl_LocalInvocationID.x;
+    uint base = r * p.cols;
+    float acc = 0.0;
+    for (uint t = lid; t < p.cols; t += GROUP) {
+        float v = float(LOAD(p.x, base + t));
+        acc += v * v;
+    }
+    part[lid] = acc;
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (lid < s) part[lid] += part[lid + s];
+        barrier();
+    }
+    float d = sqrt(part[0] / float(p.cols) + p.eps);
+    for (uint t = lid; t < p.cols; t += GROUP) {
+        float n = ROUND(float(LOAD(p.x, base + t)) / d);
+        STORE(p.y, base + t, ACC(n * float(LOAD(p.w, t))));
+    }
+}
