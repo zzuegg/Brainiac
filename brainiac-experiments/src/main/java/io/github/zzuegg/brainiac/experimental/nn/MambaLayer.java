@@ -123,7 +123,7 @@ public final class MambaLayer implements Layer {
         Var x = p[0];
         Var delta = p[2];
         Var a = aLog.exp().neg();                                                     // [D, N]
-        Var cs = delta.permute(0, 2, 1).matmul(Var.of(MixerOps.cumsumMatrix(t)));    // [b, D, t]
+        Var cs = delta.permute(0, 2, 1).cumsum(-1);    // [b, D, t]
         Var gap = cs.reshape(b, inner, t, 1).sub(cs.reshape(b, inner, 1, t))
                 .mul(MixerOps.lowerOnes(t)).permute(0, 2, 3, 1);                     // [b, t, s, D]
         Var decay = gap.reshape(b, t, t, inner, 1).mul(a).exp()

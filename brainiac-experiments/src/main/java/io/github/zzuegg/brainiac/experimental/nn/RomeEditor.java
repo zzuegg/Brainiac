@@ -6,6 +6,8 @@ import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -144,37 +146,16 @@ public final class RomeEditor {
         return new Edit(k, old, vStar);
     }
 
-    /** Solves {@code A x = b} by Gaussian elimination with partial pivoting. */
+    /** Solves {@code A x = b} in double precision (core {@link Linalg#solve}). */
     static double[] solve(double[][] a, float[] b) {
         int n = b.length;
-        double[][] m = new double[n][n + 1];
+        double[] m = new double[n * n];
+        double[] r = new double[n];
         for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m[i], 0, n);
-            m[i][n] = b[i];
+            System.arraycopy(a[i], 0, m, i * n, n);
+            r[i] = b[i];
         }
-        for (int c = 0; c < n; c++) {
-            int p = c;
-            for (int r = c + 1; r < n; r++) {
-                if (Math.abs(m[r][c]) > Math.abs(m[p][c])) {
-                    p = r;
-                }
-            }
-            double[] t = m[c];
-            m[c] = m[p];
-            m[p] = t;
-            for (int r = 0; r < n; r++) {
-                if (r != c && m[c][c] != 0) {
-                    double f = m[r][c] / m[c][c];
-                    for (int j = c; j <= n; j++) {
-                        m[r][j] -= f * m[c][j];
-                    }
-                }
-            }
-        }
-        double[] x = new double[n];
-        for (int i = 0; i < n; i++) {
-            x[i] = m[i][i] == 0 ? 0 : m[i][n] / m[i][i];
-        }
-        return x;
+        return Linalg.solve(Tensor.of(Shape.of(n, n), m, DType.FLOAT64, Device.cpu()),
+                Tensor.of(Shape.of(n, 1), r, DType.FLOAT64, Device.cpu())).toDoubleArray();
     }
 }

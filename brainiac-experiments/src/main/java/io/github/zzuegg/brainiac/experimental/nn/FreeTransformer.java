@@ -182,7 +182,7 @@ public final class FreeTransformer {
             }
             onehot[i * codes + c] = 1;
         }
-        Var z = Var.of(Tensor.of(Shape.of(b, t, codes), onehot)).add(p).sub(p.detach());
+        Var z = Functional.straightThrough(Var.of(Tensor.of(Shape.of(b, t, codes), onehot)), p);
         Var out = upperHalf(mid, z);
         float[] target = new float[b * t];
         for (int n = 0; n < b; n++) {

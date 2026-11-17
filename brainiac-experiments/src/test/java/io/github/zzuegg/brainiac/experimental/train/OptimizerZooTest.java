@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.nn.SimpleMlp;
-import io.github.zzuegg.brainiac.experimental.tensor.SymmetricEigen;
 import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -139,11 +139,7 @@ class OptimizerZooTest {
         Var w = Var.param(Tensor.of(1, 2, 3));
         Tensor a = Tensor.of(2, 5, 0.5f);
         Sophia s = new Sophia(0.1f, 0.9f, 0f, 1, 0);   // beta2 = 0: the estimate itself
-        s.updateHessianHutchinson(List.of(w), () -> {
-            Var l = w.square().mul(a).sum().mul(0.5f);
-            l.backward();
-            return l;
-        }, 1);
+        s.updateHessianHutchinson(List.of(w), () -> w.square().mul(a).sum().mul(0.5f), 1);
         // a quadratic with diagonal Hessian a: u * (H u) = a exactly
         w.mul(a).sum().backward();
         s.step(List.of(w));
@@ -189,12 +185,12 @@ class OptimizerZooTest {
     void galoreKeepsLowRankStateAndPreconditionersAreCorrect() {
         GaLore g = new GaLore(0.01f, 4, 50, 1, 0);
         assertTrue(g.stateSize(256, 512) < 2L * 256 * 512 / 10);
-        double[][] a = {{4, 1, 0.5}, {1, 3, 0.2}, {0.5, 0.2, 2}};
-        SymmetricEigen e = SymmetricEigen.of(a);
-        Tensor inv = e.power(-1, 0);
-        Tensor prod = Tensor.of(new float[][] {{4, 1, 0.5f}, {1, 3, 0.2f}, {0.5f, 0.2f, 2}}).matmul(inv);
+        // the preconditioners are core matrix functions (Linalg), as Shampoo and SOAP use them
+        Tensor a = Tensor.of(new float[][] {{4, 1, 0.5f}, {1, 3, 0.2f}, {0.5f, 0.2f, 2}});
+        Tensor prod = a.matmul(Linalg.symmetricPower(a, -1, 0));
         assertArrayEquals(new float[] {1, 0, 0, 0, 1, 0, 0, 0, 1}, prod.toArray(), 1e-4f);
-        assertTrue(e.values()[0] >= e.values()[1] && e.values()[1] >= e.values()[2]);
+        float[] values = Linalg.eigh(a)[0].toArray();
+        assertTrue(values[0] <= values[1] && values[1] <= values[2]);
     }
 
     @Test

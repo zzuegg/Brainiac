@@ -1,8 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.nn.Activation;
-import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import java.util.SplittableRandom;
 
@@ -15,7 +14,8 @@ import java.util.SplittableRandom;
  * {@code [batch, length * vocab]} logits. During training each symbol is sampled as
  * {@code softmax((logits + g) / tau)} with Gumbel noise {@code g}; with {@code hard} the
  * forward pass sends the exact one-hot while the gradient flows through the soft sample
- * (straight-through). At test time the channel sends the argmax symbols.
+ * (straight-through), all by core {@link Functional#gumbelSoftmax}. At test time the channel
+ * sends the argmax symbols.
  */
 public final class GumbelChannel {
 
@@ -65,17 +65,8 @@ public final class GumbelChannel {
      */
     public Var sample(Var logits, boolean hard) {
         int batch = logits.shape().dim(0);
-        float[] g = new float[batch * length * vocab];
-        for (int i = 0; i < g.length; i++) {
-            g[i] = (float) -Math.log(-Math.log(random.nextDouble(1e-10, 1)));
-        }
-        Var soft = Activation.SOFTMAX.forward(logits.add(Tensor.of(Shape.of(batch, length * vocab), g))
-                .div(temperature).reshape(batch, length, vocab)).reshape(batch, length * vocab);
-        if (!hard) {
-            return soft;
-        }
-        Tensor oneHot = Tensor.of(Shape.of(batch, length * vocab), argmaxOneHot(soft.value().toArray()));
-        return soft.sub(soft.detach()).add(oneHot);
+        return Functional.gumbelSoftmax(logits.reshape(batch, length, vocab), temperature, hard, random)
+                .reshape(batch, length * vocab);
     }
 
     /**

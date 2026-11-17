@@ -5,6 +5,9 @@ import io.github.zzuegg.brainiac.nn.Dense;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Linalg;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.List;
@@ -232,42 +235,17 @@ public final class LastLayerLaplace {
         return out;
     }
 
-    /** Inverts a symmetric positive definite matrix with Gauss-Jordan elimination. */
+    /** Inverts a symmetric positive definite matrix in double precision (core {@link Linalg#inverse}). */
     static double[][] invert(double[][] a) {
         int n = a.length;
-        double[][] m = new double[n][2 * n];
+        double[] m = new double[n * n];
         for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m[i], 0, n);
-            m[i][n + i] = 1;
+            System.arraycopy(a[i], 0, m, i * n, n);
         }
-        for (int c = 0; c < n; c++) {
-            int p = c;
-            for (int r = c + 1; r < n; r++) {
-                if (Math.abs(m[r][c]) > Math.abs(m[p][c])) {
-                    p = r;
-                }
-            }
-            double[] t = m[c];
-            m[c] = m[p];
-            m[p] = t;
-            double piv = m[c][c];
-            for (int j = 0; j < 2 * n; j++) {
-                m[c][j] /= piv;
-            }
-            for (int r = 0; r < n; r++) {
-                if (r != c) {
-                    double f = m[r][c];
-                    if (f != 0) {
-                        for (int j = 0; j < 2 * n; j++) {
-                            m[r][j] -= f * m[c][j];
-                        }
-                    }
-                }
-            }
-        }
+        double[] inv = Linalg.inverse(Tensor.of(Shape.of(n, n), m, DType.FLOAT64, Device.cpu())).toDoubleArray();
         double[][] out = new double[n][n];
         for (int i = 0; i < n; i++) {
-            System.arraycopy(m[i], n, out[i], 0, n);
+            System.arraycopy(inv, i * n, out[i], 0, n);
         }
         return out;
     }

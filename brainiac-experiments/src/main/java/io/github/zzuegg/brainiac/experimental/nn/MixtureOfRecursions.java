@@ -124,7 +124,7 @@ public final class MixtureOfRecursions implements Layer {
             Var gate = sel.matmul(routers.get(r)).sigmoid();
             Var out = block.forward(sel.reshape(b, c, features), training).reshape(b * c, features);
             Var delta = out.sub(sel).mul(gate);
-            h = h.add(MixerOps.scatterAdd(delta, 0, ids, b * t));
+            h = h.add(delta.scatterAdd(0, ids, b * t));
             active = next;
         }
         lastDepths = depth;

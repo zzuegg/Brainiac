@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,8 +25,8 @@ import java.util.function.Supplier;
  *       {@link #sampleLabels}), the Gauss-Newton-Bartlett estimate is
  *       {@code batch * g_hat^2}.</li>
  *   <li>{@link #updateHessianHutchinson(List, Supplier, long)} (Sophia-H): Hutchinson's
- *       {@code u * (H u)} with a random sign vector {@code u}, here with the Hessian-vector
- *       product from a finite difference of two gradients.</li>
+ *       {@code u * (H u)} with a random sign vector {@code u} and the exact Hessian-vector
+ *       product of double backpropagation.</li>
  * </ul>
  */
 public final class Sophia extends SlotOptimizer {
@@ -101,43 +102,37 @@ public final class Sophia extends SlotOptimizer {
     }
 
     /**
-     * Updates the Hessian estimate with Hutchinson's estimator {@code u * Hu}, where
-     * {@code Hu = (grad(w + eps u) - grad(w)) / eps}.
+     * Updates the Hessian estimate with Hutchinson's estimator {@code u * Hu}, with the exact
+     * Hessian-vector product {@code Hu} from core nested autograd
+     * ({@link Var#gradients(Var, List, boolean)}: the gradient of {@code grad . u}). Leaves the
+     * parameters' gradients untouched.
      *
      * @param parameters the parameters
-     * @param lossAndBackward computes the loss on a batch and runs {@code backward()}
+     * @param loss computes the loss on a batch; it need not run {@code backward()}
      * @param seed the seed of the sign vector
      */
-    public void updateHessianHutchinson(List<Var> parameters, Supplier<Var> lossAndBackward, long seed) {
-        float eps = 1e-3f;
+    public void updateHessianHutchinson(List<Var> parameters, Supplier<Var> loss, long seed) {
         SplittableRandom r = new SplittableRandom(seed);
-        Map<Var, Tensor> saved = new IdentityHashMap<>();
-        Map<Var, Tensor> u = new IdentityHashMap<>();
-        for (Var p : parameters) {
-            saved.put(p, p.grad());
-            p.zeroGrad();
-        }
-        lossAndBackward.get();
-        Map<Var, Tensor> g0 = new IdentityHashMap<>();
-        for (Var p : parameters) {
-            g0.put(p, p.grad());
-            p.zeroGrad();
+        List<Var> grads = Var.gradients(loss.get(), parameters, true);
+        List<Tensor> u = new ArrayList<>(parameters.size());
+        Var gu = null;
+        for (int i = 0; i < parameters.size(); i++) {
+            Var p = parameters.get(i);
             float[] signs = new float[Math.toIntExact(p.shape().size())];
-            for (int i = 0; i < signs.length; i++) {
-                signs[i] = r.nextBoolean() ? 1 : -1;
+            for (int j = 0; j < signs.length; j++) {
+                signs[j] = r.nextBoolean() ? 1 : -1;
             }
-            Tensor ui = Tensor.of(p.shape(), signs);
-            u.put(p, ui);
-            p.assign(p.value().add(ui.mul(eps)));
+            Tensor ui = Tensor.of(p.shape(), signs).to(p.value().device());
+            u.add(ui);
+            Var term = grads.get(i).mul(Var.of(ui)).sum();
+            gu = gu == null ? term : gu.add(term);
         }
-        lossAndBackward.get();
-        for (Var p : parameters) {
-            p.assign(p.value().sub(u.get(p).mul(eps)));
-            if (p.grad() != null && g0.get(p) != null) {
-                Tensor hu = p.grad().sub(g0.get(p)).div(eps);
-                blend(p, u.get(p).mul(hu));
-            }
-            p.setGrad(saved.get(p));
+        if (gu == null) {
+            return;
+        }
+        List<Var> hu = Var.gradients(gu, parameters, false);
+        for (int i = 0; i < parameters.size(); i++) {
+            blend(parameters.get(i), u.get(i).mul(hu.get(i).value()));
         }
     }
 

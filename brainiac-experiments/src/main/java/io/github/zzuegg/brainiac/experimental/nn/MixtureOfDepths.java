@@ -160,7 +160,7 @@ public final class MixtureOfDepths implements Layer {
             }
             Tensor ids = MixerOps.ids(flatIdx);
             Var out = block.forward(flat.gather(0, ids).reshape(b, c, features), training).reshape(b * c, features);
-            update = MixerOps.scatterAdd(out.mul(weight.gather(0, ids).reshape(b * c, 1)), 0, ids, b * t);
+            update = out.mul(weight.gather(0, ids).reshape(b * c, 1)).scatterAdd(0, ids, b * t);
         } else {
             List<Var> parts = new ArrayList<>();
             List<Integer> all = new ArrayList<>();
@@ -180,7 +180,7 @@ public final class MixtureOfDepths implements Layer {
             }
             if (!parts.isEmpty()) {
                 Var cat = parts.size() == 1 ? parts.getFirst() : Var.concat(0, parts.toArray(Var[]::new));
-                update = MixerOps.scatterAdd(cat, 0, MixerOps.ids(all.stream().mapToInt(Integer::intValue).toArray()),
+                update = cat.scatterAdd(0, MixerOps.ids(all.stream().mapToInt(Integer::intValue).toArray()),
                         b * t);
             }
         }

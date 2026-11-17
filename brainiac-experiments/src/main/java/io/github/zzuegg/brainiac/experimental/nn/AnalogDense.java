@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Init;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
@@ -112,7 +113,7 @@ public final class AnalogDense implements Layer {
         float levels = (1 << (adcBits - 1)) - 1;
         Var clamped = y.clamp(-adcRange, adcRange);
         Tensor step = clamped.value().mul(levels / adcRange).round().mul(adcRange / levels);
-        return clamped.add(Var.of(step.sub(clamped.value())));   // straight-through rounding
+        return Functional.straightThrough(Var.of(step), clamped);
     }
 
     @Override

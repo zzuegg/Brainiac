@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.autograd.Trig;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -121,8 +120,8 @@ public final class FourierFeatures implements Layer {
                     + "], got " + input.shape());
         }
         Var phase = input.matmul(Var.of(frequencies.to(input.value().device())));
-        Var sin = Trig.sin(phase);
-        Var cos = Trig.cos(phase);
+        Var sin = phase.sin();
+        Var cos = phase.cos();
         return keepInput ? Var.concat(1, sin, cos, input) : Var.concat(1, sin, cos);
     }
 
