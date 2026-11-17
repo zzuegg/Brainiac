@@ -1080,6 +1080,7 @@ public final class Generator {
                 logits = model.next(state, feed, null);
             }
         }
+        state.close();
         for (int r = 0; r < alive.length; r++) {
             int[] t = alive[r];
             finished.add(new Hyp(t, scores[r], scores[r] / Math.pow(Math.max(1, t.length), lengthPenalty)));

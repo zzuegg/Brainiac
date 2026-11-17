@@ -38,6 +38,7 @@ final class Kernels {
             case ROUND -> { for (int i = from; i < to; i++) y[i] = (float) Math.rint(x[i]); }
             case SIN -> { for (int i = from; i < to; i++) y[i] = (float) Math.sin(x[i]); }
             case COS -> { for (int i = from; i < to; i++) y[i] = (float) Math.cos(x[i]); }
+            case ATAN -> { for (int i = from; i < to; i++) y[i] = (float) Math.atan(x[i]); }
         }
     }
 

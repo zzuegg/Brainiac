@@ -32,8 +32,18 @@ final class Muon extends StatefulOptimizer {
         this.nsSteps = nsSteps;
     }
 
-    /** The orthogonal-ish matrix nearest {@code g}: U S' V^T with S' near 1. */
-    static Tensor orthogonalize(Tensor g, int steps) {
+    /**
+     * The orthogonal-ish matrix nearest {@code g}: {@code U S' V^T} with {@code S'} near 1, by
+     * quintic Newton-Schulz steps, as Muon applies it to each update.
+     *
+     * @param g a matrix
+     * @param steps the Newton-Schulz steps; 5 is Muon's default
+     * @return a matrix of the same shape
+     */
+    public static Tensor orthogonalize(Tensor g, int steps) {
+        if (g.rank() != 2) {
+            throw new IllegalArgumentException("orthogonalize takes a matrix, got " + g.shape());
+        }
         boolean tall = g.shape().dim(0) > g.shape().dim(1);
         Tensor x = tall ? g.transpose() : g;
         Tensor norm = x.square().sum().sqrt();
