@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105.
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1".
 
 ## How the module is laid out
 
@@ -15,6 +15,7 @@ Rules this page follows:
 
 - Every number was found in one of the sources below. None was estimated. Numbers keyed **Run** were printed by the tests in the full suite run of 2026-11-17 (577 tests, all passing); everything else predates that run. Tests that printed nothing in that run were then given print statements (no assertion, threshold, seed or budget changed) and the module was run again the same day (576 tests, all passing). Their numbers are also keyed **Run**.
 - Where a Run number clearly disagrees with an earlier recorded number, both are given and the difference is noted. PR #105 changed four things numerically: GumbelChannel's noise stream, and exact second-order maths in MAML, Sophia and GradientPenalty.
+- Wave 4 numbers are keyed **Run-w4**: they were printed by the tests in the full suite runs after wave 4 on 2026-11-17, one of the merged WP1–WP5 work (690 tests, all passing) and one of the WP6 branch (601 tests, all passing). Where a wave 4 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave4)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -33,6 +34,8 @@ Source keys (given under each experiment):
 | R-tricks | Session transcript: report of the training tricks, SSL and vision worker |
 | Test | The experiment's JUnit test (assertions, thresholds, comments) |
 | Run | Full suite run, 2026-11-17, after the core-hooks switch (PR #105) |
+| Run-w4 | Full suite runs after wave 4, 2026-11-17: merged WP1–WP5 (690 tests) and the WP6 branch (601 tests), all passing |
+| R-wave4 | Session transcript: final reports of the six wave 4 work-package agents (WP1–WP6) |
 
 ---
 
@@ -119,12 +122,13 @@ Sources: R-agents, PR92, Test, Run.
 | Sender and receiver trained end to end through a Gumbel-softmax channel | Accuracy, training objects / held-out objects | 0.97 / 0.92; Run: 0.97 / 0.93 with 46 distinct messages | Chance: 0.25 | The invented code generalizes to unseen objects. The Run (new GumbelChannel noise stream, PR #105) agrees within a point. |
 | Same | Topographic similarity | 0.65 | Test requires > 0.2 | The emergent language is fairly compositional. |
 
-### ReflectiveSolver (Reflexion)
-Sources: R-agents, PR92, Test.
+### ReflectiveSolver (Reflexion; W4 5.10: learned-memory agent loop)
+Sources: R-agents, PR92, Test, Run-w4, R-wave4.
 
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | Reflexion: lessons from "too high/too low" feedback filter later samples (tiny LM, multiplication) | Share solved | 0.54 | Plain retrying with the same feedback: 0.38; first attempt: 0.22 | A memory of lessons beats retrying. Caveat: lessons filter samples; the model is not conditioned on reflection text. |
+| Learned-memory agent (W4 5.10: MemGPT + Reflexion fusion; `ReflectiveMemoryAgent` over `ReflexionLoop`, `MemoryStream`, `VirtualContextPager`), 240 recurring and commuted products, 2 trials each (R-wave4) | Lifelong solve rate (first try; last quarter) | 0.454 (0.413; 0.583) (Run-w4) | Reflexion alone: 0.117 (0.050; 0.150) (Run-w4) | Reflections stored in a paged long-term store carry over between tasks; the solve rate climbs over the sequence and ends near 4x Reflexion's. |
 
 ### DebatePanel (debate and voting)
 Sources: R-agents, PR92, Test, Run.
@@ -135,17 +139,124 @@ Sources: R-agents, PR92, Test, Run.
 | Debate in answer space | Same | 0.53 | Average single agent: 0.47; vote: 0.52 | Debate is only marginally above voting (the agents exchange answers, not arguments). |
 | Product of experts | Same | 0.50 (Run) | Average single agent: 0.47; best single agent: 0.49 | Beats every member, but below voting and debate. |
 
+### GenerativeAgentsRecall (W4 5.1: Generative Agents memory stream)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Memory stream scored by recency × importance × relevance, with reflection summaries; toy town over several days, 320 memories, 6 records handed to the reader per question | Recall of past events | 0.89 (latest 0.80, event 0.87, usual place 1.00) | Sliding window: 0.58; `VirtualContextPager` (MemGPT pager): 0.46; relevance-only stream: 0.53 | The three-factor score and reflections beat every simpler memory by at least 0.31. |
+
+### SkillCurriculum (W4 5.2: Voyager skill library)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Auto-curriculum plus a growing library of verified skills retrieved by embedding (simulated program writer, R-wave4) | Tasks solved of 30 after 30 / 60 / 90 steps | 9 / 21 / 24, with 24 skills stored | No library: 10 / 14 / 14; `ReflexionLoop`: 10 / 14 / 15 | The library starts about level and then keeps compounding while both baselines plateau at 14 to 15. |
+
+### AutoResearcher (W4 5.7: AI Scientist pipeline, toy)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Idea → reviewer (logistic regression over settings) → real Brainiac MLP run on two moons → write-up → reproduction check | Share of runs that beat the baseline experiment (accuracy 0.960) | 0.67, with 6 findings reproduced; best 1.000 | Random config search: 0.38; best 1.000 | The reviewer filter almost doubles the hit rate, though both reach the same best run. |
+
+### LatentActionPlay (W4 6.1: Genie latent-action world model)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Latent-action world model (Gumbel bottleneck) trained on 6x6 grid-world frames with no action labels | Action recovery | 0.763 | Chance: 0.25 | Discrete latent actions line up with the true actions three times better than chance. The test threshold was lowered to 0.7 to match (R-wave4). |
+| Same, driven by its latent codes | Next-cell accuracy | 1.000 | Action-conditioned `MlpWorldModel`: 1.000 | The model learned from action-free frames is as good a simulator as one given the actions. |
+
 ---
 
 ## attention
 
 ### AttentionShootout
-Sources: R-attn, Test, Run.
+Sources: R-attn, Test, Run, Run-w4.
 
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | Gated attention (NoPE) and Differential attention | Associative recall accuracy | 1.00 | Test requires > 0.9; core TransformerBlock not reported | Both solve associative recall. |
-| Every variant in the lineup (core TransformerBlock, differential, gated NoPE, gated rotary, forgetting (FoX), native sparse (NSA), nGPT, universal, feedback, Kimi-style 3:1 hybrid) | Parameters; recall(4,4,2) accuracy after 2 training steps (smoke run) | Parameters: transformer 3248, differential 1040, gated NoPE 1296, gated rotary 1296, forgetting 1314, native sparse 1406, nGPT 2672, universal 3265, feedback 3589, hybrid 3:1 10768. Accuracy 0.11 to 0.37 (Run) | Chance about 0.25 | A plumbing check only: every variant builds and trains through its `LayerSpec`. Two steps are far too few to rank them, so the accuracies are noise around chance.
+| Every variant in the lineup (core TransformerBlock, differential, gated NoPE, gated rotary, forgetting (FoX), native sparse (NSA), nGPT, universal, feedback, Kimi-style 3:1 hybrid) | Parameters; recall(4,4,2) accuracy after 2 training steps (smoke run) | Parameters: transformer 3248, differential 1040, gated NoPE 1296, gated rotary 1296, forgetting 1314, native sparse 1406, nGPT 2672, universal 3265, feedback 3589, hybrid 3:1 10768. Accuracy 0.11 to 0.37 (Run) | Chance about 0.25 | A plumbing check only: every variant builds and trains through its `LayerSpec`. Two steps are far too few to rank them, so the accuracies are noise around chance. |
+| Wave 4 additions to the lineup: latent (MLA), sigmoid, Softpick, stick-breaking, talking heads, selective, sink logit, parallel hybrid | Parameters; recall(4,4,2) accuracy after 2 training steps (smoke run) | Parameters: latent (MLA) 1096, sigmoid 1024, softpick 1024, stick-breaking 1024, talking heads 1032, selective 1024, sink logit 1026, parallel hybrid 3782. Accuracy 0.17 to 0.38 (Run-w4) | Chance about 0.25 | Plumbing check only, as above. The real comparisons are in the experiments below. |
+
+Wave 4 (WP1) experiments share the harness `ArchitectureBench`: a toy language (a noisy Markov prefix followed by a repeated span, so the loss mostly measures how fast attention learns to retrieve), retrieval and exact-lag tasks at several lengths, and baselines built from the core `TransformerBlock`. One seed each.
+
+### KvEfficientAttention (W4 1.1: multi-head latent attention)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MLA (latent 16, decoupled RoPE keys), latent-only KV cache | Validation loss; cached values per token | 1.891; 40 (20,896 params) | Core MHA: 1.807; 128 (20,928 params). Core GQA kv=1: 1.960; 32 (17,856 params) | MLA lands between MHA and GQA in loss while caching less than a third of MHA's values. |
+
+### DeepStackRefinements (W4 1.2: value residual learning)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Value residual (every layer's V mixed with the first layer's), depth 5 | Validation loss | 2.801 (29,044 params) | Same stack without it: 2.828 (29,040); core `TransformerBlock` stack: 2.996 (29,640) | A small gain over the plain stack. Only depth 5 was measured, not the planned 8 and 16. |
+
+### CrossLayerKv (W4 1.3: cross-layer KV sharing, CLA and YOCO)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CLA x2 (pairs of layers share one KV projection) | Validation loss; cache values per token | 2.428; 128 (37,120 params) | Unshared stack: 2.522; 256 (41,216 params) | Half the cache and a lower loss. |
+| YOCO, window 8 (upper half reuses one global cache) | Same | 2.237; 64 (39,200 params) | Same | A quarter of the cache and the best loss of the three. |
+
+### AttentionWeightings (W4 1.4: sigmoid attention, 1.7: Softpick)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Sigmoid attention (`-log n` bias, no row normalisation) | Validation loss | 1.542 | Softmax: 1.721 | Clearly better LM loss than softmax (but see RecallExtrapolation). |
+| Same | Attention mass per row; outlier measure | 1.694; 13.61 | Softmax: 1.000; 5.84 | Rows sum to more than 1 and activation outliers more than double. |
+| Softpick | Validation loss; first-token sink share; attention mass; 4-bit quantization error | 1.731; 0.065; 0.855; 0.0952 | Softmax: 1.721; 0.084; 1.000; 0.0970 | Shrinks the sink and slightly lowers 4-bit error at about equal loss. |
+| Core `GatedAttention` (for reference) | Validation loss; 4-bit error | 1.781; 0.0964 | Softmax: 1.721; 0.0970 | Slightly worse loss than plain softmax on this task. |
+
+### RecallExtrapolation (W4 1.4: sigmoid, 1.6: SSMax, 1.12: iRoPE)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Scalable-Softmax (SSMax) | Recall at 4 / 8 / 16 pairs (trained on 4) | 0.992 / 0.988 / 0.961 | Softmax: 1.000 / 1.000 / 0.957 | Level with softmax: no extrapolation gain at 4x the pairs. |
+| Sigmoid attention | Same | 0.949 / 0.910 / 0.820 | Same | Its better LM loss does not carry over: recall drops off with more pairs. |
+| iRoPE (interleaved NoPE/RoPE), 2 layers | Same | 0.965 / 0.957 / 0.941 | All-RoPE: 0.996 / 0.945 / 0.613; all-NoPE: 0.988 / 0.996 / 0.977 | Far better than all-RoPE at 16 pairs, but all-NoPE does slightly better still. |
+
+### LagExtrapolation (W4 1.5: stick-breaking attention)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Stick-breaking attention, no position encoding | Lag-2 accuracy at length 12 / 24 / 48 | 1.000 / 0.998 / 0.998 | Softmax + RoPE: 1.000 / 1.000 / 0.938; softmax NoPE: 0.470 / 0.407 / 0.333 | Built-in recency holds at 4x the training length, where RoPE starts to slip. |
+
+### SinkAndRegisters (W4 1.8: sink logit and registers, 1.9: talking heads)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Learned per-head sink logit | Validation loss; first-token share; attention mass | 1.539; 0.047; 0.708 | Softmax: 1.721; 0.084; 1.000 | An "attend to nothing" option lowers the loss and nearly halves the first-token sink. |
+| 2 register tokens | Validation loss; first-token share | 1.529; 0.047 | Same | Same effect, best loss of the row. Measured on the toy language only; the planned VisionShootout row was not done (R-wave4). |
+| Talking-heads attention | Validation loss | 1.611 | Softmax: 1.721 | Mixing across heads helps. |
+
+### SelectiveContext (W4 1.10: selective attention)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Selective attention, context pruned to 0.74 | Recent-recall accuracy | 0.996 (unpruned 1.000) | Softmax with H2O at the same budget: 0.602; full softmax: 0.656 | Selective attention loses almost nothing from pruning a quarter of the context and beats softmax by a wide margin. The H2O baseline is an idealised per-query key mask, not a real cache policy (R-wave4). |
+
+### MoeRefinements (W4 1.15: sparse upcycling, 1.16: expert-choice routing)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Expert-choice routing, capacity 2 | Validation MSE; load CV; dropped share | 0.708; 0.000; 0.000 | `FineGrainedMoe` top-2: 0.633; 0.426; 0.000 (zero predictor 2.890) | Perfect balance but a worse loss: tokens no expert picks get zero output, and this regression task has no residual stream to carry them (R-wave4). |
+| Token choice, capacity factor 1.25 + router z-loss | Same | 0.803; 0.356; 0.033 | Same | Capping capacity drops 3.3% of tokens and costs loss. |
+| Token choice + z-loss + balance loss | Same | 0.791; 0.282; 0.025 | Same | The balance loss evens the load a little more; still behind top-2. |
+| Sparse upcycling (MoE initialised as exact copies of the trained dense FFN) | Validation MSE after continued training | 0.880 | Dense continued: 0.950; MoE from scratch at equal compute: 0.541 | Beats continuing the dense model, but a MoE trained from scratch is far better here. |
+| Drop-upcycling (half of each expert re-initialised) | Same | 0.964 | Same | Worse than continuing the dense model. |
 
 ---
 
@@ -166,6 +277,15 @@ Sources: Test, Run.
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | Self-contained HTML page of attention reads and evictions | Steps; page size; evictions | 40 steps, 53,369 bytes, 32 evictions (Run) | n/a | The page shows every step and all 32 evictions of 40 tokens through 8 slots, with no scripts or external files. |
+
+### KvQuantization (W4 4.5: KIVI 2-bit KV cache)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| KIVI 2-bit (keys per channel, values per token, full-precision recent window), 384 steps with outlier key channels (R-wave4) | Relative attention-output error; KB held | 0.453; 32 KB | float32: 0; 192 KB. H2O (`EvictingKvCache.heavyHitters`) at the same 32 KB: 1.213 | At equal memory, quantizing beats evicting by a wide margin. |
+| KIVI 4-bit | Same | 0.084; 43 KB | Same | About a fifth of the 2-bit error for 11 KB more. |
+| 2-bit with per-token keys | Same | 1.667; 32 KB | KIVI 2-bit: 0.453 | Per-channel key quantization is what makes 2-bit work when keys have outlier channels. |
 
 ---
 
@@ -216,6 +336,13 @@ Sources: R-rl, Test, Run.
 | MaxEnt IRL from 5 demos (slippery grid) | Return | 0.92 (Run) | Expert: 0.92; random: -0.09 | Recovers the expert's return exactly. |
 | Behaviour cloning, same demos | Return | 0.84 (Run) | Expert: 0.92 | Close to the expert. |
 | GAIL, same demos | Return | -0.20 (Run) | Random: -0.09 | Fails in this experiment, below random. The block-level `ImitationTest` (Run) shows GAIL reaching 0.95 vs random -0.06 in its own setup. |
+
+### DifferentiablePhysicsControl (W4 6.6: differentiable physics)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Backprop through a mass-spring "flexible arm" simulator (BPTT), 2000 episodes | Mean final distance to the goal (same MLP for all) | 0.024 | CEM over weights: 0.240; core PPO: 0.691; untrained: 2.423 | Gradients through the physics give a controller 10x closer than CEM and nearly 30x closer than PPO at equal samples. |
 
 ---
 
@@ -271,6 +398,28 @@ Sources: R-evo, Test.
 |---|---|---|---|---|
 | Ensemble of the best distinct designs from a neuroevolution run, abstaining on low-confidence inputs | Risk at 50% coverage | 0 | Full coverage: 0.097 | Disagreement points to exactly the mistakes worth abstaining on. |
 | Same | Mutual information (disagreement) | 0.10 out of distribution | 0.0016 in distribution | Disagreement flags out-of-distribution inputs. |
+
+### EvolvedKernels (W4 5.5: AlphaEvolve-style program evolution)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Program evolution with a MAP-Elites archive and an inspiration-aware proposer (a simulated, data-flow-aware writer), softmax kernel, 8000 evaluations (R-wave4) | Fitness (half budget) | 12.09 (7.25); finds the stable max-subtract kernel with a reciprocal multiply | Blind mutation: 1.46 (1.46); regularized evolution (AutoML-Zero): 1.46; naive softmax kernel: 5.80 | Only the guided proposer beats the hand-written naive kernel. |
+| Same, matmul loop nest through a simulated LRU cache | Cache misses | 896 | Blind mutation: 1280; regularized evolution: 896; textbook ijk: 33,024 | Ties regularized evolution; both beat the textbook loop order by far. Kernels are evolved as DSL programs, not Java source (R-wave4). |
+
+### SelfImprovingCoders (W4 5.6: Darwin Gödel Machine, toy)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Agents that edit their own synthesizer scaffold, kept in an open-ended archive, 25 generations (101 agents) | Benchmark score | 0.561 (scaffold length 4, with pruning) | Greedy hill-climbing: 0.504 (stuck at length 3, no pruning); start: 0.431 | The archive crosses a valley that greedy search cannot. The valley comes from a compute penalty chosen so single edits score worse (R-wave4). |
+
+### LearnedLibraries (W4 5.8: DreamCoder library learning)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Wake-sleep library learning, 65 list tasks, 4 rounds | Tasks solved per round | 38, 42, 50, 50, with 14 abstractions learned (276 ms) | Fixed DSL: 38, 38, 38, 38 (126 ms) | Compressing solved programs into new primitives solves 12 more tasks; a fixed DSL never improves. |
 
 ---
 
@@ -384,6 +533,13 @@ Sources: R-gen, PR92, Test.
 |---|---|---|---|---|
 | Five voting columns | Sensations needed to recognize an object | 2.3 | One column: 4.5 | Voting across columns halves the movements needed. |
 
+### SpikingLanguageModel (W4 6.5: SpikeGPT)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| RWKV-style LM with LIF spiking activations and surrogate gradients, counting sequences | Perplexity; share of neurons spiking per token | 1.1311; 0.268 | Non-spiking RWKV: 1.1288 (uniform: 16) | Spiking costs almost nothing in perplexity with about a quarter of the neurons active. |
+
 ---
 
 ## generative
@@ -455,6 +611,59 @@ Sources: Test, Run.
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | LLaDA-style masked diffusion text model | Share of samples that are real words | 0.90 (Run) | Autoregressive model of the same size: 1.00; untrained diffusion: 0.00 (Run) | Diffusion learns the words but trails autoregressive decoding slightly. |
+
+### CodecLanguageModel (W4 6.2: MusicGen-style codec LM)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Transformer over 3-stage RVQ codec tokens (codec SNR 8.8 dB) with the delay pattern | NLL per code | 2.120 | Flattened RVQ: 2.029 | The flattened LM models the codes slightly better. |
+| Same | Continuation code accuracy; SNR; model calls | 0.210; -1.8 dB; 6 calls | Flattened: 0.184; -1.6 dB; 12 calls | Delay halves the calls at about the same quality. |
+
+### MaskGit (W4 6.9: MaskGIT)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MaskGIT parallel decoding of toy-image VQ tokens, cosine masking | Distance / real share / distinct at 4, 8, 16 steps | 4 steps 0.161 / 0.27 / 17; 8 steps 0.076 / 0.48 / 27; 16 steps 0.056 / 0.58 / 32 | Autoregressive, 16 steps: 0.049 / 0.75 / 33 | Quality rises with steps, but MaskGIT trails the autoregressive model at equal steps. |
+
+### NextScalePrediction (W4 6.10: VAR next-scale prediction)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| VAR over coarse-to-fine multi-scale VQ maps (tokenizer error 0.0287), 3 calls | Distance; real share; distinct; classes | 0.209; 0.09; 7; 3 | MaskGIT, 3 steps: 0.215; 0.15; 13. v-prediction DDPM, 3 DDIM steps: distance 0.238 | Lowest distance at 3 calls, but fewer real-looking and fewer distinct samples than MaskGIT: a mixed result. |
+
+### OneStepGenerators (W4 6.11: MeanFlow and shortcut models)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MeanFlow, one step, 4-blob ring | Distance; near share; modes | 0.386; 0.55; 4 | Flow matching: 1.300; 0.00; 3. Reflow: 0.940; 0.02; 4. Consistency model: 0.444; 0.39; 4 | Best one-step generator here, ahead of the consistency model. |
+| Shortcut model, one step | Same | 0.492; 0.33; 4 | Same | Beats reflow and flow matching, behind the consistency model. |
+| MeanFlow JVP (double backward) | Maximum relative error vs central differences | 0.0001 (Run-w4; the report gave 0.0015) | n/a | The JVP is correct. |
+
+### DiffusionTargets (W4 6.12: v-prediction and min-SNR weighting)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| v-prediction, 10 DDIM steps | Distance to the nearest real image per pixel | 0.2686 | ε-prediction: 0.5735 | v-prediction halves the distance. |
+| min-SNR weighting | Same | ε + min-SNR 0.5365; v + min-SNR 0.2686 | ε: 0.5735; v: 0.2686 | min-SNR helps ε-prediction a little and v-prediction not at all. |
+
+### NovelViewSynthesis (W4 6.7: 3D Gaussian Splatting)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| 64 3-D Gaussian splats (quaternion covariance, EWA projection, depth sort, alpha compositing), three ray-traced spheres, 8 train and 8 held-out views (R-wave4), 400 steps | Held-out PSNR (train); time | 25.68 dB (26.70); 1.3 s | NeRF-style `FourierFeatures` MLP, 24 samples per ray: 25.59 dB (27.17); 7.3 s. All-black image: 16.84 dB | Same held-out quality as the NeRF baseline in about a fifth of the time. The report gave 2.0 s vs 8.0 s (R-wave4); wall time varies. |
+
+### ThermodynamicDenoising (W4 6.8: denoising thermodynamic models)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DTM: 4 chained conditional Boltzmann stages on `PBitIsingMachine`, 4x4 bars and stripes | Valid share; distinct patterns of 30; MMD | 0.963; 30; 0.0045 | Single Boltzmann machine: 0.973; 30; 0.0059. Thresholded DDPM, 10 steps: 0.145; 26; 0.0110 | Negative: the DTM is only on par with a single machine (slightly better MMD, slightly fewer valid samples). On 6x6 data the single machine was clearly better, 0.903 valid vs 0.413 (R-wave4). |
 
 ---
 
@@ -560,6 +769,96 @@ Sources: R-llm.
 | Sequence packing with document masks | Loss | Equal to unpacked training (to 1e-4) | Unpacked training | Packing is exact. |
 | Vocabulary trimming | Logits of kept tokens | Exactly preserved | Untrimmed model | Lossless for kept tokens. |
 
+### ActivationSparsityDecoding (W4 1.14: TEAL / CATS activation sparsity)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Training-free magnitude thresholding, 25% sparsity | Validation loss; density; tokens/s; speed-up | 2.821; 0.760; 17,194; 1.16x | Dense: 2.839; 1.000; 14,820 tokens/s | Free at 25%. |
+| Same, 40% | Same | 2.854 (+0.015); 0.589; 20,769; 1.40x | Same | A small loss cost for a 1.4x decode speed-up. |
+| Same, 50% | Same | 2.925 (+0.086); 0.497; 22,739; 1.53x | Same | The loss cost grows quickly past 40%. Speed-ups are wall-clock on a shared machine; the report saw 1.39–1.79x at 40% (R-wave4), and the test asserts only loss and density. |
+
+### DistillationShootout (W4 3.12: GKD, 3.13: MiniLLM, 3.14: sequence-level KD, 3.15: feature distillation)
+Sources: Run-w4, R-wave4.
+Teacher 128 wide with accuracy 1.00; student 24 wide, 300 steps (R-wave4).
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| On-policy distillation (GKD, generalised JSD) | Student accuracy; perplexity; teacher tokens | 0.61; 1.872; 24,376 | Offline logit KD (`DistillationLoss`): 0.48; 1.714; 23,572. SFT: 0.49; 1.797; 0 | Clearly the best student accuracy, at a slightly higher perplexity. |
+| MiniLLM (reverse KL on the student's own samples) | Same | 0.17; 5.162; 22,725 | Same | Negative: pure reverse KL with no mixed-in pretraining loss collapses the student. |
+| Sequence-level KD (greedy and beam teacher outputs) | Same | 0.49; 1.797; 245 | Same | Equals SFT because the teacher is perfect, at about 1% of logit KD's teacher tokens. |
+| Feature/hidden-state distillation | Same | 0.50; 1.680; 23,572 | Same | Best perplexity, about level with logit KD on accuracy. |
+
+### LoraScaling (W4 3.17: rsLoRA and LoftQ, PeftShootout additions)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| rsLoRA (α/√r scaling) | New-task loss at rank 2 / 16 | 0.109 / 0.013 | LoRA: 0.152 / 0.079 | Better at both ranks, and the gap widens at rank 16. |
+| LoftQ initialisation on a 4-bit base | 4-bit weight error at init | 0.596 | QLoRA: 0.833 | Starts closer to the full-precision weights. |
+| Same | New-task loss after 30 steps on the 4-bit base | 0.335 | QLoRA: 0.122; fp32 LoRA: 0.108 | Negative: the better start does not help; LoftQ ends far behind QLoRA. |
+
+### NoisyPreference (W4 3.5: cDPO and rDPO, 3.6: DPOP and β-DPO)
+Sources: Run-w4, R-wave4.
+`PreferenceTuning.noisy` with 20% of preference labels flipped. The pretrained base strongly prefers the rejected style.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Conservative DPO (label smoothing) | Held-out margin after (before -35.65); chosen log-likelihood drift; absolute win rate | -34.30; +1.04; 0.000 | DPO: -32.07; +1.98; 0.000 | No better than DPO under noise. |
+| Robust DPO (unbiased noisy-label correction) | Same | -4.66; +21.12; 0.188 | Same | The only variant that keeps moving: under noise DPO stalls where flipped and clean gradients cancel (R-wave4). |
+| DPO-Positive | Same | -31.35; +4.30; 0.000 | Same | Keeps the chosen likelihood higher than DPO, as designed. |
+| β-DPO (adaptive β) | Same | -33.23; +1.50; 0.000 | Same | No gain. |
+
+### SamplerShowdown (W4 4.10: top-nσ and XTC, 4.11: entropy-adaptive sampling)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Top-nσ (n = 1), counting decoder at temperature 3 | Accuracy; distinct continuations | 1.00; 0.50 | Top-p 0.9: 0.04; 1.00. Min-p 0.1: 0.31; 0.90. Greedy: 1.00; 0.25 | Stays correct at high temperature with twice greedy's diversity. |
+| XTC after min-p | Same | 1.00; 0.42 | Same | Also correct, slightly less diverse than top-nσ. |
+| Entropy-adaptive sampler (entropix-style) | Same | 1.00; 0.46 | Plain temperature: 0.02; 1.00. Greedy: 1.00; 0.25 | Correct and more varied than greedy. |
+
+### ServingThroughput (W4 4.1: prefix caching, 4.2: paged KV, 4.3: continuous batching, 4.4: chunked prefill, 4.13: KV offload)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Radix-tree prefix cache, 8 requests sharing a 160-token system prompt (R-wave4) | Time to first token; prompt tokens read | Core + prefix cache 1.37 ms; paged + prefix cache 1.20 ms; 64 tokens read | No reuse: 14.09 ms; 1,344 tokens read | About 10x faster first token, with identical logits (difference 0.0). |
+| Paged KV cache (`PagedKvCache`, `PagedLlama`), 16 mixed-length requests (R-wave4) | Peak memory; sequences that fit in 256 blocks | 224 KB; 58 | Core state per request: 397 KB, one padded batch 616 KB; core doubling rule: 44 | Less memory and 32% more concurrent sequences. `PagedLlama` matches core `Llama` logits exactly (difference 0.00 over 17 tokens). |
+| Continuous batching (core `Generator.batcher`), Poisson trace of 32 requests, batch 4 (R-wave4) | Tokens per pass; p50 / p95 latency in passes; tokens/s | Over core Llama: 3.14; 75 / 144; 2,386. Over PagedLlama: 3.16; 73 / 140; 6,901 | Static batching: 2.59; 134 / 257; 5,254 | Continuous batching nearly halves p95 latency in passes. In wall time it needs the paged cache: over core Llama it is slower than static batching because the core cache copies on every join (R-wave4). |
+| Chunked prefill (chunk 32), three 256-token prompts arriving while 6 sequences decode (R-wave4) | Worst decode gap in tokens; in ms; throughput | 39 tokens; 7.28 ms; 2,641 tokens/s | Monolithic prefill: 262 tokens; 47.77 ms; 1,766 tokens/s | Decode stalls shrink 6 to 7x, and throughput rises too. Tokens are identical (R-wave4). |
+| KV offload to a simulated host tier, key-sketch block selection | Logit error vs full KV; top-1 agreement | 0.034; 0.67 (35 KB of 108 KB hot, 14,421 B fetched per token) | At the same device bytes (71 tokens): core `slidingWindow` 0.086, 0.21; core StreamingLLM state 0.087, 0.21 | Selecting blocks by query keeps far more of the model than any fixed window. |
+| Same, other selection rules | Same | Quest bounds: 0.084, 0.33; exact-key oracle: 0.026, 0.79 | Same | Quest bounds are loose for 16-dimensional heads; the sketch gets close to the oracle. Throughput 2,663 vs 2,997 tokens/s with full KV. |
+
+### TreeSpeculation (W4 4.6: EAGLE tree speculative decoding)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| EAGLE feature-level draft head, dynamic draft tree verified in one `PagedLlama` pass | Tokens per target pass | Tree: 3.00; chain: 2.22 | Greedy: 1.00; lookahead (Jacobi + n-grams): 1.82; core `Generator.speculative` with a distilled draft model: 2.44 | The tree beats every other method; every method reproduces greedy output exactly (R-wave4). The report saw ranges of 2.94–3.00 (tree) and 2.22–2.48 (chain) across runs (R-wave4). |
+
+### ConceptVsTokenLm (W4 6.4: Large Concept Model)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Concept LM (autoregression over sentence embeddings), equal positions trained | Next-sentence accuracy; model calls per sentence | 0.839; 1 | Token LM: 1.000; 5 | Five times fewer calls, but less accurate than the token LM. |
+
+### ElectraVsMaskedLm (W4 6.14: ELECTRA)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ELECTRA replaced-token detection, 250 steps | Stride-probe accuracy on the frozen encoder | 0.686 | Masked LM, 270 steps (equal compute): 0.640; untrained: 0.542; chance 0.200 | ELECTRA gives the better encoder at equal compute. |
+
+### FillInTheMiddle (W4 6.15: FIM training)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| PSM/SPM fill-in-the-middle transform | Infill token accuracy (exact) | 0.910 (0.820) | Plain causal LM: 0.098 (0.008) | FIM teaches infilling. |
+| Same | Left-to-right loss | 1.274 | Plain causal LM: 1.271 | "FIM is free": left-to-right loss is unchanged. |
+
 ---
 
 ## learning
@@ -620,6 +919,28 @@ Sources: R-mem, Test.
 
 ---
 
+## multimodal
+
+New theme in wave 4 (package `experiments.multimodal`).
+
+### EarlyFusion (W4 6.3: Chameleon-style early fusion)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| One transformer over VQ image tokens and text tokens, 300 steps | Caption accuracy; generation accuracy (distance) | 0.854; 0.620 (0.049) | Separate models, 150 steps each: 0.825; 0.620 (0.129) | One fused model captions slightly better and generates closer images at the same total steps. |
+
+### ZeroShotDigits (W4 6.13: CLIP and SigLIP)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CLIP (InfoNCE) two-tower digit/text encoder, unseen caption phrasing | Zero-shot accuracy | 0.786 | SimCLR + linear probe on 5 labels per class: 0.312; chance 0.100 | Zero-shot from label text beats a few-shot probe by a wide margin. |
+| SigLIP (pairwise sigmoid loss) | Same | 0.780 | Same | Matches CLIP. |
+| SigLIP loss block (`ContrastivePairLoss`) | Loss on matched vs random pairs | 0.726 | Random pairs: 9.584 | The loss separates matched from random pairs. |
+
+---
+
 ## optim
 
 ### ContinualLearningExperiment (X21: ContinualBrain on permuted digits)
@@ -648,6 +969,76 @@ Sources: R-learn.
 | Federated averaging (simulated) | Accuracy | 0.97 | n/a | Works in simulation. |
 | DiLoCo (simulated) | Accuracy; transfers | 0.96 with 120 transfers | n/a | Near FedAvg with infrequent communication. |
 | QDoRA (DoRA on a packed quantized base) | Accuracy on a rotated task | Above 0.85 | Frozen base uses fewer bytes than a dense one | Adapts while keeping the base quantized. |
+
+### Grokfast (W4 2.1)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Grokfast-EMA (α 0.98, λ 5, R-wave4) with AdamW, modular addition | Step at which test accuracy passes 0.99; final test accuracy | 900; 0.991 | AdamW + weight decay: 850; 0.991 (both memorise by step 100) | Null result: no speed-up. Other λ, α and moving-average settings were no better (R-wave4). |
+
+### ModernOptimizerExperiment (W4 2.2: Cautious, 2.3: MARS, 2.4: ADOPT, 2.5: Adam-mini)
+Sources: Run-w4, R-wave4.
+Small next-token task: a random second-order Markov source with 10 tokens, entropy (best possible loss) 0.898.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| C-AdamW, C-Lion | Loss at 400 steps, tuned learning rate (mean of 3 seeds, R-wave4) | C-AdamW 1.061; C-Lion 1.057 | AdamW: 1.043; Lion: 1.047 | A tie at best: the cautious mask does not help here. |
+| MARS-AdamW | Steps to loss 1.2; final loss | 183; 1.037 | AdamW: 150; 1.043 | Slightly lower final loss, but slower to the target: not faster. |
+| ADOPT on Adam's counterexample (optimum θ = −1) | Final θ at β₂ = 0.1 / 0.5 / 0.9 | -0.18 / +0.10 / -0.25 | Adam: +0.68 / +0.96 / +0.98 | ADOPT stays near or below 0 while Adam drifts to the wrong side. Needs clipping off; with the authors' t^0.25 clip ADOPT fails too (R-wave4). |
+| ADOPT on the language task | Worst loss over a β₂ sweep 0.5 to 0.999 (R-wave4) | 1.099 | Adam: 1.106 | Slightly more robust to β₂. |
+| Adam-mini | Loss; optimizer-state bytes | 1.113; 25,180 | AdamW: 1.087; 49,232. Core Adam8bit: 1.087; 24,784 | Half of AdamW's memory for a 2% higher loss; core Adam8bit saves the same memory with no loss. |
+
+### PreconditionerStability (W4 2.6: StableAdamW and Adam-atan2, 2.8: PSGD Kron)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| StableAdamW / Adam-atan2 after a 100x gradient jump, lr 0.03 | Final loss; peak loss | StableAdamW 1.361, 2.13; Adam-atan2 1.477, 2.30 | AdamW: 1.449, 2.23 | StableAdamW helps a little; atan2 does not. |
+| Same, lr 0.1 | Seeds diverged of 6 | StableAdamW 6; Adam-atan2 6 | AdamW: 5 | Negative: neither variant lowers the divergence rate. |
+| PSGD Kron | Loss at step 100 / 400; train time | 1.317 / 1.077; 1.13 s | Muon 1.288 / 1.130, 0.64 s; SOAP 1.702 / 1.018, 1.43 s; Shampoo 1.987 / 1.681, 1.19 s; AdamW 1.668 / 1.087, 0.14 s | Fast early like Muon and ends second to SOAP; far ahead of Shampoo. |
+
+### TrainingDynamicsExperiment (W4 2.7: SpikeGuard, 2.11: LAWA, 2.12: batch-size ramp, 2.13: stochastic rounding)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SpikeGuard (SPAM-style momentum reset and batch skipping), outlier batches injected | MSE; outlier batches skipped | 0.0179; 120 of 120 | AdamW + norm clipping: 0.0197; clean run: 0.0153 | Catches every outlier batch and ends closer to the clean run. |
+| LAWA (running average of the last k checkpoints) | Held-out loss at step 100 / 400 | 1.171 / 0.974 | Raw weights 1.312 / 1.054; EMA 1.312 / 0.961; SWA 1.319 / 1.011 | Beats the raw weights at every checkpoint after the first and leads EMA early; EMA edges ahead by the end. |
+| Batch-size ramp, same 12,800 examples | Final loss; steps | 0.984; 245 | Fixed batch + cosine: 0.951; 400. Fixed batch + constant lr: 1.061 | 39% fewer steps, but 3% worse than cosine decay. |
+| Stochastic rounding, weights held at bf16 values | MSE | 0.551 | Round-to-nearest bf16: 8.108; fp32: 0.510 | Stochastic rounding nearly recovers fp32; round-to-nearest loses the small updates. |
+
+### ScionTransferExperiment (W4 2.9: Scion / modular-norm optimizers)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Scion, learning-rate transfer from width 32 to 128 | Best-rate shift (grid steps); regret; best loss at width 128 | 0; 0.000; 1.148 | Muon + μP: 0; 0.000; 1.093. Plain Adam: 1; 0.085; 1.111 | Scion transfers its learning rate exactly, like Muon + μP, but its best loss is worse. Widths 32→128 instead of the planned 64→512 (R-wave4). |
+
+### QkClipExperiment (W4 2.10: MuonClip)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MuonClip (τ = 10), high-learning-rate transformer | Maximum attention logit; loss; accuracy | 10.0; 0.029; 1.000 (249 clipped steps) | Muon: 680.2; 0.224; 0.936 | QK-clip caps the logits and trains far better. |
+
+### MergingMethods (W4 3.16: SLERP, Fisher and RegMean merging)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| RegMean, Fisher, SLERP | Loss on the two-skill regression (lower is better) | RegMean 0.923; Fisher 0.982; SLERP 8.962 | Uniform soup: 25.073; TIES: 0.994; DARE: 102.491 | RegMean is best, Fisher just ahead of TIES; SLERP beats a uniform soup but trails both. |
+
+### Block-level results (wave 4 optimizers)
+Sources: Run-w4.
+
+All wave 4 optimizers on the block-level classification task in `ModernOptimizersTest` (loss starts at 1.266), against core Adam from `OptimizerZooTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| C-AdamW, C-Lion, MARS-AdamW, ADOPT, Adam-mini, StableAdamW, Adam-atan2, PSGD Kron, Scion, Grokfast-EMA, SpikeGuard, MuonClip, bf16 + stochastic rounding | Final loss; accuracy | Losses 0.020 (Grokfast-EMA) to 0.043 (C-Lion); accuracy 0.989 each | Core Adam: 0.024; 0.989 | Every new optimizer trains the task as well as Adam. |
+| MARS-Lion | Same | 0.099; 0.983 | Same | Slightly behind. |
+| Grokfast, moving-average mode | Same | 0.383; 0.844 | Same | The only setting that clearly hurts here. |
 
 ---
 
@@ -718,6 +1109,88 @@ Sources: R-agents, PR92, Test.
 ### ArithmeticTask, ChainTask
 Support classes (toy tasks with verifiers); no experiments of their own.
 
+### ArithmeticPpo (W4 3.1: PPO for LLMs)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Token-level PPO with a value head, GAE and a KL penalty, 128 samples per step | Greedy accuracy on addition; wall time | 0.80; 5.1 s | GRPO: 0.80; 3.5 s | Same accuracy as GRPO; the critic only adds time. |
+
+### ArithmeticRlVariants (W4 3.2: RLOO, 3.3: ReMax and REINFORCE++, 3.4: GSPO)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| RLOO | Greedy accuracy 0.00 → after (seed 1, lr 3e-3, KL 0.05) | 0.80 | GRPO: 0.72 | Beats GRPO. |
+| ReMax | Same | 0.84 | GRPO: 0.72 | Joint best. |
+| GSPO (sequence-level ratio and clipping) | Same | 0.84 | GRPO: 0.72 | Joint best. |
+| REINFORCE++ | Same | 0.68 | GRPO: 0.72 | Slightly behind GRPO. At the default KL of 0.2 the unnormalised REINFORCE variants barely learned (0.12–0.28, R-wave4). One seed; the planned seed-variance runs were not done (R-wave4). |
+
+### Star (W4 3.7: STaR)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| STaR with rationalisation hints, chain arithmetic, 3 rounds | Greedy accuracy | 0.266 → 0.813 | Rejection-sampling fine-tuning (no rationalisation): 0.266 → 0.469 | Rationalising failures is what makes self-training work here. |
+
+### QuietThoughts (W4 3.8: Quiet-STaR)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Quiet-STaR hidden thoughts, two-hop pointer chasing | Held-out accuracy | 0.652 | No thoughts: 0.625; Coconut latent (CoconutCurriculum): 0.31 | Roughly a tie with no thoughts, well above Coconut. |
+| Same | Share of questions where the thought equals the intermediate hop | 0.078 | n/a | The thoughts rarely compute the hop. |
+
+### SelfEdits (W4 3.9: SEAL self-adapting LM)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Self-written fine-tuning edits trained with ReST-EM, toy fact injection (4 facts per update, R-wave4) | Recall after an update | 0.250 | Raw passage: 0.188; untrained editor: 0.188; ideal rewrite: 1.000 | A small gain, far below an ideal rewrite. An earlier run with a different random stream gave 0.375 vs 0.188 (R-wave4). |
+
+### TestTimeRl (W4 3.10: TTRL)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GRPO on unlabelled test prompts with majority-vote pseudo-rewards | Greedy accuracy, before → after | 0.719 → 0.406 | Greedy decoding: 0.719; self-consistency: 0.609 | Negative: accuracy falls. The vote of 8 samples is less accurate than greedy, so TTRL distils a worse target. |
+| Same | Group agreement; sample accuracy; vote@8 accuracy | 0.648 → 0.773; 0.475 → 0.396; 0.609 → 0.438 | Before | The model grows more self-consistent while getting less accurate. |
+
+### Constitution (W4 3.11: Constitutional AI / RLAIF)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Critique and revise against written rules, preference model, then DPO and SL | Rule-violation rate; addition accuracy | 0.76 → 0.32; 1.00 → 0.56 | `SelfRewardingTrainer`: 0.76 → 1.00; 1.00 → 0.88 | Cuts violations by more than half, at a large cost in task accuracy. |
+
+### ThinkingBudget (W4 4.12: budget forcing, s1)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Forced thinking budget of 0 / 1 / 2 / 3 / 4 steps, bisection reasoner that tends to stop early | Accuracy | 0.06 / 0.13 / 0.25 / 0.50 / 0.88 | Unconstrained greedy: 0.38 (2.13 thoughts on average) | Forcing longer thinking more than doubles accuracy; accuracy rises steadily with the budget. |
+
+### GraphOfThoughtsSorting (W4 5.3: Graph of Thoughts)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Graph of Thoughts (split, sort, merge, refine), sorting 32 digits with a simulated noisy model (R-wave4) | Mean errors; exact share; LM calls | 0.47; 0.63; 24.0 | ToT: 2.00; 0.03; 23.8. Single call: 7.32; 0.00 | Merging partial results beats tree search at equal calls. |
+
+### StepMctsSearch (W4 5.4: MCTS over reasoning steps)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| UCT search over partial solutions with a PRM value, ChainTask(4) | Accuracy; PRM calls | 0.504; 8.7 | ToT depth-first: 0.296 (≤ 10 calls); PRM best-of-10: 0.464; one sample: 0.168 | MCTS is best at about equal calls. |
+
+### NeuroSymbolicProver (W4 5.9: AlphaGeometry-style prover)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Union-find congruence engine plus a neural proposer of auxiliary terms, toy algebra | Proof rate | 0.978 (1.60 auxiliary terms on average) | Random auxiliary terms: 0.689; engine alone: 0.089 | The proposer turns a weak engine into a near-complete prover. It gets two engineered distance inputs; without them it reached only 0.60 vs 0.52 for random terms (R-wave4). |
+
 ---
 
 ## selfsupervised
@@ -746,6 +1219,21 @@ Sources: R-attn, Test, Run.
 |---|---|---|---|---|
 | Mamba-3 style rotary state | Parity(6) accuracy | 1.00 | S4D: 0.49 | Rotary (complex) state tracks parity, which a time-invariant convolution cannot. |
 | Every mixer in the lineup (linear attention, S4D, Mamba, Mamba-2, Mamba-3 rotary, Gated DeltaNet, Kimi delta, RWKV-7, mLSTM, sLSTM, Hyena, TTT-Linear) | Parameters; recall(4,4,2) accuracy after 2 training steps (smoke run) | Parameters: S4D 560 (smallest) to Hyena 2016 (largest). Accuracy 0.13 to 0.32 (Run) | Chance about 0.25 | A plumbing check only: every mixer builds and trains through its `LayerSpec`. Two steps cannot rank them. |
+
+### HybridAndCanonShootout (W4 1.11: canon layers)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Canon layers (short causal depthwise convolutions) in one block, recall with no bigram feature | Accuracy | 1.000 | Same block without canon layers: 0.375 | Canon layers let a single block solve recall. |
+| Canon layers around the core `TransformerBlock` | Same | 1.000 | Core block alone: 0.387 | Works as an add-on to the core block. |
+
+### ParallelHybrid (W4 1.13: Hymba-style parallel attention + SSM heads)
+Sources: Run-w4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Attention and Mamba-2 heads in parallel with meta tokens, 2 layers | Associative recall; parameters | 1.000; 7,564 | Kimi 3:1 `HybridLinearStack`, 4 layers: 0.996; 10,768 | Matches the sequential hybrid with 30% fewer parameters. |
 
 ---
 
@@ -818,6 +1306,17 @@ Sources: R-tricks, Test, Run.
 | R-Drop | Accuracy | 0.40 | Without R-Drop: 0.40 | Null result: no gain on this task. |
 | Annealed gradient noise, 12-layer MLP | Final loss | 1.2e-3 (Run) | Without noise: 2.6e-5 | Both train, but noise leaves a roughly 50x higher final loss. |
 
+### LowBitQuantization (W4 4.7: Hadamard rotation, 4.8: HQQ, 4.9: MXFP4 and NVFP4)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Hadamard rotation + RTN / + GPTQ, W4A4, one layer with outlier channels | Relative output error | 0.289 / 0.227 | Plain RTN: 0.626; SmoothQuant: 0.168 | Rotation halves the error, but SmoothQuant wins on this layer, whose outlier channels never change. |
+| Same, on the counting decoder | KL to float; perplexity | Hadamard + GPTQ 1.46e-3, 1.087; Hadamard + RTN 1.88e-3, 1.089 | RTN 1.64e-3, 1.087; SmoothQuant 2.14e-3, 1.087; float 1.081 | Hadamard + GPTQ is best, but the gaps are small: the tiny decoder has no outliers. |
+| HQQ, groups of 16 | KL to float at 3 / 4 bits | 1.63e-3 / 3.27e-4 | Asymmetric RTN groups of 16: 1.72e-3 / 3.66e-4; core int groups of 16: 2.95e-3 / 3.95e-4; GPTQ per column: 1.69e-3 / 2.15e-4; AWQ per column: 2.76e-3 / 4.43e-4 | Calibration-free HQQ beats RTN at both widths and GPTQ at 3 bits; GPTQ wins at 4 bits. Perplexity barely moves (1.090–1.099), which is why KL is the score (R-wave4). |
+| HQQ, per column | Same | 3.03e-3 / 3.38e-4 | Asymmetric RTN per column: 3.34e-3 / 2.73e-4 | Beats RTN at 3 bits but not at 4. Quantize time about 18–19 ms vs 13–18 ms for GPTQ and 136–145 ms for AWQ (Run-w4); times swing with JIT warm-up (R-wave4). |
+| NVFP4 (16 per E4M3 scale), MXFP4 (32 per E8M0 scale) | Decoder KL to float | NVFP4 7.83e-4; MXFP4 8.29e-4 | int4 per column 8.65e-4; core int4 groups of 32: 6.16e-4; groups of 16: 3.73e-4; FP8 E4M3: 5.09e-5 | The FP4 formats beat per-column int4 but lose to core int4 at the same group size. |
+
 ---
 
 ## timeseries
@@ -855,6 +1354,14 @@ Sources: R-tricks, Test, Run.
 | CNN, deformable CNN, ConvNeXt, ViT, ViT with 2-D RoPE, MLP-Mixer on 8x8 shape images | Test accuracy | Every architecture at least 0.78 | Plain CNN | All experimental blocks work as drop-ins in `Model.sequential()`. The test asserts > 0.6 each. |
 | Per model (Run) | Test accuracy | Deformable CNN 1.0; ViT 0.996; ViT + 2-D RoPE 0.988; ConvNeXt 0.947; MLP-Mixer 0.783 | Plain CNN: 0.947 | Deformable convolution and ViTs lead; MLP-Mixer trails clearly. |
 
+### DataPruningExperiment (W4 2.14: data pruning by difficulty)
+Sources: Run-w4, R-wave4.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| EL2N and forgetting scores, digits with 15% of labels flipped | Share of flipped labels among the top 15% scored | EL2N 0.49; forgetting 0.43 | Chance: 0.15 | Both scores find mislabelled examples about 3x better than chance. |
+| Keep 50% by score | Test accuracy | EL2N hard 0.582; EL2N easy 0.623; forgetting easy 0.647 | Random half: 0.645; all data: 0.712 | Negative: score-based pruning does not beat random pruning at this data size. Measured with an MLP on `ToyTasks.digits`, not in VisionShootout (R-wave4). |
+
 ---
 
 ## Highlights
@@ -875,6 +1382,23 @@ The ten most interesting findings, chosen for effect size and for what they show
 Honourable mentions: NG-RC forecasts Lorenz for 250 steps (about 5.7 Lyapunov times) against 191 for an ESN. Noise-aware analog training holds 0.96 against 0.78. Active inference reads the cue and is rewarded 95.5% of the time against 53%. Predictive coding on a sparse Brain graph reaches 0.96 on digits.
 
 New in the Run: test-time compute with a verifier or critic lifts chain-of-thought arithmetic from 0.375 (one sample) to 0.64, with the critique loop using 3.7 samples on average (reasoning). With exact second-order maths, MAML reaches 0.65 against 0.81 for first-order, reversing the earlier result (techniques). GIN with sum readout tells trees from cycles at 0.85 against 0.50 for GraphSAGE with mean (graphs). SPIN lifts accuracy from 0.36 to 0.64 with no new labels (reasoning). Sleep consolidation cuts forgetting from 0.515 to 0.105 and lifts final accuracy from 0.65 to 0.93 (memory). One reflow pass cuts rectified flow's one-step error from 1.16 to 0.17 (generative). Ternary quantization-aware training keeps spirals at 1.00 where ternarizing afterwards drops to 0.90 (exotic). Novelty search escapes the deceptive maze on 2 of 3 seeds where objective search stays stuck on all 3 (evolution).
+
+### Wave 4
+
+The ten most interesting wave 4 findings (Run-w4):
+
+1. **Gradients through physics win big.** Backprop through a mass-spring simulator ends 0.024 from the goal, against 0.240 for CEM and 0.691 for PPO at equal samples (control).
+2. **Rationalisation makes self-training work.** STaR lifts chain arithmetic from 0.266 to 0.813, against 0.469 for rejection-sampling fine-tuning without hints (reasoning).
+3. **A query-aware KV offload keeps the model intact.** With a 4-bit key sketch, logit error is 0.034 and top-1 agreement 0.67, against 0.086 and 0.21 for a sliding window at the same device bytes (language).
+4. **QK-clip tames Muon.** MuonClip caps the attention logit at 10 against 680 for plain Muon, and reaches accuracy 1.000 against 0.936 (optim).
+5. **Stochastic rounding rescues bf16 weights.** MSE 0.551 against 8.108 for round-to-nearest, close to fp32's 0.510 (optim).
+6. **Tree drafts accept the most tokens.** EAGLE's draft tree verifies 3.00 tokens per target pass, against 2.44 for core speculative decoding with a distilled draft model, all with exact greedy output (language).
+7. **Canon layers solve recall in one block.** Accuracy 0.375 → 1.000 for a single block, and 0.387 → 1.000 when added to the core `TransformerBlock` (sequence).
+8. **A neural proposer completes a symbolic prover.** Proof rate 0.978 against 0.089 for the engine alone and 0.689 with random auxiliary terms (reasoning).
+9. **Fill-in-the-middle is free.** Infill token accuracy 0.910 against 0.098, with left-to-right loss unchanged (1.274 vs 1.271) (language).
+10. **More forced thinking, more accuracy.** Budget forcing rises from 0.06 at budget 0 to 0.88 at budget 4, against 0.38 unconstrained (reasoning).
+
+Honourable mentions: CLIP and SigLIP classify digits zero-shot at 0.786 and 0.780, against 0.312 for a 5-shot SimCLR probe (multimodal). On-policy distillation (GKD) lifts the student to 0.61 against 0.48 for logit KD (language). KIVI 2-bit holds the attention error to 0.45 where H2O at the same bytes gives 1.21 (context). A Generative Agents memory stream recalls 0.89 against 0.58 for a sliding window (agents). DreamCoder-style library learning solves 50 of 65 tasks against a flat 38 for a fixed DSL (evolution). v-prediction halves the diffusion sample distance, 0.27 against 0.57 for ε-prediction (generative). Stick-breaking attention keeps lag-2 accuracy at 0.998 at 4x the training length, against 0.938 for RoPE (attention).
 
 ## Negative or null results
 
@@ -912,5 +1436,29 @@ These are kept honest in the tests, which assert only the weaker claim.
 | learning | Forward-Forward, wrong-label negatives | About 0.6 (vs 0.76 with hardest-label negatives) | Depends heavily on the choice of negatives. |
 | learning | Predictive coding on a looped Brain | About 0.53 | Loops in the region graph hurt badly. |
 | optim | GrokkingExperiment | Train accuracy 1.0, test accuracy 0.0 at every checkpoint (Run) | No grokking within the test's 400 steps; the test does not wait for it. |
+
+Wave 4 (Run-w4):
+
+| Theme | Experiment | Result | What it means |
+|---|---|---|---|
+| optim | Grokfast | Test accuracy passes 0.99 at step 900 vs 850 for AdamW + weight decay | No speed-up; other settings were no better (R-wave4). |
+| optim | ModernOptimizerExperiment, MARS-AdamW | 183 steps to loss 1.2 vs 150 for AdamW | Not faster, despite a slightly lower final loss (1.037 vs 1.043). |
+| optim | ModernOptimizerExperiment, Cautious | C-AdamW 1.061 vs 1.043; C-Lion 1.057 vs 1.047 | The cautious mask does not help at this budget. |
+| optim | PreconditionerStability, StableAdamW and Adam-atan2 | 6 of 6 seeds diverge at lr 0.1, vs 5 of 6 for AdamW | Neither variant lowers the divergence rate. |
+| vision | DataPruningExperiment | Keeping 50% by score: 0.582 to 0.647 vs 0.645 for a random half | Score-based pruning does not beat random pruning, though the scores do find flipped labels. |
+| reasoning | TestTimeRl (TTRL) | Greedy accuracy 0.719 → 0.406; self-consistency baseline 0.609 | The majority vote is worse than greedy here, so TTRL trains toward a worse target. |
+| reasoning | QuietThoughts (Quiet-STaR) | 0.652 vs 0.625 with no thoughts | Roughly a tie; the thought matches the intermediate hop on only 0.078 of questions. |
+| reasoning | Constitution (Constitutional AI) | Violations 0.76 → 0.32, but addition accuracy 1.00 → 0.56 | The rule-following gain costs a lot of task accuracy. |
+| language | DistillationShootout, MiniLLM | Student accuracy 0.17 vs 0.48 for logit KD | Pure reverse KL without a pretraining loss collapses the student. |
+| language | LoraScaling, LoftQ | Loss 0.335 vs 0.122 for QLoRA after 30 steps | A better 4-bit start (error 0.596 vs 0.833) does not lead to better training. |
+| language | ConceptVsTokenLm | Next-sentence accuracy 0.839 vs 1.000 for the token LM | Fewer calls, lower accuracy. |
+| attention | MoeRefinements, sparse upcycling | MSE 0.880 (drop-upcycled 0.964) vs 0.541 for a MoE from scratch at equal compute | Upcycling loses clearly to training the MoE from scratch. |
+| attention | MoeRefinements, expert choice | MSE 0.708 vs 0.633 for top-2 token choice | Perfect balance, but unchosen tokens get zero output with no residual path. |
+| attention | RecallExtrapolation, sigmoid attention | Recall at 16 pairs 0.820 vs 0.957 for softmax | Better LM loss, worse extrapolation. |
+| attention | RecallExtrapolation, iRoPE | Recall at 16 pairs 0.941 vs 0.977 for all-NoPE | Beats all-RoPE but not all-NoPE. |
+| techniques | LowBitQuantization, Hadamard rotation | Outlier-layer error 0.289 (with GPTQ 0.227) vs 0.168 for SmoothQuant | Rotation does not beat SmoothQuant when the outlier channels are fixed. |
+| generative | ThermodynamicDenoising (DTM) | Valid share 0.963 vs 0.973 for a single Boltzmann machine; on 6x6 data 0.413 vs 0.903 (R-wave4) | Chaining denoising stages gives no gain over one machine. |
+| generative | MaskGit vs autoregressive | At 16 steps: distance 0.056, real share 0.58 vs 0.049 and 0.75 | MaskGIT trails the autoregressive model at equal steps. |
+| generative | NextScalePrediction (VAR) | Real share 0.09 and 7 distinct vs 0.15 and 13 for MaskGIT at 3 calls | Lowest distance (0.209 vs 0.215), but less realistic and less varied. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.
