@@ -8,6 +8,8 @@ import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.QuantizedRows;
+import io.github.zzuegg.brainiac.tensor.spi.RowQuantizedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
@@ -15,6 +17,7 @@ import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
 
 import java.lang.ref.Cleaner;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -445,6 +448,14 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
+        if (storage instanceof QRows r) {
+            r.levels().release();
+            r.scales().release();
+            return;
+        }
+        if (storage instanceof QuantizedRows) {
+            return;
+        }
         if (storage instanceof Packed p) {
             if (p.host() == null) {   // quantized here, such as optimizer state: freed now
                 p.levels().release();
@@ -1019,19 +1030,62 @@ public final class VulkanBackend implements Backend {
         int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
         int chunk = ceil(k, pieces);
         pieces = ceil(k, chunk);
-        long mn = (long) m * n;
-        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         // the vector loads need four aligned columns
         boolean vectors = n % 4 == 0 && y.address() % (4L * y.dtype.bytes()) == 0;
-        vk.push().putLong(x.address()).putLong(y.address()).putLong(y.address()).putLong(target.address())
-                .putInt(m).putInt(k).putInt(n).putInt(chunk).putInt(vectors ? 1 : 0);
-        vk.dispatch(shader("matmul_vec" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
+        Pieces split = pieces(pieces, m, n, columnGroups, z.dtype);
+        vk.push().putLong(x.address()).putLong(y.address()).putLong(y.address()).putLong(z.address())
+                .putLong(split.partsAddress()).putLong(counters.address()).putInt(m).putInt(k).putInt(n).putInt(chunk)
+                .putInt(vectors ? 1 : 0).putInt(pieces).putInt(split.counter());
+        vk.dispatch(shader("matmul_vec" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), x.slot(),
                 y.slot());
-        if (pieces > 1) {
-            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
-            target.release();
+        split.release();
+    }
+
+    /**
+     * Scratch for a product split into pieces along k: each piece's sums and a run of
+     * counters (one per column group) by which the last piece to finish adds them up and
+     * resets the counter. Runs of the counter buffer rotate, so products running at once use
+     * different counters; the buffer is not listed as written, which would order them.
+     */
+    private record Pieces(VkStorage parts, int counter) {
+
+        long partsAddress() {
+            return parts == null ? 0 : parts.address();
         }
+
+        VkContext.Slot[] writes(VkStorage z) {
+            return parts == null ? new VkContext.Slot[] {z.slot()} : new VkContext.Slot[] {z.slot(), parts.slot()};
+        }
+
+        void release() {
+            if (parts != null) {
+                parts.release();
+            }
+        }
+    }
+
+    /** Counters of products split into pieces, all 0 between products. */
+    private static final int COUNTERS = 1 << 16;
+    private VkStorage counters;
+    private int nextCounter;
+
+    private Pieces pieces(int pieces, int m, int n, int columnGroups, DType type) {
+        if (counters == null) {
+            counters = raw(COUNTERS, null);
+            fillNow(counters, 0);
+        }
+        if (pieces == 1) {
+            return new Pieces(null, 0);
+        }
+        if (nextCounter + columnGroups > COUNTERS) {
+            nextCounter = 0;
+        }
+        int counter = nextCounter;
+        nextCounter += columnGroups;
+        long vectors = (long) pieces * m * ceil(n, 4);
+        VkStorage parts = type == DType.FLOAT64 ? raw(vectors * 4, DType.FLOAT64, null) : raw(vectors * 4, null);
+        return new Pieces(parts, counter);
     }
 
     private static int ceil(long a, int b) {
@@ -1056,6 +1110,8 @@ public final class VulkanBackend implements Backend {
 
     /** The largest head size of the backward shaders ({@code ATT_D} in attention_dq.comp). */
     private static final int BACKWARD_SIZE = 64;
+    /** Rows per work group of attention_dq and attention_dkv (their ROWS). */
+    private static final int BACKWARD_ROWS = 64;
 
     @Override
     public boolean hasAttention(int[] shape, DType type, boolean backward) {
@@ -1091,13 +1147,18 @@ public final class VulkanBackend implements Backend {
                 .putLong(xl.address()).putLong(xg.address()).putLong(gq.address()).putLong(dsum.address())
                 .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
                 .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(rows));
-        vk.dispatch(shader("attention_dq", type), groups(rows), new VkContext.Slot[] {gq.slot(), dsum.slot()},
+        String size = Math.max(shape[5], shape[6]) <= 32 ? "32" : "";   // smaller register arrays
+        long heads = (long) shape[0] * shape[1];
+        long keyHeads = (long) shape[0] * shape[2];
+        vk.dispatch(shader("attention_dq" + size, type), heads * ((shape[3] + BACKWARD_ROWS - 1) / BACKWARD_ROWS),
+                new VkContext.Slot[] {gq.slot(), dsum.slot()},
                 xq.slot(), xk.slot(), xv.slot(), xo.slot(), xl.slot(), xg.slot());
         vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(xl.address())
                 .putLong(xg.address()).putLong(dsum.address()).putLong(gk.address()).putLong(gv.address())
                 .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
                 .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(keys));
-        vk.dispatch(shader("attention_dkv", type), groups(keys), new VkContext.Slot[] {gk.slot(), gv.slot()},
+        vk.dispatch(shader("attention_dkv" + size, type), keyHeads * ((shape[4] + BACKWARD_ROWS - 1) / BACKWARD_ROWS),
+                new VkContext.Slot[] {gk.slot(), gv.slot()},
                 xq.slot(), xk.slot(), xv.slot(), xl.slot(), xg.slot(), dsum.slot());
         dsum.release();
         done(xq, vs(q));
@@ -1157,6 +1218,97 @@ public final class VulkanBackend implements Backend {
         done(xv, vs(v));
     }
 
+    // ------------------------------------------------------------------ 8-bit rows
+
+    /** Rows of 8-bit levels on the device (raw bytes read as words) with a float scale per row. */
+    private record QRows(int rows, int cols, DType dtype, VkStorage levels, VkStorage scales)
+            implements RowQuantizedStorage {
+
+        @Override
+        public long size() {
+            return (long) rows * cols;
+        }
+
+        @Override
+        public long bytes() {
+            return levels.bytes() + scales.bytes();
+        }
+    }
+
+    @Override
+    public synchronized RowQuantizedStorage allocateQuantizedRows(long rows, int cols, DType dtype) {
+        if (cols % 4 != 0 || cols > 4 * GROUP_SIZE || rows * cols / 4 > Integer.MAX_VALUE || rows > Integer.MAX_VALUE) {
+            return Backend.super.allocateQuantizedRows(rows, cols, dtype);
+        }
+        VkStorage levels = raw(Math.max(1, rows * cols / 4), null);
+        VkStorage scales = raw(Math.max(1, rows), DType.FLOAT32, null);
+        fillNow(levels, 0);   // not deferred: the shaders below write these buffers directly
+        fillNow(scales, 0);
+        return new QRows((int) rows, cols, dtype, levels, scales);
+    }
+
+    @Override
+    public synchronized void writeQuantizedRows(RowQuantizedStorage target, Storage values, long outer,
+            int blockRows, int sourceRows, int start) {
+        if (!(target instanceof QRows t)) {
+            Backend.super.writeQuantizedRows(target, values, outer, blockRows, sourceRows, start);
+            return;
+        }
+        VkStorage x = vs(values);
+        eager(x);
+        long rows = outer * sourceRows;
+        if (rows == 0) {
+            return;
+        }
+        vk.push().putLong(x.address()).putLong(t.levels().address()).putLong(t.scales().address())
+                .putInt(t.cols() / 4).putInt(blockRows).putInt(sourceRows).putInt(start).putInt(Math.toIntExact(rows));
+        vk.dispatch(shader("quantize_rows", x.dtype), rows, new VkContext.Slot[] {t.levels().slot(),
+                t.scales().slot()}, x.slot());
+    }
+
+    private void unpackRows(QRows r, VkStorage z) {
+        eager(z);
+        vk.push().putLong(r.levels().address()).putLong(r.scales().address()).putLong(z.address()).putInt(r.cols())
+                .putInt(Math.toIntExact(r.size()));
+        vk.dispatch(shader("unpack_rows", z.dtype), groups(r.size()), z.slot(), r.levels().slot(), r.scales().slot());
+    }
+
+    @Override
+    public boolean hasQuantizedAttention(int[] shape, DType type) {
+        return hasAttention(shape, type, false) && shape[5] % 4 == 0 && shape[6] % 4 == 0;
+    }
+
+    @Override
+    public synchronized void attentionQuantized(Storage q, RowQuantizedStorage k, RowQuantizedStorage v, int[] shape,
+            float scale, boolean causal, Storage bias, long[] strides, Storage out, Storage lse) {
+        VkStorage z = vs(out);
+        if (!(k instanceof QRows qk && v instanceof QRows qv) || !hasQuantizedAttention(shape, z.dtype)) {
+            Backend.super.attentionQuantized(q, k, v, shape, scale, causal, bias, strides, out, lse);
+            return;
+        }
+        VkStorage l = vs(lse);
+        eager(vs(q), z, l);
+        VkStorage xq = as(vs(q), z.dtype);
+        VkStorage xb = bias == null ? xq : as(vs(bias), z.dtype);   // no bias: an address never read
+        if (bias != null) {
+            eager(vs(bias));
+        }
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        vk.push().putLong(xq.address()).putLong(qk.levels().address()).putLong(qk.scales().address())
+                .putLong(qv.levels().address()).putLong(qv.scales().address()).putLong(z.address())
+                .putLong(l.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+                .putInt(shape[4]).putInt(shape[5]).putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0)
+                .putInt((int) rows).putInt(bias != null ? 1 : 0).putInt(Math.toIntExact(strides[0]))
+                .putInt(Math.toIntExact(strides[1])).putInt(Math.toIntExact(strides[2]))
+                .putInt(Math.toIntExact(strides[3]));
+        vk.dispatch(shader("attention_q8", z.dtype), rows, new VkContext.Slot[] {z.slot(), l.slot()}, xq.slot(),
+                qk.levels().slot(), qk.scales().slot(), qv.levels().slot(), qv.scales().slot(), xb.slot());
+        if (bias != null) {
+            done(xb, vs(bias));
+        }
+        done(xq, vs(q));
+    }
+
     /** The longest power-of-two transform one work group computes in shared memory (fft.comp). */
     private static final int FFT_MAX = 2048;
 
@@ -1201,12 +1353,13 @@ public final class VulkanBackend implements Backend {
     // ------------------------------------------------------------------ packed weights
 
     /**
-     * A packed matrix on the device: levels as raw bytes (read as 32-bit words) and scales.
+     * A packed matrix on the device: levels as raw bytes (read as 32-bit words), scales and
+     * offsets (null for none).
      * {@code host} is the matrix it was uploaded from, or null for one quantized on the device,
      * which {@link #release} frees.
      */
     private record Packed(int rows, int cols, int bits, int group, boolean nibbles, PackedMatrix host, VkStorage levels,
-            VkStorage scales) implements PackedStorage {
+            VkStorage scales, VkStorage offsets) implements PackedStorage {
 
         @Override
         public long size() {
@@ -1215,7 +1368,26 @@ public final class VulkanBackend implements Backend {
 
         @Override
         public long bytes() {
-            return levels.bytes() + scales.bytes();
+            return levels.bytes() + scales.bytes() + (offsets == null ? 0 : offsets.bytes());
+        }
+
+        /** @return the offsets' address, or the scales' when there are none (never read then) */
+        long offsetsAddress() {
+            return (offsets == null ? scales : offsets).address();
+        }
+
+        /** @return the storages a product reads */
+        VkContext.Slot[] reads(VkStorage... more) {
+            List<VkContext.Slot> slots = new ArrayList<>();
+            for (VkStorage s : more) {
+                slots.add(s.slot());
+            }
+            slots.add(levels.slot());
+            slots.add(scales.slot());
+            if (offsets != null) {
+                slots.add(offsets.slot());
+            }
+            return slots.toArray(VkContext.Slot[]::new);
         }
     }
 
@@ -1223,6 +1395,8 @@ public final class VulkanBackend implements Backend {
     private static final int PACKED_ROWS = 8;
     /** Products by packed weights split their rows into pieces until about this many work groups run. */
     private static final int PACKED_GROUPS = Integer.getInteger("brainiac.vulkan.packedGroups", 256);
+    /** The fewest rows a piece of a product by packed weights takes. */
+    private static final int PACKED_PIECE = Integer.getInteger("brainiac.vulkan.packedPiece", 64);
 
     @Override
     public synchronized PackedStorage pack(PackedMatrix matrix) {
@@ -1230,7 +1404,7 @@ public final class VulkanBackend implements Backend {
         VkStorage levels = raw(Math.max(1, (data.length + 3) / 4), null);
         vk.upload(levels.slot(), levels.bytes(), b -> b.put(data));
         return new Packed(matrix.rows(), matrix.cols(), matrix.bits(), matrix.group(), matrix.nibbles(), matrix, levels,
-                vs(upload(matrix.scales())));
+                vs(upload(matrix.scales())), matrix.offsets() == null ? null : vs(upload(matrix.offsets())));
     }
 
     @Override
@@ -1247,7 +1421,7 @@ public final class VulkanBackend implements Backend {
                 .putInt(group).putInt((int) work);
         vk.dispatch(shader("quantize8", DType.FLOAT32), groups(work), new VkContext.Slot[] {levels.slot(), scales.slot()},
                 x.slot());
-        return new Packed(rows, cols, bits, group, false, null, levels, scales);
+        return new Packed(rows, cols, bits, group, false, null, levels, scales, null);
     }
 
     @Override
@@ -1257,12 +1431,13 @@ public final class VulkanBackend implements Backend {
                 return p.host();
             }
             float[] scales = download(p.scales());
+            float[] offsets = p.offsets() == null ? null : download(p.offsets());
             byte[] levels = new byte[(int) p.size()];
             synchronized (this) {
                 eager(p.levels());
                 vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
             }
-            return PackedMatrix.of(levels, scales, p.rows(), p.cols(), p.bits(), p.group());
+            return PackedMatrix.of(levels, scales, offsets, p.rows(), p.cols(), p.bits(), p.group());
         }
         return Backend.super.unpackToHost(packed);
     }
@@ -1276,13 +1451,21 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void unpack(PackedStorage packed, Storage out) {
+        if (packed instanceof QRows r) {
+            unpackRows(r, vs(out));
+            return;
+        }
+        if (packed instanceof QuantizedRows) {
+            Backend.super.unpack(packed, out);
+            return;
+        }
         Packed p = packed(packed);
         VkStorage z = vs(out);
         eager(z);
-        vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(z.address())
-                .putInt(p.rows()).putInt(p.cols()).putInt(p.group()).putInt(p.nibbles() ? 1 : 0);
-        vk.dispatch(shader("unpack_packed", z.dtype), groups(p.size()), z.slot(), p.levels().slot(),
-                p.scales().slot());
+        vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(p.offsetsAddress())
+                .putLong(z.address()).putInt(p.rows()).putInt(p.cols()).putInt(p.group()).putInt(p.nibbles() ? 1 : 0)
+                .putInt(p.offsets() == null ? 0 : 1);
+        vk.dispatch(shader("unpack_packed", z.dtype), groups(p.size()), z.slot(), p.reads());
     }
 
     @Override
@@ -1296,23 +1479,20 @@ public final class VulkanBackend implements Backend {
         eager(vs(a), z);
         VkStorage x = as(vs(a), z.dtype);
         int columnGroups = ceil(n, 128);
-        // enough pieces to fill the device, of at least 256 rows each: every piece costs a pass
-        // that adds them up, which small products would mostly spend waiting
-        int pieces = Math.max(1, Math.min(ceil(k, 256), PACKED_GROUPS / columnGroups));
+        // enough pieces to fill the device, of at least PACKED_PIECE rows each, as matvec does:
+        // with 256 a 896-wide model ran only 28 work groups and decoded at half f16's speed
+        int pieces = Math.max(1, Math.min(ceil(k, PACKED_PIECE), PACKED_GROUPS / columnGroups));
         int chunk = ceil(ceil(k, pieces), 2) * 2;
         pieces = ceil(k, chunk);
-        long mn = (long) m * n;
-        VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        Pieces split = pieces(pieces, m, n, columnGroups, z.dtype);
         vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
-                .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
-                .putInt(p.nibbles() ? 1 : 0).putInt(chunk);
-        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
-                p.levels().slot(), p.scales().slot());
-        if (pieces > 1) {
-            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
-            target.release();
-        }
+                .putLong(p.offsetsAddress()).putLong(z.address()).putLong(split.partsAddress())
+                .putLong(counters.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
+                .putInt(p.nibbles() ? 1 : 0).putInt(chunk).putInt(p.offsets() == null ? 0 : 1).putInt(pieces)
+                .putInt(split.counter());
+        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
+        split.release();
         done(x, vs(a));
     }
 

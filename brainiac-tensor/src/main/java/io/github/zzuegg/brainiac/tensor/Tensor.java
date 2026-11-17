@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.RowQuantizedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
@@ -451,9 +452,35 @@ public final class Tensor {
         return new Tensor(shape, device, backend().quantize(storage(), shape.dim(0), shape.dim(1), bits, group));
     }
 
-    /** @return whether this tensor is a {@linkplain #packed packed} matrix */
+    /** @return whether this tensor is a {@linkplain #packed packed} matrix or {@linkplain #quantizedRows quantized rows} */
     public boolean isPacked() {
         return storage instanceof PackedStorage;
+    }
+
+    /**
+     * Creates zeros kept as 8-bit levels with a scale for every row (the last axis), as
+     * {@link io.github.zzuegg.brainiac.tensor.spi.QuantizedRows} describes: half of
+     * float16's memory, for a key/value cache. {@link #write} along the second-to-last axis
+     * quantizes the rows written; fused attention reads the levels directly where the
+     * backend has a kernel for it, and every other operation sees the values, of type
+     * {@code dtype}, computed into a temporary tensor.
+     *
+     * @param shape the shape, of rank 2 or more
+     * @param dtype the type the values are read as
+     * @param device where to keep it
+     * @return the tensor
+     */
+    public static Tensor quantizedRows(Shape shape, DType dtype, Device device) {
+        if (shape.rank() < 2) {
+            throw new IllegalArgumentException("quantized rows need at least two axes, got " + shape);
+        }
+        int cols = shape.dim(shape.rank() - 1);
+        return new Tensor(shape, device, device.backend().allocateQuantizedRows(shape.size() / cols, cols, dtype));
+    }
+
+    /** @return whether this tensor is kept as {@linkplain #quantizedRows quantized rows} */
+    public boolean isQuantizedRows() {
+        return storage instanceof RowQuantizedStorage;
     }
 
     /**
@@ -478,7 +505,7 @@ public final class Tensor {
     /** The values as ordinary storage: a packed matrix's are computed into a new one. */
     private Storage storage() {
         if (storage instanceof PackedStorage p) {
-            Storage out = backend().allocateUninitialized(size(), DType.FLOAT32);
+            Storage out = backend().allocateUninitialized(size(), dtype());
             backend().unpack(p, out);
             return out;
         }
@@ -496,6 +523,11 @@ public final class Tensor {
     public Tensor to(Device target) {
         if (target.equals(device)) {
             return this;
+        }
+        if (storage instanceof RowQuantizedStorage) {
+            Tensor t = quantizedRows(shape, dtype(), target);
+            t.write(-2, 0, unpacked().to(target));
+            return t;
         }
         if (storage instanceof PackedStorage p) {
             return new Tensor(shape, target, target.backend().pack(backend().unpackToHost(p)));
@@ -816,10 +848,11 @@ public final class Tensor {
      */
     public void write(int axis, int start, Tensor values) {
         sameDevice(values);
-        if (isPacked()) {
-            throw new UnsupportedOperationException("cannot write into a packed matrix");
-        }
         int a = axis(axis);
+        if (isPacked() && !(storage instanceof RowQuantizedStorage && a == shape.rank() - 2)) {
+            throw new UnsupportedOperationException(isQuantizedRows() ? "quantized rows are written along axis -2"
+                    : "cannot write into a packed matrix");
+        }
         int[] dims = shape.toArray();
         int[] v = values.shape.toArray();
         boolean fits = v.length == dims.length && start >= 0 && start + v[a] <= dims[a];
@@ -829,6 +862,11 @@ public final class Tensor {
         if (!fits) {
             throw new IllegalArgumentException("cannot write " + values.shape + " at " + start + " along axis " + a
                     + " of " + shape);
+        }
+        if (storage instanceof RowQuantizedStorage rows) {
+            long outer = size() / ((long) dims[a] * dims[a + 1]);
+            backend().writeQuantizedRows(rows, values.unpacked().storage, outer, dims[a], v[a], start);
+            return;
         }
         Tensor t = values.to(dtype());
         long[] strides = shape.strides();
@@ -1180,7 +1218,9 @@ public final class Tensor {
      */
     public Tensor matmul(Tensor other) {
         sameDevice(other);
-        if (other.dtype() != dtype()) {
+        // packed weights multiply in the type of what they multiply: their levels have none
+        boolean packedRight = other.storage instanceof PackedStorage && rank() >= 2 && other.rank() == 2;
+        if (other.dtype() != dtype() && !packedRight) {
             DType type = DType.promote(dtype(), other.dtype());
             return to(type).matmul(other.to(type));
         }
@@ -1198,7 +1238,7 @@ public final class Tensor {
         if (rank() == 2 && other.rank() == 2) {
             Shape outShape = Shape.of(m, n);
             Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-            if (other.storage instanceof PackedStorage packed) {
+            if (other.storage instanceof PackedStorage packed && !(packed instanceof RowQuantizedStorage)) {
                 backend().matmulPacked(storage(), packed, m, k, n, out);
             } else {
                 backend().matmul(storage(), other.storage(), m, k, n, out);
@@ -1444,7 +1484,9 @@ public final class Tensor {
      * @return whether to call it
      */
     public static boolean hasAttentionWithBias(Tensor q, Tensor k, Tensor v) {
-        return q.backend().hasAttentionWithBias(attentionShape(q, k, v), q.dtype());
+        int[] d = attentionShape(q, k, v);
+        return k.isQuantizedRows() && v.isQuantizedRows() && q.backend().hasQuantizedAttention(d, q.dtype())
+                || q.backend().hasAttentionWithBias(d, q.dtype());
     }
 
     /**
@@ -1485,7 +1527,12 @@ public final class Tensor {
         Backend backend = q.backend();
         Storage out = backend.allocateUninitialized((long) d[0] * d[1] * d[3] * d[6], q.dtype());
         Storage lse = backend.allocateUninitialized((long) d[0] * d[1] * d[3], q.dtype());
-        backend.attention(q.storage(), k.storage(), v.storage(), d, scale, causal, b.storage(), strides, out, lse);
+        if (k.storage instanceof RowQuantizedStorage qk && v.storage instanceof RowQuantizedStorage qv
+                && backend.hasQuantizedAttention(d, q.dtype())) {
+            backend.attentionQuantized(q.storage(), qk, qv, d, scale, causal, b.storage(), strides, out, lse);
+        } else {
+            backend.attention(q.storage(), k.storage(), v.storage(), d, scale, causal, b.storage(), strides, out, lse);
+        }
         return new Tensor[] {new Tensor(Shape.of(d[0], d[1], d[3], d[6]), q.device, out),
                 new Tensor(Shape.of(d[0], d[1], d[3]), q.device, lse)};
     }

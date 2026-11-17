@@ -425,8 +425,11 @@ public final class Llama implements LanguageModel {
         /** Eviction: the first steps and the latest steps kept, or window 0 to keep all. */
         int sinks;
         int window;
+        /** Whether keys and values are kept as 8-bit rows. */
+        final boolean quantized;
 
-        Cache(int layers, int batch) {
+        Cache(int layers, int batch, boolean quantized) {
+            this.quantized = quantized;
             keys = new Tensor[layers];
             values = new Tensor[layers];
             padding = new boolean[batch][0];
@@ -446,9 +449,10 @@ public final class Llama implements LanguageModel {
             }
             int grown = Math.max(need, Math.max(64, 2 * capacity));
             int batch = next.length;
+            Shape shape = Shape.of(batch, kvHeads, grown, headDim);
             for (int l = 0; l < keys.length; l++) {
-                Tensor k = Tensor.zeros(Shape.of(batch, kvHeads, grown, headDim), dtype, device);
-                Tensor v = Tensor.zeros(Shape.of(batch, kvHeads, grown, headDim), dtype, device);
+                Tensor k = quantized ? Tensor.quantizedRows(shape, dtype, device) : Tensor.zeros(shape, dtype, device);
+                Tensor v = quantized ? Tensor.quantizedRows(shape, dtype, device) : Tensor.zeros(shape, dtype, device);
                 Tensor.evaluate(List.of(k, v));
                 if (length > 0) {
                     k.write(2, 0, keys[l].slice(2, 0, length));
@@ -509,14 +513,14 @@ public final class Llama implements LanguageModel {
 
         @Override
         public State select(int[] rows) {
-            Cache c = new Cache(keys.length, rows.length);
+            Cache c = new Cache(keys.length, rows.length, quantized);
             c.sinks = sinks;
             c.window = window;
             if (capacity > 0) {
                 Tensor index = indices(rows, keys[0].device());
                 for (int l = 0; l < keys.length; l++) {
-                    c.keys[l] = keys[l].gather(0, index);
-                    c.values[l] = values[l].gather(0, index);
+                    c.keys[l] = requantized(keys[l].gather(0, index));
+                    c.values[l] = requantized(values[l].gather(0, index));
                 }
                 Tensor.evaluate(java.util.Arrays.asList(c.keys));
                 Tensor.evaluate(java.util.Arrays.asList(c.values));
@@ -529,11 +533,37 @@ public final class Llama implements LanguageModel {
             c.capacity = capacity;
             return c;
         }
+
+        /** Gathered values kept as 8-bit rows again, when this cache keeps them so. */
+        private Tensor requantized(Tensor values) {
+            if (!quantized) {
+                return values;
+            }
+            Tensor q = Tensor.quantizedRows(values.shape(), values.dtype(), values.device());
+            q.write(2, 0, values);
+            return q;
+        }
     }
 
     @Override
     public State newState(int batch) {
-        return new Cache(config.layers(), batch);
+        return new Cache(config.layers(), batch, quantizedCache);
+    }
+
+    private volatile boolean quantizedCache;
+
+    /**
+     * Sets whether states made from now on keep their keys and values as 8-bit levels with a
+     * scale per head and step: half of float16's memory (a quarter of float32's), for long
+     * texts, at a small loss of accuracy. Where the backend has a kernel for it, attention
+     * reads the levels directly.
+     *
+     * @param quantized whether to quantize the cache
+     * @return this model
+     */
+    public Llama quantizeCache(boolean quantized) {
+        this.quantizedCache = quantized;
+        return this;
     }
 
     /**
@@ -552,7 +582,7 @@ public final class Llama implements LanguageModel {
             throw new IllegalArgumentException("sinks must be at least 0 and window at least 1, got " + sinks + ", "
                     + window);
         }
-        Cache c = new Cache(config.layers(), batch);
+        Cache c = new Cache(config.layers(), batch, quantizedCache);
         c.sinks = sinks;
         c.window = window;
         return c;

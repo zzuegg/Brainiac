@@ -1,0 +1,12 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "packed.glsl"
+// z = the values of 8-bit rows (see QuantizedRows): level times its row's scale.
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P { InWords q; InFloats scales; Buf z; uint cols; uint total; } p;
+void main() {
+    uint i = gid();
+    if (i >= p.total) return;
+    STORE(p.z, i, ACC(packed_byte(p.q, i)) * ACC(p.scales.v[i / p.cols]));
+}

@@ -484,6 +484,54 @@ class VulkanBackendTest {
         }
     }
 
+    /** 8-bit rows: written in pieces, read back and attended over as the CPU does. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 1, 70, 16, 16", "2, 4, 4, 6, 300, 64, 32",
+        "1, 2, 1, 3, 5, 8, 8"})
+    void eightBitRowsMatchTheCpu(int b, int h, int kvh, int tq, int tk, int dk, int dv) {
+        Tensor q = random(51, b, h, tq, dk);
+        Tensor k = random(52, b, kvh, tk, dk);
+        Tensor v = random(53, b, kvh, tk, dv);
+        float[] mask = new float[b * tq * tk];
+        SplittableRandom r = new SplittableRandom(5);
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = r.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) r.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        int split = tk / 3;
+        Tensor kc = Tensor.quantizedRows(k.shape(), DType.FLOAT32, CPU);
+        Tensor vc = Tensor.quantizedRows(v.shape(), DType.FLOAT32, CPU);
+        kc.write(2, 0, k.slice(2, 0, split));
+        kc.write(2, split, k.slice(2, split, tk));
+        vc.write(2, 0, v);
+        float[] kValues = kc.unpacked().toArray();
+        assertArrayEquals(k.toArray(), kValues, 0.01f);   // within half a level of 1/127 of the largest
+        float[] expected = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(q), Var.of(kc), Var.of(vc), bias,
+                scale, 0, null).value().toArray();
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor kg = Tensor.quantizedRows(k.shape(), type, gpu);
+            Tensor vg = Tensor.quantizedRows(v.shape(), type, gpu);
+            assertTrue(kg.isQuantizedRows());
+            assertEquals(k.size() + 4L * k.size() / dk, kg.bytes());
+            kg.write(2, 0, k.slice(2, 0, split).to(type).to(gpu));
+            kg.write(2, split, k.slice(2, split, tk).to(type).to(gpu));
+            vg.write(2, 0, v.to(type).to(gpu));
+            // a value halfway between levels may round to either: GPUs divide less exactly
+            float close = 1.1f / 127;
+            assertArrayEquals(kValues, kg.unpacked().toArray(), close, type.toString());
+            assertArrayEquals(kValues, kg.to(CPU).unpacked().toArray(), close, type.toString());
+            Tensor qg = q.to(type).to(gpu);
+            assertTrue(Tensor.hasAttentionWithBias(qg, kg, vg));
+            float[] fused = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(qg), Var.of(kg), Var.of(vg),
+                    bias.to(gpu), scale, 0, null).value().toArray();
+            assertArrayEquals(expected, fused, type == DType.FLOAT32 ? 1e-4f : 3e-2f, type.toString());
+        }
+    }
+
     /** One kernel for RMSNorm, against the operations Llama builds it from; the input a pending sum. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 576", "5, 2048", "3, 100", "2, 7"})
@@ -593,11 +641,18 @@ class VulkanBackendTest {
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
         "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
-        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77);
-        packedMatches(bits, group, m, 768, 256);
+        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77, false);
+        packedMatches(bits, group, m, 768, 256, false);
     }
 
-    private static void packedMatches(int bits, int group, int m, int rows, int cols) {
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4, 32, 1", "5, 32, 3", "6, 16, 8", "2, 16, 2", "8, 32, 12"})
+    void packedMatricesWithOffsetsMatchTheCpu(int bits, int group, int m) {
+        packedMatches(bits, group, m, 192, 77, true);
+        packedMatches(bits, group, m, 768, 256, true);
+    }
+
+    private static void packedMatches(int bits, int group, int m, int rows, int cols, boolean withOffsets) {
         if (rows % group != 0) {
             return;
         }
@@ -611,7 +666,14 @@ class VulkanBackendTest {
         for (int i = 0; i < scales.length; i++) {
             scales[i] = (float) r.nextDouble(0.001, 0.05);
         }
-        PackedMatrix w = PackedMatrix.of(levels, scales, rows, cols, bits, group);
+        float[] offsets = null;
+        if (withOffsets) {
+            offsets = new float[scales.length];
+            for (int i = 0; i < offsets.length; i++) {
+                offsets[i] = (float) r.nextDouble(-0.2, 0.2);
+            }
+        }
+        PackedMatrix w = PackedMatrix.of(levels, scales, offsets, rows, cols, bits, group);
         Tensor x = random(3, m, rows);
         Tensor onCpu = Tensor.packed(w, CPU);
         Tensor onGpu = onCpu.to(gpu);
@@ -631,7 +693,9 @@ class VulkanBackendTest {
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {
                 // inputs rounded to 16 bits: errors relative to the largest output
-                float[] actual = x.to(type).to(gpu).matmul(onGpu).toArray();
+                Tensor product = x.to(type).to(gpu).matmul(onGpu);
+                assertEquals(type, product.dtype(), "packed weights multiply in the activations' type");
+                float[] actual = product.toArray();
                 double tolerance = (type == DType.FLOAT64 ? 1e-5 : type == DType.FLOAT16 ? 4e-3 : 3e-2) * scale;
                 for (int i = 0; i < expected.length; i++) {
                     assertEquals(expected[i], actual[i], tolerance, what + ", " + type + " at " + i);
