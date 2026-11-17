@@ -13,11 +13,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * An optimizer that keeps a few tensors per parameter. Subclasses write one parameter's
- * update; this class runs the step as one batch of tensor work, frees what the step no
- * longer needs, and saves and restores the state.
+ * An optimizer that keeps a few tensors per parameter, named slots (such as Adam's
+ * {@code "m"} and {@code "v"}). Subclasses write one parameter's update; this class runs the
+ * step as one batch of tensor work, frees what the step no longer needs, saves and restores
+ * the state, and resets it for chosen entries.
  */
-abstract class StatefulOptimizer implements Optimizer {
+public abstract class StatefulOptimizer implements Optimizer {
 
     private float learningRate;
     private final String[] slots;
@@ -28,8 +29,8 @@ abstract class StatefulOptimizer implements Optimizer {
      * @param learningRate the step size
      * @param slots the names of the tensors kept per parameter
      */
-    StatefulOptimizer(float learningRate, String... slots) {
-        learningRate(learningRate);
+    protected StatefulOptimizer(float learningRate, String... slots) {
+        this.learningRate = positive(learningRate);
         this.slots = slots.clone();
     }
 
@@ -42,7 +43,7 @@ abstract class StatefulOptimizer implements Optimizer {
      * @param t the step number, from 1
      * @return the new state, one entry per slot
      */
-    abstract Tensor[] update(Var p, Tensor g, Tensor[] s, int t);
+    protected abstract Tensor[] update(Var p, Tensor g, Tensor[] s, int t);
 
     @Override
     public void step(List<Var> parameters) {
@@ -90,8 +91,49 @@ abstract class StatefulOptimizer implements Optimizer {
     }
 
     /** @return the steps taken */
-    int steps() {
+    protected int steps() {
         return steps;
+    }
+
+    /**
+     * Returns one parameter's state.
+     *
+     * @param parameter the parameter
+     * @return its tensors, one per slot ({@code null} before its first step); a copy of the array
+     */
+    public Tensor[] slots(Var parameter) {
+        Tensor[] s = state.get(parameter);
+        return s == null ? new Tensor[slots.length] : s.clone();
+    }
+
+    /**
+     * Resets the state of chosen entries of a parameter, as if they had never been updated,
+     * for example when units are re-initialized: each slot of the parameter's shape is
+     * multiplied by {@code keep}. Slots of another shape or kept packed (Adafactor's factored
+     * ones, Adam8bit's) are reset whole if any entry is.
+     *
+     * @param parameter the parameter
+     * @param keep 1 for entries to keep and 0 for entries to reset, broadcast to the parameter
+     */
+    @Override
+    public void resetState(Var parameter, Tensor keep) {
+        Tensor[] s = state.get(parameter);
+        if (s == null) {
+            return;
+        }
+        Tensor mask = keep.shape().equals(parameter.shape()) ? keep : keep.expand(parameter.shape());
+        boolean any = mask.min().item() < 0.5f;
+        for (int k = 0; k < s.length; k++) {
+            Tensor x = s[k];
+            if (x == null) {
+                continue;
+            }
+            if (!x.isPacked() && x.shape().equals(parameter.shape())) {
+                s[k] = x.mul(mask.to(x.dtype()));
+            } else if (any) {
+                s[k] = null;   // started again from zero at the next step
+            }
+        }
     }
 
     @Override
@@ -141,9 +183,13 @@ abstract class StatefulOptimizer implements Optimizer {
 
     @Override
     public void learningRate(float learningRate) {
+        this.learningRate = positive(learningRate);
+    }
+
+    private static float positive(float learningRate) {
         if (!(learningRate > 0)) {
             throw new IllegalArgumentException("learningRate must be positive, got " + learningRate);
         }
-        this.learningRate = learningRate;
+        return learningRate;
     }
 }

@@ -36,7 +36,7 @@ final class Adam8bit extends StatefulOptimizer {
     }
 
     @Override
-    Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
+    protected Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
         float lr = learningRate();
         Shape shape = p.value().shape();
         float correction1 = 1 - (float) Math.pow(beta1, t);

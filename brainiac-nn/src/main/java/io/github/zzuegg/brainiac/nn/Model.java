@@ -311,6 +311,30 @@ public final class Model {
         return distinct(buffers);
     }
 
+    /**
+     * Sums the {@linkplain Layer#auxiliaryLoss() auxiliary losses} the layers computed in
+     * the last training forward pass.
+     *
+     * @return the scalar sum, or {@code null} when no layer has one
+     */
+    public Var auxiliaryLoss() {
+        Var sum = null;
+        for (Layer layer : layers) {
+            Var aux = layer.auxiliaryLoss();
+            if (aux != null) {
+                sum = sum == null ? aux : sum.add(aux);
+            }
+        }
+        return sum;
+    }
+
+    /** Clears the state every layer carries between forward passes; see {@link Layer#resetState()}. */
+    public void resetState() {
+        for (Layer layer : layers) {
+            layer.resetState();
+        }
+    }
+
     /** Drops repeats, which appear when layers share a parameter (e.g. one bound activation). */
     private static List<Var> distinct(List<Var> vars) {
         Set<Var> seen = Collections.newSetFromMap(new IdentityHashMap<>());

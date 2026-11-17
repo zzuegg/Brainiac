@@ -36,6 +36,8 @@ final class Kernels {
             case ERF -> { for (int i = from; i < to; i++) y[i] = (float) erf(x[i]); }
             case SOFTPLUS -> { for (int i = from; i < to; i++) y[i] = softplus(x[i]); }
             case ROUND -> { for (int i = from; i < to; i++) y[i] = (float) Math.rint(x[i]); }
+            case SIN -> { for (int i = from; i < to; i++) y[i] = (float) Math.sin(x[i]); }
+            case COS -> { for (int i = from; i < to; i++) y[i] = (float) Math.cos(x[i]); }
         }
     }
 

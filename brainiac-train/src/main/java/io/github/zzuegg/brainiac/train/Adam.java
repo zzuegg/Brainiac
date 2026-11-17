@@ -26,7 +26,7 @@ final class Adam extends StatefulOptimizer {
     }
 
     @Override
-    Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
+    protected Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
         float lr = learningRate();
         float correction1 = 1 - (float) Math.pow(beta1, t);
         float correction2 = 1 - (float) Math.pow(beta2, t);

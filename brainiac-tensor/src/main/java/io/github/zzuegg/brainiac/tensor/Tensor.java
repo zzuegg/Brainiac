@@ -1128,6 +1128,16 @@ public final class Tensor {
         return unary(UnaryOp.SOFTPLUS);
     }
 
+    /** @return the sine of each value, in radians */
+    public Tensor sin() {
+        return unary(UnaryOp.SIN);
+    }
+
+    /** @return the cosine of each value, in radians */
+    public Tensor cos() {
+        return unary(UnaryOp.COS);
+    }
+
     /** @return each value rounded to the nearest whole number, ties to even */
     public Tensor round() {
         return unary(UnaryOp.ROUND);
@@ -1743,6 +1753,86 @@ public final class Tensor {
      */
     public Tensor min(int axis, boolean keepDims) {
         return reduce(ReduceOp.MIN, axis, keepDims);
+    }
+
+    /**
+     * The {@code k} largest values along the last axis and where they are, largest first;
+     * ties pick the first index. Computed as {@code k} rounds of {@link #argmax}, so meant
+     * for small {@code k}.
+     *
+     * @param k how many, at most the last axis' length
+     * @return the values and their indices (as floats), each of this shape with the last
+     *     axis {@code k} long
+     */
+    public Tensor[] topk(int k) {
+        int last = shape.rank() - 1;
+        int n = shape.dim(last);
+        if (k < 1 || k > n) {
+            throw new IllegalArgumentException("top " + k + " of " + n);
+        }
+        int[] keep = shape.toArray();
+        keep[last] = 1;
+        Tensor positions = arange(n).to(device);
+        Tensor work = this;
+        Tensor[] values = new Tensor[k];
+        Tensor[] indices = new Tensor[k];
+        for (int i = 0; i < k; i++) {
+            indices[i] = work.argmax(last).reshape(keep);
+            Tensor picked = indices[i].equalTo(positions).to(dtype());
+            values[i] = mul(picked).sum(last, true);
+            // the picked entry falls to the lowest finite value
+            work = work.mul(picked.neg().add(1)).add(picked.mul(-Float.MAX_VALUE));
+        }
+        return new Tensor[] {concat(last, values), concat(last, indices)};
+    }
+
+    /**
+     * Running sums along one axis: entry {@code i} is the sum of entries {@code 0 .. i}.
+     * Computed as a product with a triangle of ones, so the work grows with the square of
+     * the axis' length.
+     *
+     * @param axis the axis; negative values count from the end
+     * @return the running sums, of this shape
+     */
+    public Tensor cumsum(int axis) {
+        int a = axis(axis);
+        int n = shape.dim(a);
+        int[] order = moveLast(shape.rank(), a);
+        Tensor moved = a == shape.rank() - 1 ? this : permute(order);
+        Tensor sums = moved.matmul(upperTriangle(n, dtype(), device));
+        return a == shape.rank() - 1 ? sums : sums.permute(inverse(order));
+    }
+
+    /** @return {@code [n, n]} ones on and above the diagonal */
+    public static Tensor upperTriangle(int n, DType dtype, Device device) {
+        float[] t = new float[n * n];
+        for (int j = 0; j < n; j++) {
+            for (int i = j; i < n; i++) {
+                t[j * n + i] = 1;
+            }
+        }
+        return of(Shape.of(n, n), t, device).to(dtype);
+    }
+
+    /** @return the axis order moving axis {@code a} of {@code rank} to the end */
+    public static int[] moveLast(int rank, int a) {
+        int[] order = new int[rank];
+        for (int i = 0, j = 0; i < rank; i++) {
+            if (i != a) {
+                order[j++] = i;
+            }
+        }
+        order[rank - 1] = a;
+        return order;
+    }
+
+    /** @return the permutation undoing {@code order} */
+    public static int[] inverse(int[] order) {
+        int[] back = new int[order.length];
+        for (int i = 0; i < order.length; i++) {
+            back[order[i]] = i;
+        }
+        return back;
     }
 
     /**

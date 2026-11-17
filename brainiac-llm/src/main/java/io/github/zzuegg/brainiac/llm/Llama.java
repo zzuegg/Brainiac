@@ -659,7 +659,28 @@ public final class Llama implements LanguageModel {
         return read(state, tokens, null, true);
     }
 
+    /**
+     * As {@link #next}, also giving the final normalized hidden states of the new tokens,
+     * the input of the output layer: for retrieval by hidden state (kNN-LM), probes and
+     * steering.
+     *
+     * @param state the state; updated
+     * @param tokens the new tokens per sequence
+     * @param padding which new tokens are padding, or {@code null}
+     * @return the next-token logits {@code [batch, vocab]} and the hidden states
+     *     {@code [batch, steps, hidden]}, both float32
+     */
+    public Tensor[] nextWithHidden(State state, int[][] tokens, boolean[][] padding) {
+        Tensor[] hidden = new Tensor[1];
+        Tensor logits = read(state, tokens, padding, false, hidden);
+        return new Tensor[] {logits, hidden[0]};
+    }
+
     private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep) {
+        return read(state, tokens, padding, everyStep, null);
+    }
+
+    private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep, Tensor[] hiddenOut) {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
         int batch = tokens.length;
         int steps = tokens[0].length;
@@ -691,19 +712,32 @@ public final class Llama implements LanguageModel {
             }
         }
         Tensor bias = Tensor.of(Shape.of(batch, 1, steps, keys), m, device).to(dtype);
-        Var logits = run(tokens, positions, cache, bias);
+        Var[] hidden = new Var[1];
+        Var logits = run(tokens, positions, cache, bias, hidden);
         cache.padding = keysPad;
         cache.length += steps;
         Tensor out = everyStep ? logits.value().to(DType.FLOAT32)
                 : logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
         // computed before the next step writes into the cache it read
-        Tensor.evaluate(List.of(out));
+        if (hiddenOut != null) {
+            hiddenOut[0] = hidden[0].value().to(DType.FLOAT32);
+            Tensor.evaluate(List.of(out, hiddenOut[0]));
+        } else {
+            Tensor.evaluate(List.of(out));
+        }
         cache.evict();
         return out;
     }
 
     private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
+        return run(tokens, positions, cache, bias, null);
+    }
+
+    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias, Var[] hiddenOut) {
         Var x = hidden(tokens, positions, cache, bias);
+        if (hiddenOut != null) {
+            hiddenOut[0] = x;
+        }
         if (lmHead != null) {
             return lmHead.apply(x);
         }

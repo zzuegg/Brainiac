@@ -69,10 +69,47 @@ double log_(double x) {
 double pow_native(double a, double b) {
     return exp_(b * log_(a));
 }
+// sine and cosine: x = q pi/2 + r with |r| <= pi/4 (pi/2 in two parts, exact for |q| < 2^20),
+// then Taylor series to r^19, below double's rounding there
+double sin_poly(double r) {
+    double r2 = r * r;
+    double p = 0.0LF;
+    for (int i = 9; i >= 1; i--) {
+        p = (1.0LF - p) * r2 / double((2 * i) * (2 * i + 1));
+    }
+    return r * (1.0LF - p);
+}
+
+double cos_poly(double r) {
+    double r2 = r * r;
+    double p = 0.0LF;
+    for (int i = 9; i >= 1; i--) {
+        p = (1.0LF - p) * r2 / double((2 * i - 1) * (2 * i));
+    }
+    return 1.0LF - p;
+}
+
+double sin_cos_(double x, int shift) {
+    if (isnan(x) || isinf(x)) return NAN_;
+    double q = roundEven(x * 0.63661977236758134308LF);
+    double r = (x - q * 1.57079632673412561417LF) - q * 6.07710050650619224932e-11LF;
+    int quadrant = (int(mod(q, 4.0LF)) + shift) & 3;
+    switch (quadrant) {
+        case 0: return sin_poly(r);
+        case 1: return cos_poly(r);
+        case 2: return -sin_poly(r);
+        default: return -cos_poly(r);
+    }
+}
+
+double sin_(double x) { return sin_cos_(x, 0); }
+double cos_(double x) { return sin_cos_(x, 1); }
 #else
 float exp_(float x) { return exp(x); }
 float log_(float x) { return log(x); }
 float pow_native(float a, float b) { return pow(a, b); }
+float sin_(float x) { return sin(x); }
+float cos_(float x) { return cos(x); }
 #endif
 
 ACC sigmoid_(ACC x) {
@@ -155,7 +192,9 @@ ACC unary_op(uint op, ACC v) {
         case 10: return v > K(0.0) ? K(1.0) : v < K(0.0) ? K(-1.0) : v;
         case 11: return erf_(v);
         case 12: return softplus_(v);
-        default: return roundEven(v);
+        case 13: return roundEven(v);
+        case 14: return sin_(v);
+        default: return cos_(v);
     }
 }
 

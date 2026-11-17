@@ -21,6 +21,9 @@ final class Pretokenizer {
 
     static final String HEADER = "brainiac-tokenizer ";
 
+    /** Readers of tokenizer kinds registered from outside the module. */
+    static final Map<String, Tokenizer.Reader> READERS = new java.util.concurrent.ConcurrentHashMap<>();
+
     private Pretokenizer() {
     }
 
