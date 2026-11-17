@@ -212,4 +212,40 @@ class VisionAndGenerativeBlocksTest {
             assertEquals((1 - t * t) * wn, norms[i], 1e-3);
         }
     }
+
+    /** The penalty's weight gradient matches finite differences of the exact gradient norm. */
+    @Test
+    void gradientPenaltyWeightGradientMatchesDoubleBackprop() {
+        SplittableRandom rnd = new SplittableRandom(20);
+        Var w1 = Var.param(Tensor.normal(Shape.of(2, 8), 0, 1, rnd));
+        Var w2 = Var.param(Tensor.normal(Shape.of(8, 1), 0, 1, rnd));
+        java.util.function.UnaryOperator<Var> critic = x -> x.matmul(w1).tanh().matmul(w2);
+        Tensor x = randn(21, 5, 2);
+        GradientPenalty.gradientNorm(critic, List.of(w1, w2), x, 1e-3f).sub(1f).square().mean().backward();
+        float[] analytic = w1.grad().toArray();
+        float[] base = w1.value().toArray();
+        for (int i = 0; i < base.length; i++) {
+            float[] plus = base.clone();
+            float[] minus = base.clone();
+            plus[i] += 1e-2f;
+            minus[i] -= 1e-2f;
+            double numeric = (exactPenalty(critic, w1, plus, x) - exactPenalty(critic, w1, minus, x)) / 2e-2;
+            assertEquals(numeric, analytic[i], 2e-2 * Math.max(1, Math.abs(numeric)), "weight " + i);
+            w1.assign(Tensor.of(Shape.of(2, 8), base));
+        }
+    }
+
+    private static double exactPenalty(java.util.function.UnaryOperator<Var> critic, Var w1, float[] values,
+            Tensor x) {
+        w1.assign(Tensor.of(Shape.of(2, 8), values));
+        Var xv = Var.param(x);
+        critic.apply(xv).sum().backward();
+        float[] g = xv.grad().toArray();
+        double total = 0;
+        for (int i = 0; i < 5; i++) {
+            double n = Math.sqrt(g[2 * i] * g[2 * i] + g[2 * i + 1] * g[2 * i + 1]);
+            total += (n - 1) * (n - 1) / 5;
+        }
+        return total;
+    }
 }
