@@ -35,6 +35,7 @@ public final class ChatService {
     private final Path outputs;
     private final UsageLog usage;
     private final ProviderSettings settings;
+    private final Conversations conversations;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
 
     private record Listing(List<ModelInfo> models, String error, long at) {
@@ -53,6 +54,7 @@ public final class ChatService {
         this.outputs = outputs;
         this.usage = new UsageLog(outputs.resolveSibling("usage.jsonl"));
         this.settings = new ProviderSettings(outputs.resolveSibling("providers.properties"));
+        this.conversations = new Conversations(outputs.resolveSibling("chats"));
         for (ChatProvider p : this.providers) {
             if (p instanceof RemoteProvider r) {
                 apply(r);
@@ -114,6 +116,15 @@ public final class ChatService {
 
     private boolean shown(ModelInfo m) {
         return settings.models(m.provider()).map(ids -> ids.contains(m.id())).orElse(true);
+    }
+
+    /**
+     * Returns the chat conversations, kept next to the outputs folder in {@code chats}.
+     *
+     * @return the conversations
+     */
+    public Conversations conversations() {
+        return conversations;
     }
 
     /**

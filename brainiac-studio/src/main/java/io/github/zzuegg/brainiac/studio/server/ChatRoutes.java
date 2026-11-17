@@ -37,6 +37,9 @@ import java.util.Map;
  *       ["openai/gpt-oss-120b"], "url": "", "options": {"billTo": "my-org"}}} changes how a provider is
  *       used: whether Auto may pick it, which models to show ({@code null} for all), its address
  *       ({@code ""} for its own) and its options. Fields left out stay as they are.
+ *   <li>{@code GET /api/chats} lists the saved conversations, newest first; {@code POST /api/chats}
+ *       with a conversation ({@code id}, {@code title}, {@code messages}, {@code status} open or
+ *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it.
  *   <li>{@code GET /api/usage} sums every call by provider, key, model and day;
  *       {@code GET /api/balances} asks the providers that report one what is left on each key.
  * </ul>
@@ -58,6 +61,16 @@ final class ChatRoutes {
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
         server.post("/api/keys", this::keys);
         server.post("/api/providers", this::providers);
+        server.get("/api/chats", ex -> Exchanges.json(ex, 200, Map.of("chats", chat.conversations().list())));
+        server.post("/api/chats", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 32 << 20);
+            if (Boolean.TRUE.equals(body.get("delete"))) {
+                chat.conversations().delete(body.get("id"));
+            } else {
+                chat.conversations().save(body);
+            }
+            Exchanges.json(ex, 200, Map.of("ok", true));
+        });
         server.post("/api/chat", this::chat);
         server.post("/api/images", this::images);
         server.get("/api/usage", ex -> Exchanges.json(ex, 200, chat.usage().summary(java.time.ZoneId.systemDefault())));

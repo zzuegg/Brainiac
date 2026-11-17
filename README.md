@@ -718,6 +718,12 @@ A gateway or proxy in front of a provider is set with `-Dstudio.<provider>.url=`
 `-Dstudio.openai.url=https://gateway.example/v1/` or `-Dstudio.qwen.url=` for Alibaba Cloud's
 China region.
 
+**Conversations** open in tabs. On a wide screen, Split (or Ctrl+click on a conversation) puts
+two to four side by side, each with its own model, and each answers on its own, so several
+can be written at once. Finish moves a conversation out of the tabs to the Finished list,
+where Reopen brings it back. Conversations are saved in `~/.brainiac/studio/chats`, one JSON
+file each, so they show up in any browser on this PC; the newest 1000 are kept.
+
 **Edit** on a provider chooses which of its models appear in the model pickers and in Auto
 (all, including new ones, or only the ones you pick), whether Auto may use the provider at all,
 another address (a gateway, a proxy, or another region such as Qwen's mainland China endpoint),
@@ -751,6 +757,9 @@ POST /api/providers         {"provider":"huggingface","auto":true,"models":["ope
                             "url":"","options":{"billTo":"my-org"}} (models null shows all)
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
 GET  /api/balances          what is left on each key, at providers that report it
+GET  /api/chats             the saved conversations, newest first
+POST /api/chats             {"id":"k3x9a","title":"...","status":"open","messages":[...]} saves one;
+                            {"id":"k3x9a","delete":true} deletes it
 ```
 
 The other surfaces are being connected one at a time; until a surface reads real data it
