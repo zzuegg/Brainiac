@@ -1202,14 +1202,35 @@ public final class VulkanBackend implements Backend {
             eager(vs(bias));
         }
         long rows = (long) shape[0] * shape[1] * shape[3];
-        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(z.address())
-                .putLong(xl.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+        // flash decoding: few rows (one query per head while generating) and many keys share
+        // each row's keys out among work groups, enough to fill the device
+        int parts = (int) Math.max(1, Math.min(ceil(shape[4], ATTENTION_PIECE), ATTENTION_GROUPS / rows));
+        int chunk = ceil(ceil(shape[4], parts), GROUP_SIZE) * GROUP_SIZE;
+        parts = ceil(shape[4], chunk);
+        VkStorage pieces = parts > 1 ? raw(rows * parts * (shape[6] + 2), null) : null;
+        var push = vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(z.address())
+                .putLong(xl.address()).putLong(xb.address());
+        if (pieces != null) {
+            push.putLong(pieces.address());
+        }
+        push.putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
                 .putInt(shape[4]).putInt(shape[5]).putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0)
                 .putInt((int) rows).putInt(bias != null ? 1 : 0).putInt(Math.toIntExact(strides[0]))
                 .putInt(Math.toIntExact(strides[1])).putInt(Math.toIntExact(strides[2]))
                 .putInt(Math.toIntExact(strides[3]));
-        vk.dispatch(shader("attention", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()}, xq.slot(),
-                xk.slot(), xv.slot(), xb.slot());
+        if (pieces == null) {
+            vk.dispatch(shader("attention", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()}, xq.slot(),
+                    xk.slot(), xv.slot(), xb.slot());
+        } else {
+            push.putInt(parts).putInt(chunk);
+            vk.dispatch(shader("attention_split", z.dtype), rows * parts, pieces.slot(), xq.slot(), xk.slot(),
+                    xv.slot(), xb.slot());
+            vk.push().putLong(pieces.address()).putLong(z.address()).putLong(xl.address()).putInt(parts)
+                    .putInt(shape[6]).putInt((int) rows);
+            vk.dispatch(shader("attention_combine", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()},
+                    pieces.slot());
+            pieces.release();
+        }
         if (bias != null) {
             done(xb, vs(bias));
         }
@@ -1393,6 +1414,9 @@ public final class VulkanBackend implements Backend {
 
     /** Rows up to which a product reads packed levels directly; more unpack first. */
     private static final int PACKED_ROWS = 8;
+    /** Work groups a split attention aims for, and the fewest keys a piece takes. */
+    private static final int ATTENTION_GROUPS = Integer.getInteger("brainiac.vulkan.attentionGroups", 256);
+    private static final int ATTENTION_PIECE = Integer.getInteger("brainiac.vulkan.attentionPiece", 256);
     /** Products by packed weights split their rows into pieces until about this many work groups run. */
     private static final int PACKED_GROUPS = Integer.getInteger("brainiac.vulkan.packedGroups", 256);
     /** The fewest rows a piece of a product by packed weights takes. */

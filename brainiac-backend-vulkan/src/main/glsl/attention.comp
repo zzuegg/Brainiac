@@ -6,11 +6,20 @@
 // block's maximum and sum come from shared-memory reductions; invocation d keeps output
 // component d, rescaled online as the running maximum grows (as flash attention does).
 // Computed in float32 whatever the format. An optional bias (masks) is added to the scores.
+// With SPLIT (flash decoding), each row's keys are shared out in pieces of `chunk` among
+// `parts` work groups, which write their unnormalized output, maximum and sum to `part` for
+// attention_combine: a single query row then fills the device rather than one work group.
 layout(local_size_x = GROUP) in;
 layout(push_constant) uniform P {
     In q; In k; In v; Buf z; Buf lse; In bias;
+#ifdef SPLIT
+    Floats part;
+#endif
     uint heads; uint kvHeads; uint tq; uint tk; uint dk; uint dv; float scale; uint causal; uint rows;
     uint hasBias; uint sb; uint sh; uint si; uint sj;
+#ifdef SPLIT
+    uint parts; uint chunk;
+#endif
 } p;
 shared float qs[GROUP];
 shared float weights[GROUP];
@@ -45,7 +54,13 @@ float reduceSum(float x, uint tid) {
 }
 
 void main() {
-    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+#ifdef SPLIT
+    uint row = id / p.parts;
+    uint piece = id % p.parts;
+#else
+    uint row = id;
+#endif
     if (row >= p.rows) return;   // whole work groups: barriers stay uniform
     uint tid = gl_LocalInvocationID.x;
     uint i = row % p.tq;
@@ -59,11 +74,17 @@ void main() {
     }
     barrier();
     int seen = p.causal != 0 ? clamp(int(i + p.tk) - int(p.tq) + 1, 0, int(p.tk)) : int(p.tk);
+#ifdef SPLIT
+    uint first = min(piece * p.chunk, uint(seen));
+    uint last = min(first + p.chunk, uint(seen));
+#else
+    uint first = 0;
     uint last = uint(seen);
+#endif
     float m = uintBitsToFloat(0xff800000u);
     float l = 0;
     float o = 0;
-    for (uint c = 0; c < last; c += GROUP) {
+    for (uint c = first; c < last; c += GROUP) {
         uint j = c + tid;
         float s = uintBitsToFloat(0xff800000u);
         if (j < last) {
@@ -78,9 +99,11 @@ void main() {
             }
         }
         float mNew = max(m, reduceMax(s, tid));
-        float w = j < last ? exp(s - mNew) : 0.0;
+        // a block masked to -inf throughout (a float16 bias cannot hold -1e9) adds nothing:
+        // without the guards, exp(-inf - -inf) would make everything NaN
+        float w = j < last && !isinf(s) ? exp(s - mNew) : 0.0;
         weights[tid] = w;
-        float alpha = exp(m - mNew);
+        float alpha = m == mNew ? 1.0 : exp(m - mNew);
         l = l * alpha + reduceSum(w, tid);   // its barriers also publish weights
         if (tid < p.dv) {
             float acc = o * alpha;
@@ -94,10 +117,21 @@ void main() {
         m = mNew;
         barrier();   // weights are rewritten by the next block
     }
+#ifdef SPLIT
+    uint base = (row * p.parts + piece) * (p.dv + 2);
+    if (tid < p.dv) {
+        p.part.v[base + tid] = o;
+    }
+    if (tid == 0) {
+        p.part.v[base + p.dv] = m;
+        p.part.v[base + p.dv + 1] = l;
+    }
+#else
     if (tid < p.dv) {
         STORE(p.z, row * p.dv + tid, ACC(l > 0 ? o / l : 0.0));
     }
     if (tid == 0) {
         STORE(p.lse, row, ACC(l > 0 ? m + log(l) : uintBitsToFloat(0xff800000u)));
     }
+#endif
 }

@@ -84,6 +84,8 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
             // register arrays sized for the head: 32 keeps more work groups resident
             "attention_dq" to listOf("attention_dq" to emptyList(), "attention_dq32" to listOf("-DATT_D=32")),
             "attention_dkv" to listOf("attention_dkv" to emptyList(), "attention_dkv32" to listOf("-DATT_D=32")),
+            // flash decoding: the keys of a row shared out among work groups (attention_combine joins them)
+            "attention" to listOf("attention" to emptyList(), "attention_split" to listOf("-DSPLIT")),
         )
         val dir = sources.get().asFile
         output.get().asFile.listFiles { f -> f.name.endsWith(".spv") }?.forEach { it.delete() }
