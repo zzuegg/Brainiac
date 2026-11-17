@@ -16,6 +16,7 @@ import org.lwjgl.vulkan.VkPhysicalDeviceCooperativeMatrixFeaturesKHR;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
@@ -108,6 +109,10 @@ final class VkContext {
         long size;
         long used;
         long mapped;
+        /** The memory type it was allocated from. */
+        int type;
+        /** Whether it holds device data spilled to slower memory. */
+        boolean spill;
     }
 
     /** A part of a block, owned by one storage at a time. */
@@ -140,6 +145,21 @@ final class VkContext {
     private final int deviceLocalType;
     private final int uploadType;
     private final int readbackType;
+    /**
+     * Host-visible memory for bulk uploads: system memory, not the small window of device memory
+     * the CPU can map (256 MB on many integrated GPUs), as large as the host heap allows.
+     */
+    private final int bulkType;
+    /**
+     * Where device memory spills when the device-local heap is full: a host-visible type in
+     * another heap (system memory on integrated GPUs and with resizable BAR), or -1.
+     * {@code -Dbrainiac.vulkan.spill=false} turns spilling off.
+     */
+    private final int spillType;
+    /** Bytes spilled to {@link #spillType}. */
+    private long spilled;
+    /** Tests: device-local allocations fail once this many bytes are allocated (0: never). */
+    long simulatedLimit;
 
     private final Map<String, Long> pipelines = new HashMap<>();
     private final Map<Long, ArrayDeque<Slot>> free = new HashMap<>();
@@ -152,6 +172,10 @@ final class VkContext {
 
     private final ArrayDeque<Block> stagingPool = new ArrayDeque<>();
     private Block staging;
+    /** Bulk upload blocks: each serves one batch, like staging, and returns when it is done. */
+    private final ArrayDeque<Block> bulkPool = new ArrayDeque<>();
+    private Block bulk;
+    private static final long BULK_CHUNK = 32L << 20;
     private Block readback;
 
     private final ArrayDeque<Batch> idleBatches = new ArrayDeque<>();
@@ -166,6 +190,10 @@ final class VkContext {
     long barriers;
     long submits;
     long waits;
+    /** Nanoseconds spent waiting for the device, allocating device memory, creating pipelines, writing uploads. */
+    long waitNanos, allocNanos, pipelineNanos, uploadNanos;
+    /** Bytes uploaded from the host. */
+    long uploaded;
     long reclaims;
     long collections;
     private long createdSinceCollect;
@@ -273,10 +301,14 @@ final class VkContext {
                 int cached = memoryType(mp, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                         | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
                 readbackType = cached >= 0 ? cached : uploadType;
+                int bulk = bulkType(mp);
+                bulkType = bulk >= 0 ? bulk : uploadType;
                 if (deviceLocalType < 0 || uploadType < 0) {
                     throw new IllegalStateException("no suitable memory types");
                 }
                 deviceMemory = mp.memoryHeaps(mp.memoryTypes(deviceLocalType).heapIndex()).size();
+                spillType = "false".equals(System.getProperty("brainiac.vulkan.spill")) ? -1
+                        : spillType(mp, mp.memoryTypes(deviceLocalType).heapIndex());
                 Integer mb = Integer.getInteger("brainiac.vulkan.memory");
                 budget = mb != null ? (long) mb << 20 : deviceMemory / 10 * 8;
             }
@@ -447,6 +479,35 @@ final class VkContext {
         }
     }
 
+    /** A host-visible, coherent memory type that is not device-local, on the largest heap; or -1. */
+    private static int bulkType(VkPhysicalDeviceMemoryProperties mp) {
+        int best = -1;
+        int need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        for (int i = 0; i < mp.memoryTypeCount(); i++) {
+            int flags = mp.memoryTypes(i).propertyFlags();
+            if ((flags & need) == need && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0
+                    && (best < 0 || mp.memoryHeaps(mp.memoryTypes(i).heapIndex()).size()
+                            > mp.memoryHeaps(mp.memoryTypes(best).heapIndex()).size())) {
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /** A host-visible memory type outside the device-local heap, preferring the largest heap. */
+    private static int spillType(VkPhysicalDeviceMemoryProperties mp, int deviceHeap) {
+        int best = -1;
+        for (int i = 0; i < mp.memoryTypeCount(); i++) {
+            int flags = mp.memoryTypes(i).propertyFlags();
+            int heap = mp.memoryTypes(i).heapIndex();
+            if (heap != deviceHeap && (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0
+                    && (best < 0 || mp.memoryHeaps(heap).size() > mp.memoryHeaps(mp.memoryTypes(best).heapIndex()).size())) {
+                best = i;
+            }
+        }
+        return best;
+    }
+
     private static int memoryType(VkPhysicalDeviceMemoryProperties mp, int required, int preferred) {
         int fallback = -1;
         for (int i = 0; i < mp.memoryTypeCount(); i++) {
@@ -478,7 +539,7 @@ final class VkContext {
         ArrayDeque<Slot> list = free.get(size);
         Slot s = list == null ? null : list.poll();
         if (s == null) {
-            if (allocated + (size > SMALL_SLOT ? size : CHUNK) > budget && allocated > 0) {
+            if (allocated + (size > SMALL_SLOT ? size : CHUNK) > budget && allocated > 0 && !deviceFull()) {
                 reclaim();
                 list = free.get(size);
                 s = list == null ? null : list.poll();
@@ -535,7 +596,7 @@ final class VkContext {
     }
 
     /** Frees unused dedicated blocks after collecting garbage, to stay within the budget. */
-    private void reclaim() {
+    void reclaim() {
         reclaims++;
         finish();
         System.gc();
@@ -557,14 +618,45 @@ final class VkContext {
 
     private Block block(long size, int type, boolean map) {
         try {
-            return tryBlock(size, type, map);
+            return tryBlock(size, type, map, false);
         } catch (OutOfDeviceMemory e) {
-            if (type == deviceLocalType) {
-                reclaim();
-                return tryBlock(size, type, map);
+            if (type != deviceLocalType) {
+                throw e;
             }
-            throw e;
+            try {
+                if (deviceFull()) {
+                    throw e;   // reclaimed when it filled up: spill without waiting again
+                }
+                reclaim();
+                return tryBlock(size, type, map, false);
+            } catch (OutOfDeviceMemory again) {
+                fullAt = allocated;
+                // the device's own memory is full: slower memory the device reads over the bus
+                int spill = spillType >= 0 ? spillType : simulatedLimit > 0 ? uploadType : -1;
+                if (spill < 0) {
+                    throw again;
+                }
+                return tryBlock(size, spill, map, true);
+            }
         }
+    }
+
+    /**
+     * The device-local bytes allocated when an allocation last failed even after reclaiming;
+     * while no more than that is allocated again, new blocks spill without reclaiming first.
+     */
+    private long fullAt = -1;
+
+    private boolean deviceFull() {
+        if (fullAt >= 0 && allocated < fullAt) {
+            fullAt = -1;   // blocks were freed since
+        }
+        return fullAt >= 0 && spillType >= 0;
+    }
+
+    /** @return bytes spilled from device-local memory to slower memory */
+    long spilled() {
+        return spilled;
     }
 
     private static final class OutOfDeviceMemory extends IllegalStateException {
@@ -575,10 +667,15 @@ final class VkContext {
         }
     }
 
-    private Block tryBlock(long size, int type, boolean map) {
+    private Block tryBlock(long size, int type, boolean map, boolean spill) {
         try (MemoryStack st = stackPush()) {
             Block b = new Block();
             b.size = size;
+            b.type = type;
+            b.spill = spill;
+            if (!spill && type == deviceLocalType && simulatedLimit > 0 && allocated + size > simulatedLimit) {
+                throw new OutOfDeviceMemory("simulated: out of device memory");
+            }
             VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(st).sType$Default().size(size)
                     .usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
                             | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
@@ -596,7 +693,9 @@ final class VkContext {
                     .flags(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT);
             VkMemoryAllocateInfo mai = VkMemoryAllocateInfo.calloc(st).sType$Default().pNext(flags)
                     .allocationSize(req.size()).memoryTypeIndex(type);
+            long t = System.nanoTime();
             int r = vkAllocateMemory(device, mai, null, lp);
+            allocNanos += System.nanoTime() - t;
             if (r != VK_SUCCESS) {
                 vkDestroyBuffer(device, b.buffer, null);
                 if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
@@ -614,7 +713,9 @@ final class VkContext {
                 check(vkMapMemory(device, b.memory, 0, VK_WHOLE_SIZE, 0, pp), "vkMapMemory");
                 b.mapped = pp.get(0);
             }
-            if (type == deviceLocalType) {
+            if (spill) {
+                spilled += size;
+            } else if (type == deviceLocalType) {
                 allocated += size;
             }
             return b;
@@ -627,7 +728,9 @@ final class VkContext {
         }
         vkDestroyBuffer(device, b.buffer, null);
         vkFreeMemory(device, b.memory, null);
-        if (b.memory != 0 && b.mapped == 0) {
+        if (b.spill) {
+            spilled -= b.size;
+        } else if (b.type == deviceLocalType) {
             allocated -= b.size;
         }
     }
@@ -673,6 +776,15 @@ final class VkContext {
 
     /** @param subgroups32 whether the shader needs whole subgroups of 32 invocations */
     private long createPipeline(byte[] code, boolean subgroups32) {
+        long t = System.nanoTime();
+        try {
+            return createPipelineTimed(code, subgroups32);
+        } finally {
+            pipelineNanos += System.nanoTime() - t;
+        }
+    }
+
+    private long createPipelineTimed(byte[] code, boolean subgroups32) {
         ByteBuffer spirv = MemoryUtil.memAlloc(code.length);
         try (MemoryStack st = stackPush()) {
             spirv.put(code).flip();
@@ -856,6 +968,8 @@ final class VkContext {
         if (bytes == 0) {
             return;
         }
+        long t = System.nanoTime();
+        uploaded += bytes;
         access(s.address);
         Batch b = recording();
         if (bytes <= inline.capacity()) {
@@ -870,7 +984,7 @@ final class VkContext {
             Block from;
             long at;
             if (bytes > STAGING_CHUNK / 2) {
-                from = block(bytes, uploadType, true);
+                from = block(bytes, bulkType, true);
                 at = 0;
                 b.done.add(() -> destroy(from));
             } else {
@@ -883,7 +997,47 @@ final class VkContext {
                         VkBufferCopy.calloc(1, st).srcOffset(at).dstOffset(s.offset).size(bytes));
             }
         }
+        uploadNanos += System.nanoTime() - t;
         recorded(b);
+    }
+
+    /**
+     * Copies host memory into a slot. Large amounts stream through blocks of system memory,
+     * each submitted once full, so the device copies one while the next is written.
+     */
+    void upload(Slot s, MemorySegment src) {
+        long bytes = src.byteSize();
+        if (bytes <= STAGING_CHUNK / 2) {
+            upload(s, bytes, b -> MemorySegment.ofBuffer(b).copyFrom(src));
+            return;
+        }
+        long t = System.nanoTime();
+        uploaded += bytes;
+        access(s.address);
+        long done = 0;
+        while (done < bytes) {
+            Batch b = recording();
+            if (bulk == null || bulk.used == bulk.size) {
+                Block fresh = bulkPool.poll();
+                bulk = fresh != null ? fresh : block(BULK_CHUNK, bulkType, true);
+                bulk.used = 0;
+                Block mine = bulk;
+                b.done.add(() -> bulkPool.add(mine));
+            }
+            long n = Math.min(bytes - done, bulk.size - bulk.used);
+            MemorySegment.ofBuffer(MemoryUtil.memByteBuffer(bulk.mapped + bulk.used, (int) n)).copyFrom(src.asSlice(done, n));
+            try (MemoryStack st = stackPush()) {
+                vkCmdCopyBuffer(b.commands, bulk.buffer, s.block.buffer, VkBufferCopy.calloc(1, st)
+                        .srcOffset(bulk.used).dstOffset(s.offset + done).size(n));
+            }
+            bulk.used += n;
+            done += n;
+            recorded(b);
+            if (bulk != null && bulk.used == bulk.size) {
+                submit();   // the device copies this block while the next one is written
+            }
+        }
+        uploadNanos += System.nanoTime() - t;
     }
 
     /** Room for {@code bytes} bytes in the staging chunk, for commands recorded into {@code b}. */
@@ -960,6 +1114,7 @@ final class VkContext {
         }
         current = null;
         staging = null;   // its space belongs to this batch until it completes
+        bulk = null;
         while (inFlight.size() >= MAX_IN_FLIGHT) {
             complete(inFlight.poll());
         }
@@ -984,7 +1139,9 @@ final class VkContext {
             LongBuffer fence = st.longs(b.fence);
             if (vkGetFenceStatus(device, b.fence) != VK_SUCCESS) {
                 waits++;
+                long t = System.nanoTime();
                 check(vkWaitForFences(device, fence, true, Long.MAX_VALUE), "vkWaitForFences");
+                waitNanos += System.nanoTime() - t;
             }
             check(vkResetFences(device, fence), "vkResetFences");
         }
