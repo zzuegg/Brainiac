@@ -89,7 +89,14 @@ class AgentRunsTest {
     }
 
     @AfterEach
-    void close() {
+    void close() throws InterruptedException {
+        // agents write their files from their own threads; let them end before the folder goes
+        for (int i = 0; i < 200 && agents.list().stream().anyMatch(r -> "running".equals(r.get("state"))
+                || "waiting".equals(r.get("state"))); i++) {
+            agents.list().stream().filter(r -> "waiting".equals(r.get("state")))
+                    .forEach(r -> agents.stop((String) r.get("id")));
+            Thread.sleep(20);
+        }
         training.close();
     }
 
@@ -206,7 +213,11 @@ class AgentRunsTest {
         assertEquals(2, reopened.list().size());
         assertEquals(done, reopened.list().getFirst().get("id"));
         assertEquals("Hello again.", reopened.get(done).orElseThrow().get("answer"));
-        assertEquals("3", reopened.start("x", "script/bot", "auto", 1, null).get("id"), "ids go on after the kept ones");
+        String third = (String) reopened.start("x", "script/bot", "auto", 1, null).get("id");
+        assertEquals("3", third, "ids go on after the kept ones");
+        for (int i = 0; i < 200 && "running".equals(reopened.get(third).orElseThrow().get("state")); i++) {
+            Thread.sleep(20);   // its last save must land before the folder is cleaned up
+        }
         assertTrue(reopened.delete(id));
         assertFalse(reopened.get(id).isPresent());
     }
