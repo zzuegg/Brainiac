@@ -97,7 +97,8 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
                 }.toTypedArray()),
             // tile shapes the per-device tuning picks from (VulkanBackend.COOP_SHAPES)
             "matmul_coop" to listOf("" to emptyList(), "k64" to listOf("-DBK=64"), "m64" to listOf("-DBM=64", "-DSGR=2"),
-                    "n256" to listOf("-DBN=256"), "m256" to listOf("-DBM=256"), "t44" to listOf("-DSGR=2", "-DSGC=4"))
+                    "n256" to listOf("-DBN=256"), "m256" to listOf("-DBM=256"), "t44" to listOf("-DSGR=2", "-DSGC=4"),
+                    "v" to listOf("-DVEC"), "t44v" to listOf("-DSGR=2", "-DSGC=4", "-DVEC"), "k64v" to listOf("-DBK=64", "-DVEC"))
                 .flatMap { (v, d) -> listOf("matmul_coop$v" to d, "matmul_coop_packed$v" to d + "-DPACKED") },
             "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
             "matmul_vec" to listOf(1, 2, 4, 8).map { "matmul_vec$it" to listOf("-DROWS=$it") },

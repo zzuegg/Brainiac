@@ -26,7 +26,8 @@ final class Tuning {
     /** The compiled shapes (see matmul_coop.comp and the build's variants). */
     static final List<CoopShape> COOP_SHAPES = List.of(new CoopShape("", 128, 128), new CoopShape("k64", 128, 128),
             new CoopShape("m64", 64, 128), new CoopShape("n256", 128, 256), new CoopShape("m256", 256, 128),
-            new CoopShape("t44", 128, 128));
+            new CoopShape("t44", 128, 128), new CoopShape("v", 128, 128), new CoopShape("t44v", 128, 128),
+            new CoopShape("k64v", 128, 128));
 
     /** The values used without a tuning: those measured on an RX 9070 XT. */
     static final Map<String, Long> DEFAULTS = Map.of(

@@ -64,38 +64,46 @@ final class Tuner {
 
     private void coopShape() {
         int[][] shapes = {{2048, 2048, 2048}, {512, 4096, 4096}};
-        double[] times = new double[Tuning.COOP_SHAPES.size() + 1];
-        for (int c = -1; c < Tuning.COOP_SHAPES.size(); c++) {
+        double[] times = new double[Tuning.COOP_SHAPES.size()];
+        tuning.set("coopRows", 1);
+        for (int c = 0; c < times.length; c++) {
             tuning.set("coopShape", c);
-            tuning.set("coopRows", 1);
-            double t = 0;
             for (int[] s : shapes) {
-                t += product(DType.FLOAT16, s[0], s[1], s[2]);
+                times[c] += product(DType.FLOAT16, s[0], s[1], s[2]);
             }
-            note("coopShape", c < 0 ? "off" : name(c), t, flops(shapes) / t);
-            times[c + 1] = t;
+            note("coopShape", name(c), times[c], flops(shapes) / times[c]);
         }
-        tuning.set("coopShape", pick(times, 1) - 1);
+        tuning.set("coopShape", pick(times, 0));
         tuning.set("coopRows", Tuning.DEFAULTS.get("coopRows"));
     }
 
-    /** The fewest rows from which the cooperative matrices are at least as fast as the tiles. */
+    /**
+     * Whether and from how many rows the matrix cores beat the tiles, each size on its own: on
+     * an RTX 4090 they lost at 2048 x 2048 x 2048 by half while a sum over sizes hid it.
+     */
     private void coopRows() {
-        int[] rows = {16, 32, 64, 128, 256};
-        long chosen = 512;
-        for (int i = rows.length - 1; i >= 0; i--) {
-            int m = rows[i];
-            tuning.set("coopRows", m);
-            double coop = product(DType.FLOAT16, m, 4096, 4096);
+        int[][] shapes = {{2048, 2048, 2048}, {512, 4096, 4096}, {256, 4096, 4096}, {128, 4096, 4096},
+                {64, 4096, 4096}, {32, 4096, 4096}, {16, 4096, 4096}};
+        long chosen = -1;
+        for (int i = 0; i < shapes.length; i++) {
+            int[] s = shapes[i];
+            tuning.set("coopRows", 1);
+            double coop = product(DType.FLOAT16, s[0], s[1], s[2]);
             tuning.set("coopRows", Integer.MAX_VALUE);
-            double tiles = product(DType.FLOAT16, m, 4096, 4096);
-            note("coopRows " + m, "matrix cores vs tiles", coop, tiles);
-            if (coop > tiles * 1.02) {
+            double tiles = product(DType.FLOAT16, s[0], s[1], s[2]);
+            note("coop " + s[0] + "x" + s[1] + "x" + s[2], "matrix cores vs tiles", coop, tiles);
+            if (coop > tiles) {
                 break;
             }
-            chosen = m;
+            chosen = s[0];
         }
-        tuning.set("coopRows", chosen);
+        if (chosen < 0) {
+            // slower on the largest products: tiles throughout
+            tuning.set("coopShape", -1);
+            tuning.set("coopRows", Tuning.DEFAULTS.get("coopRows"));
+        } else {
+            tuning.set("coopRows", chosen);
+        }
     }
 
     private void bigTiles() {

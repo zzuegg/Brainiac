@@ -254,6 +254,17 @@ final class VkContext {
     /** Timed dispatches per key of {@link #shaderNanos}. */
     final Map<String, Long> shaderCalls = new HashMap<>();
 
+    /**
+     * Waits for the device and destroys it and the instance, at exit: NVIDIA's Linux driver
+     * crashed in libEGL_nvidia while the JVM unloaded libraries under a live device.
+     */
+    void shutdown() {
+        vkDeviceWaitIdle(device);
+        vkDestroyCommandPool(device, commandPool, null);
+        vkDestroyDevice(device, null);
+        vkDestroyInstance(instance, null);
+    }
+
     VkContext() {
         try (MemoryStack st = stackPush()) {
             VkApplicationInfo app = VkApplicationInfo.calloc(st).sType$Default()

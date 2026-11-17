@@ -111,17 +111,30 @@ public final class VulkanBackend implements Backend {
                         first = this;
                     }
                 }
+                boolean statistics = Boolean.getBoolean("brainiac.vulkan.statistics");
+                boolean teardown = !"false".equals(System.getProperty("brainiac.vulkan.teardown"));
+                if (statistics || teardown) {
+                    VkContext context = vk;
+                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                        synchronized (VulkanBackend.this) {
+                            if (statistics && vk == context && context.dispatches > 0) {
+                                System.err.println(name() + ": " + statistics());
+                            }
+                            if (teardown && vk == context) {
+                                vk = null;   // later calls fail plainly instead of using a destroyed device
+                                try {
+                                    context.shutdown();
+                                } catch (RuntimeException | LinkageError e) {
+                                    // exiting anyway
+                                }
+                            }
+                        }
+                    }, "vulkan-exit"));
+                }
                 String mode = System.getProperty("brainiac.vulkan.tune", "auto");
                 if (!mode.equals("false") && !mode.equals("off")) {
                     // forced once per run: further instances read what the first measured
                     loadTuning(mode.equals("force") && FORCED.compareAndSet(false, true));
-                }
-                if (Boolean.getBoolean("brainiac.vulkan.statistics")) {
-                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                        if (vk.dispatches > 0) {
-                            System.err.println(name() + ": " + statistics());
-                        }
-                    }, "vulkan-statistics"));
                 }
             } catch (RuntimeException | LinkageError e) {
                 unavailable = e.getMessage() == null ? e.toString() : e.getMessage();

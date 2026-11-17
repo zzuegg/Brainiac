@@ -51,8 +51,16 @@ layout(push_constant) uniform P {
 } p;
 #endif
 layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer In4 { f16vec4 v[]; };
+#ifdef VEC
+// staged four values at a time: one 8-byte store each instead of four 2-byte ones
+shared f16vec4 tileA[BM * SA / 4];
+shared f16vec4 tileB[BK * SB / 4];
+#define V 4
+#else
 shared float16_t tileA[BM * SA];
 shared float16_t tileB[BK * SB];
+#define V 1
+#endif
 shared float scratch[SGR * SGC * 256];   // one 16 x 16 piece per subgroup, for edge tiles
 
 #define ACCM coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
@@ -106,9 +114,13 @@ void main() {
                     x[e] = gr < p.m && gc + e < to ? p.a.v[aBase + gr * p.k + gc + e] : float16_t(0);
                 }
             }
+#ifdef VEC
+            tileA[(row * SA + c) / 4] = x;
+#else
             for (uint e = 0; e < 4; e++) {
                 tileA[row * SA + c + e] = x[e];
             }
+#endif
         }
         for (uint r4 = tid; r4 < BK * BN / 4; r4 += LOCAL) {
             uint br = r4 / (BN / 4);
@@ -136,19 +148,23 @@ void main() {
                 }
             }
 #endif
+#ifdef VEC
+            tileB[(br * SB + bc) / 4] = y;
+#else
             for (uint e = 0; e < 4; e++) {
                 tileB[br * SB + bc + e] = y[e];
             }
+#endif
         }
         barrier();
         for (uint q = 0; q < BK; q += 16) {
             coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> ma[TM];
             for (uint i = 0; i < TM; i++) {
-                coopMatLoad(ma[i], tileA, (sr * TM * 16 + i * 16) * SA + q, SA, gl_CooperativeMatrixLayoutRowMajor);
+                coopMatLoad(ma[i], tileA, ((sr * TM * 16 + i * 16) * SA + q) / V, SA / V, gl_CooperativeMatrixLayoutRowMajor);
             }
             for (uint j = 0; j < TN; j++) {
                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> mb;
-                coopMatLoad(mb, tileB, q * SB + sc * TN * 16 + j * 16, SB, gl_CooperativeMatrixLayoutRowMajor);
+                coopMatLoad(mb, tileB, (q * SB + sc * TN * 16 + j * 16) / V, SB / V, gl_CooperativeMatrixLayoutRowMajor);
                 for (uint i = 0; i < TM; i++) {
                     acc[i][j] = coopMatMulAdd(ma[i], mb, acc[i][j]);
                 }
