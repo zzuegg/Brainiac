@@ -31,6 +31,8 @@ class DiTFlowTest {
         // strong guidance makes the short-trained DiT commit to the requested class
         double[] guided = TinyDdpmTest.score(fm.sampleHeun(fm.noise(16, 4), labels, 16, 4f, null), labels);
         double[] plain = TinyDdpmTest.score(fm.sampleHeun(fm.noise(16, 4), labels, 16, 1f, null), labels);
+        System.out.printf("DiT flow: class match guided %.3f, unguided %.3f; nearest-real distance guided %.3f, "
+                + "unguided %.3f%n", guided[1], plain[1], guided[0], plain[0]);
         assertTrue(guided[1] >= 0.6 && guided[1] > plain[1],
                 "guided samples match their class: " + guided[1] + " (unguided " + plain[1] + ")");
     }

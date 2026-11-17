@@ -43,6 +43,8 @@ class ImageAutoencodersTest {
         assertTrue(activeFree >= activePlain && activeFree >= 3,
                 "active latents: free bits " + activeFree + ", plain " + activePlain);
         double sampled = TinyDdpmTest.score(free.sample(32, 3), new int[32])[0];
+        System.out.printf("VAE: reconstruction %.3f -> %.3f, active latents free bits %d vs plain %d, prior-sample "
+                + "distance %.3f vs untrained %.3f%n", first[0], last[0], activeFree, activePlain, sampled, untrained);
         assertTrue(sampled < untrained / 2, "prior samples " + sampled + " vs untrained " + untrained);
     }
 
@@ -61,6 +63,7 @@ class ImageAutoencodersTest {
         float[][] probe = batch(64, r, labels);
         float[][] round = vq.decode(vq.encode(probe));
         double[] s = TinyDdpmTest.score(round, labels);
+        System.out.printf("VQ-VAE: decoded codes keep the class %.3f, nearest-real distance %.3f%n", s[1], s[0]);
         assertTrue(s[1] > 0.9, "decoded codes keep the class: " + s[1]);
         assertTrue(s[0] < 8, "decoded codes are close to real images: " + s[0]);
     }

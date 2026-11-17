@@ -16,6 +16,8 @@ class AttentionViewerDemoTest {
         Path file = dir.resolve("cache.html");
         int steps = AttentionViewerDemo.write(file, 40, 8, false);
         String html = Files.readString(file);
+        System.out.printf("attention viewer: %d steps, %d bytes, %d evictions%n", steps, html.length(),
+                html.split("class=\"gone drop\"|class=\"drop\"", -1).length - 1);
         assertEquals(40, steps);
         assertTrue(html.startsWith("<!doctype html>"));
         assertTrue(html.endsWith("</html>\n"));

@@ -12,6 +12,7 @@ class CompressionVsDroppingTest {
     @Test
     void foldingRecallsWhatDroppingLoses() {
         Map<String, CompressionVsDropping.Result> r = CompressionVsDropping.run(48, 8, 128, 1);
+        System.out.printf("evicted-pair recall (cosine) and memory floats: %s%n", r);
         double drop = r.get("DROP").recall();
         double linear = r.get("LINEAR").recall();
         double delta = r.get("DELTA").recall();

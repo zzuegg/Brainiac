@@ -43,6 +43,7 @@ class MixerShootoutTest {
     void everyMixerOfTheLineupTrainsThroughItsSpec() {
         List<MixerShootout.Result> results = MixerShootout.run(MixerShootout.lineup(),
                 List.of(MixerShootout.recall(4, 4, 2)), 16, 2, 0.01f, 1);
+        System.out.println("mixer lineup, 2 training steps (smoke run):\n" + MixerShootout.table(results));
         assertEquals(MixerShootout.lineup().size(), results.size());
         for (MixerShootout.Result r : results) {
             assertTrue(r.parameters() > 0, r.mixer());
