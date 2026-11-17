@@ -11,6 +11,7 @@ import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,12 +26,19 @@ import java.util.concurrent.Executors;
  * can talk to a local model: {@code GET /v1/models}, {@code POST /v1/completions} and
  * {@code POST /v1/chat/completions}, each with {@code "stream": true} as server-sent events.
  * A chat's {@code response_format} of type {@code json_schema} or {@code json_object}
- * constrains the answer. A chat's {@code tools} go to the chat template, and a reply that calls
+ * constrains the answer, as does a GBNF {@code grammar} (llama.cpp's extension). A chat's
+ * {@code tools} go to the chat template, and a reply that calls
  * them (Hermes {@code <tool_call>} blocks or a bare JSON call, see {@link Agent}) comes back as
  * {@code tool_calls} with {@code finish_reason} "tool_calls"; earlier calls and {@code tool}
  * messages in the request are rendered for the model. {@code logprobs} (chat: with
- * {@code top_logprobs}) adds token log-probabilities to answers that are not streamed. Requests are answered one at a time, or, with a batch size above
- * one, decoded together by {@link Generator#batcher continuous batching}.
+ * {@code top_logprobs}) adds token log-probabilities to answers that are not streamed; {@code n}
+ * asks for several answers; {@code top_k}, {@code min_p} and {@code repetition_penalty} are read
+ * as llama.cpp's server reads them. A thinking model's {@code <think>} part comes back apart, as
+ * {@code reasoning_content}. {@code GET /health} answers once the server is up, and
+ * {@code POST /tokenize} and {@code /detokenize} convert text. With {@link #requireApiKey}, every
+ * request needs {@code Authorization: Bearer <key>}. Requests are answered one at a time, or,
+ * with a batch size above one, decoded together by {@link Generator#batcher continuous
+ * batching}.
  *
  * <pre>{@code
  * try (OpenAiServer server = OpenAiServer.start(new InetSocketAddress(8080), "qwen", generator, tokenizer,
@@ -98,14 +106,87 @@ public final class OpenAiServer implements AutoCloseable {
             OpenAiServer s = new OpenAiServer(http, Objects.requireNonNull(model, "model"),
                     Objects.requireNonNull(generator, "generator"), Objects.requireNonNull(tokenizer, "tokenizer"),
                     stopTokens, maxBatch);
-            http.createContext("/v1/models", s::models);
-            http.createContext("/v1/completions", e -> s.complete(e, false));
-            http.createContext("/v1/chat/completions", e -> s.complete(e, true));
+            http.createContext("/v1/models", e -> s.guarded(e, s::models));
+            http.createContext("/v1/completions", e -> s.guarded(e, x -> s.complete(x, false)));
+            http.createContext("/v1/chat/completions", e -> s.guarded(e, x -> s.complete(x, true)));
+            http.createContext("/health", e -> s.guarded(e, x -> json(x, 200, Map.of("status", "ok"))));
+            http.createContext("/tokenize", e -> s.guarded(e, s::tokenize));
+            http.createContext("/v1/embeddings", e -> s.guarded(e, s::embeddings));
+            http.createContext("/detokenize", e -> s.guarded(e, s::detokenize));
             http.setExecutor(s.worker);
             http.start();
             return s;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+    }
+
+    private volatile String apiKey;
+
+    /**
+     * Requires every request to carry {@code Authorization: Bearer <key>}; others are answered
+     * with status 401.
+     *
+     * @param key the key, or {@code null} to accept every request
+     * @return this server
+     */
+    public OpenAiServer requireApiKey(String key) {
+        this.apiKey = key;
+        return this;
+    }
+
+    private void guarded(HttpExchange e, com.sun.net.httpserver.HttpHandler handler) throws IOException {
+        String key = apiKey;
+        if (key != null) {
+            String given = e.getRequestHeaders().getFirst("Authorization");
+            if (given == null || !java.security.MessageDigest.isEqual(("Bearer " + key).getBytes(StandardCharsets.UTF_8),
+                    given.getBytes(StandardCharsets.UTF_8))) {
+                try (e) {
+                    e.getRequestBody().readAllBytes();
+                    error(e, 401, "a valid API key is needed: Authorization: Bearer <key>");
+                }
+                return;
+            }
+        }
+        handler.handle(e);
+    }
+
+    private Map<String, Object> body(HttpExchange e) throws IOException {
+        if (!e.getRequestMethod().equals("POST")) {
+            throw new BadRequest("use POST");
+        }
+        return Json.object(Json.parse(new String(e.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+    }
+
+    private void tokenize(HttpExchange e) throws IOException {
+        try (e) {
+            Map<String, Object> req;
+            try {
+                req = body(e);
+            } catch (RuntimeException ex) {
+                error(e, 400, ex.getMessage());
+                return;
+            }
+            String text = Json.string(req, "content", "");
+            boolean special = Boolean.TRUE.equals(req.get("add_special"));
+            List<Object> ids = new ArrayList<>();
+            for (int id : tokenizer.encode(text, special)) {
+                ids.add(id);
+            }
+            json(e, 200, Map.of("tokens", ids));
+        }
+    }
+
+    private void detokenize(HttpExchange e) throws IOException {
+        try (e) {
+            int[] ids;
+            try {
+                ids = Json.array(body(e).get("tokens")).stream().mapToInt(o -> ((Number) o).intValue()).toArray();
+            } catch (RuntimeException ex) {
+                error(e, 400, "tokens must be a list of ids: " + ex.getMessage());
+                return;
+            }
+            json(e, 200, Map.of("content", tokenizer.decode(ids, false)));
         }
     }
 
@@ -136,6 +217,122 @@ public final class OpenAiServer implements AutoCloseable {
         json(e, 200, Map.of("object", "list", "data", List.of(m)));
     }
 
+    /**
+     * OpenAI's embeddings: {@code input} is a string, a list of strings, or token ids (one
+     * list or a list of lists). The vectors are the model's final hidden states pooled by
+     * {@code pooling} ("last", the default, as decoder embedders do, or "mean"), scaled to
+     * length 1, and cut to {@code dimensions} (then scaled again) when it is given.
+     */
+    private void embeddings(HttpExchange e) throws IOException {
+        try (e) {
+            if (!(generator.model() instanceof Llama llama)) {
+                error(e, 400, "this model cannot make embeddings");
+                return;
+            }
+            int[][] inputs;
+            Llama.Pooling pooling;
+            int dimensions;
+            try {
+                Map<String, Object> req = body(e);
+                inputs = embeddingInputs(req.get("input"));
+                String p = Json.string(req, "pooling", "last");
+                pooling = switch (p) {
+                    case "last" -> Llama.Pooling.LAST;
+                    case "mean" -> Llama.Pooling.MEAN;
+                    default -> throw new BadRequest("pooling must be \"last\" or \"mean\"");
+                };
+                dimensions = (int) Json.integer(req, "dimensions", 0);
+                if (dimensions < 0 || "base64".equals(req.get("encoding_format"))) {
+                    throw new BadRequest("dimensions must be positive and encoding_format \"float\"");
+                }
+            } catch (RuntimeException ex) {
+                error(e, 400, ex.getMessage());
+                return;
+            }
+            float[][] vectors;
+            try {
+                int[][] in = inputs;
+                java.util.function.Supplier<float[][]> task = () -> llama.embed(in, pooling, true);
+                vectors = batcher == null ? task.get() : batcher.run(task).get();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                error(e, 500, "interrupted");
+                return;
+            } catch (java.util.concurrent.ExecutionException | RuntimeException ex) {
+                Throwable cause = ex instanceof java.util.concurrent.ExecutionException ? ex.getCause() : ex;
+                LOG.log(System.Logger.Level.ERROR, "embeddings failed", cause);
+                error(e, 500, String.valueOf(cause.getMessage()));
+                return;
+            }
+            List<Object> data = new ArrayList<>();
+            int tokens = 0;
+            for (int i = 0; i < vectors.length; i++) {
+                float[] v = vectors[i];
+                if (dimensions > 0 && dimensions < v.length) {
+                    v = java.util.Arrays.copyOf(v, dimensions);
+                    double sq = 0;
+                    for (float x : v) {
+                        sq += (double) x * x;
+                    }
+                    float inv = (float) (1 / Math.max(Math.sqrt(sq), 1e-12));
+                    for (int j = 0; j < v.length; j++) {
+                        v[j] *= inv;
+                    }
+                }
+                List<Object> values = new ArrayList<>(v.length);
+                for (float x : v) {
+                    values.add((double) x);
+                }
+                Map<String, Object> d = new LinkedHashMap<>();
+                d.put("object", "embedding");
+                d.put("index", i);
+                d.put("embedding", values);
+                data.add(d);
+                tokens += inputs[i].length;
+            }
+            Map<String, Object> res = new LinkedHashMap<>();
+            res.put("object", "list");
+            res.put("data", data);
+            res.put("model", model);
+            res.put("usage", Map.of("prompt_tokens", tokens, "total_tokens", tokens));
+            json(e, 200, res);
+        }
+    }
+
+    private int[][] embeddingInputs(Object input) {
+        List<?> list = input instanceof List<?> l ? l : input instanceof String s ? List.of(s) : null;
+        if (list == null || list.isEmpty()) {
+            throw new BadRequest("input must be a string, a list of strings or token ids");
+        }
+        if (list.getFirst() instanceof Number) {
+            list = List.of(list);   // one list of token ids
+        }
+        if (list.size() > 2048) {
+            throw new BadRequest("at most 2048 inputs");
+        }
+        int[][] out = new int[list.size()][];
+        for (int i = 0; i < out.length; i++) {
+            Object o = list.get(i);
+            if (o instanceof String s) {
+                out[i] = generator.encode(s);
+            } else if (o instanceof List<?> ids) {
+                out[i] = new int[ids.size()];
+                for (int j = 0; j < out[i].length; j++) {
+                    if (!(ids.get(j) instanceof Number n)) {
+                        throw new BadRequest("token ids must be numbers");
+                    }
+                    out[i][j] = n.intValue();
+                }
+            } else {
+                throw new BadRequest("input must be a string, a list of strings or token ids");
+            }
+            if (out[i].length == 0) {
+                throw new BadRequest("input " + i + " is empty");
+            }
+        }
+        return out;
+    }
+
     /** A request that cannot be served, answered with status 400. */
     private static final class BadRequest extends RuntimeException {
         private static final long serialVersionUID = 1;
@@ -145,8 +342,33 @@ public final class OpenAiServer implements AutoCloseable {
         }
     }
 
+    private static final System.Logger LOG = System.getLogger(OpenAiServer.class.getName());
+
     private void complete(HttpExchange e, boolean chat) throws IOException {
         try (e) {
+            try {
+                answer(e, chat);
+            } catch (IOException ex) {
+                throw ex;
+            } catch (RuntimeException | Error ex) {
+                // HttpServer drops a handler's exception and the client sees no answer at all
+                LOG.log(System.Logger.Level.ERROR, "request failed", ex);
+                if (e.getResponseCode() < 0) {
+                    error(e, 500, ex.getClass().getSimpleName() + ": " + ex.getMessage());
+                } else {
+                    e.getResponseBody().write(("data: " + Json.write(Map.of("error", Map.of("message",
+                            String.valueOf(ex.getMessage()), "type", "server_error"))) + "\n\n")
+                            .getBytes(StandardCharsets.UTF_8));
+                }
+                if (ex instanceof Error err && !(ex instanceof OutOfMemoryError)) {
+                    throw err;
+                }
+            }
+        }
+    }
+
+    private void answer(HttpExchange e, boolean chat) throws IOException {
+        {
             if (!e.getRequestMethod().equals("POST")) {
                 error(e, 405, "use POST");
                 return;
@@ -168,6 +390,12 @@ public final class OpenAiServer implements AutoCloseable {
                 return;
             }
             boolean stream = Boolean.TRUE.equals(req.get("stream"));
+            long nl = Json.integer(req, "n", 1);
+            if (nl < 1 || nl > 16 || stream && nl > 1) {
+                error(e, 400, "n must be 1 to 16, and 1 when streaming");
+                return;
+            }
+            int n = (int) nl;
             boolean tools = chat && tools(req) != null;
             String id = (chat ? "chatcmpl-" : "cmpl-") + UUID.randomUUID();
             long created = System.currentTimeMillis() / 1000;
@@ -217,29 +445,39 @@ public final class OpenAiServer implements AutoCloseable {
                 out.flush();
                 return;
             }
-            Generator.Output o = run(prompt, options, null);
-            Map<String, Object> choice = new LinkedHashMap<>();
-            choice.put("index", 0);
-            Map<String, Object> message = chat ? assistant(o.text(), tools) : null;
-            if (chat) {
-                choice.put("message", message);
-            } else {
-                choice.put("text", o.text());
-            }
-            choice.put("finish_reason", message != null && message.containsKey("tool_calls") ? "tool_calls" : finish(o));
-            if (o.logprobs() != null) {
-                choice.put("logprobs", chat ? chatLogprobs(o.logprobs()) : completionLogprobs(o.logprobs()));
+            List<Object> choices = new ArrayList<>();
+            int completion = 0;
+            for (int i = 0; i < n; i++) {
+                Generator.Options oi = i == 0 ? options : new Generator.Options(options.maxNewTokens(),
+                        options.sampling(), options.seed() + i, options.stopTokens(), options.stopStrings(),
+                        options.constraint(), options.logprobs());
+                Generator.Output o = run(prompt, oi, null);
+                completion += o.tokens().length;
+                Map<String, Object> choice = new LinkedHashMap<>();
+                choice.put("index", i);
+                Map<String, Object> message = chat ? assistant(o.text(), tools) : null;
+                if (chat) {
+                    choice.put("message", message);
+                } else {
+                    choice.put("text", o.text());
+                }
+                choice.put("finish_reason", message != null && message.containsKey("tool_calls") ? "tool_calls"
+                        : finish(o));
+                if (o.logprobs() != null) {
+                    choice.put("logprobs", chat ? chatLogprobs(o.logprobs()) : completionLogprobs(o.logprobs()));
+                }
+                choices.add(choice);
             }
             Map<String, Object> usage = new LinkedHashMap<>();
             usage.put("prompt_tokens", promptTokens);
-            usage.put("completion_tokens", o.tokens().length);
-            usage.put("total_tokens", promptTokens + o.tokens().length);
+            usage.put("completion_tokens", completion);
+            usage.put("total_tokens", promptTokens + completion);
             Map<String, Object> res = new LinkedHashMap<>();
             res.put("id", id);
             res.put("object", chat ? "chat.completion" : "text_completion");
             res.put("created", created);
             res.put("model", model);
-            res.put("choices", List.of(choice));
+            res.put("choices", choices);
             res.put("usage", usage);
             json(e, 200, res);
         }
@@ -325,15 +563,27 @@ public final class OpenAiServer implements AutoCloseable {
     }
 
     /** The assistant's message: with {@code tool_calls} when tools were offered and it called them. */
+    private static final java.util.regex.Pattern HERMES_OPEN = java.util.regex.Pattern.compile("<tool_call>");
+
     private static Map<String, Object> assistant(String text, boolean tools) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("role", "assistant");
+        // a thinking model's reasoning, apart from its answer
+        int open = text.indexOf("<think>");
+        int close = text.indexOf("</think>");
+        if (close >= 0 && (open < 0 || open < close) && text.substring(0, open < 0 ? close : open).isBlank()) {
+            m.put("reasoning_content", text.substring(open < 0 ? 0 : open + "<think>".length(), close).strip());
+            text = text.substring(close + "</think>".length()).stripLeading();
+        }
         List<Map<String, Object>> calls = tools ? Agent.calls(text.strip()) : List.of();
         if (calls.isEmpty()) {
             m.put("content", text);
             return m;
         }
         String rest = Agent.content(text.strip());
+        if (!HERMES_OPEN.matcher(text).find()) {
+            rest = "";   // the whole turn was the call, as JSON
+        }
         m.put("content", rest.isEmpty() ? null : rest);
         List<Object> out = new ArrayList<>();
         for (Map<String, Object> c : calls) {
@@ -368,7 +618,35 @@ public final class OpenAiServer implements AutoCloseable {
         double topP = Json.number(req, "top_p", 1);
         long seed = Json.integer(req, "seed", System.nanoTime());
         Sampling sampling = temperature <= 0 ? Sampling.GREEDY
-                : Sampling.temperature((float) temperature).withTopP((float) topP);
+                : Sampling.temperature((float) temperature).withTopP((float) topP)
+                        .withTopK((int) Json.integer(req, "top_k", 0)).withMinP((float) Json.number(req, "min_p", 0));
+        double penalty = Json.number(req, "repetition_penalty", 1);
+        if (penalty != 1) {
+            sampling = sampling.withRepetitionPenalty((float) penalty);
+        }
+        double presence = Json.number(req, "presence_penalty", 0);
+        double frequency = Json.number(req, "frequency_penalty", 0);
+        if (Math.abs(presence) > 2 || Math.abs(frequency) > 2) {
+            throw new BadRequest("presence_penalty and frequency_penalty must be between -2 and 2");
+        }
+        sampling = sampling.withPenalties((float) presence, (float) frequency);
+        if (req.get("logit_bias") instanceof Map<?, ?> bias && !bias.isEmpty()) {
+            Map<Integer, Float> b = new HashMap<>();
+            for (Map.Entry<?, ?> e : bias.entrySet()) {
+                int token;
+                try {
+                    token = Integer.parseInt(String.valueOf(e.getKey()));
+                } catch (NumberFormatException x) {
+                    throw new BadRequest("logit_bias keys must be token ids, got " + e.getKey());
+                }
+                if (token < 0 || !(e.getValue() instanceof Number n)
+                        || Math.abs(n.doubleValue()) > 100) {
+                    throw new BadRequest("logit_bias needs token ids and biases from -100 to 100");
+                }
+                b.put(token, n.floatValue());
+            }
+            sampling = sampling.withLogitBias(b);
+        }
         List<String> stop = new ArrayList<>();
         Object s = req.get("stop");
         if (s instanceof String one) {
@@ -435,6 +713,14 @@ public final class OpenAiServer implements AutoCloseable {
                 options = options.withConstraint(Constraint.jsonSchema(Map.of("type", "object")));
             } else if (type != null && !"text".equals(type)) {
                 throw new BadRequest("unsupported response_format " + type);
+            }
+        }
+        if (req.get("grammar") instanceof String gbnf && !gbnf.isBlank()) {
+            // llama.cpp's server extension
+            try {
+                options = options.withConstraint(Constraint.grammar(gbnf));
+            } catch (IllegalArgumentException e) {
+                throw new BadRequest(e.getMessage());
             }
         }
         return options;
@@ -536,7 +822,7 @@ public final class OpenAiServer implements AutoCloseable {
     private static void error(HttpExchange e, int status, String message) throws IOException {
         Map<String, Object> err = new LinkedHashMap<>();
         err.put("message", message);
-        err.put("type", "invalid_request_error");
+        err.put("type", status >= 500 ? "server_error" : "invalid_request_error");
         json(e, status, Map.of("error", err));
     }
 }

@@ -356,11 +356,42 @@ public final class Gguf implements WeightSource {
 
     @Override
     public boolean contains(String name) {
-        return entries.containsKey(name);
+        return entries.containsKey(name) || slices.containsKey(name);
+    }
+
+    /** The views {@link #slice} made, by name; not among {@link #names()}. */
+    private final Map<String, Entry> slices = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Names one matrix of a stack, such as one expert of the {@code [experts, out, in]}
+     * weights llama.cpp stores a mixture of experts' projections in, so it can be read like
+     * any tensor ({@link #tensor}, {@link #packedTransposed}) without copying the others.
+     *
+     * @param name a tensor of rank 3
+     * @param index which matrix
+     * @return the name of a view of it, {@code name[index]}
+     */
+    public String slice(String name, int index) {
+        Entry e = entry(name);
+        if (e.shape.rank() != 3) {
+            throw new IllegalArgumentException(name + " is " + e.shape + ", not a stack of matrices");
+        }
+        int count = e.shape.dim(0);
+        if (index < 0 || index >= count) {
+            throw new IndexOutOfBoundsException(index + " of " + count + " in " + name);
+        }
+        long each = e.bytes / count;
+        String view = name + "[" + index + "]";
+        slices.computeIfAbsent(view, k -> new Entry(e.format, Shape.of(e.shape.dim(1), e.shape.dim(2)), e.data,
+                e.offset + index * each, each));
+        return view;
     }
 
     private Entry entry(String name) {
         Entry e = entries.get(name);
+        if (e == null) {
+            e = slices.get(name);
+        }
         if (e == null) {
             throw new IllegalArgumentException("no tensor named " + name + " in " + path);
         }

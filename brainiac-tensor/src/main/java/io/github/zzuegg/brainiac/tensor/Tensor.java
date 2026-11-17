@@ -1871,6 +1871,98 @@ public final class Tensor {
     }
 
     /**
+     * {@code log(sum(exp(x)))} along one axis, computed stably by shifting by the maximum.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return the log of the summed exponentials
+     */
+    public Tensor logsumexp(int axis, boolean keepDims) {
+        Tensor m = max(axis, true);
+        Tensor s = sub(m).exp().sum(axis, keepDims).log();
+        return s.add(m.reshape(s.shape()));
+    }
+
+    /**
+     * The variance along one axis, {@code sum((x - mean)^2) / (n - correction)}, as
+     * {@code torch.var}: correction 1 is the sample variance, 0 the population variance.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param correction subtracted from the count, usually 0 or 1
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return the variances
+     */
+    public Tensor variance(int axis, int correction, boolean keepDims) {
+        float n = shape.dim(axis) - correction;
+        return sub(mean(axis, true)).square().sum(axis, keepDims).div(n);
+    }
+
+    /**
+     * The standard deviation along one axis, the square root of {@link #variance}.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param correction subtracted from the count, usually 0 or 1
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return the standard deviations
+     */
+    public Tensor std(int axis, int correction, boolean keepDims) {
+        return variance(axis, correction, keepDims).sqrt();
+    }
+
+    /**
+     * Whether any value along one axis is non-zero.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return 1 where some value is non-zero, else 0
+     */
+    public Tensor any(int axis, boolean keepDims) {
+        return abs().max(axis, keepDims).sign();
+    }
+
+    /**
+     * Whether every value along one axis is non-zero.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param keepDims keep the axis with size 1 instead of removing it
+     * @return 1 where all values are non-zero, else 0
+     */
+    public Tensor all(int axis, boolean keepDims) {
+        return abs().min(axis, keepDims).sign();
+    }
+
+    /**
+     * Repeats each entry along an axis, as {@code torch.repeat_interleave}:
+     * {@code [a, b]} repeated twice is {@code [a, a, b, b]}.
+     *
+     * @param repeats how often each entry appears, at least 1
+     * @param axis the axis; negative values count from the end
+     * @return the tensor with that axis {@code repeats} times longer
+     */
+    public Tensor repeatInterleave(int repeats, int axis) {
+        return gather(axis, repeatIndices(shape.dim(axis), repeats, device()));
+    }
+
+    /**
+     * The indices {@code [0, 0, 1, 1, ...]} that {@link #repeatInterleave} gathers.
+     *
+     * @param n the axis length
+     * @param repeats how often each index appears
+     * @param device where the indices live
+     * @return {@code n * repeats} indices
+     */
+    public static Tensor repeatIndices(int n, int repeats, Device device) {
+        if (repeats < 1) {
+            throw new IllegalArgumentException("repeats must be at least 1, got " + repeats);
+        }
+        float[] idx = new float[n * repeats];
+        for (int i = 0; i < idx.length; i++) {
+            idx[i] = i / repeats;
+        }
+        return of(Shape.of(idx.length), idx).to(device);
+    }
+
+    /**
      * The {@code k} largest values along the last axis and where they are, largest first;
      * ties pick the first index. Computed as {@code k} rounds of {@link #argmax}, so meant
      * for small {@code k}.

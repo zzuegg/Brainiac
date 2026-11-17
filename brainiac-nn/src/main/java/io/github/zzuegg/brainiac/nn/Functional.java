@@ -1156,6 +1156,23 @@ public final class Functional {
     }
 
     /**
+     * Cross-entropy per row, without averaging: {@code logsumexp(logits) - logits[id]} for each
+     * row and 0 where the id is negative, for losses that weight or compare rows themselves
+     * (token-selective training such as Rho-1, per-example losses, curricula).
+     *
+     * @param logits {@code [rows, classes]}
+     * @param ids {@code [rows]} class ids, negative to skip a row
+     * @return {@code [rows]}
+     */
+    public static Var crossEntropyPerRow(Var logits, Tensor ids) {
+        int rows = logits.shape().dim(0);
+        int classes = logits.shape().dim(1);
+        Tensor target = ids.reshape(rows, 1).equalTo(Tensor.arange(classes).to(ids.device()))
+                .to(logits.value().dtype());
+        return Activation.LOG_SOFTMAX.forward(logits).mul(target).sum(1, false).neg();
+    }
+
+    /**
      * Cross-entropy of a linear output layer, {@code crossEntropy(hidden x weight, ids)}, that
      * never holds the {@code [rows, classes]} logits: it computes them {@code chunk} rows at a
      * time and again for the gradient. For language models, whose vocabularies make the

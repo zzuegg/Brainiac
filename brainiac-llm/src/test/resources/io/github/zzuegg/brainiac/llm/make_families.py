@@ -63,6 +63,15 @@ gemma3 = save("gemma3", init(tf.Gemma3ForCausalLM(tf.Gemma3TextConfig(**g3, head
         "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
         "full_attention": {"rope_type": "linear", "rope_theta": 1000.0, "factor": 2.0}}))))
 
+moe = dict(base, num_hidden_layers=2)
+save("mixtral", init(tf.MixtralForCausalLM(tf.MixtralConfig(**moe, num_local_experts=4, num_experts_per_tok=2,
+                                                            tie_word_embeddings=False))))
+save("qwen3moe", init(tf.Qwen3MoeForCausalLM(tf.Qwen3MoeConfig(**moe, head_dim=8, num_experts=4, num_experts_per_tok=2,
+                                                               moe_intermediate_size=16, norm_topk_prob=True,
+                                                               tie_word_embeddings=False))))
+save("qwen2moe", init(tf.Qwen2MoeForCausalLM(tf.Qwen2MoeConfig(**moe, num_experts=4, num_experts_per_tok=2,
+                                                               moe_intermediate_size=16, shared_expert_intermediate_size=24,
+                                                               norm_topk_prob=False, tie_word_embeddings=False))))
 
 # ---------------------------------------------------------------- GGUF copies
 
@@ -132,3 +141,71 @@ write_gguf("gemma2", "gemma2", gemma2, {"gemma2.rope.freq_base": 10000.0, "gemma
                                         "gemma2.final_logit_softcapping": 3.0}, g2)
 write_gguf("gemma3", "gemma3", gemma3, {"gemma3.rope.freq_base": 1000.0, "gemma3.attention.sliding_window": 4,
                                         "gemma3.rope.scaling.type": "linear", "gemma3.rope.scaling.factor": 2.0})
+
+# ---------------------------------------------------------------- mixtures of experts as GGUF
+
+
+def write_moe_gguf(name, arch, path, kv):
+    """Qwen 2 and 3 MoE as llama.cpp writes them: each projection's experts in one 3-d stack."""
+    model = getattr(tf, {"qwen2moe": "Qwen2MoeForCausalLM", "qwen3moe": "Qwen3MoeForCausalLM"}[arch]) \
+        .from_pretrained(path).eval()
+    sd = {k: v.float().numpy() for k, v in model.state_dict().items()}
+    c = model.config
+    w = gguf.GGUFWriter(f"{out}/{name}.gguf", arch=arch)
+    w.add_context_length(128); w.add_embedding_length(32); w.add_block_count(c.num_hidden_layers)
+    w.add_feed_forward_length(64); w.add_head_count(4); w.add_head_count_kv(2); w.add_layer_norm_rms_eps(1e-5)
+    w.add_vocab_size(48); hd = getattr(c, "head_dim", None) or 8; w.add_key_length(hd); w.add_value_length(hd)
+    w.add_uint32(f"{arch}.expert_count", c.num_experts); w.add_uint32(f"{arch}.expert_used_count", c.num_experts_per_tok)
+    w.add_uint32(f"{arch}.expert_feed_forward_length", c.moe_intermediate_size)
+    for k, v in kv.items():
+        w.add_float32(k, v) if isinstance(v, float) else w.add_uint32(k, v)
+    deq = {}
+
+    def put(gname, hf_keys, q8=True):
+        arr = np.stack([sd[k] for k in hf_keys]) if len(hf_keys) > 1 else sd[hf_keys[0]]
+        if q8 and arr.ndim >= 2 and arr.shape[-1] % 32 == 0:
+            qv = q.quantize(arr, gguf.GGMLQuantizationType.Q8_0)
+            w.add_tensor(gname, qv, raw_dtype=gguf.GGMLQuantizationType.Q8_0)
+            d = q.dequantize(qv, gguf.GGMLQuantizationType.Q8_0)
+        else:
+            w.add_tensor(gname, arr.astype(np.float32))
+            d = arr
+        for i, k in enumerate(hf_keys):
+            deq[k] = d[i] if len(hf_keys) > 1 else d
+
+    put("token_embd.weight", ["model.embed_tokens.weight"], q8=False)
+    put("output_norm.weight", ["model.norm.weight"], q8=False)
+    if not c.tie_word_embeddings:
+        put("output.weight", ["lm_head.weight"])
+    for i in range(c.num_hidden_layers):
+        p, g = f"model.layers.{i}.", f"blk.{i}."
+        put(g + "attn_norm.weight", [p + "input_layernorm.weight"], q8=False)
+        put(g + "ffn_norm.weight", [p + "post_attention_layernorm.weight"], q8=False)
+        for hf, gn in [("q_proj", "attn_q"), ("k_proj", "attn_k"), ("v_proj", "attn_v"), ("o_proj", "attn_output")]:
+            put(g + gn + ".weight", [p + "self_attn." + hf + ".weight"])
+            if p + "self_attn." + hf + ".bias" in sd:
+                put(g + gn + ".bias", [p + "self_attn." + hf + ".bias"], q8=False)
+        if arch == "qwen3moe":
+            put(g + "attn_q_norm.weight", [p + "self_attn.q_norm.weight"], q8=False)
+            put(g + "attn_k_norm.weight", [p + "self_attn.k_norm.weight"], q8=False)
+        put(g + "ffn_gate_inp.weight", [p + "mlp.gate.weight"], q8=False)
+        # transformers 5 keeps the experts stacked too: gate and up in one, gate first
+        gu, f = sd[p + "mlp.experts.gate_up_proj"], c.moe_intermediate_size
+        sd[p + "#gate"], sd[p + "#up"] = gu[:, :f], gu[:, f:]
+        put(g + "ffn_gate_exps.weight", [p + "#gate"])
+        put(g + "ffn_up_exps.weight", [p + "#up"])
+        put(g + "ffn_down_exps.weight", [p + "mlp.experts.down_proj"])
+        deq[p + "mlp.experts.gate_up_proj"] = np.concatenate([deq.pop(p + "#gate"), deq.pop(p + "#up")], axis=1)
+        if arch == "qwen2moe":
+            for hf, gn in [("gate_proj", "ffn_gate_shexp"), ("up_proj", "ffn_up_shexp"), ("down_proj", "ffn_down_shexp")]:
+                put(g + gn + ".weight", [f"{p}mlp.shared_expert.{hf}.weight"])
+            w.add_tensor(g + "ffn_gate_inp_shexp.weight", sd[p + "mlp.shared_expert_gate.weight"][0].astype(np.float32))
+            deq[p + "mlp.shared_expert_gate.weight"] = sd[p + "mlp.shared_expert_gate.weight"]
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+    model.load_state_dict({k: torch.tensor(np.asarray(v)) for k, v in deq.items()}, strict=False)
+    expected(model, f"{out}/{name}.gguf.expected.json", beams=False)
+
+
+write_moe_gguf("qwen3moe", "qwen3moe", f"{out}/qwen3moe", {"qwen3moe.rope.freq_base": 10000.0})
+write_moe_gguf("qwen2moe", "qwen2moe", f"{out}/qwen2moe", {"qwen2moe.rope.freq_base": 10000.0,
+                                                          "qwen2moe.expert_shared_feed_forward_length": 24})

@@ -69,6 +69,58 @@ class OpenAiServerTest {
     }
 
     @Test
+    void healthTokensSeveralAnswersAndKeys() throws IOException {
+        assertTrue(call("GET", "/health", null).startsWith("200 {\"status\":\"ok\"}"));
+        String t = call("POST", "/tokenize", "{\"content\":\"hello\"}");
+        assertTrue(t.startsWith("200 "), t);
+        String ids = Json.write(Json.object(Json.parse(t.substring(4))).get("tokens"));
+        assertEquals("200 {\"content\":\"hello\"}", call("POST", "/detokenize", "{\"tokens\":" + ids + "}"));
+
+        String r = call("POST", "/v1/completions", "{\"prompt\":\"hello\",\"max_tokens\":4,\"n\":3,\"seed\":7}");
+        assertTrue(r.startsWith("200 "), r);
+        List<Object> choices = Json.array(Json.object(Json.parse(r.substring(4))).get("choices"));
+        assertEquals(3, choices.size());
+        assertEquals(2L, ((Number) Json.object(choices.get(2)).get("index")).longValue());
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"n\":2,\"stream\":true}").startsWith("400 "));
+
+        // a bias of 100 on one token makes greedy decoding write only it
+        int first = ((Number) Json.array(Json.object(Json.parse(t.substring(4))).get("tokens")).getFirst()).intValue();
+        String biased = call("POST", "/v1/completions", "{\"prompt\":\"hello\",\"max_tokens\":3,\"temperature\":0,"
+                + "\"logit_bias\":{\"" + first + "\":100},\"presence_penalty\":0.5,\"frequency_penalty\":0.1}");
+        assertTrue(biased.startsWith("200 "), biased);
+        String three = call("POST", "/detokenize", "{\"tokens\":[" + first + "," + first + "," + first + "]}");
+        assertEquals(Json.object(Json.parse(three.substring(4))).get("content"),
+                Json.object(Json.array(Json.object(Json.parse(biased.substring(4))).get("choices")).getFirst()).get("text"));
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"presence_penalty\":3}").startsWith("400 "));
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"logit_bias\":{\"a\":1}}").startsWith("400 "));
+
+        // embeddings: one per input, length 1, cut to the dimensions asked for
+        String emb = call("POST", "/v1/embeddings", "{\"input\":[\"hello\",\"a longer text\"],\"dimensions\":8}");
+        assertTrue(emb.startsWith("200 "), emb);
+        List<Object> data = Json.array(Json.object(Json.parse(emb.substring(4))).get("data"));
+        assertEquals(2, data.size());
+        List<Object> vec = Json.array(Json.object(data.get(1)).get("embedding"));
+        assertEquals(8, vec.size());
+        double sq = 0;
+        for (Object v : vec) {
+            sq += Math.pow(((Number) v).doubleValue(), 2);
+        }
+        assertEquals(1, sq, 1e-4);
+        assertTrue(call("POST", "/v1/embeddings", "{\"input\":[]}").startsWith("400 "));
+
+        server.requireApiKey("secret");
+        try {
+            assertTrue(call("GET", "/v1/models", null).startsWith("401 "));
+            HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + "/v1/models")
+                    .toURL().openConnection();
+            c.setRequestProperty("Authorization", "Bearer secret");
+            assertEquals(200, c.getResponseCode());
+        } finally {
+            server.requireApiKey(null);
+        }
+    }
+
+    @Test
     void listsTheModel() throws IOException {
         String r = call("GET", "/v1/models", null);
         assertTrue(r.startsWith("200 "), r);
@@ -125,6 +177,18 @@ class OpenAiServerTest {
     }
 
     @Test
+    void grammarConstrainsTheAnswer() throws IOException {
+        String r = call("POST", "/v1/completions", "{\"prompt\":\"x\",\"max_tokens\":30,\"temperature\":0,"
+                + "\"grammar\":\"root ::= \\\"(\\\" [a-c]+ \\\")\\\"\"}");
+        assertTrue(r.startsWith("200 "), r);
+        String text = (String) Json.object(Json.array(Json.object(Json.parse(r.substring(4))).get("choices"))
+                .getFirst()).get("text");
+        assertTrue(Grammar.parse("root ::= \"(\" [a-c]+ \")\"").start().feed(text) != null, text);
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"grammar\":\"root ::= nothing\"}")
+                .startsWith("400 "));
+    }
+
+    @Test
     void badRequestsGet400() throws IOException {
         assertTrue(call("POST", "/v1/completions", "not json").startsWith("400 "));
         assertTrue(call("POST", "/v1/chat/completions", "{\"messages\":[]}").startsWith("400 "));
@@ -145,6 +209,10 @@ class OpenAiServerTest {
                     answers.add(pool.submit(() -> call("POST", "/v1/completions", "{\"prompt\":\"" + p
                             + "\",\"max_tokens\":10,\"temperature\":0}")));
                 }
+                // embeddings run on the decoding thread between steps
+                java.util.concurrent.Future<String> emb = pool.submit(() -> call("POST", "/v1/embeddings",
+                        "{\"input\":\"hello\"}"));
+                assertTrue(emb.get().startsWith("200 "), emb.get());
                 for (int i = 0; i < prompts.length; i++) {
                     String r = answers.get(i).get();
                     assertTrue(r.startsWith("200 "), r);

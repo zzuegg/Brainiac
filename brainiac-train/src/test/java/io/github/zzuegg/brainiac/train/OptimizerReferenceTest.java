@@ -97,6 +97,26 @@ class OptimizerReferenceTest {
     }
 
     @Test
+    void muonTakesAnOrthogonalizerOfOnesOwn() {
+        java.util.function.UnaryOperator<Tensor> polar = g -> {
+            Tensor[] usv = io.github.zzuegg.brainiac.tensor.Linalg.svd(g);
+            return usv[0].matmul(usv[2]);
+        };
+        Tensor g = Tensor.of(Shape.of(3, 2), 1f, 2f, -1f, 0.5f, 3f, -2f);
+        Var p = Var.param(Tensor.zeros(Shape.of(3, 2)));
+        p.setGrad(g);
+        Optimizer.muon(0.1f, 0f, 0.9f, false, polar).step(List.of(p));
+        // the direction is the exact polar factor, scaled by sqrt(max(1, rows / cols))
+        assertArrayEquals(polar.apply(g).mul((float) (-0.1 * Math.sqrt(1.5))).toArray(), p.value().toArray(), 1e-5f);
+        // Newton-Schulz approximates it only roughly
+        float[] ns = Muon.orthogonalize(g, 5).toArray();
+        float[] exact = polar.apply(g).toArray();
+        for (int i = 0; i < ns.length; i++) {
+            assertEquals(exact[i], ns[i], 0.35f);
+        }
+    }
+
+    @Test
     void groupsSendEachParameterToItsOptimizer() {
         // Muon for the matrix, AdamW for the vector: the same as running them apart
         Optimizer groups = Optimizer.groups(Optimizer.adamW(0.01f, 0.1f), Optimizer.Group.matrices(Optimizer.muon(0.02f)));

@@ -18,18 +18,30 @@ final class Muon extends StatefulOptimizer {
     private final float momentum;
     private final boolean nesterov;
     private final boolean matchAdamW;
-    private final int nsSteps;
+    private final java.util.function.UnaryOperator<Tensor> orthogonalizer;
 
     Muon(float learningRate, float weightDecay, float momentum, boolean nesterov, boolean matchAdamW, int nsSteps) {
+        this(learningRate, weightDecay, momentum, nesterov, matchAdamW, checked(nsSteps));
+    }
+
+    Muon(float learningRate, float weightDecay, float momentum, boolean nesterov, boolean matchAdamW,
+            java.util.function.UnaryOperator<Tensor> orthogonalizer) {
         super(learningRate, "momentum");
-        if (weightDecay < 0 || momentum < 0 || momentum >= 1 || nsSteps < 1) {
+        if (weightDecay < 0 || momentum < 0 || momentum >= 1 || orthogonalizer == null) {
             throw new IllegalArgumentException("bad Muon settings");
         }
         this.weightDecay = weightDecay;
         this.momentum = momentum;
         this.nesterov = nesterov;
         this.matchAdamW = matchAdamW;
-        this.nsSteps = nsSteps;
+        this.orthogonalizer = orthogonalizer;
+    }
+
+    private static java.util.function.UnaryOperator<Tensor> checked(int steps) {
+        if (steps < 1) {
+            throw new IllegalArgumentException("bad Muon settings");
+        }
+        return g -> orthogonalize(g, steps);
     }
 
     /**
@@ -65,7 +77,7 @@ final class Muon extends StatefulOptimizer {
         float lr = learningRate();
         Tensor buf = s[0] == null ? g.mul(1 - momentum) : s[0].mul(momentum).add(g.mul(1 - momentum));
         Tensor u = nesterov ? g.mul(1 - momentum).add(buf.mul(momentum)) : buf;
-        u = orthogonalize(u, nsSteps);
+        u = orthogonalizer.apply(u);
         int rows = g.shape().dim(0);
         int cols = g.shape().dim(1);
         double ratio = matchAdamW ? 0.2 * Math.sqrt(Math.max(rows, cols)) : Math.sqrt(Math.max(1.0, rows / (double) cols));

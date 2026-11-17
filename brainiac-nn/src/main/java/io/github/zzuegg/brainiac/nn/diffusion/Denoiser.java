@@ -10,7 +10,9 @@ public interface Denoiser {
     /**
      * @param noisy the noisy data, batch first
      * @param time per example, {@code [batch]} float32: the step for {@link Diffusion} (0 to
-     *     steps - 1), the time in [0, 1] for {@link FlowMatching}
+     *     steps - 1), the time in [0, 1] for {@link FlowMatching}; {@code [batch, tokens]} when
+     *     trained with a step per token ({@link Diffusion#loss(Denoiser, Tensor, int[][],
+     *     java.util.random.RandomGenerator)})
      * @return the prediction, the shape of {@code noisy}
      */
     Var apply(Var noisy, Tensor time);

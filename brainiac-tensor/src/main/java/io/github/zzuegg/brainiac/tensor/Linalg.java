@@ -2,7 +2,7 @@ package io.github.zzuegg.brainiac.tensor;
 
 /**
  * Matrix decompositions and solves on the last two dimensions of a tensor, batched over
- * the leading ones: symmetric eigendecomposition, Cholesky, triangular and general solves,
+ * the leading ones: symmetric eigendecomposition, singular values, Cholesky, triangular and general solves,
  * least squares, inverses and powers. For preconditioners (Shampoo, SOAP), low-rank
  * projections (GaLore) and closed-form readouts.
  *
@@ -60,6 +60,139 @@ public final class Linalg {
             Tensor.of(Shape.of(valueDims), values, a.dtype(), a.device()),
             Tensor.of(a.shape(), vectors, a.dtype(), a.device())
         };
+    }
+
+    /**
+     * The thin singular value decomposition, as {@code torch.linalg.svd(a, full_matrices=False)}:
+     * {@code a = u * diag(s) * vt} with {@code k = min(m, n)}, singular values in descending
+     * order. One-sided Jacobi in double precision, accurate also for small singular values.
+     * Signs of matching singular vectors may differ from other libraries'.
+     *
+     * @param a matrices {@code [..., m, n]}
+     * @return {u {@code [..., m, k]}, s {@code [..., k]}, vt {@code [..., k, n]}}
+     */
+    public static Tensor[] svd(Tensor a) {
+        int r = a.shape().rank();
+        if (r < 2) {
+            throw new IllegalArgumentException("svd needs matrices, got " + a.shape());
+        }
+        int rows = a.shape().dim(r - 2);
+        int cols = a.shape().dim(r - 1);
+        int batch = Math.toIntExact(a.size() / ((long) rows * cols));
+        boolean wide = rows < cols;   // decompose the transpose so that columns <= rows
+        int m = wide ? cols : rows;
+        int n = wide ? rows : cols;
+        double[] in = a.toDoubleArray();
+        double[] us = new double[batch * rows * n];
+        double[] ss = new double[batch * n];
+        double[] vts = new double[batch * n * cols];
+        double[][] w = new double[n][m];   // the columns being orthogonalized
+        double[][] v = new double[n][n];
+        for (int b = 0; b < batch; b++) {
+            int base = b * rows * cols;
+            for (int i = 0; i < m; i++) {
+                for (int j = 0; j < n; j++) {
+                    w[j][i] = wide ? in[base + j * cols + i] : in[base + i * cols + j];
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                java.util.Arrays.fill(v[i], 0);
+                v[i][i] = 1;
+            }
+            oneSidedJacobi(w, v);
+            double[] sigma = new double[n];
+            Integer[] order = new Integer[n];
+            for (int j = 0; j < n; j++) {
+                double norm = 0;
+                for (double x : w[j]) {
+                    norm += x * x;
+                }
+                sigma[j] = Math.sqrt(norm);
+                order[j] = j;
+            }
+            java.util.Arrays.sort(order, (x, y) -> Double.compare(sigma[y], sigma[x]));
+            for (int k = 0; k < n; k++) {
+                int c = order[k];
+                ss[b * n + k] = sigma[c];
+                double inv = sigma[c] > 0 ? 1 / sigma[c] : 0;
+                // of the decomposed matrix: left vectors w[c] / sigma, right vectors v[.][c]
+                for (int i = 0; i < m; i++) {
+                    double left = w[c][i] * inv;
+                    if (wide) {
+                        vts[b * n * cols + k * cols + i] = left;
+                    } else {
+                        us[b * rows * n + i * n + k] = left;
+                    }
+                }
+                for (int i = 0; i < n; i++) {
+                    double right = v[i][c];
+                    if (wide) {
+                        us[b * rows * n + i * n + k] = right;
+                    } else {
+                        vts[b * n * cols + k * cols + i] = right;
+                    }
+                }
+            }
+        }
+        int[] dims = a.shape().toArray();
+        int[] uDims = dims.clone();
+        uDims[r - 1] = n;
+        int[] sDims = java.util.Arrays.copyOf(dims, r - 1);
+        sDims[r - 2] = n;
+        int[] vtDims = dims.clone();
+        vtDims[r - 2] = n;
+        return new Tensor[] {
+            Tensor.of(Shape.of(uDims), us, a.dtype(), a.device()),
+            Tensor.of(Shape.of(sDims), ss, a.dtype(), a.device()),
+            Tensor.of(Shape.of(vtDims), vts, a.dtype(), a.device())
+        };
+    }
+
+    /** Rotates pairs of the columns {@code w[j]} until they are orthogonal, the rotations into {@code v}. */
+    private static void oneSidedJacobi(double[][] w, double[][] v) {
+        int n = w.length;
+        int m = n == 0 ? 0 : w[0].length;
+        for (int sweep = 0; sweep < 60; sweep++) {
+            boolean rotated = false;
+            for (int p = 0; p < n - 1; p++) {
+                for (int q = p + 1; q < n; q++) {
+                    double alpha = 0;
+                    double beta = 0;
+                    double gamma = 0;
+                    for (int i = 0; i < m; i++) {
+                        alpha += w[p][i] * w[p][i];
+                        beta += w[q][i] * w[q][i];
+                        gamma += w[p][i] * w[q][i];
+                    }
+                    if (gamma == 0 || Math.abs(gamma) <= 1e-15 * Math.sqrt(alpha * beta)) {
+                        continue;
+                    }
+                    rotated = true;
+                    double zeta = (beta - alpha) / (2 * gamma);
+                    double t = Math.signum(zeta) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta));
+                    if (zeta == 0) {
+                        t = 1;
+                    }
+                    double c = 1 / Math.sqrt(1 + t * t);
+                    double s = c * t;
+                    for (int i = 0; i < m; i++) {
+                        double wp = w[p][i];
+                        double wq = w[q][i];
+                        w[p][i] = c * wp - s * wq;
+                        w[q][i] = s * wp + c * wq;
+                    }
+                    for (int i = 0; i < n; i++) {
+                        double vp = v[i][p];
+                        double vq = v[i][q];
+                        v[i][p] = c * vp - s * vq;
+                        v[i][q] = s * vp + c * vq;
+                    }
+                }
+            }
+            if (!rotated) {
+                return;
+            }
+        }
     }
 
     /** Diagonalizes {@code m} in place, accumulating the rotations into {@code v}. */

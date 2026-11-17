@@ -45,6 +45,11 @@ public final class Generator {
         this.tokenizer = tokenizer;
     }
 
+    /** @return the model this generator runs */
+    public LanguageModel model() {
+        return model;
+    }
+
     private volatile PrefixCache prefixes;
 
     /**
@@ -418,7 +423,7 @@ public final class Generator {
             // plain greedy decoding reads back only the chosen tokens, which the device finds
             Sampling sampling = options.sampling();
             boolean onDevice = options.constraint() == null && sampling.temperature() == 0
-                    && sampling.repetitionPenalty() == 1 && options.logprobs() < 0;
+                    && sampling.plain() && options.logprobs() < 0;
             for (int step = 0; active > 0; step++) {
                 float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;
@@ -445,7 +450,7 @@ public final class Generator {
                         skip[b][0] = true;
                         continue;
                     }
-                    int token = options.sampling().sample(row, r.seen(), random);
+                    int token = options.sampling().sample(row, r.seen(), r.count, random);
                     r.score(row, token);
                     next[b][0] = token;
                     if (r.matcher != null && !stops.contains(token)) {
@@ -563,7 +568,7 @@ public final class Generator {
         }
 
         int[] seen() {
-            if (options.sampling().repetitionPenalty() == 1) {
+            if (!options.sampling().usesHistory()) {
                 return prompt;
             }
             int[] s = Arrays.copyOf(prompt, prompt.length + count);
@@ -717,6 +722,8 @@ public final class Generator {
 
         private final int maxBatch;
         private final java.util.concurrent.LinkedBlockingQueue<Job> queue = new java.util.concurrent.LinkedBlockingQueue<>();
+        private final java.util.concurrent.ConcurrentLinkedQueue<Runnable> tasks =
+                new java.util.concurrent.ConcurrentLinkedQueue<>();
         private final Thread thread;
         private volatile boolean closed;
         private volatile int largest;
@@ -800,6 +807,29 @@ public final class Generator {
             return this;
         }
 
+        /**
+         * Runs other work with the model, such as embeddings, on the decoding thread between
+         * two steps, so it never uses the model at the same time as the decoding.
+         *
+         * @param task the work
+         * @param <T> its result
+         * @return the result once it has run
+         */
+        public <T> java.util.concurrent.CompletableFuture<T> run(java.util.function.Supplier<T> task) {
+            if (closed) {
+                throw new IllegalStateException("the batcher is closed");
+            }
+            java.util.concurrent.CompletableFuture<T> f = new java.util.concurrent.CompletableFuture<>();
+            tasks.add(() -> {
+                try {
+                    f.complete(task.get());
+                } catch (Throwable t) {
+                    f.completeExceptionally(t);
+                }
+            });
+            return f;
+        }
+
         /** @return the most sequences decoded side by side so far */
         public int largestBatch() {
             return largest;
@@ -818,6 +848,7 @@ public final class Generator {
             for (Job j; (j = queue.poll()) != null;) {
                 j.future.completeExceptionally(new java.util.concurrent.CancellationException("batcher closed"));
             }
+            tasks.clear();
         }
 
         private void loop() {
@@ -825,9 +856,16 @@ public final class Generator {
             LanguageModel.State state = null;
             try {
                 while (!closed) {
+                    for (Runnable t; (t = tasks.poll()) != null;) {
+                        t.run();
+                    }
                     List<Job> joining = new ArrayList<>();
                     if (active.isEmpty()) {
-                        joining.add(queue.take());
+                        Job first = queue.poll(5, java.util.concurrent.TimeUnit.MILLISECONDS);
+                        if (first == null) {
+                            continue;   // idle: look for tasks again
+                        }
+                        joining.add(first);
                     }
                     queue.drainTo(joining, maxBatch - active.size() - joining.size());
                     joining.removeIf(j -> {
@@ -864,7 +902,7 @@ public final class Generator {
                                 done[i] = true;
                                 continue;
                             }
-                            int token = r.options.sampling().sample(row, r.seen(), j.random);
+                            int token = r.options.sampling().sample(row, r.seen(), r.count, j.random);
                             r.score(row, token);
                             next[i] = token;
                             if (r.matcher != null && !j.stops.contains(token)) {
@@ -897,7 +935,9 @@ public final class Generator {
                             tokens[i][0] = next[rows.get(i)];
                         }
                         spread(model.next(state, tokens, null), active);
-                    } catch (RuntimeException e) {
+                    } catch (RuntimeException | Error e) {
+                        // the requests fail, not the batcher: an out-of-memory error on one
+                        // batch must still answer them, and let later requests run
                         for (Job j : active) {
                             j.future.completeExceptionally(e);
                         }
@@ -906,6 +946,9 @@ public final class Generator {
                         }
                         active.clear();
                         state = null;
+                        if (e instanceof VirtualMachineError && !(e instanceof OutOfMemoryError)) {
+                            throw e;
+                        }
                     }
                 }
             } catch (InterruptedException e) {
@@ -955,14 +998,14 @@ public final class Generator {
 
         /**
          * Hands each job its logits. When every job decodes greedily without constraints or
-         * a repetition penalty, only the chosen tokens are read back: the device finds them,
+         * a penalty or bias, only the chosen tokens are read back: the device finds them,
          * so the whole vocabulary per row is neither downloaded nor copied.
          */
         private void spread(Tensor logits, List<Job> jobs) {
             boolean greedy = true;
             for (Job j : jobs) {
                 Sampling s = j.row.options.sampling();
-                greedy &= j.row.matcher == null && s.temperature() == 0 && s.repetitionPenalty() == 1
+                greedy &= j.row.matcher == null && s.temperature() == 0 && s.plain()
                         && j.row.options.logprobs() < 0;
             }
             if (greedy) {
@@ -996,7 +1039,7 @@ public final class Generator {
      * @param prompt the token ids to continue, one sequence
      * @param draft the small model
      * @param lookahead the tokens guessed per step
-     * @param options as for {@link #generate}; the repetition penalty is not supported
+     * @param options as for {@link #generate}; penalties and a logit bias are not supported
      * @param listener receives the text as it is written, or {@code null}
      * @return the result, with {@link Output#tokens()} and the number of tokens accepted
      */
@@ -1013,8 +1056,8 @@ public final class Generator {
                     + ") differs from the model's (" + model.vocabSize() + ")");
         }
         Sampling sampling = options.sampling();
-        if (sampling.repetitionPenalty() != 1) {
-            throw new IllegalArgumentException("speculative decoding does not support a repetition penalty");
+        if (!sampling.plain()) {
+            throw new IllegalArgumentException("speculative decoding does not support penalties or a logit bias");
         }
         Set<Integer> stops = stopTokens(options);
         Row row = new Row(0, prompt, options, listener);
