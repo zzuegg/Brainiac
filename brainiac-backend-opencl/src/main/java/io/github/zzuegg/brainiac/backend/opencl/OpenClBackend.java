@@ -459,7 +459,7 @@ public final class OpenClBackend implements Backend {
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "matmul_mid", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
-                "attention_dkv", "unpack_packed", "matmul_packed", "matmul_rows")) {
+                "attention_dkv", "unpack_packed", "matmul_packed", "matmul_rows", "attention_rows")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -2649,8 +2649,43 @@ public final class OpenClBackend implements Backend {
         }
         ClStorage o = cl(out);
         long rows = (long) shape[0] * shape[1] * shape[3];
+        if (rows < ROWS_ATTENTION) {
+            attentionRows(q, k, v, shape, scale, causal, null, new long[4], out, lse);
+            return;
+        }
         run(o.dtype, "attention", rows, as(q, o.dtype), as(k, o.dtype), as(v, o.dtype), o, cl(lse), shape[1],
                 shape[2], shape[3], shape[4], shape[5], shape[6], scale, causal ? 1 : 0, rows);
+    }
+
+    /**
+     * Query rows below which attention runs a work group per row ({@code attention_rows})
+     * rather than a work item per row: with few rows (decoding) the latter leaves the device idle.
+     */
+    private static final long ROWS_ATTENTION = Long.getLong("brainiac.opencl.rowsAttention", 4096);
+
+    @Override
+    public boolean hasAttentionWithBias(int[] shape, DType type) {
+        return shape[5] <= ATTENTION_SIZE && shape[6] <= ATTENTION_SIZE && !"false".equals(FUSED_ATTENTION);
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage bias, long[] strides, Storage out, Storage lse) {
+        if (shape[5] > ATTENTION_SIZE || shape[6] > ATTENTION_SIZE) {
+            throw new UnsupportedOperationException("fused attention for heads larger than " + ATTENTION_SIZE);
+        }
+        attentionRows(q, k, v, shape, scale, causal, bias, strides, out, lse);
+    }
+
+    private void attentionRows(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage bias, long[] strides, Storage out, Storage lse) {
+        ClStorage o = cl(out);
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        ClStorage qs = as(q, o.dtype);
+        run(o.dtype, "attention_rows", new long[] {rows * 256}, new long[] {256}, qs, as(k, o.dtype),
+                as(v, o.dtype), o, cl(lse), bias == null ? qs : as(bias, o.dtype), shape[1], shape[2], shape[3],
+                shape[4], shape[5], shape[6], scale, causal ? 1 : 0, bias == null ? 0 : 1, strides[0], strides[1],
+                strides[2], strides[3]);
     }
 
     @Override
