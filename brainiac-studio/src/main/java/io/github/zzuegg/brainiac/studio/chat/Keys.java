@@ -1,0 +1,240 @@
+package io.github.zzuegg.brainiac.studio.chat;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+/**
+ * API keys for remote providers. Each provider can hold several keys, each with a name such as
+ * {@code work} or {@code personal}; they are tried in the order they were added. Keys saved in
+ * the studio go to a file only the user's account can read, and the provider's usual
+ * environment variable counts as one more key after them. Keys are never sent to the page:
+ * only their names, where they come from, and their last four characters.
+ */
+public final class Keys {
+
+    /** The providers that take keys, and the environment variables each one reads. */
+    static final Map<String, List<String>> ENV = Map.of(
+            "anthropic", List.of("ANTHROPIC_API_KEY"),
+            "openai", List.of("OPENAI_API_KEY"),
+            "google", List.of("GEMINI_API_KEY", "GOOGLE_API_KEY"));
+
+    private static final Pattern LABEL = Pattern.compile("[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}");
+
+    /**
+     * One key, described without its value.
+     *
+     * @param label its name
+     * @param source {@code saved}, or the environment variable it comes from
+     * @param hint its last four characters
+     */
+    public record Entry(String label, String source, String hint) {
+    }
+
+    private final Path file;
+    private final Map<String, String> env;
+    private final Properties saved = new Properties();
+
+    /**
+     * Opens the key store.
+     *
+     * @param file the file saved keys go to; it need not exist yet
+     * @param env the environment to fall back to
+     */
+    public Keys(Path file, Map<String, String> env) {
+        this.file = file;
+        this.env = Map.copyOf(env);
+        if (Files.isRegularFile(file)) {
+            try (InputStream in = Files.newInputStream(file)) {
+                saved.load(in);
+            } catch (IOException e) {
+                throw new UncheckedIOException("cannot read " + file, e);
+            }
+        }
+    }
+
+    /**
+     * Lists a provider's keys in the order they are tried.
+     *
+     * @param provider the provider id
+     * @return the keys, described without their values
+     */
+    public synchronized List<Entry> list(String provider) {
+        List<Entry> out = new ArrayList<>();
+        for (String label : order(provider)) {
+            out.add(new Entry(label, "saved", hint(saved.getProperty(name(provider, label)))));
+        }
+        envKey(provider).ifPresent(e -> out.add(new Entry(e[0], "environment", hint(e[1]))));
+        return out;
+    }
+
+    /**
+     * Returns whether a provider has any key.
+     *
+     * @param provider the provider id
+     * @return true if it has one
+     */
+    public boolean has(String provider) {
+        return !list(provider).isEmpty();
+    }
+
+    /**
+     * Returns a key by name.
+     *
+     * @param provider the provider id
+     * @param label the key's name, as {@link #list} gives it
+     * @return the key, if there is one by that name
+     */
+    public synchronized Optional<String> get(String provider, String label) {
+        String k = saved.getProperty(name(provider, label));
+        if (k != null && order(provider).contains(label)) {
+            return Optional.of(k);
+        }
+        return envKey(provider).filter(e -> e[0].equals(label)).map(e -> e[1]);
+    }
+
+    /**
+     * Saves a key under a name, replacing a key of the same name and keeping its place.
+     *
+     * @param provider the provider id
+     * @param label the name, such as {@code work}
+     * @param key the key
+     * @throws IOException if the file cannot be written
+     */
+    public synchronized void add(String provider, String label, String key) throws IOException {
+        check(provider, label);
+        String k = key == null ? "" : key.trim();
+        if (k.isEmpty() || k.chars().anyMatch(c -> c < 0x21 || c > 0x7e)) {
+            throw new IllegalArgumentException("an API key is printable ASCII without spaces");
+        }
+        List<String> order = order(provider);
+        if (!order.contains(label)) {
+            order.add(label);
+        }
+        saved.setProperty(name(provider, label), k);
+        saved.setProperty(provider + ".order", String.join("\n", order));
+        store();
+    }
+
+    /**
+     * Removes a saved key.
+     *
+     * @param provider the provider id
+     * @param label its name
+     * @return true if there was one
+     * @throws IOException if the file cannot be written
+     */
+    public synchronized boolean remove(String provider, String label) throws IOException {
+        check(provider, label);
+        List<String> order = order(provider);
+        if (!order.remove(label)) {
+            return false;
+        }
+        saved.remove(name(provider, label));
+        saved.setProperty(provider + ".order", String.join("\n", order));
+        store();
+        return true;
+    }
+
+    /**
+     * Moves a saved key to the front, so it is tried first.
+     *
+     * @param provider the provider id
+     * @param label its name
+     * @throws IOException if the file cannot be written
+     */
+    public synchronized void makeFirst(String provider, String label) throws IOException {
+        check(provider, label);
+        List<String> order = order(provider);
+        if (!order.remove(label)) {
+            throw new IllegalArgumentException("no saved " + provider + " key named " + label);
+        }
+        order.addFirst(label);
+        saved.setProperty(provider + ".order", String.join("\n", order));
+        store();
+    }
+
+    private static void check(String provider, String label) {
+        if (!ENV.containsKey(provider)) {
+            throw new IllegalArgumentException("unknown provider: " + provider);
+        }
+        if (label == null || !LABEL.matcher(label).matches()) {
+            throw new IllegalArgumentException("a key's name is 1 to 40 letters, digits, spaces, dots, dashes"
+                    + " or underscores");
+        }
+    }
+
+    private static String name(String provider, String label) {
+        return provider + ".key." + label;
+    }
+
+    private List<String> order(String provider) {
+        String o = saved.getProperty(provider + ".order", "");
+        List<String> labels = new ArrayList<>(o.isEmpty() ? List.of() : Arrays.asList(o.split("\n")));
+        labels.removeIf(l -> saved.getProperty(name(provider, l)) == null);
+        return labels;
+    }
+
+    private Optional<String[]> envKey(String provider) {
+        for (String var : ENV.getOrDefault(provider, List.of())) {
+            String v = env.get(var);
+            if (v != null && !v.isBlank()) {
+                return Optional.of(new String[] {var, v.trim()});
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static String hint(String key) {
+        return key == null || key.length() < 12 ? "…" : "…" + key.substring(key.length() - 4);
+    }
+
+    private void store() throws IOException {
+        Files.createDirectories(file.getParent());
+        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+        Files.deleteIfExists(tmp);
+        ownerOnly(Files.createFile(tmp));
+        try (OutputStream out = Files.newOutputStream(tmp)) {
+            saved.store(out, "Brainiac Studio API keys. Readable only by this account.");
+        }
+        try {
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    // POSIX: rw-------. Windows: an ACL with only the owner.
+    private static void ownerOnly(Path p) throws IOException {
+        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            Files.setPosixFilePermissions(p, PosixFilePermissions.fromString("rw-------"));
+            return;
+        }
+        AclFileAttributeView acl = Files.getFileAttributeView(p, AclFileAttributeView.class);
+        if (acl != null) {
+            UserPrincipal owner = Files.getOwner(p);
+            acl.setAcl(List.of(AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(owner)
+                    .setPermissions(Set.of(AclEntryPermission.values())).build()));
+        }
+    }
+}

@@ -686,8 +686,27 @@ public final class MyTts implements CapabilityProvider {
 // module-info.java: provides io.github.zzuegg.brainiac.studio.spi.CapabilityProvider with MyTts;
 ```
 
-The surfaces are being connected one at a time; until a surface reads real data it shows
-example data and says so in the top bar.
+**Chat** works with models on this PC and at Anthropic, OpenAI and Google. Local models are
+Hugging Face model folders (Llama, Qwen2, Mistral) and `.gguf` files in `./models`,
+`~/.brainiac/models`, `$BRAINIAC_MODELS`, or the folders given with `--models <folder>`.
+Remote providers list their own models live; add API keys under Models, Providers. Each
+provider can hold several named keys: they are tried in order, and the next one takes over
+when a key is refused, rate limited or out of credit. Saved keys go to
+`~/.brainiac/studio/keys.properties`, readable only by your account; `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY` and `GEMINI_API_KEY` count as one more key each. The page never sees a key,
+only its name and last four characters. Auto sends a conversation to a model on this PC when
+there is one, then to Anthropic, OpenAI and Google. A gateway or proxy in front of a provider
+is set with `-Dstudio.anthropic.url=`, `-Dstudio.openai.url=` or `-Dstudio.google.url=`.
+
+```
+GET  /api/models            providers, their keys (names only) and models, and what Auto picks
+POST /api/keys              {"provider":"anthropic","label":"work","key":"..."} ("remove" or "first": true)
+POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"Hi"}]} -> event stream:
+                            route, thinking, text ..., done or error
+```
+
+The other surfaces are being connected one at a time; until a surface reads real data it
+shows example data and says so in the top bar.
 
 ## Benchmarks: test any model
 

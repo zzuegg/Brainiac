@@ -392,10 +392,11 @@
   function fmt(s) { const m = Math.floor(s / 60), x = (s % 60).toFixed(1).padStart(4, "0"); return `${m}:${x}`; }
 
   function chatView() {
+    if (isLive() && L.sel !== "example") return liveChatView();
     const lay = effectiveLayout();
     const insp = lay !== "focus" || state.inspectorOpen;
     return `<div class="chat lay-${lay} ${insp ? "" : "no-inspector"}">
-      ${threadList()}${transcript()}${inspector()}${lay === "ultra" ? mediaPane() : ""}
+      ${isLive() ? liveThreadList() : threadList()}${transcript()}${inspector()}${lay === "ultra" ? mediaPane() : ""}
     </div>`;
   }
 
@@ -733,16 +734,16 @@
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span><span class="grow"></span>
         <button class="btn">${icon("plus")}Add folder or GGUF</button><button class="btn primary">${icon("build")}New model</button></div>
-      <div class="tablebox"><table class="models">
+      ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
           <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.src)}</div></td>
           <td>${m.cap.map(c => `<span class="chip c-${c}">${capName[c]}</span>`).join(" ")}</td>
           <td class="mono">${m.fmt}</td><td class="mono tnum">${m.size}</td><td class="mono">${m.ctx}</td><td>${fitCell(m)}</td>
           <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "remote" ? `<span class="chip c-agent">remote · your key</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
-        </tr>`).join("")}</tbody></table></div>
+        </tr>`).join("")}</tbody></table></div>`}
       <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>
-      <div class="providers">${M.providers.map(p => `
+      ${isLive() ? liveProviders() : `<div class="providers">${M.providers.map(p => `
         <div class="prov ${p.state}">
           <div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
             ${p.key === "local" ? `<span class="chip c-ok">always on</span>` : `<label class="switch"><input type="checkbox" ${p.state === "on" ? "checked" : ""} aria-label="Use ${esc(p.name)}"><i></i></label>`}</div>
@@ -757,7 +758,7 @@
           <label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" checked> Ask before sending anything to a remote provider</label>
           <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account.</span>
         </div>
-      </div>
+      </div>`}
       <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Capabilities</span>${M.system ? `<span class="chip c-ok">live</span>` : ""}<span class="muted">Found at startup from the core and experimental modules. New ones appear here, in routing and over MCP without UI changes.</span></div>
       <div class="caps">${M.capabilities.map(c => `
         <div class="cap ${c.missing ? "missing" : ""}" style="--c:var(--cap-${c.cap})">
@@ -859,14 +860,20 @@
   function render() {
     applyFrame();
     $("#main").innerHTML = `<div class="view">${views[state.view]()}</div>`;
-    $("#crumb").innerHTML = crumbs[state.view];
-    const [c, n] = routes[state.view];
+    const liveChat = isLive() && state.view === "chat" && L.sel !== "example";
+    const liveLib = isLive() && state.view === "library";
+    const ready = (L.info?.providers || []).filter(p => p.ready).length;
+    $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
+      : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>` : crumbs[state.view];
+    const autoModel = (liveChat || liveLib) && L.info ? modelByKey(L.model === "auto" || liveLib ? L.info.auto.text : L.model) : null;
+    const [c, n] = liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"] : routes[state.view];
     $("#router .chip").className = "chip " + c; $("#router .chip").textContent = n;
     $$(".rail a").forEach(a => { if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     paintAll();
     renderDataNote();
     if (state.view === "builder") { drawEdges(); fitWorld(); enableDrag(); }
     if (state.view === "chat") bindChat();
+    if (state.view === "library" && isLive()) bindLiveLibrary();
     if (state.view === "agents") document.querySelectorAll(".agent[data-agent]").forEach(el => el.addEventListener("click", () => { if (["script", "voice", "thumb"].includes(el.dataset.agent)) { state.agent = el.dataset.agent; state.inspectorOpen = true; go("chat"); } }));
   }
 
@@ -877,6 +884,10 @@
   }
 
   function bindChat() {
+    if (isLive()) {
+      bindLiveChat();
+      if (L.sel !== "example") return;
+    }
     $$("[data-agent], [data-agent-open]").forEach(el => el.addEventListener("click", () => {
       state.agent = el.dataset.agent || el.dataset.agentOpen; state.inspectorOpen = true; render();
     }));
@@ -989,12 +1000,370 @@
   });
   document.addEventListener("click", e => { const p = $("#pop"); if (p && !p.contains(e.target)) p.remove(); });
 
+  // ---------- live chat ----------
+  // Served by the studio, Chat holds real conversations. They are kept in this browser; the
+  // example conversation stays in the list so the agent screens can still be seen.
+  const L = {
+    info: null,                           // GET /api/models: providers, models, what auto picks
+    convos: store.get("convos", []),
+    sel: store.get("convo", null),        // a conversation id, "example", or null for a new one
+    model: store.get("chatModel", "auto"),
+    busy: null,                           // the AbortController of the answer being written
+  };
+  const isLive = () => !!document.querySelector('meta[name="studio-token"]');
+  const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
+  const current = () => L.convos.find(c => c.id === L.sel) || null;
+  const chatModels = () => (L.info?.models || []).filter(m => m.media.includes("text"));
+  const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
+  const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
+  const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
+  const mediaName = { text: "Text", vision: "Vision", image: "Image", speech: "Speech", transcribe: "Transcribe", video: "Video" };
+
+  // A little Markdown: code fences, inline code, bold, paragraphs. Everything is escaped first.
+  function md(text) {
+    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>").replace(/\n/g, "<br>");
+    return text.split("```").map((part, i) => {
+      if (i % 2) {
+        const nl = part.indexOf("\n");
+        return `<pre class="code">${esc((nl >= 0 ? part.slice(nl + 1) : part).replace(/\n$/, ""))}</pre>`;
+      }
+      return part.split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${inline(p.trim())}</p>`).join("");
+    }).join("");
+  }
+
+  function when(t) {
+    const d = new Date(t), now = new Date();
+    return d.toDateString() === now.toDateString() ? d.toTimeString().slice(0, 5) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function liveThreadList() {
+    const q = (L.search || "").toLowerCase();
+    const list = L.convos.filter(c => !q || c.title.toLowerCase().includes(q)).sort((a, b) => b.updated - a.updated);
+    return `
+    <aside class="threads" aria-label="Conversations">
+      <div class="col-head"><span class="h3">Threads</span><span class="grow"></span>
+        <button class="iconbtn" id="new-convo" aria-label="New conversation">${icon("plus")}</button></div>
+      <div class="search">${icon("search")}<input class="input" id="thread-search" placeholder="Search conversations" value="${esc(L.search || "")}"></div>
+      <div class="scroll">
+        <div class="tgroup"><span class="eyebrow">Conversations</span>
+          ${list.length ? list.map(c => {
+            const last = c.messages.findLast(m => m.role === "assistant" && m.model);
+            return `<div class="titem ${c.id === L.sel ? "active" : ""}" data-convo="${c.id}" tabindex="0">
+              <span class="dot ic" style="--c:var(--cap-text)"></span>
+              <div style="min-width:0"><div class="t">${esc(c.title)}</div><div class="s">${esc(last ? last.model.name : "no answer yet")}</div></div>
+              <span class="when">${when(c.updated)}</span></div>`;
+          }).join("") : `<div class="muted" style="padding:2px 8px 8px;font-size:12.5px">${q ? "Nothing matches." : "Your conversations appear here."}</div>`}
+        </div>
+        <div class="tgroup"><span class="eyebrow">Example</span>
+          <div class="titem ${L.sel === "example" ? "active" : ""}" data-convo="example" tabindex="0">
+            <span class="dot ic" style="--c:var(--cap-agent)"></span>
+            <div style="min-width:0"><div class="t">Voiceover for the builder demo</div><div class="s">design preview · agents</div></div>
+            <span class="when"></span></div>
+        </div>
+      </div>
+    </aside>`;
+  }
+
+  function msgHtml(m, i) {
+    if (m.role === "user") {
+      return `<div class="msg user" data-i="${i}"><div class="avatar user">${icon("chat")}</div><div style="min-width:0">
+        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div></div></div>`;
+    }
+    const s = m.stats, model = m.model;
+    const rate = s && s.outputTokens > 0 && s.seconds > 0 ? `${(s.outputTokens / s.seconds).toFixed(0)} tok/s` : "";
+    const notes = [];
+    if (s && s.stop === "length") notes.push(`<span class="chip c-warn">cut at the length limit</span>`);
+    if (s && s.stop === "refusal") notes.push(`<span class="chip c-warn">the model declined</span>`);
+    if (m.stopped) notes.push(`<span class="chip plain">stopped</span>`);
+    return `<div class="msg" data-i="${i}">
+      <div class="avatar ai" style="--c:var(--cap-text)">${icon("text")}</div>
+      <div style="min-width:0">
+        <div class="meta"><b>${esc(model ? model.name : "Choosing a model…")}</b>
+          ${model ? (model.local ? `<span class="chip c-ok">this PC</span>` : `<span class="chip plain">${esc(providerName(model.provider))}</span>`) : ""}
+          ${s ? `<span class="mono">${s.outputTokens >= 0 ? s.outputTokens + " tok" : ""}${rate ? " · " + rate : ""}${s.seconds ? " · " + s.seconds.toFixed(1) + " s" : ""}</span>` : ""}
+          ${notes.join("")}</div>
+        <div class="body">
+          ${m.thinking ? `<details class="tool think" ${m.streaming && !m.text ? "open" : ""}><summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${m.streaming && !m.text ? "thinking…" : "summary"}</span></summary><pre>${esc(m.thinking)}</pre></details>` : ""}
+          ${md(m.text)}
+          ${m.streaming && !m.text && !m.thinking ? `<span class="typing" aria-label="Writing"><i></i><i></i><i></i></span>` : ""}
+          ${m.error ? `<div class="flag bad">${icon("flask")}<div><b>No answer.</b> ${esc(m.error)}</div></div>` : ""}
+        </div>
+        ${m.streaming ? "" : `<div class="actions">
+          <button class="iconbtn" data-copy="${i}" aria-label="Copy">${icon("copy")}</button>
+          <button class="iconbtn" data-retry="${i}" aria-label="Answer again">${icon("retry")}</button></div>`}
+      </div></div>`;
+  }
+
+  function routeLine() {
+    if (!L.info) return `${icon("wand")}<span>Looking for models on this PC and at your providers…</span>`;
+    const key = L.model === "auto" ? L.info.auto.text : L.model;
+    const m = modelByKey(key);
+    if (!key) return `${icon("wand")}<span>No chat model yet.</span>`;
+    const where = m && m.provider === "local" ? "this PC · nothing leaves it" : `${providerName(m ? m.provider : key.split("/")[0])} · uses your key`;
+    return `${icon("wand")}<span>${L.model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
+  }
+
+  function modelPicker() {
+    const groups = {};
+    chatModels().forEach(m => (groups[m.provider] ||= []).push(m));
+    const auto = L.info && L.info.auto.text ? modelByKey(L.info.auto.text) : null;
+    return `<select class="input model-pick" id="model-pick" aria-label="Model">
+      <option value="auto" ${L.model === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
+      ${Object.entries(groups).map(([p, ms]) => `<optgroup label="${esc(providerName(p))}">${ms.map(m => `<option value="${esc(m.key)}" ${m.key === L.model ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</optgroup>`).join("")}
+    </select>`;
+  }
+
+  function emptyState() {
+    if (!L.info) return `<div class="empty"><span class="typing"><i></i><i></i><i></i></span></div>`;
+    if (chatModels().length) {
+      return `<div class="empty"><div class="h2">What should we work on?</div>
+        <div class="muted">${L.info.auto.text ? `Auto picks ${esc(modelByKey(L.info.auto.text)?.name || L.info.auto.text)}, this PC first. Choose any model above.` : ""}</div></div>`;
+    }
+    const local = L.info.providers.find(p => p.local);
+    return `<div class="empty"><div class="flag">${icon("flask")}<div><b>No chat model yet.</b> Put a Hugging Face model folder or a <code>.gguf</code> file in
+      ${(local?.folders || []).map(f => `<code>${esc(f)}</code>`).join(" or ")}, or add an API key for Anthropic, OpenAI or Google.
+      <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
+  }
+
+  function liveStage() {
+    const c = current();
+    return `
+    <section class="stage" aria-label="Conversation">
+      <div class="stage-head">
+        <span class="title">${c ? esc(c.title) : "New conversation"}</span>
+        <span class="grow"></span>
+        ${modelPicker()}
+      </div>
+      <div class="transcript" id="transcript"><div class="lane" id="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
+      <div class="composer-wrap">
+        <div class="composer">
+          <div class="route-hint" id="route-hint">${routeLine()}</div>
+          <textarea id="prompt" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.draft || "")}</textarea>
+          <div class="row">
+            <span class="faint" style="font-size:12px;padding-left:6px">Kept in this browser</span>
+            <span class="grow"></span>
+            ${L.busy ? `<button class="send stop" id="stop" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" id="send" aria-label="Send">${icon("send")}</button>`}
+          </div>
+        </div>
+      </div>
+    </section>`;
+  }
+
+  function liveChatView() {
+    return `<div class="chat lay-${effectiveLayout()} no-inspector">${liveThreadList()}${liveStage()}</div>`;
+  }
+
+  // Repaints one message while it streams, at most once a frame, keeping the view at the bottom.
+  let paintQueued = null;
+  function paintMsg(c, i) {
+    if (paintQueued) return;
+    paintQueued = requestAnimationFrame(() => {
+      paintQueued = null;
+      if (state.view !== "chat" || L.sel !== c.id) return;
+      const el = $(`#lane .msg[data-i="${i}"]`), box = $("#transcript");
+      if (!el || !box) return;
+      const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      el.outerHTML = msgHtml(c.messages[i], i);
+      if (stick) box.scrollTop = box.scrollHeight;
+    });
+  }
+
+  // The provider wants alternating turns: a failed answer is left out and the user's turns around it are joined.
+  function turns(messages) {
+    const out = [];
+    for (const m of messages) {
+      if (m.role === "assistant" && (m.error || !m.text)) continue;
+      const last = out[out.length - 1];
+      if (last && last.role === m.role) last.text += "\n\n" + m.text; else out.push({ role: m.role, text: m.text });
+    }
+    return out;
+  }
+
+  async function answer(c) {
+    const a = { role: "assistant", text: "", thinking: "", model: null, streaming: true, at: Date.now() };
+    const history = turns(c.messages);
+    c.messages.push(a);
+    const i = c.messages.length - 1;
+    const ctrl = new AbortController();
+    L.busy = ctrl;
+    render();
+    const box = $("#transcript"); if (box) box.scrollTop = box.scrollHeight;
+    const onEvent = (event, d) => {
+      if (event === "route") a.model = d;
+      else if (event === "text") a.text += d.text;
+      else if (event === "thinking") a.thinking += d.text;
+      else if (event === "done") a.stats = d;
+      else if (event === "error") a.error = d.message;
+      paintMsg(c, i);
+    };
+    try {
+      const r = await fetch("/api/chat", {
+        method: "POST", signal: ctrl.signal,
+        headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: L.model, messages: history }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          let event = "message", data = "";
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event: ")) event = line.slice(7);
+            else if (line.startsWith("data: ")) data += line.slice(6);
+          }
+          if (data) onEvent(event, JSON.parse(data));
+        }
+      }
+    } catch (e) {
+      if (e.name === "AbortError") a.stopped = true; else a.error = e.message;
+    }
+    a.streaming = false;
+    L.busy = null;
+    c.updated = Date.now();
+    saveConvos();
+    if (state.view === "chat") render();
+  }
+
+  function send() {
+    const p = $("#prompt"), text = (p?.value || "").trim();
+    if (!text || L.busy || !L.info) return;
+    let c = current();
+    if (!c) {
+      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70), messages: [], updated: Date.now() };
+      L.convos.unshift(c);
+      L.sel = c.id; store.set("convo", c.id);
+    }
+    c.messages.push({ role: "user", text, at: Date.now() });
+    L.draft = "";
+    answer(c);
+  }
+
+  function bindLiveChat() {
+    $$("[data-convo]").forEach(el => {
+      const open = () => { if (L.busy) return; L.sel = el.dataset.convo; store.set("convo", L.sel); render(); };
+      el.addEventListener("click", open);
+      el.addEventListener("keydown", e => { if (e.key === "Enter") open(); });
+    });
+    $("#new-convo")?.addEventListener("click", () => { if (L.busy) return; L.sel = null; store.set("convo", null); render(); $("#prompt")?.focus(); });
+    $("#thread-search")?.addEventListener("input", e => {
+      L.search = e.target.value; const at = e.target.selectionStart; render();
+      const s = $("#thread-search"); s.focus(); s.setSelectionRange(at, at);
+    });
+    $("#model-pick")?.addEventListener("change", e => { L.model = e.target.value; store.set("chatModel", L.model); $("#route-hint").innerHTML = routeLine(); });
+    const p = $("#prompt");
+    if (p) {
+      p.addEventListener("input", () => { L.draft = p.value; });
+      p.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+    }
+    $("#send")?.addEventListener("click", send);
+    $("#stop")?.addEventListener("click", () => L.busy?.abort());
+    $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+    $$("[data-copy]").forEach(b => b.addEventListener("click", () => {
+      const m = current()?.messages[+b.dataset.copy];
+      if (m) navigator.clipboard?.writeText(m.text).then(() => { b.innerHTML = icon("check"); setTimeout(() => { b.innerHTML = icon("copy"); }, 1200); });
+    }));
+    $$("[data-retry]").forEach(b => b.addEventListener("click", () => {
+      const c = current(); if (!c || L.busy) return;
+      c.messages.splice(+b.dataset.retry);
+      answer(c);
+    }));
+    const box = $("#transcript"); if (box && !L.busy) box.scrollTop = box.scrollHeight;
+    if (!L.busy) p?.focus({ preventScroll: true });
+  }
+
+  // ---------- live models and providers ----------
+  function liveModelsTable() {
+    const ms = L.info ? L.info.models : [];
+    return `<div class="tablebox"><table class="models">
+      <thead><tr><th>Model</th><th>Can</th><th>Where</th><th>Detail</th></tr></thead>
+      <tbody>${ms.length ? ms.map(m => `<tr>
+        <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.key)}</div></td>
+        <td>${m.media.map(x => `<span class="chip ${mediaChip[x] || "plain"}">${mediaName[x] || esc(x)}</span>`).join(" ")}</td>
+        <td>${m.provider === "local" ? `<span class="chip c-ok">this PC</span>` : `<span class="chip c-agent">${esc(providerName(m.provider))} · your key</span>`}</td>
+        <td class="mono">${esc(m.detail)}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="muted">${L.info ? "No models yet: add a model to a model folder, or an API key below." : "Looking for models…"}</td></tr>`}</tbody></table></div>`;
+  }
+
+  function liveProviders() {
+    if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
+    return `<div class="providers">${L.info.providers.map(p => {
+      const head = `<div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
+        ${p.ready ? `<span class="chip c-ok">${p.models} model${p.models === 1 ? "" : "s"}</span>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
+      if (p.local) {
+        return `<div class="prov ${p.ready ? "on" : "off"}">${head}
+          <div class="muted" style="font-size:12.5px">Hugging Face model folders (Llama, Qwen2, Mistral) and <code>.gguf</code> files in:</div>
+          ${p.folders.map(f => `<div class="mono faint" style="font-size:11.5px;word-break:break-all">${esc(f)}</div>`).join("")}
+          <span class="mono faint" style="font-size:11px">free · private · works offline</span></div>`;
+      }
+      const saved = p.keys.filter(k => k.source === "saved");
+      return `<div class="prov ${p.ready ? "on" : "off"}">${head}
+        ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
+        <div class="keys">${p.keys.length ? p.keys.map((k, n) => `<div class="keyrow">
+            <span class="dot" style="--c:var(--${k.error ? "bad" : "ok"})"></span>
+            <span class="lbl">${esc(k.label)}</span><span class="mono faint">${esc(k.hint)}</span>
+            ${n === 0 && p.keys.length > 1 ? `<span class="chip plain">tried first</span>` : ""}
+            <span class="grow"></span>
+            ${k.source === "saved" ? `${n > 0 ? `<button class="btn ghost sm" data-key-first="${p.id}" data-label="${esc(k.label)}">Try first</button>` : ""}<button class="btn ghost sm" data-key-remove="${p.id}" data-label="${esc(k.label)}" aria-label="Remove key ${esc(k.label)}">Remove</button>` : `<span class="chip plain" title="Set in the environment the studio started from">environment</span>`}
+            ${k.error ? `<div class="keyerr">${esc(k.error)}</div>` : ""}</div>`).join("") : `<div class="muted" style="font-size:12.5px">Add a key to list and use ${esc(p.name)} models.</div>`}</div>
+        <form class="keyform" data-provider="${p.id}">
+          <input class="input" name="label" placeholder="Name" value="${saved.length ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
+          <input class="input mono" name="key" type="password" placeholder="API key" aria-label="${esc(p.name)} API key" required autocomplete="off">
+          <button class="btn" type="submit">${icon("plus")}Add</button>
+        </form>
+        <span class="mono faint" style="font-size:11px">several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
+    }).join("")}
+      <div class="prov routing">
+        <b>Routing</b>
+        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then Anthropic, OpenAI and Google, in that order.</span>
+        <button class="btn" id="refresh-models">${icon("retry")}List models again</button>
+        <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters.</span>
+      </div>
+    </div>`;
+  }
+
+  async function postKeys(body) {
+    const r = await fetch("/api/keys", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.status);
+    L.info = j;
+    render();
+  }
+
+  function bindLiveLibrary() {
+    $$(".keyform").forEach(f => f.addEventListener("submit", async e => {
+      e.preventDefault();
+      const btn = f.querySelector("button"); btn.disabled = true;
+      try { await postKeys({ provider: f.dataset.provider, label: f.label.value.trim(), key: f.key.value.trim() }); }
+      catch (err) { btn.disabled = false; f.insertAdjacentHTML("afterend", `<div class="keyerr">${esc(err.message)}</div>`); }
+    }));
+    $$("[data-key-remove]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyRemove, label: b.dataset.label, remove: true }).catch(e => console.warn(e))));
+    $$("[data-key-first]").forEach(b => b.addEventListener("click", () => postKeys({ provider: b.dataset.keyFirst, label: b.dataset.label, first: true }).catch(e => console.warn(e))));
+    $("#refresh-models")?.addEventListener("click", () => loadModels(true));
+  }
+
+  async function loadModels(refresh) {
+    try {
+      L.info = await api("/api/models" + (refresh ? "?refresh=1" : ""));
+      if (L.model !== "auto" && !modelByKey(L.model)) L.model = "auto";
+      if (["chat", "library"].includes(state.view) && !(state.view === "chat" && L.busy)) render();
+    } catch (e) {
+      console.warn("cannot list models", e);
+    }
+  }
+
   // ---------- live data ----------
   // Served by the studio, the page carries a token and reads real data from the API. Opened
   // as a plain file or preview, it shows the example data in mock.js and says so.
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
-  const liveViews = new Set();   // screens that show only real data; none yet
+  // screens that show only real data
+  const showsLiveData = () => state.view === "library" || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });
@@ -1011,7 +1380,7 @@
 
   function renderDataNote() {
     const note = $("#data-note");
-    note.hidden = !!tokenMeta && liveViews.has(state.view);
+    note.hidden = !!tokenMeta && showsLiveData();
     note.textContent = tokenMeta ? "Example data on this screen" : "Example data";
   }
 
@@ -1025,6 +1394,7 @@
       M.system = sys;
       renderDevices();
       render();
+      loadModels(false);
     } catch (e) {
       console.warn("studio API not reachable, showing example data", e);
     }
