@@ -1054,6 +1054,17 @@ public final class VulkanBackend implements Backend {
         if ((long) batch * m * n == 0) {
             return;
         }
+        // few rows times a transposed matrix (a tied output head): its rows read in place
+        if (m <= VEC_ROWS && batch == 1 && k > 0) {
+            Operand vb = view(vs(b), 1, k, n, z.dtype);
+            if (vb != null && vb.row() == 1 && vb.col() != 1) {
+                eager(vs(a), vb.values(), z);
+                VkStorage x = as(vs(a), z.dtype);
+                matvecTransposed(x, vb, m, k, n, z);
+                done(x, vs(a));
+                return;
+            }
+        }
         // a transposed or otherwise strided operand still pending is read in place by the tiles
         boolean tiled = k > 0 && !(m <= VEC_ROWS && batch == 1) && !coop(z.dtype, m);
         Operand va = tiled ? view(vs(a), batch, m, k, z.dtype) : null;
@@ -1178,6 +1189,17 @@ public final class VulkanBackend implements Backend {
             reduce(ReduceOp.SUM.ordinal(), target, z, (long) batch * mn, splits, mn);
             target.release();
         }
+    }
+
+    /** Few rows times a transposed matrix, whose columns are stored as rows: see matmul_vect.comp. */
+    private void matvecTransposed(VkStorage x, Operand b, int m, int k, int n, VkStorage z) {
+        VkStorage y = b.values();
+        int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        long first = y.address(b.offset());
+        boolean vectors = k % 4 == 0 && b.col() % 4 == 0 && first % (4L * y.dtype.bytes()) == 0;
+        vk.push().putLong(x.address()).putLong(first).putLong(first).putLong(z.address()).putInt(m).putInt(k)
+                .putInt(n).putInt((int) b.col()).putInt(vectors ? 1 : 0);
+        vk.dispatch(shader("matmul_vect" + rows, z.dtype), ceil(n, 4), z.slot(), x.slot(), y.slot());
     }
 
     /** Few rows times a matrix, limited by reading the matrix: see matmul_vec.comp. */
