@@ -29,6 +29,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.exotic;
     exports io.github.zzuegg.brainiac.experiments.generative;
     exports io.github.zzuegg.brainiac.experiments.interp;
+    exports io.github.zzuegg.brainiac.experiments.language;
     exports io.github.zzuegg.brainiac.experiments.learning;
     exports io.github.zzuegg.brainiac.experiments.memory;
     exports io.github.zzuegg.brainiac.experiments.optim;
