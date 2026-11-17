@@ -385,6 +385,27 @@ class VulkanBackendTest {
         }
     }
 
+    /** Few long rows (the logits of a sampled token): by work groups, in pieces; the first largest wins. */
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
+    void argmaxOfLongRowsMatchesTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        for (int[] dims : new int[][] {{1, 151_936}, {3, 5000}, {8, 1000}, {2, 300}, {700, 257}}) {
+            Tensor x = random(dims[0] * 31L + dims[1], dims);
+            same(type, "argmax " + dims[0] + "x" + dims[1], t -> t.argmax(1).to(DType.FLOAT32), x);
+            same(type, "argmax over rows " + dims[0] + "x" + dims[1], t -> t.argmax(0).to(DType.FLOAT32),
+                    x.slice(1, 0, Math.min(dims[1], 300)));
+        }
+        // ties go to the first; NaN is never the largest, and a leading NaN gives 0
+        float[] row = new float[4000];
+        row[1234] = 5;
+        row[3999] = 5;
+        row[2000] = Float.NaN;
+        assertEquals(1234f, Tensor.of(row).reshape(1, 4000).to(gpu).argmax(1).to(DType.FLOAT32).item());
+        row[0] = Float.NaN;
+        assertEquals(0f, Tensor.of(row).reshape(1, 4000).to(gpu).argmax(1).to(DType.FLOAT32).item());
+    }
+
     /** Transposed and sliced operands, read in place by the tiled product. */
     @ParameterizedTest
     @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
