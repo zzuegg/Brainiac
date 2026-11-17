@@ -1,4 +1,4 @@
-package io.github.zzuegg.brainiac.experimental.nn;
+package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -31,7 +31,7 @@ class DiffusionTransformerTest {
         DiffusionTransformer dit = DiffusionTransformer.builder(8, 8).patch(2).width(32).depth(2).heads(2).classes(3)
                 .seed(1).build();
         Tensor x = Tensor.normal(Shape.of(4, 64), 0, 1, new SplittableRandom(2));
-        Var out = dit.forward(Var.of(x), new float[] {0.1f, 0.5f, 0.9f, 0.3f}, new int[] {0, 1, 2, -1});
+        Var out = dit.apply(Var.of(x), Tensor.of(Shape.of(4), 0.1f, 0.5f, 0.9f, 0.3f), new int[] {0, 1, 2, -1});
         assertEquals(0, out.value().abs().max().item(), 0);
         out.sub(Var.of(x)).square().mean().backward();
         // only the zero-initialised output maps get a gradient at first; that is enough to start
@@ -61,7 +61,7 @@ class DiffusionTransformerTest {
             Tensor noise = Tensor.normal(Shape.of(16, 64), 0, 0.5f, r);
             float[] t = new float[16];
             java.util.Arrays.fill(t, 0.5f);
-            Var loss = dit.forward(Var.of(x0.add(noise)), t, labels).sub(Var.of(noise)).square().mean();
+            Var loss = dit.apply(Var.of(x0.add(noise)), Tensor.of(Shape.of(16), t), labels).sub(Var.of(noise)).square().mean();
             if (step < 10) {
                 first += loss.value().item() / 10;
             }

@@ -1,17 +1,17 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
-import io.github.zzuegg.brainiac.experimental.nn.MlpDenoiser;
+import io.github.zzuegg.brainiac.experimental.nn.diffusion.MlpDenoiser;
 import org.junit.jupiter.api.Test;
 
 import java.util.SplittableRandom;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class FlowMatchingTest {
+class RectifiedFlowExperimentTest {
     static final ToyPoints RING = ToyPoints.ring(6, 2, 0.08);
 
-    static FlowMatching trained(int iterations) {
-        FlowMatching fm = FlowMatching.of(MlpDenoiser.of(2, RING.modes(), 64, 2, 1), 3e-3f, 0.15f, 2);
+    static RectifiedFlowExperiment trained(int iterations) {
+        RectifiedFlowExperiment fm = RectifiedFlowExperiment.of(MlpDenoiser.of(2, RING.modes(), 64, 2, 1), 3e-3f, 0.15f, 2);
         SplittableRandom r = new SplittableRandom(3);
         for (int i = 0; i < iterations; i++) {
             if (i == iterations * 2 / 3) {
@@ -55,7 +55,7 @@ class FlowMatchingTest {
 
     @Test
     void learnsTheRingAndHeunBeatsEuler() {
-        FlowMatching fm = trained(1000);
+        RectifiedFlowExperiment fm = trained(1000);
         int[] none = labels(64);   // conditional, unguided
         float[][] z = fm.noise(64, 5);
         float[][] reference = fm.sampleHeun(z, none, 64, 1, null);
@@ -73,7 +73,7 @@ class FlowMatchingTest {
 
     @Test
     void reflowStraightensPaths() {
-        FlowMatching fm = trained(500);
+        RectifiedFlowExperiment fm = trained(500);
         int[] none = new int[96];
         java.util.Arrays.fill(none, -1);
         float[][] probe = fm.noise(96, 11);

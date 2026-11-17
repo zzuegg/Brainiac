@@ -1,4 +1,4 @@
-package io.github.zzuegg.brainiac.experimental.nn;
+package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
@@ -52,5 +52,55 @@ final class GenBlocks {
             out[i * (classes + 1) + c] = 1;
         }
         return Tensor.of(Shape.of(labels.length, classes + 1), out);
+    }
+
+    static Tensor column(float[] values) {
+        return Tensor.of(Shape.of(values.length, 1), values.clone());
+    }
+
+    static Tensor matrix(float[][] rows) {
+        int cols = rows[0].length;
+        float[] flat = new float[rows.length * cols];
+        for (int i = 0; i < rows.length; i++) {
+            System.arraycopy(rows[i], 0, flat, i * cols, cols);
+        }
+        return Tensor.of(Shape.of(rows.length, cols), flat);
+    }
+
+    static float[][] rows(Tensor t) {
+        int r = t.shape().dim(0);
+        int c = Math.toIntExact(t.size() / r);
+        float[] flat = t.toArray();
+        float[][] out = new float[r][c];
+        for (int i = 0; i < r; i++) {
+            System.arraycopy(flat, i * c, out[i], 0, c);
+        }
+        return out;
+    }
+
+    static Tensor gaussian(int rows, int cols, RandomGenerator random) {
+        return Tensor.normal(Shape.of(rows, cols), 0, 1, random);
+    }
+
+    static Tensor times(float[] t) {
+        return Tensor.of(Shape.of(t.length), t.clone());
+    }
+
+    static void clip(java.util.List<Var> params, float maxNorm) {
+        double total = 0;
+        for (Var p : params) {
+            if (p.grad() != null) {
+                total += p.grad().square().sum().item();
+            }
+        }
+        double norm = Math.sqrt(total);
+        if (norm > maxNorm) {
+            float f = (float) (maxNorm / norm);
+            for (Var p : params) {
+                if (p.grad() != null) {
+                    p.setGrad(p.grad().mul(f));
+                }
+            }
+        }
     }
 }

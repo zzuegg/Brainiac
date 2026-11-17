@@ -1,6 +1,5 @@
-package io.github.zzuegg.brainiac.experiments.generative;
+package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
-import io.github.zzuegg.brainiac.experimental.nn.MlpDenoiser;
 import org.junit.jupiter.api.Test;
 
 import java.util.SplittableRandom;
@@ -9,7 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConsistencyModelTest {
-    static final ToyPoints RING = ToyPoints.ring(4, 1, 0.05);
+    static final io.github.zzuegg.brainiac.experiments.generative.ToyPoints RING =
+            io.github.zzuegg.brainiac.experiments.generative.ToyPoints.ring(4, 1, 0.05);
 
     static ConsistencyModel trained(int iterations) {
         ConsistencyModel cm = ConsistencyModel.of(MlpDenoiser.of(2, RING.modes(), 64, 2, 1), 0.002, 10, 2e-3f, 2);

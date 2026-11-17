@@ -1,7 +1,6 @@
-package io.github.zzuegg.brainiac.experiments.generative;
+package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.nn.Denoiser;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
@@ -11,7 +10,8 @@ import java.util.SplittableRandom;
  * A consistency model trained from scratch with consistency training (Song et al.,
  * <a href="https://arxiv.org/abs/2303.01469">2303.01469</a>, with the improvements of
  * <a href="https://arxiv.org/abs/2310.14189">2310.14189</a>): a network
- * {@code f(x, sigma) = c_skip(sigma) x + c_out(sigma) F(c_in(sigma) x, sigma)} that maps
+ * {@code f(x, sigma) = c_skip(sigma) x + c_out(sigma) F(c_in(sigma) x, sigma)} around any
+ * {@link ConditionalDenoiser} {@code F} (it sees the time {@code log(sigma / sigmaMin) / log(sigmaMax / sigmaMin)}) that maps
  * any point on a noising trajectory straight to its clean end point. The boundary
  * condition {@code f(x, sigma_min) = x} holds by construction of {@code c_skip, c_out}.
  *
@@ -23,17 +23,16 @@ import java.util.SplittableRandom;
  * ({@link #sampleOneStep}), optionally refined by a few noise-and-denoise rounds
  * ({@link #sampleMultiStep}).
  */
-@SuppressWarnings("exports")   // experimental.* packages are exported by the lead at integration
 public final class ConsistencyModel {
     private static final double SIGMA_DATA = 0.5;
-    private final Denoiser net;
+    private final ConditionalDenoiser net;
     private final Optimizer optimizer;
     private final double sigmaMin;
     private final double sigmaMax;
     private final SplittableRandom random;
     private int trained;
 
-    private ConsistencyModel(Denoiser net, double sigmaMin, double sigmaMax, float learningRate, long seed) {
+    private ConsistencyModel(ConditionalDenoiser net, double sigmaMin, double sigmaMax, float learningRate, long seed) {
         this.net = net;
         this.sigmaMin = sigmaMin;
         this.sigmaMax = sigmaMax;
@@ -51,7 +50,7 @@ public final class ConsistencyModel {
      * @param seed the seed for noise and levels
      * @return the model
      */
-    public static ConsistencyModel of(Denoiser net, double sigmaMin, double sigmaMax, float learningRate, long seed) {
+    public static ConsistencyModel of(ConditionalDenoiser net, double sigmaMin, double sigmaMax, float learningRate, long seed) {
         return new ConsistencyModel(net, sigmaMin, sigmaMax, learningRate, seed);
     }
 
@@ -101,8 +100,8 @@ public final class ConsistencyModel {
             in[i] = (float) (1 / Math.sqrt(sigma[i] * sigma[i] + SIGMA_DATA * SIGMA_DATA));
             t[i] = time(sigma[i]);
         }
-        Var f = net.forward(x.mul(Nets.column(in)), t, labels);
-        return x.mul(Nets.column(skip)).add(f.mul(Nets.column(out)));
+        Var f = net.apply(x.mul(GenBlocks.column(in)), GenBlocks.times(t), labels);
+        return x.mul(GenBlocks.column(skip)).add(f.mul(GenBlocks.column(out)));
     }
 
     /**
@@ -134,19 +133,19 @@ public final class ConsistencyModel {
             hi[i] = sigmas[k + 1];
             w[i] = (float) (1 / (hi[i] - lo[i]));   // iCT weighting
         }
-        Tensor x = Nets.matrix(data);
-        Tensor z = Nets.gaussian(n, net.dimension(), random);
-        Tensor xHi = x.add(z.mul(Nets.column(toFloat(hi))));
-        Tensor xLo = x.add(z.mul(Nets.column(toFloat(lo))));
+        Tensor x = GenBlocks.matrix(data);
+        Tensor z = GenBlocks.gaussian(n, net.dimension(), random);
+        Tensor xHi = x.add(z.mul(GenBlocks.column(toFloat(hi))));
+        Tensor xLo = x.add(z.mul(GenBlocks.column(toFloat(lo))));
         Tensor target = apply(Var.of(xLo), lo, labels).value();   // stop-gradient teacher
         Var diff = apply(Var.of(xHi), hi, labels).sub(target);
         // pseudo-Huber: sqrt(|d|^2 + c^2) - c, robust and smooth
         float c = 0.03f * (float) Math.sqrt(net.dimension());
         Var dist = diff.square().sum(1, true).add(c * c).sqrt().sub(c);
-        Var loss = dist.mul(Nets.column(w)).mean();
+        Var loss = dist.mul(GenBlocks.column(w)).mean();
         float value = loss.value().item();
         loss.backward();
-        Nets.clip(net.parameters(), 1f);
+        GenBlocks.clip(net.parameters(), 1f);
         optimizer.step(net.parameters());
         return value;
     }
@@ -176,15 +175,15 @@ public final class ConsistencyModel {
         int n = labels.length;
         double[] level = new double[n];
         java.util.Arrays.fill(level, sigmaMax);
-        Tensor x = Nets.gaussian(n, net.dimension(), r).mul((float) sigmaMax);
+        Tensor x = GenBlocks.gaussian(n, net.dimension(), r).mul((float) sigmaMax);
         Tensor clean = apply(Var.of(x), level, labels).value();
         for (double s : sigmas) {
             java.util.Arrays.fill(level, s);
             float noise = (float) Math.sqrt(Math.max(0, s * s - sigmaMin * sigmaMin));
-            x = clean.add(Nets.gaussian(n, net.dimension(), r).mul(noise));
+            x = clean.add(GenBlocks.gaussian(n, net.dimension(), r).mul(noise));
             clean = apply(Var.of(x), level, labels).value();
         }
-        return Nets.rows(clean);
+        return GenBlocks.rows(clean);
     }
 
     /**
@@ -198,7 +197,7 @@ public final class ConsistencyModel {
     public float[][] denoise(float[][] x, double sigma, int[] labels) {
         double[] s = new double[x.length];
         java.util.Arrays.fill(s, sigma);
-        return Nets.rows(apply(Var.of(Nets.matrix(x)), s, labels).value());
+        return GenBlocks.rows(apply(Var.of(GenBlocks.matrix(x)), s, labels).value());
     }
 
     private static float[] toFloat(double[] d) {

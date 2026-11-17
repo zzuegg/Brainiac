@@ -1,6 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
-import io.github.zzuegg.brainiac.experimental.nn.MlpDenoiser;
+import io.github.zzuegg.brainiac.experimental.nn.diffusion.MlpDenoiser;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TinyDdpmTest {
 
     static TinyDdpm trained(int iterations) {
-        TinyDdpm ddpm = TinyDdpm.of(MlpDenoiser.of(ToyImages.PIXELS, ToyImages.CLASSES, 128, 2, 1), 50, true,
+        TinyDdpm ddpm = TinyDdpm.of(MlpDenoiser.of(ToyImages.PIXELS, ToyImages.CLASSES, 128, 2, 1).timeScale(1f / 50), 50, true,
                 3e-3f, 0.15f, 2);
         SplittableRandom r = new SplittableRandom(3);
         for (int i = 0; i < iterations; i++) {
@@ -43,9 +43,9 @@ class TinyDdpmTest {
     @Test
     void schedulesDecayToNoise() {
         TinyDdpm ddpm = TinyDdpm.of(MlpDenoiser.of(4, 0, 8, 1, 1), 100, true, 1e-3f, 0, 1);
-        assertEquals(1.0, ddpm.alphaBar(0), 1e-9);
-        assertTrue(ddpm.alphaBar(100) < 1e-3);
-        for (int t = 1; t <= 100; t++) {
+        assertTrue(ddpm.alphaBar(0) > 0.99);
+        assertTrue(ddpm.alphaBar(99) < 1e-3);
+        for (int t = 1; t < 100; t++) {
             assertTrue(ddpm.alphaBar(t) < ddpm.alphaBar(t - 1));
         }
     }
@@ -59,9 +59,9 @@ class TinyDdpmTest {
             labels[i] = i % ToyImages.CLASSES;
         }
         List<float[][]> trajectory = new ArrayList<>();
-        double[] ddim = score(ddpm.sampleDdim(labels, 20, 0, 3f, 7, trajectory), labels);
+        double[] ddim = score(ddpm.sampleDdim(labels, 20, 3f, 7, trajectory), labels);
         double[] ddpmScore = score(ddpm.sampleDdpm(labels, 3f, 7, null), labels);
-        double[] base = score(untrained.sampleDdim(labels, 20, 0, 3f, 7, null), labels);
+        double[] base = score(untrained.sampleDdim(labels, 20, 3f, 7, null), labels);
         assertEquals(20, trajectory.size());
         byte[] gif = TinyDdpm.denoisingGif(trajectory, ToyImages.SIDE, 4);
         assertEquals('G', gif[0]);
@@ -76,6 +76,6 @@ class TinyDdpmTest {
     void ddimWithoutNoiseIsDeterministic() {
         TinyDdpm ddpm = trained(5);
         int[] labels = {0, 1};
-        assertArrayEquals(ddpm.sampleDdim(labels, 5, 0, 1, 9, null)[1], ddpm.sampleDdim(labels, 5, 0, 1, 9, null)[1]);
+        assertArrayEquals(ddpm.sampleDdim(labels, 5, 1, 9, null)[1], ddpm.sampleDdim(labels, 5, 1, 9, null)[1]);
     }
 }

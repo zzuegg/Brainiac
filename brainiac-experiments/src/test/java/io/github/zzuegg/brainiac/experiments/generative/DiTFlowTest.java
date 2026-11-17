@@ -1,6 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.generative;
 
-import io.github.zzuegg.brainiac.experimental.nn.DiffusionTransformer;
+import io.github.zzuegg.brainiac.experimental.nn.diffusion.DiffusionTransformer;
 import org.junit.jupiter.api.Test;
 
 import java.util.SplittableRandom;
@@ -12,7 +12,7 @@ class DiTFlowTest {
 
     @Test
     void ditGeneratesTheRequestedShapes() {
-        FlowMatching fm = FlowMatching.of(DiffusionTransformer.builder(8, 8).patch(4).width(48).depth(2).heads(2)
+        RectifiedFlowExperiment fm = RectifiedFlowExperiment.of(DiffusionTransformer.builder(8, 8).patch(4).width(48).depth(2).heads(2)
                 .classes(2).seed(1).build(), 6e-3f, 0.15f, 2);
         SplittableRandom r = new SplittableRandom(3);
         for (int i = 0; i < 300; i++) {

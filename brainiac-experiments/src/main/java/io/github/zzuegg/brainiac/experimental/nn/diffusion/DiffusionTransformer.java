@@ -1,4 +1,4 @@
-package io.github.zzuegg.brainiac.experimental.nn;
+package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Dense;
@@ -12,7 +12,7 @@ import java.util.SplittableRandom;
 
 /**
  * A Diffusion Transformer (DiT, Peebles and Xie, <a href="https://arxiv.org/abs/2212.09748">2212.09748</a>)
- * as a {@link Denoiser} for small single-channel images. The image is cut into
+ * as a {@link ConditionalDenoiser} for small single-channel images. The image is cut into
  * {@code patch x patch} patches, each a token; a stack of transformer blocks mixes them;
  * a final linear layer turns every token back into its patch.
  *
@@ -22,13 +22,13 @@ import java.util.SplittableRandom;
  * {@code x += gate * Attention(LayerNorm(x) * (1 + scale) + shift)} (and the same for the
  * MLP). Those maps start at exactly zero, so every block starts as the identity and the
  * whole network starts by predicting 0: the property that made DiT train stably, and that
- * {@link #forward} shows on a fresh network.
+ * {@link #apply} shows on a fresh network.
  *
  * <pre>{@code
- * Denoiser dit = DiffusionTransformer.builder(8, 8).patch(2).width(32).depth(2).heads(2).classes(4).build();
+ * DiffusionTransformer dit = DiffusionTransformer.builder(8, 8).patch(2).width(32).depth(2).heads(2).classes(4).build();
  * }</pre>
  */
-public final class DiffusionTransformer implements Denoiser {
+public final class DiffusionTransformer implements ConditionalDenoiser {
     private static final int TIME_FEATURES = 32;
     private final int height;
     private final int width;
@@ -37,6 +37,7 @@ public final class DiffusionTransformer implements Denoiser {
     private final int heads;
     private final int classes;
     private final int tokens;
+    private final float timeScale;
     private final Dense embed;
     private final Var position;
     private final Dense time1;
@@ -58,6 +59,7 @@ public final class DiffusionTransformer implements Denoiser {
         heads = b.heads;
         classes = b.classes;
         tokens = (height / patch) * (width / patch);
+        timeScale = b.timeScale;
         embed = GenBlocks.linear(patch * patch, dim, random);
         position = Var.param(Tensor.normal(Shape.of(tokens, dim), 0, 0.02f, random));
         time1 = GenBlocks.linear(TIME_FEATURES, dim, random);
@@ -91,6 +93,7 @@ public final class DiffusionTransformer implements Denoiser {
         private int heads = 2;
         private int classes;
         private long seed = 42;
+        private float timeScale = 1;
 
         private Builder(int height, int width) {
             this.height = height;
@@ -124,6 +127,18 @@ public final class DiffusionTransformer implements Denoiser {
         /** @param n the number of classes, 0 for unconditional @return this builder */
         public Builder classes(int n) {
             this.classes = n;
+            return this;
+        }
+
+        /**
+         * Sets the factor applied to incoming times: {@code 1 / steps} for core
+         * {@code Diffusion}, 1 (the default) for flow matching.
+         *
+         * @param scale the factor
+         * @return this builder
+         */
+        public Builder timeScale(float scale) {
+            this.timeScale = scale;
             return this;
         }
 
@@ -210,8 +225,12 @@ public final class DiffusionTransformer implements Denoiser {
     }
 
     @Override
-    public Var forward(Var x, float[] t, int[] labels) {
+    public Var apply(Var x, Tensor time, int[] labels) {
         int b = x.shape().dim(0);
+        float[] t = time.toArray();
+        for (int i = 0; i < t.length; i++) {
+            t[i] *= timeScale;
+        }
         Var h = embed.forward(patchify(x)).add(position);
         Tensor oneHot = GenBlocks.oneHot(labels, classes).to(x.value().device());
         Var c = time2.forward(GenBlocks.silu(time1.forward(Var.of(GenBlocks.timeEmbedding(t, TIME_FEATURES)

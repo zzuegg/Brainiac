@@ -1,4 +1,4 @@
-package io.github.zzuegg.brainiac.experimental.nn;
+package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Dense;
@@ -9,23 +9,25 @@ import java.util.List;
 import java.util.SplittableRandom;
 
 /**
- * The smallest useful {@link Denoiser}: an MLP over the flattened sample, sinusoidal
+ * The smallest useful {@link ConditionalDenoiser}: an MLP over the flattened sample, sinusoidal
  * features of the time and a one-hot class (with an extra "no label" slot for
  * classifier-free guidance), with a residual connection around each hidden layer. Good
  * enough for 2-D toy distributions and 8x8 images.
  *
  * <pre>{@code
- * Denoiser net = MlpDenoiser.of(64, 4, 128, 2, 42);   // 8x8 images, 4 classes
- * Var eps = net.forward(Var.of(noisy), times, labels);
+ * MlpDenoiser net = MlpDenoiser.of(64, 4, 128, 2, 42).timeScale(1f / 1000);   // 8x8 images, 4 classes
+ * Var loss = new Diffusion(NoiseSchedule.cosine(1000), Diffusion.Prediction.NOISE)
+ *         .loss(net.bind(labels), images, random);
  * }</pre>
  */
-public final class MlpDenoiser implements Denoiser {
+public final class MlpDenoiser implements ConditionalDenoiser {
     private static final int TIME_FEATURES = 16;
     private final int dimension;
     private final int classes;
     private final Dense in;
     private final List<Dense> hidden = new ArrayList<>();
     private final Dense out;
+    private float timeScale = 1;
 
     private MlpDenoiser(int dimension, int classes, int width, int depth, long seed) {
         if (dimension < 1 || classes < 0 || width < 1 || depth < 0) {
@@ -55,8 +57,24 @@ public final class MlpDenoiser implements Denoiser {
         return new MlpDenoiser(dimension, classes, width, depth, seed);
     }
 
+    /**
+     * Sets the factor applied to incoming times so they land in about [0, 1]: {@code 1 / steps}
+     * for core {@code Diffusion}, 1 (the default) for flow matching.
+     *
+     * @param scale the factor
+     * @return this network
+     */
+    public MlpDenoiser timeScale(float scale) {
+        this.timeScale = scale;
+        return this;
+    }
+
     @Override
-    public Var forward(Var x, float[] t, int[] labels) {
+    public Var apply(Var x, Tensor time, int[] labels) {
+        float[] t = time.toArray();
+        for (int i = 0; i < t.length; i++) {
+            t[i] *= timeScale;
+        }
         Tensor cond = Tensor.concat(1, GenBlocks.timeEmbedding(t, TIME_FEATURES), GenBlocks.oneHot(labels, classes))
                 .to(x.value().device());
         Var h = GenBlocks.silu(in.forward(Var.concat(1, x, Var.of(cond))));
