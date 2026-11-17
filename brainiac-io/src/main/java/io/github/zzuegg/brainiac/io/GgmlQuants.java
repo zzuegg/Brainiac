@@ -15,8 +15,98 @@ final class GgmlQuants {
     private GgmlQuants() {
     }
 
+    /** Receives value {@code i} as {@code q * scale + offset}, q a whole number. */
+    interface Sink {
+        void put(int i, int q, float scale, float offset);
+    }
+
+    /** A sink that keeps the levels of a row and the scale and offset of each of its groups. */
+    record Row(byte[] levels, float[] scales, float[] offsets, int group) implements Sink {
+
+        Row(int length, int group) {
+            this(new byte[length], new float[length / group], new float[length / group], group);
+        }
+
+        @Override
+        public void put(int i, int q, float scale, float offset) {
+            levels[i] = (byte) q;
+            if (i % group == 0) {
+                scales[i / group] = scale;
+                offsets[i / group] = offset;
+            }
+        }
+    }
+
+    /** A sink that only computes the values, rounding as llama.cpp does. */
+    private record Values(double[] y, int base) implements Sink {
+        @Override
+        public void put(int i, int q, float scale, float offset) {
+            y[base + i] = offset == 0 ? q * scale : q * scale + offset;
+        }
+    }
+
     static double[] decode(Gguf.Format format, MemorySegment m, long count) {
         double[] y = new double[Math.toIntExact(count)];
+        switch (format) {
+            case I8, I16, I32, I64 -> {
+                for (int i = 0; i < y.length; i++) {
+                    long at = (long) i * format.bytes;
+                    y[i] = switch (format) {
+                        case I8 -> i8(m, at);
+                        case I16 -> m.get(RawValues.SHORT, at);
+                        case I32 -> m.get(INT, at);
+                        default -> m.get(LONG, at);
+                    };
+                }
+                return y;
+            }
+            default -> {
+            }
+        }
+        // in pieces of whole blocks, in parallel
+        int blocks = Math.toIntExact(count / format.block);
+        int perTask = Math.max(1, 65536 / format.block);
+        java.util.stream.IntStream.range(0, Math.ceilDiv(blocks, perTask)).parallel().forEach(task -> {
+            int first = task * perTask;
+            int n = Math.min(blocks, first + perTask) - first;
+            levels(format, m.asSlice((long) first * format.bytes, (long) n * format.bytes), (long) n * format.block,
+                    new Values(y, first * format.block));
+        });
+        return y;
+    }
+
+    /**
+     * Rows per scale of the formats that {@link #levels} reads, or 0: 32 for the simple
+     * formats, Q4_K and Q5_K; 16 for Q2_K, Q3_K and Q6_K.
+     */
+    static int group(Gguf.Format format) {
+        return switch (format) {
+            case Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q4_K, Q5_K -> 32;
+            case Q2_K, Q3_K, Q6_K -> 16;
+            default -> 0;
+        };
+    }
+
+    /** Bits per level, as {@link #levels} gives them (unsigned where the format has an offset). */
+    static int bits(Gguf.Format format) {
+        return switch (format) {
+            case Q2_K -> 2;
+            case Q3_K -> 3;
+            case Q4_0, Q4_1, Q4_K -> 4;
+            case Q5_0, Q5_1, Q5_K -> 5;
+            case Q6_K -> 6;
+            default -> 8;
+        };
+    }
+
+    /** Whether the format adds an offset per group (its levels are then unsigned). */
+    static boolean offsets(Gguf.Format format) {
+        return format == Gguf.Format.Q4_1 || format == Gguf.Format.Q5_1 || format == Gguf.Format.Q2_K
+                || format == Gguf.Format.Q4_K || format == Gguf.Format.Q5_K;
+    }
+
+    /** Reads every value as a level, a scale and an offset. */
+    static void levels(Gguf.Format format, MemorySegment m, long count, Sink y) {
         int blocks = (int) (count / format.block);
         for (int b = 0; b < blocks; b++) {
             long at = (long) b * format.bytes;
@@ -29,13 +119,13 @@ final class GgmlQuants {
                 case Q8_0 -> {
                     float d = f16(m, at);
                     for (int j = 0; j < 32; j++) {
-                        y[o + j] = d * (float) i8(m, at + 2 + j);
+                        y.put(o + j, i8(m, at + 2 + j), d, 0);
                     }
                 }
                 case Q8_1 -> {
                     float d = f16(m, at);
                     for (int j = 0; j < 32; j++) {
-                        y[o + j] = d * (float) i8(m, at + 4 + j);
+                        y.put(o + j, i8(m, at + 4 + j), d, 0);
                     }
                 }
                 case Q2_K -> q2k(m, at, y, o);
@@ -46,17 +136,12 @@ final class GgmlQuants {
                 case Q8_K -> {
                     float d = m.get(RawValues.FLOAT, at);
                     for (int j = 0; j < 256; j++) {
-                        y[o + j] = d * (float) i8(m, at + 4 + j);
+                        y.put(o + j, i8(m, at + 4 + j), d, 0);
                     }
                 }
-                case I8 -> y[o] = i8(m, at);
-                case I16 -> y[o] = m.get(RawValues.SHORT, at);
-                case I32 -> y[o] = m.get(INT, at);
-                case I64 -> y[o] = m.get(LONG, at);
                 default -> throw new IllegalArgumentException("cannot decode " + format);
             }
         }
-        return y;
     }
 
     private static float f16(MemorySegment m, long at) {
@@ -71,23 +156,23 @@ final class GgmlQuants {
         return m.get(ValueLayout.JAVA_BYTE, at);
     }
 
-    private static void q4(MemorySegment m, long at, double[] y, int o, boolean min) {
+    private static void q4(MemorySegment m, long at, Sink y, int o, boolean min) {
         float d = f16(m, at);
         float mn = min ? f16(m, at + 2) : 0;
         long qs = at + (min ? 4 : 2);
         for (int j = 0; j < 16; j++) {
             int q = u8(m, qs + j);
             if (min) {
-                y[o + j] = (q & 0xF) * d + mn;
-                y[o + j + 16] = (q >>> 4) * d + mn;
+                y.put(o + j, q & 0xF, d, mn);
+                y.put(o + j + 16, q >>> 4, d, mn);
             } else {
-                y[o + j] = ((q & 0xF) - 8) * d;
-                y[o + j + 16] = ((q >>> 4) - 8) * d;
+                y.put(o + j, (q & 0xF) - 8, d, 0);
+                y.put(o + j + 16, (q >>> 4) - 8, d, 0);
             }
         }
     }
 
-    private static void q5(MemorySegment m, long at, double[] y, int o, boolean min) {
+    private static void q5(MemorySegment m, long at, Sink y, int o, boolean min) {
         float d = f16(m, at);
         float mn = min ? f16(m, at + 2) : 0;
         long hAt = at + (min ? 4 : 2);
@@ -98,16 +183,16 @@ final class GgmlQuants {
             int x0 = (q & 0xF) | (((qh >>> j) & 1) << 4);
             int x1 = (q >>> 4) | (((qh >>> (j + 16)) & 1) << 4);
             if (min) {
-                y[o + j] = x0 * d + mn;
-                y[o + j + 16] = x1 * d + mn;
+                y.put(o + j, x0, d, mn);
+                y.put(o + j + 16, x1, d, mn);
             } else {
-                y[o + j] = (x0 - 16) * d;
-                y[o + j + 16] = (x1 - 16) * d;
+                y.put(o + j, x0 - 16, d, 0);
+                y.put(o + j + 16, x1 - 16, d, 0);
             }
         }
     }
 
-    private static void q2k(MemorySegment m, long at, double[] y, int o) {
+    private static void q2k(MemorySegment m, long at, Sink y, int o) {
         long scales = at;
         long qs = at + 16;
         float d = f16(m, at + 80);
@@ -121,13 +206,13 @@ final class GgmlQuants {
                 float dl = d * (sc & 0xF);
                 float ml = min * (sc >>> 4);
                 for (int l = 0; l < 16; l++) {
-                    y[out++] = dl * ((u8(m, qs + l) >>> shift) & 3) - ml;
+                    y.put(out++, (u8(m, qs + l) >>> shift) & 3, dl, -ml);
                 }
                 sc = u8(m, scales + is++);
                 dl = d * (sc & 0xF);
                 ml = min * (sc >>> 4);
                 for (int l = 0; l < 16; l++) {
-                    y[out++] = dl * ((u8(m, qs + l + 16) >>> shift) & 3) - ml;
+                    y.put(out++, (u8(m, qs + l + 16) >>> shift) & 3, dl, -ml);
                 }
                 shift += 2;
             }
@@ -135,7 +220,7 @@ final class GgmlQuants {
         }
     }
 
-    private static void q3k(MemorySegment m, long at, double[] y, int o) {
+    private static void q3k(MemorySegment m, long at, Sink y, int o) {
         long hm = at;
         long qs = at + 32;
         long sAt = at + 96;
@@ -161,12 +246,12 @@ final class GgmlQuants {
                 float dl = d * (scales[is++] - 32);
                 for (int l = 0; l < 16; l++) {
                     int q = (u8(m, qs + l) >>> shift) & 3;
-                    y[out++] = dl * (q - ((u8(m, hm + l) & bit) != 0 ? 0 : 4));
+                    y.put(out++, q - ((u8(m, hm + l) & bit) != 0 ? 0 : 4), dl, 0);
                 }
                 dl = d * (scales[is++] - 32);
                 for (int l = 0; l < 16; l++) {
                     int q = (u8(m, qs + l + 16) >>> shift) & 3;
-                    y[out++] = dl * (q - ((u8(m, hm + l + 16) & bit) != 0 ? 0 : 4));
+                    y.put(out++, q - ((u8(m, hm + l + 16) & bit) != 0 ? 0 : 4), dl, 0);
                 }
                 shift += 2;
                 bit <<= 1;
@@ -184,7 +269,7 @@ final class GgmlQuants {
                 (u8(m, q + j + 4) >>> 4) | ((u8(m, q + j) >>> 6) << 4)};
     }
 
-    private static void q4k(MemorySegment m, long at, double[] y, int o) {
+    private static void q4k(MemorySegment m, long at, Sink y, int o) {
         float d = f16(m, at);
         float min = f16(m, at + 2);
         long scales = at + 4;
@@ -199,17 +284,17 @@ final class GgmlQuants {
             float d2 = d * b[0];
             float m2 = min * b[1];
             for (int l = 0; l < 32; l++) {
-                y[out++] = d1 * (u8(m, q + l) & 0xF) - m1;
+                y.put(out++, u8(m, q + l) & 0xF, d1, -m1);
             }
             for (int l = 0; l < 32; l++) {
-                y[out++] = d2 * (u8(m, q + l) >>> 4) - m2;
+                y.put(out++, u8(m, q + l) >>> 4, d2, -m2);
             }
             q += 32;
             is += 2;
         }
     }
 
-    private static void q5k(MemorySegment m, long at, double[] y, int o) {
+    private static void q5k(MemorySegment m, long at, Sink y, int o) {
         float d = f16(m, at);
         float min = f16(m, at + 2);
         long scales = at + 4;
@@ -227,10 +312,10 @@ final class GgmlQuants {
             float d2 = d * b[0];
             float m2 = min * b[1];
             for (int l = 0; l < 32; l++) {
-                y[out++] = d1 * ((u8(m, ql + l) & 0xF) + ((u8(m, qh + l) & u1) != 0 ? 16 : 0)) - m1;
+                y.put(out++, (u8(m, ql + l) & 0xF) + ((u8(m, qh + l) & u1) != 0 ? 16 : 0), d1, -m1);
             }
             for (int l = 0; l < 32; l++) {
-                y[out++] = d2 * ((u8(m, ql + l) >>> 4) + ((u8(m, qh + l) & u2) != 0 ? 16 : 0)) - m2;
+                y.put(out++, (u8(m, ql + l) >>> 4) + ((u8(m, qh + l) & u2) != 0 ? 16 : 0), d2, -m2);
             }
             ql += 32;
             is += 2;
@@ -239,7 +324,7 @@ final class GgmlQuants {
         }
     }
 
-    private static void q6k(MemorySegment m, long at, double[] y, int o) {
+    private static void q6k(MemorySegment m, long at, Sink y, int o) {
         long ql = at;
         long qh = at + 128;
         long sc = at + 192;
@@ -253,10 +338,10 @@ final class GgmlQuants {
                 int q2 = ((u8(m, ql + l + 32) & 0xF) | (((h >>> 2) & 3) << 4)) - 32;
                 int q3 = ((u8(m, ql + l) >>> 4) | (((h >>> 4) & 3) << 4)) - 32;
                 int q4 = ((u8(m, ql + l + 32) >>> 4) | (((h >>> 6) & 3) << 4)) - 32;
-                y[out + l] = d * i8(m, sc + is) * q1;
-                y[out + l + 32] = d * i8(m, sc + is + 2) * q2;
-                y[out + l + 64] = d * i8(m, sc + is + 4) * q3;
-                y[out + l + 96] = d * i8(m, sc + is + 6) * q4;
+                y.put(out + l, q1, d * i8(m, sc + is), 0);
+                y.put(out + l + 32, q2, d * i8(m, sc + is + 2), 0);
+                y.put(out + l + 64, q3, d * i8(m, sc + is + 4), 0);
+                y.put(out + l + 96, q4, d * i8(m, sc + is + 6), 0);
             }
             out += 128;
             ql += 64;

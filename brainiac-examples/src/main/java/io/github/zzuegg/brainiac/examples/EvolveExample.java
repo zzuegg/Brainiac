@@ -33,7 +33,7 @@ import java.util.function.Supplier;
  * {@link Mutations#names()}), {@code --epochs E} (training budget per candidate),
  * {@code --scale S} (start from this fraction of the template's neurons),
  * {@code --size-penalty P} (fitness lost per thousand parameters), {@code --threads T},
- * {@code --seed S}, {@code --device cpu|gpu|best|opencl|vulkan}, {@code --batched} or {@code --one-by-one}
+ * {@code --seed S}, {@code --device cpu|gpu|best|vulkan}, {@code --batched} or {@code --one-by-one}
  * (train each generation stacked into one model or not, see {@link Evolution#batched}; by
  * default stacked on a GPU), {@code --inherit} (children start
  * from their parents' trained weights, see {@link Evolution#inheritWeights}), {@code --search-only}
@@ -96,7 +96,7 @@ public final class EvolveExample {
     public static void main(String[] args) {
         if (args.length == 0) {
             System.out.println("Usage: evolve <task> [--population N] [--generations G] [--mutate a,b,c]"
-                    + " [--epochs E] [--scale S] [--size-penalty P] [--threads T] [--seed S] [--device cpu|gpu|opencl|vulkan]"
+                    + " [--epochs E] [--scale S] [--size-penalty P] [--threads T] [--seed S] [--device cpu|gpu|vulkan]"
                     + " [--batched|--one-by-one] [--inherit] [--search-only]\n"
                     + "  tasks: xor, iris, spiral, shapes, ...   mutations: " + String.join(",", Mutations.names()));
             return;

@@ -1180,7 +1180,9 @@ public final class Tensor {
      */
     public Tensor matmul(Tensor other) {
         sameDevice(other);
-        if (other.dtype() != dtype()) {
+        // packed weights multiply in the type of what they multiply: their levels have none
+        boolean packedRight = other.storage instanceof PackedStorage && rank() >= 2 && other.rank() == 2;
+        if (other.dtype() != dtype() && !packedRight) {
             DType type = DType.promote(dtype(), other.dtype());
             return to(type).matmul(other.to(type));
         }

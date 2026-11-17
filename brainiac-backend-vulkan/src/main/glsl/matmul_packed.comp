@@ -8,7 +8,8 @@
 // words. A work group covers 4 * QUADS columns with SLICES invocations per column quad,
 // each over its own run of rows; the work group's z index picks a piece of `chunk` rows.
 // Sums go to z[piece * m * n + ...], added up afterwards when there are several pieces.
-// Levels are summed per scale group and scaled once per group.
+// Levels are summed per scale group and scaled once per group; with offsets != 0 each group
+// also adds its offset times the sum of a over its rows.
 // Compiled for ROWS = 1, 2, 4 and 8; rows past m repeat row 0 and are not stored.
 #ifndef ROWS
 #define ROWS 1
@@ -17,8 +18,8 @@
 #define SLICES 8
 layout(local_size_x = QUADS, local_size_y = SLICES) in;
 layout(push_constant) uniform P {
-    In a; InWords q; InFloats scales; Buf z;
-    uint m; uint k; uint n; uint group; uint nibbles; uint chunk;
+    In a; InWords q; InFloats scales; InFloats offsets; Buf z;
+    uint m; uint k; uint n; uint group; uint nibbles; uint chunk; uint hasOffsets;
 } p;
 shared ACC4 sums[SLICES][QUADS];
 
@@ -46,11 +47,11 @@ ACC4 levels(uint r, uint c, bool words) {
     return v;
 }
 
-ACC4 scalesAt(uint g, uint c) {
+ACC4 perGroup(InFloats f, uint g, uint c) {
     uint s = g * p.n + c;
     ACC4 v = ACC4(0.0);
     for (uint j = 0; j < 4; j++) {
-        if (c + j < p.n) v[j] = ACC(p.scales.v[s + j]);
+        if (c + j < p.n) v[j] = ACC(f.v[s + j]);
     }
     return v;
 }
@@ -81,18 +82,28 @@ void main() {
             uint g = r / p.group;
             uint stop = min(end, (g + 1) * p.group);
             ACC4 part[ROWS];
+            ACC sum[ROWS];
             for (uint i = 0; i < ROWS; i++) {
                 part[i] = ACC4(0.0);
+                sum[i] = ACC(0.0);
             }
             for (; r < stop; r++) {
                 ACC4 l = levels(r, c, words);
                 for (uint i = 0; i < ROWS; i++) {
-                    part[i] = fma(ACC4(LOAD(p.a, rowOf[i] + r)), l, part[i]);
+                    ACC x = ACC(LOAD(p.a, rowOf[i] + r));
+                    part[i] = fma(ACC4(x), l, part[i]);
+                    sum[i] += x;
                 }
             }
-            ACC4 s = scalesAt(g, c);
+            ACC4 s = perGroup(p.scales, g, c);
             for (uint i = 0; i < ROWS; i++) {
                 total[i] = fma(part[i], s, total[i]);
+            }
+            if (p.hasOffsets != 0) {
+                ACC4 o = perGroup(p.offsets, g, c);
+                for (uint i = 0; i < ROWS; i++) {
+                    total[i] = fma(ACC4(sum[i]), o, total[i]);
+                }
             }
         }
     }

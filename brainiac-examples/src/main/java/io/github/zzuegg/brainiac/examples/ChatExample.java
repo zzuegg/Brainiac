@@ -30,7 +30,7 @@ import java.util.Set;
  * </pre>
  *
  * Without {@code --prompt} it reads questions from the console. Options: {@code --device
- * cpu|vulkan|opencl|<part of a name>}, {@code --dtype f32|f16|bf16}, {@code --max N},
+ * cpu|vulkan|<part of a name>}, {@code --dtype f32|f16|bf16}, {@code --max N},
  * {@code --temperature T} (0 for greedy), {@code --top-p P}.
  */
 public final class ChatExample {
