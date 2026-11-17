@@ -1,18 +1,27 @@
 package io.github.zzuegg.brainiac.diffusion;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.nn.Conv;
+import io.github.zzuegg.brainiac.nn.Dense;
+import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.function.UnaryOperator;
 
 /**
- * Reads one model's tensors from a weight file onto a device, under a name prefix, and keeps
- * every tensor it made so that the forward passes never release them.
+ * Reads one model's tensors from a weight file onto a device, under a name prefix, and puts
+ * them into the parameters of brainiac layers. It keeps every tensor it placed, so that a
+ * model can be freed at once, and which parameters it filled, so that a loader can check that
+ * none was missed.
  */
 final class Weights {
 
@@ -22,38 +31,36 @@ final class Weights {
     final Device device;
     final DType dtype;
     final List<Tensor> all;
+    private final Set<Var> filled;
 
     Weights(WeightSource source, String prefix, Device device, DType dtype) {
-        this(source, prefix, UnaryOperator.identity(), device, dtype, new ArrayList<>());
+        this(source, prefix, device, dtype, new ArrayList<>());
     }
 
     Weights(WeightSource source, String prefix, Device device, DType dtype, List<Tensor> all) {
-        this(source, prefix, UnaryOperator.identity(), device, dtype, all);
+        this(source, prefix, UnaryOperator.identity(), device, dtype, all,
+                Collections.newSetFromMap(new IdentityHashMap<>()));
     }
 
     private Weights(WeightSource source, String prefix, UnaryOperator<String> rename, Device device, DType dtype,
-            List<Tensor> all) {
+            List<Tensor> all, Set<Var> filled) {
         this.source = source;
         this.prefix = prefix;
         this.rename = rename;
         this.device = device;
         this.dtype = dtype;
         this.all = all;
+        this.filled = filled;
     }
 
     /** The same file seen under {@code prefix + more}. */
     Weights at(String more) {
-        return new Weights(source, prefix + more, rename, device, dtype, all);
+        return new Weights(source, prefix + more, rename, device, dtype, all, filled);
     }
 
     /** The same file with names translated before they are looked up (for other checkpoint layouts). */
     Weights renamed(UnaryOperator<String> names) {
-        return new Weights(source, prefix, names, device, dtype, all);
-    }
-
-    /** The same file read in another type, sharing the list of tensors. */
-    Weights as(DType type) {
-        return new Weights(source, prefix, rename, device, type, all);
+        return new Weights(source, prefix, names, device, dtype, all, filled);
     }
 
     private String full(String name) {
@@ -78,96 +85,114 @@ final class Weights {
         if (!source.contains(n)) {
             throw new IllegalArgumentException("missing weight " + n);
         }
-        return keep(source.tensor(n, device, dtype));
+        return source.tensor(n, device, dtype);
     }
 
-    Tensor keep(Tensor t) {
-        all.add(t);
-        return t;
+    /** Puts {@code value} into a parameter, computed now; {@code from} (if another tensor) is freed. */
+    void set(Var parameter, Tensor value, Tensor... from) {
+        if (!parameter.shape().equals(value.shape())) {
+            throw new IllegalArgumentException(prefix + ": weight of shape " + value.shape() + " for a parameter of "
+                    + parameter.shape());
+        }
+        Tensor.evaluate(List.of(value));
+        for (Tensor f : from) {
+            if (f != null && f != value) {
+                f.release();
+            }
+        }
+        parameter.assign(value);
+        all.add(value);
+        filled.add(parameter);
     }
 
-    /** Replaces a tensor made from weights by another one built from it, freeing the first. */
-    Tensor replace(Tensor old, Tensor made) {
-        Tensor.evaluate(List.of(made));
-        all.remove(old);
-        old.release();
-        return keep(made);
+    /** Fills a parameter with zeros, for a bias the checkpoint does not have. */
+    void zero(Var parameter) {
+        set(parameter, Tensor.zeros(parameter.shape(), dtype, device));
     }
 
-    /** {@code name.weight} {@code [out, in]} as {@code [in, out]} and {@code name.bias} if present. */
-    Nn.Linear linear(String name) {
-        Tensor w = get(name + ".weight");
+    /** Fills a bias from {@code name}, or with zeros if the checkpoint has none. */
+    void bias(Var parameter, String name) {
+        if (has(name)) {
+            set(parameter, get(name));
+        } else {
+            zero(parameter);
+        }
+    }
+
+    /** A projection {@code name.weight} {@code [out, in]} (or a 1x1 convolution) into a dense layer {@code [in, out]}. */
+    void dense(Dense d, String name) {
+        matrix(d.weight(), name + ".weight");
+        bias(d.bias(), name + ".bias");
+    }
+
+    /** {@code name} {@code [out, in]} (or {@code [out, in, 1, 1]}) transposed into {@code parameter}. */
+    void matrix(Var parameter, String name) {
+        Tensor w = get(name);
         // a 1x1 convolution used as a projection is the same matrix; the reshape shares memory
-        Tensor matrix = w.rank() == 4 ? w.reshape(w.shape().dim(0), w.shape().dim(1)) : w;
-        Tensor t = replace(w, matrix.transpose());
-        Tensor b = has(name + ".bias") ? get(name + ".bias") : null;
-        return new Nn.Linear(t, b);
+        Tensor m = w.rank() == 4 ? w.reshape(w.shape().dim(0), w.shape().dim(1)) : w;
+        set(parameter, m.transpose(), w);
     }
 
-    /** Rows {@code [start, end)} of a fused {@code [out, in]} projection (and its bias), as {@code [in, end - start]}. */
-    Nn.Linear linearRows(String weight, String bias, int start, int end) {
-        Tensor w = get(weight);
-        Tensor t = keep(w.slice(0, start, end).transpose());
-        Tensor b = bias == null ? null : get(bias);
-        Tensor bt = b == null ? null : keep(b.slice(0, start, end));
-        Tensor.evaluate(bt == null ? List.of(t) : List.of(t, bt));
-        all.remove(w);
-        w.release();
-        if (b != null) {
-            all.remove(b);
-            b.release();
+    /** Rows {@code [start, end)} of a fused {@code [out, in]} projection, transposed. */
+    void matrixRows(Var parameter, String name, int start, int end) {
+        Tensor w = get(name);
+        set(parameter, w.slice(0, start, end).transpose(), w);
+    }
+
+    /** Entries {@code [start, end)} of a fused bias. */
+    void biasRows(Var parameter, String name, int start, int end) {
+        Tensor b = get(name);
+        set(parameter, b.slice(0, start, end), b);
+    }
+
+    /** A convolution {@code name.weight} {@code [out, in, k, k]} and its bias. */
+    void conv(Conv c, String name) {
+        set(c.weight(), get(name + ".weight"));
+        bias(c.bias(), name + ".bias");
+    }
+
+    /** A projection that is a 1x1 convolution or a dense layer, whichever {@code layer} is. */
+    void projection(Layer layer, String name) {
+        if (layer instanceof Dense d) {
+            dense(d, name);
+        } else {
+            Conv c = (Conv) layer;
+            Tensor w = get(name + ".weight");
+            // a linear projection's weight [out, in] as a 1x1 convolution [out, in, 1, 1]
+            set(c.weight(), w.rank() == 2 ? w.reshape(w.shape().dim(0), w.shape().dim(1), 1, 1) : w);
+            bias(c.bias(), name + ".bias");
         }
-        return new Nn.Linear(t, bt);
     }
 
-    /** {@code name.weight} {@code [out, in]} split in two halves of the output, as GEGLU needs. */
-    Nn.Linear[] linearHalves(String name) {
-        Tensor w = get(name + ".weight");
-        Tensor b = get(name + ".bias");
-        int out = w.shape().dim(0) / 2;
-        Nn.Linear[] halves = new Nn.Linear[2];
-        for (int i = 0; i < 2; i++) {
-            Tensor wi = keep(w.slice(0, i * out, (i + 1) * out).transpose());
-            Tensor bi = keep(b.slice(0, i * out, (i + 1) * out));
-            Tensor.evaluate(List.of(wi, bi));
-            halves[i] = new Nn.Linear(wi, bi);
+    /** A norm's scale and shift, {@code name.weight} and {@code name.bias}. */
+    void norm(Layer norm, String name) {
+        List<Var> p = norm.parameters();
+        set(p.get(0), get(name + ".weight"));
+        set(p.get(1), get(name + ".bias"));
+    }
+
+    /**
+     * An attention's projections, whose parameters are listed as {@code wq, wk, wv, wo, bq,
+     * bk, bv, bo} starting at {@code first}; missing biases become zeros.
+     */
+    void attention(List<Var> p, int first, String q, String k, String v, String out) {
+        String[] names = {q, k, v, out};
+        for (int i = 0; i < 4; i++) {
+            matrix(p.get(first + i), names[i] + ".weight");
+            bias(p.get(first + 4 + i), names[i] + ".bias");
         }
-        all.remove(w);
-        all.remove(b);
-        w.release();
-        b.release();
-        return halves;
     }
 
-    /** A convolution {@code [out, in, k, k]} with its bias. */
-    Nn.Conv2d conv(String name, int stride, int pad) {
-        return conv(name, stride, pad, pad);
-    }
-
-    /** A convolution with different padding before and after the image. */
-    Nn.Conv2d conv(String name, int stride, int pad, int padEnd) {
-        Tensor w = get(name + ".weight");
-        int out = w.shape().dim(0);
-        int in = w.shape().dim(1);
-        int k = w.shape().dim(2);
-        Tensor cols = replace(w, w.reshape(out, in * k * k).transpose());
-        Tensor b = has(name + ".bias") ? get(name + ".bias").reshape(out, 1, 1) : null;
-        return new Nn.Conv2d(cols, b, in, out, k, stride, pad, padEnd);
-    }
-
-    /** A convolution with stride 1 that keeps the image size. */
-    Nn.Conv2d conv(String name) {
-        return conv(name, 1, shape(name + ".weight").dim(2) / 2);
-    }
-
-    /** A group norm's weight and bias. */
-    Nn.GroupNorm groupNorm(String name, int groups, float eps) {
-        return new Nn.GroupNorm(as(DType.FLOAT32).get(name + ".weight"), as(DType.FLOAT32).get(name + ".bias"),
-                groups, eps);
-    }
-
-    /** A layer norm's weight and bias. */
-    Nn.LayerNorm layerNorm(String name, float eps) {
-        return new Nn.LayerNorm(as(DType.FLOAT32).get(name + ".weight"), as(DType.FLOAT32).get(name + ".bias"), eps);
+    /** Throws if a parameter of {@code layer} was not filled from the checkpoint. */
+    void checkFilled(Layer layer, String what) {
+        int missing = 0;
+        for (Var p : layer.parameters()) {
+            if (!filled.contains(p)) {
+                missing++;
+            }
+        }
+        if (missing > 0) {
+            throw new IllegalStateException(missing + " parameters of the " + what + " were not in the checkpoint");
+        }
     }
 }

@@ -1,6 +1,10 @@
 package io.github.zzuegg.brainiac.diffusion;
 
 import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.nn.Activation;
+import io.github.zzuegg.brainiac.nn.diffusion.AutoencoderKL;
+import io.github.zzuegg.brainiac.nn.diffusion.ClipTextEncoder;
+import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -54,7 +58,7 @@ final class SingleFile {
     }
 
     /** Reads the UNet's shape from its weights. */
-    static UNet.Config unetConfig(WeightSource w, Arch arch) {
+    static UNet.Settings unetConfig(WeightSource w, Arch arch) {
         int levels = 1;
         for (int i = 1; w.contains(UNET + "input_blocks." + i + ".0.in_layers.0.weight")
                 || w.contains(UNET + "input_blocks." + i + ".0.op.weight"); i++) {
@@ -90,19 +94,20 @@ final class SingleFile {
             heads[i] = linear ? Math.max(1, channels[i] / arch.headDim()) : arch.sd1Heads();
         }
         int addTimeDim = 0;
+        int pooled = 0;
         if (w.contains(UNET + "label_emb.0.0.weight")) {
             int in = w.shape(UNET + "label_emb.0.0.weight").dim(1);
             String proj = "conditioner.embedders.1.model.text_projection";
-            int pooled = w.contains(proj) ? w.shape(proj).dim(1) : 1280;
+            pooled = w.contains(proj) ? w.shape(proj).dim(1) : 1280;
             addTimeDim = (in - pooled) / 6;
         }
-        return new UNet.Config(w.shape(UNET + "input_blocks.0.0.weight").dim(1),
+        return new UNet.Settings(w.shape(UNET + "input_blocks.0.0.weight").dim(1),
                 w.shape(UNET + "out.2.weight").dim(0), channels, cross, per, heads, depth, context, linear,
-                arch.unetGroups(), 1e-5f, addTimeDim, true, 0);
+                arch.unetGroups(), 1e-5f, addTimeDim, pooled, addTimeDim > 0 ? 6 : 0, true, 0);
     }
 
     /** Reads the VAE's shape from its weights. */
-    static Vae.Config vaeConfig(WeightSource w, Arch arch, float scaling) {
+    static AutoencoderKL.Settings vaeConfig(WeightSource w, Arch arch, float scaling) {
         List<Integer> channels = new ArrayList<>();
         while (w.contains(VAE + "encoder.down." + channels.size() + ".block.0.conv1.weight")) {
             channels.add(w.shape(VAE + "encoder.down." + channels.size() + ".block.0.conv1.weight").dim(0));
@@ -111,8 +116,9 @@ final class SingleFile {
         while (w.contains(VAE + "encoder.down.0.block." + layers + ".conv1.weight")) {
             layers++;
         }
-        return new Vae.Config(channels.stream().mapToInt(Integer::intValue).toArray(), layers,
-                w.shape(VAE + "decoder.conv_in.weight").dim(1), arch.vaeGroups(), scaling, 0);
+        return new AutoencoderKL.Settings(3, channels.stream().mapToInt(Integer::intValue).toArray(), layers,
+                w.shape(VAE + "decoder.conv_in.weight").dim(1), arch.vaeGroups(), 1e-6f, scaling, 0,
+                w.contains(VAE + "post_quant_conv.weight"), false);
     }
 
     static StableDiffusion load(Path file, Device device, DType dtype) throws IOException {
@@ -127,32 +133,31 @@ final class SingleFile {
             StableDiffusion.Kind kind = detect(source).orElseThrow(() -> new IllegalArgumentException(file
                     + " is not a Stable Diffusion 1.x, 2.x or XL checkpoint this library can run"));
             Path vocab = tokenizerFolder(file);
-            UNet.Config uc = unetConfig(source, arch);
+            UNet.Settings uc = unetConfig(source, arch);
             Weights w = new Weights(source, "", device, dtype, all);
             // OpenCLIP pads with "!" (id 0), OpenAI's CLIP with the end token
-            ClipTextModel enc1;
+            ClipTextEncoder enc1;
             ClipTokenizer tok2 = null;
-            ClipTextModel enc2 = null;
+            ClipTextEncoder enc2 = null;
             switch (kind) {
                 case SD1 -> enc1 = clipL(w.at("cond_stage_model.transformer."), arch);
                 // Stable Diffusion 2 conditions on the penultimate layer of OpenCLIP ViT-H
-                case SD2 -> enc1 = ClipTextModel.loadOpenClip(w.at("cond_stage_model.model."), 1,
-                        arch.clipHeadDim());
+                case SD2 -> enc1 = Pretrained.openClip(w.at("cond_stage_model.model."), 1, arch.clipHeadDim());
                 default -> {
                     enc1 = clipL(w.at("conditioner.embedders.0.transformer."), arch);
-                    enc2 = ClipTextModel.loadOpenClip(w.at("conditioner.embedders.1.model."), 0, arch.clipHeadDim());
-                    tok2 = ClipTokenizer.load(vocab, enc2.config().positions(), "!");
+                    enc2 = Pretrained.openClip(w.at("conditioner.embedders.1.model."), 0, arch.clipHeadDim());
+                    tok2 = ClipTokenizer.load(vocab, enc2.settings().positions(), "!");
                 }
             }
             // OpenCLIP pads with "!" (id 0), OpenAI's CLIP with the end token
-            ClipTokenizer tok1 = ClipTokenizer.load(vocab, enc1.config().positions(),
+            ClipTokenizer tok1 = ClipTokenizer.load(vocab, enc1.settings().positions(),
                     kind == StableDiffusion.Kind.SD2 ? "!" : "<|endoftext|>");
-            UNet unet = UNet.load(w.renamed(unetNames(uc)), uc);
+            UNet unet = Pretrained.unet(w.renamed(unetNames(uc)), uc);
             float scaling = arch.vaeScaling() > 0 ? arch.vaeScaling()
                     : kind == StableDiffusion.Kind.SDXL ? 0.13025f : 0.18215f;
-            Vae.Config vc = vaeConfig(source, arch, scaling);
-            Vae vae = Vae.load(new Weights(source, "", device, DType.FLOAT32, all)
-                    .renamed(vaeNames(vc.channels().length)), vc, false);
+            AutoencoderKL.Settings vc = vaeConfig(source, arch, scaling);
+            AutoencoderKL vae = Pretrained.vae(new Weights(source, "", device, DType.FLOAT32, all)
+                    .renamed(vaeNames(vc.channels().length)), vc);
             // a 768 Stable Diffusion 2 model predicts velocity; single files do not say which they are
             NoiseSchedule.Prediction prediction = kind == StableDiffusion.Kind.SD2 && !isBase(file)
                     ? NoiseSchedule.Prediction.V_PREDICTION : NoiseSchedule.Prediction.EPSILON;
@@ -177,16 +182,17 @@ final class SingleFile {
         return name.contains("base") || name.contains("512");
     }
 
-    private static ClipTextModel clipL(Weights w, Arch arch) {
+    private static ClipTextEncoder clipL(Weights w, Arch arch) {
         Weights t = w.at("text_model.");
         int layers = 0;
         while (t.has("encoder.layers." + layers + ".layer_norm1.weight")) {
             layers++;
         }
         int[] embed = t.shape("embeddings.token_embedding.weight").toArray();
-        ClipTextModel.Config c = new ClipTextModel.Config(embed[0], embed[1], layers, embed[1] / arch.clipHeadDim(),
-                t.shape("embeddings.position_embedding.weight").dim(0), true, 1e-5f, 2, 0);
-        return ClipTextModel.load(w, c, c.layers());
+        ClipTextEncoder.Settings c = new ClipTextEncoder.Settings(embed[0], embed[1], layers,
+                embed[1] / arch.clipHeadDim(), t.shape("encoder.layers.0.mlp.fc1.weight").dim(0),
+                t.shape("embeddings.position_embedding.weight").dim(0), Activation.QUICK_GELU, 1e-5f, -1, 0);
+        return Pretrained.clip(w, c, layers);
     }
 
     /** Where the CLIP vocabulary for a single file is: a {@code tokenizer} folder beside it, or the shared cache. */
@@ -212,9 +218,9 @@ final class SingleFile {
     private static final Pattern MID = Pattern.compile("mid_block\\.(resnets|attentions)\\.(\\d+)\\.(.*)");
 
     /** Diffusers UNet names to the original ones. */
-    static UnaryOperator<String> unetNames(UNet.Config c) {
+    static UnaryOperator<String> unetNames(UNet.Settings c) {
         int per = c.layersPerBlock();
-        boolean[] cross = c.crossAttention();
+        boolean[] cross = c.attention();
         int levels = c.channels().length;
         return name -> {
             Matcher m;

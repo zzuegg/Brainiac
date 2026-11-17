@@ -166,6 +166,8 @@ final class VkContext {
     private final Map<Long, ArrayDeque<Slot>> free = new HashMap<>();
     private final ConcurrentLinkedQueue<Slot> released = new ConcurrentLinkedQueue<>();
     private final List<Block> dedicated = new ArrayList<>();
+    /** The blocks small slots are cut from, the current {@link #chunk} last. */
+    private final List<Block> chunks = new ArrayList<>();
     private Block chunk;
     private long allocated;
     private long inUse;
@@ -605,6 +607,7 @@ final class VkContext {
         }
         if (chunk == null || chunk.used + size > chunk.size) {
             chunk = block(CHUNK, deviceLocalType, false);
+            chunks.add(chunk);
         }
         Slot s = new Slot(chunk, chunk.used, size, chunk.address + chunk.used);
         chunk.used += size;
@@ -624,7 +627,12 @@ final class VkContext {
         }
     }
 
-    /** Frees unused dedicated blocks after collecting garbage, to stay within the budget. */
+    /**
+     * Frees unused dedicated blocks, and chunks all of whose slots are unused, after
+     * collecting garbage, to stay within the budget. Freeing chunks matters when one model is
+     * closed and another loaded: its small tensors' slots have sizes the next model may never
+     * ask for again.
+     */
     void reclaim() {
         reclaims++;
         finish();
@@ -643,6 +651,47 @@ final class VkContext {
                 it.remove();
             }
         }
+        reclaimChunks();
+    }
+
+    private void reclaimChunks() {
+        Map<Block, long[]> unused = new java.util.IdentityHashMap<>();
+        for (Block c : chunks) {
+            if (c != chunk) {
+                unused.put(c, new long[1]);
+            }
+        }
+        if (unused.isEmpty()) {
+            return;
+        }
+        for (ArrayDeque<Slot> list : free.values()) {
+            for (Slot s : list) {
+                long[] bytes = unused.get(s.block());
+                if (bytes != null) {
+                    bytes[0] += s.bytes();
+                }
+            }
+        }
+        java.util.Set<Block> empty = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        unused.forEach((c, bytes) -> {
+            if (bytes[0] == c.used) {
+                empty.add(c);
+            }
+        });
+        if (empty.isEmpty()) {
+            return;
+        }
+        for (var it = free.values().iterator(); it.hasNext(); ) {
+            ArrayDeque<Slot> list = it.next();
+            list.removeIf(s -> empty.contains(s.block()));
+            if (list.isEmpty()) {
+                it.remove();
+            }
+        }
+        for (Block c : empty) {
+            destroy(c);
+        }
+        chunks.removeIf(empty::contains);
     }
 
     private Block block(long size, int type, boolean map) {

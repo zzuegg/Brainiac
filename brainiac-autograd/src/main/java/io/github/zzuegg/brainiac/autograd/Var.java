@@ -66,6 +66,9 @@ public final class Var {
     /** Whether operations on this thread check for NaN, see {@link #anomalyDetection(boolean)}. */
     private static final ThreadLocal<Boolean> ANOMALIES = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    /** How many {@link #noGrad} calls are running on this thread. */
+    private static final ThreadLocal<int[]> NO_GRAD = ThreadLocal.withInitial(() -> new int[1]);
+
     /** The operation and the code that made this value, when anomaly detection was on. */
     private String origin;
 
@@ -94,6 +97,40 @@ public final class Var {
     /** @return whether anomaly detection is on for the calling thread */
     public static boolean anomalyDetection() {
         return ANOMALIES.get();
+    }
+
+    /**
+     * Runs inference code without recording gradients: every operation on the calling
+     * thread inside {@code body} returns a constant, even when its inputs are parameters.
+     * No graph is kept, so intermediate values can be freed as soon as they are unused, and
+     * operations that have a faster form without gradients (such as fused attention) use
+     * it. Calls nest.
+     *
+     * <pre>{@code
+     * Tensor out = Var.noGrad(() -> model.forward(Var.of(batch)).value());
+     * }</pre>
+     *
+     * @param body the code to run
+     * @param <T> what it returns
+     * @return what {@code body} returned
+     */
+    public static <T> T noGrad(java.util.function.Supplier<T> body) {
+        int[] depth = NO_GRAD.get();
+        depth[0]++;
+        try {
+            return body.get();
+        } finally {
+            depth[0]--;
+        }
+    }
+
+    /**
+     * Returns whether operations on the calling thread record gradients.
+     *
+     * @return {@code false} inside {@link #noGrad}
+     */
+    public static boolean gradEnabled() {
+        return NO_GRAD.get()[0] == 0;
     }
 
     /** The public method that created a value and its first caller outside {@code Var}. */
@@ -446,6 +483,10 @@ public final class Var {
     }
 
     private static Var op(Tensor out, Var[] inputs, Backward backward, Higher higher) {
+        if (NO_GRAD.get()[0] > 0) {
+            // no graph: anomaly detection still needs the inputs to tell where NaN came from
+            return checked(new Var(out, false, ANOMALIES.get() ? inputs : NO_INPUTS, null, null));
+        }
         for (Var in : inputs) {
             if (in.requiresGrad) {
                 return checked(new Var(out, true, inputs, backward, higher));

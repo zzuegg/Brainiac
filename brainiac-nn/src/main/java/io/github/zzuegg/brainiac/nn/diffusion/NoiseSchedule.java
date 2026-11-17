@@ -44,6 +44,27 @@ public record NoiseSchedule(double[] alphaBar) {
     }
 
     /**
+     * Betas whose square roots rise linearly, as latent diffusion and Stable Diffusion train
+     * with (0.00085 to 0.012 over 1000 steps), computed in float32 like diffusers.
+     *
+     * @param steps the number of steps
+     * @param first the first beta
+     * @param last the last beta
+     * @return the schedule
+     */
+    public static NoiseSchedule scaledLinear(int steps, double first, double last) {
+        double[] a = new double[steps];
+        double prod = 1;
+        for (int t = 0; t < steps; t++) {
+            double f = steps == 1 ? 0 : (double) t / (steps - 1);
+            double beta = (float) Math.pow(Math.sqrt(first) + f * (Math.sqrt(last) - Math.sqrt(first)), 2);
+            prod *= 1 - beta;
+            a[t] = (float) prod;
+        }
+        return new NoiseSchedule(a);
+    }
+
+    /**
      * The cosine schedule of Nichol and Dhariwal (2021), with betas capped at 0.999.
      *
      * @param steps the number of steps
@@ -74,6 +95,59 @@ public record NoiseSchedule(double[] alphaBar) {
      */
     public double alphaBar(int t) {
         return alphaBar[t];
+    }
+
+    /**
+     * The noise level of step {@code t} in the variance-exploding view of k-diffusion
+     * samplers: {@code sqrt((1 - alphaBar) / alphaBar)}, so noisy data at step {@code t} is
+     * {@code (x0 + sigma noise) sqrt(alphaBar)}.
+     *
+     * @param t the step
+     * @return the noise level
+     */
+    public double sigma(int t) {
+        return Math.sqrt((1 - alphaBar[t]) / alphaBar[t]);
+    }
+
+    /**
+     * The noise level at a fractional step, interpolated linearly between steps.
+     *
+     * @param t the step, in {@code [0, steps - 1]}
+     * @return the noise level
+     */
+    public double sigma(double t) {
+        int lo = (int) Math.floor(t);
+        int hi = Math.min(lo + 1, alphaBar.length - 1);
+        double f = t - lo;
+        return (1 - f) * sigma(lo) + f * sigma(hi);
+    }
+
+    /**
+     * The fractional step with a noise level, interpolating the log noise levels: the
+     * inverse of {@link #sigma(int)}, as k-diffusion samplers tell a denoiser trained on
+     * steps where they are.
+     *
+     * @param sigma the noise level
+     * @return the step, in {@code [0, steps - 1]}
+     */
+    public double timestep(double sigma) {
+        int n = alphaBar.length;
+        if (n == 1) {
+            return 0;
+        }
+        double logSigma = Math.log(Math.max(sigma, 1e-10));
+        int low = 0;
+        for (int i = 0; i < n; i++) {
+            if (logSigma - Math.log(sigma(i)) >= 0) {
+                low = i;
+            }
+        }
+        low = Math.min(low, n - 2);
+        int high = low + 1;
+        double a = Math.log(sigma(low));
+        double b = Math.log(sigma(high));
+        double w = Math.max(0, Math.min(1, (a - logSigma) / (a - b)));
+        return (1 - w) * low + w * high;
     }
 
     @Override

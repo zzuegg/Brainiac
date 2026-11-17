@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    api(project(":brainiac-tensor"))
+    api(project(":brainiac-nn"))
     api(project(":brainiac-io"))
     testRuntimeOnly(project(":brainiac-backend-cpu"))
     testRuntimeOnly(project(":brainiac-backend-vulkan"))

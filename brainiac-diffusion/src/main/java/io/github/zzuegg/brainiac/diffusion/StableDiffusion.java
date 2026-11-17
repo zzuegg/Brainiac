@@ -1,8 +1,14 @@
 package io.github.zzuegg.brainiac.diffusion;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.HuggingFaceHub;
 import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.nn.diffusion.AutoencoderKL;
+import io.github.zzuegg.brainiac.nn.diffusion.ClipTextEncoder;
+import io.github.zzuegg.brainiac.nn.diffusion.Diffusion;
+import io.github.zzuegg.brainiac.nn.diffusion.SigmaSampler;
+import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -56,17 +62,17 @@ public final class StableDiffusion implements AutoCloseable {
     private final List<Tensor> weights;
     private final ClipTokenizer tokenizer;
     private final ClipTokenizer tokenizer2;
-    private final ClipTextModel textEncoder;
-    private final ClipTextModel textEncoder2;
+    private final ClipTextEncoder textEncoder;
+    private final ClipTextEncoder textEncoder2;
     private final UNet unet;
-    private final Vae vae;
+    private final AutoencoderKL vae;
     private final NoiseSchedule schedule;
     private final boolean zerosForEmptyNegative;
     private final int nativeSize;
 
     StableDiffusion(Kind kind, Device device, List<WeightSource> sources, List<Tensor> weights,
-            ClipTokenizer tokenizer, ClipTextModel textEncoder, ClipTokenizer tokenizer2, ClipTextModel textEncoder2,
-            UNet unet, Vae vae, NoiseSchedule schedule, boolean zerosForEmptyNegative, int nativeSize) {
+            ClipTokenizer tokenizer, ClipTextEncoder textEncoder, ClipTokenizer tokenizer2,
+            ClipTextEncoder textEncoder2, UNet unet, AutoencoderKL vae, NoiseSchedule schedule, boolean zerosForEmptyNegative, int nativeSize) {
         this.kind = kind;
         this.device = device;
         this.sources = sources;
@@ -111,11 +117,11 @@ public final class StableDiffusion implements AutoCloseable {
     }
 
     private static Kind kindOf(Map<String, Object> unetConfig) {
-        UNet.Config c = UNet.Config.fromJson(unetConfig);
-        if (c.addTimeDim() > 0) {
+        UNet.Settings c = Pretrained.unetSettings(unetConfig);
+        if (c.addTimeFeatures() > 0) {
             return Kind.SDXL;
         }
-        return c.contextDim() == 1024 ? Kind.SD2 : Kind.SD1;
+        return c.contextFeatures() == 1024 ? Kind.SD2 : Kind.SD1;
     }
 
     /**
@@ -153,32 +159,33 @@ public final class StableDiffusion implements AutoCloseable {
         List<WeightSource> sources = new ArrayList<>();
         List<Tensor> all = new ArrayList<>();
         try {
-            ClipTextModel enc1 = null;
+            ClipTextEncoder enc1 = null;
             ClipTokenizer tok1 = null;
             if (Files.isDirectory(dir.resolve("text_encoder"))) {
-                ClipTextModel.Config c = ClipTextModel.Config.fromJson(
+                ClipTextEncoder.Settings c = Pretrained.clipSettings(
                         Json.object(Json.read(dir.resolve("text_encoder/config.json"))));
-                enc1 = ClipTextModel.load(weights(dir.resolve("text_encoder"), "model", sources, device, dtype, all),
+                enc1 = Pretrained.clip(weights(dir.resolve("text_encoder"), "model", sources, device, dtype, all),
                         c, c.layers());
                 tok1 = ClipTokenizer.load(dir.resolve("tokenizer"), c.positions());
             }
-            ClipTextModel enc2 = null;
+            ClipTextEncoder enc2 = null;
             ClipTokenizer tok2 = null;
             if (kind == Kind.SDXL) {
-                ClipTextModel.Config c = ClipTextModel.Config.fromJson(
+                ClipTextEncoder.Settings c = Pretrained.clipSettings(
                         Json.object(Json.read(dir.resolve("text_encoder_2/config.json"))));
-                enc2 = ClipTextModel.load(weights(dir.resolve("text_encoder_2"), "model", sources, device, dtype, all),
+                enc2 = Pretrained.clip(weights(dir.resolve("text_encoder_2"), "model", sources, device, dtype, all),
                         c, c.layers());
                 tok2 = ClipTokenizer.load(dir.resolve("tokenizer_2"), c.positions());
             }
             if (enc1 == null) {
                 throw new IllegalArgumentException(dir + " has no text_encoder (SDXL refiners are not supported yet)");
             }
-            UNet unet = UNet.load(weights(dir.resolve("unet"), "diffusion_pytorch_model", sources, device, dtype, all),
-                    UNet.Config.fromJson(unetJson));
-            Vae.Config vc = Vae.Config.fromJson(Json.object(Json.read(dir.resolve("vae/config.json"))));
-            Vae vae = Vae.load(weights(dir.resolve("vae"), "diffusion_pytorch_model", sources, device, DType.FLOAT32,
-                    all), vc, false);
+            UNet unet = Pretrained.unet(weights(dir.resolve("unet"), "diffusion_pytorch_model", sources, device,
+                    dtype, all), Pretrained.unetSettings(unetJson));
+            AutoencoderKL.Settings vc = Pretrained.vaeSettings(Json.object(Json.read(dir.resolve("vae/config.json"))),
+                    false);
+            AutoencoderKL vae = Pretrained.vae(weights(dir.resolve("vae"), "diffusion_pytorch_model", sources, device,
+                    DType.FLOAT32, all), vc);
             Path schedulerConfig = dir.resolve("scheduler/scheduler_config.json");
             NoiseSchedule schedule = Files.isRegularFile(schedulerConfig)
                     ? NoiseSchedule.fromJson(Json.object(Json.read(schedulerConfig)))
@@ -325,7 +332,7 @@ public final class StableDiffusion implements AutoCloseable {
     public synchronized List<GeneratedImage> generate(ImageRequest request, Progress progress) {
         int width = request.width() == 0 ? nativeSize : request.width();
         int height = request.height() == 0 ? nativeSize : request.height();
-        int latentChannels = unet.config().inChannels();
+        int latentChannels = unet.settings().inChannels();
         boolean guided = request.guidance() > 1;
         Conditioning cond = encode(request.prompt(), request.negativePrompt(), guided);
         try {
@@ -380,134 +387,104 @@ public final class StableDiffusion implements AutoCloseable {
             StepListener listener) {
         Sampler sampler = request.sampler();
         NoiseSchedule.Plan plan = schedule.plan(request.steps(), sampler.karras());
-        boolean guided = cond.context().shape().dim(0) == 2;
+        int batch = cond.context().shape().dim(0);
+        boolean guided = batch == 2;
         int height = noise.shape().dim(2) * 8;
         int width = noise.shape().dim(3) * 8;
-        float[][] timeIds = null;
-        if (unet.config().addTimeDim() > 0) {
-            float[] ids = {height, width, 0, 0, height, width};
-            timeIds = guided ? new float[][] {ids, ids} : new float[][] {ids};
-        }
-        Tensor x = noise.to(DType.FLOAT32).mul((float) plan.initialSigma());
-        Tensor previous = null;   // the last step's denoised latents, for DPM-Solver++ (2M)
-        double[] sigmas = plan.sigmas();
-        List<Tensor> none = List.of();
-        for (int i = 0; i < plan.steps(); i++) {
-            double sigma = sigmas[i];
-            double next = sigmas[i + 1];
-            float t = plan.timesteps()[i];
-            Tensor xi = x;
-            float[][] ids = timeIds;
-            Tensor denoised = Nn.scoped(none, () -> {
-                Tensor in = xi.mul((float) (1 / Math.sqrt(sigma * sigma + 1)));
-                Tensor batch = guided ? Tensor.concat(0, in, in) : in;
-                Tensor out = unet.forward(batch, guided ? new float[] {t, t} : new float[] {t}, cond.context(),
-                        cond.pooled(), ids).to(DType.FLOAT32);
-                if (guided) {
-                    Tensor uncond = out.slice(0, 0, 1);
-                    Tensor c = out.slice(0, 1, 2);
-                    out = uncond.add(c.sub(uncond).mul(request.guidance()));
-                }
-                if (schedule.prediction() == NoiseSchedule.Prediction.V_PREDICTION) {
-                    return xi.mul((float) (1 / (sigma * sigma + 1)))
-                            .sub(out.mul((float) (sigma / Math.sqrt(sigma * sigma + 1))));
-                }
-                return xi.sub(out.mul((float) sigma));
-            }, xi);
-            Tensor prev = previous;
-            double last = i > 0 ? sigmas[i - 1] : 0;
-            Tensor nextX = Nn.scoped(none, () -> switch (sampler) {
-                case EULER, EULER_KARRAS -> euler(xi, denoised, sigma, next);
-                case EULER_ANCESTRAL -> {
-                    double up = Math.min(next, Math.sqrt(next * next * (sigma * sigma - next * next) / (sigma * sigma)));
-                    double down = Math.sqrt(next * next - up * up);
-                    Tensor y = euler(xi, denoised, sigma, down);
-                    yield next > 0 ? y.add(gaussian(xi.shape(), random).mul((float) up)) : y;
-                }
-                case DPM_PP_2M, DPM_PP_2M_KARRAS -> dpmSolver2m(xi, denoised, prev, sigma, next, last);
-            }, xi, denoised, prev);
-            if (previous != null && previous != nextX) {
-                previous.release();
+        Tensor added = null;
+        if (unet.settings().addTimeFeatures() > 0) {
+            // SDXL: the pooled text embedding, then original size, crop and target size
+            float[] ids = new float[batch * 6];
+            for (int b = 0; b < batch; b++) {
+                System.arraycopy(new float[] {height, width, 0, 0, height, width}, 0, ids, b * 6, 6);
             }
-            previous = denoised;
-            x.release();
-            x = nextX;
-            if (!listener.step(i + 1, plan.steps(), denoised)) {
-                x.release();
-                if (denoised != x) {
-                    denoised.release();
-                }
-                throw new CancellationException("image generation stopped at step " + (i + 1));
+            added = Tensor.concat(1, cond.pooled(), Tensor.of(Shape.of(batch, 6), ids, device));
+        }
+        Tensor addedFinal = added;
+        Diffusion.Prediction prediction = schedule.prediction() == NoiseSchedule.Prediction.V_PREDICTION
+                ? Diffusion.Prediction.VELOCITY : Diffusion.Prediction.NOISE;
+        SigmaSampler.Model model = (x, sigma, step) -> {
+            float t = plan.timesteps()[step];
+            Tensor in = x.mul((float) (1 / Math.sqrt(sigma * sigma + 1)));
+            Tensor both = guided ? Tensor.concat(0, in, in) : in;
+            float[] ts = guided ? new float[] {t, t} : new float[] {t};
+            Tensor out = Var.noGrad(() -> unet.forward(Var.of(both), Var.of(Tensor.of(Shape.of(ts.length), ts,
+                    device)), Var.of(cond.context()), addedFinal == null ? null : Var.of(addedFinal), false))
+                    .value().to(DType.FLOAT32);
+            if (guided) {
+                Tensor uncond = out.slice(0, 0, 1);
+                Tensor c = out.slice(0, 1, 2);
+                out = uncond.add(c.sub(uncond).mul(request.guidance()));
+            }
+            return SigmaSampler.denoised(x, out, sigma, prediction);
+        };
+        SigmaSampler.Method method = switch (sampler) {
+            case EULER, EULER_KARRAS -> SigmaSampler.Method.EULER;
+            case EULER_ANCESTRAL -> SigmaSampler.Method.EULER_ANCESTRAL;
+            case DPM_PP_2M, DPM_PP_2M_KARRAS -> SigmaSampler.Method.DPM_PP_2M;
+        };
+        Tensor start = noise.to(DType.FLOAT32).mul((float) plan.initialSigma());
+        try {
+            return SigmaSampler.sample(model, start, plan.sigmas(), method, random, listener::step);
+        } finally {
+            start.release();
+            if (added != null) {
+                added.release();
             }
         }
-        // DPM-Solver++ ends on the denoised latents themselves
-        if (previous != null && previous != x) {
-            previous.release();
-        }
-        return x;
     }
 
     /** Decodes latents into images {@code [batch, 3, h, w]} with values in {@code [0, 1]}. */
     Tensor decode(Tensor latents) {
-        Tensor image = vae.decode(latents);
-        Tensor out = Nn.scoped(List.of(), () -> image.mul(0.5f).add(0.5f)
+        Tensor image = Var.noGrad(() -> vae.fromLatents(Var.of(latents)).value());
+        Tensor[] out = new Tensor[1];
+        List<Tensor> made = Tensor.created(() -> out[0] = image.mul(0.5f).add(0.5f)
                 .maximum(Tensor.full(Shape.of(1), 0f, image.device()))
-                .minimum(Tensor.full(Shape.of(1), 1f, image.device())), image);
+                .minimum(Tensor.full(Shape.of(1), 1f, image.device())));
+        Tensor.evaluate(List.of(out[0]));
+        Tensor.releaseCreated(made, List.of(out[0]));
         image.release();
-        return out;
-    }
-
-    private static Tensor euler(Tensor x, Tensor denoised, double sigma, double next) {
-        // x + (next - sigma) * (x - denoised) / sigma
-        return denoised.add(x.sub(denoised).mul((float) (next / sigma)));
-    }
-
-    private static Tensor dpmSolver2m(Tensor x, Tensor denoised, Tensor previous, double sigma, double next,
-            double last) {
-        if (next == 0) {
-            return denoised;
-        }
-        double t = -Math.log(sigma);
-        double tNext = -Math.log(next);
-        double h = tNext - t;
-        Tensor d = denoised;
-        if (previous != null) {
-            double hLast = t + Math.log(last);
-            double r = hLast / h;
-            d = denoised.mul((float) (1 + 1 / (2 * r))).sub(previous.mul((float) (1 / (2 * r))));
-        }
-        return x.mul((float) (next / sigma)).sub(d.mul((float) Math.expm1(-h)));
+        return out[0];
     }
 
     /** Encodes the prompts: {uncond, cond} if guided, else {cond}. */
     Conditioning encode(String prompt, String negative, boolean guided) {
         String[] texts = guided ? new String[] {negative, prompt} : new String[] {prompt};
         boolean zeroUncond = guided && zerosForEmptyNegative && negative.isBlank();
-        if (kind != Kind.SDXL) {
-            ClipTextModel.Output o = textEncoder.encode(ids(tokenizer, texts));
-            release(o.penultimate());
-            release(o.pooled());
-            return new Conditioning(o.last(), null);
-        }
-        ClipTextModel.Output a = textEncoder.encode(ids(tokenizer, texts));
-        ClipTextModel.Output b = textEncoder2.encode(ids(tokenizer2, texts));
-        Tensor context = Tensor.concat(2, a.penultimate().to(unet.dtype()), b.penultimate().to(unet.dtype()));
-        Tensor pooled = b.pooled().to(DType.FLOAT32);
-        if (zeroUncond) {
-            Tensor mask = Tensor.of(Shape.of(2, 1, 1), new float[] {0, 1}, device).to(context.dtype());
-            context = context.mul(mask);
-            pooled = pooled.mul(Tensor.of(Shape.of(2, 1), new float[] {0, 1}, device));
-        }
-        Tensor.evaluate(List.of(context, pooled));
-        for (ClipTextModel.Output o : new ClipTextModel.Output[] {a, b}) {
-            for (Tensor t : new Tensor[] {o.last(), o.penultimate(), o.pooled()}) {
-                // a conversion to the same type returns the tensor itself
-                if (t != null && t != context && t != pooled) {
-                    t.release();
+        return Var.noGrad(() -> {
+            if (kind != Kind.SDXL) {
+                ClipTextEncoder.Output o = textEncoder.encode(Var.of(ids(tokenizer, texts)), false);
+                release(o.penultimate());
+                release(o.pooled());
+                return new Conditioning(o.last().value(), null);
+            }
+            ClipTextEncoder.Output a = textEncoder.encode(Var.of(ids(tokenizer, texts)), false);
+            ClipTextEncoder.Output b = textEncoder2.encode(Var.of(ids(tokenizer2, texts)), false);
+            Tensor context = Tensor.concat(2, a.penultimate().value().to(unet.dtype()),
+                    b.penultimate().value().to(unet.dtype()));
+            Tensor pooled = b.pooled().value().to(DType.FLOAT32);
+            if (zeroUncond) {
+                Tensor mask = Tensor.of(Shape.of(2, 1, 1), new float[] {0, 1}, device).to(context.dtype());
+                context = context.mul(mask);
+                pooled = pooled.mul(Tensor.of(Shape.of(2, 1), new float[] {0, 1}, device));
+            }
+            Tensor.evaluate(List.of(context, pooled));
+            for (ClipTextEncoder.Output o : new ClipTextEncoder.Output[] {a, b}) {
+                for (Var v : new Var[] {o.last(), o.penultimate(), o.pooled()}) {
+                    // a conversion to the same type returns the tensor itself
+                    if (v != null && v.value() != context && v.value() != pooled) {
+                        v.value().release();
+                    }
                 }
             }
+            return new Conditioning(context, pooled);
+        });
+    }
+
+    private static void release(Var v) {
+        if (v != null) {
+            v.value().release();
         }
-        return new Conditioning(context, pooled);
     }
 
     private static void release(Tensor t) {
@@ -516,12 +493,24 @@ public final class StableDiffusion implements AutoCloseable {
         }
     }
 
-    private static int[][] ids(ClipTokenizer tokenizer, String[] texts) {
+    private Tensor ids(ClipTokenizer tokenizer, String[] texts) {
         int[][] ids = new int[texts.length][];
         for (int i = 0; i < texts.length; i++) {
             ids[i] = tokenizer.encode(texts[i]);
         }
-        return ids;
+        return idTensor(ids, device);
+    }
+
+    /** Token ids {@code [batch][tokens]} as a tensor of numbers. */
+    static Tensor idTensor(int[][] ids, Device device) {
+        int n = ids[0].length;
+        float[] flat = new float[ids.length * n];
+        for (int b = 0; b < ids.length; b++) {
+            for (int i = 0; i < n; i++) {
+                flat[b * n + i] = ids[b][i];
+            }
+        }
+        return Tensor.of(Shape.of(ids.length, n), flat, device);
     }
 
     private Tensor gaussian(Shape shape, SplittableRandom random) {

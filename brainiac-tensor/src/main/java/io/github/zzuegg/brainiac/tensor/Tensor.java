@@ -43,10 +43,18 @@ public final class Tensor {
     /** The tensors created on this thread while {@link #created} runs, innermost call last. */
     private static final ThreadLocal<java.util.ArrayList<Tensor>> CREATED = new ThreadLocal<>();
 
+    /** For a view such as a reshape, the tensor that owns the memory; {@code null} if this one does. */
+    private final Tensor base;
+
     private Tensor(Shape shape, Device device, Storage storage) {
+        this(shape, device, storage, null);
+    }
+
+    private Tensor(Shape shape, Device device, Storage storage, Tensor base) {
         this.shape = shape;
         this.device = device;
         this.storage = storage;
+        this.base = base;
         java.util.ArrayList<Tensor> created = CREATED.get();
         if (created != null) {
             created.add(this);
@@ -216,6 +224,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor zeros(Shape shape, DType dtype, Device device) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, dtype, device);
+        }
         return new Tensor(shape, device, device.backend().allocate(shape.size(), dtype));
     }
 
@@ -273,6 +284,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor full(Shape shape, float value, DType dtype, Device device) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, dtype, device);
+        }
         if (shape.rank() == 0) {
             // Tensors are immutable, so single values are shared; on a GPU each new one
             // would otherwise cost a device command.
@@ -299,6 +313,42 @@ public final class Tensor {
             return size() > 1_024;
         }
     };
+
+    /** How many {@link #withoutValues} calls are running on this thread. */
+    private static final ThreadLocal<int[]> WITHOUT_VALUES = ThreadLocal.withInitial(() -> new int[1]);
+
+    /** One value per device and type that stands in for every tensor made by {@link #withoutValues}. */
+    private static final Map<ScalarKey, Storage> PLACEHOLDERS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Runs {@code body} with tensor creation ({@code zeros}, {@code full}, {@code ones},
+     * {@code normal}, {@code uniform}) giving tensors that have a shape but no values: they
+     * cost no memory and no random numbers. It is meant for building a model whose
+     * parameters are all replaced right after, such as by pretrained weights; the values of
+     * such a tensor must never be read.
+     *
+     * @param body the code to run
+     * @param <T> what it returns
+     * @return what {@code body} returned
+     */
+    public static <T> T withoutValues(java.util.function.Supplier<T> body) {
+        int[] depth = WITHOUT_VALUES.get();
+        depth[0]++;
+        try {
+            return body.get();
+        } finally {
+            depth[0]--;
+        }
+    }
+
+    private static Tensor placeholder(Shape shape, DType dtype, Device device) {
+        Storage s = PLACEHOLDERS.computeIfAbsent(new ScalarKey(device, dtype, 0), k -> {
+            Storage made = device.backend().allocate(1, dtype);
+            SHARED.put(made, Boolean.TRUE);
+            return made;
+        });
+        return new Tensor(shape, device, s);
+    }
 
     /** Storages handed out to many callers (the shared scalars): never released early. */
     private static final Map<Storage, Boolean> SHARED =
@@ -343,6 +393,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor uniform(Shape shape, float low, float high, RandomGenerator random) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, DType.FLOAT32, Device.getDefault());
+        }
         float[] v = new float[checkedSize(shape)];
         for (int i = 0; i < v.length; i++) {
             v[i] = low + (high - low) * random.nextFloat();
@@ -361,6 +414,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor normal(Shape shape, float mean, float std, RandomGenerator random) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, DType.FLOAT32, Device.getDefault());
+        }
         float[] v = new float[checkedSize(shape)];
         for (int i = 0; i < v.length; i++) {
             v[i] = (float) random.nextGaussian(mean, std);
@@ -633,6 +689,29 @@ public final class Tensor {
     }
 
     /**
+     * Releases what a computation made (from {@link #created}) except {@code keep}: like
+     * {@link #release(java.util.Collection, java.util.Collection)}, but a view made in the
+     * computation of a tensor made before it, such as a reshape of a weight, is left alone,
+     * as its memory is not the computation's.
+     *
+     * @param made the tensors {@link #created} returned
+     * @param keep tensors that stay in use, such as the result
+     */
+    public static void releaseCreated(java.util.List<Tensor> made, java.util.Collection<Tensor> keep) {
+        Map<Tensor, Boolean> mine = new java.util.IdentityHashMap<>();
+        for (Tensor t : made) {
+            mine.put(t, Boolean.TRUE);
+        }
+        java.util.List<Tensor> dead = new java.util.ArrayList<>(made.size());
+        for (Tensor t : made) {
+            if (t.base == null || mine.containsKey(t.base)) {
+                dead.add(t);
+            }
+        }
+        release(dead, keep);
+    }
+
+    /**
      * Copies all values to a new Java array in row-major order.
      *
      * @return the values
@@ -676,10 +755,10 @@ public final class Tensor {
         if (newShape.size() != shape.size()) {
             throw new IllegalArgumentException("cannot reshape " + shape + " to " + newShape);
         }
-        if (storage instanceof PackedStorage && newShape.equals(shape)) {
-            return this;
+        if (storage instanceof PackedStorage) {
+            return newShape.equals(shape) ? this : new Tensor(newShape, device, storage());
         }
-        return new Tensor(newShape, device, storage());
+        return new Tensor(newShape, device, storage, base != null ? base : this);
     }
 
     /**

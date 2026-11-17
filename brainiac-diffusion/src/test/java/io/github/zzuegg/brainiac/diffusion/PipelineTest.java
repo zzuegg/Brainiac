@@ -88,7 +88,7 @@ class PipelineTest {
     /** Writes a diffusers folder as an original-layout single file, as image tools share them. */
     private static void writeCheckpoint(Path folder, Path file, boolean xl) throws Exception {
         Map<String, Tensor> out = new LinkedHashMap<>();
-        UNet.Config uc = UNet.Config.fromJson(Json.object(Json.read(folder.resolve("unet/config.json"))));
+        var uc = Pretrained.unetSettings(Json.object(Json.read(folder.resolve("unet/config.json"))));
         var unetNames = SingleFile.unetNames(uc);
         try (SafeTensors s = SafeTensors.open(folder.resolve("unet/diffusion_pytorch_model.safetensors"))) {
             for (String n : s.names()) {

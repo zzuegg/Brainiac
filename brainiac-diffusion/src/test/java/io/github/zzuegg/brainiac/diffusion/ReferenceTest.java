@@ -1,6 +1,10 @@
 package io.github.zzuegg.brainiac.diffusion;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.nn.diffusion.AutoencoderKL;
+import io.github.zzuegg.brainiac.nn.diffusion.ClipTextEncoder;
+import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 import io.github.zzuegg.brainiac.io.SafeTensors;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -76,44 +80,60 @@ class ReferenceTest {
     @Test
     void clipTextEncoder() throws Exception {
         for (String name : new String[] {"text_encoder", "text_encoder_2"}) {
-            ClipTextModel.Config c = ClipTextModel.Config.fromJson(config("sdxl/" + name));
-            ClipTextModel m = ClipTextModel.load(weights("sdxl/" + name, "model.safetensors"), c, c.layers());
-            ClipTextModel.Output out = m.encode(ids(name + ".ids"));
-            assertClose(ref(name + ".last"), out.last(), 1e-4);
-            assertClose(ref(name + ".penultimate"), out.penultimate(), 1e-4);
-            assertClose(ref(name + ".pooled"), out.pooled(), 1e-4);
+            ClipTextEncoder.Settings c = Pretrained.clipSettings(config("sdxl/" + name));
+            ClipTextEncoder m = Pretrained.clip(weights("sdxl/" + name, "model.safetensors"), c, c.layers());
+            ClipTextEncoder.Output out = Var.noGrad(() -> m.encode(Var.of(StableDiffusion.idTensor(ids(name + ".ids"),
+                    DEVICE)), false));
+            assertClose(ref(name + ".last"), out.last().value(), 1e-4);
+            assertClose(ref(name + ".penultimate"), out.penultimate().value(), 1e-4);
+            assertClose(ref(name + ".pooled"), out.pooled().value(), 1e-4);
         }
     }
 
-    private static float[] floats(String name) {
-        return ref(name).toArray();
+    private static Tensor steps(String name) {
+        return ref(name);
+    }
+
+    private static Tensor unet(UNet unet, Tensor x, Tensor t, Tensor ctx, Tensor added) {
+        return Var.noGrad(() -> unet.forward(Var.of(x), Var.of(t), Var.of(ctx), added == null ? null : Var.of(added),
+                false).value());
     }
 
     @Test
     void unetSd15() throws Exception {
-        UNet unet = UNet.load(weights("sd/unet", "diffusion_pytorch_model.safetensors"),
-                UNet.Config.fromJson(config("sd/unet")));
-        Tensor out = unet.forward(ref("unet.x"), floats("unet.t"), ref("unet.ctx"), null, null);
+        UNet unet = Pretrained.unet(weights("sd/unet", "diffusion_pytorch_model.safetensors"),
+                Pretrained.unetSettings(config("sd/unet")));
+        Tensor out = unet(unet, ref("unet.x"), steps("unet.t"), ref("unet.ctx"), null);
         assertClose(ref("unet.out"), out, 1e-4);
     }
 
     @Test
     void unetXl() throws Exception {
-        UNet unet = UNet.load(weights("sdxl/unet", "diffusion_pytorch_model.safetensors"),
-                UNet.Config.fromJson(config("sdxl/unet")));
-        float[] ids = floats("unet_xl.time_ids");
-        float[][] timeIds = {java.util.Arrays.copyOfRange(ids, 0, 6), java.util.Arrays.copyOfRange(ids, 6, 12)};
-        Tensor out = unet.forward(ref("unet_xl.x"), floats("unet_xl.t"), ref("unet_xl.ctx"), ref("unet_xl.pooled"),
-                timeIds);
+        UNet unet = Pretrained.unet(weights("sdxl/unet", "diffusion_pytorch_model.safetensors"),
+                Pretrained.unetSettings(config("sdxl/unet")));
+        Tensor added = Tensor.concat(1, ref("unet_xl.pooled"), ref("unet_xl.time_ids").reshape(2, 6));
+        Tensor out = unet(unet, ref("unet_xl.x"), steps("unet_xl.t"), ref("unet_xl.ctx"), added);
         assertClose(ref("unet_xl.out"), out, 1e-4);
     }
 
     @Test
     void vae() throws Exception {
-        Vae.Config c = Vae.Config.fromJson(config("sd/vae"));
-        Vae vae = Vae.load(weights("sd/vae", "diffusion_pytorch_model.safetensors"), c, true);
-        // decode takes latents as the UNet sees them; the reference decoded raw latents
-        assertClose(ref("vae.decoded"), vae.decode(ref("vae.z").mul(c.scalingFactor())), 1e-4);
-        assertClose(ref("vae.mean").mul(c.scalingFactor()), vae.encode(ref("vae.image")), 1e-4);
+        AutoencoderKL.Settings c = Pretrained.vaeSettings(config("sd/vae"), true);
+        AutoencoderKL vae = Pretrained.vae(weights("sd/vae", "diffusion_pytorch_model.safetensors"), c);
+        // fromLatents takes latents as the UNet sees them; the reference decoded raw latents
+        Tensor decoded = Var.noGrad(() -> vae.fromLatents(Var.of(ref("vae.z").mul(c.scalingFactor()))).value());
+        assertClose(ref("vae.decoded"), decoded, 1e-4);
+        Tensor latents = Var.noGrad(() -> vae.toLatents(Var.of(ref("vae.image"))).value());
+        assertClose(ref("vae.mean").mul(c.scalingFactor()), latents, 1e-4);
+    }
+
+    @Test
+    void sameResultsWithGradients() throws Exception {
+        // the layers give the same values when they record gradients (as while training)
+        UNet unet = Pretrained.unet(weights("sd/unet", "diffusion_pytorch_model.safetensors"),
+                Pretrained.unetSettings(config("sd/unet")));
+        Var out = unet.forward(Var.of(ref("unet.x")), Var.of(steps("unet.t")), Var.of(ref("unet.ctx")), null, false);
+        assertTrue(out.requiresGrad());
+        assertClose(ref("unet.out"), out.value(), 1e-4);
     }
 }

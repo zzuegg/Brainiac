@@ -535,6 +535,39 @@ the SD 1.x and SDXL pipelines (`brainiac-diffusion/src/test/python` makes the fi
 ./gradlew :brainiac-examples:run --args="image models/stable-diffusion-v1-5 'a lighthouse at dusk' --steps 25"
 ```
 
+### The same layers in your own networks
+
+Stable Diffusion runs on ordinary brainiac-nn layers in `io.github.zzuegg.brainiac.nn.diffusion`.
+They train, save and load like every other layer, so you can build your own latent diffusion
+model from them, or fine-tune a pretrained one:
+
+| Layer | What |
+| --- | --- |
+| `TimestepEmbedding` | sinusoids of a step (or any number) through two dense layers |
+| `ResnetBlock` | group norm, SiLU, 3x3 convolutions, plus an optional time embedding |
+| `SpatialTransformer` | transformer blocks over an image's pixels, cross-attending to a context (GEGLU feed-forward) |
+| `ImageAttention` | single- or multi-head self-attention over pixels |
+| `UNet` | the full denoising UNet; also a `Denoiser` for `Diffusion.loss` |
+| `AutoencoderKL` | the VAE: `encode`, `decode`, `toLatents`, `loss` (reconstruction + KL) |
+| `ClipTextEncoder` | CLIP's causal text transformer: last and penultimate layers, pooled embedding |
+
+```java
+UNet unet = new UNet(UNet.Settings.of(4, 4, new int[] {64, 128, 256}, 512), new SplittableRandom(1));
+Diffusion diffusion = new Diffusion(NoiseSchedule.scaledLinear(1000, 0.00085, 0.012), Diffusion.Prediction.NOISE);
+Denoiser model = unet.conditional().given(textEmbeddings);   // [batch, tokens, 512]
+Var loss = diffusion.loss(model, latents, random);
+
+// sample in 25 steps with DPM-Solver++ instead of 1000 DDPM steps
+double[] sigmas = SigmaSampler.karras(diffusion.schedule(), 25);
+Tensor start = Tensor.normal(shape, 0, 1, random).mul((float) sigmas[0]);
+Tensor images = SigmaSampler.sample(SigmaSampler.model(model, diffusion.schedule(), Diffusion.Prediction.NOISE),
+        start, sigmas, SigmaSampler.Method.DPM_PP_2M, random, SigmaSampler.Listener.NONE);
+```
+
+Inference runs inside `Var.noGrad(...)`, which records no graph: intermediate values are freed
+right away, and attention uses the fused kernel. `Tensor.withoutValues(...)` builds a model
+without allocating initial weights, for loading pretrained ones into it.
+
 ## Reinforcement learning
 
 `brainiac-rl` has environments to act in and agents that learn from rewards.

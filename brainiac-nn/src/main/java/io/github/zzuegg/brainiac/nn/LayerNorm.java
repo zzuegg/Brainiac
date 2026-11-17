@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -83,7 +84,9 @@ public final class LayerNorm implements Layer {
         }
         long width = Shape.of(normalized).size();
         int rows = Math.toIntExact(s.size() / width);
-        Var x = input.reshape(rows, Math.toIntExact(width));
+        DType type = input.value().dtype();
+        boolean half = type.bytes() == 2;   // statistics over many values need float32
+        Var x = (half ? input.to(DType.FLOAT32) : input).reshape(rows, Math.toIntExact(width));
         Var y;
         if (rms) {
             y = x.div(x.square().mean(1, true).add(epsilon).sqrt());
@@ -92,6 +95,9 @@ public final class LayerNorm implements Layer {
             y = centered.div(centered.square().mean(1, true).add(epsilon).sqrt());
         }
         y = y.reshape(s.toArray());
+        if (half) {
+            y = y.to(type);
+        }
         if (gamma != null) {
             y = y.mul(gamma);
         }
