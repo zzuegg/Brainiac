@@ -847,7 +847,64 @@ public final class Llama implements LanguageModel {
                 next[b * steps + t] = t + 1 < steps ? tokens[b][t + 1] : -1;   // the last step predicts nothing
             }
         }
-        Var h = hidden(tokens, positions, null, null).reshape(batch * steps, config.hidden());
+        return loss(tokens, next, positions, null, chunk);
+    }
+
+    /**
+     * The cross-entropy of instruction-tuning data: padded or packed rows where only the
+     * marked tokens count (see {@link InstructionData}). Packed examples see only their own
+     * earlier tokens, and each starts again at position 0.
+     *
+     * @param batch the rows
+     * @return the mean over the tokens that count
+     */
+    public Var loss(InstructionData.Batch batch) {
+        int rows = batch.tokens().length;
+        int steps = batch.tokens()[0].length;
+        int[][] positions = new int[rows][steps];
+        float[] next = new float[rows * steps];
+        boolean packed = false;
+        for (int b = 0; b < rows; b++) {
+            int[] seg = batch.segments()[b];
+            for (int t = 0; t < steps; t++) {
+                boolean continues = t > 0 && seg[t] == seg[t - 1];
+                positions[b][t] = continues ? positions[b][t - 1] + 1 : 0;
+                packed |= t > 0 && seg[t] != seg[t - 1] && seg[t] != 0;
+                next[b * steps + t] = batch.targets()[b][t];
+            }
+        }
+        Tensor[] masks = null;
+        if (packed) {
+            masks = new Tensor[blocks.size()];
+            Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+            for (int l = 0; l < masks.length; l++) {
+                masks[l] = byWindow.computeIfAbsent(windowOf(l), w -> segmentMask(batch.segments(), w));
+            }
+        }
+        return loss(batch.tokens(), next, positions, masks, Math.max(1, (1 << 24) / config.vocabSize()));
+    }
+
+    /** Causal within each segment, optionally windowed: {@code [rows, 1, steps, steps]}. */
+    private Tensor segmentMask(int[][] segments, int window) {
+        int rows = segments.length;
+        int steps = segments[0].length;
+        float[] m = new float[rows * steps * steps];
+        for (int b = 0; b < rows; b++) {
+            for (int t = 0; t < steps; t++) {
+                for (int k = 0; k < steps; k++) {
+                    if (k > t || segments[b][k] != segments[b][t] || window > 0 && k <= t - window) {
+                        m[(b * steps + t) * steps + k] = -1e9f;
+                    }
+                }
+            }
+        }
+        return Tensor.of(Shape.of(rows, 1, steps, steps), m, device).to(dtype);
+    }
+
+    private Var loss(int[][] tokens, float[] next, int[][] positions, Tensor[] masks, int chunk) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        Var h = hidden(tokens, positions, null, masks).reshape(batch * steps, config.hidden());
         Tensor ids = Tensor.of(Shape.of(batch * steps), next, device);
         if (config.extras().finalSoftcap() > 0) {
             return Functional.crossEntropy(softcap(head(h, false)).reshape(batch * steps, config.vocabSize()), ids);
