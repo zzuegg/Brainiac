@@ -1676,6 +1676,11 @@ public final class VulkanBackend implements Backend {
                     f.superOffsets() == null ? null : uploadHalves(f.superOffsets()));
         }
         flags |= matrix.offsets() != null ? Packed.OFFSETS : 0;
+        if (PACKED_FACTORS && halves(matrix.scales()) && (matrix.offsets() == null || halves(matrix.offsets()))) {
+            // float16 values per group, as IQ4_NL and MXFP4 store them
+            return new Packed(rows, cols, bits, matrix.group(), flags | Packed.HALF, 1, 0, matrix, levels, hi, null, null,
+                    uploadHalves(matrix.scales()), matrix.offsets() == null ? null : uploadHalves(matrix.offsets()));
+        }
         return new Packed(rows, cols, bits, matrix.group(), flags, 1, 0, matrix, levels, hi, null, null,
                 vs(upload(matrix.scales())), matrix.offsets() == null ? null : vs(upload(matrix.offsets())));
     }

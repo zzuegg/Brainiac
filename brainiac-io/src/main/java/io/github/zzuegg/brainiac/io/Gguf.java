@@ -405,6 +405,9 @@ public final class Gguf implements WeightSource {
         for (int c = 0; c < out; c++) {
             column[order == null ? c : order[c]] = c;
         }
+        if (!GgmlQuants.factored(e.format)) {
+            return packedPlain(e, name, device, column, group, bits, shifted, shift);
+        }
         // scales and offsets as GGUF stores them: a small code per group times a value per
         // super-block of 256 inputs (k-quants), or a value per group (the others)
         boolean superBlocks = e.format.block == 256;
@@ -447,6 +450,39 @@ public final class Gguf implements WeightSource {
         PackedMatrix.Factors factors = new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets,
                 superGroup, shift);
         return Tensor.packed(PackedMatrix.of(levels, factors, in, out, bits, group), device);
+    }
+
+    /** As packedTransposed, with a float scale and offset per group. */
+    private Tensor packedPlain(Entry e, String name, Device device, int[] column, int group, int bits, boolean shifted,
+            int shift) {
+        int out = e.shape.dim(0);
+        int in = e.shape.dim(1);
+        byte[] levels = new byte[in * out];
+        float[] scales = new float[in / group * out];
+        float[] offsets = shifted ? new float[scales.length] : null;
+        MemorySegment m = raw(name);
+        long rowBytes = (long) in / e.format.block * e.format.bytes;
+        int perTask = 64;
+        java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
+            GgmlQuants.Row row = new GgmlQuants.Row(in, group);
+            for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
+                GgmlQuants.levels(e.format, m.asSlice(o * rowBytes, rowBytes), in, row);
+                int c = column[o];
+                byte[] q = row.levels();
+                for (int r = 0; r < in; r++) {
+                    levels[r * out + c] = (byte) (q[r] - shift);
+                }
+                float[] s = row.scales();
+                float[] f = row.offsets();
+                for (int g = 0; g < s.length; g++) {
+                    scales[g * out + c] = s[g];
+                    if (shifted) {
+                        offsets[g * out + c] = (float) (f[g] + (double) s[g] * shift);
+                    }
+                }
+            }
+        });
+        return Tensor.packed(PackedMatrix.of(levels, scales, offsets, in, out, bits, group), device);
     }
 
     @Override

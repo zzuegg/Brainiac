@@ -118,6 +118,14 @@ final class GgmlQuants {
         };
     }
 
+    /** Whether {@link #levels} reports the format's scales and offsets as {@linkplain Sink#factors factors}. */
+    static boolean factored(Gguf.Format format) {
+        return switch (format) {
+            case Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K -> true;
+            default -> false;
+        };
+    }
+
     /** Whether the format adds an offset per group (its levels are then unsigned). */
     static boolean offsets(Gguf.Format format) {
         return format == Gguf.Format.Q4_1 || format == Gguf.Format.Q5_1 || format == Gguf.Format.Q2_K
