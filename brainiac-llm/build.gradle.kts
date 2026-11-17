@@ -23,6 +23,6 @@ tasks.test {
     }
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     if (device != "cpu") {
-        jvmArgs("-Dbrainiac.vulkan.devices=all")   // lavapipe counts too
+        jvmArgs("-Dbrainiac.vulkan.devices=all", "-Dbrainiac.opencl.devices=all")   // lavapipe and pocl count too
     }
 }

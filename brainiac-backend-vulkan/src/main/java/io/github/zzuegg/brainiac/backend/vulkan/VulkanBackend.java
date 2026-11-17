@@ -146,7 +146,9 @@ public final class VulkanBackend implements Backend {
         }
         return vk.dispatches + " dispatches (" + fusedDispatches + " fused, " + fusedShaders.size()
                 + " shaders generated in " + compileNanos / 1_000_000 + " ms), " + vk.barriers + " barriers, " + vk.submits + " submits, " + vk.waits
-                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.peakInUse() >> 20) + " MB peak in use";
+                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
+                + vk.perShader.entrySet().stream().sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
+                        .limit(12).map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", "));
     }
 
     /** Commands recorded so far, fused or not; for tests. */
@@ -180,9 +182,13 @@ public final class VulkanBackend implements Backend {
     private long fusedDispatches;
     private long compileNanos;
 
+    /** Whether 16-bit chains fuse too ({@code -Dbrainiac.vulkan.fuse16=false} rounds after every step). */
+    private static final boolean FUSE_16 = !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.fuse16"));
+
     /** Whether an element-wise result can be recorded instead of computed now. */
     private boolean fusable(VkStorage out, Storage... inputs) {
-        if (compiler == null || out.size == 0 || (out.dtype != DType.FLOAT32 && out.dtype != DType.FLOAT64)) {
+        // float16 and bfloat16 chains compute in float32 and round once, at the end
+        if (compiler == null || out.size == 0 || !FUSE_16 && (out.dtype == DType.FLOAT16 || out.dtype == DType.BFLOAT16)) {
             return false;
         }
         for (Storage in : inputs) {
@@ -256,13 +262,13 @@ public final class VulkanBackend implements Backend {
             return;
         }
         if (e instanceof Fusion.Src v && v.storage().pending == null && v.dims().length == 1
-                && v.strides()[0] == 1) {
+                && v.strides()[0] == 1 && v.storage().dtype == s.dtype) {
             // a contiguous range of stored values
             int bytes = s.dtype.bytes();
             vk.copy(v.storage().slot(), (long) v.offset() * bytes, s.slot(), 0, s.size * bytes);
             return;
         }
-        Fusion.Kernel k = Fusion.generate(e);
+        Fusion.Kernel k = Fusion.generate(e, s.dtype);
         String name = fusedPipeline(k.source(), s.dtype);
         VkContext.Slot[] reads = new VkContext.Slot[k.loads().size()];
         for (int i = 0; i < reads.length; i++) {
@@ -284,7 +290,7 @@ public final class VulkanBackend implements Backend {
     private String fusedPipeline(String body, DType dtype) {
         // looked up by the generated part only: the shared prelude would make every lookup hash
         // and compare kilobytes, which costs more than a small dispatch saves
-        String key = dtype == DType.FLOAT64 ? "d" + body : body;
+        String key = dtype == DType.FLOAT32 ? body : dtype.ordinal() + body;
         String name = fusedShaders.get(key);
         if (name == null) {
             long start = System.nanoTime();
@@ -369,6 +375,7 @@ public final class VulkanBackend implements Backend {
         }
         VkStorage c = raw(s.size, dtype, null);
         convert(s, c);
+        ready(c);   // read directly by the command that asked for it
         return c;
     }
 
@@ -537,6 +544,12 @@ public final class VulkanBackend implements Backend {
     public synchronized void convert(Storage in, Storage out) {
         VkStorage x = vs(in);
         VkStorage y = vs(out);
+        if (x.dtype != y.dtype && x.dtype != DType.FLOAT64 && y.dtype != DType.FLOAT64 && fusable(y)
+                && x.size == y.size) {
+            // between float32, float16 and bfloat16: read in the other format by what uses it
+            defer(y, Fusion.whole(x));
+            return;
+        }
         eager(x, y);
         if (x.dtype == y.dtype) {
             vk.copy(x.slot(), 0, y.slot(), 0, x.bytes());

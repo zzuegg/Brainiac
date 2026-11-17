@@ -835,6 +835,22 @@ public final class Tensor {
         backend().copy(t.storage(), 0, t.shape.strides(), v, storage, start * strides[a], strides);
     }
 
+    /**
+     * Reverses the order along one axis. A GPU reads it in place as part of what uses it.
+     *
+     * @param axis the axis; negative counts from the end
+     * @return the reversed tensor
+     */
+    public Tensor flip(int axis) {
+        int a = axis(axis);
+        long[] strides = shape.strides();
+        long offset = (shape.dim(a) - 1) * strides[a];
+        strides[a] = -strides[a];
+        Storage out = backend().allocateUninitialized(size(), dtype());
+        backend().copy(storage(), offset, strides, shape.toArray(), out, 0, shape.strides());
+        return new Tensor(shape, device, out);
+    }
+
     private Tensor strided(long[] strides, Shape outShape) {
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().copy(storage(), strides, outShape.toArray(), out);
