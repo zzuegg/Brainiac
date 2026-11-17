@@ -313,6 +313,46 @@ class VulkanBackendTest {
         }
     }
 
+    /** Uploads larger than a staging block stream through several, in order. */
+    @Test
+    void largeUploadsArriveWhole() {
+        float[] data = new float[(80 << 20) / 4 + 12345];
+        SplittableRandom r = new SplittableRandom(81);
+        for (int i = 0; i < data.length; i++) {
+            data[i] = (float) r.nextDouble();
+        }
+        Tensor t = Tensor.of(Shape.of(data.length), data, gpu);
+        assertArrayEquals(data, t.toArray());
+        java.lang.foreign.MemorySegment seg = java.lang.foreign.MemorySegment.ofArray(data);
+        assertArrayEquals(data, Tensor.of(Shape.of(data.length), seg, DType.FLOAT32, gpu).toArray());
+    }
+
+    /** A full device keeps working: new tensors go to memory the device reads over the bus. */
+    @Test
+    void spillsToHostMemoryWhenTheDeviceIsFull() {
+        VulkanBackend vk = VulkanBackend.loaded().orElseThrow();
+        Tensor a = random(51, 1031, 1029);
+        Tensor b = random(52, 1029, 1027);
+        float[] expected = a.matmul(b).toArray();
+        vk.simulateFullDevice(true);
+        try {
+            long before = vk.spilled();
+            // held, so pooled blocks run out and new ones are needed
+            List<Tensor> held = new java.util.ArrayList<>();
+            for (int i = 0; i < 40 && vk.spilled() == before; i++) {
+                held.add(Tensor.zeros(Shape.of(1 << 20), DType.FLOAT32, gpu).add(1f));
+                held.getLast().toArray();
+            }
+            float[] actual = a.to(gpu).matmul(b.to(gpu)).add(held.getLast().sum()).toArray();
+            assertTrue(vk.spilled() > before, vk.statistics());
+            for (int i = 0; i < expected.length; i += 997) {
+                assertEquals(expected[i] + (1 << 20), actual[i], 1e-3f * (1 + Math.abs(expected[i] + (1 << 20))));
+            }
+        } finally {
+            vk.simulateFullDevice(false);
+        }
+    }
+
     @Test
     void elementWiseChainsRunAsOneDispatch() {
         VulkanBackend vk = VulkanBackend.loaded().orElseThrow();
@@ -441,6 +481,69 @@ class VulkanBackendTest {
                     Var.of(k.to(type).to(gpu)), Var.of(v.to(type).to(gpu)), bias.to(gpu), scale, 0, null).value()
                     .toArray();
             assertArrayEquals(fused, viaFunctional, 0f, type.toString());
+        }
+    }
+
+    /** One kernel for RMSNorm, against the operations Llama builds it from; the input a pending sum. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1, 576", "5, 2048", "3, 100", "2, 7"})
+    void rmsNormMatchesItsOperations(int rows, int cols) {
+        Tensor a = random(41, rows, cols);
+        Tensor b = random(42, rows, cols);
+        Tensor w = random(43, cols);
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Var x = Var.of(a.to(type).add(b.to(type)));
+            Var x32 = x.to(DType.FLOAT32);
+            float[] expected = x32.div(x32.square().mean(1, true).add(1e-5f).sqrt()).to(type).mul(Var.of(w.to(type)))
+                    .value().toArray();
+            Tensor xg = a.to(type).to(gpu).add(b.to(type).to(gpu));
+            assertTrue(xg.hasRmsNorm());
+            float[] fused = xg.rmsNorm(w.to(gpu), 1e-5f).toArray();
+            float tolerance = type == DType.FLOAT32 ? 1e-5f : type == DType.FLOAT16 ? 4e-3f : 3e-2f;
+            for (int i = 0; i < fused.length; i++) {
+                assertEquals(expected[i], fused[i], tolerance * (1 + Math.abs(expected[i])), type + " at " + i);
+            }
+        }
+    }
+
+    /** Decoding's products of a few rows: one pass over the matrix, in pieces of rows added up. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1, 896, 896", "1, 4864, 896", "2, 64, 7", "3, 1000, 130", "5, 17, 4",
+        "8, 2048, 516", "1, 3, 1"})
+    void productsOfFewRowsMatchTheCpu(int m, int k, int n) {
+        Tensor a = random(61, m, k);
+        Tensor b = random(62, k, n);
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            float[] expected = a.to(type).to(DType.FLOAT32).matmul(b.to(type).to(DType.FLOAT32)).toArray();
+            float[] actual = a.to(type).to(gpu).matmul(b.to(type).to(gpu)).toArray();
+            double tolerance = type == DType.FLOAT32 ? 1e-4 : type == DType.FLOAT16 ? 4e-3 : 3e-2;
+            for (int i = 0; i < expected.length; i++) {
+                assertEquals(expected[i], actual[i], tolerance * (Math.sqrt(k) + Math.abs(expected[i])),
+                        type + " " + m + "x" + k + "x" + n + " at " + i);
+            }
+        }
+    }
+
+    /** Fourier transforms in shared memory for powers of two up to 2048, on the host otherwise. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2, 8, 64, 2048, 12, 4096})
+    void fourierTransformsMatchTheCpu(int n) {
+        Tensor x = random(71, 3, n, 2);
+        for (boolean inverse : new boolean[] {false, true}) {
+            float[] expected = x.fft(inverse).toArray();
+            float[] actual = x.to(gpu).fft(inverse).toArray();
+            float tolerance = (inverse ? 1e-5f : 1e-5f * n) * (float) Math.log(n + 1) + 1e-5f;
+            assertArrayEquals(expected, actual, tolerance, (inverse ? "inverse " : "") + n);
+        }
+        if (supported(DType.FLOAT16)) {
+            Tensor h = x.to(DType.FLOAT16);
+            assertArrayEquals(h.fft(false).toArray(), h.to(gpu).fft(false).toArray(), 2e-3f * n + 1e-2f, "f16 " + n);
         }
     }
 

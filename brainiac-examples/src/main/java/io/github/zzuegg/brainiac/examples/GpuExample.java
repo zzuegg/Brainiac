@@ -1,6 +1,5 @@
 package io.github.zzuegg.brainiac.examples;
 
-import io.github.zzuegg.brainiac.backend.opencl.OpenClBackend;
 import io.github.zzuegg.brainiac.backend.vulkan.VulkanBackend;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -17,8 +16,8 @@ import java.util.SplittableRandom;
  * Lists the devices, then compares them: a large matrix multiplication, and training the
  * same CNN on the synthetic shapes task. Run with
  * {@code ./gradlew :brainiac-examples:run --args=gpu}; add
- * {@code -Dbrainiac.opencl.devices=all} or {@code -Dbrainiac.vulkan.devices=all} to the JVM to also
- * try OpenCL or Vulkan CPU drivers.
+ * {@code -Dbrainiac.vulkan.devices=all} to the JVM to also try Vulkan CPU drivers
+ * (such as lavapipe).
  */
 public final class GpuExample {
 
@@ -33,7 +32,6 @@ public final class GpuExample {
     public static void main(String[] args) {
         int size = args.length > 0 ? Integer.parseInt(args[0]) : 1024;
         System.out.println("devices: " + Device.available());
-        System.out.println("OpenCL: " + new OpenClBackend().status());
         System.out.println("Vulkan: " + VulkanBackend.loaded().orElseGet(VulkanBackend::new).status());
         Tensor a = Tensor.uniform(Shape.of(size, size), -1, 1, new SplittableRandom(1));
         Tensor b = Tensor.uniform(Shape.of(size, size), -1, 1, new SplittableRandom(2));

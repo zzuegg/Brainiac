@@ -456,6 +456,159 @@ public final class Generator {
         }
     }
 
+    // ---------------------------------------------------------------- speculative decoding
+
+    /**
+     * Speculative decoding (Leviathan et al., 2023; Chen et al., 2023): a small draft model
+     * guesses {@code lookahead} tokens one by one, then this generator's model checks them all
+     * in one step and keeps the longest run it agrees with, plus one token of its own. Each
+     * token is accepted with probability {@code min(1, p / q)} and a rejected one is replaced
+     * from {@code max(0, p - q)}, so the text follows the large model's distribution exactly:
+     * greedy decoding gives the same tokens as {@link #generate}, only in fewer steps of the
+     * large model. Both models must share the vocabulary and be able to
+     * {@linkplain LanguageModel.State#truncate go back}.
+     *
+     * @param prompt the token ids to continue, one sequence
+     * @param draft the small model
+     * @param lookahead the tokens guessed per step
+     * @param options as for {@link #generate}; the repetition penalty is not supported
+     * @param listener receives the text as it is written, or {@code null}
+     * @return the result, with {@link Output#tokens()} and the number of tokens accepted
+     */
+    public Speculation speculative(int[] prompt, LanguageModel draft, int lookahead, Options options,
+            Listener listener) {
+        if (lookahead < 1) {
+            throw new IllegalArgumentException("lookahead must be at least 1, got " + lookahead);
+        }
+        if (prompt.length == 0) {
+            throw new IllegalArgumentException("empty prompt");
+        }
+        if (draft.vocabSize() != model.vocabSize()) {
+            throw new IllegalArgumentException("the draft model's vocabulary (" + draft.vocabSize()
+                    + ") differs from the model's (" + model.vocabSize() + ")");
+        }
+        Sampling sampling = options.sampling();
+        if (sampling.repetitionPenalty() != 1) {
+            throw new IllegalArgumentException("speculative decoding does not support a repetition penalty");
+        }
+        Set<Integer> stops = stopTokens(options);
+        Row row = new Row(0, prompt, options, listener);
+        SplittableRandom random = new SplittableRandom(options.seed());
+        LanguageModel.State target = model.newState(1);
+        LanguageModel.State small = draft.newState(1);
+        int proposed = 0;
+        int accepted = 0;
+        int targetSteps = 0;
+        if (options.maxNewTokens() > 0) {
+            float[] p = model.next(target, new int[][] {prompt}, null).toArray();
+            float[] q = draft.next(small, new int[][] {prompt}, null).toArray();
+            targetSteps++;
+            boolean done = false;
+            while (!done) {
+                int base = target.length();
+                // the draft's guesses, and the distributions it drew them from
+                int[] guess = new int[lookahead];
+                double[][] qs = new double[lookahead][];
+                for (int i = 0; i < lookahead; i++) {
+                    qs[i] = sampling.probabilities(q);
+                    guess[i] = draw(qs[i], random);
+                    if (i + 1 < lookahead) {
+                        q = draft.next(small, new int[][] {{guess[i]}}, null).toArray();
+                    }
+                }
+                // the model's distributions after the prompt so far and after each guess
+                float[] all = model.nextAll(target, new int[][] {guess}).toArray();
+                targetSteps++;
+                int vocab = model.vocabSize();
+                int keep = 0;
+                int extra = -1;
+                for (int i = 0; i < lookahead; i++) {
+                    float[] logits = i == 0 ? p : Arrays.copyOfRange(all, (i - 1) * vocab, i * vocab);
+                    double[] ps = sampling.probabilities(logits);
+                    int x = guess[i];
+                    if (random.nextDouble() * qs[i][x] < ps[x]) {
+                        keep++;
+                        continue;
+                    }
+                    // rejected: from what the model wants more than the draft offered
+                    double[] rest = new double[vocab];
+                    for (int t = 0; t < vocab; t++) {
+                        rest[t] = Math.max(0, ps[t] - qs[i][t]);
+                    }
+                    extra = draw(rest, random);
+                    break;
+                }
+                proposed += lookahead;
+                accepted += keep;
+                if (extra < 0) {
+                    // every guess kept: one more token from the model's last distribution
+                    extra = draw(sampling.probabilities(Arrays.copyOfRange(all, (lookahead - 1) * vocab,
+                            lookahead * vocab)), random);
+                }
+                for (int i = 0; i < keep && !done; i++) {
+                    done = row.add(guess[i], stops);
+                }
+                if (!done) {
+                    done = row.add(extra, stops);
+                }
+                if (done) {
+                    break;
+                }
+                // both states keep the accepted guesses, then read the new token
+                target = target.truncate(base + keep);
+                p = model.next(target, new int[][] {{extra}}, null).toArray();
+                int drafted = Math.min(keep, lookahead - 1);   // the draft never read its last guess
+                small = small.truncate(base + drafted);
+                int[] missing = new int[keep - drafted + 1];
+                for (int i = drafted; i < keep; i++) {
+                    missing[i - drafted] = guess[i];
+                }
+                missing[missing.length - 1] = extra;
+                q = draft.next(small, new int[][] {missing}, null).toArray();
+            }
+        }
+        return new Speculation(row.finish(), proposed, accepted, targetSteps);
+    }
+
+    /**
+     * What {@link #speculative} wrote, and how well the draft guessed.
+     *
+     * @param output the text and tokens
+     * @param proposed the tokens the draft guessed
+     * @param accepted the guesses the model kept
+     * @param modelSteps the steps the large model took
+     */
+    public record Speculation(Output output, int proposed, int accepted, int modelSteps) {
+
+        /** @return the share of guesses kept */
+        public double acceptance() {
+            return proposed == 0 ? 0 : (double) accepted / proposed;
+        }
+    }
+
+    /** A token drawn from weights that need not add up to 1 (all zero: the first largest). */
+    private static int draw(double[] weights, SplittableRandom random) {
+        double sum = 0;
+        int best = 0;
+        for (int i = 0; i < weights.length; i++) {
+            sum += weights[i];
+            if (weights[i] > weights[best]) {
+                best = i;
+            }
+        }
+        if (sum <= 0) {
+            return best;
+        }
+        double r = random.nextDouble() * sum;
+        for (int i = 0; i < weights.length; i++) {
+            r -= weights[i];
+            if (r < 0 && weights[i] > 0) {
+                return i;
+            }
+        }
+        return best;
+    }
+
     // ---------------------------------------------------------------- beam search
 
     /**
