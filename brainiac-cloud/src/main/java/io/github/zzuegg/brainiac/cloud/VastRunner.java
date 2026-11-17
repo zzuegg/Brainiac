@@ -180,14 +180,30 @@ public final class VastRunner {
             throw new IllegalArgumentException("a worker token has at least 32 characters");
         }
         // bash reads its script from the pipe a line at a time, so read takes the next line: the token
-        String script = "IFS= read -r BRAINIAC_WORKER_TOKEN && export BRAINIAC_WORKER_TOKEN && " + remote("worker", args)
-                + "\n" + token + "\n";
+        String script = "IFS= read -r BRAINIAC_WORKER_TOKEN && export BRAINIAC_WORKER_TOKEN BRAINIAC_WORKER_UNTIL_EOF=1 && "
+                + remote("worker", args) + "\n" + token + "\n";
         Process p = new ProcessBuilder(ssh(i, List.of("-L", localPort + ":127.0.0.1:7870", "-o", "ExitOnForwardFailure=yes"),
                 "bash -s")).redirectErrorStream(true).start();
-        try (OutputStream in = p.getOutputStream()) {
-            in.write(script.getBytes(StandardCharsets.UTF_8));
-        }
+        // left open on purpose: the worker stops when this input ends, so it stops with this process
+        OutputStream in = p.getOutputStream();
+        in.write(script.getBytes(StandardCharsets.UTF_8));
+        in.flush();
         return p;
+    }
+
+    /**
+     * Stops a studio worker on the instance. Ending the local ssh process alone can leave the
+     * worker running there, holding GPU memory.
+     *
+     * @param i the instance
+     * @throws IOException if ssh cannot be started
+     * @throws InterruptedException if interrupted
+     */
+    public void stopWorker(VastInstance i) throws IOException, InterruptedException {
+        Process p = new ProcessBuilder(ssh(i, List.of(), "pkill -f brainiac.studio; true"))
+                .redirectErrorStream(true).start();
+        p.getInputStream().readAllBytes();
+        p.waitFor();
     }
 
     /**
