@@ -774,3 +774,90 @@ void matmul_rows(__global const T* a, __global const T* b, __global T* z, int m,
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 }
+
+// Attention forward with one work group per query row, the keys taken ATT_GROUP at a time:
+// each work item scores one key of a block, the block's maximum and sum come from reductions
+// in local memory, and item d keeps output component d, rescaled online as the running
+// maximum grows. Many items per row keep the device busy when there are few query rows
+// (decoding a token), where the one-item-per-row attention kernel would leave it idle. An
+// optional bias (masks) is added to the scaled scores: element (b, h, i, j) at
+// b * sb + h * sh + i * si + j * sj.
+#define ATT_GROUP 256
+ACC att_reduce(__local ACC* red, ACC x, uint tid, int max_) {
+    red[tid] = x;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (uint s = ATT_GROUP / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red[tid] = max_ ? fmax(red[tid], red[tid + s]) : red[tid] + red[tid + s];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    ACC r = red[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    return r;
+}
+
+__kernel __attribute__((reqd_work_group_size(ATT_GROUP, 1, 1)))
+void attention_rows(__global const T* q, __global const T* k, __global const T* v, __global T* out,
+                    __global T* lse, __global const T* bias, int heads, int kvHeads, int tq, int tk, int dk,
+                    int dv, float scale, int causal, int hasBias, long sb, long sh, long si, long sj) {
+    __local ACC qs[ATT_D];
+    __local ACC weights[ATT_GROUP];
+    __local ACC red[ATT_GROUP];
+    long row = get_group_id(0);
+    uint tid = get_local_id(0);
+    int i = (int) (row % tq);
+    long bh = row / tq;
+    int h = (int) (bh % heads);
+    long b = bh / heads;
+    long kv = b * kvHeads + h / (heads / kvHeads);
+    long kBase = kv * tk * dk;
+    long vBase = kv * tk * dv;
+    if (tid < (uint) dk) {
+        qs[tid] = LOAD(q, row * dk + tid);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    int last = causal ? clamp(i + tk - tq + 1, 0, tk) : tk;
+    long biasRow = b * sb + h * sh + i * si;
+    ACC m = -INFINITY;
+    ACC l = (ACC) 0;
+    ACC o = (ACC) 0;
+    for (int c = 0; c < last; c += ATT_GROUP) {
+        int j = c + (int) tid;
+        ACC s = -INFINITY;
+        if (j < last) {
+            ACC dot = (ACC) 0;
+            long kr = kBase + (long) j * dk;
+            for (int d = 0; d < dk; d++) {
+                dot = fma(qs[d], LOAD(k, kr + d), dot);
+            }
+            s = dot * scale;
+            if (hasBias) {
+                s += LOAD(bias, biasRow + j * sj);
+            }
+        }
+        ACC mNew = fmax(m, att_reduce(red, s, tid, 1));
+        // a row whose scores are all -inf so far (fully masked) keeps zero weights
+        ACC w = j < last && mNew > -INFINITY ? exp(s - mNew) : (ACC) 0;
+        weights[tid] = w;
+        ACC alpha = mNew > -INFINITY ? exp(m - mNew) : (ACC) 1;
+        l = l * alpha + att_reduce(red, w, tid, 0);   // its barriers also publish weights
+        if (tid < (uint) dv) {
+            ACC acc = o * alpha;
+            int n = min(ATT_GROUP, last - c);
+            long vr = vBase + (long) c * dv + tid;
+            for (int jj = 0; jj < n; jj++) {
+                acc = fma(weights[jj], LOAD(v, vr + (long) jj * dv), acc);
+            }
+            o = acc;
+        }
+        m = mNew;
+        barrier(CLK_LOCAL_MEM_FENCE);   // weights are rewritten by the next block
+    }
+    if (tid < (uint) dv) {
+        STORE(out, row * dv + tid, l > (ACC) 0 ? o / l : (ACC) 0);
+    }
+    if (tid == 0) {
+        STORE(lse, row, l > (ACC) 0 ? m + log(l) : (ACC) -INFINITY);
+    }
+}
