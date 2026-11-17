@@ -111,6 +111,9 @@ jdks() {
     "$JDK21/bin/java" -version 2>&1 | head -n1
     "$JDK27/bin/java" -version 2>&1 | head -n1
     export JAVA_HOME="$JDK21"
+    # more room on LWJGL's thread stack (64 KB by default) for drivers that report a lot,
+    # passed on to every JVM Gradle starts (tests, run tasks)
+    export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dorg.lwjgl.system.stackSize=512"
     export PATH="$JAVA_HOME/bin:$PATH"
     GRADLE=(./gradlew --console=plain "-Porg.gradle.java.installations.paths=$JDK27"
         -Porg.gradle.java.installations.auto-download=false)
