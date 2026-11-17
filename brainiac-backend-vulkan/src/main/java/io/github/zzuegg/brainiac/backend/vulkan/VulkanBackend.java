@@ -141,6 +141,22 @@ public final class VulkanBackend implements Backend {
                 + vk.deviceList;
     }
 
+    @Override
+    public synchronized Device.Memory memory() {
+        if (vk == null) {
+            return null;
+        }
+        long now = vk.inUse();
+        return new Device.Memory(now, vk.peakInUse(), vk.allocated(), vk.budget);
+    }
+
+    @Override
+    public synchronized void resetPeakMemory() {
+        if (vk != null) {
+            vk.resetPeak();
+        }
+    }
+
     /**
      * Counts of work done so far, for tuning.
      *
@@ -1068,13 +1084,14 @@ public final class VulkanBackend implements Backend {
                 return null;
             }
         }
+        Operand o = null;
         if (batch == 1 && d.length == 2 && d[0] == rows && d[1] == cols) {
-            return new Operand(src.storage(), src.offset(), 0, st[0], st[1]);
+            o = new Operand(src.storage(), src.offset(), 0, st[0], st[1]);
+        } else if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
+            o = new Operand(src.storage(), src.offset(), st[0], st[1], st[2]);
         }
-        if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
-            return new Operand(src.storage(), src.offset(), st[0], st[1], st[2]);
-        }
-        return null;
+        // the product reads along a contiguous row or column (see matmul.comp)
+        return o != null && (o.col() == 1 || o.row() == 1) ? o : null;
     }
 
     /** Whether a float16 product has enough rows for the matrix cores, where the device has them. */
@@ -1125,7 +1142,8 @@ public final class VulkanBackend implements Backend {
                     .putInt((int) xo.col()).putInt((int) yo.row()).putInt((int) yo.col());
             // the strided variant only where an operand needs it: its addressing costs the plain case
             boolean plain = xo.row() == k && xo.col() == 1 && yo.row() == n && yo.col() == 1;
-            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32") + (plain ? "" : "s");
+            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32")
+                    + (plain ? "" : "s" + (xo.col() == 1 ? "" : "a") + (yo.col() == 1 ? "" : "b"));
             vk.dispatch(shader(name, z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }

@@ -742,6 +742,76 @@ public final class Functional {
     }
 
     /**
+     * The Lovász-softmax loss (Berman et al., 2018): a smooth surrogate of the mean
+     * intersection-over-union over classes, for segmentation. Per class present in the
+     * labels, the pixels' errors {@code |[label = c] - p_c|} are sorted (on the host) and
+     * weighted by the gradient of the Jaccard loss's Lovász extension.
+     *
+     * @param probabilities {@code [pixels, classes]}, such as a softmax over flattened pixels
+     * @param labels the class id of each pixel {@code [pixels]}
+     * @return the loss averaged over the present classes, a scalar
+     */
+    public static Var lovaszSoftmax(Var probabilities, Tensor labels) {
+        int n = probabilities.shape().dim(0);
+        int classes = probabilities.shape().dim(1);
+        float[] ids = labels.toArray();
+        float[] p = probabilities.value().to(DType.FLOAT32).toArray();
+        Var total = null;
+        int present = 0;
+        Device device = probabilities.value().device();
+        for (int c = 0; c < classes; c++) {
+            float[] fg = new float[n];
+            float[] err = new float[n];
+            int gts = 0;
+            for (int i = 0; i < n; i++) {
+                fg[i] = (int) ids[i] == c ? 1 : 0;
+                gts += (int) fg[i];
+                err[i] = Math.abs(fg[i] - p[i * classes + c]);
+            }
+            if (gts == 0) {
+                continue;
+            }
+            Integer[] order = new Integer[n];
+            for (int i = 0; i < n; i++) {
+                order[i] = i;
+            }
+            Arrays.sort(order, (a, b) -> Float.compare(err[b], err[a]));
+            float[] grad = new float[n];
+            float[] perm = new float[n];
+            double inter = gts;
+            double union = gts;
+            double prev = 0;
+            for (int k = 0; k < n; k++) {
+                int i = order[k];
+                perm[k] = i;
+                inter -= fg[i];
+                union += 1 - fg[i];
+                double jaccard = 1 - inter / union;
+                grad[k] = (float) (jaccard - prev);
+                prev = jaccard;
+            }
+            Tensor index = Tensor.of(Shape.of(n), perm).to(device);
+            Var sorted = probabilities.slice(1, c, c + 1).reshape(n).gather(0, index)
+                    .sub(Tensor.of(Shape.of(n), gather(fg, perm)).to(device)).abs();
+            Var term = sorted.mul(Tensor.of(Shape.of(n), grad).to(device)).sum();
+            total = total == null ? term : total.add(term);
+            present++;
+        }
+        if (total == null) {
+            return probabilities.sum().mul(0f);
+        }
+        return total.div(present);
+    }
+
+    private static float[] gather(float[] v, float[] at) {
+        float[] out = new float[at.length];
+        for (int i = 0; i < at.length; i++) {
+            out[i] = v[(int) at[i]];
+        }
+        return out;
+    }
+
+    /**
      * The reparameterization trick of variational autoencoders (Kingma and Welling, 2014): a
      * sample {@code mu + exp(logVar / 2) * eps} with {@code eps ~ N(0, 1)}, differentiable in
      * the mean and the log-variance.
