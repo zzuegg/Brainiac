@@ -7,6 +7,8 @@
 // splits > 1 the batch dimension also splits k into pieces of chunk values summed
 // separately: piece s of batch b goes to z[(b * splits + s) * strideZ], added up afterwards.
 // Compiled twice: W = 4 (64 x 64 tiles) and W = 2 (32 x 32 tiles, for smaller products).
+// With STRIDED, a and b are read through row and column strides, so a transposed matrix is
+// read in place; the loads run along whichever of the two is contiguous.
 #ifndef W
 #define W 4
 #endif
@@ -16,9 +18,14 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(push_constant) uniform P {
     In a; In b; Buf z;
     uint m; uint k; uint n; uint strideA; uint strideB; uint strideZ; uint splits; uint chunk;
+    uint aRow; uint aCol; uint bRow; uint bCol;
 } p;
 shared ACC tileA[KT][TILE + 1];
+#ifdef STRIDED
+shared ACC tileB[KT][TILE + 1];
+#else
 shared ACC tileB[KT][TILE];
+#endif
 void main() {
     uint lc = gl_LocalInvocationID.x;
     uint lr = gl_LocalInvocationID.y;
@@ -41,12 +48,26 @@ void main() {
         // TILE x KT values of a and KT x TILE of b; 256 invocations load W of each
         for (uint l = 0; l < W; l++) {
             uint idx = l * 256 + tid;
+#ifdef STRIDED
+            // neighbouring invocations read neighbouring values
+            uint ak = p.aCol == 1 ? idx % KT : idx / TILE;
+            uint ai = p.aCol == 1 ? idx / KT : idx % TILE;
+            uint row = rowBase + ai;
+            uint ac = t + ak;
+            tileA[ak][ai] = row < p.m && ac < to ? LOAD(p.a, aBase + row * p.aRow + ac * p.aCol) : K(0.0);
+            uint bk = p.bRow == 1 && p.bCol != 1 ? idx % KT : idx / TILE;
+            uint bj = p.bRow == 1 && p.bCol != 1 ? idx / KT : idx % TILE;
+            uint br = t + bk;
+            uint col = colBase + bj;
+            tileB[bk][bj] = br < to && col < p.n ? LOAD(p.b, bBase + br * p.bRow + col * p.bCol) : K(0.0);
+#else
             uint row = rowBase + idx / KT;
             uint ac = t + idx % KT;
             tileA[idx % KT][idx / KT] = row < p.m && ac < to ? LOAD(p.a, aBase + row * p.k + ac) : K(0.0);
             uint br = t + idx / TILE;
             uint col = colBase + idx % TILE;
             tileB[idx / TILE][idx % TILE] = br < to && col < p.n ? LOAD(p.b, bBase + br * p.n + col) : K(0.0);
+#endif
         }
         barrier();
         for (uint q = 0; q < KT; q++) {
