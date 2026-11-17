@@ -939,6 +939,11 @@ public final class Tensor {
         return unary(UnaryOp.SOFTPLUS);
     }
 
+    /** @return each value rounded to the nearest whole number, ties to even */
+    public Tensor round() {
+        return unary(UnaryOp.ROUND);
+    }
+
     /**
      * Applies an activation function in one pass, instead of as a chain of simpler
      * operations.

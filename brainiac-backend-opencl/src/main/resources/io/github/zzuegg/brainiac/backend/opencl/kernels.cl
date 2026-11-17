@@ -40,7 +40,8 @@ ACC unary_op(int op, ACC v) {
         case 9: return v > (ACC) 0 ? (ACC) 1 : (ACC) 0;
         case 10: return v > (ACC) 0 ? (ACC) 1 : v < (ACC) 0 ? (ACC) -1 : v;
         case 11: return erf(v);
-        default: return softplus_(v);
+        case 12: return softplus_(v);
+        default: return rint(v);
     }
 }
 

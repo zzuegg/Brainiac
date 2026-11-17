@@ -49,6 +49,7 @@ public final class Model {
     private final List<Step> steps;
     private final List<Layer> layers;
     private final boolean chain;
+    private Quantization quantization;
 
     /**
      * One computation: a layer, a sum or a concatenation of earlier values. Value 0 is the
@@ -369,6 +370,47 @@ public final class Model {
             b.assign(b.value().to(type));
         }
         return this;
+    }
+
+    /**
+     * Quantizes the weights after training: rounds every weight matrix and filter to
+     * {@code q.bits()} bits per value plus a scale per group (see {@link Quantization}).
+     * The model still computes in its number format, on any device, with the rounded
+     * values; {@link #save(Path)} then stores those weights packed, in {@code bits} bits
+     * each. Biases, normalization and activation parameters are unchanged.
+     *
+     * <pre>{@code
+     * model.quantize(Quantization.int8());   // usually within a fraction of a percent
+     * model.quantize(Quantization.int4().groups(32));
+     * }</pre>
+     *
+     * Training a quantized model further moves its weights off the grid again; saving
+     * rounds them back. To train for a quantization, use {@code Trainer.quantizationAware}.
+     *
+     * @param q the quantization
+     * @return this model
+     */
+    public Model quantize(Quantization q) {
+        java.util.Objects.requireNonNull(q, "quantization");
+        for (Quantization.Weight w : Quantization.weights(this)) {
+            w.weight().assign(q.quantize(w.weight().value(), w.axis()));
+        }
+        this.quantization = q;
+        return this;
+    }
+
+    /**
+     * Returns how the weights are quantized, as set by {@link #quantize(Quantization)} or
+     * restored from a file.
+     *
+     * @return the quantization, or {@code null} for full-precision weights
+     */
+    public Quantization quantization() {
+        return quantization;
+    }
+
+    void quantization(Quantization q) {
+        this.quantization = q;
     }
 
     /**

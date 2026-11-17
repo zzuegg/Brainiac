@@ -64,7 +64,8 @@ class DTypeTest {
         same(type, "pow", t -> t.abs().pow(1.5f), x);
         same(type, "max/min/greater", t -> t.maximum(yt).add(t.minimum(yt)).add(t.greater(yt)), x);
         same(type, "unary", t -> t.exp().add(t.tanh()).add(t.sigmoid()).add(t.square().add(1).log())
-                .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()), x);
+                .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign())
+                .add(t.mul(4).round()), x);
         for (ActivationOp op : ActivationOp.values()) {
             same(type, op.name(), t -> t.activation(op, 0.1f), x);
             same(type, op + " backward", t -> t.activationBackward(op, 0.1f, yt), x);

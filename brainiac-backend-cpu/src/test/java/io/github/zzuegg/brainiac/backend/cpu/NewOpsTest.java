@@ -7,7 +7,7 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import org.junit.jupiter.api.Test;
 
-/** Error function, softplus, masks and element-wise selection. */
+/** Error function, softplus, rounding, masks and element-wise selection. */
 class NewOpsTest {
 
     @Test
@@ -21,6 +21,14 @@ class NewOpsTest {
     void softplusNeverOverflows() {
         float[] y = Tensor.of(-100f, 0f, 1f, 100f, 1000f).softplus().toArray();
         assertArrayEquals(new float[] {0f, (float) Math.log(2), (float) Math.log1p(Math.E), 100f, 1000f}, y, 1e-6f);
+    }
+
+    @Test
+    void roundGoesToTheNearestWholeNumberTiesToEven() {
+        float[] y = Tensor.of(-2.5f, -1.6f, -0.5f, 0.4f, 0.5f, 1.5f, 2.5f, 126.7f).round().toArray();
+        assertArrayEquals(new float[] {-2f, -2f, -0f, 0f, 0f, 2f, 2f, 127f}, y);
+        float[] wide = Tensor.of(-2.5f, 1.5f, 2.5f).to(io.github.zzuegg.brainiac.tensor.DType.FLOAT64).round().toArray();
+        assertArrayEquals(new float[] {-2f, 2f, 2f}, wide);
     }
 
     @Test

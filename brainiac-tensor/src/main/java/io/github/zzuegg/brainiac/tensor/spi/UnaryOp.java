@@ -27,5 +27,7 @@ public enum UnaryOp {
     /** the Gauss error function */
     ERF,
     /** {@code log(1 + e^x)}, computed without overflow */
-    SOFTPLUS
+    SOFTPLUS,
+    /** the nearest whole number, ties to even */
+    ROUND
 }

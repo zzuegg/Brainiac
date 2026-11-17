@@ -35,6 +35,7 @@ final class Kernels {
             case SIGN -> { for (int i = from; i < to; i++) y[i] = Math.signum(x[i]); }
             case ERF -> { for (int i = from; i < to; i++) y[i] = (float) erf(x[i]); }
             case SOFTPLUS -> { for (int i = from; i < to; i++) y[i] = softplus(x[i]); }
+            case ROUND -> { for (int i = from; i < to; i++) y[i] = (float) Math.rint(x[i]); }
         }
     }
 
