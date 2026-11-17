@@ -714,7 +714,9 @@ Everything the studio keeps goes to one **data folder**: `--data <folder>`, or e
 | `page.json` | what the page remembers: open tabs and panes, layout, density, size, chosen models, folded groups |
 | `usage.jsonl` | the usage log |
 | `outputs/` | every picture and take |
-| `graphs/`, `models/` | models drawn in the builder, and the `.brainiac` files built from them |
+| `graphs/`, `models/` | models drawn in the builder, and the `.brainiac` files built and trained from them |
+| `runs/` | every training run: its settings, each epoch and the loss curve |
+| `datasets/` | your data for training: CSV files, MNIST-style IDX files and image folders |
 
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that
@@ -807,6 +809,17 @@ that would make a working block fail is refused and shown with the core's reason
 never holds a broken model. **Build and save** writes the model to `models/` and the drawing to
 `graphs/`, and **Open** brings a saved drawing back.
 
+**Training** trains a built model on built-in data (spirals, circles, blobs, XOR, a sine curve,
+and small image sets of strokes and stripes, so nothing has to be downloaded) or on files in
+`datasets`: a CSV table (the last column is the answer unless you pick another), MNIST-style IDX
+files, or a folder of images with one subfolder per class. The optimizers, losses, learning rate
+schedules and metrics are found in the installed modules the same way as layers, so Muon, Lion,
+Adafactor and the experimental ones are all there with their settings. The screen checks that the
+data fits the model before a run starts and says what to change if it does not. Runs train one at
+a time on this machine, with the loss of every step drawn live; a learning rate sweep starts one
+run per rate. Stopping a run keeps what it learned. Each run saves its model as
+`models/<model>-run<N>.brainiac`, which can be trained further.
+
 **Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
 `gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
 with its 30 voices), with the same keys. The screens only show settings the chosen model has.
@@ -832,6 +845,16 @@ GET  /api/builder/layers    every layer the installed modules offer, with its op
 POST /api/builder/check     {"graph":{"nodes":[...]}} -> each block's output shape, or why it cannot take its input
 POST /api/builder/build     {"name":"resnet-s","graph":{...},"seed":42} -> models/resnet-s.brainiac, parameters, summary
 GET  /api/builder/graphs    the saved graphs; POST {"name":"...","graph":{...}} saves one ("delete": true deletes)
+GET  /api/train/options     every optimizer, loss, schedule and metric the installed modules offer, and the devices
+GET  /api/train/data        the built-in data sets and what is in the datasets folder
+GET  /api/train/models      the models that can be trained, with their input and output shapes
+POST /api/train/check       {"spec":{...}} -> whether the model and the data fit, samples and steps per epoch
+POST /api/train/start       {"spec":{"model":"resnet-s","data":{"kind":"builtin","name":"stripes"},
+                              "optimizer":{"entry":"...Optimizer#adamW(float,float)","args":[0.001,0.01]},
+                              "loss":{"entry":"...Loss#CROSS_ENTROPY"},"epochs":20,"batchSize":32,"validation":0.1}}
+POST /api/train/stop        {"id":"3"} stops a run after its current step and saves what it learned
+POST /api/train/delete      {"id":"3"} removes an ended run from the list (its model stays)
+GET  /api/train/runs        every run with its progress, epochs and loss curve
 ```
 
 The other surfaces are being connected one at a time; until a surface reads real data it

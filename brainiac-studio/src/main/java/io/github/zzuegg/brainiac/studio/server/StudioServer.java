@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.train.TrainingService;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -35,6 +36,7 @@ public final class StudioServer implements AutoCloseable {
     private final String token;
     private final Set<String> hosts;
     private final Map<String, Route> api = new LinkedHashMap<>();
+    private final TrainingService training;
 
     /** Answers one API call. */
     @FunctionalInterface
@@ -48,8 +50,9 @@ public final class StudioServer implements AutoCloseable {
         void handle(HttpExchange exchange) throws IOException;
     }
 
-    private StudioServer(HttpServer http, ExecutorService executor, String token) {
+    private StudioServer(HttpServer http, ExecutorService executor, String token, TrainingService training) {
         this.http = http;
+        this.training = training;
         this.executor = executor;
         this.token = token;
         int port = http.getAddress().getPort();
@@ -72,7 +75,7 @@ public final class StudioServer implements AutoCloseable {
         HttpServer http = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         http.setExecutor(executor);
-        StudioServer server = new StudioServer(http, executor, token);
+        StudioServer server = new StudioServer(http, executor, token, new TrainingService(chat.folder()));
         WebAssets web = new WebAssets(token, chat.page()::json, chat.folder().toString());
         http.createContext("/", ex -> server.guard(ex, false, web::handle));
         http.createContext("/api/", ex -> server.guard(ex, true, server::routeApi));
@@ -81,6 +84,7 @@ public final class StudioServer implements AutoCloseable {
         server.get("/api/system", ex -> Exchanges.json(ex, 200, SystemInfo.snapshot()));
         new ChatRoutes(chat).register(server);
         new BuilderRoutes(chat.folder()).register(server);
+        new TrainRoutes(server.training).register(server);
         http.start();
         return server;
     }
@@ -132,6 +136,7 @@ public final class StudioServer implements AutoCloseable {
     @Override
     public void close() {
         http.stop(0);
+        training.close();
         executor.shutdownNow();
     }
 

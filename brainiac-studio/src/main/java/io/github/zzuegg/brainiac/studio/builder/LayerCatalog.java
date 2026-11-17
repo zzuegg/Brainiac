@@ -30,6 +30,7 @@ import java.util.Set;
 import java.util.SplittableRandom;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
+import java.util.function.Function;
 import java.util.jar.JarFile;
 import java.util.random.RandomGenerator;
 import java.util.stream.Stream;
@@ -111,11 +112,36 @@ public final class LayerCatalog {
     }
 
     /**
-     * Looks through the Brainiac modules that are present.
+     * Looks through the Brainiac modules that are present for layers.
      *
      * @return the catalog
      */
     public static LayerCatalog discover() {
+        return discover(LayerCatalog::produces);
+    }
+
+    /**
+     * Looks through the Brainiac modules that are present for anything a function recognizes,
+     * such as optimizers or losses, the same way as for layers.
+     *
+     * @param kinds says what a type makes, as a short word, or null if it is not wanted
+     * @return the catalog
+     */
+    public static LayerCatalog discover(Function<Class<?>, String> kinds) {
+        Scan scan = scan();
+        return of(scan.classes(), scan.moduleOf(), kinds);
+    }
+
+    private record Scan(List<Class<?>> classes, Map<String, String> moduleOf) {
+    }
+
+    private static volatile Scan scanned;
+
+    private static Scan scan() {
+        Scan s = scanned;
+        if (s != null) {
+            return s;
+        }
         Set<String> names = new TreeSet<>();
         Map<String, String> moduleOf = new LinkedHashMap<>();
         for (Module m : ModuleLayer.boot().modules()) {
@@ -132,16 +158,20 @@ public final class LayerCatalog {
                 }
             }
         }
-        return of(names.stream().<Class<?>>map(LayerCatalog::load).filter(c -> c != null).toList(), moduleOf);
+        s = new Scan(names.stream().<Class<?>>map(LayerCatalog::load).filter(c -> c != null).toList(), Map.copyOf(moduleOf));
+        scanned = s;
+        return s;
     }
 
     /**
      * Builds a catalog from given classes, for tests.
      *
      * @param classes the classes to look at
+     * @param moduleOf the module each class comes from, by class name
+     * @param kinds says what a type makes, or null if it is not wanted
      * @return the catalog
      */
-    static LayerCatalog of(List<Class<?>> classes, Map<String, String> moduleOf) {
+    static LayerCatalog of(List<Class<?>> classes, Map<String, String> moduleOf, Function<Class<?>, String> kinds) {
         Map<String, Entry> out = new LinkedHashMap<>();
         List<String> skipped = new ArrayList<>();
         for (Class<?> c : classes) {
@@ -153,11 +183,11 @@ public final class LayerCatalog {
             List<Executable> makers = new ArrayList<>();
             for (Method m : c.getDeclaredMethods()) {
                 if (Modifier.isPublic(m.getModifiers()) && Modifier.isStatic(m.getModifiers()) && !m.isSynthetic()
-                        && produces(m.getReturnType()) != null) {
+                        && kinds.apply(m.getReturnType()) != null) {
                     makers.add(m);
                 }
             }
-            if (!Modifier.isAbstract(c.getModifiers()) && produces(c) != null) {
+            if (!Modifier.isAbstract(c.getModifiers()) && kinds.apply(c) != null) {
                 for (Constructor<?> k : c.getConstructors()) {
                     makers.add(k);
                 }
@@ -170,14 +200,16 @@ public final class LayerCatalog {
                     skipped.add(key);
                     continue;
                 }
-                out.put(key, new Entry(key, group(c), e instanceof Method ? e.getName() : "new", module, produces(made),
+                out.put(key, new Entry(key, group(c), e instanceof Method ? e.getName() : "new", module,
+                        kinds.apply(made),
                         MultiInputLayer.Spec.class.isAssignableFrom(made), params, options(made), (Member) e));
             }
             for (Field f : c.getDeclaredFields()) {
                 int mod = f.getModifiers();
-                if (Modifier.isPublic(mod) && Modifier.isStatic(mod) && Modifier.isFinal(mod) && produces(f.getType()) != null) {
+                if (Modifier.isPublic(mod) && Modifier.isStatic(mod) && Modifier.isFinal(mod)
+                        && kinds.apply(f.getType()) != null) {
                     String key = c.getName() + "#" + f.getName();
-                    out.put(key, new Entry(key, group(c), f.getName(), module, produces(f.getType()),
+                    out.put(key, new Entry(key, group(c), f.getName(), module, kinds.apply(f.getType()),
                             MultiInputLayer.Spec.class.isAssignableFrom(f.getType()), List.of(), options(f.getType()), f));
                 }
             }
@@ -225,21 +257,31 @@ public final class LayerCatalog {
     public Map<String, Object> toJson() {
         List<Object> list = new ArrayList<>();
         for (Entry e : entries.values()) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("key", e.key());
-            m.put("group", e.group());
-            m.put("name", e.name());
-            m.put("module", e.module());
-            m.put("experimental", e.module().endsWith(".experiments") || e.key().contains(".experimental.")
-                    || e.key().contains(".experiments."));
-            m.put("produces", e.produces());
-            m.put("multiInput", e.multiInput());
-            m.put("params", e.params().stream().map(LayerCatalog::paramJson).toList());
-            m.put("options", e.options().stream().map(o -> Map.of("key", o.key(), "name", o.name(),
-                    "params", o.params().stream().map(LayerCatalog::paramJson).toList())).toList());
-            list.add(m);
+            list.add(describe(e));
         }
         return Map.of("entries", list, "skipped", skipped.size());
+    }
+
+    /**
+     * Describes one entry for the page.
+     *
+     * @param e the entry
+     * @return its key, group, name, module, parameters and options
+     */
+    public static Map<String, Object> describe(Entry e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("key", e.key());
+        m.put("group", e.group());
+        m.put("name", e.name());
+        m.put("module", e.module());
+        m.put("experimental", e.module().endsWith(".experiments") || e.key().contains(".experimental.")
+                || e.key().contains(".experiments."));
+        m.put("produces", e.produces());
+        m.put("multiInput", e.multiInput());
+        m.put("params", e.params().stream().map(LayerCatalog::paramJson).toList());
+        m.put("options", e.options().stream().map(o -> Map.of("key", o.key(), "name", o.name(),
+                "params", o.params().stream().map(LayerCatalog::paramJson).toList())).toList());
+        return m;
     }
 
     private static Map<String, Object> paramJson(Param p) {
