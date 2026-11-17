@@ -749,7 +749,7 @@ class VulkanBackendTest {
 
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
-        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4", "4, 32, 70", "8, 1536, 40", "4, 3, 130"})
+        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4", "4, 32, 70", "8, 1536, 40", "4, 3, 130", "3, 48, 70", "4, 16, 140"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
         packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77, false);
         packedMatches(bits, group, m, 768, 256, false);

@@ -729,7 +729,8 @@ final class VkContext {
                 vkDestroyBuffer(device, b.buffer, null);
                 if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
                     throw new OutOfDeviceMemory("out of Vulkan memory allocating " + (size >> 20) + " MB ("
-                            + (allocated >> 20) + " MB allocated)");
+                            + (allocated >> 20) + " MB allocated, " + (spilled >> 20) + " MB spilled; memory type "
+                            + type + (spill ? ", spilling" : "") + ", result " + r + ")");
                 }
                 check(r, "vkAllocateMemory");
             }

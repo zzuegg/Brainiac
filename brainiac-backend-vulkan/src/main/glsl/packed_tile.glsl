@@ -23,3 +23,19 @@ ACC4 packed4(uint r, uint c) {
     }
     return v;
 }
+
+// Scales and offsets staged per tile step: with groups of a multiple of 16 rows and steps
+// starting at multiples of 16, the rows t .. t + 31 of a step span at most two groups, so
+// the step's scales and offsets are computed once per column instead of once per value.
+// staged(from): whether this piece's steps can (uniform over the work group).
+bool staged(uint from, uint step) {
+    return (p.group & 15u) == 0 && (from % step) == 0 && (p.n & 3u) == 0;
+}
+
+// the scale and offset of the i-th group from row t's (i = 0, 1) in column c, 0 past k or n
+vec2 stagedFactors(uint t, uint i, uint c) {
+    uint g = t / p.group + i;
+    if (c >= p.n || g * p.group >= p.k) return vec2(0);
+    float s = scaleAt(g, c);
+    return vec2(s, (p.flags & 2u) != 0 ? offsetAt(g, c, s) : 0.0);
+}

@@ -23,6 +23,7 @@ layout(push_constant) uniform P {
 } p;
 #include "packed_layout.glsl"
 #include "packed_tile.glsl"
+shared vec2 factorsB[2][BN];
 #else
 layout(push_constant) uniform P {
     In a; In b; Buf z;
@@ -46,6 +47,7 @@ void main() {
     uint to = min(p.k, from + p.chunk);
 #ifdef PACKED
     uint aBase = 0;
+    bool stage = staged(from, BK);
 #else
     uint aBase = batch * p.strideA;
     uint bBase = batch * p.strideB;
@@ -62,6 +64,12 @@ void main() {
         }
     }
     for (uint t = from; t < to; t += BK) {
+#ifdef PACKED
+        if (stage) {
+            factorsB[tid / BN][tid % BN] = stagedFactors(t, tid / BN, colBase + tid % BN);
+            barrier();
+        }
+#endif
         // a: 128 x 32 as 1024 runs of 4; b: 32 x 128 likewise; 4 of each per invocation
         for (uint l = 0; l < 4; l++) {
             uint r4 = l * 256 + tid;
@@ -85,7 +93,16 @@ void main() {
             uint gbr = t + br;
             uint gbc = colBase + bc;
 #ifdef PACKED
-            f16vec4 y = gbr < to ? f16vec4(packed4(gbr, gbc)) : f16vec4(0);
+            f16vec4 y = f16vec4(0);
+            if (gbr < to && stage) {
+                uint i = gbr / p.group - t / p.group;
+                if (gbc < p.n) {
+                    vec2 f0 = factorsB[i][bc], f1 = factorsB[i][bc + 1], f2 = factorsB[i][bc + 2], f3 = factorsB[i][bc + 3];
+                    y = f16vec4(vec4(levels4At(gbr, gbc)) * vec4(f0.x, f1.x, f2.x, f3.x) + vec4(f0.y, f1.y, f2.y, f3.y));
+                }
+            } else if (gbr < to) {
+                y = f16vec4(packed4(gbr, gbc));
+            }
 #else
             f16vec4 y = f16vec4(0);
             if (aligned && gbr < to && gbc + 3 < p.n) {

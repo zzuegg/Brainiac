@@ -1821,7 +1821,7 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
-        if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0 && n > 0 && PACKED_TILES) {
+        if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0 && n > 0 && m <= PACKED_TILE_ROWS) {
             Packed p = packed(b);
             VkStorage z = vs(out);
             eager(vs(a), z);
@@ -1872,6 +1872,9 @@ public final class VulkanBackend implements Backend {
      */
     private static final boolean PACKED_TILES =
             !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.packedTiles"));
+    /** The most rows for which they do ({@code -Dbrainiac.vulkan.packedTileRows}); more unpack first. */
+    private static final int PACKED_TILE_ROWS =
+            PACKED_TILES ? Integer.getInteger("brainiac.vulkan.packedTileRows", Integer.MAX_VALUE) : 0;
 
     /** matmul's tiles over a packed matrix: no unpacked copy of it, read as levels. */
     private void matmulPackedTiled(VkStorage x, Packed p, int m, int k, int n, VkStorage z) {
