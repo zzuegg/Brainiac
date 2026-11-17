@@ -175,6 +175,11 @@ public final class PagedLlama implements LanguageModel {
                 .to(DType.FLOAT32).toArray();
     }
 
+    /** @return the output layer's weight {@code [hidden, vocab]} in float32, a constant */
+    public Tensor outputWeights() {
+        return head().value();
+    }
+
     /**
      * Embeds tokens with the model's own table.
      *
