@@ -40,6 +40,14 @@ import java.util.Set;
  * <a href="https://arxiv.org/abs/2403.14541">arXiv:2403.14541</a>), {@code T = T0 *
  * N^(theta / H)}: sharp when the model is sure, flatter when it is not.
  *
+ * <p><b>Temperature-robust truncation and creativity</b>: {@link #topNSigma} (Tang et al.
+ * 2024, <a href="https://arxiv.org/abs/2411.07641">arXiv:2411.07641</a>) keeps the logits
+ * within {@code n} standard deviations of the largest, a cut that does not move with the
+ * temperature, so high temperatures stay coherent; {@link #xtc} ("exclude top choices",
+ * p-e-w 2024, text-generation-webui / llama.cpp) sometimes removes every token above a
+ * probability threshold except the least likely of them, steering away from the most
+ * predictable continuation without admitting the noisy tail.
+ *
  * <p>Plus {@link #logitBias} and {@link #minLength}.
  */
 public final class LogitsProcessors {
@@ -293,6 +301,84 @@ public final class LogitsProcessors {
                     l[t] = LogitMath.MASKED;
                 }
                 cum += p[t];
+            }
+        };
+    }
+
+    /**
+     * Top-nσ: masks every logit below {@code max - n * sigma}, with {@code sigma} the standard
+     * deviation of the unmasked logits. Applied before or after a temperature, it keeps the
+     * same tokens.
+     *
+     * @param n the standard deviations kept below the maximum, 1 in the paper
+     * @return the processor
+     */
+    public static LogitsProcessor topNSigma(double n) {
+        if (n < 0) {
+            throw new IllegalArgumentException("n must be at least 0");
+        }
+        return (c, l) -> {
+            double sum = 0;
+            double sq = 0;
+            int count = 0;
+            float max = Float.NEGATIVE_INFINITY;
+            for (float x : l) {
+                if (x != LogitMath.MASKED) {
+                    sum += x;
+                    sq += (double) x * x;
+                    count++;
+                    max = Math.max(max, x);
+                }
+            }
+            if (count == 0) {
+                return;
+            }
+            double mean = sum / count;
+            double sigma = Math.sqrt(Math.max(0, sq / count - mean * mean));
+            double cut = max - n * sigma;
+            for (int i = 0; i < l.length; i++) {
+                if (l[i] < cut) {
+                    l[i] = LogitMath.MASKED;
+                }
+            }
+        };
+    }
+
+    /**
+     * XTC, exclude top choices: with probability {@code probability} per step, masks every
+     * token whose probability is at least {@code threshold} except the least likely of them.
+     * Nothing happens when fewer than two tokens reach the threshold, so a sure step stays
+     * sure. Put a truncation (min-p) before it so the tail stays out.
+     *
+     * @param threshold the probability that makes a token a "top choice", 0.1 by default
+     * @param probability the chance per step of excluding, 0.5 by default
+     * @param seed seeds the processor's own draws
+     * @return the processor
+     */
+    public static LogitsProcessor xtc(double threshold, double probability, long seed) {
+        java.util.SplittableRandom random = new java.util.SplittableRandom(seed);
+        return (c, l) -> {
+            if (random.nextDouble() >= probability) {
+                return;
+            }
+            double[] p = LogitMath.softmax(l);
+            int last = -1;
+            int above = 0;
+            for (int i = 0; i < l.length; i++) {
+                if (p[i] >= threshold) {
+                    above++;
+                    if (last < 0 || p[i] < p[last]) {
+                        last = i;
+                    }
+                }
+            }
+            if (above < 2) {
+                return;
+            }
+            for (int i = 0; i < l.length; i++) {
+                if (p[i] >= threshold && i != last) {
+                    l[i] = LogitMath.MASKED;
+                }
             }
         };
     }

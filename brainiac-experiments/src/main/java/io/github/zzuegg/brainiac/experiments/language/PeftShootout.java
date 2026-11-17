@@ -48,7 +48,13 @@ public final class PeftShootout {
         /** learned input embeddings from an MLP encoder */
         P_TUNING,
         /** learned keys and values at every layer */
-        PREFIX_TUNING
+        PREFIX_TUNING,
+        /** LoRA with the rank-stabilized scale alpha / sqrt(r) */
+        RSLORA,
+        /** LoRA from zero over a 4-bit quantized base */
+        QLORA,
+        /** LoRA over a 4-bit base, initialized to the low-rank part of the quantization error */
+        LOFTQ
     }
 
     /**
@@ -76,6 +82,21 @@ public final class PeftShootout {
      * @return the result
      */
     public static Result run(HookedDecoder base, Method method, int steps, long seed) {
+        return run(base, method, steps, seed, 4);
+    }
+
+    /**
+     * Adapts a copy of {@code base} with one method at a given adapter rank (used by the
+     * LoRA-family methods).
+     *
+     * @param base the pretrained decoder (not changed)
+     * @param method the method
+     * @param steps fine-tuning steps
+     * @param seed the seed
+     * @param rank the adapter rank
+     * @return the result
+     */
+    public static Result run(HookedDecoder base, Method method, int steps, long seed, int rank) {
         HookedDecoder m = base.copy();
         float before = CountingTasks.evaluate(m, 12, seed + 100, NEW_STRIDE);
         SplittableRandom r = new SplittableRandom(seed);
@@ -87,7 +108,7 @@ public final class PeftShootout {
             case LORA, LORA_PLUS -> {
                 List<Var> bs = new ArrayList<>();
                 m.replaceLinears((name, l) -> {
-                    LoraAdapterDense a = LoraAdapterDense.lora((Dense) l, 4, 8, r);
+                    LoraAdapterDense a = LoraAdapterDense.lora((Dense) l, rank, 8, r);
                     params.addAll(a.parameters());
                     bs.add(a.b());
                     return a;
@@ -96,8 +117,17 @@ public final class PeftShootout {
                     opt = LoraPlus.optimizer(bs, lr, 16, Optimizer::adam);
                 }
             }
+            case RSLORA, QLORA, LOFTQ -> m.replaceLinears((name, l) -> {
+                LoraAdapterDense a = switch (method) {
+                    case RSLORA -> LoraAdapterDense.rsLora((Dense) l, rank, 8, r);
+                    case QLORA -> LoraAdapterDense.qlora((Dense) l, rank, 8, 4, r);
+                    default -> LoraAdapterDense.loftQ((Dense) l, rank, 4, 5);
+                };
+                params.addAll(a.parameters());
+                return a;
+            });
             case PISSA -> m.replaceLinears((name, l) -> {
-                LoraAdapterDense a = LoraAdapterDense.pissa((Dense) l, 4);
+                LoraAdapterDense a = LoraAdapterDense.pissa((Dense) l, rank);
                 params.addAll(a.parameters());
                 return a;
             });

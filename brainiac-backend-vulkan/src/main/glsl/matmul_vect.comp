@@ -1,0 +1,82 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// z = a b for few rows of a (row-major [m, k]) and a transposed b: column j of b is stored
+// as a row, at j * bRow (a transposed embedding read as the output head). Like matmul_vec,
+// limited by reading b once. COLS columns per work group, LANES invocations along each
+// column's k values (as vectors of four when they are aligned), summed in shared memory.
+// Compiled for ROWS = 1, 2, 4 and 8; rows past m are not stored.
+#ifndef ROWS
+#define ROWS 1
+#endif
+#define LANES 64
+#define COLS 4
+#if defined(TYPE_F64)
+#define ACC4 dvec4
+layout(buffer_reference, std430, buffer_reference_align = 32) restrict readonly buffer In4 { dvec4 v[]; };
+#define LOAD4(b, i) (b.v[i])
+#elif defined(TYPE_F16)
+#define ACC4 vec4
+layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer In4 { f16vec4 v[]; };
+#define LOAD4(b, i) vec4(b.v[i])
+#elif defined(TYPE_BF16)
+#define ACC4 vec4
+layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer In4 { u16vec4 v[]; };
+vec4 bf16x4(u16vec4 h) {
+    uvec4 u = uvec4(h) << 16;
+    return uintBitsToFloat(u);
+}
+#define LOAD4(b, i) bf16x4(b.v[i])
+#else
+#define ACC4 vec4
+layout(buffer_reference, std430, buffer_reference_align = 16) restrict readonly buffer In4 { vec4 v[]; };
+#define LOAD4(b, i) (b.v[i])
+#endif
+layout(local_size_x = LANES, local_size_y = COLS) in;
+layout(push_constant) uniform P { In a; In4 a4; In b; In4 b4; Buf z; uint m; uint k; uint n; uint bRow; uint vectors; } p;
+shared ACC part[ROWS][COLS][LANES];
+void main() {
+    uint lane = gl_LocalInvocationID.x;
+    uint cy = gl_LocalInvocationID.y;
+    uint j = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * COLS + cy;
+    ACC total[ROWS];
+    for (uint i = 0; i < ROWS; i++) {
+        total[i] = K(0.0);
+    }
+    if (j < p.n) {
+        uint base = j * p.bRow;
+        if (p.vectors != 0) {
+            uint quads = p.k / 4;
+            for (uint q = lane; q < quads; q += LANES) {
+                ACC4 bv = LOAD4(p.b4, (base >> 2) + q);
+                for (uint i = 0; i < ROWS; i++) {
+                    total[i] += dot(LOAD4(p.a4, (i < p.m ? i : 0) * quads + q), bv);
+                }
+            }
+        } else {
+            for (uint r = lane; r < p.k; r += LANES) {
+                ACC bv = LOAD(p.b, base + r);
+                for (uint i = 0; i < ROWS; i++) {
+                    total[i] = fma(LOAD(p.a, (i < p.m ? i : 0) * p.k + r), bv, total[i]);
+                }
+            }
+        }
+    }
+    for (uint i = 0; i < ROWS; i++) {
+        part[i][cy][lane] = total[i];
+    }
+    barrier();
+    for (uint h = LANES / 2; h > 0; h >>= 1) {
+        if (lane < h) {
+            for (uint i = 0; i < ROWS; i++) {
+                part[i][cy][lane] += part[i][cy][lane + h];
+            }
+        }
+        barrier();
+    }
+    if (lane == 0 && j < p.n) {
+        for (uint i = 0; i < ROWS; i++) {
+            if (i < p.m) STORE(p.z, i * p.n + j, part[i][cy][0]);
+        }
+    }
+}
