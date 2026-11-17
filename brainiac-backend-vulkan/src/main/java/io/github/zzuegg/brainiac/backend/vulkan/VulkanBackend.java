@@ -1123,7 +1123,10 @@ public final class VulkanBackend implements Backend {
                     .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt((int) xo.batch())
                     .putInt((int) yo.batch()).putInt((int) mn).putInt(splits).putInt(chunk).putInt((int) xo.row())
                     .putInt((int) xo.col()).putInt((int) yo.row()).putInt((int) yo.col());
-            vk.dispatch(shader(coop ? "matmul_coop" : tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
+            // the strided variant only where an operand needs it: its addressing costs the plain case
+            boolean plain = xo.row() == k && xo.col() == 1 && yo.row() == n && yo.col() == 1;
+            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32") + (plain ? "" : "s");
+            vk.dispatch(shader(name, z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }
         if (splits > 1) {
