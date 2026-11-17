@@ -115,6 +115,9 @@ jdks() {
     # passed on to every JVM Gradle starts (tests, run tasks)
     export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dorg.lwjgl.system.stackSize=512"
     export PATH="$JAVA_HOME/bin:$PATH"
+    # so that any ./gradlew (for example in "run CMD") finds JDK 27 without extra flags
+    mkdir -p ~/.gradle
+    printf 'org.gradle.java.installations.paths=%s\norg.gradle.java.installations.auto-download=false\n' "$JDK27" > ~/.gradle/gradle.properties
     GRADLE=(./gradlew --console=plain "-Porg.gradle.java.installations.paths=$JDK27"
         -Porg.gradle.java.installations.auto-download=false)
 }
