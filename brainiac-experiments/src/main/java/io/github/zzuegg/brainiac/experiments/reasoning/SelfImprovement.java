@@ -3,16 +3,20 @@ package io.github.zzuegg.brainiac.experiments.reasoning;
 import io.github.zzuegg.brainiac.experimental.llm.DpoTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.SelfRewardingTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.SpinTrainer;
+import io.github.zzuegg.brainiac.experimental.llm.StarTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.WindowLm;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.SplittableRandom;
 
 /**
  * Preference and self-improvement experiments on arithmetic: DPO (and IPO, SimPO) from
  * labelled pairs, SPIN from the supervised data alone, and a self-rewarding loop where the
- * model judges its own answers. Each returns the greedy accuracy before and after.
+ * model judges its own answers, and STaR bootstrapping chain-of-thought from a few worked
+ * examples (with and without rationalization). Each returns the greedy accuracy before and
+ * after.
  */
 public final class SelfImprovement {
 
@@ -116,6 +120,72 @@ public final class SelfImprovement {
             spin.iterate(prompts, answers, random);
         }
         return new Result(before, ArithmeticRl.accuracy(lm, task));
+    }
+
+    /**
+     * The STaR hint for a chain problem: the right final answer in brackets before the
+     * question, {@code [9]3+4+2=}.
+     *
+     * @param task the puzzles
+     * @param prompt a problem
+     * @return the hinted problem
+     */
+    static int[] hinted(ChainTask task, int[] prompt) {
+        int[] h = task.tokenizer().encode("[" + task.answer(prompt) + "]");
+        int[] out = Arrays.copyOf(h, h.length + prompt.length);
+        System.arraycopy(prompt, 0, out, h.length, prompt.length);
+        return out;
+    }
+
+    static double chainAccuracy(WindowLm lm, ChainTask task) {
+        List<int[]> prompts = task.allPrompts();
+        int[][] outs = lm.sample(prompts.toArray(int[][]::new), task.maxSolutionTokens(), task.eos(), 0,
+                new SplittableRandom(0));
+        int right = 0;
+        for (int i = 0; i < outs.length; i++) {
+            right += task.correct(prompts.get(i), outs[i]) ? 1 : 0;
+        }
+        return (double) right / outs.length;
+    }
+
+    /**
+     * STaR on chain arithmetic: a model sees worked solutions (plain and hinted) for only
+     * {@code labelled} problems, then bootstraps on all problems from final-answer checks
+     * alone. With {@code rationalize} off it is rejection-sampling fine-tuning.
+     *
+     * @param task the puzzles
+     * @param labelled how many worked examples seed the model
+     * @param rounds STaR iterations
+     * @param rationalize whether failures are retried with the answer as a hint
+     * @param seed the seed
+     * @return greedy accuracy after seeding and after the iterations
+     */
+    public static Result star(ChainTask task, int labelled, int rounds, boolean rationalize, long seed) {
+        SplittableRandom random = new SplittableRandom(seed);
+        List<int[]> prompts = task.allPrompts();
+        List<int[]> seedPrompts = new ArrayList<>();
+        List<int[]> seedSolutions = new ArrayList<>();
+        List<int[]> shuffled = new ArrayList<>(prompts);
+        java.util.Collections.shuffle(shuffled, new java.util.Random(seed));
+        for (int[] p : shuffled.subList(0, labelled)) {
+            seedPrompts.add(p);
+            seedSolutions.add(task.solution(p));
+            seedPrompts.add(hinted(task, p));
+            seedSolutions.add(task.solution(p));
+        }
+        WindowLm lm = WindowLm.of(task.vocabSize(), 16, 64, seed);
+        Optimizer opt = Optimizer.adam(3e-3f);
+        for (int s = 0; s < 60; s++) {
+            lm.supervisedStep(seedPrompts, seedSolutions, opt);
+        }
+        double before = chainAccuracy(lm, task);
+        StarTrainer star = StarTrainer.of(lm, task::correct, p -> hinted(task, p)).rationalization(rationalize)
+                .samples(4).generation(task.maxSolutionTokens(), task.eos(), 1.0)
+                .finetune(60, () -> Optimizer.adam(3e-3f)).seed(seedPrompts, seedSolutions);
+        for (int r = 0; r < rounds; r++) {
+            star.iterate(prompts, random);
+        }
+        return new Result(before, chainAccuracy(lm, task));
     }
 
     /**
