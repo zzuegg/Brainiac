@@ -645,6 +645,12 @@ validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the 
 barriers and submits. The examples take `--device vulkan` or `--device opencl` to pick one
 GPU backend when both are present. CI runs the tests on lavapipe.
 
+On an RX 9070 XT (2 epochs of MNIST; OpenCL in brackets): the MLP trains in 1.7 s (3.0 s)
+and infers 600k samples/s (90-117k); the CNN trains in 3.2 s (3.1 s) and infers 130k
+samples/s (158-227k). A 2048 x 2048 matmul reaches 0.9-1.1 TFLOP/s (1.8-1.9). Vulkan wins
+where many small operations dominate; OpenCL's fused kernels win on large matmuls and
+convolutions.
+
 Tensors and models come in four number formats:
 
 ```java

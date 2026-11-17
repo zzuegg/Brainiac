@@ -89,8 +89,11 @@ public final class VulkanBackend implements Backend {
                     }
                 }
                 if (Boolean.getBoolean("brainiac.vulkan.statistics")) {
-                    Runtime.getRuntime().addShutdownHook(new Thread(
-                            () -> System.err.println(name() + ": " + statistics()), "vulkan-statistics"));
+                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                        if (vk.dispatches > 0) {
+                            System.err.println(name() + ": " + statistics());
+                        }
+                    }, "vulkan-statistics"));
                 }
             } catch (RuntimeException | LinkageError e) {
                 unavailable = e.getMessage() == null ? e.toString() : e.getMessage();
