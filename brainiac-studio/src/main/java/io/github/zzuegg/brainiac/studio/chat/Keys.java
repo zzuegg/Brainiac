@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -42,6 +43,7 @@ public final class Keys {
         m.put(Preset.OPENAI.id(), Preset.OPENAI.env());
         m.put("google", List.of("GEMINI_API_KEY", "GOOGLE_API_KEY"));
         Preset.COMPATIBLE.forEach(p -> m.put(p.id(), p.env()));
+        m.put(VastAi.PROVIDER, List.of("VAST_API_KEY"));   // GPUs to rent, not a chat provider
         return Map.copyOf(m);
     }
 
@@ -51,25 +53,52 @@ public final class Keys {
      * One key, described without its value.
      *
      * @param label its name
-     * @param source {@code saved}, or the environment variable it comes from
+     * @param source {@code saved}, {@code environment}, or {@code file} for a token file
      * @param hint its last four characters
      */
     public record Entry(String label, String source, String hint) {
     }
 
+    /** The Hugging Face token file Brainiac shares between the studio and the core's downloader. */
+    public static final String HF_TOKEN_FILE = "hf_token";
+
     private final Path file;
     private final Map<String, String> env;
+    private final Map<String, List<TokenFile>> files;
     private final Properties saved = new Properties();
+
+    /**
+     * A file a provider's token may be read from.
+     *
+     * @param label how the page names it
+     * @param path where it is
+     * @param managed whether the studio writes and forgets it, or only reads it
+     */
+    public record TokenFile(String label, Path path, boolean managed) {
+    }
+
+    /**
+     * Opens the key store with no token files.
+     *
+     * @param file the file saved keys go to; it need not exist yet
+     * @param env the environment to fall back to
+     */
+    public Keys(Path file, Map<String, String> env) {
+        this(file, env, Map.of());
+    }
 
     /**
      * Opens the key store.
      *
      * @param file the file saved keys go to; it need not exist yet
      * @param env the environment to fall back to
+     * @param files token files per provider: a managed one is tried right after the saved keys,
+     *     the others after the environment
      */
-    public Keys(Path file, Map<String, String> env) {
+    public Keys(Path file, Map<String, String> env, Map<String, List<TokenFile>> files) {
         this.file = file;
         this.env = Map.copyOf(env);
+        this.files = Map.copyOf(files);
         if (Files.isRegularFile(file)) {
             try (InputStream in = Files.newInputStream(file)) {
                 saved.load(in);
@@ -90,8 +119,93 @@ public final class Keys {
         for (String label : order(provider)) {
             out.add(new Entry(label, "saved", hint(saved.getProperty(name(provider, label)))));
         }
+        for (TokenFile f : files.getOrDefault(provider, List.of())) {
+            if (f.managed()) {
+                read(f).ifPresent(k -> out.add(new Entry(f.label(), "file", hint(k))));
+            }
+        }
         envKey(provider).ifPresent(e -> out.add(new Entry(e[0], "environment", hint(e[1]))));
+        for (TokenFile f : files.getOrDefault(provider, List.of())) {
+            if (!f.managed()) {
+                read(f).ifPresent(k -> out.add(new Entry(f.label(), "file", hint(k))));
+            }
+        }
         return out;
+    }
+
+    /**
+     * The standard token files: for Hugging Face, {@code ~/.brainiac/hf_token}, which the studio
+     * writes and the core's downloader reads too, then the file {@code huggingface-cli login}
+     * writes ({@code $HF_TOKEN_PATH}, or {@code token} in {@code $HF_HOME} or {@code ~/.cache/huggingface}).
+     *
+     * @param home the user's home folder
+     * @param env the environment
+     * @return the files per provider
+     */
+    public static Map<String, List<TokenFile>> standardFiles(Path home, Map<String, String> env) {
+        List<TokenFile> hf = new ArrayList<>();
+        hf.add(new TokenFile("~/.brainiac/" + HF_TOKEN_FILE, home.resolve(".brainiac").resolve(HF_TOKEN_FILE), true));
+        String path = env.get("HF_TOKEN_PATH");
+        String hfHome = env.get("HF_HOME");
+        Path cli = path != null && !path.isBlank() ? Path.of(path)
+                : hfHome != null && !hfHome.isBlank() ? Path.of(hfHome, "token")
+                : home.resolve(".cache").resolve("huggingface").resolve("token");
+        hf.add(new TokenFile("huggingface-cli login", cli, false));
+        return Map.of("huggingface", List.copyOf(hf));
+    }
+
+    /**
+     * Writes a provider's managed token file, readable only by this account.
+     *
+     * @param provider the provider id
+     * @param token the token
+     * @throws IOException if it cannot be written
+     * @throws IllegalArgumentException if the provider has no managed file or the token is not one
+     */
+    public synchronized void saveFile(String provider, String token) throws IOException {
+        TokenFile f = managed(provider);
+        String t = token == null ? "" : token.strip();
+        if (t.isEmpty() || t.length() > 400 || t.chars().anyMatch(c -> c <= ' ' || c > '~')) {
+            throw new IllegalArgumentException("that does not look like a token: paste it on its own, without spaces");
+        }
+        Files.createDirectories(f.path().getParent());
+        Path tmp = f.path().resolveSibling(f.path().getFileName() + ".tmp");
+        Files.deleteIfExists(tmp);
+        ownerOnly(Files.createFile(tmp));
+        Files.writeString(tmp, t + "\n", StandardCharsets.UTF_8);
+        try {
+            Files.move(tmp, f.path(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmp, f.path(), StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Deletes a provider's managed token file.
+     *
+     * @param provider the provider id
+     * @return false if there was none
+     * @throws IOException if it cannot be deleted
+     */
+    public synchronized boolean removeFile(String provider) throws IOException {
+        return Files.deleteIfExists(managed(provider).path());
+    }
+
+    private TokenFile managed(String provider) {
+        return files.getOrDefault(provider, List.of()).stream().filter(TokenFile::managed).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(provider + " has no token file"));
+    }
+
+    private static Optional<String> read(TokenFile f) {
+        try {
+            if (!Files.isRegularFile(f.path())) {
+                return Optional.empty();
+            }
+            String t = Files.readString(f.path(), StandardCharsets.UTF_8).strip();
+            return t.isEmpty() ? Optional.empty() : Optional.of(t);
+        } catch (IOException | RuntimeException e) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -115,6 +229,11 @@ public final class Keys {
         String k = saved.getProperty(name(provider, label));
         if (k != null && order(provider).contains(label)) {
             return Optional.of(k);
+        }
+        for (TokenFile f : files.getOrDefault(provider, List.of())) {
+            if (f.label().equals(label)) {
+                return read(f);
+            }
         }
         return envKey(provider).filter(e -> e[0].equals(label)).map(e -> e[1]);
     }

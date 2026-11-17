@@ -36,6 +36,7 @@ public final class ChatService {
     private final UsageLog usage;
     private final ProviderSettings settings;
     private Hub hub;
+    private VastAi vast;
     private final Conversations conversations;
     private final PageState page;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
@@ -327,7 +328,17 @@ public final class ChatService {
         }
         ChatService service = new ChatService(keys, ps, outputs);
         service.hub = new Hub(keys, downloads, bases.getOrDefault("hub", Hub.BASE));
+        service.vast = new VastAi(keys, bases.getOrDefault(VastAi.PROVIDER, VastAi.BASE));
         return service;
+    }
+
+    /**
+     * Returns the Vast.ai client, which reads the user's account and the GPU machines to rent.
+     *
+     * @return the client
+     */
+    public VastAi vast() {
+        return vast;
     }
 
     /**
@@ -388,6 +399,42 @@ public final class ChatService {
      */
     public void makeKeyFirst(String provider, String label) throws IOException {
         keys.makeFirst(provider, label);
+    }
+
+    /**
+     * Describes the Hugging Face token the downloader sends, without its value.
+     *
+     * @return {@code {label, source, hint}} of the token used, or null if there is none
+     */
+    public Map<String, Object> hubToken() {
+        List<Keys.Entry> list = keys.list("huggingface");
+        if (list.isEmpty()) {
+            return null;
+        }
+        Keys.Entry e = list.getFirst();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("label", e.label());
+        m.put("source", e.source());
+        m.put("hint", e.hint());
+        m.put("managed", e.label().endsWith("/" + Keys.HF_TOKEN_FILE));
+        return m;
+    }
+
+    /**
+     * Saves a Hugging Face token to {@code ~/.brainiac/hf_token}, which the core's downloader
+     * reads too, or deletes that file.
+     *
+     * @param token the token, or null to delete the file
+     * @return whether a file was written or deleted
+     * @throws IOException if the file cannot be changed
+     */
+    public boolean saveHubToken(String token) throws IOException {
+        listings.remove("huggingface");
+        if (token == null) {
+            return keys.removeFile("huggingface");
+        }
+        keys.saveFile("huggingface", token);
+        return true;
     }
 
     /**
