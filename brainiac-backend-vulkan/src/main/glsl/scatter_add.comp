@@ -3,20 +3,25 @@
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
 // For every target l, offsets/entries list the source rows i with indices[i] == l.
+// With several slices (the z dimension), slice s adds up its share of each target's
+// entries into z[s * total + idx]; the slices are summed afterwards.
 layout(push_constant) uniform P {
-    In src; InInts offsets; InInts entries; Buf z; uint len; uint inner; uint count; uint total;
+    In src; InInts offsets; InInts entries; Buf z; uint len; uint inner; uint count; uint total; uint slices;
 } p;
 void main() {
     uint idx = gid();
     if (idx >= p.total) return;
+    uint s = gl_WorkGroupID.z;
     uint o = idx / (p.len * p.inner);
     uint rest = idx % (p.len * p.inner);
     uint l = rest / p.inner;
     uint j = rest % p.inner;
     ACC acc = K(0.0);
-    int end = p.offsets.v[l + 1];
-    for (int e = p.offsets.v[l]; e < end; e++) {
+    int first = p.offsets.v[l];
+    int n = p.offsets.v[l + 1] - first;
+    int end = first + int((uint(n) * (s + 1u)) / p.slices);
+    for (int e = first + int((uint(n) * s) / p.slices); e < end; e++) {
         acc += LOAD(p.src, (o * p.count + uint(p.entries.v[e])) * p.inner + j);
     }
-    STORE(p.z, idx, acc);
+    STORE(p.z, s * p.total + idx, acc);
 }
