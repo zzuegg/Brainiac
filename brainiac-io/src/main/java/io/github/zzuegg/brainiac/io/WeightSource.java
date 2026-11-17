@@ -132,7 +132,7 @@ public interface WeightSource extends AutoCloseable {
     /**
      * Opens weights at a path: a {@code .safetensors} file, a sharded model's {@code
      * *.safetensors.index.json}, or a directory holding either (a Hugging Face model
-     * download), or a {@code .gguf} file once supported.
+     * download), or a {@code .gguf} file.
      *
      * @param path the file or directory
      * @return the weights
@@ -175,6 +175,9 @@ public interface WeightSource extends AutoCloseable {
                     opened.add(SafeTensors.open(dir.resolve(s)));
                 }
                 return of(opened);
+            }
+            if (file.endsWith(".gguf")) {
+                return Gguf.open(path);
             }
             return SafeTensors.open(path);
         } catch (IOException e) {
