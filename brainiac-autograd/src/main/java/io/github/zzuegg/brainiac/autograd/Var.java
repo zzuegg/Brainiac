@@ -610,6 +610,18 @@ public final class Var {
         return unary(x.erf(), g -> new Tensor[] {g.mul(x.square().neg().exp().mul((float) (2 / Math.sqrt(Math.PI))))});
     }
 
+    /** @return the sine of each value, in radians */
+    public Var sin() {
+        Tensor x = value;
+        return unary(x.sin(), g -> new Tensor[] {g.mul(x.cos())});
+    }
+
+    /** @return the cosine of each value, in radians */
+    public Var cos() {
+        Tensor x = value;
+        return unary(x.cos(), g -> new Tensor[] {g.mul(x.sin()).neg()});
+    }
+
     /** @return {@code log(1 + e^x)} for each value, computed without overflow */
     public Var softplus() {
         return activation(ActivationOp.SOFTPLUS, 0);

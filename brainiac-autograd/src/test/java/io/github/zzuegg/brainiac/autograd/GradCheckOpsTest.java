@@ -71,6 +71,8 @@ class GradCheckOpsTest {
                 op("max axis keep", v -> v.get(0).max(0, true).square().sum(), a),
                 op("erf", v -> v.get(0).erf().sum(), a),
                 op("softplus", v -> v.get(0).softplus().sum(), a),
+                op("sin", v -> v.get(0).mul(2).sin().sum(), a),
+                op("cos", v -> v.get(0).mul(2).cos().square().sum(), a),
                 op("maximum", v -> v.get(0).maximum(v.get(1)).square().sum(), a, b),
                 op("maximum broadcast", v -> v.get(0).maximum(v.get(1)).square().sum(), a, row),
                 op("minimum", v -> v.get(0).minimum(v.get(1)).square().sum(), a, b),

@@ -58,7 +58,7 @@ class OptimizerHooksTest {
         }
 
         @Override
-        public void step(List<Var> parameters, Supplier<Float> reevaluate) {
+        public void step(List<Var> parameters, Optimizer.Reevaluation reevaluate) {
             List<Tensor> moved = new ArrayList<>();
             for (Var p : parameters) {
                 Tensor g = p.grad();
@@ -66,7 +66,7 @@ class OptimizerHooksTest {
                 moved.add(e);
                 p.assign(p.value().add(e));
             }
-            losses.add(reevaluate.get());   // the gradient at the perturbed weights
+            losses.add(reevaluate.lossAndGradients());   // the gradient at the perturbed weights
             for (int i = 0; i < parameters.size(); i++) {
                 Var p = parameters.get(i);
                 p.assign(p.value().sub(moved.get(i)));

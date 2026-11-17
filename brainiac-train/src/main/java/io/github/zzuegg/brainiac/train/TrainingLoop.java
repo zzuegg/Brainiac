@@ -203,7 +203,7 @@ public final class TrainingLoop {
         return out;
     }
 
-    /** The loss and gradients again at the current weights, for {@link Optimizer#step(List, Supplier)}. */
+    /** The loss and gradients again at the current weights, for {@link Optimizer#step(List, Optimizer.Reevaluation)}. */
     private float reevaluate(Supplier<Var> loss) {
         for (Var p : params) {
             p.zeroGrad();

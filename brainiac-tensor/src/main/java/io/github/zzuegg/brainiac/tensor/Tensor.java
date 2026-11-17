@@ -1128,6 +1128,16 @@ public final class Tensor {
         return unary(UnaryOp.SOFTPLUS);
     }
 
+    /** @return the sine of each value, in radians */
+    public Tensor sin() {
+        return unary(UnaryOp.SIN);
+    }
+
+    /** @return the cosine of each value, in radians */
+    public Tensor cos() {
+        return unary(UnaryOp.COS);
+    }
+
     /** @return each value rounded to the nearest whole number, ties to even */
     public Tensor round() {
         return unary(UnaryOp.ROUND);

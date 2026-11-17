@@ -128,7 +128,7 @@ public final class CpuBackend implements Backend {
         float[] x = data(in);
         float[] y = data(out);
         long cost = switch (op) {
-            case EXP, LOG, TANH, SIGMOID, ERF, SOFTPLUS -> 20;
+            case EXP, LOG, TANH, SIGMOID, ERF, SOFTPLUS, SIN, COS -> 20;
             case SQRT -> 4;
             default -> 1;
         };

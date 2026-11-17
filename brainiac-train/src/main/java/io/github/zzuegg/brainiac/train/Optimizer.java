@@ -29,16 +29,27 @@ public interface Optimizer {
 
     /**
      * As {@link #step(List)}, for optimizers that need the loss and gradients again at other
-     * weights within one step, such as SAM or zeroth-order methods. {@code reevaluate}
-     * clears the gradients, computes the batch's loss at the parameters' current values,
-     * back-propagates it and returns it. {@link TrainingLoop} passes it when it does not
+     * weights within one step, such as SAM or zeroth-order methods. {@link TrainingLoop} passes it when it does not
      * accumulate micro-batches. The default ignores it.
      *
      * @param parameters the parameters to update
      * @param reevaluate computes the loss and gradients again
      */
-    default void step(List<Var> parameters, java.util.function.Supplier<Float> reevaluate) {
+    default void step(List<Var> parameters, Reevaluation reevaluate) {
         step(parameters);
+    }
+
+    /** Computes a batch's loss and gradients again, for {@link #step(List, Reevaluation)}. */
+    @FunctionalInterface
+    interface Reevaluation {
+
+        /**
+         * Clears the gradients, computes the loss at the parameters' current values and
+         * back-propagates it.
+         *
+         * @return the loss
+         */
+        float lossAndGradients();
     }
 
     /**
