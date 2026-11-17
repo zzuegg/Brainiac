@@ -16,7 +16,9 @@ java {
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
     options.release = javaVersion
-    options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+    // -parameters keeps parameter names in the class files, so tools such as the studio's
+    // builder can show "filters" and "kernel" instead of arg0 and arg1
+    options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror", "-parameters"))
 }
 
 dependencies {
