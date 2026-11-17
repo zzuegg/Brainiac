@@ -82,7 +82,9 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
         // 64 x 64 and 32 x 32 output tiles; matmul_packed for 1, 2, 4 and 8 rows
         val types = listOf("f32", "f64", "f16", "bf16")
         val variants = mapOf(
-            "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")),
+            "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2"),
+                // operands read through strides: a transposed matrix in place
+                "matmul64s" to listOf("-DW=4", "-DSTRIDED"), "matmul32s" to listOf("-DW=2", "-DSTRIDED")),
             "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
             "matmul_vec" to listOf(1, 2, 4, 8).map { "matmul_vec$it" to listOf("-DROWS=$it") },
             // register arrays sized for the head: 32 keeps more work groups resident
