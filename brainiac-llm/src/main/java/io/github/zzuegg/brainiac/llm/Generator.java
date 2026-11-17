@@ -54,9 +54,26 @@ public final class Generator {
      * @param stopTokens tokens that end a sequence (not part of the output); {@code null} for
      *     the tokenizer's end-of-sequence token
      * @param stopStrings strings that end a sequence (cut from the output)
+     * @param constraint a language the new text must belong to, or {@code null}: only tokens
+     *     that keep it a prefix of an accepted text are sampled, a stop token only once it is
+     *     accepted, and a sequence that cannot go on ends there (needs a tokenizer)
      */
     public record Options(int maxNewTokens, Sampling sampling, long seed, Set<Integer> stopTokens,
-            List<String> stopStrings) {
+            List<String> stopStrings, Constraint constraint) {
+
+        /**
+         * Options without a constraint.
+         *
+         * @param maxNewTokens the most tokens to add
+         * @param sampling how to pick tokens
+         * @param seed seeds the draws
+         * @param stopTokens stop tokens
+         * @param stopStrings stop strings
+         */
+        public Options(int maxNewTokens, Sampling sampling, long seed, Set<Integer> stopTokens,
+                List<String> stopStrings) {
+            this(maxNewTokens, sampling, seed, stopTokens, stopStrings, null);
+        }
 
         /**
          * Checks the options.
@@ -66,6 +83,7 @@ public final class Generator {
          * @param seed seeds the draws
          * @param stopTokens stop tokens
          * @param stopStrings stop strings
+         * @param constraint the constraint, or {@code null}
          */
         public Options {
             if (maxNewTokens < 0) {
@@ -99,7 +117,7 @@ public final class Generator {
          * @return a copy that stops on them
          */
         public Options withStopTokens(Set<Integer> tokens) {
-            return new Options(maxNewTokens, sampling, seed, tokens, stopStrings);
+            return new Options(maxNewTokens, sampling, seed, tokens, stopStrings, constraint);
         }
 
         /**
@@ -107,7 +125,15 @@ public final class Generator {
          * @return a copy that stops on them
          */
         public Options withStopStrings(String... strings) {
-            return new Options(maxNewTokens, sampling, seed, stopTokens, List.of(strings));
+            return new Options(maxNewTokens, sampling, seed, stopTokens, List.of(strings), constraint);
+        }
+
+        /**
+         * @param c the language the new text must belong to
+         * @return a copy constrained to it
+         */
+        public Options withConstraint(Constraint c) {
+            return new Options(maxNewTokens, sampling, seed, stopTokens, stopStrings, c);
         }
     }
 
@@ -274,8 +300,17 @@ public final class Generator {
                         continue;
                     }
                     float[] row = Arrays.copyOfRange(all, b * vocab, (b + 1) * vocab);
+                    if (r.matcher != null && !constrain(row, r.matcher, stops)) {
+                        r.end();   // accepted and nothing can follow, but no stop token to say so
+                        active--;
+                        skip[b][0] = true;
+                        continue;
+                    }
                     int token = options.sampling().sample(row, r.seen(), random);
                     next[b][0] = token;
+                    if (r.matcher != null && !stops.contains(token)) {
+                        r.matcher = vocabulary(vocab).advance(r.matcher, token);
+                    }
                     if (r.add(token, stops)) {
                         active--;
                         skip[b][0] = true;
@@ -355,11 +390,27 @@ public final class Generator {
         int emitted;
         Finish finish;
 
+        /** Where the text stands in the options' constraint, or {@code null} without one. */
+        Constraint.Matcher matcher;
+
         Row(int index, int[] prompt, Options options, Listener listener) {
             this.index = index;
             this.prompt = prompt;
             this.options = options;
             this.listener = listener;
+            if (options.constraint() != null) {
+                if (tokenizer == null) {
+                    throw new IllegalStateException("constrained decoding needs a tokenizer");
+                }
+                matcher = options.constraint().start();
+            }
+        }
+
+        /** Ends the sequence as if a stop token came. */
+        void end() {
+            finish = Finish.STOP;
+            text = decode(Arrays.copyOf(tokens, count));
+            flush(text.length());
         }
 
         int[] seen() {
@@ -454,6 +505,35 @@ public final class Generator {
             }
             return new Output(t, text, finish);
         }
+    }
+
+    private Constraint.Vocabulary vocabulary;
+
+    /** The token texts, made once per vocabulary size. */
+    private synchronized Constraint.Vocabulary vocabulary(int size) {
+        if (vocabulary == null || vocabulary.size() != size) {
+            vocabulary = Constraint.Vocabulary.of(tokenizer, size);
+        }
+        return vocabulary;
+    }
+
+    /**
+     * Masks the tokens a constraint does not allow.
+     *
+     * @return whether any token is left
+     */
+    private boolean constrain(float[] logits, Constraint.Matcher m, Set<Integer> stops) {
+        boolean[] ok = vocabulary(logits.length).allowed(m);
+        boolean accepted = m.accepting();
+        boolean any = false;
+        for (int t = 0; t < logits.length; t++) {
+            if (ok[t] && !stops.contains(t) || accepted && stops.contains(t)) {
+                any = true;
+            } else {
+                logits[t] = Float.NEGATIVE_INFINITY;
+            }
+        }
+        return any;
     }
 
     // ---------------------------------------------------------------- speculative decoding
