@@ -9,7 +9,8 @@
 #   bash cloud/vast/setup.sh worker [--models DIR]...   # a studio worker on 127.0.0.1:7870
 #   bash cloud/vast/setup.sh run CMD...       # check, JDKs, then any command (e.g. ./gradlew ...)
 #
-# The VastCli launcher (brainiac-cloud) ships the checkout here and runs this script over SSH.
+# The VastCli launcher (brainiac-cloud) runs "check" first with only this script sent over (a
+# host that fails it, exit 2, is destroyed and remembered), then ships the checkout and runs the job.
 # Brainiac's GPU backend is Vulkan, not CUDA: NVIDIA's container runtime only mounts the
 # driver's Vulkan libraries when the container was started with NVIDIA_DRIVER_CAPABILITIES
 # including "graphics" (VastLaunch sets "all"). Hosts that hand out CUDA only fail the check.
@@ -74,7 +75,14 @@ EOF
         echo "missing libraries of $drv:"; ldd "$drv" | grep 'not found'
     fi
     local summary
-    summary=$(vulkaninfo --summary 2>&1) || { echo "$summary" | tail -n 30; fail "vulkaninfo failed"; }
+    summary=$(vulkaninfo --summary 2>&1) || {
+        echo "$summary" | tail -n 30
+        if echo "$summary" | grep -qE 'Found no drivers|ERROR_INCOMPATIBLE_DRIVER|ERROR_INITIALIZATION_FAILED'; then
+            fail "the Vulkan loader finds no usable NVIDIA driver on this host (the ICD file names a library the
+container does not have). Brainiac needs Vulkan: destroy this instance and pick another offer or host."
+        fi
+        fail "vulkaninfo failed"
+    }
     echo "$summary" | sed -n '/^Devices:/,$p'
     echo "$summary" | grep -qiE 'deviceName *= *.*NVIDIA' \
         || fail "Vulkan works but shows no NVIDIA device (only a CPU driver?)"

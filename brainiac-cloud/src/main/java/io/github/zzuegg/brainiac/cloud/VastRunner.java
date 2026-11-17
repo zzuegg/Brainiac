@@ -93,6 +93,30 @@ public final class VastRunner {
     }
 
     /**
+     * Runs {@code setup.sh check} (packages and the Vulkan driver test) before the checkout is
+     * copied: only the script goes over, so a host without a usable NVIDIA Vulkan driver fails
+     * within a minute or two instead of after the upload.
+     *
+     * @param i the instance
+     * @param log a file that gets a copy of the output, or null
+     * @return 0 when Vulkan works, 2 when this machine cannot run Brainiac, else another failure
+     * @throws IOException if the script cannot be read or ssh cannot be started
+     * @throws InterruptedException if interrupted
+     */
+    public int check(VastInstance i, Path log) throws IOException, InterruptedException {
+        // LF line endings even from a Windows checkout
+        byte[] script = Files.readString(repo.resolve("cloud/vast/setup.sh"), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n").getBytes(StandardCharsets.UTF_8);
+        Process p = new ProcessBuilder(ssh(i, List.of(),
+                "cat > /root/brainiac-check.sh && bash /root/brainiac-check.sh check")).redirectErrorStream(true).start();
+        try (OutputStream in = p.getOutputStream()) {
+            in.write(script);
+        }
+        copy(p.getInputStream(), log);
+        return p.waitFor();
+    }
+
+    /**
      * Copies the checkout's {@code HEAD} commit to {@link #REMOTE_DIR}, replacing what was there.
      * Uncommitted changes are not sent. The archive is made locally first, uploaded with
      * {@code cat} (checked by size, up to three tries: Vast's SSH proxy sometimes drops a

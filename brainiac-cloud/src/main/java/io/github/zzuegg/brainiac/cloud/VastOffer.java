@@ -19,10 +19,11 @@ import java.util.Map;
  * @param diskGb free disk space
  * @param cpuCores CPU cores that come with the offer
  * @param verified whether Vast has verified the host
+ * @param machineId the host machine, which stays the same across its offers; 0 when unknown
  */
 public record VastOffer(long id, String gpuName, int gpus, double gpuMemoryGb, double dollarsPerHour,
         double reliability, String driverVersion, String location, double downloadMbps, double diskGb,
-        double cpuCores, boolean verified) {
+        double cpuCores, boolean verified, long machineId) {
 
     /**
      * Reads an offer from the search's JSON.
@@ -43,12 +44,13 @@ public record VastOffer(long id, String gpuName, int gpus, double gpuMemoryGb, d
                 Json.number(o, "inet_down", 0),
                 Json.number(o, "disk_space", 0),
                 Json.number(o, "cpu_cores_effective", Json.number(o, "cpu_cores", 0)),
-                Boolean.TRUE.equals(o.get("verified")) || "verified".equals(o.get("verification")));
+                Boolean.TRUE.equals(o.get("verified")) || "verified".equals(o.get("verification")),
+                Json.integer(o, "machine_id", 0));
     }
 
     @Override
     public String toString() {
-        return String.format(java.util.Locale.ROOT, "#%d %dx %s %.0f GB, $%.3f/h, %s, driver %s, reliability %.3f",
-                id, gpus, gpuName, gpuMemoryGb, dollarsPerHour, location, driverVersion, reliability);
+        return String.format(java.util.Locale.ROOT, "#%d %dx %s %.0f GB, $%.3f/h, %s, driver %s, reliability %.3f, machine %d",
+                id, gpus, gpuName, gpuMemoryGb, dollarsPerHour, location, driverVersion, reliability, machineId);
     }
 }

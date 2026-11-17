@@ -28,6 +28,12 @@ The instance is destroyed when the job ends or fails, after `--max-minutes` (def
 or on Ctrl+C. `--keep` keeps it; `--instance ID` reuses one. Logs go to `build/vast/`.
 Only the `HEAD` commit is copied, so commit first.
 
+Before copying anything, the launcher runs `setup.sh check` with just the script. Some hosts
+give containers NVIDIA's CUDA driver without its Vulkan libraries, and `check` fails there with
+exit code 2. The machine id then goes to `~/.brainiac/vast/bad-machines.txt`, and later searches
+skip that machine. With `--cheapest`, the instance is destroyed and the next cheapest offer is
+tried (up to 3 hosts, each within your limits). `offers` marks known bad machines.
+
 ## setup.sh jobs
 
 | Job | What it does |

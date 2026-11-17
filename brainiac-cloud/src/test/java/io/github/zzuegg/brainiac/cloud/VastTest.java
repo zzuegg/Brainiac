@@ -36,12 +36,29 @@ class VastTest {
     }
 
     @Test
+    void remembersBadHosts(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        java.nio.file.Path file = dir.resolve("vast/bad-machines.txt");
+        VastOffer f = new VastOffer(1, "RTX 4090", 1, 24, 0.3, 0.99, "580.142", "Jiangsu, CN", 500, 100, 16, true, 4711);
+        VastOffer other = new VastOffer(2, "RTX 4090", 1, 24, 0.3, 0.99, "580.142", "Jiangsu, CN", 500, 100, 16, true, 4712);
+        VastBadHosts bad = new VastBadHosts(file);
+        assertFalse(bad.contains(f));
+        bad.add(f, "no usable NVIDIA Vulkan driver");
+        bad.add(f, "again");
+        assertTrue(bad.contains(f));
+        VastBadHosts reread = new VastBadHosts(file);
+        assertTrue(reread.contains(f));
+        assertFalse(reread.contains(other));
+        assertFalse(reread.contains(new VastOffer(3, "RTX 4090", 1, 24, 0.3, 0.99, "?", "?", 0, 0, 0, true, 0)));
+    }
+
+    @Test
     void readsOffersAndInstances() {
         VastOffer f = VastOffer.from(Json.object(Json.parse("""
                 {"id": 123, "gpu_name": "RTX 4090", "num_gpus": 1, "gpu_ram": 24564, "dph_total": 0.3567,
                  "reliability2": 0.995, "driver_version": "560.35.03", "geolocation": "Norway, NO",
-                 "inet_down": 812.5, "disk_space": 120.0, "verification": "verified"}""")));
+                 "inet_down": 812.5, "disk_space": 120.0, "verification": "verified", "machine_id": 4711}""")));
         assertEquals(123, f.id());
+        assertEquals(4711, f.machineId());
         assertEquals(24, Math.round(f.gpuMemoryGb()));
         assertEquals(0.3567, f.dollarsPerHour());
         assertTrue(f.verified());
