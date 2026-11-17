@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Vast.ai, where GPU machines are rented by the hour: the user's account, the machines they rent,
@@ -70,7 +72,7 @@ public final class VastAi {
                 out.put("balance", n.doubleValue());
             }
             List<Object> instances = new ArrayList<>();
-            for (Object o : Json.array(Json.object(get("instances")).getOrDefault("instances", List.of()))) {
+            for (Object o : instanceList(Json.object(get("instances")))) {
                 Map<String, Object> i = Json.object(o);
                 Map<String, Object> r = new LinkedHashMap<>();
                 r.put("id", i.get("id"));
@@ -121,9 +123,7 @@ public final class VastAi {
         if (maxPricePerHour > 0) {
             q.put("dph_total", Map.of("lte", maxPricePerHour));
         }
-        Object answer = send(HttpRequest.newBuilder(base.resolve("bundles/"))
-                .POST(HttpRequest.BodyPublishers.ofString(Json.write(q))).header("Content-Type", "application/json"),
-                "bundles");
+        Object answer = send("POST", base.resolve("bundles/"), Json.write(q), "bundles", true);
         List<String> words = gpu == null || gpu.isBlank() ? List.of()
                 : List.of(gpu.toLowerCase(Locale.ROOT).replace('_', ' ').strip().split("\\s+"));
         List<Map<String, Object>> out = new ArrayList<>();
@@ -161,17 +161,47 @@ public final class VastAi {
         return Json.string(m, "gpu_name", "?").replace('_', ' ');
     }
 
-    private Object get(String path) throws IOException, InterruptedException {
-        return send(HttpRequest.newBuilder(base.resolve(path + "/")).GET(), path);
+    // {"instances": [...]} in API v0, {"instances": {...}} or {"results": [...]} in v1
+    private static List<Object> instanceList(Map<String, Object> r) throws IOException {
+        Object v = r.containsKey("instances") ? r.get("instances") : r.get("results");
+        if (v instanceof List<?> l) {
+            return new ArrayList<>(l);
+        }
+        if (v instanceof Map<?, ?> m) {
+            return m.get("id") != null ? List.of(m) : new ArrayList<>(m.values());
+        }
+        // a changed answer must not read as "nothing rented"
+        throw new IOException("Vast.ai listed the rented machines in an unknown shape, with fields " + r.keySet());
     }
 
-    private Object send(HttpRequest.Builder b, String what) throws IOException, InterruptedException {
+    private Object get(String path) throws IOException, InterruptedException {
+        return send("GET", base.resolve(path + "/"), null, path, true);
+    }
+
+    /** Vast.ai retires endpoints with 410 and names the new one: "Use /api/v1/instances/ instead." */
+    private static final Pattern MOVED = Pattern.compile("Use (/api/v\\d+/)\\S*? instead");
+
+    private Object send(String method, URI uri, String body, String what, boolean follow)
+            throws IOException, InterruptedException {
         String key = key().orElseThrow(() -> new IOException("add your Vast.ai API key first"));
+        HttpRequest.Builder b = HttpRequest.newBuilder(uri);
+        if (body != null) {
+            b.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofString(body));
+        } else {
+            b.method(method, HttpRequest.BodyPublishers.noBody());
+        }
         // only to the Vast.ai API; redirects are not followed, so the key goes nowhere else
         HttpResponse<String> r = http.send(b.timeout(Duration.ofSeconds(30)).header("Authorization", "Bearer " + key)
                 .header("Accept", "application/json").header("User-Agent", "brainiac-studio").build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         int s = r.statusCode();
+        Matcher moved = MOVED.matcher(r.body() == null ? "" : r.body());
+        if (s == 410 && follow && moved.find()) {
+            // the same path under the version named, on the same host: /api/v0/instances/ -> /api/v1/instances/
+            String path = uri.getRawPath().replaceFirst("/api/v\\d+/", moved.group(1));
+            return send(method, uri.resolve(path + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery())),
+                    body, what, false);
+        }
         if (s == 401 || s == 403) {
             throw new IOException("Vast.ai refused the key; check it at cloud.vast.ai/manage-keys");
         }

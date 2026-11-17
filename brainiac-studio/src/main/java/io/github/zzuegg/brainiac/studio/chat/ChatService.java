@@ -560,8 +560,13 @@ public final class ChatService {
         ModelInfo target = resolve(model, "text");
         ChatProvider p = provider(target.provider());
         route.accept(target);
-        return logged(target, "chat", () -> p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key), listener),
-                r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
+        // reasoning models that think in plain text: their <think> block goes to the thinking
+        ThinkSplitter split = new ThinkSplitter(listener, false);
+        return logged(target, "chat", () -> {
+            ChatResult r = p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key), split);
+            split.finish();
+            return r;
+        }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
     }
 
     /**

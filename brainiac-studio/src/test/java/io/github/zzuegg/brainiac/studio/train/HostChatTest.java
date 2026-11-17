@@ -141,6 +141,37 @@ class HostChatTest {
     }
 
     @Test
+    void theWorkerTakesAModelKeyAndContentAndRefusesEmptyMessages() throws Exception {
+        Echo echo = new Echo();
+        try (WorkerServer worker = WorkerServer.start(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), lab,
+                echo, TOKEN)) {
+            java.net.http.HttpClient http = java.net.http.HttpClient.newHttpClient();
+            java.util.function.Function<String, java.net.http.HttpResponse<String>> post = json -> {
+                try {
+                    return http.send(java.net.http.HttpRequest.newBuilder(
+                                    java.net.URI.create("http://127.0.0.1:" + worker.port() + "/worker/chat"))
+                            .header("Authorization", "Bearer " + TOKEN)
+                            .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json)).build(),
+                            java.net.http.HttpResponse.BodyHandlers.ofString());
+                } catch (IOException | InterruptedException e) {
+                    throw new AssertionError(e);
+                }
+            };
+            var ok = post.apply("{\"model\":\"local/qwen-0.5b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
+            assertEquals(200, ok.statusCode());
+            assertTrue(ok.body().contains("event: done"), ok.body());
+            assertEquals("qwen-0.5b", echo.heard.getFirst().model());
+            assertEquals("hi", echo.heard.getFirst().messages().getFirst().text());
+
+            var empty = post.apply("{\"model\":\"qwen-0.5b\",\"messages\":[{\"role\":\"user\",\"body\":\"hi\"}]}");
+            assertEquals(400, empty.statusCode());
+            assertTrue(empty.body().contains("text"), empty.body());
+            assertEquals(400, post.apply("{\"model\":\"qwen-0.5b\",\"messages\":[]}").statusCode());
+            assertEquals(1, echo.heard.size(), "refused requests never reach the model");
+        }
+    }
+
+    @Test
     void aShortGivenTokenIsRefused() {
         assertThrows(IllegalArgumentException.class, () -> WorkerServer.start(
                 new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), lab, new Echo(), "too-short"));
