@@ -105,6 +105,7 @@ class VulkanBackendTest {
         same(type, "compare", t -> t.maximum(t.neg()).add(t.minimum(t.square())).add(t.greater(t.square())), x);
         same(type, "unary", t -> t.exp().add(t.tanh()).add(t.sigmoid()).add(t.square().add(1).log())
                 .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()).add(t.step()).add(t.mul(4).round()), x);
+        same(type, "trigonometric", t -> t.mul(3).sin().add(t.mul(2).cos()), x);
         for (ActivationOp op : ActivationOp.values()) {
             same(type, op.name(), t -> t.activation(op, 0.1f), x);
             same(type, op + " backward", t -> t.activationBackward(op, 0.1f, t.square()), x);
@@ -192,7 +193,7 @@ class VulkanBackendTest {
         // GLSL has no double exp or log; the shaders bring their own
         Tensor x = random(13, 64).mul(30).to(DType.FLOAT64);
         UnaryOperator<Tensor> f = t -> t.exp().add(t.abs().add(1e-3f).log()).add(t.tanh()).add(t.sigmoid())
-                .add(t.abs().pow(0.7f));
+                .add(t.abs().pow(0.7f)).add(t.sin()).add(t.mul(100).cos());
         double[] e = f.apply(x).toDoubleArray();
         double[] a = f.apply(x.to(gpu)).toDoubleArray();
         for (int i = 0; i < e.length; i++) {
@@ -481,6 +482,54 @@ class VulkanBackendTest {
                     Var.of(k.to(type).to(gpu)), Var.of(v.to(type).to(gpu)), bias.to(gpu), scale, 0, null).value()
                     .toArray();
             assertArrayEquals(fused, viaFunctional, 0f, type.toString());
+        }
+    }
+
+    /** 8-bit rows: written in pieces, read back and attended over as the CPU does. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 1, 70, 16, 16", "2, 4, 4, 6, 300, 64, 32",
+        "1, 2, 1, 3, 5, 8, 8"})
+    void eightBitRowsMatchTheCpu(int b, int h, int kvh, int tq, int tk, int dk, int dv) {
+        Tensor q = random(51, b, h, tq, dk);
+        Tensor k = random(52, b, kvh, tk, dk);
+        Tensor v = random(53, b, kvh, tk, dv);
+        float[] mask = new float[b * tq * tk];
+        SplittableRandom r = new SplittableRandom(5);
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = r.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) r.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        int split = tk / 3;
+        Tensor kc = Tensor.quantizedRows(k.shape(), DType.FLOAT32, CPU);
+        Tensor vc = Tensor.quantizedRows(v.shape(), DType.FLOAT32, CPU);
+        kc.write(2, 0, k.slice(2, 0, split));
+        kc.write(2, split, k.slice(2, split, tk));
+        vc.write(2, 0, v);
+        float[] kValues = kc.unpacked().toArray();
+        assertArrayEquals(k.toArray(), kValues, 0.01f);   // within half a level of 1/127 of the largest
+        float[] expected = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(q), Var.of(kc), Var.of(vc), bias,
+                scale, 0, null).value().toArray();
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor kg = Tensor.quantizedRows(k.shape(), type, gpu);
+            Tensor vg = Tensor.quantizedRows(v.shape(), type, gpu);
+            assertTrue(kg.isQuantizedRows());
+            assertEquals(k.size() + 4L * k.size() / dk, kg.bytes());
+            kg.write(2, 0, k.slice(2, 0, split).to(type).to(gpu));
+            kg.write(2, split, k.slice(2, split, tk).to(type).to(gpu));
+            vg.write(2, 0, v.to(type).to(gpu));
+            // a value halfway between levels may round to either: GPUs divide less exactly
+            float close = 1.1f / 127;
+            assertArrayEquals(kValues, kg.unpacked().toArray(), close, type.toString());
+            assertArrayEquals(kValues, kg.to(CPU).unpacked().toArray(), close, type.toString());
+            Tensor qg = q.to(type).to(gpu);
+            assertTrue(Tensor.hasAttentionWithBias(qg, kg, vg));
+            float[] fused = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(qg), Var.of(kg), Var.of(vg),
+                    bias.to(gpu), scale, 0, null).value().toArray();
+            assertArrayEquals(expected, fused, type == DType.FLOAT32 ? 1e-4f : 3e-2f, type.toString());
         }
     }
 

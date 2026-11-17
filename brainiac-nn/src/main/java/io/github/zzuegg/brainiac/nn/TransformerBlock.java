@@ -338,9 +338,13 @@ public final class TransformerBlock implements MultiInputLayer {
 
     /**
      * The block for new steps only, attending to the cached earlier ones; see
-     * {@link KvCache}.
+     * {@link KvCache}. No gradients.
+     *
+     * @param x the new steps, {@code [batch, steps, features]}
+     * @param cache the earlier steps; updated
+     * @return the output for the new steps
      */
-    Var step(Var x, MultiHeadAttention.Cache cache) {
+    public Var step(Var x, MultiHeadAttention.Cache cache) {
         if (crossAttention != null || settings.keyMask()) {
             throw new IllegalStateException(this + ": blocks with cross-attention or a padding mask cannot be cached");
         }

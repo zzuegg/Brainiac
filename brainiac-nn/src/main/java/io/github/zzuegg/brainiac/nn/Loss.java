@@ -47,6 +47,39 @@ public interface Loss {
     Var compute(Var prediction, Tensor target);
 
     /**
+     * The loss of each example rather than their mean, for weighting, mixup, per-sample
+     * gradients or picking hard examples: a vector {@code [batch]} whose mean is
+     * {@code loss.compute(prediction, target)}. {@link #MSE}, {@link #CROSS_ENTROPY} and
+     * {@link #BINARY_CROSS_ENTROPY} are computed in one pass; other losses one example at a time.
+     *
+     * @param loss the loss
+     * @param prediction the model output, examples on axis 0
+     * @param target the expected output
+     * @return the loss of each example
+     */
+    static Var perSample(Loss loss, Var prediction, Tensor target) {
+        int batch = prediction.shape().dim(0);
+        int[] rows = {batch, Math.toIntExact(prediction.shape().size() / batch)};
+        if (loss == MSE) {
+            return checked(prediction, target).sub(target).square().reshape(rows).mean(1, false);
+        }
+        if (loss == BINARY_CROSS_ENTROPY) {
+            Var pos = checked(prediction, target).add(EPSILON).log().mul(target);
+            Var neg = prediction.neg().add(1 + EPSILON).log().mul(target.neg().add(1));
+            return pos.add(neg).reshape(rows).mean(1, false).neg();
+        }
+        if (loss == CROSS_ENTROPY) {
+            Tensor t = classIds(prediction.shape(), target.shape()) ? oneHot(target, prediction.shape()) : target;
+            return checked(prediction, t).add(EPSILON).log().mul(t).reshape(rows).sum(1, false).neg();
+        }
+        Var[] each = new Var[batch];
+        for (int i = 0; i < batch; i++) {
+            each[i] = loss.compute(prediction.slice(0, i, i + 1), target.slice(0, i, i + 1)).reshape(1);
+        }
+        return Var.concat(0, each);
+    }
+
+    /**
      * Whether targets are class ids for these predictions: one value per row of the
      * prediction's last axis, rather than a full one-hot row.
      *

@@ -57,6 +57,27 @@ public interface Layer {
     }
 
     /**
+     * Returns an extra loss the layer computed in its last training forward pass, such as
+     * a load-balancing term of a mixture of experts or a sparsity penalty on activations.
+     * {@link Model#auxiliaryLoss()} sums these and the trainer adds the sum to the loss.
+     * A layer that has one computes it in {@link #forward(Var, boolean)} and keeps it until
+     * its next forward pass.
+     *
+     * @return a scalar loss, or {@code null} for none
+     */
+    default Var auxiliaryLoss() {
+        return null;
+    }
+
+    /**
+     * Clears state that a layer carries from one forward pass to the next, such as a
+     * recurrent hidden state or a running trace. {@link Model#resetState()} calls it on
+     * every layer, for example between episodes or sequences. The default does nothing.
+     */
+    default void resetState() {
+    }
+
+    /**
      * Returns how many features each output row has, given the input width.
      *
      * @param inputSize the number of input features

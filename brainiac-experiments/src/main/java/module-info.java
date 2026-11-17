@@ -17,6 +17,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.evolve;
     exports io.github.zzuegg.brainiac.experimental.llm;
     exports io.github.zzuegg.brainiac.experimental.nn;
+    exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.rl;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.train;

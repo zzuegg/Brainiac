@@ -408,8 +408,11 @@ public final class MultiHeadAttention implements MultiInputLayer {
      * step attends to them without computing them again. Made by {@link KvCache}. Keys are
      * kept before their rotary rotation, which is applied by position within the cache, so
      * a cache that drops steps from the middle still has contiguous positions.
+     *
+     * <p>Code outside the module can make one to run {@link MultiHeadAttention#step} or
+     * {@link TransformerBlock#step} itself, such as a recurrent or retrieval experiment.
      */
-    static final class Cache {
+    public static final class Cache {
 
         private final int window;
         private final KvCache.Strategy strategy;
@@ -419,27 +422,57 @@ public final class MultiHeadAttention implements MultiInputLayer {
         /** For heavy hitters: the attention each cached step has received so far. */
         private float[] received = new float[0];
 
-        Cache(int window, KvCache.Strategy strategy, io.github.zzuegg.brainiac.tensor.DType storage) {
+        /**
+         * Creates an empty cache.
+         *
+         * @param window the most steps it holds
+         * @param strategy which steps it drops when full
+         * @param storage the type keys and values are kept in
+         */
+        public Cache(int window, KvCache.Strategy strategy, io.github.zzuegg.brainiac.tensor.DType storage) {
+            if (window < 1) {
+                throw new IllegalArgumentException("window must be positive: " + window);
+            }
             this.window = window;
             this.strategy = strategy;
             this.storage = storage;
         }
 
-        void reset() {
+        /** Forgets every step. */
+        public void reset() {
             keys = null;
             values = null;
             received = new float[0];
         }
 
-        int size() {
+        /** @return the steps held */
+        public int size() {
             return keys == null ? 0 : keys.shape().dim(2);
         }
 
         /** The cached steps to keep when {@code total} steps are held and {@code fresh} are new. */
-        int[] keep(int total, int fresh) {
+        int[] keep(int total, int fresh, Tensor held) {
             int drop = total - window;
             int[] kept = new int[window];
             switch (strategy) {
+                case KvCache.Strategy.Policy p -> {
+                    int[] chosen = p.keep(total, fresh, window,
+                            p.tracksAttention() ? java.util.Arrays.copyOf(received, total) : new float[0], held);
+                    if (chosen.length != window) {
+                        throw new IllegalStateException(p + " kept " + chosen.length + " steps of a window of " + window);
+                    }
+                    for (int i = 0; i < window; i++) {
+                        if (chosen[i] < 0 || chosen[i] >= total || i > 0 && chosen[i] <= chosen[i - 1]) {
+                            throw new IllegalStateException(p + " must keep increasing steps below " + total);
+                        }
+                    }
+                    for (int i = total - fresh; i < total; i++) {
+                        if (java.util.Arrays.binarySearch(chosen, i) < 0) {
+                            throw new IllegalStateException(p + " dropped new step " + i);
+                        }
+                    }
+                    System.arraycopy(chosen, 0, kept, 0, window);
+                }
                 case KvCache.Strategy.Sinks s -> {
                     int sinks = Math.min(s.count(), window - fresh);
                     for (int i = 0; i < sinks; i++) {
@@ -491,7 +524,7 @@ public final class MultiHeadAttention implements MultiInputLayer {
      * @param cache the earlier steps; updated
      * @return the output for the new steps
      */
-    Var step(Var input, Cache cache) {
+    public Var step(Var input, Cache cache) {
         Settings s = settings;
         if (s.keyMask() || s.queryFeatures() != s.kvFeatures()) {
             throw new IllegalStateException(this + ": only self-attention without a key mask can be cached");
@@ -512,7 +545,7 @@ public final class MultiHeadAttention implements MultiInputLayer {
         }
         int tk = k.shape().dim(2);
         if (tk > cache.window) {
-            int[] kept = cache.keep(tk, tq);
+            int[] kept = cache.keep(tk, tq, k.value());
             float[] ids = new float[kept.length];
             float[] r = new float[kept.length];
             for (int i = 0; i < kept.length; i++) {
@@ -541,7 +574,8 @@ public final class MultiHeadAttention implements MultiInputLayer {
             bias = bias == null ? a : a.add(bias);
         }
         float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
-        boolean track = cache.strategy instanceof KvCache.Strategy.HeavyHitters;
+        boolean track = cache.strategy instanceof KvCache.Strategy.HeavyHitters
+                || cache.strategy instanceof KvCache.Strategy.Policy p && p.tracksAttention();
         Tensor[] weights = track ? new Tensor[1] : null;
         Var out = track || s.alibi()
                 ? Functional.attention(qr, kr, v, bias, scale, 0, null, weights)
