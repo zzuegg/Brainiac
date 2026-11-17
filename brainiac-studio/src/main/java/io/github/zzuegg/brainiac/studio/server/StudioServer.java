@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.studio.server;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import io.github.zzuegg.brainiac.studio.chat.ChatService;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -60,10 +61,11 @@ public final class StudioServer implements AutoCloseable {
      *
      * @param port the port, or 0 for any free port
      * @param capabilities the capabilities to offer
+     * @param chat the chat models
      * @return the running server
      * @throws IOException if the port cannot be opened
      */
-    public static StudioServer start(int port, CapabilityRegistry capabilities) throws IOException {
+    public static StudioServer start(int port, CapabilityRegistry capabilities, ChatService chat) throws IOException {
         byte[] secret = new byte[24];
         new SecureRandom().nextBytes(secret);
         String token = HexFormat.of().formatHex(secret);
@@ -77,6 +79,7 @@ public final class StudioServer implements AutoCloseable {
         server.get("/api/health", ex -> Exchanges.json(ex, 200, Map.of("status", "ok", "name", "Brainiac Studio")));
         server.get("/api/capabilities", ex -> Exchanges.json(ex, 200, Map.of("capabilities", capabilities.toJson())));
         server.get("/api/system", ex -> Exchanges.json(ex, 200, SystemInfo.snapshot()));
+        new ChatRoutes(chat).register(server);
         http.start();
         return server;
     }
@@ -92,6 +95,19 @@ public final class StudioServer implements AutoCloseable {
             throw new IllegalArgumentException("API paths start with /api/: " + path);
         }
         api.put("GET " + path, route);
+    }
+
+    /**
+     * Adds a {@code POST} endpoint under {@code /api/}.
+     *
+     * @param path the full path, such as {@code /api/chat}
+     * @param route the handler
+     */
+    public void post(String path, Route route) {
+        if (!path.startsWith("/api/")) {
+            throw new IllegalArgumentException("API paths start with /api/: " + path);
+        }
+        api.put("POST " + path, route);
     }
 
     /**
@@ -130,6 +146,12 @@ public final class StudioServer implements AutoCloseable {
                 return;
             }
             next.handle(ex);
+        } catch (Exchanges.BadRequest | IllegalArgumentException e) {
+            try {
+                Exchanges.error(ex, 400, e.getMessage());
+            } catch (IOException | RuntimeException ignored) {
+                ex.close();
+            }
         } catch (IOException | RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "request " + ex.getRequestURI() + " failed", e);
             try {
