@@ -45,6 +45,11 @@ public final class Generator {
         this.tokenizer = tokenizer;
     }
 
+    /** @return the model this generator runs */
+    public LanguageModel model() {
+        return model;
+    }
+
     private volatile PrefixCache prefixes;
 
     /**
@@ -717,6 +722,8 @@ public final class Generator {
 
         private final int maxBatch;
         private final java.util.concurrent.LinkedBlockingQueue<Job> queue = new java.util.concurrent.LinkedBlockingQueue<>();
+        private final java.util.concurrent.ConcurrentLinkedQueue<Runnable> tasks =
+                new java.util.concurrent.ConcurrentLinkedQueue<>();
         private final Thread thread;
         private volatile boolean closed;
         private volatile int largest;
@@ -800,6 +807,29 @@ public final class Generator {
             return this;
         }
 
+        /**
+         * Runs other work with the model, such as embeddings, on the decoding thread between
+         * two steps, so it never uses the model at the same time as the decoding.
+         *
+         * @param task the work
+         * @param <T> its result
+         * @return the result once it has run
+         */
+        public <T> java.util.concurrent.CompletableFuture<T> run(java.util.function.Supplier<T> task) {
+            if (closed) {
+                throw new IllegalStateException("the batcher is closed");
+            }
+            java.util.concurrent.CompletableFuture<T> f = new java.util.concurrent.CompletableFuture<>();
+            tasks.add(() -> {
+                try {
+                    f.complete(task.get());
+                } catch (Throwable t) {
+                    f.completeExceptionally(t);
+                }
+            });
+            return f;
+        }
+
         /** @return the most sequences decoded side by side so far */
         public int largestBatch() {
             return largest;
@@ -818,6 +848,7 @@ public final class Generator {
             for (Job j; (j = queue.poll()) != null;) {
                 j.future.completeExceptionally(new java.util.concurrent.CancellationException("batcher closed"));
             }
+            tasks.clear();
         }
 
         private void loop() {
@@ -825,9 +856,16 @@ public final class Generator {
             LanguageModel.State state = null;
             try {
                 while (!closed) {
+                    for (Runnable t; (t = tasks.poll()) != null;) {
+                        t.run();
+                    }
                     List<Job> joining = new ArrayList<>();
                     if (active.isEmpty()) {
-                        joining.add(queue.take());
+                        Job first = queue.poll(5, java.util.concurrent.TimeUnit.MILLISECONDS);
+                        if (first == null) {
+                            continue;   // idle: look for tasks again
+                        }
+                        joining.add(first);
                     }
                     queue.drainTo(joining, maxBatch - active.size() - joining.size());
                     joining.removeIf(j -> {

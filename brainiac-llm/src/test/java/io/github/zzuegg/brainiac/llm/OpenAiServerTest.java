@@ -94,6 +94,20 @@ class OpenAiServerTest {
         assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"presence_penalty\":3}").startsWith("400 "));
         assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"logit_bias\":{\"a\":1}}").startsWith("400 "));
 
+        // embeddings: one per input, length 1, cut to the dimensions asked for
+        String emb = call("POST", "/v1/embeddings", "{\"input\":[\"hello\",\"a longer text\"],\"dimensions\":8}");
+        assertTrue(emb.startsWith("200 "), emb);
+        List<Object> data = Json.array(Json.object(Json.parse(emb.substring(4))).get("data"));
+        assertEquals(2, data.size());
+        List<Object> vec = Json.array(Json.object(data.get(1)).get("embedding"));
+        assertEquals(8, vec.size());
+        double sq = 0;
+        for (Object v : vec) {
+            sq += Math.pow(((Number) v).doubleValue(), 2);
+        }
+        assertEquals(1, sq, 1e-4);
+        assertTrue(call("POST", "/v1/embeddings", "{\"input\":[]}").startsWith("400 "));
+
         server.requireApiKey("secret");
         try {
             assertTrue(call("GET", "/v1/models", null).startsWith("401 "));
@@ -183,6 +197,10 @@ class OpenAiServerTest {
                     answers.add(pool.submit(() -> call("POST", "/v1/completions", "{\"prompt\":\"" + p
                             + "\",\"max_tokens\":10,\"temperature\":0}")));
                 }
+                // embeddings run on the decoding thread between steps
+                java.util.concurrent.Future<String> emb = pool.submit(() -> call("POST", "/v1/embeddings",
+                        "{\"input\":\"hello\"}"));
+                assertTrue(emb.get().startsWith("200 "), emb.get());
                 for (int i = 0; i < prompts.length; i++) {
                     String r = answers.get(i).get();
                     assertTrue(r.startsWith("200 "), r);

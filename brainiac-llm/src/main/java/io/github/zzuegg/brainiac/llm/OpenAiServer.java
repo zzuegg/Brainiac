@@ -110,6 +110,7 @@ public final class OpenAiServer implements AutoCloseable {
             http.createContext("/v1/chat/completions", e -> s.guarded(e, x -> s.complete(x, true)));
             http.createContext("/health", e -> s.guarded(e, x -> json(x, 200, Map.of("status", "ok"))));
             http.createContext("/tokenize", e -> s.guarded(e, s::tokenize));
+            http.createContext("/v1/embeddings", e -> s.guarded(e, s::embeddings));
             http.createContext("/detokenize", e -> s.guarded(e, s::detokenize));
             http.setExecutor(s.worker);
             http.start();
@@ -213,6 +214,122 @@ public final class OpenAiServer implements AutoCloseable {
         m.put("object", "model");
         m.put("owned_by", "brainiac");
         json(e, 200, Map.of("object", "list", "data", List.of(m)));
+    }
+
+    /**
+     * OpenAI's embeddings: {@code input} is a string, a list of strings, or token ids (one
+     * list or a list of lists). The vectors are the model's final hidden states pooled by
+     * {@code pooling} ("last", the default, as decoder embedders do, or "mean"), scaled to
+     * length 1, and cut to {@code dimensions} (then scaled again) when it is given.
+     */
+    private void embeddings(HttpExchange e) throws IOException {
+        try (e) {
+            if (!(generator.model() instanceof Llama llama)) {
+                error(e, 400, "this model cannot make embeddings");
+                return;
+            }
+            int[][] inputs;
+            Llama.Pooling pooling;
+            int dimensions;
+            try {
+                Map<String, Object> req = body(e);
+                inputs = embeddingInputs(req.get("input"));
+                String p = Json.string(req, "pooling", "last");
+                pooling = switch (p) {
+                    case "last" -> Llama.Pooling.LAST;
+                    case "mean" -> Llama.Pooling.MEAN;
+                    default -> throw new BadRequest("pooling must be \"last\" or \"mean\"");
+                };
+                dimensions = (int) Json.integer(req, "dimensions", 0);
+                if (dimensions < 0 || "base64".equals(req.get("encoding_format"))) {
+                    throw new BadRequest("dimensions must be positive and encoding_format \"float\"");
+                }
+            } catch (RuntimeException ex) {
+                error(e, 400, ex.getMessage());
+                return;
+            }
+            float[][] vectors;
+            try {
+                int[][] in = inputs;
+                java.util.function.Supplier<float[][]> task = () -> llama.embed(in, pooling, true);
+                vectors = batcher == null ? task.get() : batcher.run(task).get();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                error(e, 500, "interrupted");
+                return;
+            } catch (java.util.concurrent.ExecutionException | RuntimeException ex) {
+                Throwable cause = ex instanceof java.util.concurrent.ExecutionException ? ex.getCause() : ex;
+                LOG.log(System.Logger.Level.ERROR, "embeddings failed", cause);
+                error(e, 500, String.valueOf(cause.getMessage()));
+                return;
+            }
+            List<Object> data = new ArrayList<>();
+            int tokens = 0;
+            for (int i = 0; i < vectors.length; i++) {
+                float[] v = vectors[i];
+                if (dimensions > 0 && dimensions < v.length) {
+                    v = java.util.Arrays.copyOf(v, dimensions);
+                    double sq = 0;
+                    for (float x : v) {
+                        sq += (double) x * x;
+                    }
+                    float inv = (float) (1 / Math.max(Math.sqrt(sq), 1e-12));
+                    for (int j = 0; j < v.length; j++) {
+                        v[j] *= inv;
+                    }
+                }
+                List<Object> values = new ArrayList<>(v.length);
+                for (float x : v) {
+                    values.add((double) x);
+                }
+                Map<String, Object> d = new LinkedHashMap<>();
+                d.put("object", "embedding");
+                d.put("index", i);
+                d.put("embedding", values);
+                data.add(d);
+                tokens += inputs[i].length;
+            }
+            Map<String, Object> res = new LinkedHashMap<>();
+            res.put("object", "list");
+            res.put("data", data);
+            res.put("model", model);
+            res.put("usage", Map.of("prompt_tokens", tokens, "total_tokens", tokens));
+            json(e, 200, res);
+        }
+    }
+
+    private int[][] embeddingInputs(Object input) {
+        List<?> list = input instanceof List<?> l ? l : input instanceof String s ? List.of(s) : null;
+        if (list == null || list.isEmpty()) {
+            throw new BadRequest("input must be a string, a list of strings or token ids");
+        }
+        if (list.getFirst() instanceof Number) {
+            list = List.of(list);   // one list of token ids
+        }
+        if (list.size() > 2048) {
+            throw new BadRequest("at most 2048 inputs");
+        }
+        int[][] out = new int[list.size()][];
+        for (int i = 0; i < out.length; i++) {
+            Object o = list.get(i);
+            if (o instanceof String s) {
+                out[i] = generator.encode(s);
+            } else if (o instanceof List<?> ids) {
+                out[i] = new int[ids.size()];
+                for (int j = 0; j < out[i].length; j++) {
+                    if (!(ids.get(j) instanceof Number n)) {
+                        throw new BadRequest("token ids must be numbers");
+                    }
+                    out[i][j] = n.intValue();
+                }
+            } else {
+                throw new BadRequest("input must be a string, a list of strings or token ids");
+            }
+            if (out[i].length == 0) {
+                throw new BadRequest("input " + i + " is empty");
+            }
+        }
+        return out;
     }
 
     /** A request that cannot be served, answered with status 400. */

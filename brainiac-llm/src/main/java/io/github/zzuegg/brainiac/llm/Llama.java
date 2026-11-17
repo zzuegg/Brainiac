@@ -1224,6 +1224,84 @@ public final class Llama implements LanguageModel {
         return new Tensor[] {logits, hidden[0]};
     }
 
+    /** How {@link #embed} turns a sequence's hidden states into one vector. */
+    public enum Pooling {
+        /** The last token's hidden state, as Qwen3-Embedding and other decoder embedders do. */
+        LAST,
+        /** The mean over the sequence's tokens. */
+        MEAN
+    }
+
+    /**
+     * Sentence embeddings from the final normalized hidden states, for retrieval and
+     * similarity with decoder embedding models (Qwen3-Embedding, gte-Qwen2, e5-mistral).
+     * Sequences may differ in length; each is padded after its end, which a causal model
+     * never looks at.
+     *
+     * @param tokens the token ids of each sequence, none empty
+     * @param pooling how the steps are pooled
+     * @param normalize whether each vector is scaled to length 1, for cosine similarity by
+     *     dot product
+     * @return {@code [sequences][hidden]}
+     */
+    public float[][] embed(int[][] tokens, Pooling pooling, boolean normalize) {
+        int batch = tokens.length;
+        int steps = 0;
+        for (int[] t : tokens) {
+            if (t.length == 0) {
+                throw new IllegalArgumentException("cannot embed an empty sequence");
+            }
+            steps = Math.max(steps, t.length);
+        }
+        int[][] padded = new int[batch][steps];
+        boolean[][] pad = new boolean[batch][steps];
+        boolean any = false;
+        for (int b = 0; b < batch; b++) {
+            System.arraycopy(tokens[b], 0, padded[b], 0, tokens[b].length);
+            for (int t = tokens[b].length; t < steps; t++) {
+                pad[b][t] = true;
+                any = true;
+            }
+        }
+        State state = newState(batch);
+        float[] h;
+        try {
+            Tensor[] out = nextWithHidden(state, padded, any ? pad : null);
+            h = out[1].toArray();
+            out[0].release();
+            out[1].release();
+        } finally {
+            state.close();
+        }
+        int hidden = config.hidden();
+        float[][] result = new float[batch][hidden];
+        for (int b = 0; b < batch; b++) {
+            int n = tokens[b].length;
+            float[] v = result[b];
+            if (pooling == Pooling.LAST) {
+                System.arraycopy(h, (b * steps + n - 1) * hidden, v, 0, hidden);
+            } else {
+                for (int t = 0; t < n; t++) {
+                    int at = (b * steps + t) * hidden;
+                    for (int i = 0; i < hidden; i++) {
+                        v[i] += h[at + i] / n;
+                    }
+                }
+            }
+            if (normalize) {
+                double sq = 0;
+                for (float x : v) {
+                    sq += (double) x * x;
+                }
+                float inv = (float) (1 / Math.max(Math.sqrt(sq), 1e-12));
+                for (int i = 0; i < hidden; i++) {
+                    v[i] *= inv;
+                }
+            }
+        }
+        return result;
+    }
+
     private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep) {
         return read(state, tokens, padding, everyStep, null);
     }
