@@ -420,6 +420,20 @@ public final class Trainer {
         }
     }
 
+    /** The scalars' values, read from the device at once rather than waiting for each. */
+    static float[] readAll(List<Tensor> scalars) {
+        if (scalars.isEmpty()) {
+            return new float[0];
+        }
+        Tensor[] parts = new Tensor[scalars.size()];
+        for (int i = 0; i < parts.length; i++) {
+            Tensor t = scalars.get(i);
+            parts[i] = (t.dtype() == DType.FLOAT32 ? t : t.to(DType.FLOAT32)).reshape(1);
+        }
+        Tensor all = Tensor.concat(0, parts);
+        return all.toArray();
+    }
+
     /** Whether a listener wants the batch losses: a lambda only receives epochs. */
     private static boolean overridesOnBatch(TrainingListener listener) {
         try {
@@ -598,11 +612,12 @@ public final class Trainer {
             double lossSum = 0;
             Map<String, Double> metricSums = new LinkedHashMap<>();
             int perBatch = 1 + metrics.size();
+            float[] read = readAll(batchValues);
             for (int b = 0; b < batchSizes.size(); b++) {
                 int size = batchSizes.get(b);
-                lossSum += batchValues.get(b * perBatch).item() * size;
+                lossSum += read[b * perBatch] * size;
                 for (int i = 0; i < metrics.size(); i++) {
-                    metricSums.merge(metrics.get(i).name(), (double) batchValues.get(b * perBatch + 1 + i).item() * size,
+                    metricSums.merge(metrics.get(i).name(), (double) read[b * perBatch + 1 + i] * size,
                             Double::sum);
                 }
             }
@@ -706,10 +721,11 @@ public final class Trainer {
         double lossSum = 0;
         Map<String, Double> sums = new LinkedHashMap<>();
         int perBatch = 1 + metrics.size();
+        float[] read = readAll(values);
         for (int b = 0; b < sizes.size(); b++) {
-            lossSum += values.get(b * perBatch).item() * sizes.get(b);
+            lossSum += read[b * perBatch] * sizes.get(b);
             for (int i = 0; i < metrics.size(); i++) {
-                sums.merge(metrics.get(i).name(), (double) values.get(b * perBatch + 1 + i).item() * sizes.get(b),
+                sums.merge(metrics.get(i).name(), (double) read[b * perBatch + 1 + i] * sizes.get(b),
                         Double::sum);
             }
         }
