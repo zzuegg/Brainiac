@@ -215,7 +215,7 @@ public final class Generator {
     public List<Output> generate(List<String> prompts, Options options, Listener listener) {
         int[][] ids = new int[prompts.size()][];
         for (int i = 0; i < ids.length; i++) {
-            ids[i] = tokenizer().encode(prompts.get(i));
+            ids[i] = encode(prompts.get(i));
         }
         return generate(ids, options, listener);
     }
@@ -292,6 +292,31 @@ public final class Generator {
             out.add(r.finish());
         }
         return out;
+    }
+
+    /**
+     * Turns a prompt into token ids as the model expects them: with the special tokens its
+     * tokenizer adds at the start (such as Llama's begin token), but not twice when a chat
+     * template already wrote it, and without an end-of-sequence token at the end.
+     *
+     * @param prompt the text
+     * @return the token ids
+     */
+    public int[] encode(String prompt) {
+        if (!(tokenizer() instanceof PretrainedTokenizer p)) {
+            return tokenizer.encode(prompt);
+        }
+        int[] ids = p.encode(prompt, true);
+        int from = 0;
+        int to = ids.length;
+        if (p.bos().isPresent() && to - from > 1 && ids[0] == p.bos().getAsInt() && ids[1] == ids[0]) {
+            from = 1;
+        }
+        if (p.eos().isPresent() && to - from > 1 && ids[to - 1] == p.eos().getAsInt()
+                && !prompt.endsWith(p.token(p.eos().getAsInt()))) {
+            to--;
+        }
+        return from == 0 && to == ids.length ? ids : Arrays.copyOfRange(ids, from, to);
     }
 
     private Tokenizer tokenizer() {

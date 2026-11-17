@@ -68,7 +68,7 @@ class PretrainedModelsTest {
                 : "Q: " + question + "\nA:";
         Generator gen = new Generator(model, tok);
         Generator.Options options = Generator.Options.greedy(24).withStopTokens(Generator.stopTokens(path, tok));
-        int[] ids = tok.encode(prompt);
+        int[] ids = gen.encode(prompt);
         long t1 = System.nanoTime();
         Generator.Output out = gen.generate(new int[][] {ids}, options, null).getFirst();
         double seconds = (System.nanoTime() - t1) / 1e9;
@@ -80,7 +80,8 @@ class PretrainedModelsTest {
         Path expectedFile = path.resolveSibling(path.getFileName() + ".expected.json");
         Assumptions.assumeTrue(Files.isRegularFile(expectedFile), "no transformers reference for " + path);
         Map<String, Object> e = Json.object(Json.read(expectedFile));
-        assertArrayEquals(LlamaTest.ints(e.get("ids")), ids, "the tokenizer differs from transformers");
+        // transformers' tokenizer(prompt) adds the special tokens as tok.encode(prompt, true) does
+        assertArrayEquals(LlamaTest.ints(e.get("ids")), tok.encode(prompt, true), "the tokenizer differs from transformers");
         float[] logits = model.next(model.newState(1), new int[][] {ids}, null).toArray();
         float[] want = LlamaTest.rows(List.of(e.get("logits")));
         double worst = 0;

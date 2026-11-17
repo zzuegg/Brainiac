@@ -126,6 +126,27 @@ class LlamaTest {
     }
 
     @Test
+    void cacheThatGrowsMatchesTheFullForwardPass() {
+        // 150 steps: the cache's buffers grow from 64 to 128 to 256 on the way
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 5, DEVICE, DType.FLOAT32);
+        int[] seq = new int[150];
+        java.util.SplittableRandom r = new java.util.SplittableRandom(6);
+        for (int i = 0; i < seq.length; i++) {
+            seq[i] = r.nextInt(40);
+        }
+        LanguageModel.State s = model.newState(1);
+        model.next(s, new int[][] {java.util.Arrays.copyOf(seq, 10)}, null);
+        float[] last = null;
+        for (int i = 10; i < seq.length; i++) {
+            last = model.next(s, new int[][] {{seq[i]}}, null).toArray();
+        }
+        float[] full = model.forward(new int[][] {seq}).value().toArray();
+        int v = model.vocabSize();
+        assertArrayEquals(java.util.Arrays.copyOfRange(full, full.length - v, full.length), last, 1e-4f);
+        assertEquals(150, s.length());
+    }
+
+    @Test
     void selectReordersRows() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
         LanguageModel.State s = model.newState(2);
