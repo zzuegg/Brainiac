@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.nn.diffusion;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -88,6 +89,25 @@ class DiffusionTest {
         Tensor data = Tensor.full(Shape.of(16, 4), 2f);
         assertEquals(0, d.loss(gaussian(d, 2, 0), data, new SplittableRandom(3)).value().item(), 1e-6);
         assertTrue(d.loss(gaussian(d, 0, 0), data, new SplittableRandom(3)).value().item() > 0.01);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Diffusion.Prediction.class)
+    void aStepPerTokenTrainsLikeDiffusionForcing(Diffusion.Prediction p) {
+        Diffusion d = new Diffusion(NoiseSchedule.cosine(100), p);
+        Tensor data = Tensor.full(Shape.of(4, 6, 3), 2f);
+        int[][] steps = d.randomTokenSteps(4, 6, new SplittableRandom(5));
+        assertTrue(java.util.Arrays.stream(steps).flatMapToInt(java.util.Arrays::stream).distinct().count() > 6);
+        assertEquals(0, d.loss(gaussian(d, 2, 0), data, steps, new SplittableRandom(3)).value().item(), 1e-6);
+        assertTrue(d.loss(gaussian(d, 0, 0), data, steps, new SplittableRandom(3)).value().item() > 0.01);
+        // the same step on every token is the per-example noise
+        Tensor noise = Tensor.normal(data.shape(), 0, 1, new SplittableRandom(9));
+        int[][] same = new int[4][6];
+        for (int[] row : same) {
+            java.util.Arrays.fill(row, 40);
+        }
+        assertArrayEquals(d.noisy(data, noise, new int[] {40, 40, 40, 40}).toArray(), d.noisy(data, noise, same).toArray(),
+                1e-6f);
     }
 
     @Test
