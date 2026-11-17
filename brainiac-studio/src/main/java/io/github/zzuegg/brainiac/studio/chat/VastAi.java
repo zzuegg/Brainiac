@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.studio.chat;
 
+import io.github.zzuegg.brainiac.cloud.VastClient;
 import io.github.zzuegg.brainiac.io.Json;
 import java.io.IOException;
 import java.net.URI;
@@ -19,7 +20,8 @@ import java.util.regex.Pattern;
 
 /**
  * Vast.ai, where GPU machines are rented by the hour: the user's account, the machines they rent,
- * and the offers to rent. This only reads; nothing here rents or bills anything.
+ * and the offers to rent. This only reads; renting goes through {@link #client()} and the studio's
+ * rentals, which ask the user each time.
  *
  * <p>The key is kept with the others in {@code keys.properties} under {@code vastai} (or comes from
  * {@code VAST_API_KEY}) and is sent only to the Vast.ai console host.
@@ -155,6 +157,45 @@ public final class VastAi {
             }
         }
         return out;
+    }
+
+    /**
+     * Looks an offer up again, for its price now.
+     *
+     * @param id the offer
+     * @return {@code {id, gpu, gpus, pricePerHour}}, or empty if it is no longer offered
+     * @throws IOException if Vast.ai cannot be asked or refuses
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public Optional<Map<String, Object>> offer(long id) throws IOException, InterruptedException {
+        Map<String, Object> q = new LinkedHashMap<>();
+        q.put("id", Map.of("eq", id));
+        q.put("rentable", Map.of("eq", true));
+        q.put("rented", Map.of("eq", false));
+        q.put("type", "ondemand");
+        Object answer = send("POST", base.resolve("bundles/"), Json.write(q), "bundles", true);
+        for (Object o : Json.array(Json.object(answer).getOrDefault("offers", List.of()))) {
+            Map<String, Object> m = Json.object(o);
+            if (m.get("id") instanceof Number n && n.longValue() == id && m.get("dph_total") instanceof Number price) {
+                Map<String, Object> r = new LinkedHashMap<>();
+                r.put("id", id);
+                r.put("gpu", gpu(m));
+                r.put("gpus", m.get("num_gpus"));
+                r.put("pricePerHour", price.doubleValue());
+                return Optional.of(r);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Returns a brainiac-cloud client with the user's key, which talks only to the same API.
+     *
+     * @return the client
+     * @throws IOException if there is no key
+     */
+    public VastClient client() throws IOException {
+        return new VastClient(key().orElseThrow(() -> new IOException("add your Vast.ai API key first")), base, http);
     }
 
     private static String gpu(Map<String, Object> m) {
