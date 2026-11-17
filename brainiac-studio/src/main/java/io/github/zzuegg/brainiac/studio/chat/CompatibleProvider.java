@@ -44,7 +44,14 @@ class CompatibleProvider extends RemoteProvider {
 
     @Override
     List<String> auth(String key) {
-        return List.of("Authorization", "Bearer " + key);
+        String org = options.getOrDefault(ProviderSettings.BILL_TO, "");
+        return org.isEmpty() ? List.of("Authorization", "Bearer " + key)
+                : List.of("Authorization", "Bearer " + key, "X-HF-Bill-To", org);
+    }
+
+    @Override
+    List<String> optionNames() {
+        return preset.id().equals("huggingface") ? List.of(ProviderSettings.BILL_TO) : List.of();
     }
 
     @Override
@@ -54,20 +61,61 @@ class CompatibleProvider extends RemoteProvider {
             Map<String, Object> m = obj(o);
             String id = Json.string(m, "id", null);
             List<String> media = id == null ? List.of() : media(id);
-            if (!media.isEmpty()) {
-                long context = num(m.get("context_length"));
-                out.add(new ModelInfo(id(), id, Json.string(m, "name", id), media, Math.max(0, num(m.get("created"))),
-                        ModelInfo.context(context)));
+            if (media.isEmpty()) {
+                continue;
             }
+            long context = num(m.get("context_length"));
+            String detail = ModelInfo.context(context);
+            if (m.get("providers") instanceof List<?> hosts) {
+                // Hugging Face's router: each model lists the inference providers that serve it
+                int live = 0;
+                double in = Double.NaN;
+                double outPrice = Double.NaN;
+                for (Object h : hosts) {
+                    Map<String, Object> host = obj(h);
+                    String status = Json.string(host, "status", "live");
+                    if (!status.equals("live")) {
+                        continue;
+                    }
+                    live++;
+                    context = Math.max(context, num(host.get("context_length")));
+                    Map<String, Object> price = obj(host.get("pricing"));
+                    if (price.get("input") instanceof Number pi && price.get("output") instanceof Number po
+                            && (Double.isNaN(in) || pi.doubleValue() + po.doubleValue() < in + outPrice)) {
+                        in = pi.doubleValue();
+                        outPrice = po.doubleValue();
+                    }
+                }
+                if (live == 0) {
+                    continue;   // listed, but no provider serves it now
+                }
+                List<String> bits = new ArrayList<>();
+                if (context > 0) {
+                    bits.add(ModelInfo.context(context));
+                }
+                bits.add(live + (live == 1 ? " host" : " hosts"));
+                if (!Double.isNaN(in)) {
+                    bits.add(String.format(Locale.ROOT, "from $%s in / $%s out per 1M", price(in), price(outPrice)));
+                }
+                detail = String.join(" · ", bits);
+            }
+            out.add(new ModelInfo(id(), id, Json.string(m, "name", id), media, Math.max(0, num(m.get("created"))),
+                    detail));
         }
         out.sort(Comparator.comparingLong(ModelInfo::created).reversed());
         return out;
     }
 
+    private static String price(double d) {
+        // cents for most prices; two significant digits for fractions of a cent
+        return d >= 0.01 || d == 0 ? String.format(Locale.ROOT, "%.2f", d)
+                : new java.math.BigDecimal(d).round(new java.math.MathContext(2)).stripTrailingZeros().toPlainString();
+    }
+
     /** What a model does, from its name: the lists have no capability fields. */
     List<String> media(String id) {
         String s = id.toLowerCase(Locale.ROOT);
-        if (s.contains("embed") || s.contains("rerank") || s.contains("moderation") || s.contains("guard")
+        if (s.contains("embed") || s.contains("rerank") || s.contains("/bge-") || s.startsWith("bge-") || s.contains("moderation") || s.contains("guard")
                 || s.contains("whisper") || s.contains("tts") || s.contains("ocr")) {
             return List.of();
         }

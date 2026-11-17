@@ -718,6 +718,14 @@ A gateway or proxy in front of a provider is set with `-Dstudio.<provider>.url=`
 `-Dstudio.openai.url=https://gateway.example/v1/` or `-Dstudio.qwen.url=` for Alibaba Cloud's
 China region.
 
+**Edit** on a provider chooses which of its models appear in the model pickers and in Auto
+(all, including new ones, or only the ones you pick), whether Auto may use the provider at all,
+another address (a gateway, a proxy, or another region such as Qwen's mainland China endpoint),
+and for Hugging Face the organization whose credits pay (`X-HF-Bill-To`). Hugging Face models
+show how many hosts serve them and the cheapest host's price; models no host serves are left
+out. The choices are saved in `~/.brainiac/studio/providers.properties`, which holds no keys.
+A model hidden from the pickers can still be asked for by name.
+
 **Usage** is logged for every call, by provider, key, model and day, in
 `~/.brainiac/studio/usage.jsonl`: tokens as the provider counts them, pictures made,
 characters spoken, time taken and failures. Prompts are not kept, and keys appear by name only.
@@ -739,6 +747,8 @@ POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"H
                             route, thinking, text ..., done or error
 POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","count":2}
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
+POST /api/providers         {"provider":"huggingface","auto":true,"models":["openai/gpt-oss-120b"],
+                            "url":"","options":{"billTo":"my-org"}} (models null shows all)
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
 GET  /api/balances          what is left on each key, at providers that report it
 ```

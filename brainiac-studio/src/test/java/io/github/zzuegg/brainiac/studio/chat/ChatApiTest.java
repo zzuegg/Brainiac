@@ -141,4 +141,18 @@ class ChatApiTest {
         assertTrue(r.body().contains("\"currency\":\"CNY\""), r.body());
         assertFalse(r.body().contains("sk-ds-1"));
     }
+
+    @Test
+    void providerSettingsAreChangedThroughTheApi() throws Exception {
+        call("POST", "/api/keys", "{\"provider\":\"anthropic\",\"key\":\"k\"}");
+        HttpResponse<String> r = call("POST", "/api/providers",
+                "{\"provider\":\"anthropic\",\"models\":[\"claude-haiku-5-5\"],\"auto\":true}");
+        assertEquals(200, r.statusCode(), r.body());
+        Map<String, Object> d = Json.object(Json.parse(r.body()));
+        assertEquals(Map.of("text", "anthropic/claude-haiku-5-5"), d.get("auto"));
+        assertEquals(400, call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"url\":\"file:///etc/\"}").statusCode());
+        assertEquals(400, call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"models\":[1]}").statusCode());
+        r = call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"models\":null}");
+        assertEquals(Map.of("text", "anthropic/claude-opus-5-5"), Json.object(Json.parse(r.body())).get("auto"));
+    }
 }
