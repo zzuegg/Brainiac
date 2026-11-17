@@ -175,7 +175,7 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
 
     /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
     public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2", "qwen3", "phi3",
-            "gemma", "gemma2", "gemma3");
+            "gemma", "gemma2", "gemma3", "qwen2moe", "qwen3moe");
 
     /**
      * Reads a Hugging Face {@code config.json} (transformers 4 or 5 layout) of Llama, Mistral,
@@ -358,17 +358,29 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         boolean big = a.equals("gemma2") && layers == 46 || a.equals("gemma3") && layers == 62;
         float queryScale = (float) number(m, a + ".attention.scale",
                 big ? 1 / Math.sqrt((double) hidden / heads) : 0);
-        Extras extras = new Extras(a.equals("qwen3") || a.equals("gemma3"), window, window > 0 ? every : 0,
+        Moe moe = Moe.NONE;
+        if (m.get(a + ".expert_count") instanceof Number count && count.intValue() > 0) {
+            // Mixtral is written as "llama" with experts
+            moe = new Moe(count.intValue(), (int) number(m, a + ".expert_used_count", -1),
+                    (int) number(m, a + ".expert_feed_forward_length", number(m, a + ".feed_forward_length", -1)),
+                    a.equals("qwen2moe") ? false : !Boolean.FALSE.equals(m.get(a + ".expert_weights_norm")),
+                    (int) number(m, a + ".expert_shared_feed_forward_length", 0));
+        }
+        Extras extras = new Extras(a.equals("qwen3") || a.equals("qwen3moe") || a.equals("gemma3"), window,
+                window > 0 ? every : 0,
                 a.equals("gemma3") ? number(m, a + ".rope.freq_base_swa", 10000) : 0,
                 gemma ? ActivationOp.GELU_TANH : ActivationOp.SILU, gemma, gemma23, gemma,
                 (float) number(m, a + ".attn_logit_softcapping", 0), (float) number(m, a + ".final_logit_softcapping", 0),
-                queryScale, gguf.contains("blk.0.attn_qkv.weight"), Moe.NONE);
-        if (m.get(a + ".expert_count") instanceof Number) {
-            throw new IllegalArgumentException("mixture-of-experts GGUF files are not supported yet; "
-                    + "load the Hugging Face model instead");
-        }
-        String type = a.equals("gemma3") ? "gemma3_text" : a;
-        return new LlamaConfig(type, vocab, hidden, (int) number(m, a + ".feed_forward_length", -1), layers, heads,
+                queryScale, gguf.contains("blk.0.attn_qkv.weight"), moe);
+        String type = switch (a) {
+            case "gemma3" -> "gemma3_text";
+            case "qwen2moe" -> "qwen2_moe";
+            case "qwen3moe" -> "qwen3_moe";
+            case "llama" -> moe.present() ? "mixtral" : a;
+            default -> a;
+        };
+        return new LlamaConfig(type, vocab, hidden, (int) number(m, a + ".feed_forward_length",
+                moe.present() ? moe.ffn() : -1), layers, heads,
                 (int) number(m, a + ".attention.head_count_kv", heads), headDim,
                 (float) number(m, a + ".attention.layer_norm_rms_epsilon", 1e-6), rope,
                 !gguf.contains("output.weight"), a.equals("qwen2") || gguf.contains("blk.0.attn_q.bias"), context,

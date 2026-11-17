@@ -351,7 +351,7 @@ public final class Llama implements LanguageModel {
         }
         LlamaConfig.Extras extras = config.extras();
         // llama.cpp's converter interleaves the two rotary halves of Llama's query and key rows
-        boolean permuted = config.architecture().equals("llama");
+        boolean permuted = gguf.architecture().equals("llama");
         Map<String, Var> named = new LinkedHashMap<>();
         Map<String, Linear> linears = new LinkedHashMap<>();
         named.put("model.embed_tokens.weight", Var.param(gguf.tensor("token_embd.weight", device, dtype)));
@@ -375,6 +375,40 @@ public final class Llama implements LanguageModel {
                     named.put(l + ".bias", bias);
                 }
                 linears.put(l, linear(gguf, g + e.getValue() + ".weight", l, order, device, dtype, named, bias));
+            }
+            LlamaConfig.Moe moe = extras.moe();
+            if (moe.present()) {
+                String[] n = expertNames(config);
+                String[] stored = {"ffn_gate", "ffn_up", "ffn_down"};
+                linears.put(p + n[0] + "gate", linear(gguf, g + "ffn_gate_inp.weight", p + n[0] + "gate", null, device,
+                        dtype, named, null));
+                for (int x = 0; x < moe.experts(); x++) {
+                    for (int k = 0; k < 3; k++) {
+                        // a stack of all experts, or (older files) one matrix each
+                        String stack = g + stored[k] + "_exps.weight";
+                        String w = gguf.contains(stack) ? gguf.slice(stack, x) : g + stored[k] + "." + x + ".weight";
+                        String hf = p + n[0] + "experts." + x + "." + n[k + 1];
+                        linears.put(hf, linear(gguf, w, hf, null, device, dtype, named, null));
+                    }
+                }
+                if (moe.sharedFfn() > 0) {
+                    String[] hf = {"mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj",
+                            "mlp.shared_expert.down_proj", "mlp.shared_expert_gate"};
+                    String[] gg = {"ffn_gate_shexp", "ffn_up_shexp", "ffn_down_shexp", "ffn_gate_inp_shexp"};
+                    for (int k = 0; k < 4; k++) {
+                        Tensor shapeCheck = null;
+                        String w = g + gg[k] + ".weight";
+                        if (k == 3 && gguf.shape(w).rank() == 1) {
+                            // the shared expert's gate stored as a vector: one output
+                            shapeCheck = gguf.tensor(w, device, dtype).reshape(1, config.hidden());
+                            Var v = Var.param(inOut(shapeCheck));
+                            named.put(p + hf[k] + ".weight", v);
+                            linears.put(p + hf[k], new Linear(v, null));
+                            continue;
+                        }
+                        linears.put(p + hf[k], linear(gguf, w, p + hf[k], null, device, dtype, named, null));
+                    }
+                }
             }
         }
         if (!config.tieEmbeddings()) {
@@ -401,6 +435,9 @@ public final class Llama implements LanguageModel {
             parts.put("mlp.up_proj", "ffn_up");
         }
         parts.put("mlp.down_proj", "ffn_down");
+        if (c.extras().moe().present()) {
+            parts.keySet().removeIf(k -> k.startsWith("mlp."));
+        }
         return parts;
     }
 

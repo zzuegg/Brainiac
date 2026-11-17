@@ -97,7 +97,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"qwen3", "phi3", "gemma2", "gemma3"})
+    @ValueSource(strings = {"qwen3", "phi3", "gemma2", "gemma3", "qwen3moe", "qwen2moe"})
     void readsOtherFamiliesFromGguf(String name) throws IOException {
         Map<String, Object> e = expected(name + ".gguf.expected.json");
         Llama model = Llama.load(resource(name + ".gguf"), DEVICE, DType.FLOAT32);
