@@ -141,6 +141,22 @@ public final class VulkanBackend implements Backend {
                 + vk.deviceList;
     }
 
+    @Override
+    public synchronized Device.Memory memory() {
+        if (vk == null) {
+            return null;
+        }
+        long now = vk.inUse();
+        return new Device.Memory(now, vk.peakInUse(), vk.allocated(), vk.budget);
+    }
+
+    @Override
+    public synchronized void resetPeakMemory() {
+        if (vk != null) {
+            vk.resetPeak();
+        }
+    }
+
     /**
      * Counts of work done so far, for tuning.
      *
