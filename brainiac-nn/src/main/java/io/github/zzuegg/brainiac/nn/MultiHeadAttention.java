@@ -436,10 +436,28 @@ public final class MultiHeadAttention implements MultiInputLayer {
         }
 
         /** The cached steps to keep when {@code total} steps are held and {@code fresh} are new. */
-        int[] keep(int total, int fresh) {
+        int[] keep(int total, int fresh, Tensor held) {
             int drop = total - window;
             int[] kept = new int[window];
             switch (strategy) {
+                case KvCache.Strategy.Policy p -> {
+                    int[] chosen = p.keep(total, fresh, window,
+                            p.tracksAttention() ? java.util.Arrays.copyOf(received, total) : new float[0], held);
+                    if (chosen.length != window) {
+                        throw new IllegalStateException(p + " kept " + chosen.length + " steps of a window of " + window);
+                    }
+                    for (int i = 0; i < window; i++) {
+                        if (chosen[i] < 0 || chosen[i] >= total || i > 0 && chosen[i] <= chosen[i - 1]) {
+                            throw new IllegalStateException(p + " must keep increasing steps below " + total);
+                        }
+                    }
+                    for (int i = total - fresh; i < total; i++) {
+                        if (java.util.Arrays.binarySearch(chosen, i) < 0) {
+                            throw new IllegalStateException(p + " dropped new step " + i);
+                        }
+                    }
+                    System.arraycopy(chosen, 0, kept, 0, window);
+                }
                 case KvCache.Strategy.Sinks s -> {
                     int sinks = Math.min(s.count(), window - fresh);
                     for (int i = 0; i < sinks; i++) {
@@ -512,7 +530,7 @@ public final class MultiHeadAttention implements MultiInputLayer {
         }
         int tk = k.shape().dim(2);
         if (tk > cache.window) {
-            int[] kept = cache.keep(tk, tq);
+            int[] kept = cache.keep(tk, tq, k.value());
             float[] ids = new float[kept.length];
             float[] r = new float[kept.length];
             for (int i = 0; i < kept.length; i++) {
@@ -541,7 +559,8 @@ public final class MultiHeadAttention implements MultiInputLayer {
             bias = bias == null ? a : a.add(bias);
         }
         float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
-        boolean track = cache.strategy instanceof KvCache.Strategy.HeavyHitters;
+        boolean track = cache.strategy instanceof KvCache.Strategy.HeavyHitters
+                || cache.strategy instanceof KvCache.Strategy.Policy p && p.tracksAttention();
         Tensor[] weights = track ? new Tensor[1] : null;
         Var out = track || s.alibi()
                 ? Functional.attention(qr, kr, v, bias, scale, 0, null, weights)
