@@ -24,7 +24,7 @@ window.STUDIO_MOCK = {
     { name: "Mistral 7B Instruct v0.3", cap: ["text"], fmt: "GGUF Q8_0", size: "7.7 GB", ctx: "32k", device: "—", state: "on disk", src: "models/mistral-7b-instruct-v0.3.Q8_0.gguf", tps: "" },
     { name: "SmolLM2 1.7B", cap: ["text"], fmt: "safetensors bf16", size: "3.4 GB", ctx: "8k", device: "—", state: "on disk", src: "models/SmolLM2-1.7B-Instruct", tps: "" },
     { name: "thumb-dit-64", cap: ["image"], fmt: ".brainiac", size: "212 MB", ctx: "64×64", device: "Vulkan", state: "loaded", src: "runs/thumb-dit-64/best.brainiac", tps: "trained here" },
-    { name: "narrator-tts", cap: ["speech"], fmt: "—", size: "—", ctx: "—", device: "—", state: "planned", src: "needs speech.synthesize", tps: "" },
+    { name: "OpenAI speech", cap: ["speech"], fmt: "remote API", size: "—", ctx: "—", device: "—", state: "remote", src: "openai · voices listed live", tps: "" },
   ],
 
   threads: [
@@ -51,7 +51,7 @@ window.STUDIO_MOCK = {
     { id: "script", name: "Script writer", cap: "text", model: "Qwen2.5 7B Instruct", status: "done", doing: "Wrote 6 lines timed to the cuts (112 words, 38.4 s)",
       tokens: "1.2k", time: "14 s", progress: 1,
       tools: ["text.chat", "video.scenes (read)", "file.write"] },
-    { id: "voice", name: "Voiceover", cap: "speech", model: "narrator-tts (planned)", status: "running", doing: "Voicing line 3 of 6 · “Drag a block onto the canvas…”",
+    { id: "voice", name: "Voiceover", cap: "speech", model: "OpenAI speech (remote)", status: "running", doing: "Voicing line 3 of 6 · “Drag a block onto the canvas…”",
       tokens: "—", time: "22 s", progress: .42,
       tools: ["speech.synthesize", "speech.retake", "timeline.align", "video.play"] },
     { id: "thumb", name: "Thumbnail", cap: "image", model: "thumb-dit-64", status: "waiting", doing: "Wants to render a batch of 4 at 50 steps (≈ 9 s on GPU)",
@@ -146,10 +146,25 @@ window.STUDIO_MOCK = {
   },
 
   runs: [
-    { name: "resnet-s · adamw", c: "var(--cap-text)", state: "running", step: "18.4k / 30k", loss: 0.412, acc: "91.2%", eta: "6 min", pts: [2.3,1.9,1.55,1.3,1.1,.98,.86,.78,.71,.66,.61,.57,.54,.51,.49,.47,.46,.45,.44,.43,.42,.415] },
-    { name: "resnet-s · muon", c: "var(--cap-speech)", state: "running", step: "18.4k / 30k", loss: 0.371, acc: "92.6%", eta: "6 min", pts: [2.3,1.8,1.4,1.15,.95,.83,.74,.66,.6,.55,.51,.48,.46,.44,.42,.41,.4,.39,.385,.38,.375,.371] },
-    { name: "resnet-s · lion", c: "var(--cap-image)", state: "stopped early", step: "9.1k", loss: 0.744, acc: "84.0%", eta: "—", pts: [2.3,2.0,1.7,1.45,1.25,1.1,.98,.9,.84,.8,.77,.755,.748,.744] },
-    { name: "resnet-s · adam8bit", c: "var(--cap-vision)", state: "queued", step: "0", loss: null, acc: "—", eta: "after 2", pts: [] },
+    { name: "resnet-s · adamw", c: "var(--cap-text)", state: "running", host: "This PC", step: "18.4k / 30k", pct: 61, loss: 0.412, acc: "91.2%", eta: "6 min", speed: "5.1k img/s", pts: [2.3,1.9,1.55,1.3,1.1,.98,.86,.78,.71,.66,.61,.57,.54,.51,.49,.47,.46,.45,.44,.43,.42,.415] },
+    { name: "resnet-s · muon", c: "var(--cap-speech)", state: "running", host: "Lab workstation", step: "18.4k / 30k", pct: 61, loss: 0.371, acc: "92.6%", eta: "5 min", speed: "7.8k img/s", pts: [2.3,1.8,1.4,1.15,.95,.83,.74,.66,.6,.55,.51,.48,.46,.44,.42,.41,.4,.39,.385,.38,.375,.371] },
+    { name: "resnet-s · lion", c: "var(--cap-image)", state: "stopped early", host: "Lab workstation", step: "9.1k", pct: 30, loss: 0.744, acc: "84.0%", eta: "—", speed: "—", pts: [2.3,2.0,1.7,1.45,1.25,1.1,.98,.9,.84,.8,.77,.755,.748,.744] },
+    { name: "resnet-s · adam8bit", c: "var(--cap-vision)", state: "queued", host: "next free", step: "0 / 30k", pct: 0, loss: null, acc: "—", eta: "—", speed: "—", pts: [] },
+  ],
+
+  // Machines that run training. Each one runs `brainiac-studio --worker`; this PC is always there.
+  hosts: [
+    { name: "This PC", addr: "local", state: "busy", devices: [{ name: "RX 9070 XT", util: 78, mem: "9.9 / 16 GB" }, { name: "CPU · 16 threads", util: 22, mem: "20 / 64 GB" }], foot: "1 run · chat model loaded" },
+    { name: "Lab workstation", addr: "10.0.0.24:7861", state: "busy", devices: [{ name: "RTX 4090 #0", util: 94, mem: "18.2 / 24 GB" }, { name: "RTX 4090 #1", util: 0, mem: "0.4 / 24 GB" }], foot: "1 run · 1 GPU free" },
+    { name: "Laptop", addr: "10.0.0.31:7861", state: "offline", devices: [{ name: "Radeon 780M", util: 0, mem: "— / 8 GB" }], foot: "last seen 2 h ago" },
+  ],
+
+  // Remote model providers. Model lists come from each provider's own model-list endpoint.
+  providers: [
+    { name: "Brainiac (this PC)", key: "local", state: "on", caps: ["text", "image", "train"], models: "6 models on disk", note: "free · private · offline" },
+    { name: "Anthropic", key: "claude", state: "on", caps: ["text", "vision"], models: "Claude models · listed live", note: "your API key · billed per token" },
+    { name: "OpenAI", key: "openai", state: "on", caps: ["text", "image", "speech", "vision"], models: "GPT, image, speech and transcription models", note: "your API key · billed per use" },
+    { name: "Google", key: "google", state: "off", caps: ["text", "image", "speech", "vision", "video"], models: "Gemini, Imagen, Veo and speech models", note: "add an API key to use" },
   ],
 
   mcpTools: [

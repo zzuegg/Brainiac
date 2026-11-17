@@ -7,7 +7,7 @@
   const icon = (n, cls = "") => `<svg class="${cls}" aria-hidden="true"><use href="#i-${n}"/></svg>`;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const capIcon = { text: "text", image: "image", speech: "speech", vision: "image", train: "train", agent: "agent" };
-  const capName = { text: "Text", image: "Image", speech: "Speech", vision: "Vision", train: "Training", agent: "Agents" };
+  const capName = { text: "Text", image: "Image", speech: "Speech", vision: "Vision", train: "Training", agent: "Agents", video: "Video" };
 
   const store = {
     get(k, d) { try { const v = localStorage.getItem("studio." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -230,7 +230,7 @@
           <div class="msg">
             <div class="avatar ai" style="--c:var(--cap-speech)">${icon("speech")}</div>
             <div style="min-width:0">
-              <div class="meta"><b>Voiceover</b><span class="chip c-speech">narrator-tts</span><span class="muted">voice Mara · first two lines</span></div>
+              <div class="meta"><b>Voiceover</b><span class="chip c-speech">OpenAI speech</span><span class="chip plain">remote</span><span class="muted">voice Mara · first two lines</span></div>
               <div class="audio-card">
                 <button class="play" aria-label="Play take">${icon("play")}</button>
                 <div class="wave">${waveBars(90, 3, 40)}</div>
@@ -316,7 +316,7 @@
           <span class="eyebrow">Tools this agent can use</span>
           <div style="display:flex;gap:6px;flex-wrap:wrap">${a.tools.map(t => `<span class="chip c-${a.cap}">${esc(t)}</span>`).join("")}</div>
         </div>
-        ${a.cap === "speech" ? `<div class="flag">${icon("flask")}<div><b>Planned capability.</b> The core has no <code>speech.synthesize</code> provider yet; this panel is designed for when one is installed.</div></div>` : ""}
+        ${a.cap === "speech" ? `<div class="flag">${icon("flask")}<div><b>Runs on OpenAI.</b> No local model provides <code>speech.synthesize</code> yet, so this agent uses your OpenAI key and the script leaves this PC. A local voice model takes over once one is installed.</div></div>` : ""}
       </div>
       <div class="tabs" role="tablist">
         ${["activity", "output", "context"].map(t => `<button role="tab" data-tab="${t}" aria-selected="${state.tab === t}">${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}
@@ -452,8 +452,8 @@
       </aside>
       <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
         <div class="stage-head"><span class="title">Builder demo voiceover</span><span class="chip c-speech">6 lines · 38.4 s</span><span class="grow"></span>
-          <button class="btn">${icon("video")}Replace video</button><button class="btn primary" disabled title="Install a speech.synthesize provider first">${icon("speech")}Voice all</button></div>
-        <div style="padding:14px 24px 0"><div class="flag">${icon("flask")}<div><b>Planned capability.</b> Nothing in the core provides <code>speech.synthesize</code> yet. When a provider is installed, this screen lights up without changes; until then the buttons say what is missing.</div></div></div>
+          <button class="btn">${icon("video")}Replace video</button><button class="btn primary">${icon("speech")}Voice all</button></div>
+        <div style="padding:14px 24px 0"><div class="flag">${icon("flask")}<div><b>Runs on OpenAI.</b> No local model provides <code>speech.synthesize</code> yet, so voices come from your OpenAI key and the script is sent to OpenAI. When a local voice model is installed, this screen switches to it without changes.</div></div></div>
         <div class="vo-split">
         <div class="vo-video">
           <div class="player"><canvas class="frame" data-t="${state.t}"></canvas><div class="caption">${esc(lineAt(state.t).text)}</div></div>
@@ -626,39 +626,103 @@
     });
   }
 
-  // ---------- TRAIN ----------
+  // ---------- TRAIN (hosts, launch, live runs) ----------
+  function spark(pts, c, w = 120, h = 28) {
+    if (!pts.length) return `<svg width="${w}" height="${h}" aria-hidden="true"></svg>`;
+    const max = 2.4, xs = i => (i / 21) * (w - 4) + 2, ys = v => h - 3 - (v / max) * (h - 6);
+    const d = pts.map((v, i) => `${i ? "L" : "M"}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(" ");
+    const last = pts.length - 1;
+    return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${d} L${xs(last)},${h} L2,${h} Z" fill="${c}" opacity=".12"/><path d="${d}" fill="none" stroke="${c}" stroke-width="1.6"/><circle cx="${xs(last)}" cy="${ys(pts[last])}" r="2.6" fill="${c}"/></svg>`;
+  }
+
+  function hostCard(h) {
+    const st = { busy: ["c-text", "training"], idle: ["c-ok", "idle"], offline: ["c-bad", "offline"] }[h.state];
+    return `
+    <div class="host ${h.state}">
+      <div class="host-head"><span class="dot ${h.state === "busy" ? "pulse" : ""}" style="--c:var(--${h.state === "offline" ? "bad" : h.state === "busy" ? "accent" : "ok"})"></span>
+        <b>${esc(h.name)}</b><span class="chip ${st[0]}">${st[1]}</span><span class="grow"></span><span class="mono faint">${esc(h.addr)}</span></div>
+      ${h.devices.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="meter wide"><i style="width:${d.util}%"></i></span><span class="mono tnum">${d.mem}</span></div>`).join("")}
+      <div class="host-foot"><span class="muted">${esc(h.foot)}</span></div>
+    </div>`;
+  }
+
   function trainView() {
-    const W = 1000, H = 240, pad = 32, maxY = 2.4;
+    const runs = M.runs;
+    const W = 1000, H = 220, pad = 30, maxY = 2.4;
     const xs = n => pad + (n / 21) * (W - pad * 2), ys = v => H - pad - (v / maxY) * (H - pad * 2);
-    const lines = M.runs.filter(r => r.pts.length).map(r => {
+    const lines = runs.filter(r => r.pts.length).map(r => {
       const d = r.pts.map((v, i) => `${i ? "L" : "M"}${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(" ");
       const last = r.pts.length - 1;
       return `<path d="${d}" fill="none" stroke="${r.c}" stroke-width="2"/><circle cx="${xs(last)}" cy="${ys(r.pts[last])}" r="3.5" fill="${r.c}"/>`;
     }).join("");
     const grid = [0, .5, 1, 1.5, 2].map(v => `<line x1="${pad}" x2="${W - pad}" y1="${ys(v)}" y2="${ys(v)}" stroke="var(--line-soft)"/><text x="${pad - 8}" y="${ys(v) + 4}" text-anchor="end" fill="var(--muted)" font-size="11" font-family="var(--font-mono)">${v.toFixed(1)}</text>`).join("");
-    const xt = [0, 7, 14, 21].map(i => `<text x="${xs(i)}" y="${H - 10}" text-anchor="middle" fill="var(--muted)" font-size="11" font-family="var(--font-mono)">${Math.round(i / 21 * 30)}k</text>`).join("");
+    const xt = [0, 7, 14, 21].map(i => `<text x="${xs(i)}" y="${H - 8}" text-anchor="middle" fill="var(--muted)" font-size="11" font-family="var(--font-mono)">${Math.round(i / 21 * 30)}k</text>`).join("");
     return `
-    <div class="train"><div class="train-inner">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">CIFAR-10 ResNet sweep</span><span class="chip c-train">4 runs</span><span class="grow"></span>
-        <button class="btn">Compare</button><button class="btn primary">${icon("plus")}New run</button></div>
-      <div class="runs">${M.runs.map(r => `
-        <div class="panel" style="padding:12px 14px;display:grid;gap:6px">
-          <div style="display:flex;gap:8px;align-items:center"><span class="dot" style="--c:${r.c}"></span><b style="font-size:13.5px">${esc(r.name)}</b><span class="grow"></span><span class="chip ${r.state === "running" ? "c-text" : r.state === "queued" ? "plain" : "c-warn"}">${r.state}</span></div>
-          <dl class="kv"><dt>Step</dt><dd>${r.step}</dd><dt>Loss</dt><dd>${r.loss ?? "—"}</dd><dt>Accuracy</dt><dd>${r.acc}</dd><dt>Done in</dt><dd>${r.eta}</dd></dl>
-        </div>`).join("")}</div>
-      <div class="panel chartbox">
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span class="h3">Training loss</span><span class="grow"></span>
-          <div class="legend">${M.runs.filter(r => r.pts.length).map(r => `<span style="--c:${r.c}"><i></i>${esc(r.name)}</span>`).join("")}</div></div>
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Loss against step for three runs">${grid}${xt}${lines}</svg>
+    <div class="train">
+      <section class="hosts" aria-label="Hosts">
+        ${M.hosts.map(hostCard).join("")}
+        <button class="host add" aria-label="Add a host">${icon("plus")}<b>Add a host</b><span class="muted">Run <code>brainiac-studio --worker</code> on another machine and paste its address and token.</span></button>
+      </section>
+      <div class="train-body">
+        <aside class="launch panel" aria-label="Start a training run">
+          <div class="col-head" style="padding:0 0 4px"><span class="h3">New run</span><span class="grow"></span><span class="chip c-train">resnet-s</span></div>
+          <div class="field"><label for="t-data">Data</label><select class="input" id="t-data"><option>CIFAR-10 · 50,000 train / 10,000 test</option><option>data/my-images (folder)</option></select></div>
+          <div class="two">
+            <div class="field"><label for="t-opt">Optimizer</label><select class="input" id="t-opt"><option>AdamW</option><option selected>Muon + AdamW</option><option>Lion</option><option>Adam 8-bit</option></select></div>
+            <div class="field"><label for="t-lr">Learning rate</label><input class="input mono" id="t-lr" value="3e-4"></div>
+          </div>
+          <div class="two">
+            <div class="field"><label for="t-bs">Batch</label><input class="input mono" id="t-bs" value="256"></div>
+            <div class="field"><label for="t-steps">Steps</label><input class="input mono" id="t-steps" value="30,000"></div>
+          </div>
+          <div class="field"><label>Schedule</label><div class="seg"><button aria-pressed="false">Constant</button><button aria-pressed="true">Warmup + cosine</button><button aria-pressed="false">Step</button></div></div>
+          <div class="field"><label>Precision</label><div class="seg"><button aria-pressed="false">float32</button><button aria-pressed="true">bfloat16</button><button aria-pressed="false">float16</button></div></div>
+          <div class="field"><label for="t-host">Host</label><select class="input" id="t-host"><option>Auto: least busy that fits (lab workstation)</option><option>This PC · RX 9070 XT</option><option>Lab workstation · 2 × RTX 4090</option></select></div>
+          <label class="sweep"><input type="checkbox" checked> Sweep <span class="mono muted">lr ∈ {1e-4, 3e-4, 1e-3} × optimizer ∈ {AdamW, Muon}</span></label>
+          <div class="muted" style="font-size:12px">6 runs · about 14 min each · spread over 2 hosts · checkpoint every 1,000 steps</div>
+          <button class="btn primary" style="height:38px;justify-content:center">${icon("train")}Start 6 runs</button>
+        </aside>
+        <section class="runs-col">
+          <div class="panel">
+            <div class="col-head"><span class="h3">Runs</span><span class="chip c-text">3 running</span><span class="chip plain">1 queued</span><span class="grow"></span><div class="seg"><button aria-pressed="true">All</button><button aria-pressed="false">Running</button><button aria-pressed="false">Finished</button></div></div>
+            <div class="tablebox" style="border:0;border-radius:0">
+            <table class="models runs-table">
+              <thead><tr><th>Run</th><th>Host</th><th>Progress</th><th>Loss</th><th>Accuracy</th><th>Speed</th><th></th></tr></thead>
+              <tbody>${runs.map(r => `<tr>
+                <td><div style="display:flex;gap:8px;align-items:center"><span class="dot" style="--c:${r.c}"></span><span class="nm">${esc(r.name)}</span></div><div class="src">${r.state}</div></td>
+                <td>${esc(r.host)}</td>
+                <td><div class="prog"><span class="bar"><i style="width:${r.pct}%;background:${r.c}"></i></span><span class="mono tnum">${r.step}</span></div><div class="src">${r.eta === "—" ? "" : "done in " + r.eta}</div></td>
+                <td><div style="display:flex;gap:8px;align-items:center">${spark(r.pts, r.c)}<span class="mono tnum">${r.loss ?? "—"}</span></div></td>
+                <td class="mono tnum">${r.acc}</td>
+                <td class="mono tnum">${r.speed}</td>
+                <td><div class="row-actions">${r.state === "running" ? `<button class="iconbtn" aria-label="Pause">${icon("pause")}</button><button class="iconbtn" aria-label="Stop">${icon("stop")}</button>` : r.state === "queued" ? `<button class="iconbtn" aria-label="Start now">${icon("play")}</button>` : `<button class="iconbtn" aria-label="Run again">${icon("retry")}</button>`}</div></td>
+              </tr>`).join("")}</tbody>
+            </table></div>
+          </div>
+          <div class="panel chartbox">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span class="h3">Training loss</span><span class="grow"></span>
+              <div class="legend">${runs.filter(r => r.pts.length).map(r => `<span style="--c:${r.c}"><i></i>${esc(r.name)}</span>`).join("")}</div></div>
+            <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Loss against step for each run">${grid}${xt}${lines}</svg>
+          </div>
+        </section>
+        <aside class="run-detail panel" aria-label="Selected run">
+          <div class="col-head" style="padding:0"><span class="dot" style="--c:var(--cap-speech)"></span><span class="h3">resnet-s · muon</span><span class="grow"></span><span class="chip c-text">running</span></div>
+          <dl class="kv"><dt>Host</dt><dd>Lab workstation · GPU 0</dd><dt>Step</dt><dd>18,400 / 30,000</dd><dt>Learning rate</dt><dd>1.9e-4 (cosine)</dd><dt>Gradient norm</dt><dd>0.84</dd><dt>Best checkpoint</dt><dd>step 18,000 · 92.6%</dd></dl>
+          <div class="eyebrow">Events</div>
+          <div class="feed" style="padding:0">
+            ${[["c-ok", "Checkpoint saved · step 18,000", "16:02"], ["c-text", "Validation 92.6% (+0.4)", "16:02"], ["c-warn", "resnet-s · lion stopped early: no gain in 5 evaluations", "15:51"], ["c-text", "Started on Lab workstation · GPU 0", "15:31"]].map(([c, w, t]) => `<div class="ev"><span class="pin ${c}" style="border-color:var(--c)"></span><div><div class="what">${w}</div><div class="t">${t}</div></div></div>`).join("")}
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn">Open in builder</button><button class="btn">Chat with it</button><button class="btn ghost">Clone settings</button></div>
+        </aside>
       </div>
-    </div></div>`;
+    </div>`;
   }
 
   // ---------- LIBRARY ----------
   // Before loading, say where a model fits: 16 GB of VRAM with 6.1 GB free in this example.
   function fitCell(m) {
     const gb = parseFloat(m.size) * (m.size.includes("MB") ? .001 : 1);
-    if (!gb) return `<span class="faint">—</span>`;
+    if (!gb) return m.state === "remote" ? `<span class="chip plain">provider’s servers</span>` : `<span class="faint">—</span>`;
     if (m.state === "loaded" || m.state === "draft") return `<span class="chip c-ok">${m.device}</span>`;
     const need = gb * 1.12;
     return need <= 6.1 ? `<span class="chip c-ok">GPU · ${need.toFixed(1)} GB</span>`
@@ -675,8 +739,25 @@
           <td><div class="nm">${esc(m.name)}</div><div class="src">${esc(m.src)}</div></td>
           <td>${m.cap.map(c => `<span class="chip c-${c}">${capName[c]}</span>`).join(" ")}</td>
           <td class="mono">${m.fmt}</td><td class="mono tnum">${m.size}</td><td class="mono">${m.ctx}</td><td>${fitCell(m)}</td>
-          <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
+          <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "remote" ? `<span class="chip c-agent">remote · your key</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
         </tr>`).join("")}</tbody></table></div>
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>
+      <div class="providers">${M.providers.map(p => `
+        <div class="prov ${p.state}">
+          <div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
+            ${p.key === "local" ? `<span class="chip c-ok">always on</span>` : `<label class="switch"><input type="checkbox" ${p.state === "on" ? "checked" : ""} aria-label="Use ${esc(p.name)}"><i></i></label>`}</div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">${p.caps.map(c => `<span class="chip c-${c}">${capName[c] || c}</span>`).join("")}</div>
+          <div class="muted" style="font-size:12.5px">${esc(p.models)}</div>
+          <div style="display:flex;gap:8px;align-items:center"><span class="mono faint" style="font-size:11px">${esc(p.note)}</span><span class="grow"></span>
+            ${p.key === "local" ? "" : `<button class="btn" style="height:28px;font-size:12px">${p.state === "on" ? "Key and models" : "Add API key"}</button>`}</div>
+        </div>`).join("")}
+        <div class="prov routing">
+          <b>Routing</b>
+          <div class="seg" role="group" aria-label="Routing preference"><button aria-pressed="true">This PC first</button><button aria-pressed="false">Best quality</button><button aria-pressed="false">Cheapest</button></div>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" checked> Ask before sending anything to a remote provider</label>
+          <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account.</span>
+        </div>
+      </div>
       <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Capabilities</span>${M.system ? `<span class="chip c-ok">live</span>` : ""}<span class="muted">Found at startup from the core and experimental modules. New ones appear here, in routing and over MCP without UI changes.</span></div>
       <div class="caps">${M.capabilities.map(c => `
         <div class="cap ${c.missing ? "missing" : ""}" style="--c:var(--cap-${c.cap})">
@@ -768,11 +849,11 @@
   const crumbs = {
     chat: `Chat <span class="muted">· Voiceover for the builder demo</span>`, agents: `Agents <span class="muted">· 4 running · 2 waiting for you</span>`, create: `Images <span class="muted">· thumb-dit-64</span>`,
     voice: `Voice <span class="muted">· Builder demo voiceover</span>`, builder: `Model builder <span class="muted">· resnet-s</span>`,
-    train: `Training <span class="muted">· CIFAR-10 sweep</span>`, library: `Models <span class="muted">· 6 on this machine</span>`, mcp: `MCP <span class="muted">· 2 agents connected</span>`,
+    train: `Training <span class="muted">· 3 hosts · 2 runs live</span>`, library: `Models <span class="muted">· 6 on this machine</span>`, mcp: `MCP <span class="muted">· 2 agents connected</span>`,
   };
   const routes = {
-    chat: ["c-text", "Qwen2.5 7B Instruct"], agents: ["c-agent", "per agent"], create: ["c-image", "thumb-dit-64"], voice: ["c-speech", "narrator-tts · planned"],
-    builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "4 runs on RX 9070 XT"], library: ["c-text", "Qwen2.5 7B Instruct"], mcp: ["c-agent", "per call"],
+    chat: ["c-text", "Qwen2.5 7B Instruct"], agents: ["c-agent", "per agent"], create: ["c-image", "thumb-dit-64"], voice: ["c-speech", "OpenAI speech · remote"],
+    builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "2 hosts busy"], library: ["c-text", "Qwen2.5 7B Instruct"], mcp: ["c-agent", "per call"],
   };
 
   function render() {
@@ -817,7 +898,7 @@
   function routeHint() {
     const el = $("#route-hint"); if (!el) return;
     const text = ($("#prompt")?.value || "").toLowerCase();
-    const target = { text: ["Qwen2.5 7B Instruct", "text · 32k context · tools on"], image: ["thumb-dit-64", "image · 64 × 64 · 50 steps"], speech: ["narrator-tts", "speech · planned, not installed"] };
+    const target = { text: ["Qwen2.5 7B Instruct", "text · 32k context · tools on"], image: ["thumb-dit-64", "image · 64 × 64 · 50 steps"], speech: ["OpenAI speech", "speech · remote, uses your key"] };
     let caps = [state.mode];
     if (state.mode === "auto") {
       caps = [];
