@@ -33,6 +33,16 @@ final class Nets {
         return out;
     }
 
+    /** An unlabelled view of a class-conditional denoiser that accepts any batch size. */
+    static io.github.zzuegg.brainiac.nn.diffusion.Denoiser unconditional(
+            io.github.zzuegg.brainiac.experimental.nn.diffusion.ConditionalDenoiser net) {
+        return (x, t) -> {
+            int[] none = new int[x.shape().dim(0)];
+            java.util.Arrays.fill(none, -1);
+            return net.apply(x, t, none);
+        };
+    }
+
     static Tensor gaussian(int rows, int cols, RandomGenerator random) {
         return Tensor.normal(Shape.of(rows, cols), 0, 1, random);
     }
