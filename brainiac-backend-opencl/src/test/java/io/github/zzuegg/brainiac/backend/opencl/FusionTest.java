@@ -384,7 +384,20 @@ class FusionTest {
                 Thread.sleep(100);
             }
         }
-        assertTrue(used <= 3, "forward took " + used + " launches");
+        if (used > 3) {
+            // say why: a generated kernel the driver could not compile, or one still compiling
+            java.lang.reflect.Field failed = OpenClBackend.class.getDeclaredField("fusedFailed");
+            failed.setAccessible(true);
+            java.lang.reflect.Field kernels = OpenClBackend.class.getDeclaredField("fusedKernels");
+            kernels.setAccessible(true);
+            long pending;
+            synchronized (kernels.get(backend)) {
+                pending = ((java.util.Map<?, ?>) kernels.get(backend)).values().stream()
+                        .filter(f -> !((java.util.concurrent.Future<?>) f).isDone()).count();
+            }
+            org.junit.jupiter.api.Assertions.fail("forward took " + used + " launches; generated kernels that failed"
+                    + " to compile: " + failed.getInt(backend) + ", still compiling: " + pending);
+        }
     }
 
     @Test
