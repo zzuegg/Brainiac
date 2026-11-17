@@ -105,6 +105,29 @@ final class MixerHarness {
         };
     }
 
+    /** Parity of a random bit string; tokens are 0 and 1, the answer is class 0 or 1. */
+    static Task parity(int length) {
+        return new Task() {
+            @Override
+            public Batch batch(SplittableRandom random, int size) {
+                int[][] in = new int[size][length];
+                int[] target = new int[size];
+                for (int b = 0; b < size; b++) {
+                    for (int i = 0; i < length; i++) {
+                        in[b][i] = random.nextInt(2);
+                        target[b] ^= in[b][i];
+                    }
+                }
+                return new Batch(in, target);
+            }
+
+            @Override
+            public int vocabulary() {
+                return 2;
+            }
+        };
+    }
+
     /** The model around a mixer. */
     static final class Harness {
         final Var embed;
