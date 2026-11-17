@@ -6,15 +6,35 @@
 #include "common.glsl"
 // matmul.comp on cooperative matrices (VK_KHR_cooperative_matrix), float16 only: the same
 // push constants, batches and k pieces. Runs with subgroups of 32 (the pipeline requires
-// them): 8 subgroups per work group compute a 128 x 128 tile, each a 32 x 64 block of
-// 2 x 4 pieces of 16 x 16 with float32 sums, from float16 values staged in shared memory.
+// them): SGR x SGC subgroups per work group compute a BM x BN tile, each a block of TM x TN
+// pieces of 16 x 16 with float32 sums, from float16 values staged in shared memory, BK
+// values of k at a time. Compiled in several shapes, picked per device by VulkanBackend's
+// tuning (default: 128 x 128 by 32, 4 x 2 subgroups of 2 x 4 pieces).
 // With PACKED, b is a packed matrix (see packed_layout.glsl), staged from its levels.
+#ifndef BM
 #define BM 128
+#endif
+#ifndef BN
 #define BN 128
+#endif
+#ifndef BK
 #define BK 32
-#define SA (BK + 8)      // shared row strides, padded against bank conflicts
-#define SB (BN + 8)
-layout(local_size_x = 256) in;
+#endif
+#ifndef SGR
+#define SGR 4
+#endif
+#ifndef SGC
+#define SGC 2
+#endif
+#ifndef PAD
+#define PAD 8
+#endif
+#define TM (BM / SGR / 16)
+#define TN (BN / SGC / 16)
+#define LOCAL (32 * SGR * SGC)
+#define SA (BK + PAD)      // shared row strides, padded against bank conflicts
+#define SB (BN + PAD)
+layout(local_size_x = LOCAL) in;
 #ifdef PACKED
 #include "packed.glsl"
 layout(push_constant) uniform P {
@@ -23,7 +43,7 @@ layout(push_constant) uniform P {
 } p;
 #include "packed_layout.glsl"
 #include "packed_tile.glsl"
-shared vec2 factorsB[2][BN];
+shared vec2 factorsB[BK / 16][BN];   // groups of at least 16 rows: at most BK / 16 per step
 #else
 layout(push_constant) uniform P {
     In a; In b; Buf z;
@@ -33,7 +53,7 @@ layout(push_constant) uniform P {
 layout(buffer_reference, std430, buffer_reference_align = 8) restrict readonly buffer In4 { f16vec4 v[]; };
 shared float16_t tileA[BM * SA];
 shared float16_t tileB[BK * SB];
-shared float scratch[8 * 256];   // one 16 x 16 piece per subgroup, for edge tiles
+shared float scratch[SGR * SGC * 256];   // one 16 x 16 piece per subgroup, for edge tiles
 
 #define ACCM coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
 
@@ -55,24 +75,25 @@ void main() {
     // vector loads where every run of 4 starts at a multiple of 4
     bool aligned = (p.k & 3u) == 0 && (p.n & 3u) == 0 && (from & 3u) == 0;
     uint sg = gl_SubgroupID;
-    uint sr = sg >> 1;   // rows sr * 32 .. + 32
-    uint sc = sg & 1u;   // columns sc * 64 .. + 64
-    ACCM acc[2][4];
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 4; j++) {
+    uint sr = sg / SGC;   // rows sr * TM * 16 .. + TM * 16
+    uint sc = sg % SGC;   // columns sc * TN * 16 .. + TN * 16
+    ACCM acc[TM][TN];
+    for (int i = 0; i < TM; i++) {
+        for (int j = 0; j < TN; j++) {
             acc[i][j] = ACCM(0.0);
         }
     }
     for (uint t = from; t < to; t += BK) {
 #ifdef PACKED
         if (stage) {
-            factorsB[tid / BN][tid % BN] = stagedFactors(t, tid / BN, colBase + tid % BN);
+            for (uint e = tid; e < (BK / 16) * BN; e += LOCAL) {
+                factorsB[e / BN][e % BN] = stagedFactors(t, e / BN, colBase + e % BN);
+            }
             barrier();
         }
 #endif
-        // a: 128 x 32 as 1024 runs of 4; b: 32 x 128 likewise; 4 of each per invocation
-        for (uint l = 0; l < 4; l++) {
-            uint r4 = l * 256 + tid;
+        // a: BM x BK as runs of 4 along k, b: BK x BN as runs of 4 along n
+        for (uint r4 = tid; r4 < BM * BK / 4; r4 += LOCAL) {
             uint row = r4 / (BK / 4);
             uint c = (r4 % (BK / 4)) * 4;
             uint gr = rowBase + row;
@@ -88,6 +109,8 @@ void main() {
             for (uint e = 0; e < 4; e++) {
                 tileA[row * SA + c + e] = x[e];
             }
+        }
+        for (uint r4 = tid; r4 < BK * BN / 4; r4 += LOCAL) {
             uint br = r4 / (BN / 4);
             uint bc = (r4 % (BN / 4)) * 4;
             uint gbr = t + br;
@@ -119,14 +142,14 @@ void main() {
         }
         barrier();
         for (uint q = 0; q < BK; q += 16) {
-            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> ma[2];
-            for (uint i = 0; i < 2; i++) {
-                coopMatLoad(ma[i], tileA, (sr * 32 + i * 16) * SA + q, SA, gl_CooperativeMatrixLayoutRowMajor);
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> ma[TM];
+            for (uint i = 0; i < TM; i++) {
+                coopMatLoad(ma[i], tileA, (sr * TM * 16 + i * 16) * SA + q, SA, gl_CooperativeMatrixLayoutRowMajor);
             }
-            for (uint j = 0; j < 4; j++) {
+            for (uint j = 0; j < TN; j++) {
                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> mb;
-                coopMatLoad(mb, tileB, q * SB + sc * 64 + j * 16, SB, gl_CooperativeMatrixLayoutRowMajor);
-                for (uint i = 0; i < 2; i++) {
+                coopMatLoad(mb, tileB, q * SB + sc * TN * 16 + j * 16, SB, gl_CooperativeMatrixLayoutRowMajor);
+                for (uint i = 0; i < TM; i++) {
                     acc[i][j] = coopMatMulAdd(ma[i], mb, acc[i][j]);
                 }
             }
@@ -135,10 +158,10 @@ void main() {
     }
     uint zBase = piece * p.strideZ;
     bool whole = rowBase + BM <= p.m && colBase + BN <= p.n;
-    for (uint i = 0; i < 2; i++) {
-        for (uint j = 0; j < 4; j++) {
-            uint row0 = rowBase + sr * 32 + i * 16;
-            uint col0 = colBase + sc * 64 + j * 16;
+    for (uint i = 0; i < TM; i++) {
+        for (uint j = 0; j < TN; j++) {
+            uint row0 = rowBase + sr * TM * 16 + i * 16;
+            uint col0 = colBase + sc * TN * 16 + j * 16;
             if (whole) {
                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> h =
                         coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(acc[i][j]);

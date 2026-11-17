@@ -128,6 +128,10 @@ final class VkContext {
     final VkDevice device;
     final VkQueue queue;
     final String deviceName;
+    /** Device and driver, as a file name: what a tuning is kept for. */
+    final String deviceKey;
+    /** Whether the device is the CPU (lavapipe, SwiftShader): not tuned. */
+    final boolean softwareDevice;
     final String deviceList;
     final long deviceMemory;
     final long budget;
@@ -288,6 +292,10 @@ final class VkContext {
                 VkPhysicalDeviceProperties tp = VkPhysicalDeviceProperties.calloc(ts);
                 vkGetPhysicalDeviceProperties(physical, tp);
                 timestampPeriod = tp.limits().timestampPeriod();
+                deviceKey = (tp.deviceNameString() + "-" + Integer.toHexString(tp.vendorID()) + "-"
+                        + Integer.toHexString(tp.deviceID()) + "-driver-" + Integer.toUnsignedString(tp.driverVersion()))
+                        .replaceAll("[^A-Za-z0-9._-]+", "_");
+                softwareDevice = tp.deviceType() == VK_PHYSICAL_DEVICE_TYPE_CPU;
             }
             deviceName = chosen.name;
             deviceList = candidatesText;

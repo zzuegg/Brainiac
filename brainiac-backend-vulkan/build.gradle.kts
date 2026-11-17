@@ -55,6 +55,10 @@ tasks.test {
         jvmArgs("-Dbrainiac.bench=true")
         testLogging.showStandardStreams = true
     }
+    // -Pbrainiac.vulkan.tune=false|auto|force: the kernel tuning (VulkanBackend); force measures again
+    providers.gradleProperty("brainiac.vulkan.tune").orNull?.let {
+        jvmArgs("-Dbrainiac.vulkan.tune=$it", "-Dbrainiac.vulkan.tuneLog=true")
+    }
     // -Pbrainiac.vulkan.profile=true runs the tests with every dispatch timed (it must not change results)
     if (providers.gradleProperty("brainiac.vulkan.profile").orNull == "true") {
         jvmArgs("-Dbrainiac.vulkan.profile=true")
@@ -91,7 +95,10 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
                     listOf("matmul64s$t" to listOf("-DW=4", "-DSTRIDED") + flags,
                             "matmul32s$t" to listOf("-DW=2", "-DSTRIDED") + flags)
                 }.toTypedArray()),
-            "matmul_coop" to listOf("matmul_coop" to emptyList(), "matmul_coop_packed" to listOf("-DPACKED")),
+            // tile shapes the per-device tuning picks from (VulkanBackend.COOP_SHAPES)
+            "matmul_coop" to listOf("" to emptyList(), "k64" to listOf("-DBK=64"), "m64" to listOf("-DBM=64", "-DSGR=2"),
+                    "n256" to listOf("-DBN=256"), "m256" to listOf("-DBM=256"), "t44" to listOf("-DSGR=2", "-DSGC=4"))
+                .flatMap { (v, d) -> listOf("matmul_coop$v" to d, "matmul_coop_packed$v" to d + "-DPACKED") },
             "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
             "matmul_vec" to listOf(1, 2, 4, 8).map { "matmul_vec$it" to listOf("-DROWS=$it") },
             "matmul_vect" to listOf(1, 2, 4, 8).flatMap { listOf("matmul_vect$it" to listOf("-DROWS=$it"), "matmul_vect${it}n" to listOf("-DROWS=$it", "-DLANES=32")) },
