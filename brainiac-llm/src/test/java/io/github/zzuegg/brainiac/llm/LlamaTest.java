@@ -238,6 +238,40 @@ class LlamaTest {
     }
 
     @Test
+    void aWindowedStateForgetsTheMiddleAndStaysSmall() {
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 12, DEVICE, DType.FLOAT32);
+        LanguageModel.State full = model.newState(1);
+        LanguageModel.State windowed = model.newState(1, 4, 16);
+        java.util.SplittableRandom r = new java.util.SplittableRandom(13);
+        int[] first = new int[10];
+        for (int i = 0; i < first.length; i++) {
+            first[i] = r.nextInt(40);
+        }
+        float[] a = model.next(full, new int[][] {first}, null).toArray();
+        float[] b = model.next(windowed, new int[][] {first}, null).toArray();
+        int maxLength = 0;
+        boolean differed = false;
+        for (int step = 0; step < 100; step++) {
+            int t = r.nextInt(40);
+            if (step < 10) {
+                // nothing forgotten yet: the same as keeping everything
+                assertArrayEquals(a, b, 1e-5f, "step " + step);
+            } else {
+                differed |= !java.util.Arrays.equals(a, b);
+            }
+            a = model.next(full, new int[][] {{t}}, null).toArray();
+            b = model.next(windowed, new int[][] {{t}}, null).toArray();
+            maxLength = Math.max(maxLength, windowed.length());
+            for (float f : b) {
+                assertTrue(Float.isFinite(f));
+            }
+        }
+        assertTrue(differed);
+        assertTrue(maxLength <= 4 + 16 + 4, "length " + maxLength);
+        assertEquals(110, full.length());
+    }
+
+    @Test
     void selectReordersRows() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
         LanguageModel.State s = model.newState(2);

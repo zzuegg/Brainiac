@@ -422,6 +422,9 @@ public final class Llama implements LanguageModel {
         int[] next;
         int length;
         int capacity;
+        /** Eviction: the first steps and the latest steps kept, or window 0 to keep all. */
+        int sinks;
+        int window;
 
         Cache(int layers, int batch) {
             keys = new Tensor[layers];
@@ -459,8 +462,36 @@ public final class Llama implements LanguageModel {
             capacity = grown;
         }
 
+        /**
+         * Drops the middle once it is a quarter window long, so the copy happens every
+         * {@code window / 4} steps rather than at every one.
+         */
+        void evict() {
+            int keep = sinks + window;
+            if (window == 0 || length <= keep + Math.max(1, window / 4)) {
+                return;
+            }
+            int from = length - window;
+            for (int l = 0; l < keys.length; l++) {
+                Tensor k = keys[l].slice(2, from, length);
+                Tensor v = values[l].slice(2, from, length);
+                Tensor.evaluate(List.of(k, v));   // read before the buffers are written
+                keys[l].write(2, sinks, k);
+                values[l].write(2, sinks, v);
+            }
+            for (int b = 0; b < padding.length; b++) {
+                boolean[] p = java.util.Arrays.copyOf(padding[b], keep);
+                System.arraycopy(padding[b], from, p, sinks, window);
+                padding[b] = p;
+            }
+            length = keep;
+        }
+
         @Override
         public State truncate(int keep) {
+            if (window > 0) {
+                throw new UnsupportedOperationException("a state that forgets cannot go back");
+            }
             if (keep < 0 || keep > length) {
                 throw new IllegalArgumentException("cannot keep " + keep + " of " + length + " steps");
             }
@@ -479,6 +510,8 @@ public final class Llama implements LanguageModel {
         @Override
         public State select(int[] rows) {
             Cache c = new Cache(keys.length, rows.length);
+            c.sinks = sinks;
+            c.window = window;
             if (capacity > 0) {
                 Tensor index = indices(rows, keys[0].device());
                 for (int l = 0; l < keys.length; l++) {
@@ -501,6 +534,28 @@ public final class Llama implements LanguageModel {
     @Override
     public State newState(int batch) {
         return new Cache(config.layers(), batch);
+    }
+
+    /**
+     * A state that forgets the middle of long sequences, as StreamingLLM does (Xiao et al.,
+     * 2024): it keeps the first {@code sinks} steps, which attention leans on, and the last
+     * {@code window}, so memory and time per token stay bounded however long the text. Keys
+     * keep the positions they were read at. It cannot {@linkplain State#truncate go back}.
+     *
+     * @param batch the number of sequences
+     * @param sinks the first steps always kept
+     * @param window the latest steps kept
+     * @return an empty state
+     */
+    public State newState(int batch, int sinks, int window) {
+        if (sinks < 0 || window < 1) {
+            throw new IllegalArgumentException("sinks must be at least 0 and window at least 1, got " + sinks + ", "
+                    + window);
+        }
+        Cache c = new Cache(config.layers(), batch);
+        c.sinks = sinks;
+        c.window = window;
+        return c;
     }
 
     /**
@@ -613,6 +668,7 @@ public final class Llama implements LanguageModel {
                 : logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
         // computed before the next step writes into the cache it read
         Tensor.evaluate(List.of(out));
+        cache.evict();
         return out;
     }
 
