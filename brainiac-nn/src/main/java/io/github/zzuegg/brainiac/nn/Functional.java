@@ -766,6 +766,92 @@ public final class Functional {
     }
 
     /**
+     * The output of {@link #mixtureOfExperts} and its load-balancing loss.
+     *
+     * @param output {@code [tokens, features]}
+     * @param balanceLoss the Switch Transformer auxiliary loss, 1 when routing is even; add
+     *     it scaled (about 0.01) to the training loss
+     * @param load the share of routed slots each expert received
+     */
+    public record Experts(Var output, Var balanceLoss, double[] load) {
+    }
+
+    /**
+     * A mixture-of-experts layer (Shazeer et al., 2017; Fedus et al., 2021): a router scores
+     * each token for every expert, the token goes to its {@code k} best, and their outputs are
+     * added weighted by the router's probabilities renormalized over those {@code k}. Each
+     * expert runs once on just its tokens.
+     *
+     * @param x {@code [tokens, features]}
+     * @param router {@code [features, experts]}
+     * @param experts the expert networks, each mapping {@code [m, features]} to
+     *     {@code [m, outFeatures]}
+     * @param k experts per token
+     * @return the output, the balance loss and the load
+     */
+    public static Experts mixtureOfExperts(Var x, Var router, List<java.util.function.Function<Var, Var>> experts,
+            int k) {
+        int n = x.shape().dim(0);
+        int count = experts.size();
+        if (router.shape().dim(1) != count || k < 1 || k > count) {
+            throw new IllegalArgumentException(count + " experts, a router with " + router.shape().dim(1)
+                    + " outputs, k " + k);
+        }
+        Device device = x.value().device();
+        Var probs = Activation.SOFTMAX.forward(x.matmul(router));
+        float[] p = probs.value().to(DType.FLOAT32).toArray();
+        float[] chosen = new float[n * k];
+        List<List<Integer>> slots = new ArrayList<>();
+        for (int e = 0; e < count; e++) {
+            slots.add(new ArrayList<>());
+        }
+        double[] firstChoice = new double[count];
+        for (int t = 0; t < n; t++) {
+            Integer[] order = new Integer[count];
+            for (int e = 0; e < count; e++) {
+                order[e] = e;
+            }
+            int row = t * count;
+            Arrays.sort(order, (a, b) -> Float.compare(p[row + b], p[row + a]));
+            firstChoice[order[0]]++;
+            for (int j = 0; j < k; j++) {
+                chosen[t * k + j] = order[j];
+                slots.get(order[j]).add(t * k + j);
+            }
+        }
+        Var gates = probs.takeAlong(Tensor.of(Shape.of(n, k), chosen, device));
+        gates = gates.div(gates.sum(1, true)).reshape(n * k, 1);
+        Var out = null;
+        double[] load = new double[count];
+        for (int e = 0; e < count; e++) {
+            List<Integer> mine = slots.get(e);
+            load[e] = (double) mine.size() / (n * k);
+            if (mine.isEmpty()) {
+                continue;
+            }
+            float[] slot = new float[mine.size()];
+            float[] token = new float[mine.size()];
+            for (int i = 0; i < slot.length; i++) {
+                slot[i] = mine.get(i);
+                token[i] = mine.get(i) / k;
+            }
+            Tensor tokens = Tensor.of(Shape.of(token.length), token, device);
+            Var y = experts.get(e).apply(x.gather(0, tokens));
+            y = y.mul(gates.gather(0, Tensor.of(Shape.of(slot.length), slot, device)));
+            Var placed = y.scatterAdd(0, tokens, n);
+            out = out == null ? placed : out.add(placed);
+        }
+        // Switch: experts * sum(fraction routed first to e * mean probability of e)
+        float[] f = new float[count];
+        for (int e = 0; e < count; e++) {
+            f[e] = (float) (firstChoice[e] / n);
+        }
+        Var balance = probs.mean(0, false).mul(Tensor.of(Shape.of(count), f, device).to(probs.value().dtype()))
+                .sum().mul(count);
+        return new Experts(out, balance, load);
+    }
+
+    /**
      * Sampled softmax cross-entropy (Jean et al., 2015) for very large output layers, such as
      * recommendation catalogues: the logits are computed only for the rows' own classes and
      * {@code negatives} classes drawn uniformly, shared by the batch. Every row's class is a
