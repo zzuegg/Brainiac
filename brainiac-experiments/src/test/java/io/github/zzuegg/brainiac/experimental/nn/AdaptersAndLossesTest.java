@@ -65,6 +65,30 @@ class AdaptersAndLossesTest {
                 1e-5f);
     }
 
+    @Test
+    void quantizedDoraStoresTheBaseInFewBitsAndStillAdapts() {
+        Model base = Model.sequential().input(2).dense(16, Activation.TANH).dense(2).seed(1).build();
+        Dense first = (Dense) base.layers().get(0);
+        DoraDense q = DoraDense.quantized(first, 2, 4, 2, new SplittableRandom(3));
+        assertTrue(q.frozenBytes() < first.weight().value().bytes(),
+                q.frozenBytes() + " vs " + first.weight().value().bytes());
+        Tensor[] a = task(1, 0);
+        Tensor dequantized = first.weight().value().quantized(4, 2).unpacked();
+        Dense reference = new Dense(2, 16, first.activation(), dequantized, first.bias().value());
+        assertArrayEquals(reference.forward(Var.of(a[0])).value().toArray(), q.forward(Var.of(a[0])).value().toArray(),
+                1e-4f, "starts equal to the quantized layer");
+        Model adapted = Model.sequential().input(2).layer(q).layer(base.layers().get(1)).build();
+        Tensor[] b = task(2, 1.2f);
+        Optimizer ao = Optimizer.adam(0.05f);
+        List<Var> params = List.of(q.parameters().get(0), q.parameters().get(1), q.parameters().get(2));
+        for (int i = 0; i < 200; i++) {
+            Functional.crossEntropy(adapted.forward(Var.of(b[0])), b[1]).backward();
+            ao.step(params);
+        }
+        double acc = accuracy(adapted.predict(b[0]), b[1]);
+        assertTrue(acc > 0.85, "QDoRA adapts: " + acc);
+    }
+
     private static double accuracy(Tensor scores, Tensor ids) {
         float[] s = scores.toArray();
         float[] y = ids.toArray();

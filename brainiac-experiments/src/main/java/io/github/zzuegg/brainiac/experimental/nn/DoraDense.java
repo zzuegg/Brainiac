@@ -28,6 +28,7 @@ import java.util.SplittableRandom;
 public final class DoraDense implements Layer {
 
     private final Dense base;
+    private final Tensor frozen;
     private final Var magnitude;
     private final Var a;
     private final Var b;
@@ -39,14 +40,42 @@ public final class DoraDense implements Layer {
      * @param random the source of {@code A}'s initial values
      */
     public DoraDense(Dense base, int rank, SplittableRandom random) {
+        this(base, base.weight().value(), rank, random);
+    }
+
+    private DoraDense(Dense base, Tensor frozen, int rank, SplittableRandom random) {
         this.base = base;
-        Tensor w = base.weight().value();
+        this.frozen = frozen;
+        Tensor w = frozen.unpacked();
         int in = w.shape().dim(0);
         int out = w.shape().dim(1);
         this.magnitude = Var.param(w.square().sum(0, true).sqrt());
         this.a = Var.param(Tensor.normal(Shape.of(in, rank), 0, (float) Math.sqrt(1.0 / in), random));
         this.b = Var.param(Tensor.zeros(Shape.of(rank, out)));
         this.bias = base.bias().value();
+    }
+
+    /**
+     * QDoRA: DoRA on a frozen base weight kept <em>quantized</em> (packed to {@code bits}
+     * per value with a scale per {@code group} rows, see {@code Tensor.quantized}), in the
+     * spirit of QLoRA (Dettmers et al. 2023, <a href="https://arxiv.org/abs/2305.14314">arXiv:2305.14314</a>).
+     * The adapter starts equal to the quantized layer and can learn to correct the
+     * quantization error as well as the task.
+     *
+     * @param base the layer to quantize and freeze
+     * @param rank the adapter rank
+     * @param bits bits per weight, 2 to 8
+     * @param group rows per scale; must divide the input size
+     * @param random the source of {@code A}'s initial values
+     * @return the adapter
+     */
+    public static DoraDense quantized(Dense base, int rank, int bits, int group, SplittableRandom random) {
+        return new DoraDense(base, base.weight().value().quantized(bits, group), rank, random);
+    }
+
+    /** @return the bytes of the frozen base weight (smaller when quantized) */
+    public long frozenBytes() {
+        return frozen.bytes();
     }
 
     /**
@@ -69,7 +98,7 @@ public final class DoraDense implements Layer {
 
     /** @return the combined weight {@code m * V / |V|_col} */
     public Var weight() {
-        Var v = a.matmul(b).add(base.weight().value());
+        Var v = a.matmul(b).add(frozen.unpacked());
         Var norm = v.square().sum(0, true).sqrt();
         return v.div(norm).mul(magnitude);
     }

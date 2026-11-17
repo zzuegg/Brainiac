@@ -7,9 +7,11 @@ import io.github.zzuegg.brainiac.experimental.train.DifferenceTargetPropagation;
 import io.github.zzuegg.brainiac.experimental.train.EquilibriumPropagation;
 import io.github.zzuegg.brainiac.experimental.train.FeedbackAlignment;
 import io.github.zzuegg.brainiac.experimental.train.ForwardForward;
+import io.github.zzuegg.brainiac.experimental.train.ForwardGradientLearner;
 import io.github.zzuegg.brainiac.experimental.train.MonoForward;
 import io.github.zzuegg.brainiac.experimental.train.NoProp;
 import io.github.zzuegg.brainiac.experimental.train.PredictiveCodingNetwork;
+import io.github.zzuegg.brainiac.experimental.train.SoftHebbClassifier;
 import io.github.zzuegg.brainiac.experimental.train.SyntheticGradients;
 import io.github.zzuegg.brainiac.nn.Brain;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -110,5 +112,17 @@ class LearningRulesVsBackpropTest {
     void equilibriumPropagationMatchesBackpropOnSpiral() {
         close(LearnerComparison.run("equilibrium propagation", new EquilibriumPropagation(Optimizer.adam(0.01f),
                 0.5f, 20, 8, 1, 2, 64, 3), SPIRAL, SPIRAL_TEST, 60, 50), spiralBackprop, 0.05);
+    }
+
+    @Test
+    void softHebbFeaturesWithALinearReadoutLearnDigits() {
+        close(LearnerComparison.run("softhebb + readout", new SoftHebbClassifier(64, 256, 10, 0.05f, 0.1f,
+                Optimizer.adam(0.05f), 1), DIGITS, DIGITS_TEST, 40, 50), digitsBackprop, 0.1);
+    }
+
+    @Test
+    void forwardGradientsWithoutABackwardPassLearnSpiral() {
+        close(LearnerComparison.run("forward gradient", new ForwardGradientLearner(SimpleMlp.tanh(1, 2, 32, 32, 3),
+                Optimizer.adam(0.01f), 32, 2), SPIRAL, SPIRAL_TEST, 60, 50), spiralBackprop, 0.25);
     }
 }
