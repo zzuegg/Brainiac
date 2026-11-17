@@ -25,6 +25,7 @@ class MatmulBenchmarkTest {
         assumeTrue(Boolean.getBoolean("brainiac.bench"), "benchmark: -Pbench");
         Device gpu = Device.available().stream().filter(d -> d.name().startsWith("vulkan")).findFirst().orElseThrow();
         System.out.println(gpu.name() + "; " + new VulkanBackend().status());
+        System.out.println("kernel tuning: " + VulkanBackend.loaded().map(VulkanBackend::tuning).orElse("none"));
         for (int[] s : List.of(new int[] {512, 512, 512}, new int[] {2048, 2048, 2048}, new int[] {4096, 4096, 4096},
                 new int[] {128, 4096, 4096}, new int[] {64, 4096, 4096}, new int[] {16, 4096, 4096})) {
             for (String mode : List.of("f16 coopmat", "f32", "f16")) {

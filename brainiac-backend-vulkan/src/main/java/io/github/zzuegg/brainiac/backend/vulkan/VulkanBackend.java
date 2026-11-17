@@ -111,12 +111,30 @@ public final class VulkanBackend implements Backend {
                         first = this;
                     }
                 }
-                if (Boolean.getBoolean("brainiac.vulkan.statistics")) {
+                boolean statistics = Boolean.getBoolean("brainiac.vulkan.statistics");
+                boolean teardown = !"false".equals(System.getProperty("brainiac.vulkan.teardown"));
+                if (statistics || teardown) {
+                    VkContext context = vk;
                     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                        if (vk.dispatches > 0) {
-                            System.err.println(name() + ": " + statistics());
+                        synchronized (VulkanBackend.this) {
+                            if (statistics && vk == context && context.dispatches > 0) {
+                                System.err.println(name() + ": " + statistics());
+                            }
+                            if (teardown && vk == context) {
+                                vk = null;   // later calls fail plainly instead of using a destroyed device
+                                try {
+                                    context.shutdown();
+                                } catch (RuntimeException | LinkageError e) {
+                                    // exiting anyway
+                                }
+                            }
                         }
-                    }, "vulkan-statistics"));
+                    }, "vulkan-exit"));
+                }
+                String mode = System.getProperty("brainiac.vulkan.tune", "auto");
+                if (!mode.equals("false") && !mode.equals("off")) {
+                    // forced once per run: further instances read what the first measured
+                    loadTuning(mode.equals("force") && FORCED.compareAndSet(false, true));
                 }
             } catch (RuntimeException | LinkageError e) {
                 unavailable = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -216,6 +234,70 @@ public final class VulkanBackend implements Backend {
     /** Commands recorded so far, fused or not; for tests. */
     synchronized long dispatchCount() {
         return vk == null ? 0 : vk.dispatches;
+    }
+
+    /**
+     * Uses the kept tuning for this device, or measures one (a few seconds) when there is none
+     * and the device is not the CPU, or always with {@code force}.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean FORCED = new java.util.concurrent.atomic.AtomicBoolean();
+
+    private void loadTuning(boolean force) {
+        java.nio.file.Path file = Tuning.file(vk.deviceKey);
+        Tuning kept = force ? null : Tuning.load(file);
+        if (kept != null) {
+            tuning = kept;
+            tuningNote = "tuned (" + file + ")";
+            return;
+        }
+        if (vk.softwareDevice && !force) {
+            return;
+        }
+        try {
+            tune(file);
+        } catch (RuntimeException e) {
+            tuning = new Tuning();
+            tuningNote = "defaults (tuning failed: " + e + ")";
+            System.err.println("brainiac: tuning the Vulkan kernels failed, using defaults: " + e);
+        }
+    }
+
+    private void tune(java.nio.file.Path file) {
+        System.err.println("brainiac: tuning the Vulkan kernels for " + vk.deviceName + " (once per device and driver)...");
+        long start = System.nanoTime();
+        Tuning t = new Tuning();
+        tuning = t;
+        String log = new Tuner(this, t).run(vk.coopMatrix);
+        double seconds = (System.nanoTime() - start) / 1e9;
+        if (Boolean.getBoolean("brainiac.vulkan.tuneLog")) {
+            System.err.print(log);
+        }
+        try {
+            t.save(file, vk.deviceName + ", tuned in " + Math.round(seconds) + " s; delete or run with "
+                    + "-Dbrainiac.vulkan.tune=force to measure again");
+            tuningNote = "tuned now (" + file + ")";
+        } catch (java.io.UncheckedIOException e) {
+            tuningNote = "tuned now, not kept: " + e.getMessage();
+        }
+        System.err.printf(java.util.Locale.ROOT, "brainiac: tuned in %.1f s: %s%n", seconds, t);
+    }
+
+    /**
+     * Measures this device's kernel choices again and keeps them, as {@code -Dbrainiac.vulkan.tune=force} does.
+     *
+     * @return the choices
+     */
+    public synchronized String retune() {
+        if (!isAvailable()) {
+            return "unavailable: " + unavailable;
+        }
+        tune(Tuning.file(vk.deviceKey));
+        return tuning.toString();
+    }
+
+    /** @return the kernel choices in use and where they come from */
+    public synchronized String tuning() {
+        return isAvailable() ? tuning + "; " + tuningNote : "unavailable: " + unavailable;
     }
 
     /** Waits until all recorded work is done; for timing. */
@@ -1038,15 +1120,31 @@ public final class VulkanBackend implements Backend {
     }
 
     /** Product tiles at least this many 64 x 64 tiles use them; smaller products use 32 x 32. */
-    private static final long BIG_TILES = Long.getLong("brainiac.vulkan.bigTileGroups", 128);
+    private long bigTiles() {
+        return tuning.get("bigTileGroups");
+    }
     /** Float16 products with at least this many rows use cooperative matrices where the device has them. */
-    private static final int COOP_ROWS = Integer.getInteger("brainiac.vulkan.coopRows", 64);
+    private int coopRows() {
+        return (int) Math.min(Integer.MAX_VALUE, tuning.get("coopRows"));
+    }
+
+    /** The cooperative-matrix tile shape in use; null if they are not. */
+    private Tuning.CoopShape coopShape() {
+        long i = tuning.get("coopShape");
+        return i < 0 ? null : Tuning.COOP_SHAPES.get((int) i);
+    }
+
+    /** Kernel choices for this device: see {@link Tuning} and {@link #tune(boolean)}. */
+    Tuning tuning = new Tuning();
+    private String tuningNote = "defaults";
     /**
      * Products with fewer tiles than this, and a long k, split k into pieces summed afterwards
      * ({@code -Dbrainiac.vulkan.splitBelow}). Weight gradients (width x width over a k of batch
      * times sequence) otherwise run as a few dozen work groups each walking all of k.
      */
-    private static final long SPLIT_BELOW = Long.getLong("brainiac.vulkan.splitBelow", 256);
+    private long splitBelow() {
+        return tuning.get("splitBelow");
+    }
 
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
@@ -1134,7 +1232,7 @@ public final class VulkanBackend implements Backend {
 
     /** Whether a float16 product has enough rows for the matrix cores, where the device has them. */
     private boolean coop(DType type, int m) {
-        return vk.coopMatrix && type == DType.FLOAT16 && m >= COOP_ROWS
+        return vk.coopMatrix && type == DType.FLOAT16 && m >= coopRows() && coopShape() != null
                 && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
     }
 
@@ -1160,12 +1258,14 @@ public final class VulkanBackend implements Backend {
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
         // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
         boolean coop = coop(z.dtype, m);
-        int tile = coop ? 128 : big >= BIG_TILES ? 64 : 32;
-        long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
+        Tuning.CoopShape shape = coop ? coopShape() : null;
+        int tileM = coop ? shape.rows() : big >= bigTiles() ? 64 : 32;
+        int tileN = coop ? shape.cols() : tileM;
+        long tiles = (long) batch * ceil(m, tileM) * ceil(n, tileN);
         int splits = 1;
         int chunk = k;
-        if (tiles < SPLIT_BELOW && k >= 1024) {
-            splits = (int) Math.min(ceil(k, 256), Math.max(2, 2 * SPLIT_BELOW / tiles));
+        if (tiles < splitBelow() && k >= 1024) {
+            splits = (int) Math.min(ceil(k, 256), Math.max(2, 2 * splitBelow() / tiles));
             chunk = ceil(ceil(k, splits), 16) * 16;
             splits = ceil(k, chunk);
         }
@@ -1185,9 +1285,9 @@ public final class VulkanBackend implements Backend {
                     .putInt((int) xo.col()).putInt((int) yo.row()).putInt((int) yo.col());
             // the strided variant only where an operand needs it: its addressing costs the plain case
             boolean plain = xo.row() == k && xo.col() == 1 && yo.row() == n && yo.col() == 1;
-            String name = coop ? "matmul_coop" : (tile == 64 ? "matmul64" : "matmul32")
+            String name = coop ? "matmul_coop" + shape.suffix() : (tileM == 64 ? "matmul64" : "matmul32")
                     + (plain ? "" : "s" + (xo.col() == 1 ? "" : "a") + (yo.col() == 1 ? "" : "b"));
-            vk.dispatch(shader(name, z.dtype), ceil(n, tile), ceil(m, tile), count,
+            vk.dispatch(shader(name, z.dtype), ceil(n, tileN), ceil(m, tileM), count,
                     target.slot(), x.slot(), y.slot());
         }
         if (splits > 1) {
@@ -1632,8 +1732,6 @@ public final class VulkanBackend implements Backend {
     private static final int ATTENTION_PIECE = Integer.getInteger("brainiac.vulkan.attentionPiece", 32);
     /** Products by packed weights split their rows into pieces until about this many work groups run. */
     private static final int PACKED_GROUPS = Integer.getInteger("brainiac.vulkan.packedGroups", 256);
-    /** The fewest rows a piece of a product by packed weights takes. */
-    private static final int PACKED_PIECE = Integer.getInteger("brainiac.vulkan.packedPiece", 64);
 
     /** Whether 5- and 6-bit levels are kept as nibbles plus high-bit planes ({@code -Dbrainiac.vulkan.packedPlanes=false}: a byte each). */
     private static final boolean PACKED_PLANES = !"false".equals(System.getProperty("brainiac.vulkan.packedPlanes"));
@@ -1821,6 +1919,15 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0 && n > 0 && m <= PACKED_TILE_ROWS) {
+            Packed p = packed(b);
+            VkStorage z = vs(out);
+            eager(vs(a), z);
+            VkStorage x = as(vs(a), z.dtype);
+            matmulPackedTiled(x, p, m, k, n, z);
+            done(x, vs(a));
+            return;
+        }
         if (m > PACKED_ROWS && !(b instanceof QuantizedRows) && k > 0) {
             // unpacked into a temporary, freed as soon as the product is recorded: its slot
             // goes back to the pool, and the hazard tracking orders any reuse after this read.
@@ -1842,7 +1949,8 @@ public final class VulkanBackend implements Backend {
         int columnGroups = ceil(n, 128);
         // enough pieces to fill the device, of at least PACKED_PIECE rows each, as matvec does:
         // with 256 a 896-wide model ran only 28 work groups and decoded at half f16's speed
-        int pieces = Math.max(1, Math.min(ceil(k, PACKED_PIECE), PACKED_GROUPS / columnGroups));
+        int pieces = Math.max(1, Math.min(ceil(k, (int) tuning.get("packedPiece")),
+                (int) tuning.get("packedGroups") / columnGroups));
         int chunk = ceil(ceil(k, pieces), 2) * 2;
         pieces = ceil(k, chunk);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
@@ -1855,6 +1963,45 @@ public final class VulkanBackend implements Backend {
         vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
         split.release();
         done(x, vs(a));
+    }
+
+    /**
+     * Whether products of more rows than {@link #PACKED_ROWS} stage a packed matrix's values in
+     * the tiles from its levels ({@code -Dbrainiac.vulkan.packedTiles=false}: unpack it first).
+     */
+    private static final boolean PACKED_TILES =
+            !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.packedTiles"));
+    /** The most rows for which they do ({@code -Dbrainiac.vulkan.packedTileRows}); more unpack first. */
+    private static final int PACKED_TILE_ROWS =
+            PACKED_TILES ? Integer.getInteger("brainiac.vulkan.packedTileRows", Integer.MAX_VALUE) : 0;
+
+    /** matmul's tiles over a packed matrix: no unpacked copy of it, read as levels. */
+    private void matmulPackedTiled(VkStorage x, Packed p, int m, int k, int n, VkStorage z) {
+        boolean coop = coop(z.dtype, m);
+        Tuning.CoopShape shape = coop ? coopShape() : null;
+        int tileM = coop ? shape.rows() : (long) ceil(m, 64) * ceil(n, 64) >= bigTiles() ? 64 : 32;
+        int tileN = coop ? shape.cols() : tileM;
+        long tiles = (long) ceil(m, tileM) * ceil(n, tileN);
+        int splits = 1;
+        int chunk = k;
+        if (tiles < splitBelow() && k >= 1024) {
+            splits = (int) Math.min(ceil(k, 256), Math.max(2, 2 * splitBelow() / tiles));
+            // whole steps of the tiles (up to 64 values of k): their scales stage once per step
+            chunk = ceil(ceil(k, splits), 64) * 64;
+            splits = ceil(k, chunk);
+        }
+        long mn = (long) m * n;
+        VkStorage target = splits == 1 ? z : raw(splits * mn, z.dtype, null);
+        java.nio.ByteBuffer push = vk.push().putLong(x.address());
+        p.push(push);
+        push.putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt((int) mn).putInt(splits).putInt(chunk)
+                .putInt(p.group()).putInt(p.layout()).putInt(p.perSuper()).putFloat(p.shift());
+        String name = coop ? "matmul_coop_packed" + shape.suffix() : tileM == 64 ? "matmul64p" : "matmul32p";
+        vk.dispatch(shader(name, z.dtype), ceil(n, tileN), ceil(m, tileM), splits, target.slot(), p.reads(x));
+        if (splits > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, mn, splits, mn);
+            target.release();
+        }
     }
 
     // ------------------------------------------------------------------ windows and indices

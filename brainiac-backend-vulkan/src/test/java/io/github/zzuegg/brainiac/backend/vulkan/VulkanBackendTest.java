@@ -798,7 +798,7 @@ class VulkanBackendTest {
 
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
-        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
+        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4", "4, 32, 70", "8, 1536, 40", "4, 3, 130", "3, 48, 70", "4, 16, 140"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
         packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77, false);
         packedMatches(bits, group, m, 768, 256, false);
@@ -814,7 +814,8 @@ class VulkanBackendTest {
     /** Scales and offsets factored as GGUF's k-quants store them, kept factored on the device. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"4, 32, 1, true", "5, 32, 3, true", "6, 16, 8, false",
-            "2, 16, 2, true", "3, 16, 4, false", "8, 32, 12, false", "4, 32, 2, false", "5, 32, 1, false"})
+            "2, 16, 2, true", "3, 16, 4, false", "8, 32, 12, false", "4, 32, 2, false", "5, 32, 1, false",
+            "4, 32, 70, true", "6, 16, 33, false"})
     void packedMatricesWithFactoredScalesMatchTheCpu(int bits, int group, int m, boolean withOffsets) {
         packedMatches(bits, group, m, 192, 77, withOffsets, true);
         packedMatches(bits, group, m, 768, 256, withOffsets, true);
@@ -822,7 +823,7 @@ class VulkanBackendTest {
 
     /** 8-bit levels of at most 16 values (IQ4_NL's table), kept as 4-bit indices on the device. */
     @ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 8, 12})
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 8, 12, 70})
     void packedMatricesOfFewLevelsMatchTheCpu(int m) {
         int[] table = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
         for (int[] dims : new int[][] {{192, 77}, {768, 256}}) {
@@ -936,6 +937,64 @@ class VulkanBackendTest {
                 double tolerance = (type == DType.FLOAT64 ? 1e-5 : type == DType.FLOAT16 ? 4e-3 : 3e-2) * scale;
                 for (int i = 0; i < expected.length; i++) {
                     assertEquals(expected[i], actual[i], tolerance, what + ", " + type + " at " + i);
+                }
+            }
+        }
+    }
+
+    /** Every kernel choice a tuning can make computes the same products. */
+    @Test
+    void everyTuningChoiceMatchesTheCpu() {
+        int[][] shapes = {{130, 1100, 200}, {70, 64, 300}, {257, 2050, 129}, {300, 96, 260}};
+        List<String[]> choices = new java.util.ArrayList<>();
+        for (int c = -1; c < Tuning.COOP_SHAPES.size(); c++) {
+            choices.add(new String[] {"coopShape", Integer.toString(c), "coopRows", "1"});
+        }
+        choices.add(new String[] {"bigTileGroups", "1", "splitBelow", "100000"});
+        choices.add(new String[] {"bigTileGroups", "100000", "splitBelow", "1"});
+        for (String[] choice : choices) {
+            for (int i = 0; i < choice.length; i += 2) {
+                System.setProperty("brainiac.vulkan." + choice[i], choice[i + 1]);
+            }
+            try {
+                for (int[] s : shapes) {
+                    Tensor a = random(s[0], s[0], s[1]);
+                    Tensor b = random(s[2], s[1], s[2]);
+                    float[] expected = a.matmul(b).toArray();
+                    for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+                        if (!supported(type)) {
+                            continue;
+                        }
+                        float[] actual = a.to(type).to(gpu).matmul(b.to(type).to(gpu)).toArray();
+                        double tol = (type == DType.FLOAT16 ? 0.05 : 1e-3) * Math.sqrt(s[1]);
+                        for (int j = 0; j < expected.length; j++) {
+                            assertEquals(expected[j], actual[j], tol, String.join(" ", choice) + ", " + type + ", "
+                                    + java.util.Arrays.toString(s) + " at " + j);
+                        }
+                    }
+                }
+                // packed weights in the tiles: 4 bits in groups of 32
+                int rows = 1024;
+                int cols = 136;
+                byte[] levels = new byte[rows * cols];
+                SplittableRandom r = new SplittableRandom(7);
+                for (int j = 0; j < levels.length; j++) {
+                    levels[j] = (byte) (r.nextInt(16) - 8);
+                }
+                float[] scales = new float[rows / 32 * cols];
+                java.util.Arrays.fill(scales, 0.01f);
+                Tensor w = Tensor.packed(PackedMatrix.of(levels, scales, rows, cols, 4, 32), CPU);
+                Tensor x = random(9, 150, rows);
+                float[] expected = x.matmul(w).toArray();
+                if (supported(DType.FLOAT16)) {
+                    float[] actual = x.to(DType.FLOAT16).to(gpu).matmul(w.to(gpu)).toArray();
+                    for (int j = 0; j < expected.length; j++) {
+                        assertEquals(expected[j], actual[j], 0.05, String.join(" ", choice) + ", packed at " + j);
+                    }
+                }
+            } finally {
+                for (int i = 0; i < choice.length; i += 2) {
+                    System.clearProperty("brainiac.vulkan." + choice[i]);
                 }
             }
         }
