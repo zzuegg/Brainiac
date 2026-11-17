@@ -476,6 +476,7 @@ public final class OpenClBackend implements Backend {
                     #define T float
                     #define RAW float
                     #define ACC float
+                    #define ACC4 float4
                     #define LOAD(p, i) ((p)[i])
                     #define STORE(p, i, v) ((p)[i] = (v))
                     """;
@@ -484,6 +485,7 @@ public final class OpenClBackend implements Backend {
                     #define T double
                     #define RAW double
                     #define ACC double
+                    #define ACC4 double4
                     #define LOAD(p, i) ((p)[i])
                     #define STORE(p, i, v) ((p)[i] = (v))
                     """;
@@ -491,6 +493,7 @@ public final class OpenClBackend implements Backend {
                     #define T half
                     #define RAW ushort
                     #define ACC float
+                    #define ACC4 float4
                     #define LOAD(p, i) vload_half((i), (p))
                     #define STORE(p, i, v) vstore_half_rte((v), (i), (p))
                     """;
@@ -498,6 +501,7 @@ public final class OpenClBackend implements Backend {
                     #define T ushort
                     #define RAW ushort
                     #define ACC float
+                    #define ACC4 float4
                     ushort to_bf16(float v) {
                         uint b = as_uint(v);
                         if (isnan(v)) return (ushort) ((b >> 16) | 0x40);
@@ -2487,9 +2491,30 @@ public final class OpenClBackend implements Backend {
         Packed p = packed(b);
         ClStorage o = cl(out);
         PackedMatrix h = p.host();
-        run(o.dtype, "matmul_packed", n, as(a, o.dtype), p.levels(), p.scales(), o, m, k, n, h.group(),
-                h.nibbles() ? 1 : 0);
+        long columnGroups = (n + 127) / 128;
+        int pieces = packedPieces(k, columnGroups);
+        int chunk = ((k + pieces - 1) / pieces + 1) & ~1;
+        pieces = (k + chunk - 1) / chunk;
+        long mn = (long) m * n;
+        ClStorage target = pieces == 1 ? o : raw(pieces * mn, o.dtype);
+        run(o.dtype, "matmul_packed", new long[] {columnGroups * 32, 8, pieces}, new long[] {32, 8, 1},
+                as(a, o.dtype), p.levels(), p.scales(), target, m, k, n, h.group(), h.nibbles() ? 1 : 0, chunk);
+        if (pieces > 1) {
+            reduce(ReduceOp.SUM, target, 1, pieces, mn, o);
+            // not released here: the reduction may be deferred
+        }
     }
+
+    /**
+     * Pieces of rows a product by packed weights splits into: enough work groups to fill the
+     * device, but at least 256 rows each, since every piece costs a pass that adds them up.
+     */
+    static int packedPieces(int k, long columnGroups) {
+        return (int) Math.max(1, Math.min((k + 255) / 256, PACKED_GROUPS / columnGroups));
+    }
+
+    /** Products by packed weights split rows until about this many work groups run. */
+    private static final long PACKED_GROUPS = Long.getLong("brainiac.opencl.packedGroups", 256);
 
     /** The largest head size the attention kernels keep in registers ({@code ATT_D}). */
     private static final int ATTENTION_SIZE = 64;

@@ -292,17 +292,19 @@ class VulkanBackendTest {
         assertTrue(onGpu.isPacked());
         org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
         float[] expected = x.matmul(onCpu).toArray();
-        org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), 2e-4f, what);
+        double scale = 1;
+        for (float v : expected) {
+            scale = Math.max(scale, Math.abs(v));
+        }
+        // sums in another order: errors grow with the largest value
+        float close = (float) (5e-5 * scale);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), close, what);
         org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(),
-                2e-4f, what);
+                close, what);
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {
                 // inputs rounded to 16 bits: errors relative to the largest output
                 float[] actual = x.to(type).to(gpu).matmul(onGpu).toArray();
-                double scale = 1;
-                for (float v : expected) {
-                    scale = Math.max(scale, Math.abs(v));
-                }
                 double tolerance = (type == DType.FLOAT64 ? 1e-5 : type == DType.FLOAT16 ? 4e-3 : 3e-2) * scale;
                 for (int i = 0; i < expected.length; i++) {
                     assertEquals(expected[i], actual[i], tolerance, what + ", " + type + " at " + i);

@@ -776,8 +776,9 @@ public final class VulkanBackend implements Backend {
         VkStorage z = vs(out);
         VkStorage x = as(vs(a), z.dtype);
         int columnGroups = ceil(n, 128);
-        // pieces of at least 64 rows, enough of them to fill the device
-        int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
+        // enough pieces to fill the device, of at least 256 rows each: every piece costs a pass
+        // that adds them up, which small products would mostly spend waiting
+        int pieces = Math.max(1, Math.min(ceil(k, 256), PACKED_GROUPS / columnGroups));
         int chunk = ceil(ceil(k, pieces), 2) * 2;
         pieces = ceil(k, chunk);
         long mn = (long) m * n;

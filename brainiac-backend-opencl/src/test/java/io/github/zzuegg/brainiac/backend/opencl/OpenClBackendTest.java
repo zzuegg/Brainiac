@@ -248,11 +248,17 @@ class OpenClBackendTest {
 
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
-        "4, 3, 9", "8, 64, 20"})
+        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
-        int rows = 192;
-        int cols = 77;
-        SplittableRandom r = new SplittableRandom(bits * 100L + m);
+        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77);
+        packedMatches(bits, group, m, 768, 256);
+    }
+
+    private void packedMatches(int bits, int group, int m, int rows, int cols) {
+        if (rows % group != 0) {
+            return;
+        }
+        SplittableRandom r = new SplittableRandom(bits * 100L + m + rows);
         int limit = (1 << (bits - 1)) - 1;
         byte[] levels = new byte[rows * cols];
         for (int i = 0; i < levels.length; i++) {
@@ -267,12 +273,21 @@ class OpenClBackendTest {
         Tensor x = random(3, m, rows);
         Tensor onCpu = Tensor.packed(w, CPU);
         Tensor onGpu = onCpu.to(gpu);
+        String what = bits + " bits, groups of " + group + ", " + m + " x " + rows + " x " + cols;
         assertTrue(onGpu.isPacked());
-        assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f);
-        assertArrayEquals(x.matmul(onCpu).toArray(), x.to(gpu).matmul(onGpu).toArray(), 1e-4f, bits + " bits, m " + m);
-        assertArrayEquals(x.matmul(onCpu).toArray(), x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(), 1e-4f);
+        assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
+        float[] expected = x.matmul(onCpu).toArray();
+        double scale = 1;
+        for (float v : expected) {
+            scale = Math.max(scale, Math.abs(v));
+        }
+        // sums in another order: errors grow with the largest value
+        float close = (float) (5e-5 * scale);
+        assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), close, what);
+        assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(), close, what);
         if (supported(DType.FLOAT16)) {
-            assertArrayEquals(x.matmul(onCpu).toArray(), x.to(gpu).to(DType.FLOAT16).matmul(onGpu).toArray(), 3e-2f);
+            assertArrayEquals(expected, x.to(gpu).to(DType.FLOAT16).matmul(onGpu).toArray(), (float) (4e-3 * scale),
+                    what);
         }
     }
 }

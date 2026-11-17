@@ -193,11 +193,14 @@ public final class Benchmarks {
         return cases;
     }
 
-    /** Multiplies {@code repeat} times and waits for the result. */
+    /**
+     * Multiplies {@code repeat} times in a chain, each product by the previous one's result,
+     * and waits for the last: a backend that defers work then has to do every product.
+     */
     private static void products(Tensor v, Tensor w, int repeat) {
-        Tensor out = null;
+        Tensor out = v;
         for (int i = 0; i < repeat; i++) {
-            out = v.matmul(w);
+            out = out.matmul(w);
         }
         if (repeat > 1) {
             out.toArray();
