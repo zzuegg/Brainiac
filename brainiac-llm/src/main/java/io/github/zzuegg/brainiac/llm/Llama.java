@@ -1197,6 +1197,38 @@ public final class Llama implements LanguageModel {
         return loss(batch.tokens(), next, positions, masks, Math.max(1, (1 << 24) / config.vocabSize()));
     }
 
+    /**
+     * The log-probability of each row's marked tokens, summed: {@code sum log p(target)} over
+     * the steps whose target is not -1, as preference losses such as DPO need (see
+     * {@link PreferenceTraining}). Unlike {@link #loss(InstructionData.Batch)} it holds the
+     * {@code [tokens, vocab]} log-probabilities, so it suits short rows.
+     *
+     * @param batch padded rows, one example each (see {@link InstructionData#pad})
+     * @return {@code [rows]}
+     */
+    public Var sequenceLogProbs(InstructionData.Batch batch) {
+        int rows = batch.tokens().length;
+        int steps = batch.tokens()[0].length;
+        int[][] positions = new int[rows][steps];
+        float[] next = new float[rows * steps];
+        for (int b = 0; b < rows; b++) {
+            int[] seg = batch.segments()[b];
+            for (int t = 0; t < steps; t++) {
+                if (t > 0 && seg[t] != seg[t - 1] && seg[t] != 0) {
+                    throw new IllegalArgumentException("sequenceLogProbs needs one example per row, not packed rows");
+                }
+                positions[b][t] = t;
+                next[b * steps + t] = batch.targets()[b][t];
+            }
+        }
+        Var h = hidden(batch.tokens(), positions, null, null).reshape(rows * steps, config.hidden());
+        Var logits = softcap(head(h, false));
+        Tensor ids = Tensor.of(Shape.of(rows * steps, 1), next, headDevice());
+        Tensor pick = ids.equalTo(Tensor.arange(config.vocabSize()).to(headDevice())).to(logits.value().dtype());
+        Var logp = logits.sub(logits.logsumexp(-1, true));
+        return logp.mul(pick).sum(-1, false).reshape(rows, steps).sum(1, false);
+    }
+
     /** Causal within each segment, optionally windowed: {@code [rows, 1, steps, steps]}. */
     private Tensor segmentMask(int[][] segments, int window, Device device, DType dtype) {
         int rows = segments.length;
