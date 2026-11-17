@@ -122,6 +122,9 @@ final class Registry {
         simple("relative_attention", RelativeAttention.class, RelativeAttention::write, RelativeAttention::read);
         simple("hifigan_block", HifiGanBlock.class, HifiGanBlock::write, HifiGanBlock::read);
         simple("wavenet", WaveNet.class, WaveNet::write, WaveNet::read);
+        simple("style_norm", StyleNorm.class, StyleNorm::write, StyleNorm::read);
+        simple("adain_res_block", AdainResBlock.class, AdainResBlock::write, AdainResBlock::read);
+        simple("adain_snake_block", AdainSnakeBlock.class, AdainSnakeBlock::write, AdainSnakeBlock::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
                 Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
