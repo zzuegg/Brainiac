@@ -431,6 +431,30 @@ class VulkanBackendTest {
         }
     }
 
+    /** A few rows times a transposed matrix (the tied output head while decoding), read in place. */
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
+    void fewRowsTimesATransposedMatrixMatchTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        for (int[] mkn : new int[][] {{1, 64, 300}, {2, 33, 70}, {5, 128, 1001}, {8, 70, 9}, {3, 4, 5}}) {
+            int m = mkn[0];
+            int k = mkn[1];
+            int n = mkn[2];
+            Tensor a = random(m + 17L * k, m, k);
+            Tensor e = random(n + 19L * k, n, k);   // stored [n, k]
+            Tensor rows = random(n + 23L * k, n + 2, k);
+            Tensor wide = random(n + 29L * k, n, k + 4);
+            String at = m + "x" + k + "x" + n;
+            same(type, "a eT " + at, t -> a.to(type).to(t.device()).matmul(t.transpose()), e);
+            same(type, "a sliced rows eT " + at, t -> a.to(type).to(t.device()).matmul(t.slice(0, 1, n + 1)
+                    .transpose()), rows);
+            same(type, "a sliced columns eT " + at, t -> a.to(type).to(t.device()).matmul(t.slice(1, 4, k + 4)
+                    .transpose()), wide);
+            same(type, "a odd sliced columns eT " + at, t -> a.to(type).to(t.device()).matmul(t.slice(1, 1, k + 1)
+                    .transpose()), wide);
+        }
+    }
+
     /** Embedding gradients of a small vocabulary: long index lists, added up in slices. */
     @ParameterizedTest
     @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
