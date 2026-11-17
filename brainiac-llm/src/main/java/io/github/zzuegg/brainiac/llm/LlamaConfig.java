@@ -49,7 +49,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
                 Json.number(ropeNode, "factor", 1), Json.number(ropeNode, "low_freq_factor", 1),
                 Json.number(ropeNode, "high_freq_factor", 4),
                 (int) Json.integer(ropeNode, "original_max_position_embeddings",
-                        Json.integer(config, "max_position_embeddings", 2048)), null);
+                        Json.integer(config, "max_position_embeddings", 2048)), null)
+                .withYarn(Json.number(ropeNode, "beta_fast", 32), Json.number(ropeNode, "beta_slow", 1),
+                        Json.number(ropeNode, "attention_factor", 0));
         boolean bias = config.containsKey("attention_bias") ? Boolean.TRUE.equals(config.get("attention_bias"))
                 : type.equals("qwen2");
         return new LlamaConfig(type, (int) Json.integer(config, "vocab_size"), hidden,
@@ -83,7 +85,8 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         Rope.Settings rope = new Rope.Settings(headDim, theta, scaling.equals("none") ? "default" : scaling,
                 number(m, a + ".rope.scaling.factor", 1), 1, 4,
                 (int) number(m, a + ".rope.scaling.original_context_length", number(m, a + ".context_length", 2048)),
-                null);
+                null).withYarn(number(m, a + ".rope.scaling.yarn_beta_fast", 32),
+                        number(m, a + ".rope.scaling.yarn_beta_slow", 1), 0);
         return new LlamaConfig(a, vocab, hidden, (int) number(m, a + ".feed_forward_length", -1),
                 (int) number(m, a + ".block_count", -1), heads,
                 (int) number(m, a + ".attention.head_count_kv", heads), headDim,
@@ -127,6 +130,13 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
             s.put("low_freq_factor", rope.lowFreqFactor());
             s.put("high_freq_factor", rope.highFreqFactor());
             s.put("original_max_position_embeddings", (long) rope.originalMaxPositions());
+            if (rope.type().equals("yarn")) {
+                s.put("beta_fast", rope.betaFast());
+                s.put("beta_slow", rope.betaSlow());
+                if (rope.attentionFactor() > 0) {
+                    s.put("attention_factor", rope.attentionFactor());
+                }
+            }
             c.put("rope_scaling", s);
         }
         c.put("tie_word_embeddings", tieEmbeddings);
