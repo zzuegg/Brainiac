@@ -782,6 +782,40 @@ public final class Tensor {
         return new Tensor(outShape, first.device, out);
     }
 
+    /**
+     * Overwrites part of this tensor in place: along {@code axis}, positions {@code start} to
+     * {@code start + values.dim(axis)} take {@code values}. Tensors are otherwise never
+     * changed; this is for buffers filled step by step, such as a key/value cache, so a
+     * step writes only its new part instead of copying the whole buffer.
+     *
+     * <p>Results computed from this tensor must be computed first (see {@link #evaluate}),
+     * or they may see the new values.
+     *
+     * @param axis the axis; negative counts from the end
+     * @param start where the values go along it
+     * @param values the new values: this tensor's shape except along {@code axis}; converted to its type
+     */
+    public void write(int axis, int start, Tensor values) {
+        sameDevice(values);
+        if (isPacked()) {
+            throw new UnsupportedOperationException("cannot write into a packed matrix");
+        }
+        int a = axis(axis);
+        int[] dims = shape.toArray();
+        int[] v = values.shape.toArray();
+        boolean fits = v.length == dims.length && start >= 0 && start + v[a] <= dims[a];
+        for (int i = 0; fits && i < v.length; i++) {
+            fits = i == a || v[i] == dims[i];
+        }
+        if (!fits) {
+            throw new IllegalArgumentException("cannot write " + values.shape + " at " + start + " along axis " + a
+                    + " of " + shape);
+        }
+        Tensor t = values.to(dtype());
+        long[] strides = shape.strides();
+        backend().copy(t.storage(), 0, t.shape.strides(), v, storage, start * strides[a], strides);
+    }
+
     private Tensor strided(long[] strides, Shape outShape) {
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
         backend().copy(storage(), strides, outShape.toArray(), out);

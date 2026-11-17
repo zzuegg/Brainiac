@@ -364,7 +364,11 @@ public final class Llama implements LanguageModel {
         return y.to(x.dtype()).mul(weight);
     }
 
-    /** The cached keys and values of each block. */
+    /**
+     * The keys and values of each block, in buffers that grow by doubling: each step writes
+     * only its new keys and values, and attention reads the whole buffer with the unused
+     * end masked, so no step copies what earlier steps cached.
+     */
     private static final class Cache implements State {
         final Tensor[] keys;
         final Tensor[] values;
@@ -373,6 +377,7 @@ public final class Llama implements LanguageModel {
         /** Per sequence: the position of the next real token. */
         int[] next;
         int length;
+        int capacity;
 
         Cache(int layers, int batch) {
             keys = new Tensor[layers];
@@ -386,21 +391,48 @@ public final class Llama implements LanguageModel {
             return length;
         }
 
+        /** Makes room for {@code steps} more, keeping what is cached. */
+        void reserve(int steps, int kvHeads, int headDim, DType dtype, Device device) {
+            int need = length + steps;
+            if (need <= capacity) {
+                return;
+            }
+            int grown = Math.max(need, Math.max(64, 2 * capacity));
+            int batch = next.length;
+            for (int l = 0; l < keys.length; l++) {
+                Tensor k = Tensor.zeros(Shape.of(batch, kvHeads, grown, headDim), dtype, device);
+                Tensor v = Tensor.zeros(Shape.of(batch, kvHeads, grown, headDim), dtype, device);
+                Tensor.evaluate(List.of(k, v));
+                if (length > 0) {
+                    k.write(2, 0, keys[l].slice(2, 0, length));
+                    v.write(2, 0, values[l].slice(2, 0, length));
+                    keys[l].release();
+                    values[l].release();
+                }
+                keys[l] = k;
+                values[l] = v;
+            }
+            capacity = grown;
+        }
+
         @Override
         public State select(int[] rows) {
             Cache c = new Cache(keys.length, rows.length);
-            if (length > 0) {
+            if (capacity > 0) {
                 Tensor index = indices(rows, keys[0].device());
                 for (int l = 0; l < keys.length; l++) {
                     c.keys[l] = keys[l].gather(0, index);
                     c.values[l] = values[l].gather(0, index);
                 }
+                Tensor.evaluate(java.util.Arrays.asList(c.keys));
+                Tensor.evaluate(java.util.Arrays.asList(c.values));
             }
             for (int i = 0; i < rows.length; i++) {
                 c.padding[i] = padding[rows[i]].clone();
                 c.next[i] = next[rows[i]];
             }
             c.length = length;
+            c.capacity = capacity;
             return c;
         }
     }
@@ -436,13 +468,8 @@ public final class Llama implements LanguageModel {
         if (batch != cache.next.length) {
             throw new IllegalArgumentException("the state holds " + cache.next.length + " sequences, got " + batch);
         }
+        cache.reserve(steps, config.kvHeads(), config.headDim(), dtype, device);
         int[][] positions = new int[batch][steps];
-        boolean anyPad = padding != null;
-        for (boolean[] p : cache.padding) {
-            for (boolean x : p) {
-                anyPad |= x;
-            }
-        }
         boolean[][] keysPad = new boolean[batch][];
         for (int b = 0; b < batch; b++) {
             keysPad[b] = java.util.Arrays.copyOf(cache.padding[b], cache.length + steps);
@@ -452,26 +479,27 @@ public final class Llama implements LanguageModel {
                 positions[b][t] = pad ? 1 : cache.next[b]++;
             }
         }
-        Tensor bias = null;
-        if (anyPad) {
-            // causal and padding together: [batch, 1, steps, keys]
-            int keys = cache.length + steps;
-            float[] m = new float[batch * steps * keys];
-            for (int b = 0; b < batch; b++) {
-                for (int t = 0; t < steps; t++) {
-                    for (int k = 0; k < keys; k++) {
-                        if (k > cache.length + t || keysPad[b][k]) {
-                            m[(b * steps + t) * keys + k] = -1e9f;
-                        }
+        // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]
+        int keys = cache.capacity;
+        float[] m = new float[batch * steps * keys];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                int row = (b * steps + t) * keys;
+                for (int k = 0; k < keys; k++) {
+                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]) {
+                        m[row + k] = -1e9f;
                     }
                 }
             }
-            bias = Tensor.of(Shape.of(batch, 1, steps, keys), m, device).to(dtype);
         }
+        Tensor bias = Tensor.of(Shape.of(batch, 1, steps, keys), m, device).to(dtype);
         Var logits = run(tokens, positions, cache, bias);
         cache.padding = keysPad;
         cache.length += steps;
-        return logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
+        Tensor out = logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
+        // computed before the next step writes into the cache it read
+        Tensor.evaluate(List.of(out));
+        return out;
     }
 
     private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
@@ -494,12 +522,10 @@ public final class Llama implements LanguageModel {
             k = rope.apply(k, positions);
             boolean causal = steps > 1;
             if (cache != null) {
-                if (cache.keys[l] != null) {
-                    k = Var.concat(2, Var.of(cache.keys[l]), k);
-                    v = Var.concat(2, Var.of(cache.values[l]), v);
-                }
-                cache.keys[l] = k.value();
-                cache.values[l] = v.value();
+                cache.keys[l].write(2, cache.length, k.value());
+                cache.values[l].write(2, cache.length, v.value());
+                k = Var.of(cache.keys[l]);
+                v = Var.of(cache.values[l]);
             }
             Var a = bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
                     : Functional.attention(q, k, v, causal, scale);
