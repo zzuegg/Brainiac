@@ -39,6 +39,17 @@ class ServerToolsTest {
         }
     }
 
+    private static int status(OpenAiServer server, String body) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + "/v1/chat/completions")
+                .toURL().openConnection();
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        try (OutputStream out = c.getOutputStream()) {
+            out.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        return c.getResponseCode();
+    }
+
     @Test
     void toolCallsComeBackAsToolCalls() throws IOException {
         PretrainedTokenizer tok = AgentTest.tokenizer();
@@ -46,7 +57,8 @@ class ServerToolsTest {
                 "Checking.<tool_call>{\"name\": \"weather\", \"arguments\": {\"city\": \"Vienna\"}}</tool_call>",
                 "It is 21 C.",
                 "<tool_call>{\"name\": \"weather\", \"arguments\": {\"city\": \"Rome\"}}</tool_call>",
-                "plain"));
+                "plain",
+                "{\"name\": \"weather\", \"arguments\": {\"city\": \"Oslo\"}}"));
         Generator gen = new Generator(model, tok);
         try (OpenAiServer server = OpenAiServer.start(new InetSocketAddress("127.0.0.1", 0), "s", gen, tok,
                 Set.of(AgentTest.END))) {
@@ -76,7 +88,7 @@ class ServerToolsTest {
             // streamed: the call arrives as one delta
             String events = post(server, "{\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Rome?\"}],"
                     + TOOLS + "}");
-            assertTrue(events.contains("\"tool_calls\":[{\"id\":\"call_"), events);
+            assertTrue(events.contains("\"tool_calls\":[{\"index\":0,\"id\":\"call_"), events);
             assertTrue(events.contains("\"finish_reason\":\"tool_calls\""), events);
             assertTrue(events.endsWith("data: [DONE]\n\n"), events);
 
@@ -85,6 +97,19 @@ class ServerToolsTest {
                     + "\"content\":\"x\"}]," + TOOLS + "}")));
             choice = Json.object(Json.array(r.get("choices")).getFirst());
             assertEquals("plain", Json.object(choice.get("message")).get("content"));
+
+            // a named function is forced: the reply is held to the call's schema
+            r = Json.object(Json.parse(post(server, "{\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":"
+                    + "\"weather\"}},\"temperature\":0,\"messages\":[{\"role\":\"user\",\"content\":\"Oslo?\"}]," + TOOLS + "}")));
+            choice = Json.object(Json.array(r.get("choices")).getFirst());
+            assertEquals("tool_calls", choice.get("finish_reason"));
+            Map<String, Object> forced = Json.object(Json.object(Json.array(Json.object(choice.get("message"))
+                    .get("tool_calls")).getFirst()).get("function"));
+            assertEquals("{\"city\":\"Oslo\"}", forced.get("arguments"));
+            assertEquals(400, status(server, "{\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"nope\"}},"
+                    + "\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]," + TOOLS + "}"));
+            assertEquals(400, status(server, "{\"tool_choice\":\"sometimes\",\"messages\":[{\"role\":\"user\","
+                    + "\"content\":\"x\"}]," + TOOLS + "}"));
         }
     }
 }

@@ -15,6 +15,7 @@ import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -23,6 +24,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * A <a href="https://github.com/ggml-org/ggml/blob/master/docs/gguf.md">GGUF</a> file, the
@@ -95,7 +98,14 @@ public final class Gguf implements WeightSource {
         }
     }
 
-    private record Entry(Format format, Shape shape, long offset, long bytes) {
+    private record Entry(Format format, Shape shape, MemorySegment data, long offset, long bytes) {
+    }
+
+    /** Names a shard of a split model, as llama.cpp's {@code gguf-split} writes them. */
+    private static final Pattern SHARD = Pattern.compile("(.*)-(\\d{5})-of-(\\d{5})\\.gguf");
+
+    /** One file's header and tensor data. */
+    private record Part(int version, Map<String, Object> metadata, Map<String, Entry> entries) {
     }
 
     private final Path path;
@@ -103,16 +113,16 @@ public final class Gguf implements WeightSource {
     private final int version;
     private final Map<String, Object> metadata;
     private final Map<String, Entry> entries;
-    private final MemorySegment data;
+    private final int files;
 
     private Gguf(Path path, Arena arena, int version, Map<String, Object> metadata, Map<String, Entry> entries,
-            MemorySegment data) {
+            int files) {
         this.path = path;
         this.arena = arena;
         this.version = version;
         this.metadata = metadata;
         this.entries = entries;
-        this.data = data;
+        this.files = files;
     }
 
     /** Reads the header fields in order. */
@@ -193,16 +203,69 @@ public final class Gguf implements WeightSource {
     }
 
     /**
-     * Opens and maps a GGUF file (versions 2 and 3).
+     * Opens and maps a GGUF file (versions 2 and 3). A model split by llama.cpp's {@code
+     * gguf-split} into {@code name-00001-of-00003.gguf} and its siblings is opened whole from
+     * any of its shards: the metadata is the first shard's and the tensors are all of them.
      *
-     * @param file the {@code .gguf} file
+     * @param file the {@code .gguf} file, or one shard of a split model
      * @return the opened file; close it to unmap
      * @throws UncheckedIOException if it cannot be read
-     * @throws IllegalArgumentException if it is not a valid GGUF file
+     * @throws IllegalArgumentException if it is not a valid GGUF file, or a shard is missing
      */
     public static Gguf open(Path file) {
         Objects.requireNonNull(file, "file");
+        Matcher shard = SHARD.matcher(file.getFileName().toString());
+        List<Path> paths = new ArrayList<>();
+        if (shard.matches()) {
+            int count = Integer.parseInt(shard.group(3));
+            if (count < 1) {
+                throw new IllegalArgumentException(file + ": a split of 0 files");
+            }
+            for (int i = 1; i <= count; i++) {
+                paths.add(file.resolveSibling(String.format("%s-%05d-of-%05d.gguf", shard.group(1), i, count)));
+            }
+        } else {
+            paths.add(file);
+        }
         Arena arena = Arena.ofShared();
+        try {
+            Part first = null;
+            Map<String, Entry> entries = new LinkedHashMap<>();
+            for (int i = 0; i < paths.size(); i++) {
+                Path p = paths.get(i);
+                if (paths.size() > 1 && !Files.exists(p)) {
+                    throw new IllegalArgumentException(file + " is one of " + paths.size() + " shards, but " + p
+                            + " is missing");
+                }
+                Part part = read(p, arena);
+                if (i == 0) {
+                    first = part;
+                } else if (part.metadata.get("split.no") instanceof Long no && no != i) {
+                    throw new IllegalArgumentException(p + " says it is shard " + (no + 1) + ", not " + (i + 1));
+                }
+                if (part.metadata.get("split.count") instanceof Long n && n != paths.size()) {
+                    throw new IllegalArgumentException(p + " says the model has " + n + " shards, not "
+                            + paths.size());
+                }
+                for (Map.Entry<String, Entry> e : part.entries.entrySet()) {
+                    if (entries.putIfAbsent(e.getKey(), e.getValue()) != null) {
+                        throw new IllegalArgumentException(p + ": tensor " + e.getKey() + " is in two shards");
+                    }
+                }
+            }
+            if (first.metadata.get("split.tensors.count") instanceof Long n && n != entries.size()) {
+                throw new IllegalArgumentException(file + ": the split should hold " + n + " tensors, found "
+                        + entries.size());
+            }
+            return new Gguf(paths.getFirst(), arena, first.version, first.metadata, entries, paths.size());
+        } catch (RuntimeException e) {
+            arena.close();
+            throw e;
+        }
+    }
+
+    /** Maps one file into the arena and reads its header. */
+    private static Part read(Path file, Arena arena) {
         try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
             MemorySegment all = ch.map(FileChannel.MapMode.READ_ONLY, 0, ch.size(), arena);
             Reader r = new Reader(all);
@@ -248,19 +311,20 @@ public final class Gguf implements WeightSource {
                 if (info.offset < 0 || info.offset + bytes > data.byteSize()) {
                     throw new IllegalArgumentException(file + ": tensor " + info.name + " lies outside the file");
                 }
-                entries.put(info.name, new Entry(info.format, info.shape, info.offset, bytes));
+                entries.put(info.name, new Entry(info.format, info.shape, data, info.offset, bytes));
             }
-            return new Gguf(file, arena, version, Collections.unmodifiableMap(metadata), entries, data);
+            return new Part(version, Collections.unmodifiableMap(metadata), entries);
         } catch (IOException e) {
-            arena.close();
             throw new UncheckedIOException(e);
-        } catch (RuntimeException e) {
-            arena.close();
-            throw e;
         }
     }
 
-    /** @return the file this was opened from */
+    /** @return the files the model is in: 1, or the number of shards of a split model */
+    public int files() {
+        return files;
+    }
+
+    /** @return the file this was opened from: the first shard of a split model */
     public Path path() {
         return path;
     }
@@ -332,7 +396,7 @@ public final class Gguf implements WeightSource {
      */
     public MemorySegment raw(String name) {
         Entry e = entry(name);
-        return data.asSlice(e.offset, e.bytes);
+        return e.data.asSlice(e.offset, e.bytes);
     }
 
     @Override
@@ -419,13 +483,64 @@ public final class Gguf implements WeightSource {
         for (int c = 0; c < out; c++) {
             column[order == null ? c : order[c]] = c;
         }
+        if (!GgmlQuants.factored(e.format)) {
+            return packedPlain(e, name, device, column, group, bits, shifted, shift);
+        }
+        // scales and offsets as GGUF stores them: a small code per group times a value per
+        // super-block of 256 inputs (k-quants), or a value per group (the others)
+        boolean superBlocks = e.format.block == 256;
+        int superGroup = superBlocks ? 256 : group;
+        byte[] levels = new byte[in * out];
+        byte[] scaleCodes = superBlocks ? new byte[in / group * out] : null;
+        float[] superScales = new float[in / superGroup * out];
+        byte[] offsetCodes = shifted && superBlocks ? new byte[in / group * out] : null;
+        float[] superOffsets = shifted ? new float[superScales.length] : null;
+        int perSuper = superGroup / group;
+        MemorySegment m = raw(name);
+        long rowBytes = (long) in / e.format.block * e.format.bytes;
+        int perTask = 64;
+        // stored rows decoded in parallel, each into one output column
+        java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
+            GgmlQuants.Row row = new GgmlQuants.Row(in, group);
+            for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
+                GgmlQuants.levels(e.format, m.asSlice(o * rowBytes, rowBytes), in, row);
+                int c = column[o];
+                byte[] q = row.levels();
+                for (int r = 0; r < in; r++) {
+                    levels[r * out + c] = (byte) (q[r] - shift);
+                }
+                for (int g = 0; g < in / group; g++) {
+                    if (scaleCodes != null) {
+                        scaleCodes[g * out + c] = row.scaleCodes()[g];
+                    }
+                    if (offsetCodes != null) {
+                        offsetCodes[g * out + c] = row.offsetCodes()[g];
+                    }
+                    if (g % perSuper == 0) {
+                        superScales[g / perSuper * out + c] = row.d()[g];
+                        if (superOffsets != null) {
+                            superOffsets[g / perSuper * out + c] = row.m()[g];
+                        }
+                    }
+                }
+            }
+        });
+        PackedMatrix.Factors factors = new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets,
+                superGroup, shift);
+        return Tensor.packed(PackedMatrix.of(levels, factors, in, out, bits, group), device);
+    }
+
+    /** As packedTransposed, with a float scale and offset per group. */
+    private Tensor packedPlain(Entry e, String name, Device device, int[] column, int group, int bits, boolean shifted,
+            int shift) {
+        int out = e.shape.dim(0);
+        int in = e.shape.dim(1);
         byte[] levels = new byte[in * out];
         float[] scales = new float[in / group * out];
         float[] offsets = shifted ? new float[scales.length] : null;
         MemorySegment m = raw(name);
         long rowBytes = (long) in / e.format.block * e.format.bytes;
         int perTask = 64;
-        // stored rows decoded in parallel, each into one output column
         java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
             GgmlQuants.Row row = new GgmlQuants.Row(in, group);
             for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {

@@ -838,7 +838,7 @@ public final class Tensor {
                     host[i] = parts[i].backend().unpackToHost((PackedStorage) parts[i].storage);
                     all = host[i].bits() == host[0].bits() && host[i].group() == host[0].group()
                             && host[i].nibbles() == host[0].nibbles()
-                            && (host[i].offsets() == null) == (host[0].offsets() == null);
+                            && host[i].hasOffsets() == host[0].hasOffsets();
                 }
             }
             if (all) {

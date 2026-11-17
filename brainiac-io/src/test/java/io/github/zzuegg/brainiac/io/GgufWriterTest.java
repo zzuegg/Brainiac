@@ -76,6 +76,47 @@ class GgufWriterTest {
         }
     }
 
+    private void shard(String name, int no, int count, int total, Map<String, Tensor> t) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (no == 0) {
+            m.put("general.architecture", "llama");
+        }
+        m.put("split.no", new GgufWriter.Typed(GgufWriter.UINT16, no));
+        m.put("split.count", new GgufWriter.Typed(GgufWriter.UINT16, count));
+        m.put("split.tensors.count", new GgufWriter.Typed(GgufWriter.INT32, total));
+        GgufWriter.write(dir.resolve(String.format("%s-%05d-of-%05d.gguf", name, no + 1, count)), m, t, false);
+    }
+
+    @Test
+    void splitModelsOpenWholeFromAnyShard() throws IOException {
+        shard("m", 0, 3, 3, Map.of("a", Tensor.of(Shape.of(2), 1, 2)));
+        shard("m", 1, 3, 3, Map.of("b", Tensor.of(Shape.of(2, 2), 3, 4, 5, 6)));
+        shard("m", 2, 3, 3, Map.of("c", Tensor.of(Shape.of(1), 7)));
+        for (int i = 1; i <= 3; i++) {
+            try (Gguf g = Gguf.open(dir.resolve("m-0000" + i + "-of-00003.gguf"))) {
+                assertEquals(3, g.files());
+                assertEquals(dir.resolve("m-00001-of-00003.gguf"), g.path());
+                assertEquals("llama", g.architecture());
+                assertEquals(List.of("a", "b", "c"), g.names());
+                var cpu = io.github.zzuegg.brainiac.tensor.Device.cpu();
+                var f32 = io.github.zzuegg.brainiac.tensor.DType.FLOAT32;
+                assertArrayEquals(new float[] {1, 2}, g.tensor("a", cpu, f32).toArray(), 0);
+                assertArrayEquals(new float[] {3, 4, 5, 6}, g.tensor("b", cpu, f32).toArray(), 0);
+                assertArrayEquals(new float[] {7}, g.tensor("c", cpu, f32).toArray(), 0);
+            }
+        }
+        Files.delete(dir.resolve("m-00002-of-00003.gguf"));
+        IllegalArgumentException e = org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> Gguf.open(dir.resolve("m-00001-of-00003.gguf")));
+        org.junit.jupiter.api.Assertions.assertTrue(e.getMessage().contains("m-00002-of-00003.gguf is missing"),
+                e.getMessage());
+        shard("n", 0, 2, 2, Map.of("a", Tensor.of(Shape.of(1), 1)));
+        shard("n", 1, 2, 2, Map.of("a", Tensor.of(Shape.of(1), 2)));
+        e = org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> Gguf.open(dir.resolve("n-00001-of-00002.gguf")));
+        org.junit.jupiter.api.Assertions.assertTrue(e.getMessage().contains("in two shards"), e.getMessage());
+    }
+
     @ParameterizedTest
     // not gpt2-bpe.json: GGUF has no add_prefix_space; and texts without leading or doubled
     // spaces, which GGUF SentencePiece models keep (sp-bpe.model removes them)

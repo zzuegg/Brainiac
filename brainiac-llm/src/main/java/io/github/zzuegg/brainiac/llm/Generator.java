@@ -312,8 +312,14 @@ public final class Generator {
             }
         }
         tokenizer.eos().ifPresent(stops::add);
+        Set<Integer> special = tokenizer.specialIds();
         for (String t : END_OF_TURN) {
-            tokenizer.id(t).ifPresent(stops::add);
+            // only as a special token: in Qwen's vocabulary "</s>" is ordinary text
+            tokenizer.id(t).ifPresent(id -> {
+                if (special.contains(id)) {
+                    stops.add(id);
+                }
+            });
         }
         return stops;
     }

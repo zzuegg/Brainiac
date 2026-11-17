@@ -15,6 +15,11 @@ import java.util.Objects;
  *
  * <p>A matrix may also have an offset per scale, as GGUF's k-quants and {@code Q4_1} do:
  * then the value is {@code level(r, c) * scale(r / group, c) + offset(r / group, c)}.
+ *
+ * <p>Scales and offsets may come {@linkplain Factors factored}, as GGUF's k-quants store
+ * them: a small whole-number code per group times a value per super-group of rows. Backends
+ * can keep that form on the device, at a quarter of the memory; {@link #scales()} and
+ * {@link #offsets()} still give the products.
  */
 public final class PackedMatrix implements PackedStorage {
 
@@ -24,11 +29,43 @@ public final class PackedMatrix implements PackedStorage {
     private final int group;
     private final boolean nibbles;
     private final byte[] data;
-    private final float[] scales;
-    private final float[] offsets;
+    private float[] scales;
+    private float[] offsets;
+    private final Factors factors;
+
+    /**
+     * Scales and offsets as codes times super-group values: the scale of group {@code g} in
+     * column {@code c} is {@code scaleCodes[g * cols + c] * superScales[(g / perSuper) * cols + c]}
+     * in float, {@code perSuper} being {@code superGroup / group}; the offset is
+     * {@code offsetCodes[g * cols + c] * superOffsets[(g / perSuper) * cols + c] + scale * shift},
+     * the product in float and the sum in double rounded to float. Null codes are all 1.
+     *
+     * @param scaleCodes {@code [rows / group, cols]} codes, or null for 1
+     * @param superScales {@code [rows / superGroup, cols]}
+     * @param offsetCodes like the scale codes, or null for 1
+     * @param superOffsets like the super scales, or null for no offsets
+     * @param superGroup the rows per super value: a multiple of the group that divides the rows
+     * @param shift the multiple of the scale each offset adds
+     */
+    public record Factors(byte[] scaleCodes, float[] superScales, byte[] offsetCodes, float[] superOffsets,
+            int superGroup, int shift) {
+
+        /** @return the bytes these take */
+        long bytes() {
+            return (scaleCodes == null ? 0 : scaleCodes.length) + 4L * superScales.length
+                    + (offsetCodes == null ? 0 : offsetCodes.length)
+                    + (superOffsets == null ? 0 : 4L * superOffsets.length);
+        }
+    }
 
     private PackedMatrix(int rows, int cols, int bits, int group, boolean nibbles, byte[] data, float[] scales,
             float[] offsets) {
+        this(rows, cols, bits, group, nibbles, data, scales, offsets, null);
+    }
+
+    private PackedMatrix(int rows, int cols, int bits, int group, boolean nibbles, byte[] data, float[] scales,
+            float[] offsets, Factors factors) {
+        this.factors = factors;
         this.rows = rows;
         this.cols = cols;
         this.bits = bits;
@@ -100,6 +137,36 @@ public final class PackedMatrix implements PackedStorage {
     }
 
     /**
+     * Packs levels with factored scales and offsets (see {@link Factors}).
+     *
+     * @param levels one level per value, row-major, each within {@code bits} bits signed
+     * @param factors the scales and offsets
+     * @param rows the rows
+     * @param cols the columns
+     * @param bits the bits per level, 2 to 8
+     * @param group the rows per scale; must divide {@code rows}
+     * @return the packed matrix
+     */
+    public static PackedMatrix of(byte[] levels, Factors factors, int rows, int cols, int bits, int group) {
+        Objects.requireNonNull(factors, "factors");
+        int sg = factors.superGroup();
+        if (group < 1 || sg < group || sg % group != 0 || rows % sg != 0) {
+            throw new IllegalArgumentException("super-groups of " + sg + " rows for groups of " + group + " in "
+                    + rows + " rows");
+        }
+        long groups = (long) rows / group * cols;
+        long supers = (long) rows / sg * cols;
+        if (factors.superScales().length != supers || (factors.scaleCodes() != null && factors.scaleCodes().length != groups)
+                || (factors.superOffsets() != null && factors.superOffsets().length != supers)
+                || (factors.offsetCodes() != null && (factors.offsetCodes().length != groups || factors.superOffsets() == null))) {
+            throw new IllegalArgumentException("factors do not fit a " + rows + "x" + cols + " matrix in groups of "
+                    + group + " and super-groups of " + sg);
+        }
+        PackedMatrix plain = of(levels, new float[(int) groups], null, rows, cols, bits, group);
+        return new PackedMatrix(rows, cols, bits, group, plain.nibbles, plain.data, null, null, factors);
+    }
+
+    /**
      * Joins matrices side by side: the columns of each in turn, as one product computes
      * several projections of the same input. All must have the same rows, bits, group and
      * level layout, and all or none offsets.
@@ -110,32 +177,58 @@ public final class PackedMatrix implements PackedStorage {
     public static PackedMatrix concatColumns(PackedMatrix... parts) {
         PackedMatrix f = parts[0];
         int cols = 0;
+        boolean factored = f.factors != null;
         for (PackedMatrix p : parts) {
             if (p.rows != f.rows || p.bits != f.bits || p.group != f.group || p.nibbles != f.nibbles
-                    || (p.offsets == null) != (f.offsets == null)) {
+                    || p.hasOffsets() != f.hasOffsets()) {
                 throw new IllegalArgumentException("cannot join " + p + " with " + f);
             }
+            factored = factored && p.factors != null && p.factors.superGroup() == f.factors.superGroup()
+                    && p.factors.shift() == f.factors.shift()
+                    && (p.factors.scaleCodes() == null) == (f.factors.scaleCodes() == null)
+                    && (p.factors.offsetCodes() == null) == (f.factors.offsetCodes() == null);
             cols += p.cols;
         }
         int dataRows = f.nibbles ? f.rows / 2 : f.rows;
-        int scaleRows = f.rows / f.group;
         byte[] data = new byte[dataRows * cols];
-        float[] scales = new float[scaleRows * cols];
-        float[] offsets = f.offsets == null ? null : new float[scales.length];
         int at = 0;
         for (PackedMatrix p : parts) {
             for (int r = 0; r < dataRows; r++) {
                 System.arraycopy(p.data, r * p.cols, data, r * cols + at, p.cols);
             }
-            for (int r = 0; r < scaleRows; r++) {
-                System.arraycopy(p.scales, r * p.cols, scales, r * cols + at, p.cols);
-                if (offsets != null) {
-                    System.arraycopy(p.offsets, r * p.cols, offsets, r * cols + at, p.cols);
-                }
+            at += p.cols;
+        }
+        int groups = f.rows / f.group;
+        if (factored) {
+            int supers = f.rows / f.factors.superGroup();
+            Factors x = f.factors;
+            Factors joined = new Factors(
+                    x.scaleCodes() == null ? null : join(parts, groups, cols, p -> p.factors.scaleCodes()),
+                    join(parts, supers, cols, p -> p.factors.superScales()),
+                    x.offsetCodes() == null ? null : join(parts, groups, cols, p -> p.factors.offsetCodes()),
+                    x.superOffsets() == null ? null : join(parts, supers, cols, p -> p.factors.superOffsets()),
+                    x.superGroup(), x.shift());
+            return new PackedMatrix(f.rows, cols, f.bits, f.group, f.nibbles, data, null, null, joined);
+        }
+        float[] scales = join(parts, groups, cols, PackedMatrix::scales);
+        float[] offsets = f.hasOffsets() ? join(parts, groups, cols, PackedMatrix::offsets) : null;
+        return new PackedMatrix(f.rows, cols, f.bits, f.group, f.nibbles, data, scales, offsets);
+    }
+
+    /** Joins row-major arrays of {@code rows} rows side by side, one array per part. */
+    @SuppressWarnings("unchecked")
+    private static <A> A join(PackedMatrix[] parts, int rows, int cols, java.util.function.Function<PackedMatrix, A> of) {
+        A first = of.apply(parts[0]);
+        A out = (A) java.lang.reflect.Array.newInstance(first.getClass().getComponentType(), rows * cols);
+        int at = 0;
+        for (PackedMatrix p : parts) {
+            A a = of.apply(p);
+            for (int r = 0; r < rows; r++) {
+                System.arraycopy(a, r * p.cols, out, r * cols + at, p.cols);
             }
             at += p.cols;
         }
-        return new PackedMatrix(f.rows, cols, f.bits, f.group, f.nibbles, data, scales, offsets);
+        return out;
     }
 
     /**
@@ -210,12 +303,52 @@ public final class PackedMatrix implements PackedStorage {
 
     /** @return the scales, {@code [rows / group, cols]}; not a copy, do not change */
     public float[] scales() {
+        if (scales == null) {
+            expand();
+        }
         return scales;
     }
 
     /** @return the offsets, like {@link #scales()}, or null for none; not a copy, do not change */
     public float[] offsets() {
+        if (scales == null) {
+            expand();
+        }
         return offsets;
+    }
+
+    /** @return whether values have offsets */
+    public boolean hasOffsets() {
+        return factors != null ? factors.superOffsets() != null : offsets != null;
+    }
+
+    /** @return the factored scales and offsets these were packed with, or null */
+    public Factors factors() {
+        return factors;
+    }
+
+    /** Computes the scales and offsets from their factors, once. */
+    private synchronized void expand() {
+        if (scales != null) {
+            return;
+        }
+        Factors f = factors;
+        int perSuper = f.superGroup() / group;
+        int count = rows / group * cols;
+        float[] sc = new float[count];
+        float[] of = f.superOffsets() == null ? null : new float[count];
+        for (int i = 0; i < count; i++) {
+            int g = i / cols;
+            int at = g / perSuper * cols + i % cols;
+            float s = (f.scaleCodes() == null ? 1 : f.scaleCodes()[i]) * f.superScales()[at];
+            sc[i] = s;
+            if (of != null) {
+                float o = (f.offsetCodes() == null ? 1 : f.offsetCodes()[i]) * f.superOffsets()[at];
+                of[i] = (float) (o + (double) s * f.shift());
+            }
+        }
+        offsets = of;
+        scales = sc;
     }
 
     /**
@@ -242,8 +375,8 @@ public final class PackedMatrix implements PackedStorage {
         for (int r = 0; r < rows; r++) {
             int s = r / group * cols;
             for (int c = 0; c < cols; c++) {
-                out[r * cols + c] = offsets == null ? level(r, c) * scales[s + c]
-                        : level(r, c) * scales[s + c] + offsets[s + c];
+                out[r * cols + c] = offsets() == null ? level(r, c) * scales()[s + c]
+                        : level(r, c) * scales()[s + c] + offsets()[s + c];
             }
         }
     }
@@ -255,7 +388,8 @@ public final class PackedMatrix implements PackedStorage {
 
     @Override
     public long bytes() {
-        return data.length + 4L * scales.length * (offsets == null ? 1 : 2);
+        return factors != null ? data.length + factors.bytes()
+                : data.length + 4L * scales.length * (offsets == null ? 1 : 2);
     }
 
     @Override

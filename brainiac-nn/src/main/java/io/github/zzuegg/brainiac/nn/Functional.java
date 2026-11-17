@@ -1356,6 +1356,40 @@ public final class Functional {
         return weights.matmul(v);
     }
 
+    /**
+     * Attention with its scores soft-capped, as Gemma 2 does: {@code softmax(cap tanh(q k^T
+     * scale / cap) + bias) v}, so no score grows past {@code cap}. Built from separate
+     * operations: the fused kernels do not cap.
+     *
+     * @param q queries {@code [batch, heads, queries, dk]}
+     * @param k keys {@code [batch, kvHeads, keys, dk]}
+     * @param v values {@code [batch, kvHeads, keys, dv]}
+     * @param bias added after the cap, or {@code null}
+     * @param scale the score scale
+     * @param cap the largest score, positive
+     * @return {@code [batch, heads, queries, dv]}
+     */
+    public static Var softCappedAttention(Var q, Var k, Var v, Tensor bias, float scale, float cap) {
+        if (!(cap > 0)) {
+            throw new IllegalArgumentException("cap must be positive, got " + cap);
+        }
+        int heads = q.shape().dim(1);
+        int kvHeads = k.shape().dim(1);
+        if (heads % kvHeads != 0 || v.shape().dim(1) != kvHeads) {
+            throw new IllegalArgumentException("query heads " + heads + " must be a multiple of key/value heads "
+                    + kvHeads + " (and keys and values need the same heads)");
+        }
+        if (kvHeads != heads) {
+            k = repeatHeads(k, heads / kvHeads);
+            v = repeatHeads(v, heads / kvHeads);
+        }
+        Var scores = q.matmul(k.transpose()).mul(scale / cap).tanh().mul(cap);
+        if (bias != null) {
+            scores = scores.add(bias);
+        }
+        return Activation.SOFTMAX.forward(scores).matmul(v);
+    }
+
     /** Whether {@link #attention(Var, Var, Var, boolean, float)} may use a backend's fused kernel. */
     private static final boolean FUSED = !"false".equals(System.getProperty("brainiac.fusedAttention"));
 

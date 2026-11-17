@@ -95,14 +95,20 @@ public final class Llama implements LanguageModel {
         return t;
     }
 
+    /**
+     * A block's weights. Q, k, v, gate and up are null where the model keeps them joined
+     * ({@link Fused}); the q/k and post norms are null where the family has none.
+     */
     private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
-            Linear down) {
+            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm) {
     }
 
     private final LlamaConfig config;
     private final Device device;
     private final DType dtype;
     private final Rope rope;
+    /** The rotation of local (sliding-window) layers when it differs, or null. */
+    private final Rope localRope;
     private final Var embed;
     private final Linear lmHead;
     private final Var norm;
@@ -123,19 +129,49 @@ public final class Llama implements LanguageModel {
         this.device = device;
         this.dtype = dtype;
         this.rope = new Rope(config.rope());
+        LlamaConfig.Extras e = config.extras();
+        this.localRope = e.localTheta() > 0 ? new Rope(new Rope.Settings(config.rope().dim(), e.localTheta(),
+                "default", 1, 1, 4, config.rope().originalMaxPositions(), null)) : null;
         this.named = named;
         this.linears = linears;
         this.embed = need(named, "model.embed_tokens.weight");
         this.norm = need(named, "model.norm.weight");
         this.lmHead = config.tieEmbeddings() ? null : linears.get("lm_head");
         this.blocks = new ArrayList<>();
+        boolean post = e.postNorms();
+        if (e.fused()) {
+            fused = new Fused[config.layers()];
+        }
         for (int i = 0; i < config.layers(); i++) {
             String p = "model.layers." + i + ".";
             blocks.add(new Block(need(named, p + "input_layernorm.weight"), linears.get(p + "self_attn.q_proj"),
                     linears.get(p + "self_attn.k_proj"), linears.get(p + "self_attn.v_proj"),
-                    linears.get(p + "self_attn.o_proj"), need(named, p + "post_attention_layernorm.weight"),
-                    linears.get(p + "mlp.gate_proj"), linears.get(p + "mlp.up_proj"), linears.get(p + "mlp.down_proj")));
+                    linears.get(p + "self_attn.o_proj"),
+                    need(named, p + (post ? "pre_feedforward_layernorm" : "post_attention_layernorm") + ".weight"),
+                    linears.get(p + "mlp.gate_proj"), linears.get(p + "mlp.up_proj"), linears.get(p + "mlp.down_proj"),
+                    e.qkNorm() ? need(named, p + "self_attn.q_norm.weight") : null,
+                    e.qkNorm() ? need(named, p + "self_attn.k_norm.weight") : null,
+                    post ? need(named, p + "post_attention_layernorm.weight") : null,
+                    post ? need(named, p + "post_feedforward_layernorm.weight") : null));
+            if (e.fused()) {
+                fused[i] = new Fused(linears.get(p + "self_attn.qkv_proj"), linears.get(p + "mlp.gate_up_proj"));
+            }
         }
+    }
+
+    /** The norm weights of block {@code i}, by Hugging Face name. */
+    private static List<String> normNames(LlamaConfig c, int i) {
+        String p = "model.layers." + i + ".";
+        List<String> names = new ArrayList<>(List.of(p + "input_layernorm.weight", p + "post_attention_layernorm.weight"));
+        if (c.extras().postNorms()) {
+            names.add(p + "pre_feedforward_layernorm.weight");
+            names.add(p + "post_feedforward_layernorm.weight");
+        }
+        if (c.extras().qkNorm()) {
+            names.add(p + "self_attn.q_norm.weight");
+            names.add(p + "self_attn.k_norm.weight");
+        }
+        return names;
     }
 
     private static Var need(Map<String, Var> named, String name) {
@@ -151,8 +187,10 @@ public final class Llama implements LanguageModel {
         List<String> names = new ArrayList<>();
         for (int i = 0; i < c.layers(); i++) {
             String p = "model.layers." + i + ".";
-            for (String s : List.of("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
-                    "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")) {
+            for (String s : c.extras().fused()
+                    ? List.of("self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj")
+                    : List.of("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+                            "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj")) {
                 names.add(p + s);
             }
         }
@@ -212,10 +250,17 @@ public final class Llama implements LanguageModel {
             return v;
         };
         read.apply("model.embed_tokens.weight");
-        read.apply("model.norm.weight");
+        List<String> norms = new ArrayList<>(List.of("model.norm.weight"));
         for (int i = 0; i < config.layers(); i++) {
-            read.apply("model.layers." + i + ".input_layernorm.weight");
-            read.apply("model.layers." + i + ".post_attention_layernorm.weight");
+            norms.addAll(normNames(config, i));
+        }
+        for (String n : norms) {
+            Tensor w = weights.tensor(n, device, dtype);
+            if (config.extras().normOffset()) {
+                w = w.add(1f);   // Gemma stores w and scales by 1 + w
+            }
+            Var v = Var.param(w);
+            named.put(n, v);
         }
         for (String l : linearNames(config)) {
             Var bias = hasBias(config, l) ? read.apply(l + ".bias") : null;
@@ -239,26 +284,22 @@ public final class Llama implements LanguageModel {
         LlamaConfig config = LlamaConfig.fromGguf(gguf);
         if (gguf.contains("rope_freqs.weight")) {
             float[] f = gguf.tensor("rope_freqs.weight", Device.cpu(), DType.FLOAT32).toArray();
-            config = new LlamaConfig(config.architecture(), config.vocabSize(), config.hidden(),
-                    config.intermediate(), config.layers(), config.heads(), config.kvHeads(), config.headDim(),
-                    config.rmsEps(), config.rope().withFreqFactors(f), config.tieEmbeddings(),
-                    config.attentionBias(), config.maxPositions());
+            config = config.withRope(config.rope().withFreqFactors(f));
         }
+        LlamaConfig.Extras extras = config.extras();
         // llama.cpp's converter interleaves the two rotary halves of Llama's query and key rows
         boolean permuted = config.architecture().equals("llama");
         Map<String, Var> named = new LinkedHashMap<>();
         Map<String, Linear> linears = new LinkedHashMap<>();
         named.put("model.embed_tokens.weight", Var.param(gguf.tensor("token_embd.weight", device, dtype)));
         named.put("model.norm.weight", Var.param(gguf.tensor("output_norm.weight", device, dtype)));
-        Map<String, String> parts = Map.of("self_attn.q_proj", "attn_q", "self_attn.k_proj", "attn_k",
-                "self_attn.v_proj", "attn_v", "self_attn.o_proj", "attn_output", "mlp.gate_proj", "ffn_gate",
-                "mlp.up_proj", "ffn_up", "mlp.down_proj", "ffn_down");
+        Map<String, String> parts = ggufParts(config);
         for (int i = 0; i < config.layers(); i++) {
             String p = "model.layers." + i + ".";
             String g = "blk." + i + ".";
-            named.put(p + "input_layernorm.weight", Var.param(gguf.tensor(g + "attn_norm.weight", device, dtype)));
-            named.put(p + "post_attention_layernorm.weight",
-                    Var.param(gguf.tensor(g + "ffn_norm.weight", device, dtype)));
+            for (Map.Entry<String, String> n : ggufNorms(config).entrySet()) {
+                named.put(p + n.getKey() + ".weight", Var.param(gguf.tensor(g + n.getValue() + ".weight", device, dtype)));
+            }
             for (Map.Entry<String, String> e : parts.entrySet()) {
                 String l = p + e.getKey();
                 int heads = e.getValue().equals("attn_q") ? config.heads()
@@ -277,6 +318,45 @@ public final class Llama implements LanguageModel {
             linears.put("lm_head", linear(gguf, "output.weight", "lm_head", null, device, dtype, named, null));
         }
         return new Llama(config, device, dtype, named, linears);
+    }
+
+    /** Block projections: Hugging Face module name to llama.cpp's. */
+    private static Map<String, String> ggufParts(LlamaConfig c) {
+        Map<String, String> parts = new LinkedHashMap<>();
+        if (c.extras().fused()) {
+            parts.put("self_attn.qkv_proj", "attn_qkv");
+        } else {
+            parts.put("self_attn.q_proj", "attn_q");
+            parts.put("self_attn.k_proj", "attn_k");
+            parts.put("self_attn.v_proj", "attn_v");
+        }
+        parts.put("self_attn.o_proj", "attn_output");
+        if (c.extras().fused()) {
+            parts.put("mlp.gate_up_proj", "ffn_up");
+        } else {
+            parts.put("mlp.gate_proj", "ffn_gate");
+            parts.put("mlp.up_proj", "ffn_up");
+        }
+        parts.put("mlp.down_proj", "ffn_down");
+        return parts;
+    }
+
+    /** Block norms: Hugging Face module name to llama.cpp's. */
+    private static Map<String, String> ggufNorms(LlamaConfig c) {
+        Map<String, String> norms = new LinkedHashMap<>();
+        norms.put("input_layernorm", "attn_norm");
+        if (c.extras().postNorms()) {
+            norms.put("post_attention_layernorm", "post_attention_norm");
+            norms.put("pre_feedforward_layernorm", "ffn_norm");
+            norms.put("post_feedforward_layernorm", "post_ffw_norm");
+        } else {
+            norms.put("post_attention_layernorm", "ffn_norm");
+        }
+        if (c.extras().qkNorm()) {
+            norms.put("self_attn.q_norm", "attn_q_norm");
+            norms.put("self_attn.k_norm", "attn_k_norm");
+        }
+        return norms;
     }
 
     private static Linear linear(Gguf gguf, String name, String hfName, int[] order, Device device, DType dtype,
@@ -333,9 +413,9 @@ public final class Llama implements LanguageModel {
                 0, std, random).to(device).to(dtype)));
         named.put("model.norm.weight", Var.param(Tensor.ones(Shape.of(config.hidden())).to(device).to(dtype)));
         for (int i = 0; i < config.layers(); i++) {
-            for (String n : List.of("input_layernorm", "post_attention_layernorm")) {
-                named.put("model.layers." + i + "." + n + ".weight",
-                        Var.param(Tensor.ones(Shape.of(config.hidden())).to(device).to(dtype)));
+            for (String n : normNames(config, i)) {
+                int size = n.contains("self_attn.") ? config.headDim() : config.hidden();
+                named.put(n, Var.param(Tensor.ones(Shape.of(size)).to(device).to(dtype)));
             }
         }
         int qOut = config.heads() * config.headDim();
@@ -343,7 +423,9 @@ public final class Llama implements LanguageModel {
         // residual projections scaled down by depth, as GPT-2 does
         float residual = (float) (std / Math.sqrt(2.0 * config.layers()));
         for (String l : linearNames(config)) {
-            int[] shape = l.endsWith("q_proj") ? new int[] {qOut, config.hidden()}
+            int[] shape = l.endsWith("qkv_proj") ? new int[] {qOut + 2 * kvOut, config.hidden()}
+                    : l.endsWith("gate_up_proj") ? new int[] {2 * config.intermediate(), config.hidden()}
+                    : l.endsWith("q_proj") ? new int[] {qOut, config.hidden()}
                     : l.endsWith("k_proj") || l.endsWith("v_proj") ? new int[] {kvOut, config.hidden()}
                     : l.endsWith("o_proj") ? new int[] {config.hidden(), qOut}
                     : l.endsWith("down_proj") ? new int[] {config.hidden(), config.intermediate()}
@@ -765,8 +847,68 @@ public final class Llama implements LanguageModel {
                 next[b * steps + t] = t + 1 < steps ? tokens[b][t + 1] : -1;   // the last step predicts nothing
             }
         }
-        Var h = hidden(tokens, positions, null, null).reshape(batch * steps, config.hidden());
+        return loss(tokens, next, positions, null, chunk);
+    }
+
+    /**
+     * The cross-entropy of instruction-tuning data: padded or packed rows where only the
+     * marked tokens count (see {@link InstructionData}). Packed examples see only their own
+     * earlier tokens, and each starts again at position 0.
+     *
+     * @param batch the rows
+     * @return the mean over the tokens that count
+     */
+    public Var loss(InstructionData.Batch batch) {
+        int rows = batch.tokens().length;
+        int steps = batch.tokens()[0].length;
+        int[][] positions = new int[rows][steps];
+        float[] next = new float[rows * steps];
+        boolean packed = false;
+        for (int b = 0; b < rows; b++) {
+            int[] seg = batch.segments()[b];
+            for (int t = 0; t < steps; t++) {
+                boolean continues = t > 0 && seg[t] == seg[t - 1];
+                positions[b][t] = continues ? positions[b][t - 1] + 1 : 0;
+                packed |= t > 0 && seg[t] != seg[t - 1] && seg[t] != 0;
+                next[b * steps + t] = batch.targets()[b][t];
+            }
+        }
+        Tensor[] masks = null;
+        if (packed) {
+            masks = new Tensor[blocks.size()];
+            Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+            for (int l = 0; l < masks.length; l++) {
+                masks[l] = byWindow.computeIfAbsent(windowOf(l), w -> segmentMask(batch.segments(), w));
+            }
+        }
+        return loss(batch.tokens(), next, positions, masks, Math.max(1, (1 << 24) / config.vocabSize()));
+    }
+
+    /** Causal within each segment, optionally windowed: {@code [rows, 1, steps, steps]}. */
+    private Tensor segmentMask(int[][] segments, int window) {
+        int rows = segments.length;
+        int steps = segments[0].length;
+        float[] m = new float[rows * steps * steps];
+        for (int b = 0; b < rows; b++) {
+            for (int t = 0; t < steps; t++) {
+                for (int k = 0; k < steps; k++) {
+                    if (k > t || segments[b][k] != segments[b][t] || window > 0 && k <= t - window) {
+                        m[(b * steps + t) * steps + k] = -1e9f;
+                    }
+                }
+            }
+        }
+        return Tensor.of(Shape.of(rows, 1, steps, steps), m, device).to(dtype);
+    }
+
+    private Var loss(int[][] tokens, float[] next, int[][] positions, Tensor[] masks, int chunk) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        Var h = hidden(tokens, positions, null, masks).reshape(batch * steps, config.hidden());
         Tensor ids = Tensor.of(Shape.of(batch * steps), next, device);
+        if (config.extras().finalSoftcap() > 0) {
+            return Functional.crossEntropy(softcap(head(h, false)).reshape(batch * steps, config.vocabSize()), ids);
+        }
         if (lmHead != null && lmHead.bias() != null) {
             return Functional.crossEntropy(lmHead.apply(h).reshape(batch * steps, config.vocabSize()), ids);
         }
@@ -861,24 +1003,14 @@ public final class Llama implements LanguageModel {
                 positions[b][t] = pad ? 1 : cache.next[b]++;
             }
         }
-        // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]
-        int keys = cache.capacity;
-        int window = slidingWindow;
-        float[] m = new float[batch * steps * keys];
-        for (int b = 0; b < batch; b++) {
-            for (int t = 0; t < steps; t++) {
-                int row = (b * steps + t) * keys;
-                for (int k = 0; k < keys; k++) {
-                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]
-                            || window > 0 && k <= cache.length + t - window) {
-                        m[row + k] = -1e9f;
-                    }
-                }
-            }
+        // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]; one per window
+        Tensor[] masks = new Tensor[blocks.size()];
+        Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+        for (int l = 0; l < masks.length; l++) {
+            masks[l] = byWindow.computeIfAbsent(windowOf(l), w -> cacheMask(cache, keysPad, steps, w));
         }
-        Tensor bias = Tensor.of(Shape.of(batch, 1, steps, keys), m, device).to(dtype);
         Var[] hidden = new Var[1];
-        Var logits = run(tokens, positions, cache, bias, hidden);
+        Var logits = run(tokens, positions, cache, masks, hidden);
         cache.padding = keysPad;
         cache.length += steps;
         Tensor out = everyStep ? logits.value().to(DType.FLOAT32)
@@ -894,15 +1026,43 @@ public final class Llama implements LanguageModel {
         return out;
     }
 
-    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
-        return run(tokens, positions, cache, bias, null);
+    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window) {
+        int batch = keysPad.length;
+        int keys = cache.capacity;
+        float[] m = new float[batch * steps * keys];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                int row = (b * steps + t) * keys;
+                for (int k = 0; k < keys; k++) {
+                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]
+                            || window > 0 && k <= cache.length + t - window) {
+                        m[row + k] = -1e9f;
+                    }
+                }
+            }
+        }
+        return Tensor.of(Shape.of(batch, 1, steps, keys), m, device).to(dtype);
     }
 
-    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias, Var[] hiddenOut) {
-        Var x = hidden(tokens, positions, cache, bias);
+    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor[] masks) {
+        return run(tokens, positions, cache, masks, null);
+    }
+
+    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor[] masks, Var[] hiddenOut) {
+        Var x = hidden(tokens, positions, cache, masks);
         if (hiddenOut != null) {
             hiddenOut[0] = x;
         }
+        return softcap(head(x, cache != null));
+    }
+
+    /** Gemma 2's {@code cap tanh(logits / cap)}, or the logits as they are. */
+    private Var softcap(Var logits) {
+        float cap = config.extras().finalSoftcap();
+        return cap > 0 ? logits.mul(1 / cap).tanh().mul(cap) : logits;
+    }
+
+    private Var head(Var x, boolean decoding) {
         if (lmHead != null) {
             return lmHead.apply(x);
         }
@@ -910,36 +1070,41 @@ public final class Llama implements LanguageModel {
         // training, through the embeddings so they get the gradient
         // decoding on the CPU keeps a transposed copy of the embeddings; a GPU reads the
         // transpose in place, saving the copy's memory (272 MB for Qwen2.5-0.5B)
-        boolean copy = cache != null && embed.value().device().kind() == io.github.zzuegg.brainiac.tensor.Device.Kind.CPU;
+        boolean copy = decoding && embed.value().device().kind() == io.github.zzuegg.brainiac.tensor.Device.Kind.CPU;
         return x.matmul(copy ? Var.of(tiedHead()) : base(embed).transpose());
     }
 
     /** The final normalized hidden states {@code [batch, steps, hidden]}. */
-    private Var hidden(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
+    private Var hidden(int[][] tokens, int[][] positions, Cache cache, Tensor[] masks) {
         int batch = tokens.length;
         int steps = tokens[0].length;
         int[] flat = new int[batch * steps];
         for (int b = 0; b < batch; b++) {
             System.arraycopy(tokens[b], 0, flat, b * steps, steps);
         }
+        LlamaConfig.Extras e = config.extras();
         Var x = base(embed).gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
-        int window = slidingWindow;
-        if (bias == null && window > 0 && steps > window) {
-            float[] m = new float[steps * steps];
-            for (int t = 0; t < steps; t++) {
-                for (int k = 0; k < steps; k++) {
-                    if (k > t || k <= t - window) {
-                        m[t * steps + k] = -1e9f;
-                    }
+        if (e.scaleEmbeddings()) {
+            // as Gemma: the factor rounded to the model's type first
+            x = x.mul(Tensor.full(Shape.of(), (float) Math.sqrt(config.hidden()), Device.cpu()).to(dtype).item());
+        }
+        if (masks == null) {
+            masks = new Tensor[blocks.size()];
+            Map<Integer, Tensor> byWindow = new java.util.HashMap<>();
+            for (int l = 0; l < blocks.size(); l++) {
+                int window = windowOf(l);
+                if (window > 0 && steps > window) {
+                    masks[l] = byWindow.computeIfAbsent(window, w -> mask(steps, w));
                 }
             }
-            bias = Tensor.of(Shape.of(1, 1, steps, steps), m, device).to(dtype);
         }
         int hd = config.headDim();
-        float scale = (float) (1 / Math.sqrt(hd));
+        int rotary = config.rope().dim();
+        float scale = e.queryScale() > 0 ? e.queryScale() : (float) (1 / Math.sqrt(hd));
+        boolean decoding = cache != null;
         for (int l = 0; l < blocks.size(); l++) {
             Block blk = blocks.get(l);
-            Var h = rmsNorm(x, blk.attnNorm, cache != null);
+            Var h = rmsNorm(x, blk.attnNorm, decoding);
             Fused f = fused == null ? null : fused[l];
             Var qOut;
             Var kOut;
@@ -956,11 +1121,18 @@ public final class Llama implements LanguageModel {
                 kOut = blk.k.apply(h);
                 vOut = blk.v.apply(h);
             }
-            Var q = qOut.reshape(batch, steps, config.heads(), hd).permute(0, 2, 1, 3);
-            Var k = kOut.reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
+            Var q = qOut.reshape(batch, steps, config.heads(), hd);
+            Var k = kOut.reshape(batch, steps, config.kvHeads(), hd);
+            if (blk.qNorm != null) {
+                q = rmsNorm(q, blk.qNorm, decoding);
+                k = rmsNorm(k, blk.kNorm, decoding);
+            }
+            q = q.permute(0, 2, 1, 3);
+            k = k.permute(0, 2, 1, 3);
             Var v = vOut.reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
-            q = rope.apply(q, positions);
-            k = rope.apply(k, positions);
+            Rope r = localRope != null && e.local(l) ? localRope : rope;
+            q = rotate(r, q, positions, rotary, hd);
+            k = rotate(r, k, positions, rotary, hd);
             boolean causal = steps > 1;
             if (cache != null) {
                 cache.keys[l].write(2, cache.length, k.value());
@@ -969,11 +1141,20 @@ public final class Llama implements LanguageModel {
                 v = Var.of(cache.values[l]);
                 q = Var.of(q.value());   // decoding has no gradients: lets the fused kernel take the mask
             }
-            Var a = bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
+            Tensor bias = masks[l];
+            if (bias == null && e.attentionSoftcap() > 0 && causal) {
+                bias = Functional.causalMask(steps, k.shape().dim(2), device).to(dtype);
+            }
+            Var a = e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
+                    : bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
                     : Functional.attention(q, k, v, causal, scale);
             a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
-            x = x.add(blk.o.apply(a));
-            h = rmsNorm(x, blk.ffnNorm, cache != null);
+            Var attn = blk.o.apply(a);
+            if (blk.postAttnNorm != null) {
+                attn = rmsNorm(attn, blk.postAttnNorm, decoding);
+            }
+            x = x.add(attn);
+            h = rmsNorm(x, blk.ffnNorm, decoding);
             // both products first: the activation and the product then run as one chain
             Var gate;
             Var up;
@@ -986,10 +1167,44 @@ public final class Llama implements LanguageModel {
                 gate = blk.gate.apply(h);
                 up = blk.up.apply(h);
             }
-            Var gated = gate.activation(ActivationOp.SILU, 0).mul(up);
-            x = x.add(blk.down.apply(gated));
+            Var gated = gate.activation(e.activation(), 0).mul(up);
+            Var ffnOut = blk.down.apply(gated);
+            if (blk.postFfnNorm != null) {
+                ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
+            }
+            x = x.add(ffnOut);
         }
-        return rmsNorm(x, norm, cache != null);
+        return rmsNorm(x, norm, decoding);
+    }
+
+    /** Rotates the first {@code rotary} features of each head; the rest pass (partial rotary, Phi). */
+    private static Var rotate(Rope r, Var x, int[][] positions, int rotary, int hd) {
+        if (rotary == hd) {
+            return r.apply(x, positions);
+        }
+        return Var.concat(3, r.apply(x.slice(-1, 0, rotary), positions), x.slice(-1, rotary, hd));
+    }
+
+    /** The window layer {@code l} sees, or 0 for all of the past. */
+    private int windowOf(int layer) {
+        int set = slidingWindow;
+        if (set > 0) {
+            return set;
+        }
+        return config.extras().local(layer) ? config.extras().slidingWindow() : 0;
+    }
+
+    /** A causal mask over {@code steps} steps where each sees only the last {@code window}. */
+    private Tensor mask(int steps, int window) {
+        float[] m = new float[steps * steps];
+        for (int t = 0; t < steps; t++) {
+            for (int k = 0; k < steps; k++) {
+                if (k > t || k <= t - window) {
+                    m[t * steps + k] = -1e9f;
+                }
+            }
+        }
+        return Tensor.of(Shape.of(1, 1, steps, steps), m, device).to(dtype);
     }
 
     private Tensor headSource;
@@ -1203,13 +1418,13 @@ public final class Llama implements LanguageModel {
      * @param dir the directory, created if needed
      */
     public void save(Path dir) {
-        if (fused != null) {
+        if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
         }
-        int expected = 2 + 2 * config.layers() + linearNames(config).size()
-                + (config.attentionBias() ? 3 * config.layers() : 0);
-        if (named.size() != expected) {
-            throw new IllegalStateException("packed weights cannot be saved as safetensors");
+        for (Linear l : linears.values()) {
+            if (l.weight.value().isPacked()) {
+                throw new IllegalStateException("packed weights cannot be saved as safetensors");
+            }
         }
         try {
             Files.createDirectories(dir);
@@ -1221,6 +1436,9 @@ public final class Llama implements LanguageModel {
             }
             for (Map.Entry<String, Var> e : named.entrySet()) {
                 Tensor t = e.getValue().value();
+                if (config.extras().normOffset() && e.getKey().endsWith("norm.weight")) {
+                    t = t.sub(1f);   // Gemma's files keep w for a scale of 1 + w
+                }
                 tensors.put(e.getKey(), matrices.contains(e.getKey()) ? t.transpose() : t);
             }
             SafeTensors.write(dir.resolve("model.safetensors"), tensors, Map.of("format", "pt"));
@@ -1241,10 +1459,15 @@ public final class Llama implements LanguageModel {
      * @param half whether matrices are stored as float16
      */
     public void saveGguf(Path file, PretrainedTokenizer tokenizer, boolean half) {
-        if (fused != null) {
+        if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
         }
-        String a = config.architecture().equals("qwen2") ? "qwen2" : "llama";
+        String a = switch (config.architecture()) {
+            case "qwen2", "qwen3", "phi3", "gemma", "gemma2" -> config.architecture();
+            case "gemma3_text" -> "gemma3";
+            default -> "llama";
+        };
+        LlamaConfig.Extras x = config.extras();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("general.architecture", a);
         m.put("general.name", "brainiac-" + a);
@@ -1256,12 +1479,38 @@ public final class Llama implements LanguageModel {
         m.put(a + ".attention.head_count_kv", (long) config.kvHeads());
         m.put(a + ".attention.layer_norm_rms_epsilon", config.rmsEps());
         m.put(a + ".rope.freq_base", (float) config.rope().theta());
-        m.put(a + ".rope.dimension_count", (long) config.headDim());
+        m.put(a + ".rope.dimension_count", (long) config.rope().dim());
+        m.put(a + ".attention.key_length", (long) config.headDim());
+        m.put(a + ".attention.value_length", (long) config.headDim());
         m.put(a + ".vocab_size", (long) config.vocabSize());
+        if (x.slidingWindow() > 0) {
+            m.put(a + ".attention.sliding_window", (long) x.slidingWindow());
+            if (x.globalEvery() > 0) {
+                m.put(a + ".attention.sliding_window_pattern", (long) x.globalEvery());
+            }
+        }
+        if (x.localTheta() > 0) {
+            m.put(a + ".rope.freq_base_swa", (float) x.localTheta());
+        }
+        if (x.queryScale() > 0) {
+            m.put(a + ".attention.scale", x.queryScale());
+        }
+        if (x.attentionSoftcap() > 0) {
+            m.put(a + ".attn_logit_softcapping", x.attentionSoftcap());
+        }
+        if (x.finalSoftcap() > 0) {
+            m.put(a + ".final_logit_softcapping", x.finalSoftcap());
+        }
         Rope.Settings r = config.rope();
         Map<String, Tensor> t = new LinkedHashMap<>();
         switch (r.type()) {
             case "default" -> {
+            }
+            case "longrope" -> {
+                m.put(a + ".rope.scaling.original_context_length", (long) r.originalMaxPositions());
+                m.put(a + ".rope.scaling.attn_factor", (float) rope.magnitude());
+                t.put("rope_factors_short.weight", Tensor.of(Shape.of(r.freqFactors().length), r.freqFactors()));
+                t.put("rope_factors_long.weight", Tensor.of(Shape.of(r.freqFactors().length), r.freqFactors()));
             }
             case "linear", "yarn" -> {
                 m.put(a + ".rope.scaling.type", r.type());
@@ -1293,20 +1542,13 @@ public final class Llama implements LanguageModel {
             t.put("output.weight", plain(lmHead.weight.value()).transpose());
         }
         boolean permuted = a.equals("llama");
-        Map<String, String> parts = new LinkedHashMap<>();
-        parts.put("self_attn.q_proj", "attn_q");
-        parts.put("self_attn.k_proj", "attn_k");
-        parts.put("self_attn.v_proj", "attn_v");
-        parts.put("self_attn.o_proj", "attn_output");
-        parts.put("mlp.gate_proj", "ffn_gate");
-        parts.put("mlp.up_proj", "ffn_up");
-        parts.put("mlp.down_proj", "ffn_down");
+        Map<String, String> parts = ggufParts(config);
         for (int i = 0; i < config.layers(); i++) {
             String p = "model.layers." + i + ".";
             String g = "blk." + i + ".";
-            Block b = blocks.get(i);
-            t.put(g + "attn_norm.weight", plain(b.attnNorm().value()));
-            t.put(g + "ffn_norm.weight", plain(b.ffnNorm().value()));
+            for (Map.Entry<String, String> n : ggufNorms(config).entrySet()) {
+                t.put(g + n.getValue() + ".weight", plain(named.get(p + n.getKey() + ".weight").value()));
+            }
             for (Map.Entry<String, String> e : parts.entrySet()) {
                 Linear l = linears.get(p + e.getKey());
                 int heads = e.getValue().equals("attn_q") ? config.heads()

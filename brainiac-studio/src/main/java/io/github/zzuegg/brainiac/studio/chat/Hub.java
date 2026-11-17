@@ -191,11 +191,13 @@ public final class Hub {
         List<Map<String, Object>> options = new ArrayList<>();
         // the whole folder, when it is a transformers model
         String family = "";
+        String configError = null;
         if (byPath.containsKey("config.json")) {
             try {
                 family = Json.string(Json.object(Json.parse(text(fileUri(repo, "config.json")))), "model_type", "");
             } catch (IOException | RuntimeException e) {
                 family = "";
+                configError = e.getMessage();   // a gated model whose license is not accepted, for one
             }
             List<String> weights = byPath.keySet().stream().filter(p -> !p.contains("/") && p.endsWith(".safetensors"))
                     .toList();
@@ -207,7 +209,7 @@ public final class Hub {
                 o.put("files", files);
                 o.put("family", family);
                 if (!FAMILIES.contains(family)) {
-                    unsupported(o, family.isEmpty() ? "no model_type in config.json"
+                    unsupported(o, configError != null ? configError : family.isEmpty() ? "no model_type in config.json"
                             : "the " + family + " family does not run in the studio yet; "
                                     + String.join(", ", new java.util.TreeSet<>(FAMILIES)) + " do");
                 } else if (!byPath.containsKey("tokenizer.json")) {
@@ -775,7 +777,7 @@ public final class Hub {
                     ? "Hugging Face refused it. If the model is gated, accept its license on huggingface.co with the account"
                             + " your Hugging Face key belongs to, then try again."
                     : "this model is gated or private. Accept its license on huggingface.co, then add a Hugging Face key"
-                            + " (a read token) under Providers and try again.");
+                            + " (a read token) in the Hugging Face panel and try again.");
         }
         if (status == 404) {
             throw new IOException("Hugging Face has nothing at " + what);
