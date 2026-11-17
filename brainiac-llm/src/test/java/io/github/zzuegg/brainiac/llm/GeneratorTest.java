@@ -31,7 +31,7 @@ class GeneratorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"llama", "llama3-rope", "qwen2"})
+    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"})
     void greedyAndBeamSearchMatchTransformers(String name) throws IOException {
         Map<String, Object> e = LlamaTest.expected(name + "/expected.json");
         Generator gen = new Generator(Llama.load(LlamaTest.resource(name), DEVICE, DType.FLOAT32), null);

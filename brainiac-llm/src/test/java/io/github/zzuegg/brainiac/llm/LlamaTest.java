@@ -69,7 +69,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"llama", "llama3-rope", "qwen2"})
+    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"})
     void matchesTransformersLogits(String name) throws IOException {
         Map<String, Object> e = expected(name + "/expected.json");
         Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
@@ -79,7 +79,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"llama", "llama3-rope", "qwen2"})
+    @ValueSource(strings = {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"})
     void greedyDecodingWithTheCacheMatchesTransformers(String name) throws IOException {
         Map<String, Object> e = expected(name + "/expected.json");
         Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
@@ -94,6 +94,25 @@ class LlamaTest {
         }
         assertArrayEquals(greedy, out, name);
         assertEquals(ids.length + greedy.length, state.length());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"qwen3", "phi3", "gemma2", "gemma3"})
+    void readsOtherFamiliesFromGguf(String name) throws IOException {
+        Map<String, Object> e = expected(name + ".gguf.expected.json");
+        Llama model = Llama.load(resource(name + ".gguf"), DEVICE, DType.FLOAT32);
+        float[] logits = model.forward(new int[][] {ints(e.get("ids"))}).value().toArray();
+        assertArrayEquals(rows(e.get("logits")), logits, 2e-3f, name);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"phi3", "gemma2", "gemma3"})
+    void otherFamiliesSaveAndLoad(String name, @TempDir Path dir) {
+        Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+        model.save(dir);
+        Llama back = Llama.load(dir, DEVICE, DType.FLOAT32);
+        int[][] ids = {{1, 2, 3, 4, 5, 6, 7}};
+        assertArrayEquals(model.forward(ids).value().toArray(), back.forward(ids).value().toArray(), 1e-5f, name);
     }
 
     @Test
@@ -361,7 +380,7 @@ class LlamaTest {
     @Test
     void ggufExportLoadsBackWithTheSameLogits(@TempDir Path dir) throws IOException {
         int[][] prompt = {{1, 2, 3, 4, 5}};
-        for (String name : new String[] {"llama", "llama3-rope", "qwen2"}) {
+        for (String name : new String[] {"llama", "llama3-rope", "qwen2", "mistral", "qwen3", "phi3", "gemma", "gemma2", "gemma3"}) {
             Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
             float[] expected = model.forward(prompt).value().toArray();
             Path f = dir.resolve(name + ".gguf");

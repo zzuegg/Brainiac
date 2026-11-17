@@ -21,8 +21,9 @@ public final class Rope {
      * @param dim the rotated features per head
      * @param theta the frequency base
      * @param type {@code "default"}, {@code "linear"}, {@code "llama3"}, {@code "yarn"} (Peng et
-     *     al., 2023) or {@code "dynamic"} (NTK-aware, the base grows once positions pass
-     *     {@code originalMaxPositions})
+     *     al., 2023), {@code "dynamic"} (NTK-aware, the base grows once positions pass
+     *     {@code originalMaxPositions}) or {@code "longrope"} (Phi-3: the divisors are {@code
+     *     freqFactors}, and cos and sin are scaled by {@code sqrt(1 + ln factor / ln original)})
      * @param factor the scaling factor (every type but default)
      * @param lowFreqFactor llama3's low-frequency factor
      * @param highFreqFactor llama3's high-frequency factor
@@ -31,7 +32,7 @@ public final class Rope {
      * @param betaFast yarn: frequencies with more rotations than this over the original context
      *     are kept
      * @param betaSlow yarn: frequencies with fewer rotations than this are interpolated
-     * @param attentionFactor yarn: the factor on cos and sin, or 0 for {@code 0.1 ln(factor) + 1}
+     * @param attentionFactor yarn and longrope: the factor on cos and sin, or 0 for the type's default
      */
     public record Settings(int dim, double theta, String type, double factor, double lowFreqFactor,
             double highFreqFactor, int originalMaxPositions, float[] freqFactors, double betaFast,
@@ -98,6 +99,9 @@ public final class Rope {
         double m = 1;
         if (s.type().equals("yarn")) {
             m = s.attentionFactor() > 0 ? s.attentionFactor() : s.factor() <= 1 ? 1 : 0.1 * Math.log(s.factor()) + 1;
+        } else if (s.type().equals("longrope")) {
+            m = s.attentionFactor() > 0 ? s.attentionFactor() : s.factor() <= 1 ? 1
+                    : Math.sqrt(1 + Math.log(s.factor()) / Math.log(s.originalMaxPositions()));
         }
         this.magnitude = (float) m;
         this.dynamicLength = s.originalMaxPositions();
@@ -121,7 +125,8 @@ public final class Rope {
             inv[i] = 1.0 / (float) Math.pow(theta, (float) (2.0 * i) / s.dim());
         }
         switch (s.type()) {
-            case "default", "dynamic" -> {
+            case "default", "dynamic", "longrope" -> {
+                // longrope (Phi-3): its per-pair divisors are the freqFactors
             }
             case "linear" -> {
                 for (int i = 0; i < half; i++) {
