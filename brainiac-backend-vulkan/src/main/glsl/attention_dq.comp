@@ -1,12 +1,15 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
 #include "common.glsl"
 // Gradient of fused attention (Backend.attentionBackward) for the queries: a work group of
 // ROWS invocations takes ROWS query rows of one head, one row each, and walks the keys TILE
 // at a time through shared memory (every invocation reads the same key, so one global read
 // serves the group). Each weight is recomputed from lse: dq = scale * sum_j p_j (dO . v_j - D)
 // k_j with D = dO . out, which is also stored for attention_dkv. Head sizes up to ATT_D.
-#define ATT_D 64
+#ifndef ATT_D
+#define ATT_D 64   // the largest head; attention_*32 are built for heads up to 32
+#endif
 #define ROWS 64
 #define TILE 32
 layout(local_size_x = ROWS) in;
@@ -37,11 +40,11 @@ void main() {
     ACC acc[ATT_D];
     ACC dd = ACC(0);
     ACC row = ACC(0);
-    for (uint d = 0; d < p.dk; d++) {
+    [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
         qv[d] = live ? LOAD(p.q, g * p.dk + d) : ACC(0);
         acc[d] = ACC(0);
     }
-    for (uint d = 0; d < p.dv; d++) {
+    [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dv) {
         dov[d] = live ? LOAD(p.dout, g * p.dv + d) : ACC(0);
         dd += live ? dov[d] * LOAD(p.o, g * p.dv + d) : ACC(0);
     }
@@ -67,23 +70,23 @@ void main() {
         uint mine = seen > c ? min(n, seen - c) : 0u;
         for (uint jj = 0; jj < mine; jj++) {
             ACC s = ACC(0);
-            for (uint d = 0; d < p.dk; d++) {
+            [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
                 s += qv[d] * ks[jj * p.dk + d];
             }
             ACC pr = exp_(s * ACC(p.scale) - row);
             ACC dp = ACC(0);
-            for (uint d = 0; d < p.dv; d++) {
+            [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dv) {
                 dp += dov[d] * vs[jj * p.dv + d];
             }
             ACC ds = pr * (dp - dd) * ACC(p.scale);
-            for (uint d = 0; d < p.dk; d++) {
+            [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
                 acc[d] += ds * ks[jj * p.dk + d];
             }
         }
         barrier();   // the next tile overwrites ks and vs
     }
     if (live) {
-        for (uint d = 0; d < p.dk; d++) {
+        [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
             STORE(p.dq, g * p.dk + d, acc[d]);
         }
         STORE(p.dsum, g, dd);

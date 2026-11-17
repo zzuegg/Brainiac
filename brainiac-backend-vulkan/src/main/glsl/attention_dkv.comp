@@ -1,11 +1,14 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
 #include "common.glsl"
 // Gradient of fused attention (Backend.attentionBackward) for the keys and values: a work
 // group of ROWS invocations takes ROWS key rows of one key head, one row each, and walks the
 // queries of every head that shares it TILE at a time through shared memory:
 // dv_j = sum p dO, dk_j = scale * sum p (dO . v_j - D) q, with D from attention_dq.
-#define ATT_D 64
+#ifndef ATT_D
+#define ATT_D 64   // the largest head; attention_*32 are built for heads up to 32
+#endif
 #define ROWS 64
 #define TILE 32
 layout(local_size_x = ROWS) in;
@@ -35,11 +38,11 @@ void main() {
     ACC vr[ATT_D];
     ACC dk_[ATT_D];
     ACC dv_[ATT_D];
-    for (uint d = 0; d < p.dk; d++) {
+    [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
         kr[d] = live ? LOAD(p.k, g * p.dk + d) : ACC(0);
         dk_[d] = ACC(0);
     }
-    for (uint d = 0; d < p.dv; d++) {
+    [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dv) {
         vr[d] = live ? LOAD(p.v, g * p.dv + d) : ACC(0);
         dv_[d] = ACC(0);
     }
@@ -67,18 +70,18 @@ void main() {
             uint from = first > c ? min(n, first - c) : 0u;
             for (uint ii = from; ii < n; ii++) {
                 ACC s = ACC(0);
-                for (uint d = 0; d < p.dk; d++) {
+                [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
                     s += qs[ii * p.dk + d] * kr[d];
                 }
                 ACC pr = exp_(s * ACC(p.scale) - ls[ii]);
                 ACC dp = ACC(0);
-                for (uint d = 0; d < p.dv; d++) {
+                [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dv) {
                     ACC od = os[ii * p.dv + d];
                     dv_[d] += pr * od;
                     dp += od * vr[d];
                 }
                 ACC dsc = pr * (dp - ds_[ii]) * ACC(p.scale);
-                for (uint d = 0; d < p.dk; d++) {
+                [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
                     dk_[d] += dsc * qs[ii * p.dk + d];
                 }
             }
@@ -86,10 +89,10 @@ void main() {
         }
     }
     if (live) {
-        for (uint d = 0; d < p.dk; d++) {
+        [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dk) {
             STORE(p.gk, g * p.dk + d, dk_[d]);
         }
-        for (uint d = 0; d < p.dv; d++) {
+        [[unroll]] for (uint d = 0; d < ATT_D; d++) if (d < p.dv) {
             STORE(p.gv, g * p.dv + d, dv_[d]);
         }
     }
