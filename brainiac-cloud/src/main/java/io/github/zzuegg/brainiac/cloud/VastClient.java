@@ -78,7 +78,11 @@ public final class VastClient {
         Map<String, Object> r = call("POST", "bundles/", query.toJson());
         List<VastOffer> out = new ArrayList<>();
         for (Object o : Json.array(r.getOrDefault("offers", List.of()))) {
-            out.add(VastOffer.from(Json.object(o)));
+            VastOffer f = VastOffer.from(Json.object(o));
+            // checked here too, in case the server reads the filter in other units
+            if (f.gpuMemoryGb() >= query.minGpuMemoryGb()) {
+                out.add(f);
+            }
         }
         return out;
     }

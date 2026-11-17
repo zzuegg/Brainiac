@@ -58,6 +58,7 @@ public final class VastCli {
         int localPort = 7870;
         Path identity;
         List<Long> ids = new ArrayList<>();
+        List<Long> skipped = new ArrayList<>();
     }
 
     /**
@@ -97,7 +98,7 @@ public final class VastCli {
 
     private static void usage() {
         System.out.println("""
-                usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--limit N]
+                usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--min-gpu-ram GB] [--limit N]
                        vast run (--offer ID | --cheapest | --instance ID) [--job check|smoke|tests|bench|run]
                                 [--image IMAGE] [--disk GB] [--max-minutes N] [--keep] [--yes] [--identity KEY]
                                 [-- ARGS for the job, e.g. the command for --job run]
@@ -118,6 +119,7 @@ public final class VastCli {
                 case "--cheapest" -> o.cheapest = true;
                 case "--job" -> o.job = args[++i];
                 case "--gpu" -> o.query = o.query.withGpus(List.of(args[++i].split("\\s*,\\s*")));
+                case "--min-gpu-ram" -> o.query = o.query.withMinGpuMemory(Double.parseDouble(args[++i]));
                 case "--max-price" -> o.query = o.query.withMaxPrice(Double.parseDouble(args[++i]));
                 case "--limit" -> o.query = o.query.withLimit(Integer.parseInt(args[++i]));
                 case "--image" -> o.launch = o.launch.withImage(args[++i]);
@@ -187,7 +189,28 @@ public final class VastCli {
                 return 1;
             }
             System.out.println("Renting " + offer);
-            id = vast.rent(offer.id(), o.launch);
+            long rentedId = -1;
+            for (int tries = 0; ; tries++) {
+                try {
+                    rentedId = vast.rent(offer.id(), o.launch);
+                    break;
+                } catch (IOException e) {
+                    // an offer can stay listed after it is gone: with --cheapest, take the next one
+                    // (each still within --max-price and the other limits the user gave)
+                    if (!o.cheapest || tries >= 4 || !e.getMessage().contains("no_such_ask")) {
+                        throw e;
+                    }
+                    System.out.println("  offer " + offer.id() + " is no longer available; trying the next cheapest");
+                    long gone = offer.id();
+                    o.skipped.add(gone);
+                    offer = pick(vast, o);
+                    if (offer == null) {
+                        return 1;
+                    }
+                    System.out.println("Renting " + offer);
+                }
+            }
+            id = rentedId;
             price = offer.dollarsPerHour();
             System.out.println("Rented instance " + id + (o.keep ? " (--keep: destroy it yourself when done)" : ""));
         } else {
@@ -311,7 +334,8 @@ public final class VastCli {
             return null;
         }
         if (o.cheapest) {
-            List<VastOffer> list = vast.offers(o.query);
+            List<VastOffer> list = new ArrayList<>(vast.offers(o.query));
+            list.removeIf(f -> o.skipped.contains(f.id()));
             if (list.isEmpty()) {
                 System.out.println("No offers match.");
                 return null;

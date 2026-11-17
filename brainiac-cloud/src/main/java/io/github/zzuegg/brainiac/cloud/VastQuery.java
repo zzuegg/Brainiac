@@ -16,10 +16,12 @@ import java.util.Map;
  * @param minReliability the least reliability score, 0 to 1
  * @param minDownloadMbps the least download speed
  * @param minDiskGb the least free disk
+ * @param minGpuMemoryGb the least memory per GPU, which also keeps out mislisted cards (a
+ *        "RTX 4090" with 16 GB is a laptop part)
  * @param limit how many offers to return
  */
 public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHour, double minReliability,
-        double minDownloadMbps, double minDiskGb, int limit) {
+        double minDownloadMbps, double minDiskGb, double minGpuMemoryGb, int limit) {
 
     /** The GPU models Brainiac is meant for, as Vast names them. */
     public static final List<String> DEFAULT_GPUS = List.of(
@@ -28,10 +30,21 @@ public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHou
     /**
      * Returns the default search.
      *
-     * @return one GPU of {@link #DEFAULT_GPUS}, reliability 0.98, 200 Mbit/s, 40 GB disk, 20 offers
+     * @return one GPU of {@link #DEFAULT_GPUS} with at least 23 GB, reliability 0.98, 200 Mbit/s,
+     *         40 GB disk, 20 offers
      */
     public static VastQuery defaults() {
-        return new VastQuery(DEFAULT_GPUS, 1, 0, 0.98, 200, 40, 20);
+        return new VastQuery(DEFAULT_GPUS, 1, 0, 0.98, 200, 40, 23, 20);
+    }
+
+    /**
+     * Returns this search with another least GPU memory.
+     *
+     * @param gb the least memory per GPU, in GB
+     * @return the changed search
+     */
+    public VastQuery withMinGpuMemory(double gb) {
+        return new VastQuery(gpuNames, gpus, maxDollarsPerHour, minReliability, minDownloadMbps, minDiskGb, gb, limit);
     }
 
     /**
@@ -41,7 +54,7 @@ public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHou
      * @return the changed search
      */
     public VastQuery withGpus(List<String> names) {
-        return new VastQuery(List.copyOf(names), gpus, maxDollarsPerHour, minReliability, minDownloadMbps, minDiskGb, limit);
+        return new VastQuery(List.copyOf(names), gpus, maxDollarsPerHour, minReliability, minDownloadMbps, minDiskGb, minGpuMemoryGb, limit);
     }
 
     /**
@@ -51,7 +64,7 @@ public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHou
      * @return the changed search
      */
     public VastQuery withMaxPrice(double dollars) {
-        return new VastQuery(gpuNames, gpus, dollars, minReliability, minDownloadMbps, minDiskGb, limit);
+        return new VastQuery(gpuNames, gpus, dollars, minReliability, minDownloadMbps, minDiskGb, minGpuMemoryGb, limit);
     }
 
     /**
@@ -61,7 +74,7 @@ public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHou
      * @return the changed search
      */
     public VastQuery withLimit(int n) {
-        return new VastQuery(gpuNames, gpus, maxDollarsPerHour, minReliability, minDownloadMbps, minDiskGb, n);
+        return new VastQuery(gpuNames, gpus, maxDollarsPerHour, minReliability, minDownloadMbps, minDiskGb, minGpuMemoryGb, n);
     }
 
     /**
@@ -85,6 +98,10 @@ public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHou
         q.put("reliability2", Map.of("gte", minReliability));
         q.put("inet_down", Map.of("gte", minDownloadMbps));
         q.put("disk_space", Map.of("gte", minDiskGb));
+        if (minGpuMemoryGb > 0) {
+            // Vast keeps gpu_ram in MB
+            q.put("gpu_ram", Map.of("gte", minGpuMemoryGb * 1000));
+        }
         q.put("order", List.of(List.of("dph_total", "asc")));
         q.put("type", "on-demand");
         q.put("limit", limit);
