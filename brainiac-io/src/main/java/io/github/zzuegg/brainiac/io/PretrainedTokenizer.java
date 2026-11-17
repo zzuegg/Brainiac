@@ -555,30 +555,12 @@ public final class PretrainedTokenizer implements Tokenizer {
             if (!model.containsKey("merges")) {
                 throw new IllegalArgumentException("only byte-level BPE and SentencePiece tokenizers go into GGUF");
             }
-            m.put("tokenizer.ggml.model", "gpt2");
-            String regex = findRegex(cfg.get("pre_tokenizer"));
-            String pre = TokenizerParts.QWEN2_PATTERN.equals(regex) ? "qwen2"
-                    : TokenizerParts.LLAMA3_PATTERN.equals(regex) ? "llama-bpe" : "gpt2";
-            m.put("tokenizer.ggml.pre", pre);
-            Set<Integer> control = new HashSet<>();
-            Set<Integer> user = new HashSet<>();
-            for (Added a : added) {
-                (a.special ? control : user).add(a.id);
+            if (Boolean.TRUE.equals(model.get("byte_fallback")) || Json.write(cfg.get("normalizer")).contains("Prepend")
+                    || Json.write(cfg.get("pre_tokenizer")).contains("Metaspace")) {
+                sentencePieceBpe(m, cfg, model);
+            } else {
+                byteLevelBpe(m, cfg, model);
             }
-            for (int i = 0; i < tokens.size(); i++) {
-                types.add(control.contains(i) ? 3 : user.contains(i) ? 4 : 1);
-            }
-            List<String> merges = new ArrayList<>();
-            for (Object o : Json.array(model.get("merges"))) {
-                merges.add(o instanceof String str ? str : Json.array(o).get(0) + " " + Json.array(o).get(1));
-            }
-            List<String> names = new ArrayList<>(tokens.size());
-            for (int i = 0; i < tokens.size(); i++) {
-                names.add(tokens.get(i) == null ? "[PAD" + i + "]" : tokens.get(i));
-            }
-            m.put("tokenizer.ggml.tokens", names);
-            m.put("tokenizer.ggml.token_type", types);
-            m.put("tokenizer.ggml.merges", merges);
         }
         if (bos != null) {
             m.put("tokenizer.ggml.bos_token_id", (long) bos);
@@ -593,6 +575,92 @@ public final class PretrainedTokenizer implements Tokenizer {
             m.put("tokenizer.chat_template", chatTemplate);
         }
         return m;
+    }
+
+    /** A byte-level BPE {@code tokenizer.json} as GGUF's {@code gpt2} model. */
+    private void byteLevelBpe(Map<String, Object> m, Map<String, Object> cfg, Map<String, Object> model) {
+        List<Integer> types = new ArrayList<>();
+        m.put("tokenizer.ggml.model", "gpt2");
+        String regex = findRegex(cfg.get("pre_tokenizer"));
+        String pre = TokenizerParts.QWEN2_PATTERN.equals(regex) ? "qwen2"
+                : TokenizerParts.LLAMA3_PATTERN.equals(regex) ? "llama-bpe" : "gpt2";
+        m.put("tokenizer.ggml.pre", pre);
+        Set<Integer> control = new HashSet<>();
+        Set<Integer> user = new HashSet<>();
+        for (Added a : added) {
+            (a.special ? control : user).add(a.id);
+        }
+        for (int i = 0; i < tokens.size(); i++) {
+            types.add(control.contains(i) ? 3 : user.contains(i) ? 4 : 1);
+        }
+        List<String> merges = new ArrayList<>();
+        for (Object o : Json.array(model.get("merges"))) {
+            merges.add(o instanceof String str ? str : Json.array(o).get(0) + " " + Json.array(o).get(1));
+        }
+        List<String> names = new ArrayList<>(tokens.size());
+        for (int i = 0; i < tokens.size(); i++) {
+            names.add(tokens.get(i) == null ? "[PAD" + i + "]" : tokens.get(i));
+        }
+        m.put("tokenizer.ggml.tokens", names);
+        m.put("tokenizer.ggml.token_type", types);
+        m.put("tokenizer.ggml.merges", merges);
+    }
+
+    /**
+     * A SentencePiece-style BPE {@code tokenizer.json} (Llama 2, Mistral, TinyLlama: "\u2581"
+     * for spaces, byte fallback) as GGUF's {@code llama} model: a merge's result scores
+     * {@code -rank} so earlier merges win, and {@code <0xXX>} tokens are bytes.
+     */
+    private void sentencePieceBpe(Map<String, Object> m, Map<String, Object> cfg, Map<String, Object> model) {
+        m.put("tokenizer.ggml.model", "llama");
+        List<Object> merges = Json.array(model.get("merges"));
+        Map<String, Integer> ids = new HashMap<>();
+        for (int i = 0; i < tokens.size(); i++) {
+            if (tokens.get(i) != null) {
+                ids.putIfAbsent(tokens.get(i), i);
+            }
+        }
+        float[] score = new float[tokens.size()];
+        Arrays.fill(score, -(merges.size() + 1f));
+        for (int r = merges.size() - 1; r >= 0; r--) {
+            Object o = merges.get(r);
+            String merged;
+            if (o instanceof String str) {
+                int sp = str.indexOf(' ', 1);
+                merged = str.substring(0, sp) + str.substring(sp + 1);
+            } else {
+                merged = (String) Json.array(o).get(0) + Json.array(o).get(1);
+            }
+            Integer id = ids.get(merged);
+            if (id != null) {
+                score[id] = -r;
+            }
+        }
+        Set<Integer> control = new HashSet<>();
+        Set<Integer> user = new HashSet<>();
+        for (Added a : added) {
+            (a.special ? control : user).add(a.id);
+        }
+        Integer unk = ids.get(Json.string(model, "unk_token", "<unk>"));
+        List<String> names = new ArrayList<>(tokens.size());
+        List<Float> scores = new ArrayList<>(tokens.size());
+        List<Integer> types = new ArrayList<>(tokens.size());
+        for (int i = 0; i < tokens.size(); i++) {
+            String t = tokens.get(i);
+            names.add(t == null ? "[PAD" + i + "]" : t);
+            scores.add(score[i]);
+            types.add(unk != null && unk == i ? 2 : control.contains(i) ? 3 : user.contains(i) ? 4
+                    : t != null && t.matches("<0x[0-9A-F]{2}>") ? 6 : 1);
+        }
+        m.put("tokenizer.ggml.tokens", names);
+        m.put("tokenizer.ggml.scores", scores);
+        m.put("tokenizer.ggml.token_type", types);
+        if (unk != null) {
+            m.put("tokenizer.ggml.unknown_token_id", (long) unk);
+        }
+        m.put("tokenizer.ggml.add_space_prefix", Json.write(cfg.get("normalizer")).contains("Prepend")
+                || Json.write(cfg.get("pre_tokenizer")).matches(".*\"prepend_scheme\":\"(always|first)\".*")
+                || Json.write(cfg.get("pre_tokenizer")).contains("\"add_prefix_space\":true"));
     }
 
     /** The first split pattern in a pre-tokenizer description, or null. */
