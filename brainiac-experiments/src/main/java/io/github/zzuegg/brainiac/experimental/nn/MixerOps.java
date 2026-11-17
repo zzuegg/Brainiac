@@ -159,4 +159,94 @@ final class MixerOps {
         }
         return best;
     }
+
+    /** Element-wise sine, computed on the host. */
+    static Var sin(Var x) {
+        return trig(x, true);
+    }
+
+    /** Element-wise cosine, computed on the host. */
+    static Var cos(Var x) {
+        return trig(x, false);
+    }
+
+    private static Var trig(Var x, boolean sine) {
+        return Var.apply(new Op() {
+            @Override
+            public Tensor forward(Tensor... in) {
+                float[] v = in[0].toArray();
+                float[] o = new float[v.length];
+                for (int i = 0; i < v.length; i++) {
+                    o[i] = (float) (sine ? Math.sin(v[i]) : Math.cos(v[i]));
+                }
+                return Tensor.of(in[0].shape(), o);
+            }
+
+            @Override
+            public Tensor[] backward(Tensor grad, Tensor output, Tensor... in) {
+                float[] v = in[0].toArray();
+                float[] d = new float[v.length];
+                for (int i = 0; i < v.length; i++) {
+                    d[i] = (float) (sine ? Math.cos(v[i]) : -Math.sin(v[i]));
+                }
+                return new Tensor[] {grad.mul(Tensor.of(in[0].shape(), d))};
+            }
+
+            @Override
+            public String name() {
+                return sine ? "sin" : "cos";
+            }
+        }, x);
+    }
+
+    /**
+     * Depthwise causal convolution along steps: {@code y[t] = sum_j w[j] x[t - j]}.
+     *
+     * @param x {@code [b, t, d]}
+     * @param weight {@code [kernel, d]}
+     */
+    static Var causalDepthwise(Var x, Var weight) {
+        int b = x.shape().dim(0);
+        int t = x.shape().dim(1);
+        int d = x.shape().dim(2);
+        int kernel = weight.shape().dim(0);
+        Var y = x.mul(weight.slice(0, 0, 1));
+        for (int j = 1; j < kernel && j < t; j++) {
+            Var shifted = Var.concat(1, Var.of(Tensor.zeros(Shape.of(b, j, d))), x.slice(1, 0, t - j));
+            y = y.add(shifted.mul(weight.slice(0, j, j + 1)));
+        }
+        return y;
+    }
+
+    /** Lower-triangular ones including the diagonal, {@code [t, t]}. */
+    static Tensor lowerOnes(int t) {
+        float[] m = new float[t * t];
+        for (int i = 0; i < t; i++) {
+            for (int j = 0; j <= i; j++) {
+                m[i * t + j] = 1;
+            }
+        }
+        return Tensor.of(Shape.of(t, t), m);
+    }
+
+    /**
+     * {@code exp(c_i - c_j)} for {@code j <= i} and 0 above the diagonal, along the last axis
+     * of a cumulative log-decay {@code c [..., t]}: the decay between step {@code j} and
+     * {@code i}. The exponent is clamped at 0 above the diagonal, so it never overflows.
+     */
+    static Var segmentDecay(Var c) {
+        Shape s = c.shape();
+        int t = s.dim(-1);
+        int[] row = s.toArray();
+        int[] col = s.toArray();
+        int[] ci = java.util.Arrays.copyOf(row, row.length + 1);
+        ci[ci.length - 2] = t;
+        ci[ci.length - 1] = 1;
+        int[] cj = java.util.Arrays.copyOf(col, col.length + 1);
+        cj[cj.length - 2] = 1;
+        cj[cj.length - 1] = t;
+        Tensor mask = lowerOnes(t);
+        Var diff = c.reshape(ci).sub(c.reshape(cj));   // [..., t, t]
+        return diff.mul(mask).exp().mul(mask);
+    }
 }
