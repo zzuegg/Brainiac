@@ -168,7 +168,7 @@ public final class VulkanBackend implements Backend {
                 + vk.shaderNanos.entrySet().stream()
                         .sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed()).limit(16)
                         .map(e -> {
-                            long n = vk.perShader.getOrDefault(e.getKey(), 1L);
+                            long n = vk.shaderCalls.getOrDefault(e.getKey(), 1L);
                             return String.format(java.util.Locale.ROOT, "%s %.1f ms (%.0f%%, %d x %.1f us)", e.getKey(),
                                     e.getValue() / 1e6, 100.0 * e.getValue() / Math.max(1, total), n,
                                     e.getValue() / 1e3 / Math.max(1, n));

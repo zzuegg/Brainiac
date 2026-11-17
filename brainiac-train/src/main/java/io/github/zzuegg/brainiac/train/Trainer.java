@@ -320,13 +320,16 @@ public final class Trainer {
             if (total == null) {
                 return;
             }
-            float norm = (float) Math.sqrt(total.item());
-            if (norm > clipNorm) {
-                float scale = clipNorm / norm;
-                for (Var p : params) {
-                    if (p.grad() != null) {
-                        p.setGrad(p.grad().mul(scale));
-                    }
+            // min(1, clipNorm / norm), computed where the gradients are: reading the norm back
+            // would make every step wait for the device. Below the limit it is exactly 1.
+            Tensor limit = Tensor.full(Shape.of(), clipNorm, total.dtype(), total.device());
+            Tensor scale = limit.div(total.sqrt().maximum(limit));
+            Map<DType, Tensor> scales = new java.util.EnumMap<>(DType.class);
+            scales.put(scale.dtype(), scale);
+            for (Var p : params) {
+                if (p.grad() != null) {
+                    Tensor g = p.grad();
+                    p.setGrad(g.mul(scales.computeIfAbsent(g.dtype(), scale::to)));
                 }
             }
         }
