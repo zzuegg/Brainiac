@@ -14,7 +14,7 @@ import io.github.zzuegg.brainiac.rl.Schedule;
  * memory turns each return into a usable estimate at once, where DQN's network needs many
  * gradient steps to absorb it.
  */
-public final class EpisodicControl {
+public final class NeuralEpisodicVersusDqn {
 
     /**
      * @param nec the greedy return of Neural Episodic Control
@@ -24,7 +24,7 @@ public final class EpisodicControl {
     public record Result(double nec, double dqn, int entries) {
     }
 
-    private EpisodicControl() {
+    private NeuralEpisodicVersusDqn() {
     }
 
     /**
