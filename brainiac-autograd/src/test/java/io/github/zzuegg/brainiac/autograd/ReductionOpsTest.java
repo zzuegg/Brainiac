@@ -83,4 +83,16 @@ class ReductionOpsTest {
         w.sort(0, false).mul(Tensor.of(Shape.of(2, 1), 1f, 10f)).sum().backward();
         org.junit.jupiter.api.Assertions.assertArrayEquals(new float[] {10f, 1f, 1f, 10f}, w.grad().toArray());
     }
+
+    @Test
+    void customOperationsUseTheirGradient() {
+        Var a = Var.param(Tensor.of(1f, 2f, 3f));
+        Var b = Var.param(Tensor.of(4f, 5f, 6f));
+        // a * b with a hand-written gradient; b's left out on purpose (null: zero)
+        Var y = Var.custom(v -> v[0].mul(v[1]), (in, out, g) -> new Tensor[] {g.mul(in[1]), null}, a, b);
+        y.sum().backward();
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[] {4f, 5f, 6f}, a.grad().toArray());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[] {0f, 0f, 0f}, b.grad().toArray());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new float[] {4f, 10f, 18f}, y.value().toArray());
+    }
 }

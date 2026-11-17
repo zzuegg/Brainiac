@@ -57,4 +57,22 @@ class NewOpsTest {
         // along the first axis
         assertArrayEquals(new float[] {1, 1, 1, 0, 0, 0, 0, 0, 1, 1}, x.argsort(0, false).toArray());
     }
+
+    @Test
+    void customKernelsRunTheirJavaVersionOnTheCpu() {
+        io.github.zzuegg.brainiac.tensor.Kernel axpb = io.github.zzuegg.brainiac.tensor.Kernel.of("axpb", 2, null,
+                (in, out, ints, floats) -> {
+                    for (int i = 0; i < out.length; i++) {
+                        out[i] = floats[0] * in[0][i] + in[1][i] + ints[0];
+                    }
+                });
+        Tensor x = Tensor.of(1f, 2f, 3f);
+        Tensor y = Tensor.of(10f, 20f, 30f);
+        Tensor z = Tensor.custom(axpb, x.shape(), io.github.zzuegg.brainiac.tensor.DType.FLOAT32, new int[] {1},
+                new float[] {2}, x, y);
+        assertArrayEquals(new float[] {13f, 25f, 37f}, z.toArray());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> Tensor.custom(axpb, x.shape(), io.github.zzuegg.brainiac.tensor.DType.FLOAT32, new int[0],
+                        new float[0], x));
+    }
 }

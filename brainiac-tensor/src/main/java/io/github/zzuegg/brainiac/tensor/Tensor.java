@@ -1994,6 +1994,40 @@ public final class Tensor {
     }
 
     /**
+     * Runs a user {@link Kernel}: its shader on Vulkan, its Java version elsewhere.
+     *
+     * @param kernel the kernel
+     * @param shape the output's shape
+     * @param dtype the output's type, which the inputs are converted to
+     * @param ints up to {@link Kernel#MAX_INTS} integer parameters
+     * @param floats up to {@link Kernel#MAX_FLOATS} float parameters
+     * @param inputs the inputs, as many as the kernel reads, on one device
+     * @return the output, on the inputs' device (the default device when there are none)
+     */
+    public static Tensor custom(Kernel kernel, Shape shape, DType dtype, int[] ints, float[] floats,
+            Tensor... inputs) {
+        if (inputs.length != kernel.inputs()) {
+            throw new IllegalArgumentException(kernel + " takes " + kernel.inputs() + " inputs, got " + inputs.length);
+        }
+        if (ints.length > Kernel.MAX_INTS || floats.length > Kernel.MAX_FLOATS) {
+            throw new IllegalArgumentException("at most " + Kernel.MAX_INTS + " ints and " + Kernel.MAX_FLOATS
+                    + " floats, got " + ints.length + " and " + floats.length);
+        }
+        Device device = inputs.length > 0 ? inputs[0].device : Device.getDefault();
+        Storage[] in = new Storage[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            inputs[0].sameDevice(inputs[i]);
+            in[i] = inputs[i].storage();
+        }
+        Backend backend = device.backend();
+        Storage out = backend.allocateUninitialized(shape.size(), dtype);
+        if (shape.size() > 0) {
+            backend.custom(kernel, in, out, ints, floats);
+        }
+        return new Tensor(shape, device, out);
+    }
+
+    /**
      * Sorts along one axis, stably: equal values keep their order, and NaN counts as larger
      * than every number (last ascending, first descending).
      *

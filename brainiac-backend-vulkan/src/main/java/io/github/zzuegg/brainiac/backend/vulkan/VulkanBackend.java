@@ -2042,6 +2042,59 @@ public final class VulkanBackend implements Backend {
         done(x, vs(in));
     }
 
+    /** Pipelines of user kernels, by kernel, number format and source. */
+    private final Map<String, String> customShaders = new HashMap<>();
+
+    /**
+     * Runs a user kernel's shader, compiled on first use for the output's format; kernels
+     * without one, or with shader compilation unavailable, run their Java version.
+     */
+    @Override
+    public synchronized void custom(io.github.zzuegg.brainiac.tensor.Kernel kernel, Storage[] inputs, Storage out,
+            int[] ints, float[] floats) {
+        if (kernel.glsl() == null || compiler == null) {
+            Backend.super.custom(kernel, inputs, out, ints, floats);
+            return;
+        }
+        VkStorage y = vs(out);
+        VkStorage[] originals = new VkStorage[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            originals[i] = vs(inputs[i]);
+        }
+        VkStorage[] all = java.util.Arrays.copyOf(originals, inputs.length + 1);
+        all[inputs.length] = y;
+        eager(all);
+        String key = kernel.name() + "\n" + y.dtype + "\n" + kernel.inputs() + "\n" + kernel.glsl();
+        String name = customShaders.get(key);
+        if (name == null) {
+            byte[] code = compiler.compile(compiler.source(kernel.header() + kernel.glsl(), y.dtype));
+            name = "custom#" + kernel.name() + "#" + customShaders.size();
+            vk.register(name, code);
+            customShaders.put(key, name);
+        }
+        VkStorage[] xs = new VkStorage[inputs.length];
+        VkContext.Slot[] reads = new VkContext.Slot[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            xs[i] = as(originals[i], y.dtype);
+            reads[i] = xs[i].slot();
+        }
+        ByteBuffer p = vk.push().putLong(y.address());
+        for (VkStorage x : xs) {
+            p.putLong(x.address());
+        }
+        p.putInt((int) y.size);
+        for (int i = 0; i < io.github.zzuegg.brainiac.tensor.Kernel.MAX_INTS; i++) {
+            p.putInt(i < ints.length ? ints[i] : 0);
+        }
+        for (int i = 0; i < io.github.zzuegg.brainiac.tensor.Kernel.MAX_FLOATS; i++) {
+            p.putFloat(i < floats.length ? floats[i] : 0);
+        }
+        vk.dispatch(name, groups(y.size), y.slot(), reads);
+        for (int i = 0; i < inputs.length; i++) {
+            done(xs[i], originals[i]);
+        }
+    }
+
     /** Most slices an index list is split into for {@link #scatterAdd} ({@code -Dbrainiac.vulkan.scatterSlices}; 1: none). */
     private static final int SCATTER_SLICES = Integer.getInteger("brainiac.vulkan.scatterSlices", 32);
     /** Work groups {@link #scatterAdd} aims for when it splits the index lists. */
