@@ -52,6 +52,20 @@ public final class Gguf implements WeightSource {
     private static final ValueLayout.OfInt INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
+    /**
+     * Returns the names of the GGML tensor types this reader decodes, as GGUF tools name them,
+     * such as {@code "Q4_K"}, {@code "Q8_0"} or {@code "BF16"}.
+     *
+     * @return the names
+     */
+    public static java.util.Set<String> formats() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (Format f : Format.values()) {
+            out.add(f.name());
+        }
+        return java.util.Collections.unmodifiableSet(out);
+    }
+
     /** The GGML tensor types this reader knows: id, values per block, bytes per block. */
     enum Format {
         F32(0, 1, 4), F16(1, 1, 2), Q4_0(2, 32, 18), Q4_1(3, 32, 20), Q5_0(6, 32, 22), Q5_1(7, 32, 24),
