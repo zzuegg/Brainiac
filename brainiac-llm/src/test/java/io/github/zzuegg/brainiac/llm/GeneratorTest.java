@@ -183,4 +183,99 @@ class GeneratorTest {
         }
         assertNotEquals(0, counts[2]);
     }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 3, 5})
+    void greedySpeculativeDecodingWritesWhatGreedyDecodingWrites(int lookahead) {
+        Llama model = letters(1);
+        Generator gen = new Generator(model, new CharacterTokenizer(LETTERS));
+        int[] prompt = gen.encode("speculate");
+        Generator.Options o = Generator.Options.greedy(25).withStopTokens(Set.of());
+        int[] expected = gen.generate(new int[][] {prompt}, o, null).getFirst().tokens();
+        Generator.Speculation other = gen.speculative(prompt, letters(2), lookahead, o, null);
+        assertArrayEquals(expected, other.output().tokens());
+        Generator.Speculation same = gen.speculative(prompt, letters(1), lookahead, o, null);
+        assertArrayEquals(expected, same.output().tokens());
+        assertEquals(1.0, same.acceptance(), 1e-9);
+        // a perfect draft: the model checks lookahead + 1 tokens per step
+        assertTrue(same.modelSteps() <= 1 + Math.ceilDiv(25, lookahead + 1), same.toString());
+    }
+
+    /** Next-token logits from the last token alone; goes back by forgetting tokens. */
+    record Bigram(float[][] table) implements LanguageModel {
+        @Override
+        public int vocabSize() {
+            return table.length;
+        }
+
+        @Override
+        public State newState(int batch) {
+            return new Seen(new java.util.ArrayList<>());
+        }
+
+        @Override
+        public io.github.zzuegg.brainiac.tensor.Tensor next(State state, int[][] tokens, boolean[][] padding) {
+            for (int t : tokens[0]) {
+                ((Seen) state).tokens().add(t);
+            }
+            List<Integer> seen = ((Seen) state).tokens();
+            return io.github.zzuegg.brainiac.tensor.Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(1, table.length),
+                    table[seen.getLast()], DEVICE);
+        }
+
+        record Seen(List<Integer> tokens) implements State {
+            @Override
+            public int length() {
+                return tokens.size();
+            }
+
+            @Override
+            public State select(int[] rows) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public State truncate(int length) {
+                tokens.subList(length, tokens.size()).clear();
+                return this;
+            }
+        }
+    }
+
+    @Test
+    void sampledSpeculativeDecodingFollowsTheModelNotTheDraft() {
+        int v = 4;
+        SplittableRandom r = new SplittableRandom(3);
+        float[][] model = new float[v][v];
+        float[][] draft = new float[v][v];
+        for (int i = 0; i < v; i++) {
+            for (int j = 0; j < v; j++) {
+                model[i][j] = (float) r.nextDouble(-2, 2);
+                draft[i][j] = (float) r.nextDouble(-2, 2);
+            }
+        }
+        Sampling s = Sampling.temperature(1);
+        Generator gen = new Generator(new Bigram(model), null);
+        // the exact probability of each pair of first tokens after token 0
+        double[][] pair = new double[v][v];
+        double[] first = s.probabilities(model[0]);
+        for (int a = 0; a < v; a++) {
+            double[] second = s.probabilities(model[a]);
+            for (int b = 0; b < v; b++) {
+                pair[a][b] = first[a] * second[b];
+            }
+        }
+        int n = 20000;
+        int[][] counts = new int[v][v];
+        for (int i = 0; i < n; i++) {
+            Generator.Options o = Generator.Options.sampled(2, s, i).withStopTokens(Set.of());
+            int[] t = gen.speculative(new int[] {0}, new Bigram(draft), 2, o, null).output().tokens();
+            counts[t[0]][t[1]]++;
+        }
+        for (int a = 0; a < v; a++) {
+            for (int b = 0; b < v; b++) {
+                assertEquals(pair[a][b], counts[a][b] / (double) n, 0.012, a + "," + b);
+            }
+        }
+    }
 }

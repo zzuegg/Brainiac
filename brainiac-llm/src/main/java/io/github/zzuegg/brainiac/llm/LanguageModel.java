@@ -31,6 +31,28 @@ public interface LanguageModel {
      */
     Tensor next(State state, int[][] tokens, boolean[][] padding);
 
+    /**
+     * Reads more tokens and returns the prediction after every one of them, as speculative
+     * decoding needs to check several guessed tokens at once. By default one step at a time.
+     *
+     * @param state what was read before; updated
+     * @param tokens {@code [batch][steps]} new tokens, without padding
+     * @return float32 logits {@code [batch, steps, vocab]}
+     */
+    default Tensor nextAll(State state, int[][] tokens) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        Tensor[] each = new Tensor[steps];
+        for (int t = 0; t < steps; t++) {
+            int[][] one = new int[batch][1];
+            for (int b = 0; b < batch; b++) {
+                one[b][0] = tokens[b][t];
+            }
+            each[t] = next(state, one, null).reshape(batch, 1, vocabSize());
+        }
+        return Tensor.concat(1, each);
+    }
+
     /** What a model has read so far. */
     interface State {
 
@@ -45,5 +67,17 @@ public interface LanguageModel {
          * @return the new state; this one is no longer used
          */
         State select(int[] rows);
+
+        /**
+         * Forgets everything read after the first {@code length} steps, as when speculative
+         * decoding rejects guessed tokens.
+         *
+         * @param length the steps to keep
+         * @return the state, this one or a new one
+         * @throws UnsupportedOperationException if the model cannot go back
+         */
+        default State truncate(int length) {
+            throw new UnsupportedOperationException("this model's state cannot go back");
+        }
     }
 }
