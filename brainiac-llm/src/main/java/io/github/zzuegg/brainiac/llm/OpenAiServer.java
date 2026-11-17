@@ -26,7 +26,8 @@ import java.util.concurrent.Executors;
  * can talk to a local model: {@code GET /v1/models}, {@code POST /v1/completions} and
  * {@code POST /v1/chat/completions}, each with {@code "stream": true} as server-sent events.
  * A chat's {@code response_format} of type {@code json_schema} or {@code json_object}
- * constrains the answer. A chat's {@code tools} go to the chat template, and a reply that calls
+ * constrains the answer, as does a GBNF {@code grammar} (llama.cpp's extension). A chat's
+ * {@code tools} go to the chat template, and a reply that calls
  * them (Hermes {@code <tool_call>} blocks or a bare JSON call, see {@link Agent}) comes back as
  * {@code tool_calls} with {@code finish_reason} "tool_calls"; earlier calls and {@code tool}
  * messages in the request are rendered for the model. {@code logprobs} (chat: with
@@ -712,6 +713,14 @@ public final class OpenAiServer implements AutoCloseable {
                 options = options.withConstraint(Constraint.jsonSchema(Map.of("type", "object")));
             } else if (type != null && !"text".equals(type)) {
                 throw new BadRequest("unsupported response_format " + type);
+            }
+        }
+        if (req.get("grammar") instanceof String gbnf && !gbnf.isBlank()) {
+            // llama.cpp's server extension
+            try {
+                options = options.withConstraint(Constraint.grammar(gbnf));
+            } catch (IllegalArgumentException e) {
+                throw new BadRequest(e.getMessage());
             }
         }
         return options;

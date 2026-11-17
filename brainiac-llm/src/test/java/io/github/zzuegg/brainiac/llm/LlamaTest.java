@@ -103,6 +103,9 @@ class LlamaTest {
         Llama model = Llama.load(resource(name + ".gguf"), DEVICE, DType.FLOAT32);
         float[] logits = model.forward(new int[][] {ints(e.get("ids"))}).value().toArray();
         assertArrayEquals(rows(e.get("logits")), logits, 2e-3f, name);
+        // a mixture of experts joins only q, k and v
+        model.fuseProjections();
+        assertArrayEquals(logits, model.forward(new int[][] {ints(e.get("ids"))}).value().toArray(), 1e-4f, name);
     }
 
     @ParameterizedTest

@@ -1979,7 +1979,8 @@ public final class Llama implements LanguageModel {
      * arithmetic. The weights then go by the names {@code self_attn.qkv_proj} and
      * {@code mlp.gate_up_proj} (for {@link #addLora} targets and {@link #namedParameters()}), and
      * the model can no longer be saved. Packed projections (GGUF, {@link #quantizeWeights})
-     * join when they share bits and group; projections with adapters stay as they are.
+     * join when they share bits and group; projections with adapters stay as they are, and a
+     * mixture of experts joins only q, k and v.
      *
      * @return this model
      */
@@ -1994,7 +1995,7 @@ public final class Llama implements LanguageModel {
             Linear qkv = f.qkv() != null ? f.qkv()
                     : join(p + "self_attn.", List.of("q_proj", "k_proj", "v_proj"), "qkv_proj",
                             List.of(b.q, b.k, b.v));
-            Linear gateUp = f.gateUp() != null ? f.gateUp()
+            Linear gateUp = f.gateUp() != null || b.gate == null ? f.gateUp()   // experts have no single gate
                     : join(p + "mlp.", List.of("gate_proj", "up_proj"), "gate_up_proj", List.of(b.gate, b.up));
             fused[i] = new Fused(qkv, gateUp);
         }
