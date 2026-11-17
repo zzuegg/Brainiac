@@ -1118,3 +1118,26 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .hub-token > span { min-width: 0; flex: 1 1 240px; }
 .hub-token.edit input { flex: 1 1 220px; min-width: 0; height: 30px; }
 .hub-token .flag { flex-basis: 100%; }
+
+/* ---------- Vast.ai ---------- */
+.host.vast .vast-row { display: flex; gap: 6px; }
+.host.vast .vast-row input { flex: 1; min-width: 0; height: 30px; }
+.host.vast a { color: var(--accent); }
+.host-foot { display: flex; align-items: center; gap: 8px; }
+#train-vast:empty { display: none; }
+#train-vast { padding: 10px 20px 0; min-width: 0; }
+.live-train { grid-template-columns: minmax(0, 1fr); }
+.vast-panel { min-width: 0; overflow: hidden; }
+.vast-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 0 16px 12px; }
+.vast-filters label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.vast-filters input { height: 32px; width: 140px; }
+.vast-filters #vf-gpu { width: 190px; }
+.vast-table { margin: 0 16px; overflow-x: auto; }
+.vast-table table { min-width: 760px; }
+.vast-table td { padding: 7px 12px; white-space: nowrap; }
+.vast-note { font-size: 12px; padding: 10px 16px 14px; margin: 0; }
+@media (max-width: 720px) {
+  #train-vast { padding: 10px 12px 0; }
+  .vast-filters input, .vast-filters #vf-gpu { width: 100%; }
+  .vast-filters label { flex: 1 1 130px; }
+}

@@ -1365,6 +1365,7 @@
       T.options = o; T.data = d; T.models = m.models || []; T.hosts = h.hosts || []; T.hostsAt = Date.now();
       ensureForm();
       T.loaded = true;
+      loadVast();
       await pollRuns(true);
       checkTrain();
       if (state.view === "train") render();
@@ -1405,6 +1406,7 @@
     return `
     <div class="train live-train">
       <section class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</section>
+      <section id="train-vast" aria-label="GPUs to rent">${vastPanel()}</section>
       <div class="train-body">
         <aside class="launch panel" id="train-form" aria-label="Start a training run">${trainForm()}</aside>
         <section class="runs-col">
@@ -1447,7 +1449,7 @@
         <button class="btn primary" type="submit" ${T.hostBusy ? "disabled" : ""}>${T.hostBusy ? "Connecting…" : "Connect"}</button>
       </form>`
       : `<button class="host add" id="host-add" aria-label="Add a host">${icon("plus")}<b>Add a host</b><span class="muted">Run <code>brainiac-studio --worker</code> on another machine and paste its address and token.</span></button>`;
-    return here + remote + add;
+    return here + remote + vastCard() + add;
   }
 
   function entrySelect(kind, cur, label, allowNone) {
@@ -1659,7 +1661,7 @@
   function renderTrainLive() {
     if (state.view !== "train" || !T.loaded) return;
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
-    const typing = !!document.activeElement?.matches?.("#host-form input");
+    const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key");
     if (!typing) set("train-hosts", trainHosts());
     set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
     const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
@@ -1667,7 +1669,7 @@
     if (!tip || tip.hidden) { set("train-chart", trainChartFrame()); drawLossChart(); }
     renderTrainCheck();
     bindTrainLists();
-    if (!typing) bindHosts();
+    if (!typing) { bindHosts(); bindVastCard(); }
   }
   function renderTrainForm() {
     const box = $("#train-form"); if (!box) return;
@@ -1736,9 +1738,109 @@
     });
     $("#train-start")?.addEventListener("click", startTraining);
   }
+
+  // ----- Vast.ai: GPU machines to rent. The studio only reads here; renting will ask each time.
+  const V = { status: null, loading: false, error: null, busy: false, keyError: null, removing: false, open: false,
+    filters: { gpu: "", minGpuRam: 0, gpus: 1, maxPrice: 0 }, offers: null, searching: false, offerError: null };
+  const usd = n => n == null ? "—" : "$" + (n < 1 ? n.toFixed(3) : n.toFixed(2));
+
+  async function loadVast() {
+    if (V.loading) return;
+    V.loading = true;
+    try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
+    finally { V.loading = false; }
+    if (state.view === "train" && T.loaded) renderHosts();
+  }
+
+  function vastCard() {
+    const s = V.status;
+    if (!s) return `<div class="host vast"><div class="host-head"><span class="dot" style="--c:var(--muted)"></span><b>Vast.ai</b><span class="grow"></span><span class="typing"><i></i><i></i><i></i></span></div></div>`;
+    if (!s.key) return `<form class="host vast" id="vast-key-form" autocomplete="off">
+        <div class="host-head"><span class="dot" style="--c:var(--muted)"></span><b>Vast.ai</b><span class="chip plain">rent GPUs</span></div>
+        <span class="muted" style="font-size:12px">Rent GPU machines by the hour. Paste an API key from <a href="https://cloud.vast.ai/manage-keys/" target="_blank" rel="noopener">cloud.vast.ai</a>. It is kept in <code>keys.properties</code> and sent only to Vast.ai.</span>
+        <div class="vast-row"><input class="input mono" id="vast-key" type="password" placeholder="API key" spellcheck="false" aria-label="Vast.ai API key">
+          <button class="btn" type="submit" ${V.busy ? "disabled" : ""}>${V.busy ? "Checking…" : "Save"}</button></div>
+        ${V.keyError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.keyError)}</span></div>` : ""}
+      </form>`;
+    const ins = s.instances || [];
+    return `<div class="host vast">
+        <div class="host-head"><span class="dot" style="--c:var(--${s.error ? "bad" : "ok"})"></span><b>Vast.ai</b><span class="chip plain" title="Key ${esc(s.key.source === "environment" ? "from " + s.key.label : "saved in keys.properties")}">${esc(s.key.hint)}</span>
+          <span class="grow"></span>${s.balance != null ? `<span class="mono tnum" title="Balance on Vast.ai">${usd(s.balance)}</span>` : ""}
+          ${s.key.source === "saved" ? `<button class="iconbtn sm" id="vast-remove" aria-label="Remove the Vast.ai key" title="${V.removing ? "Click again to remove the key" : "Remove the key"}">${V.removing ? icon("check") : icon("trash")}</button>` : ""}</div>
+        ${s.error ? `<div class="flag bad">${icon("alert")}<span>${esc(s.error)}</span></div>` : ""}
+        ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
+        <div class="host-foot"><span class="muted">${ins.length ? `${ins.length} rented machine${ins.length === 1 ? "" : "s"}` : "No machines rented."}</span><span class="grow"></span>
+          <button class="btn sm" id="vast-open" aria-expanded="${V.open}">${icon("search")}${V.open ? "Hide offers" : "Find GPUs"}</button></div>
+      </div>`;
+  }
+
+  function vastPanel() {
+    if (!V.open || !V.status?.key) return "";
+    const f = V.filters, o = V.offers;
+    const rows = !o ? "" : !o.length ? `<div class="faint pad">No offers match. Loosen the filters.</div>`
+      : `<div class="tablebox vast-table"><table class="models"><thead><tr><th>GPU</th><th>Memory</th><th>$/hour</th><th>Reliability</th><th>Where</th><th>CUDA</th><th>CPU · RAM</th><th>Download</th></tr></thead><tbody>
+        ${o.map(x => `<tr><td><b>${esc(x.gpu)}</b>${x.gpus > 1 ? ` <span class="faint">× ${x.gpus}</span>` : ""}</td><td class="mono tnum">${x.gpuRamGb ?? "?"} GB</td><td class="mono tnum">${usd(x.pricePerHour)}</td>
+          <td class="mono tnum">${x.reliability != null ? (x.reliability * 100).toFixed(1) + "%" : "—"}</td><td>${esc(x.location || "—")}</td><td class="mono">${x.cuda ?? "—"}</td>
+          <td class="mono tnum">${x.cpuCores != null ? Math.round(x.cpuCores) : "?"} · ${x.ramGb ?? "?"} GB</td><td class="mono tnum">${x.downMbps != null ? Math.round(x.downMbps) + " Mb/s" : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="panel vast-panel">
+      <div class="col-head"><span class="h3">GPUs on Vast.ai</span><span class="muted" style="font-size:12px">verified machines you can rent now, cheapest first</span><span class="grow"></span>
+        <button class="iconbtn sm" id="vast-close" aria-label="Close">${icon("x")}</button></div>
+      <form class="vast-filters" id="vast-filters" autocomplete="off">
+        <label>GPU<input class="input" id="vf-gpu" placeholder="any, or 4090, A100…" value="${esc(f.gpu)}"></label>
+        <label>Memory per GPU<input class="input mono" id="vf-mem" type="number" min="0" step="1" value="${f.minGpuRam || ""}" placeholder="any GB"></label>
+        <label>GPUs<input class="input mono" id="vf-gpus" type="number" min="1" max="16" value="${f.gpus || 1}"></label>
+        <label>Most per hour<input class="input mono" id="vf-price" type="number" min="0" step="0.05" value="${f.maxPrice || ""}" placeholder="any $"></label>
+        <button class="btn primary" type="submit" ${V.searching ? "disabled" : ""}>${icon("search")}${V.searching ? "Looking…" : "Search"}</button>
+      </form>
+      ${V.offerError ? `<div class="flag bad" style="margin:0 16px 12px">${icon("alert")}<span>${esc(V.offerError)}</span></div>` : ""}
+      ${rows}
+      <p class="muted vast-note">Renting from the studio comes next: it will show the price and ask you each time before anything is billed, then add the machine as a host.</p>
+    </div>`;
+  }
+
+  function renderVast() {
+    const box = $("#train-vast"); if (!box) return;
+    box.innerHTML = vastPanel(); bindVastPanel();
+  }
+
+  async function searchVast() {
+    V.searching = true; V.offerError = null; renderVast();
+    try { V.offers = (await postJson("/api/vast/offers", V.filters)).offers; }
+    catch (e) { V.offerError = String(e.message || e); }
+    V.searching = false; renderVast();
+  }
+
+  function bindVastCard() {
+    $("#vast-key-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const key = $("#vast-key").value.trim();
+      if (!key) { V.keyError = "Paste the key first."; renderHosts(); return; }
+      V.busy = true; V.keyError = null; renderHosts();
+      try { V.status = await postJson("/api/vast/key", { key }); if (V.status.error) V.keyError = V.status.error; }
+      catch (err) { V.keyError = String(err.message || err); }
+      V.busy = false; renderHosts();
+    });
+    $("#vast-remove")?.addEventListener("click", async () => {
+      if (!V.removing) { V.removing = true; renderHosts(); setTimeout(() => { if (V.removing) { V.removing = false; renderHosts(); } }, 4000); return; }
+      V.removing = false; V.open = false; V.offers = null;
+      try { V.status = await postJson("/api/vast/key", { remove: true }); } catch (e) { console.warn(e); }
+      renderHosts(); renderVast();
+    });
+    $("#vast-open")?.addEventListener("click", () => { V.open = !V.open; renderHosts(); renderVast(); if (V.open && !V.offers) searchVast(); });
+  }
+
+  function bindVastPanel() {
+    $("#vast-close")?.addEventListener("click", () => { V.open = false; renderHosts(); renderVast(); });
+    $("#vast-filters")?.addEventListener("submit", e => {
+      e.preventDefault();
+      V.filters = { gpu: $("#vf-gpu").value.trim(), minGpuRam: +$("#vf-mem").value || 0, gpus: +$("#vf-gpus").value || 1, maxPrice: +$("#vf-price").value || 0 };
+      searchVast();
+    });
+  }
+
   function renderHosts(focus) {
     const box = $("#train-hosts"); if (!box) return;
-    box.innerHTML = trainHosts(); bindHosts();
+    box.innerHTML = trainHosts(); bindHosts(); bindVastCard();
     if (focus) $(focus)?.focus();
   }
   function bindHosts() {
@@ -1803,7 +1905,7 @@
     }
   }
   function bindLiveTrain() {
-    bindTrainForm(); bindTrainLists(); bindHosts(); drawLossChart();
+    bindTrainForm(); bindTrainLists(); bindHosts(); bindVastCard(); bindVastPanel(); drawLossChart();
     if (!T.timer) pollRuns(false);
   }
 
