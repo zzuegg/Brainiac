@@ -55,7 +55,7 @@ public final class Benchmarks {
      * Runs the benchmarks.
      *
      * @param args {@code --quick}, {@code --threads N}, {@code --filter TEXT}, {@code --no-simd},
-     *        {@code --device NAME} (the start of a device name, such as {@code opencl} or
+     *        {@code --device NAME} (the start of a device name, such as {@code cpu} or
      *        {@code vulkan}: the matrix-vector and text generation cases run there)
      */
     public static void main(String[] args) {

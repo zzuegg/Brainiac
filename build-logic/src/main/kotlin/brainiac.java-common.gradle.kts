@@ -25,7 +25,7 @@ dependencies {
     testRuntimeOnly(libs.findLibrary("junit-platform-launcher").get())
 }
 
-// Preloads the JVM's libjsig on Linux. The LLVM inside PoCL (the CPU OpenCL driver CI uses)
+// Preloads the JVM's libjsig on Linux. A driver built on LLVM (such as the CPU drivers CI uses)
 // installs its own SIGSEGV handler, but the JVM faults on purpose at every safepoint poll:
 // without chaining, about one test run in three died with SIGSEGV and no crash report.
 tasks.withType<Test>().configureEach {
