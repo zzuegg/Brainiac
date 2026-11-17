@@ -5,5 +5,6 @@
 module io.github.zzuegg.brainiac.llm {
     requires transitive io.github.zzuegg.brainiac.nn;
     requires transitive io.github.zzuegg.brainiac.io;
+    requires jdk.httpserver;
     exports io.github.zzuegg.brainiac.llm;
 }

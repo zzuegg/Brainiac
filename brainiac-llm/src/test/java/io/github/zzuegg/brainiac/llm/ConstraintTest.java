@@ -145,4 +145,48 @@ class ConstraintTest {
         assertTrue(pick.text().equals("yes") || pick.text().equals("no"), pick.text());
         assertEquals(Generator.Finish.STOP, pick.finish());
     }
+
+    /** Balanced brackets up to a depth: not a regular language for unbounded depth. */
+    private record Brackets(int depth, int length) implements Constraint.Matcher {
+        @Override
+        public Constraint.Matcher feed(char c) {
+            if (c == '[' && depth < 6) {
+                return new Brackets(depth + 1, length + 1);
+            }
+            if (c == ']' && depth > 0) {
+                return new Brackets(depth - 1, length + 1);
+            }
+            return null;
+        }
+
+        @Override
+        public boolean accepting() {
+            return depth == 0 && length > 0;
+        }
+
+        @Override
+        public boolean canContinue() {
+            return true;
+        }
+    }
+
+    @Test
+    void customLanguagesPlugIn() {
+        Constraint brackets = Constraint.of(() -> new Brackets(0, 0));
+        assertNull(brackets.pattern());
+        assertTrue(brackets.matches("[[]][]"));
+        assertFalse(brackets.matches("[[]"));
+        String chars = "abc[]$";
+        CharacterTokenizer tok = new CharacterTokenizer(chars);
+        Llama model = Llama.random(LlamaConfig.small(chars.length(), 32, 2, 4, 2), 13, GeneratorTest.DEVICE,
+                DType.FLOAT32);
+        Generator gen = new Generator(model, tok);
+        for (long seed = 0; seed < 4; seed++) {
+            Generator.Output out = gen.generate(List.of("a"), Generator.Options.sampled(30, Sampling.temperature(
+                    1.5f), seed).withStopTokens(Set.of(chars.indexOf('$'))).withConstraint(brackets), null)
+                    .getFirst();
+            assertTrue(out.text().matches("[\\[\\]]*"), out.text());
+            assertTrue(brackets.matches(out.text()) || out.finish() == Generator.Finish.LENGTH, out.text());
+        }
+    }
 }
