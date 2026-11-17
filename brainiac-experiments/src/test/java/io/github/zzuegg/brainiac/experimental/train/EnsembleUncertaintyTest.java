@@ -39,13 +39,17 @@ class EnsembleUncertaintyTest {
         return x;
     }
 
-    static void fit(Model m, float[][] x, int[] y, int epochs) {
-        float[][] t = new float[x.length][3];
-        for (int i = 0; i < x.length; i++) {
+    static float[][] oneHot(int[] y) {
+        float[][] t = new float[y.length][3];
+        for (int i = 0; i < y.length; i++) {
             t[i][y[i]] = 1;
         }
+        return t;
+    }
+
+    static void fit(Model m, float[][] x, int[] y, int epochs) {
         Trainer.of(m).loss(Loss.CROSS_ENTROPY).optimizer(Optimizer.adam(0.02f)).batchSize(32).epochs(epochs)
-                .fit(Dataset.of(x, t));
+                .fit(Dataset.of(x, oneHot(y)));
     }
 
     static double meanMi(PopulationEnsemble e, float[][] x) {
