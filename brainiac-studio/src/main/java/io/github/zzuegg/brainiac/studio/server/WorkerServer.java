@@ -1,5 +1,12 @@
 package io.github.zzuegg.brainiac.studio.server;
 
+import io.github.zzuegg.brainiac.studio.chat.ModelInfo;
+import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.chat.ChatResult;
+import io.github.zzuegg.brainiac.studio.chat.ChatRequest;
+import io.github.zzuegg.brainiac.studio.chat.ChatProvider;
+import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
+import io.github.zzuegg.brainiac.studio.chat.ChatListener;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.zzuegg.brainiac.io.Json;
@@ -43,6 +50,9 @@ import java.util.zip.ZipInputStream;
  *       {@code sha:<sha256>/<name>} (or {@code zip:...} for a folder sent as a zip).
  *   <li>{@code GET /worker/runs?id=<id>}, {@code POST /worker/stop {id}} and
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
+ *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
+ *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens}}
+ *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
  * </ul>
  */
 public final class WorkerServer implements AutoCloseable {
@@ -61,13 +71,15 @@ public final class WorkerServer implements AutoCloseable {
     private final String token;
     private final TrainingService training;
     private final Path files;
+    private final ChatProvider models;
 
-    private WorkerServer(HttpServer http, ExecutorService executor, String token, Path folder) {
+    private WorkerServer(HttpServer http, ExecutorService executor, String token, Path folder, ChatProvider models) {
         this.http = http;
         this.executor = executor;
         this.token = token;
         this.training = new TrainingService(folder);
         this.files = folder.resolve("files");
+        this.models = models;
     }
 
     /**
@@ -79,12 +91,54 @@ public final class WorkerServer implements AutoCloseable {
      * @throws IOException if the port cannot be opened or the token cannot be kept
      */
     public static WorkerServer start(InetSocketAddress address, Path folder) throws IOException {
+        return start(address, folder, List.of(), null);
+    }
+
+    /**
+     * Starts a worker that also serves chat models.
+     *
+     * @param address where to listen, such as {@code 127.0.0.1:7870}
+     * @param folder where it keeps its token, files, models and runs
+     * @param modelFolders more folders to serve chat models from
+     * @param givenToken the token to use, such as {@code $BRAINIAC_WORKER_TOKEN}, or null to use
+     *     (or create) the one in {@code worker.token}
+     * @return the running worker
+     * @throws IOException if the port cannot be opened or the token cannot be kept
+     */
+    public static WorkerServer start(InetSocketAddress address, Path folder, List<Path> modelFolders, String givenToken)
+            throws IOException {
+        List<Path> where = new ArrayList<>(modelFolders);
+        where.add(folder.resolve("downloads"));
+        where.add(folder.resolve("models"));
+        return start(address, folder, ChatService.localModels(where), givenToken);
+    }
+
+    /**
+     * Starts a worker that serves the chat models of a provider.
+     *
+     * @param address where to listen
+     * @param folder where it keeps its token, files, models and runs
+     * @param models the chat models it serves
+     * @param givenToken the token to use, or null to use (or create) the one in {@code worker.token}
+     * @return the running worker
+     * @throws IOException if the port cannot be opened or the token cannot be kept
+     */
+    public static WorkerServer start(InetSocketAddress address, Path folder, ChatProvider models, String givenToken)
+            throws IOException {
         Files.createDirectories(folder);
-        String token = token(folder.resolve("worker.token"));
+        String token;
+        if (givenToken != null && !givenToken.isBlank()) {
+            token = givenToken.strip();
+            if (token.length() < 32 || token.chars().anyMatch(c -> c <= ' ')) {
+                throw new IllegalArgumentException("the worker token must be at least 32 characters without spaces");
+            }
+        } else {
+            token = token(folder.resolve("worker.token"));
+        }
         HttpServer http = HttpServer.create(address, 0);
         ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         http.setExecutor(executor);
-        WorkerServer w = new WorkerServer(http, executor, token, folder);
+        WorkerServer w = new WorkerServer(http, executor, token, folder, models);
         http.createContext("/worker/", w::handle);
         http.createContext("/", ex -> {
             Exchanges.error(ex, 404, "this is a Brainiac Studio worker; add it on the Train screen of your studio");
@@ -136,6 +190,13 @@ public final class WorkerServer implements AutoCloseable {
      */
     public List<URI> addresses() {
         List<URI> out = new ArrayList<>();
+        InetAddress bound = http.getAddress().getAddress();
+        if (!bound.isAnyLocalAddress()) {
+            // listening on one address only, such as 127.0.0.1 behind an SSH tunnel
+            String host = bound.getHostAddress();
+            out.add(URI.create("http://" + (host.contains(":") ? "[" + host + "]" : host) + ":" + port() + "/"));
+            return out;
+        }
         try {
             for (var ni : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
                 if (!ni.isUp() || ni.isLoopback() || ni.isVirtual()) {
@@ -176,6 +237,14 @@ public final class WorkerServer implements AutoCloseable {
             Map<String, String> q = query(ex.getRequestURI().getRawQuery());
             if (path.equals("/worker/info") && method.equals("GET")) {
                 Exchanges.json(ex, 200, info());
+            } else if (path.equals("/worker/models") && method.equals("GET")) {
+                List<Object> list = new ArrayList<>();
+                for (ModelInfo m : models.models()) {
+                    list.add(m.toJson());
+                }
+                Exchanges.json(ex, 200, Map.of("models", list));
+            } else if (path.equals("/worker/chat") && method.equals("POST")) {
+                chat(ex, Exchanges.body(ex, 32 << 20));
             } else if (path.startsWith("/worker/files/")) {
                 file(ex, path.substring("/worker/files/".length()), q.getOrDefault("name", "data"));
             } else if (path.equals("/worker/runs") && method.equals("POST")) {
@@ -206,12 +275,63 @@ public final class WorkerServer implements AutoCloseable {
             }
         } catch (Exchanges.BadRequest | IllegalArgumentException e) {
             answerError(ex, 400, e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            answerError(ex, 503, "the worker is stopping");
         } catch (IOException | RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "worker request " + ex.getRequestURI() + " failed", e);
             answerError(ex, 500, String.valueOf(e.getMessage()));
         } finally {
             ex.close();
         }
+    }
+
+    private void chat(HttpExchange ex, Map<String, Object> body) throws IOException {
+        List<ChatMessage> messages = new ArrayList<>();
+        for (Object o : Json.array(body.getOrDefault("messages", List.of()))) {
+            Map<String, Object> m = Json.object(o);
+            messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", "")));
+        }
+        ChatRequest request = new ChatRequest(Json.string(body, "model", ""), Json.string(body, "system", ""), messages,
+                (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null);
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(200, 0);
+        OutputStream out = ex.getResponseBody();
+        ChatListener listener = new ChatListener() {
+            @Override
+            public void text(String text) throws IOException {
+                event(out, "text", Map.of("text", text));
+            }
+
+            @Override
+            public void thinking(String text) throws IOException {
+                event(out, "thinking", Map.of("text", text));
+            }
+        };
+        try {
+            ChatResult r = models.chat(request, listener);
+            Map<String, Object> done = new LinkedHashMap<>();
+            done.put("stop", r.stop());
+            done.put("inputTokens", r.inputTokens());
+            done.put("outputTokens", r.outputTokens());
+            event(out, "done", done);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            event(out, "error", Map.of("message", "stopped"));
+        } catch (IOException | RuntimeException e) {
+            try {
+                event(out, "error", Map.of("message", String.valueOf(e.getMessage())));
+            } catch (IOException gone) {
+                // the studio stopped reading
+            }
+        }
+        out.close();
+    }
+
+    private static void event(OutputStream out, String name, Map<String, Object> data) throws IOException {
+        out.write(("event: " + name + "\ndata: " + Json.write(data) + "\n\n").getBytes(StandardCharsets.UTF_8));
+        out.flush();
     }
 
     private static void answerError(HttpExchange ex, int status, String message) {
