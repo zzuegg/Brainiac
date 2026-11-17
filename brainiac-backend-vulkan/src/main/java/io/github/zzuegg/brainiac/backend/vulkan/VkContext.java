@@ -3,6 +3,16 @@ package io.github.zzuegg.brainiac.backend.vulkan;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK12.*;
 
+import org.lwjgl.vulkan.EXTSubgroupSizeControl;
+import org.lwjgl.vulkan.KHRCooperativeMatrix;
+import org.lwjgl.vulkan.VkPhysicalDeviceProperties2;
+import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlFeaturesEXT;
+import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlPropertiesEXT;
+import org.lwjgl.vulkan.VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT;
+import org.lwjgl.vulkan.VkCooperativeMatrixPropertiesKHR;
+import org.lwjgl.vulkan.VkExtensionProperties;
+import org.lwjgl.vulkan.VkPhysicalDeviceCooperativeMatrixFeaturesKHR;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -119,6 +129,11 @@ final class VkContext {
     final boolean storage16;
     /** Whether shaders have 16-bit integers (with {@link #storage16}: bfloat16 tensors). */
     final boolean int16;
+    /**
+     * Whether float16 products run on cooperative matrices (VK_KHR_cooperative_matrix, 16 x 16
+     * x 16 float16 with float32 sums); {@code -Dbrainiac.vulkan.coopmat=false} turns their use off.
+     */
+    final boolean coopMatrix;
     private final int family;
     private final long commandPool;
     private final long pipelineLayout;
@@ -204,11 +219,17 @@ final class VkContext {
             fp64 = chosen.fp64;
             storage16 = chosen.storage16;
             int16 = chosen.int16;
+            coopMatrix = chosen.coopMatrix;
             try (MemoryStack st = stackPush()) {
                 // chained by address: LWJGL's typed pNext setters insert a struct in front of
                 // the existing chain and would drop the links made before
+                VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sizes = VkPhysicalDeviceSubgroupSizeControlFeaturesEXT
+                        .calloc(st).sType$Default().subgroupSizeControl(true).computeFullSubgroups(true);
+                VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop = VkPhysicalDeviceCooperativeMatrixFeaturesKHR
+                        .calloc(st).sType$Default().cooperativeMatrix(true).pNext(sizes.address());
                 VkPhysicalDeviceVulkan12Features f12 = VkPhysicalDeviceVulkan12Features.calloc(st).sType$Default()
-                        .bufferDeviceAddress(true);
+                        .bufferDeviceAddress(true).vulkanMemoryModel(coopMatrix).shaderFloat16(coopMatrix)
+                        .pNext(coopMatrix ? coop.address() : 0);
                 VkPhysicalDeviceVulkan11Features f11 = VkPhysicalDeviceVulkan11Features.calloc(st).sType$Default()
                         .pNext(f12.address()).storageBuffer16BitAccess(storage16);
                 VkPhysicalDeviceFeatures2 f2 = VkPhysicalDeviceFeatures2.calloc(st).sType$Default()
@@ -220,6 +241,11 @@ final class VkContext {
                 // existing chain, which would drop f2's link to f12
                 VkDeviceCreateInfo dci = VkDeviceCreateInfo.calloc(st).sType$Default().pNext(f2.address())
                         .pQueueCreateInfos(q);
+                if (coopMatrix) {
+                    dci.ppEnabledExtensionNames(st.pointers(
+                            st.UTF8(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME),
+                            st.UTF8(EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME)));
+                }
                 PointerBuffer pp = st.mallocPointer(1);
                 check(vkCreateDevice(physical, dci, null, pp), "vkCreateDevice");
                 device = new VkDevice(pp.get(0), physical, dci, VK_API_VERSION_1_2);
@@ -263,7 +289,7 @@ final class VkContext {
     // ------------------------------------------------------------------ device choice
 
     private record Candidate(VkPhysicalDevice device, String name, int type, int family, int maxGroups,
-            boolean fp64, boolean storage16, boolean int16, String problem) {
+            boolean fp64, boolean storage16, boolean int16, boolean coopMatrix, String problem) {
     }
 
     private String candidatesText = "";
@@ -328,6 +354,7 @@ final class VkContext {
             boolean fp64 = false;
             boolean storage16 = false;
             boolean int16 = false;
+            boolean coopMatrix = false;
             if (VK_API_VERSION_MAJOR(props.apiVersion()) == 1 && VK_API_VERSION_MINOR(props.apiVersion()) < 2) {
                 problem = "needs Vulkan 1.2";
             } else if (props.limits().maxPushConstantsSize() < PUSH_BYTES) {
@@ -342,6 +369,8 @@ final class VkContext {
                 fp64 = f2.features().shaderFloat64();
                 int16 = f2.features().shaderInt16();
                 storage16 = f11.storageBuffer16BitAccess();
+                coopMatrix = storage16 && f12.vulkanMemoryModel() && f12.shaderFloat16()
+                        && cooperativeMatrix(pd);
                 if (!f12.bufferDeviceAddress()) {
                     problem = "no buffer device address";
                 } else if (!f2.features().shaderInt64()) {
@@ -361,7 +390,60 @@ final class VkContext {
             if (family < 0 && problem == null) {
                 problem = "no compute queue";
             }
-            return new Candidate(pd, name, props.deviceType(), family, maxGroups, fp64, storage16, int16, problem);
+            return new Candidate(pd, name, props.deviceType(), family, maxGroups, fp64, storage16, int16, coopMatrix,
+                    problem);
+        }
+    }
+
+    /** Whether a device has 16 x 16 x 16 float16 cooperative matrices with float32 sums in subgroups. */
+    private static boolean cooperativeMatrix(VkPhysicalDevice pd) {
+        try (MemoryStack st = stackPush()) {
+            IntBuffer ip = st.mallocInt(1);
+            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, null);
+            VkExtensionProperties.Buffer exts = VkExtensionProperties.calloc(ip.get(0), st);
+            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, exts);
+            boolean has = false;
+            for (int i = 0; i < exts.capacity(); i++) {
+                has |= exts.get(i).extensionNameString().equals(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+            }
+            boolean sizes = false;
+            for (int i = 0; i < exts.capacity(); i++) {
+                sizes |= exts.get(i).extensionNameString().equals(
+                        EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+            }
+            if (!has || !sizes || pd.getCapabilities().vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR == 0) {
+                return false;
+            }
+            // the shader needs whole subgroups of 32: 8 per work group of 256
+            VkPhysicalDeviceSubgroupSizeControlFeaturesEXT sf = VkPhysicalDeviceSubgroupSizeControlFeaturesEXT.calloc(st)
+                    .sType$Default();
+            vkGetPhysicalDeviceFeatures2(pd, VkPhysicalDeviceFeatures2.calloc(st).sType$Default().pNext(sf.address()));
+            VkPhysicalDeviceSubgroupSizeControlPropertiesEXT sp = VkPhysicalDeviceSubgroupSizeControlPropertiesEXT
+                    .calloc(st).sType$Default();
+            vkGetPhysicalDeviceProperties2(pd, VkPhysicalDeviceProperties2.calloc(st).sType$Default()
+                    .pNext(sp.address()));
+            if (!sf.subgroupSizeControl() || !sf.computeFullSubgroups() || sp.minSubgroupSize() > 32
+                    || sp.maxSubgroupSize() < 32 || (sp.requiredSubgroupSizeStages() & VK_SHADER_STAGE_COMPUTE_BIT) == 0
+                    || Integer.toUnsignedLong(sp.maxComputeWorkgroupSubgroups()) < 8) {
+                return false;
+            }
+            KHRCooperativeMatrix.vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(pd, ip, null);
+            VkCooperativeMatrixPropertiesKHR.Buffer props = VkCooperativeMatrixPropertiesKHR.calloc(ip.get(0), st);
+            for (int i = 0; i < props.capacity(); i++) {
+                props.get(i).sType$Default();
+            }
+            KHRCooperativeMatrix.vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(pd, ip, props);
+            for (VkCooperativeMatrixPropertiesKHR c : props) {
+                if (c.MSize() == 16 && c.NSize() == 16 && c.KSize() == 16
+                        && c.AType() == KHRCooperativeMatrix.VK_COMPONENT_TYPE_FLOAT16_KHR
+                        && c.BType() == KHRCooperativeMatrix.VK_COMPONENT_TYPE_FLOAT16_KHR
+                        && c.CType() == KHRCooperativeMatrix.VK_COMPONENT_TYPE_FLOAT32_KHR
+                        && c.ResultType() == KHRCooperativeMatrix.VK_COMPONENT_TYPE_FLOAT32_KHR
+                        && c.scope() == KHRCooperativeMatrix.VK_SCOPE_SUBGROUP_KHR) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -574,7 +656,7 @@ final class VkContext {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        long p2 = createPipeline(code);
+        long p2 = createPipeline(code, name.startsWith("matmul_coop"));
         pipelines.put(name, p2);
         return p2;
     }
@@ -586,10 +668,11 @@ final class VkContext {
 
     /** Makes SPIR-V compiled at run time (a fused shader) available to {@link #dispatch} by name. */
     void register(String name, byte[] code) {
-        pipelines.put(name, createPipeline(code));
+        pipelines.put(name, createPipeline(code, false));
     }
 
-    private long createPipeline(byte[] code) {
+    /** @param subgroups32 whether the shader needs whole subgroups of 32 invocations */
+    private long createPipeline(byte[] code, boolean subgroups32) {
         ByteBuffer spirv = MemoryUtil.memAlloc(code.length);
         try (MemoryStack st = stackPush()) {
             spirv.put(code).flip();
@@ -599,6 +682,13 @@ final class VkContext {
             long module = lp.get(0);
             VkPipelineShaderStageCreateInfo stage = VkPipelineShaderStageCreateInfo.calloc(st).sType$Default()
                     .stage(VK_SHADER_STAGE_COMPUTE_BIT).module(module).pName(st.UTF8("main"));
+            if (subgroups32) {
+                VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT size =
+                        VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT.calloc(st).sType$Default()
+                                .requiredSubgroupSize(32);
+                stage.flags(EXTSubgroupSizeControl.VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT)
+                        .pNext(size.address());
+            }
             VkComputePipelineCreateInfo.Buffer ci = VkComputePipelineCreateInfo.calloc(1, st).sType$Default()
                     .stage(stage).layout(pipelineLayout);
             check(vkCreateComputePipelines(device, VK_NULL_HANDLE, ci, null, lp), "vkCreateComputePipelines");
@@ -690,8 +780,28 @@ final class VkContext {
     }
 
     void dispatch(String shader, int x, int y, int z, Slot write, Slot... reads) {
+        dispatch(shader, x, y, z, new Slot[] {write}, reads);
+    }
+
+    /** A dispatch that writes several slots. */
+    void dispatch(String shader, long groups, Slot[] writes, Slot... reads) {
+        long x = Math.min(groups, maxGroups);
+        dispatch(shader, (int) x, (int) ((groups + x - 1) / x), 1, writes, reads);
+    }
+
+    private void dispatch(String shader, int x, int y, int z, Slot[] writes, Slot... reads) {
         long p = pipeline(shader);
-        access(write.address, addresses(reads));
+        long[] w = addresses(writes);
+        boolean hazard = false;
+        for (long a : w) {
+            hazard |= a != 0 && (written.contains(a) || read.contains(a));
+        }
+        if (hazard) {
+            barrier();
+        }
+        for (int i = 0; i < w.length; i++) {
+            access(w[i], i == 0 ? addresses(reads) : new long[0]);
+        }
         Batch b = recording();
         vkCmdBindPipeline(b.commands, VK_PIPELINE_BIND_POINT_COMPUTE, p);
         push.flip();

@@ -460,6 +460,46 @@ public final class Llama implements LanguageModel {
         return run(tokens, positions, null, null);
     }
 
+    /**
+     * The next-token cross-entropy of sequences, for training: the mean over every step but
+     * the last of {@code -log p(next token)}. The output layer runs a few thousand rows at a
+     * time (see {@link Functional#linearCrossEntropy}), so the {@code [tokens, vocab]} logits
+     * are never stored whole.
+     *
+     * @param tokens {@code [batch][steps]} token ids, all sequences the same length
+     * @return the loss, a scalar
+     */
+    public Var loss(int[][] tokens) {
+        return loss(tokens, Math.max(1, (1 << 24) / config.vocabSize()));
+    }
+
+    /**
+     * {@link #loss(int[][])} with the rows of logits computed at a time.
+     *
+     * @param tokens {@code [batch][steps]} token ids
+     * @param chunk rows of logits at a time
+     * @return the loss
+     */
+    public Var loss(int[][] tokens, int chunk) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        int[][] positions = new int[batch][steps];
+        float[] next = new float[batch * steps];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                positions[b][t] = t;
+                next[b * steps + t] = t + 1 < steps ? tokens[b][t + 1] : -1;   // the last step predicts nothing
+            }
+        }
+        Var h = hidden(tokens, positions, null, null).reshape(batch * steps, config.hidden());
+        Tensor ids = Tensor.of(Shape.of(batch * steps), next, device);
+        if (lmHead != null && lmHead.bias() != null) {
+            return Functional.crossEntropy(lmHead.apply(h).reshape(batch * steps, config.vocabSize()), ids);
+        }
+        Var weight = lmHead != null ? lmHead.weight() : embed.transpose();
+        return Functional.linearCrossEntropy(h, weight, ids, chunk);
+    }
+
     @Override
     public Tensor next(State state, int[][] tokens, boolean[][] padding) {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
@@ -503,6 +543,17 @@ public final class Llama implements LanguageModel {
     }
 
     private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
+        Var x = hidden(tokens, positions, cache, bias);
+        if (lmHead != null) {
+            return lmHead.apply(x);
+        }
+        // tied: while decoding, a transposed copy of the embeddings made once; while
+        // training, through the embeddings so they get the gradient
+        return x.matmul(cache != null ? Var.of(tiedHead()) : embed.transpose());
+    }
+
+    /** The final normalized hidden states {@code [batch, steps, hidden]}. */
+    private Var hidden(int[][] tokens, int[][] positions, Cache cache, Tensor bias) {
         int batch = tokens.length;
         int steps = tokens[0].length;
         int[] flat = new int[batch * steps];
@@ -526,6 +577,7 @@ public final class Llama implements LanguageModel {
                 cache.values[l].write(2, cache.length, v.value());
                 k = Var.of(cache.keys[l]);
                 v = Var.of(cache.values[l]);
+                q = Var.of(q.value());   // decoding has no gradients: lets the fused kernel take the mask
             }
             Var a = bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
                     : Functional.attention(q, k, v, causal, scale);
@@ -535,13 +587,7 @@ public final class Llama implements LanguageModel {
             Var gated = blk.gate.apply(h).activation(ActivationOp.SILU, 0).mul(blk.up.apply(h));
             x = x.add(blk.down.apply(gated));
         }
-        x = rmsNorm(x, norm);
-        if (lmHead != null) {
-            return lmHead.apply(x);
-        }
-        // tied: while decoding, a transposed copy of the embeddings made once; while
-        // training, through the embeddings so they get the gradient
-        return x.matmul(cache != null ? Var.of(tiedHead()) : embed.transpose());
+        return rmsNorm(x, norm);
     }
 
     private Tensor headSource;

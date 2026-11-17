@@ -147,6 +147,30 @@ class LlamaTest {
     }
 
     @Test
+    void chunkedLossEqualsCrossEntropyOfTheLogits() {
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 7, DEVICE, DType.FLOAT32);
+        int[][] tokens = {{1, 5, 9, 3, 7, 2, 30}, {4, 4, 8, 0, 39, 12, 6}};
+        float[] next = new float[14];
+        for (int b = 0; b < 2; b++) {
+            for (int t = 0; t < 7; t++) {
+                next[b * 7 + t] = t < 6 ? tokens[b][t + 1] : -1;
+            }
+        }
+        var logits = model.forward(tokens).reshape(14, 40);
+        var expected = io.github.zzuegg.brainiac.nn.Functional.crossEntropy(logits,
+                io.github.zzuegg.brainiac.tensor.Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(14), next, DEVICE));
+        expected.backward();
+        java.util.List<float[]> grads = model.parameters().stream().map(p -> p.grad().toArray()).toList();
+        model.parameters().forEach(p -> p.zeroGrad());
+        var loss = model.loss(tokens, 3);
+        loss.backward();
+        assertEquals(expected.value().item(), loss.value().item(), 1e-5f);
+        for (int i = 0; i < grads.size(); i++) {
+            assertArrayEquals(grads.get(i), model.parameters().get(i).grad().toArray(), 1e-5f, "parameter " + i);
+        }
+    }
+
+    @Test
     void selectReordersRows() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
         LanguageModel.State s = model.newState(2);

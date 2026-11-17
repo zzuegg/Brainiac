@@ -130,7 +130,8 @@ public final class VulkanBackend implements Backend {
             return "unavailable: " + unavailable;
         }
         return vk.deviceName + ", " + (vk.deviceMemory >> 20) + " MB, " + (vk.budget >> 20) + " MB budget, fusion "
-                + (compiler != null ? "on" : FUSION ? "unavailable (" + fusionUnavailable + ")" : "off") + "; devices "
+                + (compiler != null ? "on" : FUSION ? "unavailable (" + fusionUnavailable + ")" : "off")
+                + (vk.coopMatrix ? ", cooperative matrices" : "") + "; devices "
                 + vk.deviceList;
     }
 
@@ -418,8 +419,12 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
-        if (storage instanceof Packed) {
-            return;   // weights: freed with the tensor that holds them
+        if (storage instanceof Packed p) {
+            if (p.host() == null) {   // quantized here, such as optimizer state: freed now
+                p.levels().release();
+                p.scales().release();
+            }
+            return;   // uploaded weights: freed with the tensor that holds them
         }
         VkStorage s = vs(storage);
         if (s.pending == null) {
@@ -907,6 +912,8 @@ public final class VulkanBackend implements Backend {
 
     /** Product tiles at least this many 64 x 64 tiles use them; smaller products use 32 x 32. */
     private static final long BIG_TILES = Long.getLong("brainiac.vulkan.bigTileGroups", 128);
+    /** Float16 products with at least this many rows use cooperative matrices where the device has them. */
+    private static final int COOP_ROWS = Integer.getInteger("brainiac.vulkan.coopRows", 64);
     /** Products with fewer tiles than this, and a long k, split k into pieces summed afterwards. */
     private static final long SPLIT_BELOW = 64;
 
@@ -930,7 +937,10 @@ public final class VulkanBackend implements Backend {
 
     private void matmul(VkStorage x, VkStorage y, int batch, int m, int k, int n, VkStorage z) {
         long big = (long) batch * ceil(m, 64) * ceil(n, 64);
-        int tile = big >= BIG_TILES ? 64 : 32;
+        // float16 with enough rows to fill 16 x 16 pieces: the matrix cores
+        boolean coop = vk.coopMatrix && z.dtype == DType.FLOAT16 && m >= COOP_ROWS
+                && !"false".equals(System.getProperty("brainiac.vulkan.coopmat"));
+        int tile = coop ? 128 : big >= BIG_TILES ? 64 : 32;
         long tiles = (long) batch * ceil(m, tile) * ceil(n, tile);
         int splits = 1;
         int chunk = k;
@@ -951,7 +961,7 @@ public final class VulkanBackend implements Backend {
             vk.push().putLong(x.address(firstBatch * m * k)).putLong(y.address(firstBatch * k * n))
                     .putLong(target.address(first * mn)).putInt(m).putInt(k).putInt(n).putInt(m * k).putInt(k * n)
                     .putInt((int) mn).putInt(splits).putInt(chunk);
-            vk.dispatch(shader(tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
+            vk.dispatch(shader(coop ? "matmul_coop" : tile == 64 ? "matmul64" : "matmul32", z.dtype), ceil(n, tile), ceil(m, tile), count,
                     target.slot(), x.slot(), y.slot());
         }
         if (splits > 1) {
@@ -964,24 +974,86 @@ public final class VulkanBackend implements Backend {
         return (int) ((a + b - 1) / b);
     }
 
+    // ------------------------------------------------------------------ attention
+
+    /**
+     * When the fused attention kernel is used: {@code -Dbrainiac.vulkan.fusedAttention=false}
+     * never; by default for inference (it has no backward kernel yet) with head sizes up to
+     * 256, in float32, float16 and bfloat16.
+     */
+    private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.vulkan.fusedAttention"));
+
+    @Override
+    public boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return FUSED_ATTENTION && !backward && type != DType.FLOAT64 && shape[5] <= GROUP_SIZE
+                && shape[6] <= GROUP_SIZE && supports(type);
+    }
+
+    @Override
+    public boolean hasAttentionWithBias(int[] shape, DType type) {
+        return hasAttention(shape, type, false);
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage out, Storage lse) {
+        attention(q, k, v, shape, scale, causal, null, new long[4], out, lse);
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage bias, long[] strides, Storage out, Storage lse) {
+        VkStorage z = vs(out);
+        if (z.dtype == DType.FLOAT64 || shape[5] > GROUP_SIZE || shape[6] > GROUP_SIZE) {
+            throw new UnsupportedOperationException("fused attention: " + z.dtype + ", heads of " + shape[5] + " and "
+                    + shape[6]);
+        }
+        VkStorage l = vs(lse);
+        eager(vs(q), vs(k), vs(v), z, l);
+        VkStorage xq = as(vs(q), z.dtype);
+        VkStorage xk = as(vs(k), z.dtype);
+        VkStorage xv = as(vs(v), z.dtype);
+        if (l.dtype != z.dtype) {
+            throw new IllegalArgumentException("lse " + l.dtype + ", output " + z.dtype);
+        }
+        VkStorage xl = l;
+        VkStorage xb = bias == null ? xq : as(vs(bias), z.dtype);   // no bias: an address never read
+        if (bias != null) {
+            eager(vs(bias));
+        }
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(z.address())
+                .putLong(xl.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+                .putInt(shape[4]).putInt(shape[5]).putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0)
+                .putInt((int) rows).putInt(bias != null ? 1 : 0).putInt(Math.toIntExact(strides[0]))
+                .putInt(Math.toIntExact(strides[1])).putInt(Math.toIntExact(strides[2]))
+                .putInt(Math.toIntExact(strides[3]));
+        vk.dispatch(shader("attention", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()}, xq.slot(),
+                xk.slot(), xv.slot(), xb.slot());
+        if (bias != null) {
+            done(xb, vs(bias));
+        }
+        done(xq, vs(q));
+        done(xk, vs(k));
+        done(xv, vs(v));
+    }
+
+    /** The work group size of the shaders ({@code GROUP} in common.glsl). */
+    private static final int GROUP_SIZE = 256;
+
     // ------------------------------------------------------------------ packed weights
 
-    /** A packed matrix on the device: levels as raw bytes (read as 32-bit words) and scales. */
-    private record Packed(PackedMatrix host, VkStorage levels, VkStorage scales) implements PackedStorage {
-
-        @Override
-        public int rows() {
-            return host.rows();
-        }
-
-        @Override
-        public int cols() {
-            return host.cols();
-        }
+    /**
+     * A packed matrix on the device: levels as raw bytes (read as 32-bit words) and scales.
+     * {@code host} is the matrix it was uploaded from, or null for one quantized on the device,
+     * which {@link #release} frees.
+     */
+    private record Packed(int rows, int cols, int bits, int group, boolean nibbles, PackedMatrix host, VkStorage levels,
+            VkStorage scales) implements PackedStorage {
 
         @Override
         public long size() {
-            return host.size();
+            return (long) rows * cols;
         }
 
         @Override
@@ -1000,13 +1072,40 @@ public final class VulkanBackend implements Backend {
         byte[] data = matrix.data();
         VkStorage levels = raw(Math.max(1, (data.length + 3) / 4), null);
         vk.upload(levels.slot(), levels.bytes(), b -> b.put(data));
-        return new Packed(matrix, levels, vs(upload(matrix.scales())));
+        return new Packed(matrix.rows(), matrix.cols(), matrix.bits(), matrix.group(), matrix.nibbles(), matrix, levels,
+                vs(upload(matrix.scales())));
+    }
+
+    @Override
+    public synchronized PackedStorage quantize(Storage values, int rows, int cols, int bits, int group) {
+        VkStorage x = vs(values);
+        if (bits != 8 || cols % 4 != 0 || rows % group != 0 || x.dtype != DType.FLOAT32 || x.size != (long) rows * cols) {
+            return Backend.super.quantize(values, rows, cols, bits, group);
+        }
+        eager(x);
+        VkStorage levels = raw((long) rows * cols / 4, null);
+        VkStorage scales = raw((long) rows / group * cols, DType.FLOAT32, null);
+        long work = (long) rows / group * (cols / 4);
+        vk.push().putLong(x.address()).putLong(levels.address()).putLong(scales.address()).putInt(cols / 4)
+                .putInt(group).putInt((int) work);
+        vk.dispatch(shader("quantize8", DType.FLOAT32), groups(work), new VkContext.Slot[] {levels.slot(), scales.slot()},
+                x.slot());
+        return new Packed(rows, cols, bits, group, false, null, levels, scales);
     }
 
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
         if (packed instanceof Packed p) {
-            return p.host();
+            if (p.host() != null) {
+                return p.host();
+            }
+            float[] scales = download(p.scales());
+            byte[] levels = new byte[(int) p.size()];
+            synchronized (this) {
+                eager(p.levels());
+                vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
+            }
+            return PackedMatrix.of(levels, scales, p.rows(), p.cols(), p.bits(), p.group());
         }
         return Backend.super.unpackToHost(packed);
     }
@@ -1023,10 +1122,9 @@ public final class VulkanBackend implements Backend {
         Packed p = packed(packed);
         VkStorage z = vs(out);
         eager(z);
-        PackedMatrix h = p.host();
         vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(z.address())
-                .putInt(h.rows()).putInt(h.cols()).putInt(h.group()).putInt(h.nibbles() ? 1 : 0);
-        vk.dispatch(shader("unpack_packed", z.dtype), groups(h.size()), z.slot(), p.levels().slot(),
+                .putInt(p.rows()).putInt(p.cols()).putInt(p.group()).putInt(p.nibbles() ? 1 : 0);
+        vk.dispatch(shader("unpack_packed", z.dtype), groups(p.size()), z.slot(), p.levels().slot(),
                 p.scales().slot());
     }
 
@@ -1050,8 +1148,8 @@ public final class VulkanBackend implements Backend {
         VkStorage target = pieces == 1 ? z : raw(pieces * mn, z.dtype, null);
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
-                .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.host().group())
-                .putInt(p.host().nibbles() ? 1 : 0).putInt(chunk);
+                .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.group())
+                .putInt(p.nibbles() ? 1 : 0).putInt(chunk);
         vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, target.slot(), x.slot(),
                 p.levels().slot(), p.scales().slot());
         if (pieces > 1) {

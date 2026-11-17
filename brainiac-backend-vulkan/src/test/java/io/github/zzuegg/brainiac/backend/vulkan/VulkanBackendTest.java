@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.backend.vulkan;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -348,6 +349,141 @@ class VulkanBackendTest {
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "vulkan".length(), status);
         assertTrue(List.of(DType.values()).size() == 4);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 5, 7, 8, 6, false", "2, 4, 2, 5, 7, 8, 6, true",
+        "1, 2, 2, 1, 600, 64, 64, false", "1, 1, 1, 300, 300, 32, 16, true", "1, 8, 1, 3, 513, 128, 128, true",
+        "1, 2, 1, 2, 9, 256, 3, true"})
+    void fusedAttentionMatchesTheDefinition(int b, int h, int kvh, int tq, int tk, int dk, int dv, boolean causal) {
+        Tensor q = random(21, b, h, tq, dk);
+        Tensor k = random(22, b, kvh, tk, dk);
+        Tensor v = random(23, b, kvh, tk, dv);
+        float scale = (float) (1 / Math.sqrt(dk));
+        float[] qa = q.toArray();
+        float[] ka = k.toArray();
+        float[] va = v.toArray();
+        float[] expected = new float[b * h * tq * dv];
+        float[] expectedLse = new float[b * h * tq];
+        for (int row = 0; row < b * h * tq; row++) {
+            int i = row % tq;
+            int hh = row / tq % h;
+            int bb = row / tq / h;
+            int kv = (bb * kvh + hh / (h / kvh)) * tk;
+            int last = causal ? Math.min(tk, i + tk - tq + 1) : tk;
+            double[] sc = new double[last];
+            double max = Double.NEGATIVE_INFINITY;
+            for (int j = 0; j < last; j++) {
+                for (int d = 0; d < dk; d++) {
+                    sc[j] += (double) qa[row * dk + d] * ka[(kv + j) * dk + d];
+                }
+                sc[j] *= scale;
+                max = Math.max(max, sc[j]);
+            }
+            double sum = 0;
+            for (int j = 0; j < last; j++) {
+                sum += Math.exp(sc[j] - max);
+            }
+            expectedLse[row] = (float) (max + Math.log(sum));
+            for (int d = 0; d < dv; d++) {
+                double o = 0;
+                for (int j = 0; j < last; j++) {
+                    o += Math.exp(sc[j] - max) / sum * va[(kv + j) * dv + d];
+                }
+                expected[row * dv + d] = (float) o;
+            }
+        }
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor qg = q.to(type).to(gpu);
+            Tensor kg = k.to(type).to(gpu);
+            Tensor vg = v.to(type).to(gpu);
+            assertTrue(Tensor.hasAttention(qg, kg, vg, false));
+            Tensor[] r = Tensor.attention(qg, kg, vg, scale, causal);
+            float tolerance = type == DType.FLOAT32 ? 1e-5f : type == DType.FLOAT16 ? 3e-3f : 3e-2f;
+            String what = type + " " + b + "x" + h + "/" + kvh + "x" + tq + "x" + tk + "x" + dk + "x" + dv
+                    + (causal ? " causal" : "");
+            assertArrayEquals(expected, r[0].toArray(), tolerance * 4, what);
+            assertArrayEquals(expectedLse, r[1].toArray(), tolerance * 8 + Math.abs(expectedLse[0]) * tolerance, what);
+        }
+    }
+
+    /** A Llama cache's bias [batch, 1, queries, keys] masking padding and unused positions, fused and not. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 1, 70, 16, 16", "2, 4, 4, 6, 300, 64, 32", "1, 2, 1, 3, 5, 8, 8"})
+    void fusedAttentionWithABiasMatchesTheUnfusedOne(int b, int h, int kvh, int tq, int tk, int dk, int dv) {
+        Tensor q = random(31, b, h, tq, dk);
+        Tensor k = random(32, b, kvh, tk, dk);
+        Tensor v = random(33, b, kvh, tk, dv);
+        float[] mask = new float[b * tq * tk];
+        SplittableRandom r = new SplittableRandom(4);
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = r.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) r.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        // on the CPU, which has no fused kernel with a bias: weights built, masked and normalized
+        float[] expected = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(q), Var.of(k), Var.of(v), bias,
+                scale, 0, null).value().toArray();
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor qg = q.to(type).to(gpu);
+            assertTrue(Tensor.hasAttentionWithBias(qg, k.to(type).to(gpu), v.to(type).to(gpu)));
+            float[] fused = Tensor.attention(qg, k.to(type).to(gpu), v.to(type).to(gpu), bias.to(gpu), scale, false)[0]
+                    .toArray();
+            assertArrayEquals(expected, fused, type == DType.FLOAT32 ? 1e-5f : 1e-2f, type.toString());
+            // and through Functional, which picks the fused kernel for inference
+            float[] viaFunctional = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(qg),
+                    Var.of(k.to(type).to(gpu)), Var.of(v.to(type).to(gpu)), bias.to(gpu), scale, 0, null).value()
+                    .toArray();
+            assertArrayEquals(fused, viaFunctional, 0f, type.toString());
+        }
+    }
+
+    /** Float16 products: on cooperative matrices where the device has them (see the status). */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1, 16, 16, 16", "1, 64, 64, 64", "1, 17, 33, 70", "3, 100, 48, 130",
+        "1, 16, 4096, 24", "2, 300, 520, 260", "1, 1, 64, 64", "1, 128, 5, 128"})
+    void float16ProductsMatchTheCpu(int batch, int m, int k, int n) {
+        assumeTrue(supported(DType.FLOAT16), "float16 not supported by " + gpu);
+        Tensor a = random(5, batch, m, k).to(DType.FLOAT16);
+        Tensor b = random(6, batch, k, n).to(DType.FLOAT16);
+        float[] expected = a.to(DType.FLOAT32).matmul(b.to(DType.FLOAT32)).toArray();   // exact sums of the halves
+        float[] actual = a.to(gpu).matmul(b.to(gpu)).toArray();
+        // rounding the result to float16, and sums in float32 in another order
+        double tolerance = 2e-3 * Math.sqrt(k) + 1e-3;
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], actual[i], tolerance + Math.abs(expected[i]) * 1e-3,
+                    batch + "x" + m + "x" + k + "x" + n + " at " + i + "; " + gpu);
+        }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"256, 64", "16, 1024", "64, 4", "8, 36", "12, 6"})
+    void quantizesOnTheDeviceAsTheCpuDoes(int rows, int cols) {
+        Tensor x = random(11, rows, cols).mul(3);
+        x = x.mul(Tensor.uniform(Shape.of(1, cols), 0, 1, new SplittableRandom(2)));   // a column of near zeros
+        int group = rows % 8 == 0 ? rows / 2 : rows;
+        PackedMatrix expected = PackedMatrix.quantize(x.toArray(), rows, cols, 8, group);
+        Tensor q = x.to(gpu).quantized(8, group);
+        assertTrue(q.isPacked());
+        float[] values = new float[rows * cols];
+        expected.dequantize(values);
+        float[] actual = q.toArray();
+        float[] scales = expected.scales();
+        for (int i = 0; i < values.length; i++) {
+            // the GPU divides to within a few ulps: a level may round the other way at .5
+            float step = scales[i / cols / group * cols + i % cols];
+            assertEquals(values[i], actual[i], step * 1.001f + 1e-6f, rows + "x" + cols + " at " + i);
+        }
+        Tensor back = q.to(CPU);   // levels read back from the device
+        assertArrayEquals(actual, back.toArray(), 0f);
+        Tensor again = Tensor.packed(PackedMatrix.quantize(new float[rows * cols], rows, cols, 8, group), gpu);
+        assertArrayEquals(new float[rows * cols], again.toArray(), 0f);
     }
 
     @ParameterizedTest

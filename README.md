@@ -166,6 +166,9 @@ Activation cubeActivation = Activation.named("cube", v -> Var.apply(cube, v));
 Optimizers: `sgd`, `momentum`, `adam`, `adamW`, `lion`, `adafactor` (factored second
 moment, optionally with relative steps as T5 trained) and `muon` (orthogonalized momentum for
 matrices). Each matches PyTorch's or transformers' implementation on the same gradients.
+`adam8bit` keeps Adam's two averages as 8-bit levels with a scale per block of up to 256
+values (`Tensor.quantized`, on the GPU without leaving it): a quarter of the state memory,
+training along nearly the same path.
 Parameter groups give different parameters different optimizers or settings:
 
 ```java
