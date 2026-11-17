@@ -373,9 +373,10 @@ class FusionTest {
         OpenClBackend backend = (OpenClBackend) backendOf.invoke(gpu);
         java.lang.reflect.Field launches = OpenClBackend.class.getDeclaredField("launchIndex");
         launches.setAccessible(true);
-        // a kernel not compiled yet runs as separate precompiled steps meanwhile: wait for it
+        // a kernel not compiled yet runs as separate precompiled steps meanwhile: wait for it (up to a
+        // minute: after the other tests the compiler queue can be long on a busy machine)
         long used = Long.MAX_VALUE;
-        for (int attempt = 0; attempt < 100 && used > 3; attempt++) {
+        for (int attempt = 0; attempt < 600 && used > 3; attempt++) {
             long before = launches.getLong(backend);
             layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(x)).value().toArray();
             used = launches.getLong(backend) - before;
