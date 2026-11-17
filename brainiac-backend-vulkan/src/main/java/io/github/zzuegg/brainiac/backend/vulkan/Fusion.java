@@ -289,6 +289,82 @@ final class Fusion {
         Gen g = new Gen(type);
         String v = g.eval(root, "i0");
         StringBuilder src = new StringBuilder();
+        boolean inPush = prelude(g, src);
+        src.append("void main() {\n    uint i0 = gid();\n    if (i0 >= pc.n) return;\n");
+        src.append(inPush ? "#define m pc\n" : "    Meta m = pc.m;\n");
+        src.append(g.body);
+        src.append("    STORE(pc.out_, i0, ").append(v).append(");\n}\n");
+        return new Kernel(src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
+                List.copyOf(g.words), inPush);
+    }
+
+    /**
+     * Generates a reduction (as reduce.comp and reduce_group.comp compute it) of {@code root}'s
+     * values, so that the reduced values are never stored: output {@code r} combines the
+     * values at {@code (r / inner) * len * inner + r % inner + t * inner} for t below len.
+     * {@code op}: 0 sum, 1 mean, 2 max, 3 min. {@code group}: one work group per output, for
+     * long rows; otherwise one invocation per output. The table's first two words are len and
+     * inner, so one shader serves every shape.
+     */
+    static Kernel generateReduce(Expr root, io.github.zzuegg.brainiac.tensor.DType type, int op, boolean group,
+            int len, int inner) {
+        Gen g = new Gen(type);
+        g.words.add(len);
+        g.words.add(inner);
+        String v = g.eval(root, "i0");
+        StringBuilder src = new StringBuilder();
+        boolean inPush = prelude(g, src);
+        String init = op == 2 ? "NEG_INF" : op == 3 ? "POS_INF" : "K(0.0)";
+        src.append("ACC combine_(ACC a, ACC b) {\n    ").append(switch (op) {
+            case 2 -> "return isnan(a) || isnan(b) ? a + b : max(a, b);";
+            case 3 -> "return isnan(a) || isnan(b) ? a + b : min(a, b);";
+            default -> "return a + b;";
+        }).append("\n}\n");
+        if (group) {
+            src.append("shared ACC part_[GROUP];\n");
+            src.append("void main() {\n    uint r_ = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;\n")
+                    .append("    if (r_ >= pc.n) return;   // whole work groups: barriers stay uniform\n")
+                    .append("    uint lid_ = gl_LocalInvocationID.x;\n");
+        } else {
+            src.append("void main() {\n    uint r_ = gid();\n    if (r_ >= pc.n) return;\n");
+        }
+        src.append(inPush ? "#define m pc\n" : "    Meta m = pc.m;\n");
+        src.append("    uint len_ = uint(m.w[0]);\n    uint inner_ = uint(m.w[1]);\n")
+                .append("    uint base_ = (r_ / inner_) * len_ * inner_ + r_ % inner_;\n")
+                .append("    ACC acc_ = ").append(init).append(";\n")
+                .append(group ? "    for (uint t_ = lid_; t_ < len_; t_ += GROUP) {\n"
+                        : "    for (uint t_ = 0; t_ < len_; t_++) {\n")
+                .append("    uint i0 = base_ + t_ * inner_;\n")
+                .append(g.body)
+                .append("    acc_ = combine_(acc_, ").append(v).append(");\n    }\n");
+        String result = op == 1 ? "acc_ / ACC(len_)" : "acc_";
+        if (group) {
+            src.append("""
+                        part_[lid_] = acc_;
+                        barrier();
+                        for (uint s_ = GROUP / 2; s_ > 0; s_ >>= 1) {
+                            if (lid_ < s_) part_[lid_] = combine_(part_[lid_], part_[lid_ + s_]);
+                            barrier();
+                        }
+                        acc_ = part_[0];
+                        if (lid_ == 0) {
+                            STORE(pc.out_, r_, %s);
+                        }
+                    }
+                    """.formatted(result));
+        } else {
+            src.append("    STORE(pc.out_, r_, ").append(result).append(");\n}\n");
+        }
+        return new Kernel(src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
+                List.copyOf(g.words), inPush);
+    }
+
+    /**
+     * The declarations before main: the work group, the push constants with the table (or the
+     * table's address), and helpers the expression uses. Returns whether the table is in the
+     * push constants.
+     */
+    private static boolean prelude(Gen g, StringBuilder src) {
         src.append("layout(local_size_x = GROUP) in;\n");
         String table = " uint64_t p[" + Math.max(1, g.pointers.size()) + "]; float c["
                 + Math.max(1, g.constants.size()) + "]; int w[" + Math.max(1, g.words.size()) + "];";
@@ -322,12 +398,7 @@ final class Fusion {
                     }
                     """);
         }
-        src.append("void main() {\n    uint i0 = gid();\n    if (i0 >= pc.n) return;\n");
-        src.append(inPush ? "#define m pc\n" : "    Meta m = pc.m;\n");
-        src.append(g.body);
-        src.append("    STORE(pc.out_, i0, ").append(v).append(");\n}\n");
-        return new Kernel(src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
-                List.copyOf(g.words), inPush);
+        return inPush;
     }
 
     private static final class Gen {
