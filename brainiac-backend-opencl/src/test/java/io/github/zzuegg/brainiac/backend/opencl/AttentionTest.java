@@ -52,4 +52,36 @@ class AttentionTest {
             assertArrayEquals(cg[i].toArray(), dg[i].toArray(), 1e-4f, "gradient " + i);
         }
     }
+
+    @ParameterizedTest
+    @CsvSource({
+        "1, 4, 4, 1, 9, 8, 8",
+        "2, 4, 2, 3, 300, 16, 12",
+        "1, 14, 2, 1, 600, 64, 64",
+        "1, 2, 2, 5, 5, 4, 4",
+    })
+    void withABiasMatchesTheUnfusedOne(int b, int h, int kvh, int tq, int tk, int dk, int dv) {
+        SplittableRandom r = new SplittableRandom(b * 7L + tk);
+        Tensor q = Tensor.uniform(Shape.of(b, h, tq, dk), -1, 1, r);
+        Tensor k = Tensor.uniform(Shape.of(b, kvh, tk, dk), -1, 1, r);
+        Tensor v = Tensor.uniform(Shape.of(b, kvh, tk, dv), -1, 1, r);
+        float[] mask = new float[b * tq * tk];
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = r.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) r.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        // on the CPU: weights built, masked and normalized
+        float[] expected = io.github.zzuegg.brainiac.nn.Functional.attention(
+                io.github.zzuegg.brainiac.autograd.Var.of(q), io.github.zzuegg.brainiac.autograd.Var.of(k),
+                io.github.zzuegg.brainiac.autograd.Var.of(v), bias, scale, 0, null).value().toArray();
+        assumeTrue(Tensor.hasAttentionWithBias(q.to(gpu), k.to(gpu), v.to(gpu)));
+        Tensor[] fused = Tensor.attention(q.to(gpu), k.to(gpu), v.to(gpu), bias.to(gpu), scale, false);
+        assertArrayEquals(expected, fused[0].toArray(), 1e-5f, "output");
+        // with no bias and few rows, plain attention takes the same kernel: as the CPU's
+        Tensor[] cpu = Tensor.attention(q, k, v, scale, true);
+        Tensor[] dev = Tensor.attention(q.to(gpu), k.to(gpu), v.to(gpu), scale, true);
+        assertArrayEquals(cpu[0].toArray(), dev[0].toArray(), 1e-5f, "causal output");
+        assertArrayEquals(cpu[1].toArray(), dev[1].toArray(), 1e-5f, "causal log-sum-exp");
+    }
 }
