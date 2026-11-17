@@ -35,6 +35,7 @@ public final class ChatService {
     private final Path outputs;
     private final UsageLog usage;
     private final ProviderSettings settings;
+    private Hub hub;
     private final Conversations conversations;
     private final PageState page;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
@@ -312,14 +313,34 @@ public final class ChatService {
      */
     public static ChatService at(Keys keys, List<Path> modelFolders, Map<String, URI> bases, Path outputs) {
         List<ChatProvider> ps = new ArrayList<>();
-        ps.add(new LocalProvider(modelFolders, outputs.resolveSibling("local-models.txt")));
+        Path downloads = outputs.resolveSibling("downloads");
+        List<Path> folders = new ArrayList<>(modelFolders);
+        if (!folders.contains(downloads)) {
+            folders.add(downloads);
+        }
+        ps.add(new LocalProvider(folders, outputs.resolveSibling("local-models.txt")));
         ps.add(new AnthropicProvider(keys, bases.getOrDefault("anthropic", AnthropicProvider.BASE)));
         ps.add(new OpenAiProvider(keys, bases.getOrDefault("openai", Preset.OPENAI.base())));
         ps.add(new GoogleProvider(keys, bases.getOrDefault("google", GoogleProvider.BASE)));
         for (Preset p : Preset.COMPATIBLE) {
             ps.add(new CompatibleProvider(keys, p.at(bases.getOrDefault(p.id(), p.base()))));
         }
-        return new ChatService(keys, ps, outputs);
+        ChatService service = new ChatService(keys, ps, outputs);
+        service.hub = new Hub(keys, downloads, bases.getOrDefault("hub", Hub.BASE));
+        return service;
+    }
+
+    /**
+     * Returns the Hugging Face Hub client that finds and downloads models into this PC's
+     * {@code downloads} folder.
+     *
+     * @return the client
+     */
+    public Hub hub() {
+        if (hub == null) {
+            hub = new Hub(keys, outputs.resolveSibling("downloads"), Hub.BASE);
+        }
+        return hub;
     }
 
     /**
@@ -410,6 +431,7 @@ public final class ChatService {
             if (p instanceof LocalProvider local) {
                 m.put("folders", local.folders().stream().map(Path::toString).toList());
                 m.put("added", local.added().stream().map(Path::toString).toList());
+                m.put("families", List.copyOf(new java.util.TreeSet<>(io.github.zzuegg.brainiac.llm.LlamaConfig.MODEL_TYPES)));
             }
             ps.add(m);
             if (l != null) {

@@ -47,6 +47,13 @@ import java.util.Map;
  *       models on this PC (a {@code .gguf} file, a Hugging Face model folder or a folder holding them),
  *       and with {@code "remove": true} forgets one; {@code POST /api/local/browse} with {@code {"path":
  *       "D:/models"}} lists that folder's subfolders and models to pick from (no path: where to start).
+ *   <li>{@code POST /api/hub/search} with {@code {"query": "qwen2.5"}} finds text generation
+ *       models on Hugging Face that the core runs; {@code POST /api/hub/files} with {@code {"repo": "..."}}
+ *       lists what can be downloaded from one and whether the studio runs it; {@code POST
+ *       /api/hub/download} with {@code {"repo": "...", "option": "folder" or a GGUF file}} starts a
+ *       download into {@code downloads} in the data folder; {@code GET /api/hub/downloads} shows them;
+ *       {@code POST /api/hub/cancel} with {@code {"id": "1"}} stops one, and {@code POST
+ *       /api/hub/delete} with {@code {"name": "..."}} deletes a downloaded model.
  *   <li>{@code GET /api/usage} sums every call by provider, key, model and day;
  *       {@code GET /api/balances} asks the providers that report one what is left on each key.
  * </ul>
@@ -115,6 +122,14 @@ final class ChatRoutes {
                 Exchanges.error(ex, 400, e.getMessage());
             }
         });
+        server.post("/api/hub/search", ex -> hub(ex, body -> chat.hub().search(Json.string(body, "query", ""))));
+        server.post("/api/hub/files", ex -> hub(ex, body -> chat.hub().files(Json.string(body, "repo", "").strip())));
+        server.post("/api/hub/download", ex -> hub(ex, body -> chat.hub().download(Json.string(body, "repo", "").strip(),
+                Json.string(body, "option", ""))));
+        server.get("/api/hub/downloads", ex -> Exchanges.json(ex, 200, Map.of("downloads", chat.hub().downloads(),
+                "folder", chat.hub().folder().toString(), "runs", chat.hub().runs())));
+        server.post("/api/hub/cancel", ex -> hub(ex, body -> Map.of("ok", chat.hub().cancel(Json.string(body, "id", "")))));
+        server.post("/api/hub/delete", ex -> hub(ex, body -> Map.of("ok", chat.hub().delete(Json.string(body, "name", "")))));
         server.post("/api/local/browse", ex -> {
             Map<String, Object> body = Exchanges.body(ex, 64 << 10);
             String path = Json.string(body, "path", "").strip();
@@ -126,6 +141,23 @@ final class ChatRoutes {
                 Exchanges.error(ex, 400, e.getMessage());
             }
         });
+    }
+
+    private interface HubCall {
+        Object answer(Map<String, Object> body) throws IOException;
+    }
+
+    // a Hub call answers its result, or 400 with what went wrong
+    private void hub(HttpExchange ex, HubCall call) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 64 << 10);
+        Object out;
+        try {
+            out = call.answer(body);
+        } catch (IOException e) {
+            Exchanges.error(ex, 400, e.getMessage());
+            return;
+        }
+        Exchanges.json(ex, 200, out);
     }
 
     // {"provider": "huggingface", "auto": true, "models": ["a", "b"] or null for all, "url": "" for its own,

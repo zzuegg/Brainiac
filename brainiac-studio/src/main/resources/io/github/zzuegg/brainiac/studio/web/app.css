@@ -149,6 +149,8 @@ button { cursor: pointer; }
 .router .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 .router .auto { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 .router .arrow { color: var(--faint); }
+.router .chip { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.router .chip::before { display: inline-block; margin-right: 6px; vertical-align: 1px; }
 .top .grow { flex: 1; }
 .devices { display: flex; gap: 6px; align-items: center; }
 .dev {
@@ -1021,6 +1023,43 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .placerow { display: flex; gap: 8px; align-items: center; min-width: 0; }
 .placerow .mono { flex: 1; min-width: 0; font-size: 11.5px; word-break: break-all; }
 @media (max-width: 640px) { .place-crumb .here { display: none; } }
+
+/* ---------- Hugging Face downloads ---------- */
+.hubbox .place-path .seg { flex: none; }
+.hub-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; min-width: 0; }
+.hub-cols .place-browse { display: flex; flex-direction: column; min-height: 0; }
+.hub-list, .hub-opts { display: grid; gap: 2px; padding: 6px; max-height: 360px; overflow: auto; align-content: start; }
+.hub-cols .pad { padding: 10px 12px; font-size: 12.5px; line-height: 1.5; }
+.hub-item { display: grid; gap: 4px; padding: 7px 9px; border: 0; border-radius: 7px; background: none; color: var(--fg-2); font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.hub-item .nm { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-item .meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11.5px; }
+.hub-item .meta svg { width: 12px; height: 12px; vertical-align: -2px; margin-right: 2px; }
+.hub-item:hover { background: var(--raise); color: var(--fg); }
+.hub-item.on { background: var(--accent-soft); color: var(--fg); box-shadow: inset 0 0 0 1px var(--accent); }
+.hub-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.hub-opt { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 10px; align-items: center; padding: 7px 8px; border-radius: 7px; }
+.hub-opt + .hub-opt { border-top: 1px solid var(--line-soft); border-radius: 0; }
+.hub-opt .nm { font-size: 13px; overflow-wrap: anywhere; }
+.hub-opt.off .nm { color: var(--muted); }
+.hub-opt .why { grid-column: 1 / -1; font-size: 12px; color: var(--muted); line-height: 1.4; }
+.hub-files .place-crumb a { font-size: 12px; }
+.hub-downs { display: grid; gap: 6px; }
+.hub-down { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(80px, 1fr) auto auto; gap: 4px 12px; align-items: center; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); }
+.hub-down .nm { display: grid; min-width: 0; font-size: 13px; }
+.hub-down .nm > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-down .nm .faint { font-size: 11.5px; }
+.hub-down .st { font-size: 11.5px; white-space: nowrap; }
+.hub-down .acts { display: flex; gap: 6px; align-items: center; }
+.hub-down .why { grid-column: 1 / -1; font-size: 12px; line-height: 1.4; }
+.hub-down .why.bad { color: var(--bad); }
+#hub-box:empty { display: none; }
+@media (max-width: 900px) {
+  .hub-cols { grid-template-columns: minmax(0, 1fr); }
+  .hub-down { grid-template-columns: minmax(0, 1fr) auto; }
+  .hub-down .meter { grid-column: 1 / -1; grid-row: 2; }
+  .hub-down .st { grid-row: 3; }
+}
+@media (max-width: 640px) { .hubbox .place-path { flex-wrap: wrap; } .hubbox .place-path .input { flex-basis: 100%; } }
 .cmdk li { cursor: pointer; }
 .cmdk li .faint { font-size: 12px; white-space: nowrap; }
 .cmdk li svg { width: 16px; height: 16px; flex: none; color: var(--muted); }

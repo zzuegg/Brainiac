@@ -29,7 +29,7 @@ import java.util.stream.Stream;
 final class LocalProvider implements ChatProvider {
 
     private static final System.Logger LOG = System.getLogger(LocalProvider.class.getName());
-    private static final Set<String> TYPES = Set.of("llama", "qwen2", "mistral");
+    private static final Set<String> TYPES = io.github.zzuegg.brainiac.llm.LlamaConfig.MODEL_TYPES;
 
     private final List<Path> folders;
     private final Path placesFile;

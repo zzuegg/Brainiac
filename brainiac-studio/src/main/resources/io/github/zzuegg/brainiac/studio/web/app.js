@@ -1821,7 +1821,8 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+      ${isLive() && H.open ? hubPanel() : isLive() && H.downloads.length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
@@ -2067,6 +2068,7 @@
       { label: "New conversation", icon: "plus", run: () => { if (state.view !== "chat") go("chat"); newChat(false); } },
       { label: "New model in the builder", icon: "build", run: newModel },
       { label: "Add models from a folder or GGUF file…", icon: "folder", run: () => { P.open = true; P.error = null; go("library"); $("#place-path")?.focus(); if (!P.list) browsePlace(""); } },
+      { label: "Download a model from Hugging Face…", icon: "download", run: () => { H.open = true; go("library"); $("#hub-q")?.focus(); pollHub(); } },
       { label: "Add an API key…", icon: "lock", run: () => { go("library"); $("[data-add-key]")?.scrollIntoView({ block: "center" }); } },
       { label: "Start a training run…", icon: "train", run: () => go("train") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide"),
@@ -3000,7 +3002,7 @@
         ${p.ready ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
-          <div class="muted" style="font-size:12.5px">Hugging Face model folders (Llama, Qwen2, Mistral) and <code>.gguf</code> files in:</div>
+          <div class="muted" style="font-size:12.5px">Hugging Face model folders (${esc((p.families || ["llama", "mistral", "qwen2"]).join(", "))}) and <code>.gguf</code> files in:</div>
           ${p.folders.map(f => `<div class="mono faint" style="font-size:11.5px;word-break:break-all">${esc(f)}</div>`).join("")}
           ${(p.added || []).length ? `<div class="muted" style="font-size:12.5px">and the ones you added:</div>
             ${p.added.map(f => `<div class="placerow"><span class="mono faint">${esc(f)}</span>
@@ -3213,7 +3215,150 @@
     recheck();
   }
 
+  // ---------- downloading models from Hugging Face ----------
+  const H = { open: false, query: "", results: null, hidden: 0, runs: null, searching: false, error: null,
+    repo: null, listing: null, loadingRepo: false, repoError: null, downloads: [], folder: "", timer: 0, deleting: null };
+  const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
+  const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
+  const hubActive = d => d.state === "queued" || d.state === "downloading" || d.state === "checking";
+  function hubPanel() {
+    const res = H.results;
+    const list = H.searching ? `<div class="faint pad">Searching…</div>`
+      : !res ? `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`
+      : !res.length ? `<div class="faint pad">Nothing found that the studio runs${H.hidden ? ` (${H.hidden} other model${H.hidden === 1 ? "" : "s"} found)` : ""}.</div>`
+      : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
+          <span class="nm">${esc(r.id)}</span>
+          <span class="meta">${r.family ? `<span class="chip c-ok">${esc(r.family)}</span>` : ""}${r.gguf ? `<span class="chip c-text">GGUF</span>` : ""}${r.safetensors ? `<span class="chip c-text">safetensors</span>` : ""}
+            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add a Hugging Face key first">gated</span>` : ""}
+            <span class="faint tnum" title="downloads">${icon("download")}${fmtCount(r.downloads)}</span></span></button>`).join("")
+        + (H.hidden ? `<div class="faint pad">${H.hidden} more found that the studio cannot run yet.</div>` : "");
+    return `<section class="placebox hubbox" id="hub-box" aria-label="Download from Hugging Face">
+      <div class="place-head"><div><b>Download from Hugging Face</b> <span class="muted">Shows only models the studio runs${H.runs ? `: ${esc(H.runs.families.join(", "))} model folders, and ${esc(H.runs.architectures.join(" and "))} GGUF files` : ""}. When the core learns more, more show up. Downloads go to <code>${esc(H.folder || "downloads")}</code>.</span></div>
+        <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
+      <form class="place-path" id="hub-search" autocomplete="off">
+        <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
+        <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
+      ${H.error ? `<div class="flag bad">${icon("alert")}<span>${esc(H.error)}</span></div>` : ""}
+      <div class="hub-cols">
+        <div class="place-browse"><div class="hub-list">${list}</div></div>
+        <div class="place-browse hub-files">${hubFiles()}</div>
+      </div>
+      ${hubDownloads()}
+    </section>`;
+  }
+  function hubFiles() {
+    if (!H.repo) return `<div class="faint pad">Pick a model to see its files and which ones the studio runs.</div>`;
+    const head = `<div class="place-crumb"><code>${esc(H.repo)}</code><span class="grow"></span><a class="faint" href="https://huggingface.co/${esc(H.repo)}" target="_blank" rel="noopener">Model page</a></div>`;
+    if (H.loadingRepo) return head + `<div class="faint pad">Reading its files…</div>`;
+    if (H.repoError) return head + `<div class="flag bad">${icon("alert")}<span>${esc(H.repoError)}</span></div>`;
+    const opts = (H.listing?.options || []).slice().sort((a, b) => (b.supported - a.supported) || (a.size - b.size));
+    if (!opts.length) return head + `<div class="faint pad">No GGUF file or model folder here.</div>`;
+    const busy = o => H.downloads.find(d => d.repo === H.repo && hubActive(d) && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name));
+    return head + `<div class="hub-opts">${opts.map(o => `<div class="hub-opt ${o.supported ? "" : "off"}">
+        <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}</div>
+        <span class="mono faint tnum">${o.size ? fmtBytes(o.size) : ""}</span>
+        ${o.have ? `<span class="chip c-ok">on this PC</span>` : busy(o) ? `<span class="chip c-text">downloading</span>`
+          : o.supported ? `<button class="btn sm" data-download="${esc(o.id)}">${icon("download")}Download</button>` : `<span class="chip c-warn">won’t run</span>`}
+        ${o.reason ? `<div class="why">${esc(o.reason)}</div>` : ""}</div>`).join("")}</div>`;
+  }
+  function hubDownloads() {
+    if (!H.downloads.length) return "";
+    return `<div class="hub-downs" aria-label="Downloads">${H.downloads.map(d => {
+      const pct = d.total ? Math.min(100, d.done / d.total * 100) : 0;
+      const status = d.state === "done" ? "on this PC" : d.state === "checking" ? "checking…" : d.state === "queued" ? "starting…"
+        : d.state === "downloading" ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}${d.speed ? ` · ${fmtBytes(d.speed)}/s · ${fmtWait((d.total - d.done) / d.speed)}` : ""}`
+        : d.state === "stopped" ? `stopped at ${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "failed";
+      return `<div class="hub-down ${d.state}">
+        <div class="nm"><b>${esc(d.name)}</b><span class="faint">${esc(d.repo)}</span></div>
+        <div class="meter wide"><i style="width:${pct.toFixed(1)}%;${d.state === "failed" ? "background:var(--bad)" : d.state === "done" ? "background:var(--ok)" : ""}"></i></div>
+        <span class="mono faint tnum st">${esc(status)}</span>
+        <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}">${icon("stop")}Stop</button>`
+          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button><button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
+          : `<button class="btn sm" data-hub-retry="${esc(d.id)}">${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
+        ${d.error ? `<div class="why bad">${esc(d.error)}</div>` : ""}
+      </div>`;
+    }).join("")}</div>`;
+  }
+  function renderHub() {
+    const box = $("#hub-box");
+    if (!box || state.view !== "library") return;
+    const focus = document.activeElement?.id === "hub-q", caret = focus ? $("#hub-q").selectionStart : 0;
+    const scroll = $(".hub-list")?.scrollTop || 0, fscroll = $(".hub-opts")?.scrollTop || 0;
+    box.outerHTML = H.open ? hubPanel() : `<div id="hub-box">${hubDownloads()}</div>`;
+    bindHub();
+    if ($(".hub-list")) $(".hub-list").scrollTop = scroll;
+    if ($(".hub-opts")) $(".hub-opts").scrollTop = fscroll;
+    if (focus) { const i = $("#hub-q"); i.focus(); i.setSelectionRange(caret, caret); }
+  }
+  async function hubSearch() {
+    H.searching = true; H.error = null; renderHub();
+    try { const r = await postJson("/api/hub/search", { query: H.query }); H.results = r.models || []; H.hidden = r.hidden || 0; }
+    catch (e) { H.error = e.message; H.results = null; }
+    H.searching = false; renderHub();
+  }
+  async function hubRepo(repo) {
+    H.repo = repo; H.listing = null; H.repoError = null; H.loadingRepo = true; renderHub();
+    try { const l = await postJson("/api/hub/files", { repo }); if (H.repo === repo) H.listing = l; }
+    catch (e) { if (H.repo === repo) H.repoError = e.message; }
+    if (H.repo === repo) { H.loadingRepo = false; renderHub(); }
+  }
+  async function pollHub() {
+    clearTimeout(H.timer);
+    try {
+      const j = await api("/api/hub/downloads");
+      const before = new Map(H.downloads.map(d => [d.id, d.state]));
+      H.downloads = j.downloads || []; H.folder = j.folder || H.folder; H.runs = j.runs || H.runs;
+      const finished = H.downloads.some(d => d.state === "done" && before.has(d.id) && before.get(d.id) !== "done");
+      if (finished) {
+        if (H.listing) H.listing.options.forEach(o => { if (H.downloads.some(d => d.state === "done" && d.repo === H.repo && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name))) o.have = true; });
+        await loadModels(false);
+      } else renderHub();
+    } catch (e) { console.warn("cannot read the downloads", e); }
+    if (H.downloads.some(hubActive)) H.timer = setTimeout(pollHub, 1000);
+  }
+  function chatWith(key) {
+    go("chat"); newChat(false);
+    L.panes[L.active].model = key; L.model = key; store.set("chatModel", key); savePanes(); render();
+    $(`.pane[data-pane="${L.active}"] textarea`)?.focus();
+  }
+  function bindHub() {
+    $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
+    $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
+    $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });
+    $$("[data-repo]").forEach(b => b.addEventListener("click", () => hubRepo(b.dataset.repo)));
+    $$("[data-download]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await postJson("/api/hub/download", { repo: H.repo, option: b.dataset.download }); H.repoError = null; }
+      catch (e) { H.repoError = e.message; }
+      await pollHub(); renderHub();
+    }));
+    $$("[data-hub-cancel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/hub/cancel", { id: b.dataset.hubCancel }).catch(() => {}); setTimeout(pollHub, 300); }));
+    $$("[data-hub-retry]").forEach(b => b.addEventListener("click", async () => {
+      const d = H.downloads.find(x => x.id === b.dataset.hubRetry); if (!d) return;
+      b.disabled = true;
+      try { await postJson("/api/hub/download", { repo: d.repo, option: d.option }); }
+      catch (e) { d.error = e.message; }
+      await pollHub(); renderHub();
+    }));
+    $$("[data-chat-with]").forEach(b => b.addEventListener("click", () => chatWith(b.dataset.chatWith)));
+    $$("[data-hub-delete]").forEach(b => b.addEventListener("click", async () => {
+      const n = b.dataset.hubDelete;
+      if (H.deleting !== n) { H.deleting = n; renderHub(); setTimeout(() => { if (H.deleting === n) { H.deleting = null; renderHub(); } }, 4000); return; }
+      H.deleting = null;
+      try { await postJson("/api/hub/delete", { name: n }); } catch (e) { console.warn(e); }
+      H.downloads = H.downloads.filter(d => d.name !== n || d.state !== "done");
+      if (H.listing) H.listing.options.forEach(o => { if (o.name === n || (o.kind === "folder" && o.name === n)) o.have = false; });
+      await loadModels(false);
+    }));
+  }
+
   function bindLiveLibrary() {
+    $("#hub-open")?.addEventListener("click", () => {
+      H.open = !H.open; render();
+      if (H.open) { $("#hub-q")?.focus(); pollHub(); if (!H.results) hubSearch(); }
+    });
+    bindHub();
+    if (!H.loaded) { H.loaded = true; pollHub(); }
     $("#add-place")?.addEventListener("click", () => {
       P.open = !P.open; P.error = null; render();
       if (P.open) { $("#place-path")?.focus(); if (!P.list) browsePlace(""); }
