@@ -3,8 +3,10 @@ package io.github.zzuegg.brainiac.experiments.attention;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.nn.ExpertChoiceMoe;
 import io.github.zzuegg.brainiac.experimental.nn.FineGrainedMoe;
+import io.github.zzuegg.brainiac.experimental.nn.ReluRoutedMoe;
 import io.github.zzuegg.brainiac.experimental.nn.SiluMlpExpert;
 import io.github.zzuegg.brainiac.experimental.nn.SparseUpcycling;
+import io.github.zzuegg.brainiac.experimental.nn.ZeroComputationMoe;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -32,6 +34,11 @@ import java.util.function.Supplier;
  *       re-initialized); against a MoE trained from scratch at the same total compute
  *       ({@code N / 2 + M} steps, as a top-2 step costs two dense steps). The dense row
  *       keeps training at half the per-step compute.</li>
+ *   <li><b>Compute per token</b>: {@link ReluRoutedMoe} (ReMoE, ReLU routing with an adaptive L1
+ *       penalty aiming at two experts per token on average) and {@link ZeroComputationMoe}
+ *       (MoE++, zero, copy and constant experts beside the FFN experts) against top-2
+ *       {@link FineGrainedMoe} and expert choice. Reported: validation MSE, load imbalance,
+ *       the mean and variance of FFN experts per token (the compute).</li>
  * </ul>
  */
 public final class MoeRefinements {
@@ -52,6 +59,19 @@ public final class MoeRefinements {
      * @param dropped the share of dropped token-choice assignments (0 elsewhere)
      */
     public record Row(String name, double validationMse, double loadImbalance, double dropped) {
+    }
+
+    /**
+     * One router's result with its compute per token.
+     *
+     * @param name the configuration
+     * @param validationMse the mean squared error on 1024 fresh samples
+     * @param loadImbalance the coefficient of variation of expert loads
+     * @param ffnPerToken the mean number of FFN experts a token ran through
+     * @param ffnVariance the variance of that number over tokens (0 for fixed top-k)
+     */
+    public record ComputeRow(String name, double validationMse, double loadImbalance, double ffnPerToken,
+            double ffnVariance) {
     }
 
     /** The regime teacher: directions and per-regime networks. */
@@ -160,6 +180,72 @@ public final class MoeRefinements {
     }
 
     /**
+     * Compares ReLU routing (ReMoE) and zero-computation experts (MoE++) with top-2 token
+     * choice and expert choice, all with 8 FFN experts of hidden width 16 and two FFN experts
+     * per token on average (MoE++ adds 2 zero, 1 copy and 1 constant expert to the pool).
+     *
+     * @param steps Adam steps on batches of 128
+     * @param seed the seed
+     * @return top-2, expert choice, ReMoE, MoE++
+     */
+    public static List<ComputeRow> computePerToken(int steps, long seed) {
+        List<ComputeRow> rows = new ArrayList<>();
+        FineGrainedMoe topK = FineGrainedMoe.of(WIDTH, 8, 0, 16, 2, new SplittableRandom(seed));
+        train(topK, steps, new SplittableRandom(seed));
+        rows.add(new ComputeRow("top-2 (FineGrainedMoe)", mse(topK), ExpertChoiceMoe.loadImbalance(topK.expertLoad()),
+                2, 0));
+        ExpertChoiceMoe ec = ExpertChoiceMoe.of(WIDTH, 8, 16, ExpertChoiceMoe.Routing.EXPERT_CHOICE, 2, 2f,
+                new SplittableRandom(seed));
+        train(ec, steps, new SplittableRandom(seed));
+        double ecMse = mse(ec);
+        double[] ecStats = meanVariance(ec.expertsPerToken());
+        rows.add(new ComputeRow("expert choice c=2", ecMse, ExpertChoiceMoe.loadImbalance(ec.expertLoad()), ecStats[0],
+                ecStats[1]));
+        ReluRoutedMoe remoe = ReluRoutedMoe.of(WIDTH, 8, 16, 2, new SplittableRandom(seed));
+        train(remoe, steps, new SplittableRandom(seed));
+        double reMse = mse(remoe);
+        double[] reStats = meanVariance(remoe.expertsPerToken());
+        rows.add(new ComputeRow("ReMoE (ReLU, k=2)", reMse, ExpertChoiceMoe.loadImbalance(remoe.expertLoad()),
+                reStats[0], reStats[1]));
+        ZeroComputationMoe plus = new ZeroComputationMoe(WIDTH, 8, 2, 1, 1, 16, 2, new SplittableRandom(seed));
+        train(plus, steps, new SplittableRandom(seed));
+        double plusMse = mse(plus);
+        int[] load = plus.expertLoad();
+        rows.add(new ComputeRow("MoE++ (8 FFN + 4 zero-compute)", plusMse,
+                ExpertChoiceMoe.loadImbalance(java.util.Arrays.copyOf(load, 8)), plus.ffnExpertsPerToken(), Double.NaN));
+        return rows;
+    }
+
+    private static double[] meanVariance(int[] values) {
+        double mean = 0;
+        for (int v : values) {
+            mean += v;
+        }
+        mean /= values.length;
+        double var = 0;
+        for (int v : values) {
+            var += (v - mean) * (v - mean);
+        }
+        return new double[] {mean, var / values.length};
+    }
+
+    /**
+     * Formats compute rows.
+     *
+     * @param rows the rows
+     * @return a text table
+     */
+    public static String computeTable(List<ComputeRow> rows) {
+        StringBuilder sb = new StringBuilder(String.format("%-32s %9s %9s %9s %9s%n", "model", "val MSE", "load CV",
+                "FFN/tok", "var"));
+        for (ComputeRow r : rows) {
+            sb.append(String.format("%-32s %9.4f %9.3f %9.3f %9.3f%n", r.name(), r.validationMse(), r.loadImbalance(),
+                    r.ffnPerToken(), r.ffnVariance()));
+        }
+        return sb.toString();
+    }
+
+    /**
      * The validation MSE of always predicting zero, the scale of the targets.
      *
      * @return the mean squared target
@@ -218,5 +304,6 @@ public final class MoeRefinements {
     public static void main(String[] args) {
         System.out.print(table(routers(800, 1)));
         System.out.print(table(upcycling(800, 400, 1)));
+        System.out.print(computeTable(computePerToken(800, 1)));
     }
 }

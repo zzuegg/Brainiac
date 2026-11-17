@@ -66,8 +66,13 @@ public final class PretrainedTokenizer implements Tokenizer {
             TokenizerParts.Model model, TokenizerParts.Decoder decoder, List<Object> single) implements Engine {
     }
 
+    /**
+     * SentencePiece's pipeline. With {@code firstOnly} (GGUF files) the dummy prefix goes, as
+     * transformers' non-legacy Llama tokenizers put it, only at the very start of the text,
+     * when that is not a control token such as {@code <s>} and not already a space.
+     */
     private record Spm(TokenizerParts.Model model, boolean dummyPrefix, boolean removeExtraSpaces, boolean escape,
-            int unk, int[] types, boolean addBos) implements Engine {
+            int unk, int[] types, boolean addBos, boolean firstOnly) implements Engine {
     }
 
     private PretrainedTokenizer(List<String> tokens, List<Added> added, Engine engine, Object config, Integer bos,
@@ -406,7 +411,7 @@ public final class PretrainedTokenizer implements Tokenizer {
         Spm engine = new Spm(model, !Boolean.FALSE.equals(spec.get("add_dummy_prefix")),
                 !Boolean.FALSE.equals(spec.get("remove_extra_whitespaces")),
                 !Boolean.FALSE.equals(spec.get("escape_whitespaces")), unk, types,
-                !Boolean.FALSE.equals(spec.get("add_bos")));
+                !Boolean.FALSE.equals(spec.get("add_bos")), Boolean.TRUE.equals(spec.get("prefix_first_only")));
         int bos = (int) Json.integer(spec, "bos_id", -1);
         int eos = (int) Json.integer(spec, "eos_id", -1);
         for (int i = 0; i < types.length; i++) {
@@ -456,6 +461,7 @@ public final class PretrainedTokenizer implements Tokenizer {
                 spec.put("escape_whitespaces", true);
                 spec.put("add_bos", !Boolean.FALSE.equals(meta.get("tokenizer.ggml.add_bos_token")));
                 spec.put("parse_control", true);
+                spec.put("prefix_first_only", true);
                 if (template != null) {
                     spec.put("chat_template", template);
                 }
@@ -713,7 +719,29 @@ public final class PretrainedTokenizer implements Tokenizer {
     public int[] encode(String text, boolean addSpecialTokens) {
         Objects.requireNonNull(text, "text");
         List<Integer> out = new ArrayList<>();
-        if (engine instanceof Spm spm) {
+        if (engine instanceof Spm spm && spm.firstOnly) {
+            // the prefix belongs to the text's start: before plain text or a user-defined
+            // piece (as SentencePiece puts it), but not before a control token such as <s>
+            boolean prefix = spm.dummyPrefix;
+            for (Object p : splitAdded(text, true)) {
+                if (p instanceof Integer id) {
+                    if (prefix && !special.contains(id)) {
+                        spm.model.encode(spm.escape ? "▁" : " ", out);
+                    }
+                    out.add(id);
+                } else {
+                    String piece = (String) p;
+                    if (prefix && !piece.startsWith(" ")) {
+                        piece = " " + piece;
+                    }
+                    spm.model.encode(spm.escape ? piece.replace(' ', '▁') : piece, out);
+                }
+                prefix = false;
+            }
+            if (addSpecialTokens && spm.addBos && bos != null) {
+                out.addFirst(bos);
+            }
+        } else if (engine instanceof Spm spm) {
             String norm = normalizeSpm(spm, text);
             for (Object piece : splitAdded(norm, true)) {
                 if (piece instanceof Integer id) {

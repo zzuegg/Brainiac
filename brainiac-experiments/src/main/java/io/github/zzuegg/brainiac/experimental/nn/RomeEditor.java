@@ -71,7 +71,7 @@ public final class RomeEditor {
         return c;
     }
 
-    private static Dense dense(Model model, int layer) {
+    static Dense dense(Model model, int layer) {
         Layer l = model.layers().get(layer);
         if (!(l instanceof Dense d)) {
             throw new IllegalArgumentException("layer " + layer + " is not a dense layer: " + l);
@@ -79,7 +79,7 @@ public final class RomeEditor {
         return d;
     }
 
-    private static float[] key(Model model, int layer, Tensor inputs) {
+    static float[] key(Model model, int layer, Tensor inputs) {
         Var x = Var.of(inputs);
         if (layer > 0) {
             x = LayerHooks.trace(model, x).get(layer - 1);
@@ -110,21 +110,7 @@ public final class RomeEditor {
                 old[j] += k[i] * w[i * out + j];
             }
         }
-        // find v*: the layer value that makes the rest of the model answer the target
-        Var v = Var.param(Tensor.of(Shape.of(1, out), old.clone()));
-        Optimizer opt = Optimizer.adam(0.05f);
-        Tensor label = Tensor.of(Shape.of(1), new float[] {target});
-        Var bias = dense.bias();
-        Tensor oldT = Tensor.of(Shape.of(1, out), old);
-        for (int s = 0; s < steps; s++) {
-            Var h = dense.activation().forward(bias == null ? v : v.add(bias.value()));
-            Var logits = LayerHooks.resume(model, layer, h);
-            Var loss = Functional.crossEntropy(logits.add(1e-6f).log(), label)
-                    .add(v.sub(oldT).square().mean().mul(1e-3f));
-            loss.backward();
-            opt.step(List.of(v));
-        }
-        float[] vStar = v.value().to(DType.FLOAT32).toArray();
+        float[] vStar = targetValue(model, layer, old, target, steps);
         // rank-one update: W += (C^-1 k) (v* - k W)^T / (k^T C^-1 k)
         double[] ck = solve(covariance, k);
         double denom = 0;
@@ -139,6 +125,36 @@ public final class RomeEditor {
         Tensor nw = Tensor.of(dense.weight().shape(), w, dense.weight().value().device());
         dense.weight().assign(nw.to(dense.weight().value().dtype()));
         return new Edit(k, old, vStar);
+    }
+
+    /**
+     * The layer value {@code v*} that makes the rest of the model answer {@code target}: a
+     * small optimisation from the current value, with a weak pull back towards it.
+     *
+     * @param model a sequential classifier with probability outputs
+     * @param layer the index of the dense layer
+     * @param old the layer's current value for the subject (before bias and activation)
+     * @param target the class wanted
+     * @param steps optimisation steps
+     * @return the value
+     */
+    public static float[] targetValue(Model model, int layer, float[] old, int target, int steps) {
+        Dense dense = dense(model, layer);
+        int out = old.length;
+        Var v = Var.param(Tensor.of(Shape.of(1, out), old.clone()));
+        Optimizer opt = Optimizer.adam(0.05f);
+        Tensor label = Tensor.of(Shape.of(1), new float[] {target});
+        Var bias = dense.bias();
+        Tensor oldT = Tensor.of(Shape.of(1, out), old);
+        for (int s = 0; s < steps; s++) {
+            Var h = dense.activation().forward(bias == null ? v : v.add(bias.value()));
+            Var logits = LayerHooks.resume(model, layer, h);
+            Var loss = Functional.crossEntropy(logits.add(1e-6f).log(), label)
+                    .add(v.sub(oldT).square().mean().mul(1e-3f));
+            loss.backward();
+            opt.step(List.of(v));
+        }
+        return v.value().to(DType.FLOAT32).toArray();
     }
 
     /** Solves {@code A x = b} in double precision. */

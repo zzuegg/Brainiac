@@ -26,6 +26,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.attention;
     exports io.github.zzuegg.brainiac.experiments.context;
     exports io.github.zzuegg.brainiac.experiments.control;
+    exports io.github.zzuegg.brainiac.experiments.data;
     exports io.github.zzuegg.brainiac.experiments.evolution;
     exports io.github.zzuegg.brainiac.experiments.exotic;
     exports io.github.zzuegg.brainiac.experiments.generative;
@@ -37,6 +38,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.multimodal;
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.reasoning;
+    exports io.github.zzuegg.brainiac.experiments.safety;
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
     exports io.github.zzuegg.brainiac.experiments.sequence;
     exports io.github.zzuegg.brainiac.experiments.techniques;

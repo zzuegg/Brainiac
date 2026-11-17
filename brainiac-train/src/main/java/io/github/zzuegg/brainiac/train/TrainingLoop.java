@@ -47,6 +47,10 @@ public final class TrainingLoop {
     private boolean stepped;
     private Tensor lastNorm;
     private java.util.function.Consumer<List<Var>> beforeStep;
+    private float lossScale;
+    private int growthInterval;
+    private int goodSteps;
+    private int skipped;
 
     private TrainingLoop(Map<String, Var> parameters, Optimizer optimizer) {
         this.parameters = new LinkedHashMap<>(parameters);
@@ -102,6 +106,36 @@ public final class TrainingLoop {
     public TrainingLoop clipGradientNorm(float maxNorm) {
         this.clipNorm = maxNorm;
         return this;
+    }
+
+    /**
+     * Dynamic loss scaling for training in float16, as {@code torch.amp.GradScaler}: each loss
+     * is multiplied by a scale before back-propagation so small gradients do not flush to
+     * zero, and the gradients are divided by it again before clipping and the step. A step
+     * whose gradients hold an infinity or NaN is skipped and halves the scale; after
+     * {@code growthInterval} good steps in a row the scale doubles.
+     *
+     * @param initialScale the first scale, such as {@code 65536}
+     * @param growthInterval good steps before the scale grows, such as {@code 2000}
+     * @return this loop
+     */
+    public TrainingLoop lossScaling(float initialScale, int growthInterval) {
+        if (!(initialScale > 0) || growthInterval < 1) {
+            throw new IllegalArgumentException("need a positive scale and growth interval");
+        }
+        this.lossScale = initialScale;
+        this.growthInterval = growthInterval;
+        return this;
+    }
+
+    /** @return the current loss scale, or 0 without {@link #lossScaling} */
+    public float lossScale() {
+        return lossScale;
+    }
+
+    /** @return how many steps loss scaling skipped for infinite or NaN gradients */
+    public int skippedSteps() {
+        return skipped;
     }
 
     /**
@@ -182,7 +216,8 @@ public final class TrainingLoop {
     private float run(Supplier<Var> loss) {
         Var[] l = new Var[1];
         List<Tensor> work = Tensor.created(() -> l[0] = loss.get());
-        Var scaled = accumulate == 1 ? l[0] : l[0].div(accumulate);
+        float factor = (lossScale > 0 ? lossScale : 1) / accumulate;
+        Var scaled = factor == 1 ? l[0] : l[0].mul(factor);
         Tensor value = l[0].value();
         scaled.backward();
         Tensor.evaluate(gradients());
@@ -197,8 +232,10 @@ public final class TrainingLoop {
         stepped = false;
         if (micro == accumulate) {
             micro = 0;
-            update();
-            stepped = true;
+            stepped = lossScale <= 0 || unscale();
+            if (stepped) {
+                update();
+            }
         }
         return out;
     }
@@ -230,6 +267,58 @@ public final class TrainingLoop {
             }
         }
         return g;
+    }
+
+    /**
+     * Divides the gradients by the loss scale and adjusts it.
+     *
+     * @return whether they are all finite, so the step goes ahead
+     */
+    private boolean unscale() {
+        List<Tensor> grads = gradients();
+        if (grads.isEmpty()) {
+            return true;
+        }
+        Tensor[] check = new Tensor[1];
+        List<Tensor> unscaled = new ArrayList<>();
+        List<Tensor> work = Tensor.created(() -> {
+            Tensor sum = null;
+            for (Tensor g : grads) {
+                // 0 for finite values, NaN for an infinity or NaN
+                Tensor s = g.to(io.github.zzuegg.brainiac.tensor.DType.FLOAT32).mul(0f).sum();
+                sum = sum == null ? s : sum.add(s);
+            }
+            check[0] = sum;
+            for (Var p : params) {
+                if (p.grad() != null) {
+                    Tensor g = p.grad().mul(1f / lossScale);
+                    p.setGrad(g);
+                    unscaled.add(g);
+                }
+            }
+        });
+        List<Tensor> keep = new ArrayList<>(unscaled);
+        keep.add(check[0]);
+        Tensor.evaluate(keep);
+        boolean finite = Float.isFinite(check[0].item());
+        work.addAll(grads);
+        work.add(check[0]);
+        keep.remove(check[0]);
+        Tensor.release(work, keep);
+        if (!finite) {
+            for (Var p : params) {
+                p.zeroGrad();
+            }
+            lossScale *= 0.5f;
+            goodSteps = 0;
+            skipped++;
+            return false;
+        }
+        if (++goodSteps == growthInterval) {
+            lossScale *= 2;
+            goodSteps = 0;
+        }
+        return true;
     }
 
     private void update() {

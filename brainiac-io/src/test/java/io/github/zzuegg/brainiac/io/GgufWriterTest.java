@@ -121,7 +121,7 @@ class GgufWriterTest {
     // not gpt2-bpe.json: GGUF has no add_prefix_space; and texts without leading or doubled
     // spaces, which GGUF SentencePiece models keep (sp-bpe.model removes them)
     @ValueSource(strings = {"bytelevel-bpe.json", "sp-bpe.model", "vocab.gguf", "vocab-llama.gguf", "metaspace-bpe.json",
-        "llama-legacy-true"})
+        "llama-legacy-true", "llama-legacy-false"})
     void tokenizersSurviveAGgufRoundTrip(String name) throws IOException {
         PretrainedTokenizer tok = PretrainedTokenizer.load(name.contains(".") ? fixture(name) : folder(name));
         Path f = dir.resolve("tok.gguf");
@@ -137,5 +137,29 @@ class GgufWriterTest {
             assertArrayEquals(tok.encode(text, false), back.encode(text, false), name + ": " + text);
             assertEquals(tok.decode(tok.encode(text)), back.decode(back.encode(text)), name + ": " + text);
         }
+    }
+
+    @Test
+    void ggufSentencePieceTokenizersPrefixOnlyTheStart() throws IOException {
+        // as transformers' non-legacy Llama tokenizers (Mistral's chat template, say): no "▁"
+        // before a leading <s> or after a control token, none added to a leading space
+        PretrainedTokenizer tok = PretrainedTokenizer.load(folder("llama-legacy-false"));
+        Path f = dir.resolve("tok.gguf");
+        GgufWriter.write(f, tok.ggufMetadata(), Map.of(), false);
+        PretrainedTokenizer back;
+        try (Gguf g = Gguf.open(f)) {
+            back = PretrainedTokenizer.fromGguf(g);
+        }
+        for (String text : new String[] {"Hello world", " Hello", "<s>[INST] Hi[/INST]",
+            "<s>[INST] Hi [/INST] Ok</s>[INST] Again[/INST]"}) {
+            assertArrayEquals(tok.encode(text), back.encode(text), text);
+        }
+        // transformers' ids for the same tokenizer
+        assertArrayEquals(new int[] {355, 295, 321, 466, 331}, back.encode(" Hello"));
+        assertArrayEquals(new int[] {1, 314, 627, 306, 307, 315, 355, 295, 325, 314, 272, 627, 306, 307, 315},
+                back.encode("<s>[INST] Hi[/INST]"));
+        assertArrayEquals(new int[] {1, 314, 627, 306, 307, 315, 355, 295, 325, 355, 314, 272, 627, 306, 307, 315, 355,
+            302, 327, 2, 314, 627, 306, 307, 315, 355, 288, 323, 317, 378, 314, 272, 627, 306, 307, 315},
+                back.encode("<s>[INST] Hi [/INST] Ok</s>[INST] Again[/INST]"));
     }
 }

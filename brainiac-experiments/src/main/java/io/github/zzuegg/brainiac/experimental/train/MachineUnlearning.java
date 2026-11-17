@@ -3,8 +3,10 @@ package io.github.zzuegg.brainiac.experimental.train;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.data.Batch;
 import io.github.zzuegg.brainiac.data.Dataset;
+import io.github.zzuegg.brainiac.experimental.nn.LayerHooks;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
@@ -27,7 +29,19 @@ import java.util.function.Supplier;
  *       since ascent is unbounded;</li>
  *   <li>{@link Method#RANDOM_LABELS}: the loss towards a random wrong class, a bounded
  *       alternative (Graves et al. 2021, "Amnesiac Machine Learning",
- *       <a href="https://arxiv.org/abs/2010.10981">arXiv:2010.10981</a>).</li>
+ *       <a href="https://arxiv.org/abs/2010.10981">arXiv:2010.10981</a>);</li>
+ *   <li>{@link Method#NPO}: negative preference optimisation, {@code (2/β) softplus(β (log
+ *       p - log p_ref))} against a frozen copy of the starting model, a bounded ascent that
+ *       slows down once a sample is forgotten (Zhang et al. 2024,
+ *       <a href="https://arxiv.org/abs/2404.05868">arXiv:2404.05868</a>);</li>
+ *   <li>{@link Method#SIM_NPO}: the reference-free version, {@code (2/β) softplus(β log p +
+ *       γ)} (Fan et al. 2024, <a href="https://arxiv.org/abs/2410.07163">arXiv:2410.07163</a>;
+ *       a classifier output has length 1, so there is no length normalisation);</li>
+ *   <li>{@link Method#RMU}: representation misdirection, which pushes the forget samples'
+ *       activations at {@link #rmuLayer} towards a fixed random direction scaled by
+ *       {@link #rmuScale}, while the retain term keeps the retain samples' activations at
+ *       that layer equal to the frozen copy's, in place of the retain loss (Li et al. 2024,
+ *       "The WMDP Benchmark", <a href="https://arxiv.org/abs/2403.03218">arXiv:2403.03218</a>).</li>
  * </ul>
  *
  * <p>{@link #membershipAuc} is a loss-threshold membership-inference attack (Yeom et al.
@@ -43,7 +57,13 @@ public final class MachineUnlearning {
         /** Gradient ascent on the forget loss. */
         GRADIENT_ASCENT,
         /** Training the forget samples towards random wrong classes. */
-        RANDOM_LABELS
+        RANDOM_LABELS,
+        /** Negative preference optimisation against the starting model. */
+        NPO,
+        /** Reference-free negative preference optimisation. */
+        SIM_NPO,
+        /** Representation misdirection towards a random direction. */
+        RMU
     }
 
     /**
@@ -65,6 +85,10 @@ public final class MachineUnlearning {
     private double retainWeight = 1;
     private double ceiling = 5;
     private long seed = 1;
+    private double beta = 0.5;
+    private double gamma = 0;
+    private int rmuLayer = 0;
+    private double rmuScale = 5;
 
     private MachineUnlearning(Model model, Loss loss) {
         this.model = Objects.requireNonNull(model);
@@ -137,6 +161,42 @@ public final class MachineUnlearning {
     }
 
     /**
+     * @param b the inverse temperature of {@link Method#NPO} and {@link Method#SIM_NPO}
+     * @return this
+     */
+    public MachineUnlearning beta(double b) {
+        this.beta = b;
+        return this;
+    }
+
+    /**
+     * @param g the margin of {@link Method#SIM_NPO}
+     * @return this
+     */
+    public MachineUnlearning gamma(double g) {
+        this.gamma = g;
+        return this;
+    }
+
+    /**
+     * @param layer the step whose output {@link Method#RMU} misdirects
+     * @return this
+     */
+    public MachineUnlearning rmuLayer(int layer) {
+        this.rmuLayer = layer;
+        return this;
+    }
+
+    /**
+     * @param c the norm of {@link Method#RMU}'s random target activation
+     * @return this
+     */
+    public MachineUnlearning rmuScale(double c) {
+        this.rmuScale = c;
+        return this;
+    }
+
+    /**
      * @param s the seed for batch order and random labels
      * @return this
      */
@@ -156,6 +216,9 @@ public final class MachineUnlearning {
         Optimizer opt = optimizer.get();
         SplittableRandom r = new SplittableRandom(seed);
         List<Var> params = model.parameters();
+        Model reference = method == Method.NPO || method == Method.RMU ? model.copy(params.get(0).value().device())
+                : null;
+        Tensor direction = null;
         List<Step> history = new ArrayList<>();
         List<Batch> fb = new ArrayList<>();
         List<Batch> rb = new ArrayList<>();
@@ -168,20 +231,63 @@ public final class MachineUnlearning {
             }
             Batch f = fb.removeLast();
             Batch k = rb.removeLast();
+            if (method == Method.RMU) {
+                Var hf = LayerHooks.trace(model, Var.of(f.features())).get(rmuLayer);
+                if (direction == null) {
+                    direction = randomDirection(hf.shape().dim(-1), rmuScale, r);
+                }
+                Var forgetTerm = hf.sub(direction).square().mean();
+                Var hr = LayerHooks.trace(model, Var.of(k.features())).get(rmuLayer);
+                Tensor hrRef = LayerHooks.trace(reference, Var.of(k.features())).get(rmuLayer).value();
+                Var retainTerm = hr.sub(hrRef).square().mean();
+                forgetTerm.add(retainTerm.mul((float) retainWeight)).backward();
+                opt.step(params);
+                history.add(new Step(s, forgetTerm.value().item(), retainTerm.value().item()));
+                continue;
+            }
             Var pf = model.forward(Var.of(f.features()), true);
             Var lf = loss.compute(pf, f.targets());
             double forgetLoss = lf.value().item();
             if (method == Method.GRADIENT_ASCENT && forgetLoss > ceiling) {
                 break;
             }
-            Var term = method == Method.GRADIENT_ASCENT ? lf.neg()
-                    : loss.compute(pf, randomWrong(f.targets(), r));
+            Var term = switch (method) {
+                case GRADIENT_ASCENT -> lf.neg();
+                case RANDOM_LABELS -> loss.compute(pf, randomWrong(f.targets(), r));
+                case NPO -> {
+                    Tensor refLogP = targetLogProb(reference.forward(Var.of(f.features()), false), f.targets())
+                            .value();
+                    yield targetLogProb(pf, f.targets()).sub(refLogP).mul((float) beta).softplus()
+                            .mul((float) (2 / beta)).mean();
+                }
+                case SIM_NPO -> targetLogProb(pf, f.targets()).mul((float) beta).add((float) gamma).softplus()
+                        .mul((float) (2 / beta)).mean();
+                case RMU -> throw new AssertionError();
+            };
             Var lr = loss.compute(model.forward(Var.of(k.features()), true), k.targets());
             term.add(lr.mul((float) retainWeight)).backward();
             opt.step(params);
             history.add(new Step(s, forgetLoss, lr.value().item()));
         }
         return history;
+    }
+
+    /** {@code log p(target)} per row, for probability outputs and one-hot targets. */
+    private static Var targetLogProb(Var probabilities, Tensor oneHot) {
+        return probabilities.mul(oneHot).sum(-1, false).add(1e-7f).log();
+    }
+
+    private static Tensor randomDirection(int d, double scale, SplittableRandom r) {
+        float[] u = new float[d];
+        double n = 0;
+        for (int i = 0; i < d; i++) {
+            u[i] = (float) r.nextDouble();
+            n += u[i] * (double) u[i];
+        }
+        for (int i = 0; i < d; i++) {
+            u[i] = (float) (u[i] / Math.sqrt(n) * scale);
+        }
+        return Tensor.of(Shape.of(d), u);
     }
 
     private static Tensor randomWrong(Tensor oneHot, SplittableRandom r) {
