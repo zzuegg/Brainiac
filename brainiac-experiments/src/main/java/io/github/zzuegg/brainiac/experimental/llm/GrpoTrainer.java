@@ -239,12 +239,9 @@ public final class GrpoTrainer {
         if (endToken < 0) {
             throw new IllegalStateException("call completions(maxTokens, endToken) first");
         }
-        List<int[]> ps = new ArrayList<>();
-        List<int[]> cs = new ArrayList<>();
-        List<Float> adv = new ArrayList<>();
-        double rewardSum = 0;
-        int sampled = 0;
-        int used = 0;
+        List<int[]> groupPrompts = new ArrayList<>();
+        List<int[][]> groups = new ArrayList<>();
+        List<float[]> rewards = new ArrayList<>();
         for (int p = 0; p < prompts; p++) {
             int[] prompt = promptSource.apply(random);
             int[][] group = new int[groupSize][];
@@ -253,7 +250,36 @@ public final class GrpoTrainer {
             float[] r = new float[groupSize];
             for (int g = 0; g < groupSize; g++) {
                 r[g] = reward.score(prompt, outs[g]);
-                rewardSum += r[g];
+            }
+            groupPrompts.add(prompt);
+            groups.add(outs);
+            rewards.add(r);
+        }
+        return update(groupPrompts, groups, rewards);
+    }
+
+    /**
+     * Updates the policy from groups that were already sampled and scored, for loops that
+     * sample themselves (self-play, where the reward of a group depends on other samples).
+     *
+     * @param groupPrompts one prompt per group
+     * @param groups the completions of each group, sampled from the current policy
+     * @param groupRewards the rewards of each group's completions
+     * @return what happened
+     */
+    public Stats update(List<int[]> groupPrompts, List<int[][]> groups, List<float[]> groupRewards) {
+        List<int[]> ps = new ArrayList<>();
+        List<int[]> cs = new ArrayList<>();
+        List<Float> adv = new ArrayList<>();
+        double rewardSum = 0;
+        int sampled = 0;
+        int used = 0;
+        for (int p = 0; p < groups.size(); p++) {
+            int[] prompt = groupPrompts.get(p);
+            int[][] outs = groups.get(p);
+            float[] r = groupRewards.get(p);
+            for (float x : r) {
+                rewardSum += x;
                 sampled++;
             }
             float[] a = advantages(r, variant != Variant.DR_GRPO);
@@ -265,7 +291,7 @@ public final class GrpoTrainer {
                 continue;   // dynamic sampling: no learning signal in this group
             }
             used++;
-            for (int g = 0; g < groupSize; g++) {
+            for (int g = 0; g < outs.length; g++) {
                 if (outs[g].length == 0) {
                     continue;
                 }
@@ -275,7 +301,7 @@ public final class GrpoTrainer {
             }
         }
         if (cs.isEmpty()) {
-            return new Stats(rewardSum / sampled, 0, 0, 0);
+            return new Stats(sampled == 0 ? 0 : rewardSum / sampled, 0, 0, 0);
         }
         int tokens = WindowLm.totalTokens(cs);
         float[] tokenAdv = new float[tokens];
