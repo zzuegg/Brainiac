@@ -137,6 +137,11 @@ public abstract class StatefulOptimizer implements Optimizer {
     }
 
     @Override
+    public void forget(Var parameter) {
+        state.remove(parameter);
+    }
+
+    @Override
     public Map<String, Tensor> state(List<Var> parameters) {
         Map<String, Tensor> out = new LinkedHashMap<>();
         out.put("step", Tensor.of(Shape.of(1), steps));
