@@ -112,6 +112,19 @@ public interface Optimizer {
     }
 
     /**
+     * Runs an optimizer on the CPU (ZeRO-offload): its state and a master copy of the
+     * weights live in host memory, and each step moves the gradients there and the new
+     * weights back. Frees GPU memory for larger models at the cost of two transfers per
+     * step. The master copy also keeps float32 weights for models trained in float16.
+     *
+     * @param optimizer the optimizer to run on the host, a new one
+     * @return the offloaded optimizer
+     */
+    static Optimizer offloaded(Optimizer optimizer) {
+        return new Offloaded(optimizer, io.github.zzuegg.brainiac.tensor.Device.cpu());
+    }
+
+    /**
      * Adam with 8-bit state (Dettmers et al. 2022): the same steps as {@link #adam(float)}
      * from averages kept as 8-bit levels with a scale per block of 256, a quarter of the
      * memory. Small parameters (under 4096 values) keep float32 state.

@@ -92,6 +92,25 @@ class Adam8bitTest {
     }
 
     @Test
+    void offloadedAdamMatchesAdamOnTheDevice(@TempDir Path dir) {
+        Map<String, Var> here = model();
+        float[] a = train(here, TrainingLoop.of(here, Optimizer.adamW(3e-3f, 0.01f)), 20);
+        Map<String, Var> away = model();
+        TrainingLoop loop = TrainingLoop.of(away, Optimizer.offloaded(Optimizer.adamW(3e-3f, 0.01f)));
+        float[] b = train(away, loop, 10);
+        loop.save(dir);
+        Map<String, Var> resumed = model();
+        TrainingLoop again = TrainingLoop.of(resumed, Optimizer.offloaded(Optimizer.adamW(3e-3f, 0.01f)));
+        again.resume(dir);
+        train(resumed, again, 10);
+        assertEquals(a[9], b[9], 1e-5f * a[0] + 1e-6f);
+        for (String k : here.keySet()) {
+            assertEquals(DEVICE, resumed.get(k).value().device());
+            assertArrayEquals(here.get(k).value().toArray(), resumed.get(k).value().toArray(), 2e-5f, k);
+        }
+    }
+
+    @Test
     void choosesBlocksThatFit() {
         assertEquals(0, Adam8bit.blockRows(4095));
         assertEquals(256, Adam8bit.blockRows(32 * 256));
