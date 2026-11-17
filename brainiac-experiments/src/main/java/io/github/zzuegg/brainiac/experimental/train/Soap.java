@@ -1,7 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.tensor.SymmetricEigen;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 /**
@@ -59,8 +59,8 @@ public final class Soap extends SlotOptimizer {
             s[2] = s[2] == null ? gg : s[2].mul(beta2).add(gg);
             s[3] = s[3] == null ? ggT : s[3].mul(beta2).add(ggT);
             if (s[4] == null || (t - 1) % updateEvery == 0) {
-                s[4] = SymmetricEigen.of(s[2]).basis();
-                s[5] = SymmetricEigen.of(s[3]).basis();
+                s[4] = Linalg.eigh(s[2])[1];
+                s[5] = Linalg.eigh(s[3])[1];
             }
             rotatedG = s[4].transpose().matmul(g).matmul(s[5]);
             rotatedM = s[4].transpose().matmul(m).matmul(s[5]);

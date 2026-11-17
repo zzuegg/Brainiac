@@ -53,6 +53,12 @@ public final class Lookahead implements Optimizer {
     }
 
     @Override
+    public void forget(Var parameter) {
+        slow.remove(parameter);
+        inner.forget(parameter);
+    }
+
+    @Override
     public float learningRate() {
         return inner.learningRate();
     }

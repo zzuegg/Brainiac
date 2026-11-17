@@ -62,6 +62,8 @@ public final class LoopedTransformer implements Layer {
     private final Var haltBias;
     private final Tensor tickEmbedding;
     private Var lastPonderLoss;
+    private Var lastAuxiliary;
+    private float ponderCost;
     private float[] lastTicks;
     private List<Var> lastStates = List.of();
     private List<Var> lastDistribution = List.of();
@@ -126,6 +128,25 @@ public final class LoopedTransformer implements Layer {
     /** @return the ponder cost (ACT) or KL to the geometric prior (PonderNet) of the last pass */
     public Var ponderLoss() {
         return lastPonderLoss;
+    }
+
+    /**
+     * Sets the weight of {@link #ponderLoss()} in this layer's {@link #auxiliaryLoss()}, which
+     * the core trainer adds to the loss.
+     *
+     * @param weight the factor, for example {@code 0.001} for ACT's time penalty; 0 (the
+     *     default) reports none
+     * @return this layer
+     */
+    public LoopedTransformer ponderCost(float weight) {
+        this.ponderCost = weight;
+        return this;
+    }
+
+    /** @return {@code ponderCost * ponderLoss()} of the last training pass, or {@code null} */
+    @Override
+    public Var auxiliaryLoss() {
+        return lastAuxiliary;
     }
 
     /** @return the state after each tick of the last pass, each {@code [b, t, d]} */
@@ -230,6 +251,7 @@ public final class LoopedTransformer implements Layer {
             }
             lastPonderLoss = kl.mean();
         }
+        lastAuxiliary = training && ponderCost != 0 ? lastPonderLoss.mul(ponderCost) : null;
         lastTicks = ticks;
         lastStates = states;
         lastDistribution = dist;

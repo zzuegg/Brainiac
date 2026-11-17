@@ -7,6 +7,7 @@ import io.github.zzuegg.brainiac.rl.Learner;
 import io.github.zzuegg.brainiac.rl.RlListener;
 import io.github.zzuegg.brainiac.rl.RlResult;
 import io.github.zzuegg.brainiac.rl.Space;
+import io.github.zzuegg.brainiac.rl.Tracker;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -227,7 +228,7 @@ public final class MuZeroLite implements Learner {
             throw new IllegalArgumentException("MuZeroLite needs " + obsDims + " observation values and "
                     + actions + " discrete actions");
         }
-        EpisodeRecorder recorder = new EpisodeRecorder(listener);
+        Tracker recorder = new Tracker(listener);
         float[] obs = env.reset(random.split());
         Trajectory t = new Trajectory();
         while (recorder.steps() < steps) {

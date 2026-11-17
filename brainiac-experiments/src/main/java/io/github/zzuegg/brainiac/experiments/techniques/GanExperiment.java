@@ -14,7 +14,7 @@ import java.util.SplittableRandom;
 /**
  * A Wasserstein GAN on a 2-D toy distribution (two Gaussian blobs), with the critic's
  * 1-Lipschitz constraint enforced either by the WGAN-GP gradient penalty
- * ({@link GradientPenalty#wgan}, computed without second-order autograd) or by spectral
+ * ({@link GradientPenalty#wgan}, by double backpropagation) or by spectral
  * normalization of every critic layer ({@link SpectralNormDense}). The critic takes five
  * steps per generator step, as in the WGAN-GP paper, with Adam(1e-3, 0.5, 0.9).
  *
@@ -85,7 +85,7 @@ public final class GanExperiment {
                 Tensor fake = generator.forward(Var.of(noise(64, r))).value();
                 Var loss = critic.forward(Var.of(fake)).mean().sub(critic.forward(Var.of(real)).mean());
                 if (constraint == Constraint.GRADIENT_PENALTY) {
-                    loss = loss.add(GradientPenalty.wgan(critic::forward, critic.parameters(), real, fake, r).mul(10f));
+                    loss = loss.add(GradientPenalty.wgan(critic::forward, real, fake, r).mul(10f));
                 }
                 loss.backward();
                 cOpt.step(critic.parameters());
@@ -121,13 +121,13 @@ public final class GanExperiment {
             Tensor fake = noise(128, r);
             Tensor real = noise(128, r).add(offset);
             critic.forward(Var.of(fake)).mean().sub(critic.forward(Var.of(real)).mean())
-                    .add(GradientPenalty.wgan(critic::forward, critic.parameters(), real, fake, r).mul(10f)).backward();
+                    .add(GradientPenalty.wgan(critic::forward, real, fake, r).mul(10f)).backward();
             opt.step(critic.parameters());
         }
         Tensor fake = noise(2048, r);
         Tensor real = noise(2048, r).add(offset);
         float estimate = critic.forward(Var.of(real)).mean().sub(critic.forward(Var.of(fake)).mean()).value().item();
-        float norm = GradientPenalty.gradientNorm(critic::forward, critic.parameters(), real, 1e-2f).mean().value()
+        float norm = GradientPenalty.gradientNorm(critic::forward, real).mean().value()
                 .item();
         return new float[] {estimate, norm};
     }

@@ -104,7 +104,8 @@ public final class CemPlanner implements Agent {
     }
 
     /** Forgets the warm-start plan, for a new episode. */
-    public void reset() {
+    @Override
+    public void startEpisode() {
         plan = null;
     }
 

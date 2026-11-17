@@ -2,7 +2,6 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.GradCheck;
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.autograd.Trig;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import org.junit.jupiter.api.Test;
@@ -55,7 +54,7 @@ class DiffractiveLayerTest {
         // the layer is mask then propagation; check that composite with the phases as input
         Tensor phi = Tensor.uniform(Shape.of(4, 4, 1), 0, 6, new SplittableRandom(7));
         GradCheck.Result g = GradCheck.check(v -> DiffractiveLayer.intensity(DiffractiveLayer.propagate(
-                DiffractiveLayer.complexMultiply(Var.of(f), Var.concat(2, Trig.cos(v.get(0)), Trig.sin(v.get(0)))),
+                DiffractiveLayer.complexMultiply(Var.of(f), Var.concat(2, v.get(0).cos(), v.get(0).sin())),
                 1.2, 2)).mul(weights).sum(), List.of(phi), 1e-3f, 2e-2f);
         assertTrue(g.passed(), g.toString());
         GradCheck.Result h = GradCheck.check(v -> DiffractiveLayer.intensity(l.forward(v.get(0))).mul(weights).sum(),

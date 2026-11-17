@@ -56,7 +56,7 @@ public final class BytePatchPooling {
         for (int i = 0; i < patches; i++) {
             counts[i] = 1 / counts[i];
         }
-        Var sums = MixerOps.scatterAdd(bytes, 0, MixerOps.ids(patchIds), patches);
+        Var sums = bytes.scatterAdd(0, MixerOps.ids(patchIds), patches);
         return sums.mul(Tensor.of(Shape.of(patches, 1), counts)).matmul(down);
     }
 

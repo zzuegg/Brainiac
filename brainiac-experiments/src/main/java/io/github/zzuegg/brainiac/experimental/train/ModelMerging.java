@@ -1,5 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
+import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
@@ -27,7 +29,10 @@ import java.util.function.ToDoubleFunction;
  *       only if the held-out score does not drop.</li>
  * </ul>
  *
- * <p>Merging also works as a crossover operator for neuroevolution.
+ * <p>Merging also works as a crossover operator for neuroevolution of trained networks:
+ * two children of one ancestor combine what each learned
+ * ({@link #crossover(List, List, List, double)}). {@link #ties(Model, List, double, float)}
+ * merges whole models.
  */
 public final class ModelMerging {
 
@@ -100,6 +105,40 @@ public final class ModelMerging {
                 merged[e] = count == 0 ? 0 : (float) (sum / count);
             }
             out.add(base.get(i).add(Tensor.of(base.get(i).shape(), merged).mul(scale)));
+        }
+        return out;
+    }
+
+    /**
+     * TIES-merging as a crossover: combines two descendants of a common ancestor.
+     *
+     * @param ancestor the common ancestor's weights
+     * @param a one parent's weights
+     * @param b the other parent's weights
+     * @param density the share of each parent's changes kept
+     * @return the child's weights
+     */
+    public static List<Tensor> crossover(List<Tensor> ancestor, List<Tensor> a, List<Tensor> b, double density) {
+        return ties(ancestor, List.of(a, b), density, 1);
+    }
+
+    /**
+     * TIES-merges whole models with the same architecture into a copy of the base.
+     *
+     * @param base the base model
+     * @param finetuned models fine-tuned from it
+     * @param density the share of each task vector's entries kept
+     * @param scale the factor on the merged vector
+     * @return a new model with the merged weights
+     */
+    public static Model ties(Model base, List<Model> finetuned, double density, float scale) {
+        List<List<Tensor>> tuned = finetuned.stream().map(m -> LearningMath.values(m.parameters())).toList();
+        List<Tensor> merged = ties(LearningMath.values(base.parameters()), tuned, density, scale);
+        Model out = base.copy(base.device());
+        List<Var> params = out.parameters();
+        for (int i = 0; i < params.size(); i++) {
+            Var p = params.get(i);
+            p.assign(merged.get(i).to(p.value().device()).to(p.value().dtype()));
         }
         return out;
     }

@@ -55,16 +55,27 @@ public record SteeringVector(int layer, float[] direction) {
     }
 
     /**
-     * A model sharing every weight with {@code model} whose layer output gets
-     * {@code scale * direction} added.
+     * A forward hook that adds {@code scale * direction} to the layer's output; run the
+     * model with it through {@link Model#forward(Var, boolean, Model.Hook)}.
      *
-     * @param model the model
      * @param scale the strength; negative steers away
-     * @return the steered model
+     * @return the hook
      */
-    public Model apply(Model model, float scale) {
+    public Model.Hook hook(float scale) {
         Tensor v = Tensor.of(Shape.of(direction.length), direction).mul(scale);
-        return LayerHooks.withHook(model, layer, out -> out.add(v.to(out.value().device())));
+        return LayerHooks.at(layer, out -> out.add(v.to(out.value().device())));
+    }
+
+    /**
+     * Runs a model with the steering applied.
+     *
+     * @param model the model the vector was taken from
+     * @param input a batch
+     * @param scale the strength; negative steers away
+     * @return the model's output
+     */
+    public Tensor apply(Model model, Tensor input, float scale) {
+        return model.forward(Var.of(input), false, hook(scale)).value();
     }
 
     /** @return the length of the direction */

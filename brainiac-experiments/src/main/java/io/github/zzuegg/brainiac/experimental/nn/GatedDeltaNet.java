@@ -207,7 +207,7 @@ public final class GatedDeltaNet implements Layer {
             Var k = p[1].slice(2, start, end);
             Var v = p[2].slice(2, start, end);
             Var beta = p[4].slice(2, start, end).reshape(b, heads, c, 1);
-            Var logGamma = p[3].slice(2, start, end).matmul(Var.of(MixerOps.cumsumMatrix(c)));   // [b, h, c]
+            Var logGamma = p[3].slice(2, start, end).cumsum(-1);   // [b, h, c]
             Var gamma = logGamma.exp().reshape(b, heads, c, 1);
             Var decay = MixerOps.segmentDecay(logGamma);                                         // [b, h, c, c]
             Tensor strict = MixerOps.lowerOnes(c).sub(Tensor.of(Shape.of(c, c), identity(c)));

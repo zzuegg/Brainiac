@@ -189,7 +189,7 @@ class VisionAndGenerativeBlocksTest {
         Tensor real = randn(10, 4, 3);
         Tensor fake = randn(11, 4, 3);
         w.setGrad(Tensor.of(Shape.of(3, 1), 7f, 7f, 7f));
-        Var p = GradientPenalty.wgan(critic, List.of(w), real, fake, new SplittableRandom(12));
+        Var p = GradientPenalty.wgan(critic, real, fake, new SplittableRandom(12));
         assertArrayEquals(new float[] {7f, 7f, 7f}, w.grad().toArray(), "existing gradients are kept");
         w.zeroGrad();
         assertEquals(4f, p.value().item(), 1e-3f);
@@ -197,12 +197,12 @@ class VisionAndGenerativeBlocksTest {
         // d/dw (||w|| - 1)^2 = 2 (||w|| - 1) w / ||w|| = 2 * 2 * w / 3
         assertArrayEquals(new float[] {4f / 3, 8f / 3, 8f / 3}, w.grad().toArray(), 1e-2f);
         w.zeroGrad();
-        Var r1 = GradientPenalty.r1(critic, List.of(w), real);
+        Var r1 = GradientPenalty.r1(critic, real);
         assertEquals(9f, r1.value().item(), 1e-2f);
         // a non-linear critic: compare with the numeric norm of its input gradient
         Var w2 = Var.param(randn(13, 3, 1));
         java.util.function.UnaryOperator<Var> tanhCritic = x -> x.matmul(w2).tanh();
-        float[] norms = GradientPenalty.gradientNorm(tanhCritic, List.of(w2), real, 1e-2f).value().toArray();
+        float[] norms = GradientPenalty.gradientNorm(tanhCritic, real).value().toArray();
         float[] wv = w2.value().toArray();
         float[] rv = real.toArray();
         double wn = Math.sqrt(wv[0] * wv[0] + wv[1] * wv[1] + wv[2] * wv[2]);
@@ -221,7 +221,7 @@ class VisionAndGenerativeBlocksTest {
         Var w2 = Var.param(Tensor.normal(Shape.of(8, 1), 0, 1, rnd));
         java.util.function.UnaryOperator<Var> critic = x -> x.matmul(w1).tanh().matmul(w2);
         Tensor x = randn(21, 5, 2);
-        GradientPenalty.gradientNorm(critic, List.of(w1, w2), x, 1e-3f).sub(1f).square().mean().backward();
+        GradientPenalty.gradientNorm(critic, x).sub(1f).square().mean().backward();
         float[] analytic = w1.grad().toArray();
         float[] base = w1.value().toArray();
         for (int i = 0; i < base.length; i++) {

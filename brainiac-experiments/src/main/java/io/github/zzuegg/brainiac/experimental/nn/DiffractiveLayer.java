@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.autograd.Trig;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -150,7 +149,7 @@ public final class DiffractiveLayer implements Layer {
         if (s.rank() != 4 || s.dim(1) != size || s.dim(2) != size || s.dim(3) != 2) {
             throw new IllegalArgumentException("DiffractiveLayer expects [batch, " + size + ", " + size + ", 2], got " + s);
         }
-        Var mask = Var.concat(2, Trig.cos(phase), Trig.sin(phase));
+        Var mask = Var.concat(2, phase.cos(), phase.sin());
         Var modulated = complexMultiply(field, mask);
         return fft2(complexMultiply(fft2(modulated, false), Var.of(transfer.to(field.value().device()))), true);
     }

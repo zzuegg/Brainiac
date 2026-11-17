@@ -1,6 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
-import io.github.zzuegg.brainiac.experimental.tensor.SymmetricEigen;
+import io.github.zzuegg.brainiac.experimental.tensor.ThinSvd;
 import io.github.zzuegg.brainiac.nn.Dense;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -40,7 +40,7 @@ public final class WeightPruning {
      * @return the pruned weight
      */
     public static Tensor magnitude(Tensor weight, double sparsity) {
-        double[][] w = SymmetricEigen.toMatrix(weight);
+        double[][] w = ThinSvd.toMatrix(weight);
         return toTensor(prunePerOutput(w, abs(w), sparsity));
     }
 
@@ -51,8 +51,8 @@ public final class WeightPruning {
      * @return the pruned weight
      */
     public static Tensor wanda(Tensor weight, Tensor inputs, double sparsity) {
-        double[][] w = SymmetricEigen.toMatrix(weight);
-        return toTensor(prunePerOutput(w, wandaScores(w, SymmetricEigen.toMatrix(inputs)), sparsity));
+        double[][] w = ThinSvd.toMatrix(weight);
+        return toTensor(prunePerOutput(w, wandaScores(w, ThinSvd.toMatrix(inputs)), sparsity));
     }
 
     /**
@@ -66,8 +66,8 @@ public final class WeightPruning {
      * @return the pruned weight
      */
     public static Tensor semiStructured(Tensor weight, Tensor inputs, int n, int m) {
-        double[][] w = SymmetricEigen.toMatrix(weight);
-        double[][] score = inputs == null ? abs(w) : wandaScores(w, SymmetricEigen.toMatrix(inputs));
+        double[][] w = ThinSvd.toMatrix(weight);
+        double[][] score = inputs == null ? abs(w) : wandaScores(w, ThinSvd.toMatrix(inputs));
         int in = w.length;
         int out = w[0].length;
         if (in % m != 0) {
@@ -103,8 +103,8 @@ public final class WeightPruning {
      */
     public static Tensor sparseGpt(Tensor weight, Tensor inputs, double sparsity, int n, int m, int blockSize,
             double damp) {
-        double[][] wt = transpose(SymmetricEigen.toMatrix(weight)); // [out][in]
-        double[][] x = SymmetricEigen.toMatrix(inputs);
+        double[][] wt = transpose(ThinSvd.toMatrix(weight)); // [out][in]
+        double[][] x = ThinSvd.toMatrix(inputs);
         int rows = wt.length;
         int cols = wt[0].length;
         double[][] h = new double[cols][cols];
@@ -128,7 +128,7 @@ public final class WeightPruning {
             }
             h[i][i] += damp * Math.max(mean, 1e-8);
         }
-        double[][] u = upperCholesky(invert(h));
+        double[][] u = QuantMath.choleskyUpper(QuantMath.inverse(h));
         boolean[][] mask = new boolean[rows][cols];
         for (int b0 = 0; b0 < cols; b0 += blockSize) {
             int b1 = Math.min(cols, b0 + blockSize);
@@ -206,7 +206,7 @@ public final class WeightPruning {
      * @return whether every group of {@code m} inputs of every unit has at most {@code n} non-zeros
      */
     public static boolean isNofM(Tensor weight, int n, int m) {
-        double[][] w = SymmetricEigen.toMatrix(weight);
+        double[][] w = ThinSvd.toMatrix(weight);
         for (int j = 0; j < w[0].length; j++) {
             for (int g = 0; g < w.length; g += m) {
                 int nz = 0;
@@ -292,59 +292,5 @@ public final class WeightPruning {
             }
         }
         return Tensor.of(Shape.of(r, c), f);
-    }
-
-    /** Gauss-Jordan inverse with partial pivoting. */
-    static double[][] invert(double[][] a) {
-        int n = a.length;
-        double[][] m = new double[n][2 * n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m[i], 0, n);
-            m[i][n + i] = 1;
-        }
-        for (int c = 0; c < n; c++) {
-            int p = c;
-            for (int r = c + 1; r < n; r++) {
-                if (Math.abs(m[r][c]) > Math.abs(m[p][c])) {
-                    p = r;
-                }
-            }
-            double[] tmp = m[c];
-            m[c] = m[p];
-            m[p] = tmp;
-            double d = m[c][c];
-            for (int k = 0; k < 2 * n; k++) {
-                m[c][k] /= d;
-            }
-            for (int r = 0; r < n; r++) {
-                if (r != c && m[r][c] != 0) {
-                    double f = m[r][c];
-                    for (int k = 0; k < 2 * n; k++) {
-                        m[r][k] -= f * m[c][k];
-                    }
-                }
-            }
-        }
-        double[][] inv = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(m[i], n, inv[i], 0, n);
-        }
-        return inv;
-    }
-
-    /** {@code U} upper triangular with {@code a = U^T U}. */
-    private static double[][] upperCholesky(double[][] a) {
-        int n = a.length;
-        double[][] l = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j <= i; j++) {
-                double s = a[i][j];
-                for (int k = 0; k < j; k++) {
-                    s -= l[i][k] * l[j][k];
-                }
-                l[i][j] = i == j ? Math.sqrt(Math.max(s, 1e-12)) : s / l[j][j];
-            }
-        }
-        return transpose(l);
     }
 }

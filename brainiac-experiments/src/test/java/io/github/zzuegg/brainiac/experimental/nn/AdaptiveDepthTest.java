@@ -70,9 +70,9 @@ class AdaptiveDepthTest {
     @Test
     void loopedTransformerLearnsRecall() {
         SplittableRandom r = new SplittableRandom(5);
-        LoopedTransformer loop = new LoopedTransformer(block(16, r), 16, 3, LoopedTransformer.Halting.ACT, r);
-        double acc = MixerHarness.train(loop, MixerHarness.recall(6, 6, 3), 16, 200, 0.01f, 6,
-                () -> loop.ponderLoss() == null ? null : loop.ponderLoss().mul(0.001f));
+        LoopedTransformer loop = new LoopedTransformer(block(16, r), 16, 3, LoopedTransformer.Halting.ACT, r)
+                .ponderCost(0.001f);
+        double acc = MixerHarness.train(loop, MixerHarness.recall(6, 6, 3), 16, 200, 0.01f, 6, loop::auxiliaryLoss);
         assertTrue(acc > 0.8, "accuracy " + acc);
     }
 

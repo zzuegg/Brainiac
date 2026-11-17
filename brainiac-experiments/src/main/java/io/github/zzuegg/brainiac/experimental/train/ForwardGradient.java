@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.autograd.DualTensor;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
@@ -12,15 +11,30 @@ import java.util.function.Function;
 /**
  * Forward gradients (Baydin, Pearlmutter, Syme, Wood and Torr 2022,
  * <a href="https://arxiv.org/abs/2202.08587">arXiv:2202.08587</a>): an unbiased estimate of
- * the gradient from forward passes only. Draw a random direction {@code v ~ N(0, I)} over
- * all parameters, compute the directional derivative {@code d = grad f . v} with one
- * forward-mode pass ({@link DualTensor}), and use {@code g = d v}. Since
- * {@code E[v v^T] = I}, {@code E[g] = grad f}.
+ * the gradient from one directional derivative. Draw a random direction {@code v ~ N(0, I)}
+ * over all parameters, compute the directional derivative {@code d = grad f . v} (a
+ * Jacobian-vector product) and use {@code g = d v}. Since {@code E[v v^T] = I},
+ * {@code E[g] = grad f}.
+ *
+ * <p>The Jacobian-vector product comes from core nested autograd
+ * ({@link Var#gradients(Var, Var, List, boolean)}): the vector-Jacobian product with a
+ * symbolic seed {@code u} is linear in {@code u}, and differentiating its dot product with
+ * {@code v} with respect to {@code u} gives {@code J v}. This works for outputs of any shape;
+ * the estimator only needs the scalar case.
  *
  * <p>{@link #estimate} writes the estimate into the parameters' gradients, so any
  * {@code Optimizer} can step on it. Averaging several directions lowers the variance.
  */
 public final class ForwardGradient {
+
+    /**
+     * The value of a function and its derivative along a direction.
+     *
+     * @param value the function's value
+     * @param tangent {@code J v}, shaped like {@code value}
+     */
+    public record Jvp(Tensor value, Tensor tangent) {
+    }
 
     private final SplittableRandom random;
     private final int directions;
@@ -38,31 +52,36 @@ public final class ForwardGradient {
     }
 
     /**
-     * The directional derivative of {@code f} at the parameters' values along {@code
-     * tangents}: one Jacobian-vector product.
+     * The derivative of {@code f} at the parameters' values along {@code tangents}: one
+     * Jacobian-vector product.
      *
      * @param params the parameters
      * @param tangents one direction tensor per parameter
-     * @param f the function of the parameters' duals, returning a scalar
+     * @param f the function of the parameters
      * @return the value and the directional derivative
      */
-    public static DualTensor jvp(List<Var> params, List<Tensor> tangents,
-            Function<List<DualTensor>, DualTensor> f) {
-        List<DualTensor> duals = new ArrayList<>(params.size());
+    public static Jvp jvp(List<Var> params, List<Tensor> tangents, Function<List<Var>, Var> f) {
+        Var out = f.apply(params);
+        Var seed = Var.param(Tensor.zeros(out.shape(), out.dtype(), out.value().device()));
+        List<Var> vjp = Var.gradients(out, seed, params, true);
+        Var dot = null;
         for (int i = 0; i < params.size(); i++) {
-            duals.add(DualTensor.of(params.get(i).value(), tangents.get(i)));
+            Var term = vjp.get(i).mul(Var.of(tangents.get(i))).sum();
+            dot = dot == null ? term : dot.add(term);
         }
-        return f.apply(duals);
+        Tensor tangent = dot == null ? Tensor.zeros(out.shape(), out.dtype(), out.value().device())
+                : Var.gradients(dot, List.of(seed), false).get(0).value();
+        return new Jvp(out.value(), tangent);
     }
 
     /**
      * Estimates the gradient and stores it in every parameter's {@code grad}.
      *
      * @param params the parameters
-     * @param f the loss as a function of the parameters' duals
+     * @param f the scalar loss as a function of the parameters
      * @return the loss at the current parameters
      */
-    public float estimate(List<Var> params, Function<List<DualTensor>, DualTensor> f) {
+    public float estimate(List<Var> params, Function<List<Var>, Var> f) {
         Tensor[] acc = new Tensor[params.size()];
         float loss = 0;
         for (int k = 0; k < directions; k++) {
@@ -70,8 +89,8 @@ public final class ForwardGradient {
             for (Var p : params) {
                 v.add(Tensor.normal(p.shape(), 0, 1, random));
             }
-            DualTensor out = jvp(params, v, f);
-            loss = out.primal().item();
+            Jvp out = jvp(params, v, f);
+            loss = out.value().item();
             float d = out.tangent().item() / directions;
             for (int i = 0; i < acc.length; i++) {
                 Tensor g = v.get(i).mul(d);

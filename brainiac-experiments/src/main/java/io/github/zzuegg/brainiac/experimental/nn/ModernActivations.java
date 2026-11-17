@@ -1,6 +1,5 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
-import io.github.zzuegg.brainiac.autograd.Op;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Init;
@@ -57,7 +56,7 @@ public final class ModernActivations {
         }
         return Activation.withParameters("snake", Init.HE,
                 width -> List.of(Tensor.full(Shape.of(width), initialAlpha)),
-                (x, p) -> Var.apply(SNAKE, x, p.get(0)));
+                (x, p) -> snake(x, p.get(0)));
     }
 
     /**
@@ -146,52 +145,12 @@ public final class ModernActivations {
         for (int r = 0; r < unknowns; r++) {
             ata[r][r] += 1e-6;
         }
-        double[] sol = solve(ata, atb);
+        double[] sol = QuantMath.solve(ata, atb);
         double[] a = new double[m + 1];
         double[] b = new double[n];
         System.arraycopy(sol, 0, a, 0, m + 1);
         System.arraycopy(sol, m + 1, b, 0, n);
         return new double[][] {a, b};
-    }
-
-    /** Solves a small dense linear system by Gaussian elimination with partial pivoting. */
-    static double[] solve(double[][] matrix, double[] rhs) {
-        int n = rhs.length;
-        double[][] a = new double[n][];
-        for (int i = 0; i < n; i++) {
-            a[i] = matrix[i].clone();
-        }
-        double[] b = rhs.clone();
-        for (int col = 0; col < n; col++) {
-            int pivot = col;
-            for (int r = col + 1; r < n; r++) {
-                if (Math.abs(a[r][col]) > Math.abs(a[pivot][col])) {
-                    pivot = r;
-                }
-            }
-            double[] t = a[col];
-            a[col] = a[pivot];
-            a[pivot] = t;
-            double tb = b[col];
-            b[col] = b[pivot];
-            b[pivot] = tb;
-            for (int r = col + 1; r < n; r++) {
-                double factor = a[r][col] / a[col][col];
-                for (int c = col; c < n; c++) {
-                    a[r][c] -= factor * a[col][c];
-                }
-                b[r] -= factor * b[col];
-            }
-        }
-        double[] x = new double[n];
-        for (int r = n - 1; r >= 0; r--) {
-            double s = b[r];
-            for (int c = r + 1; c < n; c++) {
-                s -= a[r][c] * x[c];
-            }
-            x[r] = s / a[r][r];
-        }
-        return x;
     }
 
     private static float[] toFloats(double[] d) {
@@ -202,48 +161,14 @@ public final class ModernActivations {
         return f;
     }
 
-    /** Snake with its hand-derived gradient: autograd has no sine. */
-    static final Op SNAKE = new Op() {
-        @Override
-        public Tensor forward(Tensor... in) {
-            float[] x = in[0].toArray();
-            float[] a = in[1].toArray();
-            int w = a.length;
-            float[] y = new float[x.length];
-            for (int i = 0; i < x.length; i++) {
-                double al = a[i % w];
-                double s = Math.sin(al * x[i]);
-                y[i] = (float) (x[i] + s * s / al);
-            }
-            return Tensor.of(in[0].shape(), y, in[0].device());
-        }
-
-        @Override
-        public Tensor[] backward(Tensor grad, Tensor out, Tensor... in) {
-            float[] x = in[0].toArray();
-            float[] a = in[1].toArray();
-            float[] g = grad.toArray();
-            int w = a.length;
-            float[] dx = new float[x.length];
-            double[] da = new double[w];
-            for (int i = 0; i < x.length; i++) {
-                double al = a[i % w];
-                double s = Math.sin(al * x[i]);
-                double s2 = Math.sin(2 * al * x[i]);
-                dx[i] = (float) (g[i] * (1 + s2));
-                da[i % w] += g[i] * (x[i] * s2 / al - s * s / (al * al));
-            }
-            float[] daf = new float[w];
-            for (int j = 0; j < w; j++) {
-                daf[j] = (float) da[j];
-            }
-            return new Tensor[] {Tensor.of(in[0].shape(), dx, in[0].device()),
-                Tensor.of(in[1].shape(), daf, in[1].device())};
-        }
-
-        @Override
-        public String name() {
-            return "snake";
-        }
-    };
+    /**
+     * Snake on autograd's sine: {@code x + sin^2(a x) / a}.
+     *
+     * @param x the input {@code [..., width]}
+     * @param alpha the frequencies {@code [width]}
+     * @return the activation
+     */
+    static Var snake(Var x, Var alpha) {
+        return x.add(x.mul(alpha).sin().square().div(alpha));
+    }
 }

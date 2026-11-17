@@ -10,17 +10,19 @@ import java.util.List;
 import java.util.function.UnaryOperator;
 
 /**
- * Forward hooks and activation access for sequential models (chains of layers built with
- * {@code Model.sequential()}): the primitive behind steering vectors, sparse autoencoders,
- * activation patching, logit lens, probes and fact editing.
+ * Activation access built on core forward hooks ({@link Model#forward(Var, boolean, Model.Hook)}
+ * over the steps of {@link Model#graph()}): the primitive behind steering vectors, sparse
+ * autoencoders, activation patching, logit lens, probes and fact editing.
  *
  * <ul>
- *   <li>{@link #trace}: every layer's output for an input;</li>
- *   <li>{@link #resume}: run the rest of the model from a given layer's (possibly edited)
- *       output;</li>
- *   <li>{@link #withHook}: a new model sharing all weights with a {@link HookedLayer} in
- *       place of one layer.</li>
+ *   <li>{@link #trace}: every step's output for an input;</li>
+ *   <li>{@link #at}: a hook that passes one step's output through a function (to read,
+ *       steer, patch or ablate it);</li>
+ *   <li>{@link #resume}: run the rest of a sequential model from a given layer's (possibly
+ *       edited) output, without recomputing the layers before it.</li>
  * </ul>
+ *
+ * <p>For a sequential model, step {@code i} is layer {@code i}.
  */
 public final class LayerHooks {
 
@@ -28,31 +30,41 @@ public final class LayerHooks {
     }
 
     /**
-     * Every layer's output, in order.
+     * Every step's output, in order.
      *
-     * @param model a sequential model
+     * @param model a model
      * @param input a batch
-     * @return {@code outputs.get(i)} is layer {@code i}'s output; the last is the model's
+     * @return {@code outputs.get(i)} is step {@code i}'s output; the last is the model's
      */
     public static List<Var> trace(Model model, Var input) {
         List<Var> out = new ArrayList<>();
-        Var x = input;
-        for (Layer l : model.layers()) {
-            x = l.forward(x, false);
-            out.add(x);
-        }
+        model.forward(input, false, (step, value) -> {
+            out.add(value);
+            return value;
+        });
         return out;
     }
 
     /**
-     * Every layer's output values, in order.
+     * Every step's output values, in order.
      *
-     * @param model a sequential model
+     * @param model a model
      * @param input a batch
      * @return the outputs
      */
     public static List<Tensor> activations(Model model, Tensor input) {
         return trace(model, Var.of(input)).stream().map(Var::value).toList();
+    }
+
+    /**
+     * A hook that passes one step's output through a function and leaves the others alone.
+     *
+     * @param step the step, an index into {@link Model#graph()}
+     * @param function applied to that step's output
+     * @return the hook, for {@link Model#forward(Var, boolean, Model.Hook)}
+     */
+    public static Model.Hook at(int step, UnaryOperator<Var> function) {
+        return (s, value) -> s.index() == step ? function.apply(value) : value;
     }
 
     /**
@@ -70,23 +82,5 @@ public final class LayerHooks {
             x = layers.get(i).forward(x, false);
         }
         return x;
-    }
-
-    /**
-     * A model that shares every layer (and so every weight) with {@code model}, except that
-     * layer {@code layer}'s output passes through {@code hook}.
-     *
-     * @param model a sequential model
-     * @param layer the layer to hook
-     * @param hook applied to that layer's output
-     * @return the hooked model
-     */
-    public static Model withHook(Model model, int layer, UnaryOperator<Var> hook) {
-        Model.Builder b = Model.sequential().input(model.inputShape().toArray());
-        List<Layer> layers = model.layers();
-        for (int i = 0; i < layers.size(); i++) {
-            b.layer(i == layer ? HookedLayer.of(layers.get(i), hook) : layers.get(i));
-        }
-        return b.build();
     }
 }

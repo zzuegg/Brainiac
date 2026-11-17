@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.autograd.DualTensor;
 import io.github.zzuegg.brainiac.experimental.nn.SimpleMlp;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -105,9 +104,8 @@ class LocalRulesTest {
         return p -> Var.of(x).matmul(p.get(0)).add(p.get(1)).tanh().matmul(p.get(2)).add(p.get(3));
     }
 
-    private static DualTensor dualLoss(List<DualTensor> p, Tensor x, Tensor ids) {
-        return DualTensor.constant(x).matmul(p.get(0)).add(p.get(1)).tanh().matmul(p.get(2)).add(p.get(3))
-                .crossEntropy(ids);
+    private static Var forwardLoss(List<Var> p, Tensor x, Tensor ids) {
+        return io.github.zzuegg.brainiac.nn.Functional.crossEntropy(mlpLoss(x).apply(p), ids);
     }
 
     private static List<Var> params(long seed) {
@@ -117,7 +115,7 @@ class LocalRulesTest {
     }
 
     @Test
-    void dualNumbersGiveTheSameDirectionalDerivativeAsBackprop() {
+    void jvpGivesTheSameDirectionalDerivativeAsBackprop() {
         SplittableRandom r = new SplittableRandom(4);
         Tensor x = Tensor.normal(Shape.of(16, 2), 0, 1, r);
         Tensor ids = Tensor.of(Shape.of(16), 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0);
@@ -131,8 +129,8 @@ class LocalRulesTest {
             v.add(t);
             expected += q.grad().mul(t).sum().item();
         }
-        DualTensor out = ForwardGradient.jvp(p, v, d -> dualLoss(d, x, ids));
-        assertEquals(loss.value().item(), out.primal().item(), 1e-5);
+        ForwardGradient.Jvp out = ForwardGradient.jvp(p, v, q -> forwardLoss(q, x, ids));
+        assertEquals(loss.value().item(), out.value().item(), 1e-5);
         assertEquals(expected, out.tangent().item(), 1e-3 * Math.max(1, Math.abs(expected)));
     }
 
@@ -150,7 +148,7 @@ class LocalRulesTest {
         io.github.zzuegg.brainiac.nn.Functional.crossEntropy(mlpLoss(x).apply(p), ids).backward();
         List<Tensor> exact = p.stream().map(Var::grad).toList();
         p.forEach(Var::zeroGrad);
-        new ForwardGradient(8, 3000).estimate(p, d -> dualLoss(d, x, ids));
+        new ForwardGradient(8, 3000).estimate(p, q -> forwardLoss(q, x, ids));
         double cos = LearningMath.cosine(LearningMath.flatten(exact),
                 LearningMath.flatten(p.stream().map(Var::grad).toList()));
         assertTrue(cos > 0.85, "mean forward gradient aligns with the true gradient: " + cos);
@@ -158,11 +156,11 @@ class LocalRulesTest {
 
         ForwardGradient fg = new ForwardGradient(9, 4);
         Optimizer opt = Optimizer.adam(0.02f);
-        float first = fg.estimate(p, d -> dualLoss(d, x, ids));
+        float first = fg.estimate(p, q -> forwardLoss(q, x, ids));
         opt.step(p);
         float last = first;
         for (int i = 0; i < 300; i++) {
-            last = fg.estimate(p, d -> dualLoss(d, x, ids));
+            last = fg.estimate(p, q -> forwardLoss(q, x, ids));
             opt.step(p);
         }
         assertTrue(last < 0.6 * first, "loss " + first + " -> " + last);

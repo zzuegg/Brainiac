@@ -114,6 +114,11 @@ public final class RigL implements Optimizer {
         }
     }
 
+    @Override
+    public void forget(Var parameter) {
+        inner.forget(parameter);
+    }
+
     private void rewire(Var w, double frac) {
         float[] v = w.value().toArray();
         float[] g = w.grad().toArray();

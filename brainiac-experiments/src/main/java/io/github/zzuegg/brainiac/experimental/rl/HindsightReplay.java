@@ -9,6 +9,7 @@ import io.github.zzuegg.brainiac.rl.RlListener;
 import io.github.zzuegg.brainiac.rl.RlResult;
 import io.github.zzuegg.brainiac.rl.Schedule;
 import io.github.zzuegg.brainiac.rl.Space;
+import io.github.zzuegg.brainiac.rl.Tracker;
 import io.github.zzuegg.brainiac.rl.Transition;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -150,7 +151,7 @@ public final class HindsightReplay implements Learner {
         if (buffer == null) {
             buffer = new ReplayBuffer(bufferSize, env.observationSpace().size(), 1);
         }
-        EpisodeRecorder recorder = new EpisodeRecorder(listener);
+        Tracker recorder = new Tracker(listener);
         List<Transition> episode = new ArrayList<>();
         float[] obs = env.reset(random.split());
         while (recorder.steps() < totalSteps) {

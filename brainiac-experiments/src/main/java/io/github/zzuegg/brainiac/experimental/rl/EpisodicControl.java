@@ -286,8 +286,8 @@ public final class EpisodicControl implements Learner {
     }
 
     /**
-     * Plays and remembers episodes. The returned {@link RlResult} is empty (the core keeps its
-     * recording methods package-private); the listener gets every episode and
+     * Plays and remembers episodes. The returned {@link RlResult} has them (the last one cut
+     * short if the step budget runs out), the listener gets every episode and
      * {@link #episodeReturns()} has their totals.
      */
     @Override
@@ -319,7 +319,10 @@ public final class EpisodicControl implements Learner {
             } while (!s.done() && total < steps);
             remember(obs, acts, rewards, s.terminated() ? 0 : truncationValue);
             returns.add(sum);
-            listener.onEpisode(new Episode(++episodes, n, sum, total), result);
+            Episode e = new Episode(++episodes, n, sum, total);
+            result.add(e);
+            result.steps(total);
+            listener.onEpisode(e, result);
         }
         return result;
     }

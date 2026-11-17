@@ -2,7 +2,6 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.GradCheck;
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.autograd.Trig;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -19,8 +18,8 @@ class FieldLayersTest {
     @Test
     void trigGradientsCheck() {
         Tensor x = Tensor.uniform(Shape.of(3, 4), -3, 3, new SplittableRandom(1));
-        assertTrue(GradCheck.check(Trig.sinOp(), x).passed());
-        assertTrue(GradCheck.check(Trig.cosOp(), x).passed());
+        assertTrue(GradCheck.check(v -> v.get(0).sin().sum(), List.of(x)).passed());
+        assertTrue(GradCheck.check(v -> v.get(0).cos().sum(), List.of(x)).passed());
     }
 
     @Test
