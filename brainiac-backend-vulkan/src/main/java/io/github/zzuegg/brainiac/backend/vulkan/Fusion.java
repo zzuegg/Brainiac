@@ -175,7 +175,7 @@ final class Fusion {
      * crashes on float64 shaders that combine several, so float64 chains hold at most one.
      */
     private static final Set<UnaryOp> TRANSCENDENTAL = java.util.EnumSet.of(UnaryOp.EXP, UnaryOp.LOG, UnaryOp.TANH,
-            UnaryOp.SIGMOID, UnaryOp.ERF, UnaryOp.SOFTPLUS, UnaryOp.SIN, UnaryOp.COS);
+            UnaryOp.SIGMOID, UnaryOp.ERF, UnaryOp.SOFTPLUS, UnaryOp.SIN, UnaryOp.COS, UnaryOp.ATAN);
 
     static int transcendentals(Expr e) {
         return transcendentals(e, Collections.newSetFromMap(new IdentityHashMap<>()));

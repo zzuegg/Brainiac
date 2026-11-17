@@ -104,12 +104,32 @@ double sin_cos_(double x, int shift) {
 
 double sin_(double x) { return sin_cos_(x, 0); }
 double cos_(double x) { return sin_cos_(x, 1); }
+
+// arctangent: atan(x) = pi/2 - atan(1/x) above 1, then two halvings of the angle
+// (t / (1 + sqrt(1 + t^2))) to |t| <= tan(pi/16), then the series to t^31
+double atan_(double x) {
+    if (isnan(x)) return x;
+    double a = abs(x);
+    bool inverted = a > 1.0LF;
+    double t = inverted ? 1.0LF / a : a;
+    t = t / (1.0LF + sqrt(1.0LF + t * t));
+    t = t / (1.0LF + sqrt(1.0LF + t * t));
+    double t2 = t * t;
+    double p = 0.0LF;
+    for (int i = 15; i >= 0; i--) {
+        p = ((i & 1) == 0 ? 1.0LF : -1.0LF) / double(2 * i + 1) + t2 * p;
+    }
+    double r = 4.0LF * t * p;
+    if (inverted) r = 1.57079632679489661923LF - r;
+    return x < 0.0LF ? -r : r;
+}
 #else
 float exp_(float x) { return exp(x); }
 float log_(float x) { return log(x); }
 float pow_native(float a, float b) { return pow(a, b); }
 float sin_(float x) { return sin(x); }
 float cos_(float x) { return cos(x); }
+float atan_(float x) { return atan(x); }
 #endif
 
 ACC sigmoid_(ACC x) {
@@ -194,7 +214,8 @@ ACC unary_op(uint op, ACC v) {
         case 12: return softplus_(v);
         case 13: return roundEven(v);
         case 14: return sin_(v);
-        default: return cos_(v);
+        case 15: return cos_(v);
+        default: return atan_(v);
     }
 }
 

@@ -59,6 +59,23 @@ public interface VectorIndex {
      */
     List<Hit> search(Tensor query, int k);
 
+    /**
+     * Scores a query against every stored vector, as {@link #search} scores them (higher is
+     * closer), for re-ranking or soft retrieval. Removed ids, and on an approximate index the
+     * vectors its search does not reach, score {@code NaN}.
+     *
+     * @param query one vector
+     * @return one score per id, from 0 to {@link #size()} - 1
+     */
+    default float[] scores(Tensor query) {
+        float[] out = new float[size()];
+        java.util.Arrays.fill(out, Float.NaN);
+        for (Hit h : search(query, size())) {
+            out[h.id()] = h.score();
+        }
+        return out;
+    }
+
     /** @return the number of vectors, not counting removed ones */
     int size();
 
@@ -163,11 +180,40 @@ public interface VectorIndex {
         }
 
         @Override
+        public float[] scores(Tensor query) {
+            checkWidth(query, dim, 1);
+            if (size() == 0) {
+                return new float[0];
+            }
+            float[] out = scoreTensor(query).toArray();
+            for (int id = removed.nextSetBit(0); id >= 0; id = removed.nextSetBit(id + 1)) {
+                out[id] = Float.NaN;
+            }
+            return out;
+        }
+
+        @Override
         public List<Hit> search(Tensor query, int k) {
             checkWidth(query, dim, 1);
             if (size() == 0) {
                 return List.of();
             }
+            Tensor scores = scoreTensor(query);
+            int kk = Math.min(k + removed.cardinality(), size);
+            Tensor[] top = scores.reshape(1, size).topk(kk);
+            float[] s = top[0].toArray();
+            float[] ids = top[1].toArray();
+            List<Hit> out = new ArrayList<>(Math.min(k, kk));
+            for (int i = 0; i < kk && out.size() < k; i++) {
+                if (!removed.get((int) ids[i])) {
+                    out.add(new Hit((int) ids[i], s[i]));
+                }
+            }
+            return out;
+        }
+
+        /** The scores of every stored vector, removed ones included. */
+        private Tensor scoreTensor(Tensor query) {
             if (all == null) {
                 all = blocks.size() == 1 ? blocks.getFirst() : Tensor.concat(0, blocks.toArray(Tensor[]::new));
                 blocks.clear();
@@ -184,17 +230,7 @@ public interface VectorIndex {
                 }
                 scores = scores.mul(2).sub(squares).sub((float) qq);
             }
-            int kk = Math.min(k + removed.cardinality(), size);
-            Tensor[] top = scores.reshape(1, size).topk(kk);
-            float[] s = top[0].toArray();
-            float[] ids = top[1].toArray();
-            List<Hit> out = new ArrayList<>(Math.min(k, kk));
-            for (int i = 0; i < kk && out.size() < k; i++) {
-                if (!removed.get((int) ids[i])) {
-                    out.add(new Hit((int) ids[i], s[i]));
-                }
-            }
-            return out;
+            return scores;
         }
 
         @Override

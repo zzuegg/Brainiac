@@ -57,6 +57,8 @@ class GradCheckOpsTest {
                 op("log", v -> v.get(0).log().sum(), p),
                 op("abs", v -> v.get(0).abs().sum(), p.mul(-1)),
                 op("tanh", v -> v.get(0).tanh().sum(), a),
+                op("atan", v -> v.get(0).atan().sum(), a),
+                op("atan2", v -> v.get(0).atan2(v.get(1)).sum(), a, b),
                 op("sigmoid", v -> v.get(0).sigmoid().sum(), a),
                 op("relu", v -> v.get(0).relu().sum(), p.sub(1.25f).mul(2).add(0.3f)),
                 op("matmul", v -> v.get(0).matmul(v.get(1)).square().sum(), a, rand(7, 3, 4)),

@@ -114,7 +114,7 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
                     // float64 unary and activation once more per operation: AMD's LLPC compiler
                     // crashes on the switch over all of them (counts: UnaryOp, ActivationOp); optimized, so
                     // the switch is gone from the SPIR-V
-                    val ops = mapOf("unary" to 16, "activation" to 15)[base]
+                    val ops = mapOf("unary" to 17, "activation" to 15)[base]
                     if (type == "f64" && ops != null) {
                         for (op in 0 until ops) {
                             exec.exec {

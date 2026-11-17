@@ -33,5 +33,7 @@ public enum UnaryOp {
     /** sine, of radians */
     SIN,
     /** cosine, of radians */
-    COS
+    COS,
+    /** arctangent, in radians */
+    ATAN
 }
