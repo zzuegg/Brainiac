@@ -665,6 +665,83 @@ public final class Functional {
     }
 
     /**
+     * Sinusoidal embeddings of continuous times or noise levels, one row per example, as
+     * diffusion models feed their timestep (Ho et al.; the cos half first, as in DDPM code).
+     *
+     * @param times {@code [batch]}, such as diffusion steps or flow times scaled up
+     * @param dim the embedding width, even
+     * @param maxPeriod the longest wavelength, usually 10000
+     * @return {@code [batch, dim]}
+     */
+    public static Tensor timestepEmbedding(Tensor times, int dim, float maxPeriod) {
+        if (dim % 2 != 0) {
+            throw new IllegalArgumentException("dim must be even, got " + dim);
+        }
+        int half = dim / 2;
+        float[] freq = new float[half];
+        for (int i = 0; i < half; i++) {
+            freq[i] = (float) Math.exp(-Math.log(maxPeriod) * i / half);
+        }
+        int batch = times.shape().dim(0);
+        Tensor args = times.reshape(batch, 1).mul(Tensor.of(Shape.of(1, half), freq, times.device()).to(times.dtype()));
+        return Tensor.concat(1, args.cos(), args.sin());
+    }
+
+    /**
+     * Feature-wise linear modulation (FiLM, Perez et al., 2018): {@code x * (1 + scale) + shift},
+     * with one {@code scale} and {@code shift} per example and feature broadcast over the
+     * positions in between, for conditioning on a class, a timestep or text.
+     *
+     * @param x {@code [batch, ..., features]}
+     * @param scale {@code [batch, features]}
+     * @param shift {@code [batch, features]}
+     * @return modulated {@code x}
+     */
+    public static Var film(Var x, Var scale, Var shift) {
+        int[] dims = new int[x.shape().rank()];
+        java.util.Arrays.fill(dims, 1);
+        dims[0] = x.shape().dim(0);
+        dims[dims.length - 1] = x.shape().dim(-1);
+        return x.mul(scale.reshape(dims).add(1)).add(shift.reshape(dims));
+    }
+
+    /**
+     * The modulation of an adaLN-Zero block (DiT, Peebles and Xie, 2023): layer normalization
+     * without its own scale and offset, then {@link #film}. The conditioning projection that
+     * makes {@code scale}, {@code shift} and the block's output gate starts at zero, so each
+     * block starts as the identity; see {@link #gate}.
+     *
+     * @param x {@code [batch, ..., features]}
+     * @param scale {@code [batch, features]}
+     * @param shift {@code [batch, features]}
+     * @param eps added to the variance
+     * @return normalized and modulated {@code x}
+     */
+    public static Var adaLayerNorm(Var x, Var scale, Var shift, float eps) {
+        int last = x.shape().rank() - 1;
+        Var centred = x.sub(x.mean(last, true));
+        Var normed = centred.div(centred.square().mean(last, true).add(eps).sqrt());
+        return film(normed, scale, shift);
+    }
+
+    /**
+     * Scales a residual branch by a per-example, per-feature gate before it is added back,
+     * as adaLN-Zero blocks do: {@code residual + gate * branch}.
+     *
+     * @param residual {@code [batch, ..., features]}
+     * @param branch the block's output, same shape
+     * @param gate {@code [batch, features]}
+     * @return the sum
+     */
+    public static Var gate(Var residual, Var branch, Var gate) {
+        int[] dims = new int[branch.shape().rank()];
+        java.util.Arrays.fill(dims, 1);
+        dims[0] = branch.shape().dim(0);
+        dims[dims.length - 1] = branch.shape().dim(-1);
+        return residual.add(branch.mul(gate.reshape(dims)));
+    }
+
+    /**
      * The InfoNCE (contrastive) loss of paired embeddings, as in CLIP and SimCLR: row
      * {@code i} of {@code a} should be most similar to row {@code i} of {@code b} among all
      * rows of {@code b}, and the other way round. Rows are normalized first, and the other
