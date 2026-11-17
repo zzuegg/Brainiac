@@ -369,7 +369,7 @@ public interface Backend {
         Storage w = allocateUninitialized((long) k * n, out.dtype());
         unpack(b, w);
         matmul(a, w, m, k, n, out);
-        release(w);
+        // not released here: a backend that defers work may not have read it yet
     }
 
     // ---------------------------------------------------------------- optional operations

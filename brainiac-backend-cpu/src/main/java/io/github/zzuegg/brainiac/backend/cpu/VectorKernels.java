@@ -111,6 +111,26 @@ final class VectorKernels {
         }
     }
 
+    /**
+     * Columns {@code [j0, j1)} of {@code z += x * y} for every row: for products of a few
+     * rows, split by columns so that all cores share the work. Each value accumulates in the
+     * same order, with the same fused multiply-adds, as in {@link #matmulRows}.
+     */
+    static void matmulColumns(float[] x, float[] y, float[] z, int m, int k, int n, int j0, int j1) {
+        for (int p = 0; p < k; p++) {
+            int yRow = p * n;
+            for (int i = 0; i < m; i++) {
+                FloatVector a = FloatVector.broadcast(SPECIES, x[i * k + p]);
+                int zRow = i * n;
+                for (int j = j0; j < j1; j += LANES) {
+                    VectorMask<Float> mask = SPECIES.indexInRange(j, j1);
+                    a.fma(FloatVector.fromArray(SPECIES, y, yRow + j, mask),
+                            FloatVector.fromArray(SPECIES, z, zRow + j, mask)).intoArray(z, zRow + j, mask);
+                }
+            }
+        }
+    }
+
     private static void oneRow(float[] x, float[] y, float[] z, int k, int n, int i, int p0, int p1) {
         int zRow = i * n;
         int xRow = i * k;

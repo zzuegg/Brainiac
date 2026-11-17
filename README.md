@@ -669,13 +669,14 @@ model.bytes();                                           // ~7x less weight memo
 
 | 4-core machine, Vector API | float32 | int8 packed | int4 packed |
 | --- | --- | --- | --- |
-| one row x 4096x4096 weights | 6.3 ms | 2.9 ms | 2.2 ms |
-| generating with 6 transformer blocks of 768 | 22 tokens/s | 99 tokens/s | 126 tokens/s (groups of 32) |
+| one row x 4096x4096 weights | 2.4 ms | 0.9 ms | 1.4 ms |
+| generating with 6 transformer blocks of 768 | 47 tokens/s | 141 tokens/s | 116 tokens/s (groups of 32) |
 
 Products of more than a few rows (training, batch inference) unpack the weights first,
 and any other operation on a packed weight sees its values; `unpack()` turns them back
-into float32 tensors. The packed product is also simply a better kernel for one row than
-the general float32 one, so part of the gain is not from the narrower weights.
+into float32 tensors. Half-byte levels need more arithmetic to unpack on the CPU, so int4
+saves memory but runs a little slower than int8. On a GPU, packing saves memory; for small
+models the generation speed is about the same as float32.
 
 Files with quantized weights are format version 5; others are still written as version 4.
 Compare schemes on any benchmark task:

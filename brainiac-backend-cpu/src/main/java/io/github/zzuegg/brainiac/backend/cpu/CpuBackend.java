@@ -262,12 +262,27 @@ public final class CpuBackend implements Backend {
         float[] y = data(b);
         float[] z = data(out);
         Arrays.fill(z, 0, m * n, 0f);
-        if (SIMD) {
+        if (m < 2 * Parallel.threads() && n >= 2 * COLUMN_CHUNK) {
+            // too few rows to share among the cores: split the columns instead
+            int chunks = Math.ceilDiv(n, COLUMN_CHUNK);
+            Parallel.forRange(chunks, 2L * m * k * COLUMN_CHUNK, (from, to) -> {
+                int j0 = from * COLUMN_CHUNK;
+                int j1 = Math.min(n, to * COLUMN_CHUNK);
+                if (SIMD) {
+                    VectorKernels.matmulColumns(x, y, z, m, k, n, j0, j1);
+                } else {
+                    Kernels.matmulColumns(x, y, z, m, k, n, j0, j1);
+                }
+            });
+        } else if (SIMD) {
             Parallel.forRange(m, 2L * k * n, (from, to) -> VectorKernels.matmulRows(x, y, z, k, n, from, to));
         } else {
             Parallel.forRange(m, 2L * k * n, (from, to) -> Kernels.matmulRows(x, y, z, k, n, from, to));
         }
     }
+
+    /** Columns per task when a product of few rows is split by columns. */
+    private static final int COLUMN_CHUNK = 128;
 
     /** Rows up to which a product reads packed levels directly; above, it unpacks first. */
     private static final int PACKED_ROWS = Integer.getInteger("brainiac.cpu.packedRows", 16);
