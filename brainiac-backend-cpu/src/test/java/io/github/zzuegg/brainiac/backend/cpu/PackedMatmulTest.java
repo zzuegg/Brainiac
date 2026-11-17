@@ -65,6 +65,41 @@ class PackedMatmulTest {
         }
     }
 
+    static PackedMatrix withOffsets(PackedMatrix w, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        float[] offsets = new float[w.scales().length];
+        for (int i = 0; i < offsets.length; i++) {
+            offsets[i] = (float) r.nextDouble(-0.3, 0.3);
+        }
+        byte[] levels = new byte[w.rows() * w.cols()];
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = (byte) w.level(i / w.cols(), i % w.cols());
+        }
+        return PackedMatrix.of(levels, w.scales(), offsets, w.rows(), w.cols(), w.bits(), w.group());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"8, 64, 1, 32", "4, 64, 3, 32", "5, 48, 2, 16", "2, 32, 9, 16", "6, 32, 4, 16"})
+    void offsetsAddToEveryValueOfTheirGroup(int bits, int rows, int m, int group) {
+        for (int cols : new int[] {7, 200}) {
+            PackedMatrix plain = random(rows, cols, bits, group, cols);
+            PackedMatrix w = withOffsets(plain, bits);
+            float[] dense = new float[rows * cols];
+            w.dequantize(dense);
+            float[] levels = new float[rows * cols];
+            plain.dequantize(levels);
+            for (int i = 0; i < dense.length; i++) {
+                assertEquals(levels[i] + w.offsets()[i / cols / group * cols + i % cols], dense[i], 1e-6f);
+            }
+            Tensor x = Tensor.uniform(Shape.of(m, rows), -1, 1, new SplittableRandom(cols));
+            float[] expected = x.matmul(Tensor.of(Shape.of(rows, cols), dense)).toArray();
+            Tensor packed = Tensor.packed(w, Device.cpu());
+            assertArrayEquals(expected, x.matmul(packed).toArray(), 1e-4f, bits + " bits, " + cols + " columns");
+            assertArrayEquals(dense, packed.unpacked().toArray());
+            assertEquals(2 * plain.bytes() - plain.data().length, w.bytes());
+        }
+    }
+
     @ParameterizedTest
     @CsvSource({"8, 1", "4, 2"})
     void otherOperationsSeeTheValues(int bits, int m) {

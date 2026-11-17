@@ -2,9 +2,12 @@
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 #include "packed.glsl"
-// z = the values of a packed [k, n] matrix: level times its scale, in z's format.
+// z = the values of a packed [k, n] matrix: level times its scale, plus its offset when
+// hasOffsets != 0, in z's format.
 layout(local_size_x = GROUP) in;
-layout(push_constant) uniform P { InWords q; InFloats scales; Buf z; uint k; uint n; uint group; uint nibbles; } p;
+layout(push_constant) uniform P {
+    InWords q; InFloats scales; InFloats offsets; Buf z; uint k; uint n; uint group; uint nibbles; uint hasOffsets;
+} p;
 void main() {
     uint i = gid();
     if (i >= p.k * p.n) return;
@@ -17,5 +20,8 @@ void main() {
     } else {
         level = packed_byte(p.q, i);
     }
-    STORE(p.z, i, ACC(level) * ACC(p.scales.v[(r / p.group) * p.n + c]));
+    uint g = (r / p.group) * p.n + c;
+    ACC v = ACC(level) * ACC(p.scales.v[g]);
+    if (p.hasOffsets != 0) v += ACC(p.offsets.v[g]);
+    STORE(p.z, i, v);
 }

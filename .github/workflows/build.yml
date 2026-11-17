@@ -21,10 +21,10 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # PoCL is an OpenCL driver and lavapipe (in mesa-vulkan-drivers) a Vulkan driver that
-      # run on the CPU, so the GPU backends' tests run here too. Without drivers they are skipped.
-      - name: Install OpenCL and Vulkan drivers
-        run: sudo apt-get update -q && sudo apt-get install -y -q pocl-opencl-icd ocl-icd-libopencl1 mesa-vulkan-drivers libvulkan1
+      # lavapipe (in mesa-vulkan-drivers) is a Vulkan driver that runs on the CPU, so the GPU
+      # backend's tests run here too. Without a driver they are skipped.
+      - name: Install a Vulkan driver
+        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers libvulkan1
 
       - name: Build and test
         run: ./gradlew build -Porg.gradle.java.installations.fromEnv=JAVA_HOME_27_X64
@@ -33,7 +33,7 @@ jobs:
       - name: Test models on Vulkan
         run: ./gradlew :brainiac-io:test :brainiac-llm:test --rerun-tasks -PtestDevice=vulkan -Porg.gradle.java.installations.fromEnv=JAVA_HOME_27_X64
 
-      # A crash in native code (such as the OpenCL driver) leaves a JVM error report.
+      # A crash in native code (such as the Vulkan driver) leaves a JVM error report.
       - name: Show JVM crash reports
         if: failure()
         run: find . -name 'hs_err_pid*.log' -exec sh -c 'echo "== $1"; head -n 150 "$1"' _ {} \;

@@ -379,7 +379,7 @@ public interface Activation extends Layer {
     /**
      * Like {@link #perUnit(Activation...)}, but every activation of {@code palette} is
      * computed even when no unit uses it. Many models drawing their units from the same
-     * palette then run the same computation, so a backend that generates kernels (the OpenCL
+     * palette then run the same computation, so a backend that generates kernels (the Vulkan
      * one) compiles one for all of them instead of one per mix of activations.
      *
      * @param palette activations to compute even if unused

@@ -25,7 +25,7 @@ dependencies {
     testRuntimeOnly(libs.findLibrary("junit-platform-launcher").get())
 }
 
-// Preloads the JVM's libjsig on Linux. The LLVM inside PoCL (the CPU OpenCL driver CI uses)
+// Preloads the JVM's libjsig on Linux. A driver built on LLVM (such as the CPU drivers CI uses)
 // installs its own SIGSEGV handler, but the JVM faults on purpose at every safepoint poll:
 // without chaining, about one test run in three died with SIGSEGV and no crash report.
 tasks.withType<Test>().configureEach {
@@ -37,6 +37,10 @@ tasks.withType<Test>().configureEach {
                 && !test.environment.containsKey("LD_PRELOAD")) {
             test.environment("LD_PRELOAD", jsig.absolutePath)
         }
+        // LWJGL extracts its natives to one shared folder by default; test JVMs of several
+        // modules starting together then rewrote a library another one was loading (SIGBUS in
+        // dlopen). Each test task extracts into its own folder.
+        test.systemProperty("org.lwjgl.system.SharedLibraryExtractPath", File(test.temporaryDir, "lwjgl").absolutePath)
     }
 }
 
