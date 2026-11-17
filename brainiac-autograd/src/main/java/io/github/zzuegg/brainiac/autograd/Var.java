@@ -981,6 +981,18 @@ public final class Var {
     }
 
     /**
+     * Picks entries of each row by its own indices; see {@link Tensor#takeAlong}. The
+     * gradient goes back to the entries picked.
+     *
+     * @param indices whole numbers, {@code [..., k]} with this value's leading dimensions
+     * @return {@code [..., k]}
+     */
+    public Var takeAlong(Tensor indices) {
+        Tensor flat = Tensor.rowIndices(shape(), indices);
+        return reshape(Math.toIntExact(value.size())).gather(0, flat).reshape(indices.shape().toArray());
+    }
+
+    /**
      * Adds entries at the given indices along an axis (see {@link Tensor#scatterAdd}); the
      * gradient gathers them back.
      *
