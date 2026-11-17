@@ -155,7 +155,7 @@ ACC unary_op(uint op, ACC v) {
         case 10: return v > K(0.0) ? K(1.0) : v < K(0.0) ? K(-1.0) : v;
         case 11: return erf_(v);
         case 12: return softplus_(v);
-        default: return softplus_(v);
+        default: return roundEven(v);
     }
 }
 

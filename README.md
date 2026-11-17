@@ -8,8 +8,8 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 
 > Status: on top of tensors, autograd, dense networks, training and data loading, there
 > are dropout, normalization, L2, learning-rate schedules, graph models, saving and
-> loading, custom ops, 21 activations, and convolutional networks for 1-d, 2-d and 3-d
-> data.
+> loading, custom ops, 21 activations, convolutional networks for 1-d, 2-d and 3-d
+> data, and weight quantization (post-training and quantization-aware training).
 
 ## Requirements
 
@@ -685,6 +685,62 @@ float16/bfloat16 are stored in 16 bits and computed in float32.
 ```
 ./gradlew :brainiac-examples:run --args="gpu"                     # devices and speed
 ./gradlew :brainiac-examples:run --args="bench mnist cnn --device gpu --mixed f16"
+```
+
+## Quantization
+
+Weights can be stored in fewer bits: symmetric linear quantization rounds every weight
+matrix and filter to a whole number from -127..127 (8 bits), -7..7 (4 bits) or any width
+from 2 to 8 bits, times a float scale. One scale per output channel by default, per group
+of inputs for low bit widths, or one per tensor:
+
+```java
+model.quantize(Quantization.int8());               // after training
+model.quantize(Quantization.int4().groups(32));    // a scale for every 32 inputs of a unit
+model.save(path);                                  // weights stored packed: ~4x / ~6x smaller
+Model.load(path).quantization();                   // int4 (groups of 32)
+
+Trainer.of(model)                                  // quantization-aware training: forward and
+        .quantizationAware(Quantization.bits(2))   // backward with rounded weights, updates to
+        .epochs(2)                                 // float weights (straight-through estimator)
+        .fit(data);                                // ends quantized
+```
+
+Quantized are dense, convolution, attention, recurrent and embedding weights; biases,
+normalization and activation parameters stay in floating point. A quantized model keeps
+computing in its own number format with the rounded values, so it runs unchanged on the
+CPU and the GPU. To also save memory and time, pack it: dense-like weights (dense,
+attention, recurrent) then stay in memory as their 8- or 4-bit levels plus scales
+(`Tensor.packed`), and matrix products read the levels directly, on the CPU (SIMD), in
+OpenCL and in Vulkan. That pays off when generating text one token at a time, which waits
+on reading the weights:
+
+```java
+model.quantize(Quantization.int4().groups(32)).pack();   // or Model.load(path).pack()
+model.bytes();                                           // ~7x less weight memory
+```
+
+Generating with 6 transformer blocks of 768 (a GPT-2-small-sized model), tokens/s:
+
+| device | float32 | int8 packed | int4 packed (groups of 32) |
+| --- | --- | --- | --- |
+| CPU, 32 threads, Vector API | 124 | 307 | 282 |
+| RX 9070 XT, Vulkan | 355 | 802 | 888 |
+
+One row times 4096x4096 weights takes 0.24 ms in float32 on that GPU and 25 µs in int8
+(20 µs in int4); on the CPU 1.2 ms in float32 and about 0.12 ms packed.
+
+Products of more rows (over 8 on a GPU, 16 on the CPU: training, batch inference) unpack the weights first, and
+any other operation on a packed weight sees its values; `unpack()` turns them back into
+float32 tensors. Models too small to wait on their weights, such as the Shakespeare
+example, gain memory but not speed: there the cost per token is in launching work.
+
+Files with quantized weights are format version 5; others are still written as version 4.
+Compare schemes on any benchmark task:
+
+```
+./gradlew :brainiac-examples:run --args="bench mnist cnn --quantize int8,int4,int4/g32,int2 --qat 1"
+./gradlew :brainiac-examples:run --args="bench shakespeare --quantize int8,int4/g32 --pack"   # + generation speed
 ```
 
 ## Performance

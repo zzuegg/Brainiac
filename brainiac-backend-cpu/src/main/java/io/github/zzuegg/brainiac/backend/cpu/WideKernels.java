@@ -43,6 +43,7 @@ final class WideKernels {
             case SIGN -> Math.signum(v);
             case ERF -> Kernels.erf(v);
             case SOFTPLUS -> Math.max(v, 0) + Math.log1p(Math.exp(-Math.abs(v)));
+            case ROUND -> Math.rint(v);
         };
     }
 

@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.backend.opencl;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -102,7 +103,8 @@ class OpenClBackendTest {
         same(type, "pow", t -> t.abs().pow(1.5f), x);
         same(type, "compare", t -> t.maximum(t.neg()).add(t.minimum(t.square())).add(t.greater(t.square())), x);
         same(type, "unary", t -> t.exp().add(t.tanh()).add(t.sigmoid()).add(t.square().add(1).log())
-                .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()).add(t.step()), x);
+                .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()).add(t.step())
+                .add(t.mul(4).round()), x);
         for (ActivationOp op : ActivationOp.values()) {
             same(type, op.name(), t -> t.activation(op, 0.1f), x);
             same(type, op + " backward", t -> t.activationBackward(op, 0.1f, t.square()), x);
@@ -242,5 +244,50 @@ class OpenClBackendTest {
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "opencl".length(), status);
         assertTrue(List.of(DType.values()).size() == 4);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
+        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
+    void packedMatricesMatchTheCpu(int bits, int group, int m) {
+        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77);
+        packedMatches(bits, group, m, 768, 256);
+    }
+
+    private void packedMatches(int bits, int group, int m, int rows, int cols) {
+        if (rows % group != 0) {
+            return;
+        }
+        SplittableRandom r = new SplittableRandom(bits * 100L + m + rows);
+        int limit = (1 << (bits - 1)) - 1;
+        byte[] levels = new byte[rows * cols];
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = (byte) r.nextInt(-limit, limit + 1);
+        }
+        float[] scales = new float[rows / group * cols];
+        for (int i = 0; i < scales.length; i++) {
+            scales[i] = (float) r.nextDouble(0.001, 0.05);
+        }
+        io.github.zzuegg.brainiac.tensor.spi.PackedMatrix w =
+                io.github.zzuegg.brainiac.tensor.spi.PackedMatrix.of(levels, scales, rows, cols, bits, group);
+        Tensor x = random(3, m, rows);
+        Tensor onCpu = Tensor.packed(w, CPU);
+        Tensor onGpu = onCpu.to(gpu);
+        String what = bits + " bits, groups of " + group + ", " + m + " x " + rows + " x " + cols;
+        assertTrue(onGpu.isPacked());
+        assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
+        float[] expected = x.matmul(onCpu).toArray();
+        double scale = 1;
+        for (float v : expected) {
+            scale = Math.max(scale, Math.abs(v));
+        }
+        // sums in another order: errors grow with the largest value
+        float close = (float) (5e-5 * scale);
+        assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), close, what);
+        assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(), close, what);
+        if (supported(DType.FLOAT16)) {
+            assertArrayEquals(expected, x.to(gpu).to(DType.FLOAT16).matmul(onGpu).toArray(), (float) (4e-3 * scale),
+                    what);
+        }
     }
 }

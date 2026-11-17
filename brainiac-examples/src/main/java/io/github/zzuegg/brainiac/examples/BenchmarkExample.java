@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.nn.Conv;
 import io.github.zzuegg.brainiac.nn.Embedding;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.nn.Padding;
+import io.github.zzuegg.brainiac.nn.Quantization;
 import io.github.zzuegg.brainiac.nn.Recurrent;
 import io.github.zzuegg.brainiac.nn.SequencePool;
 import io.github.zzuegg.brainiac.nn.SwitchingDense;
@@ -286,6 +287,9 @@ public final class BenchmarkExample {
      *        {@code --dtype f64|f16|bf16}, {@code --mixed f16|bf16},
      *        {@code --precisions f32,bf16,f16} (one run per precision, to compare),
      *        {@code --tokenizers char,bpe:1024} (for shakespeare: one task per tokenizer),
+     *        {@code --quantize int8,int4/g32,int2} (after training, compare quantized copies:
+     *        accuracy and file size), {@code --qat N} (also train a copy N epochs for each),
+     *        {@code --pack} (for shakespeare, generation speed with packed weights),
      *        {@code --cache none,restart,sliding,sinks:4,h2o:32,restart/bf16} (for shakespeare:
      *        compare KV cache strategies on long text), {@code --streams 1,8,32} (for
      *        shakespeare: generation speed with several texts at once)
@@ -309,6 +313,18 @@ public final class BenchmarkExample {
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--streams")) {
                 streamCounts = java.util.Arrays.stream(args[++i].split(",")).mapToInt(Integer::parseInt).toArray();
+                continue;
+            }
+            if (args[i].equals("--quantize")) {
+                quantizations = java.util.Arrays.stream(args[++i].split(",")).map(BenchmarkExample::quantization).toList();
+                continue;
+            }
+            if (args[i].equals("--pack")) {
+                pack = true;
+                continue;
+            }
+            if (args[i].equals("--qat")) {
+                qatEpochs = Integer.parseInt(args[++i]);
                 continue;
             }
             if (args[i].equals("--cache")) {
@@ -378,6 +394,115 @@ public final class BenchmarkExample {
         System.out.print(Benchmark.table(reports));
     }
 
+    /** Quantizations to compare after a model is trained ({@code --quantize}). */
+    private static List<Quantization> quantizations = List.of();
+
+    /** Whether to compare generation with packed weights ({@code --pack}). */
+    private static boolean pack;
+
+    /**
+     * Generation speed and weight memory with each quantization's weights {@linkplain
+     * Model#pack() packed}, against the float model ({@code --pack}).
+     */
+    private static void comparePacked(Model model, io.github.zzuegg.brainiac.data.Tokenizer tokenizer) {
+        if (!pack || quantizations.isEmpty()) {
+            return;
+        }
+        int count = 300;
+        System.out.println("generating " + count + " tokens, 1 stream, weights packed in memory:");
+        System.out.printf("  %-14s %12s %10s%n", "weights", "memory KB", "tokens/s");
+        List<String> names = new ArrayList<>(List.of(model.dtype().name().toLowerCase()));
+        List<Model> models = new ArrayList<>(List.of(model));
+        for (Quantization q : quantizations) {
+            names.add(quantizationName(q));
+            models.add(model.copy(model.device()).quantize(q).pack());
+        }
+        for (int i = 0; i < models.size(); i++) {
+            Model m = models.get(i);
+            LanguageExample.generate(m, tokenizer, "ROMEO:\n", 1, 40, 0.8f, 1);   // warm up
+            long start = System.nanoTime();
+            LanguageExample.generate(m, tokenizer, "ROMEO:\n", 1, count, 0.8f, 1);
+            double seconds = (System.nanoTime() - start) / 1e9;
+            System.out.printf("  %-14s %12.1f %10.0f%n", names.get(i), m.bytes() / 1024.0, count / seconds);
+        }
+    }
+
+    /** Epochs of quantization-aware training per quantization ({@code --qat}); 0 for none. */
+    private static int qatEpochs;
+
+    /** Parses {@code int8}, {@code int4/g32} (groups of 32) or {@code int4/t} (per tensor). */
+    private static Quantization quantization(String spec) {
+        String[] parts = spec.split("/");
+        if (!parts[0].startsWith("int")) {
+            throw new IllegalArgumentException("--quantize takes int2..int8, optionally /gN or /t, got " + spec);
+        }
+        Quantization q = Quantization.bits(Integer.parseInt(parts[0].substring(3)));
+        if (parts.length > 1) {
+            q = parts[1].equals("t") ? q.perTensor() : q.groups(Integer.parseInt(parts[1].substring(1)));
+        }
+        return q;
+    }
+
+    private static String quantizationName(Quantization q) {
+        return "int" + q.bits() + (q.groupSize() > 0 ? "/g" + q.groupSize() : q.groupSize() < 0 ? "/t" : "");
+    }
+
+    /** @return the size of the model's file in bytes */
+    private static long fileSize(Model model) {
+        try {
+            Path file = Files.createTempFile("brainiac-quantized", ".model");
+            try {
+                model.save(file);
+                return Files.size(file);
+            } finally {
+                Files.deleteIfExists(file);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Compares the trained model with copies quantized after training and, with
+     * {@code --qat}, copies trained further for each quantization.
+     */
+    private static List<Report> compareQuantizations(Task t, String label, Model model, Options options) {
+        if (quantizations.isEmpty()) {
+            return List.of();
+        }
+        List<Report> reports = new ArrayList<>();
+        List<String> rows = new ArrayList<>();
+        long full = fileSize(model);
+        Report base = Benchmark.evaluate(t, label, model);
+        rows.add(quantizationRow(model.dtype().name().toLowerCase(), base, full, full));
+        for (Quantization q : quantizations) {
+            String name = quantizationName(q);
+            Model rounded = model.copy(model.device()).quantize(q);
+            Report r = Benchmark.evaluate(t, label + " " + name, rounded);
+            reports.add(r);
+            rows.add(quantizationRow(name, r, fileSize(rounded), full));
+            if (qatEpochs > 0) {
+                Model trained = model.copy(model.device());
+                Report qr = Benchmark.run(t, label + " " + name + " qat", trained, options.settings()
+                        .andThen(tr -> tr.epochs(qatEpochs).quantizationAware(q)));
+                reports.add(qr);
+                rows.add(quantizationRow(name + " qat", qr, fileSize(trained), full));
+            }
+        }
+        System.out.println("quantized weights" + (qatEpochs > 0 ? " (qat: " + qatEpochs
+                + " more epochs trained for the grid)" : "") + ":");
+        System.out.printf("  %-14s %10s %10s %10s %8s%n", "weights", "test loss", "accuracy", "file KB", "smaller");
+        rows.forEach(System.out::println);
+        return reports;
+    }
+
+    private static String quantizationRow(String name, Report r, long bytes, long full) {
+        float accuracy = r.accuracy();
+        return String.format("  %-14s %10.4f %10s %10.1f %7.1fx", name, r.test().loss(),
+                Float.isNaN(accuracy) ? "-" : String.format("%.2f%%", accuracy * 100), bytes / 1024.0,
+                (double) full / bytes);
+    }
+
     /** KV cache strategies to compare after a language model is trained ({@code --cache}). */
     private static List<String> cacheStrategies = List.of();
 
@@ -439,6 +564,7 @@ public final class BenchmarkExample {
             r = Benchmark.run(t, label, model, options.settings());
         }
         System.out.print(r);
+        compareQuantizations(t, label, model, options);
         if (t.name().startsWith("shakespeare")) {
             String spec = t.name().contains("/") ? t.name().substring(t.name().indexOf('/') + 1) : "char";
             io.github.zzuegg.brainiac.data.Tokenizer tokenizer;
@@ -453,6 +579,7 @@ public final class BenchmarkExample {
                     (int) Math.ceil(400 / tokenizer.charactersPerToken("ROMEO:\nWhat light through yonder window "
                             + "breaks? It is the east, and Juliet is the sun.")), 0.8f, 1) + "\n");
             compareCaches(model, tokenizer, text);
+            comparePacked(model, tokenizer);
             compareStreams(model, tokenizer);
         }
         return r;
@@ -517,6 +644,12 @@ public final class BenchmarkExample {
                   --device D    cpu, gpu (the first GPU), best, opencl or vulkan
                   --dtype T     run the model in f64, f16 or bf16 instead of f32
                   --mixed T     train in mixed precision: f16 or bf16 compute, f32 weights
+                  --quantize L  after training, test quantized copies: int8, int4, int2, ...;
+                                /g32 for a scale per 32 inputs, /t for one per tensor
+                  --pack        with --quantize, for shakespeare: generation speed and memory
+                                with each quantization's weights packed (Model.pack)
+                  --qat N       with --quantize, also train a copy N epochs for each
+                                quantization (quantization-aware training)
                   --precisions L  train each model once per precision, e.g. f32,bf16,f16
                                 (f16 and bf16 mean mixed precision), to compare them
                   --tokenizers L  for shakespeare, one run per tokenizer, e.g.

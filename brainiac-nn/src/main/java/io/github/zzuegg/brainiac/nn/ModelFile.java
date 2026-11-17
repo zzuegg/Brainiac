@@ -24,7 +24,8 @@ import java.util.function.Function;
 /**
  * Reads and writes the Brainiac model file format. All numbers are big endian except
  * tensor data, which is little-endian in the tensor's own format (float32, float64, or
- * the 16 bits of float16 and bfloat16). Version 4:
+ * the 16 bits of float16 and bfloat16). Version 5 (written as 4 when no weights are
+ * quantized, which is the same format):
  *
  * <pre>
  * int    magic "BRNC"   int version
@@ -33,20 +34,25 @@ import java.util.function.Function;
  * int    layerCount     per layer: utf type, config
  * int    stepCount      per step: byte kind, int inputCount, int[] inputs, int layerIndex (-1 if none)
  * int    tensorCount    per tensor: byte dtype, int rank, int[] dims, values
+ *                       or, for quantized weights: byte 0x10, byte dtype, byte bits,
+ *                       int groupSize, int axis, int rank, int[] dims, int scaleCount,
+ *                       float32[] scales, levels packed bits-wide, lowest bits first
  * config: int count, per entry: utf key, byte tag, value (see {@link #writeConfig})
  * </pre>
  *
  * Layer types and activations are looked up by name in the {@link Registry}. Activations
  * are stored once in their own table and referenced by index, so an activation shared by
  * several layers stays shared. Tensors are every parameter, then every buffer, in model
- * order. Older versions can still be read: version 3 has float32 tensors without a type
+ * order. Older versions can still be read: version 4 has no quantized tensors, version 3 has float32 tensors without a type
  * byte, version 2 also stores the input and output as sizes, and version 1 has fixed layer
  * types and activations by name.
  */
 final class ModelFile {
 
     private static final int MAGIC = 0x42524E43;
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
+    /** Tensor tag of quantized weights (version 5); smaller tags are a {@link DType} ordinal. */
+    private static final int QUANTIZED = 0x10;
 
     private static final byte BOOLEAN = 0;
     private static final byte INT = 1;
@@ -69,8 +75,15 @@ final class ModelFile {
 
     static void write(Model model, OutputStream stream) throws IOException {
         DataOutputStream out = new DataOutputStream(stream);
+        Quantization quantization = model.quantization();
+        Map<Var, Integer> quantized = new IdentityHashMap<>();
+        if (quantization != null) {
+            for (Quantization.Weight w : Quantization.weights(model)) {
+                quantized.put(w.weight(), w.axis());
+            }
+        }
         out.writeInt(MAGIC);
-        out.writeInt(VERSION);
+        out.writeInt(quantized.isEmpty() ? 4 : VERSION);   // readable by older versions when it can be
         writeShape(model.inputShape(), out);
         writeShape(model.outputShape(), out);
 
@@ -112,7 +125,12 @@ final class ModelFile {
         List<Var> tensors = state(model);
         out.writeInt(tensors.size());
         for (Var v : tensors) {
-            writeTensor(v.value(), out);
+            Integer axis = quantized.get(v);
+            if (axis != null) {
+                writeQuantized(v.value(), quantization, axis, out);
+            } else {
+                writeTensor(v.value(), out);
+            }
         }
         out.flush();
     }
@@ -391,8 +409,9 @@ final class ModelFile {
             throw new IOException("file has " + count + " tensors, model has " + targets.size());
         }
         List<Tensor> values = new ArrayList<>(count);
+        Quantization[] quantization = new Quantization[1];
         for (int i = 0; i < count; i++) {
-            Tensor t = readTensor(in, version);
+            Tensor t = readTensor(in, version, quantization);
             if (!t.shape().equals(targets.get(i).shape())) {
                 throw new IOException("tensor " + i + " has shape " + t.shape() + ", model expects " + targets.get(i).shape());
             }
@@ -401,6 +420,7 @@ final class ModelFile {
         for (int i = 0; i < count; i++) {
             targets.get(i).assign(values.get(i));
         }
+        model.quantization(quantization[0]);
     }
 
     private static int readHeader(DataInputStream in) throws IOException {
@@ -524,10 +544,90 @@ final class ModelFile {
         out.write(bytes.array());
     }
 
-    private static Tensor readTensor(DataInputStream in, int version) throws IOException {
+    /**
+     * Writes weights as their quantized levels: byte tag, byte dtype, byte bits, int group
+     * size, int axis, int rank, int[] dims, int scaleCount, float32 scales, packed levels.
+     */
+    private static void writeQuantized(Tensor t, Quantization q, int axis, DataOutputStream out) throws IOException {
+        Quantization.Packed packed = q.pack(t.toArray(), t.shape(), axis);
+        out.writeByte(QUANTIZED);
+        out.writeByte(t.dtype().ordinal());
+        out.writeByte(q.bits());
+        out.writeInt(q.groupSize());
+        out.writeInt(axis);
+        int[] dims = t.shape().toArray();
+        out.writeInt(dims.length);
+        for (int d : dims) {
+            out.writeInt(d);
+        }
+        out.writeInt(packed.scales().length);
+        ByteBuffer scales = ByteBuffer.allocate(packed.scales().length * 4).order(ByteOrder.LITTLE_ENDIAN);
+        scales.asFloatBuffer().put(packed.scales());
+        out.write(scales.array());
+        out.write(packed.data());
+    }
+
+    private static Tensor readQuantized(DataInputStream in, Quantization[] seen) throws IOException {
+        int typeTag = in.readUnsignedByte();
+        if (typeTag >= DType.values().length) {
+            throw new IOException("unknown number format " + typeTag);
+        }
+        DType type = DType.values()[typeTag];
+        int bits = in.readUnsignedByte();
+        int groupSize = in.readInt();
+        if (bits < 2 || bits > 8 || groupSize < -1 || groupSize == 1) {
+            throw new IOException("bad quantization: " + bits + " bits, group size " + groupSize);
+        }
+        Quantization q = Quantization.bits(bits);
+        q = groupSize == -1 ? q.perTensor() : groupSize == 0 ? q : q.groups(groupSize);
+        int axis = in.readInt();
+        int rank = in.readInt();
+        if (rank < 1 || rank > 8) {
+            throw new IOException("bad tensor rank " + rank);
+        }
+        int[] dims = new int[rank];
+        long size = 1;
+        for (int i = 0; i < rank; i++) {
+            dims[i] = in.readInt();
+            if (dims[i] < 1) {
+                throw new IOException("bad tensor dimension " + dims[i]);
+            }
+            size *= dims[i];
+            if (size > Integer.MAX_VALUE / 4) {
+                throw new IOException("tensor too large");
+            }
+        }
+        if (axis != 0 && axis != rank - 1) {
+            throw new IOException("bad quantization axis " + axis + " for rank " + rank);
+        }
+        Shape shape = Shape.of(dims);
+        int scaleCount = in.readInt();
+        if (scaleCount != q.scaleCount(shape, axis)) {
+            throw new IOException("quantized tensor " + shape + " has " + scaleCount + " scales, expected "
+                    + q.scaleCount(shape, axis));
+        }
+        byte[] rawScales = in.readNBytes(scaleCount * 4);
+        byte[] data = in.readNBytes(q.dataBytes(size));
+        if (rawScales.length != scaleCount * 4 || data.length != q.dataBytes(size)) {
+            throw new IOException("file ends inside a tensor");
+        }
+        float[] scales = new float[scaleCount];
+        ByteBuffer.wrap(rawScales).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(scales);
+        float[] values = q.unpack(new Quantization.Packed(scales, data), shape, axis);
+        if (seen[0] == null) {
+            seen[0] = q;
+        }
+        Tensor t = Tensor.of(shape, values);
+        return type == DType.FLOAT32 ? t : t.to(type);
+    }
+
+    private static Tensor readTensor(DataInputStream in, int version, Quantization[] quantization) throws IOException {
         DType type = DType.FLOAT32;
         if (version >= 4) {
             int tag = in.readUnsignedByte();
+            if (tag == QUANTIZED && version >= 5) {
+                return readQuantized(in, quantization);
+            }
             if (tag >= DType.values().length) {
                 throw new IOException("unknown number format " + tag);
             }

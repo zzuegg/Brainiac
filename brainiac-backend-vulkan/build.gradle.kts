@@ -70,9 +70,12 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
     @TaskAction
     fun compile() {
         // every shader once per number format (random is float32 only); matmul twice more:
-        // 64 x 64 and 32 x 32 output tiles
+        // 64 x 64 and 32 x 32 output tiles; matmul_packed for 1, 2, 4 and 8 rows
         val types = listOf("f32", "f64", "f16", "bf16")
-        val variants = mapOf("matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")))
+        val variants = mapOf(
+            "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")),
+            "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
+        )
         val dir = sources.get().asFile
         output.get().asFile.listFiles { f -> f.name.endsWith(".spv") }?.forEach { it.delete() }
         dir.listFiles { f -> f.name.endsWith(".comp") }!!.sorted().forEach { src ->
@@ -89,7 +92,7 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
                     // float64 unary and activation once more per operation: AMD's LLPC compiler
                     // crashes on the switch over all of them (counts: UnaryOp, ActivationOp); optimized, so
                     // the switch is gone from the SPIR-V
-                    val ops = mapOf("unary" to 13, "activation" to 15)[base]
+                    val ops = mapOf("unary" to 14, "activation" to 15)[base]
                     if (type == "f64" && ops != null) {
                         for (op in 0 until ops) {
                             exec.exec {

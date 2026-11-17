@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.data.Batch;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.nn.Quantization;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -61,6 +62,7 @@ public final class Trainer {
     private float clipValue;
     private LearningRateSchedule schedule;
     private float baseLearningRate = Float.NaN;
+    private Quantization quantization;
 
     private Trainer(Model model) {
         this.model = Objects.requireNonNull(model, "model");
@@ -379,6 +381,43 @@ public final class Trainer {
     }
 
     /**
+     * Trains for a quantization (quantization-aware training): every step runs the forward
+     * and backward pass with the weights rounded to the quantization's grid, while the
+     * optimizer updates the full-precision weights, as if rounding did not change the
+     * gradient (the straight-through estimator). Validation runs with rounded weights too,
+     * and when training ends the model is quantized with {@link Model#quantize}. Recovers
+     * most of what plain rounding after training loses at 4 bits and below.
+     *
+     * <pre>{@code
+     * Trainer.of(model).quantizationAware(Quantization.int4().groups(32)).epochs(3).fit(data);
+     * model.save(path);   // weights stored in 4 bits
+     * }</pre>
+     *
+     * @param q the quantization to train for, or {@code null} for none
+     * @return this trainer
+     */
+    public Trainer quantizationAware(Quantization q) {
+        this.quantization = q;
+        return this;
+    }
+
+    /** Rounds the quantized weights in place, returning their full-precision values. */
+    private static List<Tensor> roundWeights(Quantization q, List<Quantization.Weight> weights) {
+        List<Tensor> masters = new ArrayList<>(weights.size());
+        for (Quantization.Weight w : weights) {
+            masters.add(w.weight().value());
+            w.weight().assign(q.quantize(w.weight().value(), w.axis()));
+        }
+        return masters;
+    }
+
+    private static void restoreWeights(List<Quantization.Weight> weights, List<Tensor> masters) {
+        for (int i = 0; i < weights.size(); i++) {
+            weights.get(i).weight().assign(masters.get(i));
+        }
+    }
+
+    /**
      * Adds a listener called after every epoch.
      *
      * @param listener the listener
@@ -419,6 +458,7 @@ public final class Trainer {
         }
         Device device = model.device();
         List<Var> params = model.parameters();
+        List<Quantization.Weight> quantized = quantization == null ? List.of() : Quantization.weights(model);
         List<EpochResult> history = new ArrayList<>();
         List<Batch> fixedBatches = shuffle || augmentation != null ? null : data.batches(batchSize, device);
 
@@ -443,6 +483,13 @@ public final class Trainer {
             List<Tensor> batchValues = new ArrayList<>();
             List<Integer> batchSizes = new ArrayList<>();
             for (Batch batch : batches) {
+                List<Tensor> qatMasters = null;
+                List<Tensor> qatWork = List.of();
+                if (quantization != null) {
+                    List<List<Tensor>> got = new ArrayList<>(1);
+                    qatWork = Tensor.created(() -> got.add(roundWeights(quantization, quantized)));
+                    qatMasters = got.get(0);
+                }
                 List<Tensor> masters = null;
                 if (mixedType != null) {
                     masters = new ArrayList<>(params.size());
@@ -478,11 +525,18 @@ public final class Trainer {
                 batchSizes.add(batch.size());
                 if (masters != null) {
                     l.backward(Tensor.full(l.shape(), lossScale, l.dtype(), l.value().device()));
-                    if (!unscale(params, masters)) {
+                    boolean finite = unscale(params, masters);
+                    if (qatMasters != null) {
+                        restoreWeights(quantized, qatMasters);
+                    }
+                    if (!finite) {
                         continue;
                     }
                 } else {
                     l.backward();
+                    if (qatMasters != null) {
+                        restoreWeights(quantized, qatMasters);
+                    }
                 }
                 clip(params);
                 List<Tensor> replaced = new ArrayList<>(params.size());
@@ -508,6 +562,7 @@ public final class Trainer {
                 kept.add(batch.features());
                 kept.add(batch.targets());
                 replaced.addAll(forwardWork);
+                replaced.addAll(qatWork);
                 Tensor.release(replaced, kept);
                 stepsDone++;
                 if (!listeners.isEmpty()) {
@@ -538,7 +593,11 @@ public final class Trainer {
             float valLoss = Float.NaN;
             Map<String, Float> valMetrics = Map.of();
             if (validation != null) {
+                List<Tensor> qatMasters = quantization == null ? null : roundWeights(quantization, quantized);
                 Evaluation ev = evaluate(validation);
+                if (qatMasters != null) {
+                    restoreWeights(quantized, qatMasters);
+                }
                 valLoss = ev.loss();
                 valMetrics = ev.metrics();
             }
@@ -567,6 +626,9 @@ public final class Trainer {
             }
         } else {
             bestEpoch = history.size();
+        }
+        if (quantization != null) {
+            model.quantize(quantization);
         }
         return new TrainingResult(List.copyOf(history), bestEpoch, stoppedEarly);
     }

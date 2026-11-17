@@ -3,6 +3,8 @@ package io.github.zzuegg.brainiac.tensor;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
+import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
@@ -392,6 +394,57 @@ public final class Tensor {
         return shape.size();
     }
 
+    // ---------------------------------------------------------------- packed matrices
+
+    /**
+     * Creates a matrix kept as quantized levels and scales (see {@link PackedMatrix}): a
+     * quarter of float32's memory at 8 bits, an eighth at 4. It behaves like any other
+     * {@code [rows, cols]} float32 tensor, but only a matrix product with it on the right,
+     * {@code x.matmul(packed)}, reads the levels directly; every other operation, and a
+     * transpose, first computes the values into a temporary tensor.
+     *
+     * @param matrix the levels and scales
+     * @param device where to keep it
+     * @return the tensor
+     */
+    public static Tensor packed(PackedMatrix matrix, Device device) {
+        return new Tensor(Shape.of(matrix.rows(), matrix.cols()), device, device.backend().pack(matrix));
+    }
+
+    /** @return whether this tensor is a {@linkplain #packed packed} matrix */
+    public boolean isPacked() {
+        return storage instanceof PackedStorage;
+    }
+
+    /**
+     * Returns the bytes this tensor's values take on its device.
+     *
+     * @return the size in bytes
+     */
+    public long bytes() {
+        return storage instanceof PackedStorage p ? p.bytes() : size() * dtype().bytes();
+    }
+
+    /**
+     * Returns an ordinary tensor with this one's values: for a {@linkplain #packed packed}
+     * matrix its computed values, otherwise this tensor.
+     *
+     * @return the values
+     */
+    public Tensor unpacked() {
+        return storage instanceof PackedStorage ? new Tensor(shape, device, storage()) : this;
+    }
+
+    /** The values as ordinary storage: a packed matrix's are computed into a new one. */
+    private Storage storage() {
+        if (storage instanceof PackedStorage p) {
+            Storage out = backend().allocateUninitialized(size(), DType.FLOAT32);
+            backend().unpack(p, out);
+            return out;
+        }
+        return storage;
+    }
+
     // ---------------------------------------------------------------- data transfer
 
     /**
@@ -403,6 +456,9 @@ public final class Tensor {
     public Tensor to(Device target) {
         if (target.equals(device)) {
             return this;
+        }
+        if (storage instanceof PackedStorage p) {
+            return new Tensor(shape, target, target.backend().pack(backend().unpackToHost(p)));
         }
         if (dtype() == DType.FLOAT32) {
             return new Tensor(shape, target, target.backend().upload(toArray()));
@@ -430,7 +486,7 @@ public final class Tensor {
             return this;
         }
         Storage out = backend().allocateUninitialized(size(), type);
-        backend().convert(storage, out);
+        backend().convert(storage(), out);
         return new Tensor(shape, device, out);
     }
 
@@ -440,7 +496,7 @@ public final class Tensor {
      * @return the values
      */
     public double[] toDoubleArray() {
-        return backend().downloadDouble(storage);
+        return backend().downloadDouble(storage());
     }
 
     /**
@@ -454,7 +510,9 @@ public final class Tensor {
     public static void evaluate(java.util.List<Tensor> tensors) {
         Map<Device, java.util.List<Storage>> byDevice = new LinkedHashMap<>();
         for (Tensor t : tensors) {
-            byDevice.computeIfAbsent(t.device, d -> new java.util.ArrayList<>()).add(t.storage);
+            if (!(t.storage instanceof PackedStorage)) {
+                byDevice.computeIfAbsent(t.device, d -> new java.util.ArrayList<>()).add(t.storage);
+            }
         }
         byDevice.forEach((d, storages) -> d.backend().evaluate(storages));
     }
@@ -497,7 +555,7 @@ public final class Tensor {
      * @return the values
      */
     public float[] toArray() {
-        return backend().download(storage);
+        return backend().download(storage());
     }
 
     /**
@@ -535,7 +593,10 @@ public final class Tensor {
         if (newShape.size() != shape.size()) {
             throw new IllegalArgumentException("cannot reshape " + shape + " to " + newShape);
         }
-        return new Tensor(newShape, device, storage);
+        if (storage instanceof PackedStorage && newShape.equals(shape)) {
+            return this;
+        }
+        return new Tensor(newShape, device, storage());
     }
 
     /**
@@ -651,7 +712,7 @@ public final class Tensor {
         Shape outShape = Shape.of(dims);
         long[] strides = shape.strides();
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-        backend().copy(storage, start * strides[a], strides, dims, out, 0, outShape.strides());
+        backend().copy(storage(), start * strides[a], strides, dims, out, 0, outShape.strides());
         return new Tensor(outShape, device, out);
     }
 
@@ -694,7 +755,7 @@ public final class Tensor {
         long offset = 0;
         for (Tensor part : parts) {
             Tensor t = part.to(type);
-            first.backend().copy(t.storage, 0, t.shape.strides(), t.shape.toArray(), out, offset, outStrides);
+            first.backend().copy(t.storage(), 0, t.shape.strides(), t.shape.toArray(), out, offset, outStrides);
             offset += t.shape.dim(a) * outStrides[a];
         }
         return new Tensor(outShape, first.device, out);
@@ -702,7 +763,7 @@ public final class Tensor {
 
     private Tensor strided(long[] strides, Shape outShape) {
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-        backend().copy(storage, strides, outShape.toArray(), out);
+        backend().copy(storage(), strides, outShape.toArray(), out);
         return new Tensor(outShape, device, out);
     }
 
@@ -939,6 +1000,11 @@ public final class Tensor {
         return unary(UnaryOp.SOFTPLUS);
     }
 
+    /** @return each value rounded to the nearest whole number, ties to even */
+    public Tensor round() {
+        return unary(UnaryOp.ROUND);
+    }
+
     /**
      * Applies an activation function in one pass, instead of as a chain of simpler
      * operations.
@@ -950,7 +1016,7 @@ public final class Tensor {
      */
     public Tensor activation(ActivationOp op, float param) {
         Storage out = backend().allocateUninitialized(size(), dtype());
-        backend().activation(op, param, storage, out);
+        backend().activation(op, param, storage(), out);
         return new Tensor(shape, device, out);
     }
 
@@ -969,13 +1035,13 @@ public final class Tensor {
         }
         grad = grad.to(dtype());
         Storage out = backend().allocateUninitialized(size(), dtype());
-        backend().activationBackward(op, param, storage, grad.storage, out);
+        backend().activationBackward(op, param, storage(), grad.storage(), out);
         return new Tensor(shape, device, out);
     }
 
     private Tensor unary(UnaryOp op) {
         Storage out = backend().allocateUninitialized(size(), dtype());
-        backend().unary(op, storage, out);
+        backend().unary(op, storage(), out);
         return new Tensor(shape, device, out);
     }
 
@@ -986,8 +1052,8 @@ public final class Tensor {
         Tensor a = to(type);
         Tensor b = other.to(type);
         Storage out = backend().allocateUninitialized(outShape.size(), type);
-        backend().binary(op, a.storage, shape.broadcastStrides(outShape),
-                b.storage, other.shape.broadcastStrides(outShape), outShape.toArray(), out);
+        backend().binary(op, a.storage(), shape.broadcastStrides(outShape),
+                b.storage(), other.shape.broadcastStrides(outShape), outShape.toArray(), out);
         return new Tensor(outShape, device, out);
     }
 
@@ -1042,7 +1108,11 @@ public final class Tensor {
         if (rank() == 2 && other.rank() == 2) {
             Shape outShape = Shape.of(m, n);
             Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-            backend().matmul(storage, other.storage, m, k, n, out);
+            if (other.storage instanceof PackedStorage packed) {
+                backend().matmulPacked(storage(), packed, m, k, n, out);
+            } else {
+                backend().matmul(storage(), other.storage(), m, k, n, out);
+            }
             return new Tensor(outShape, device, out);
         }
         if (other.rank() == 2) {
@@ -1063,7 +1133,7 @@ public final class Tensor {
         outDims[batch.rank() + 1] = n;
         Shape outShape = Shape.of(outDims);
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-        backend().matmulBatched(a.storage, b.storage, count, m, k, n, out);
+        backend().matmulBatched(a.storage(), b.storage(), count, m, k, n, out);
         return new Tensor(outShape, device, out);
     }
 
@@ -1093,7 +1163,7 @@ public final class Tensor {
         }
         Shape outShape = geometry.columnShape();
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-        backend().im2col(storage, geometry, padValue, out);
+        backend().im2col(storage(), geometry, padValue, out);
         return new Tensor(outShape, device, out);
     }
 
@@ -1110,7 +1180,7 @@ public final class Tensor {
         }
         Shape outShape = geometry.imageShape();
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-        backend().col2im(storage, geometry, out);
+        backend().col2im(storage(), geometry, out);
         return new Tensor(outShape, device, out);
     }
 
@@ -1147,7 +1217,7 @@ public final class Tensor {
         Backend backend = q.backend();
         Storage out = backend.allocateUninitialized((long) d[0] * d[1] * d[3] * d[6], q.dtype());
         Storage lse = backend.allocateUninitialized((long) d[0] * d[1] * d[3], q.dtype());
-        backend.attention(q.storage, k.storage, v.storage, d, scale, causal, out, lse);
+        backend.attention(q.storage(), k.storage(), v.storage(), d, scale, causal, out, lse);
         return new Tensor[] {new Tensor(Shape.of(d[0], d[1], d[3], d[6]), q.device, out),
                 new Tensor(Shape.of(d[0], d[1], d[3]), q.device, lse)};
     }
@@ -1172,8 +1242,8 @@ public final class Tensor {
         Storage dq = backend.allocateUninitialized(q.shape.size(), q.dtype());
         Storage dk = backend.allocateUninitialized(k.shape.size(), q.dtype());
         Storage dv = backend.allocateUninitialized(v.shape.size(), q.dtype());
-        backend.attentionBackward(q.storage, k.storage, v.storage, out.storage, lse.storage,
-                grad.to(q.dtype()).storage, d, scale, causal, dq, dk, dv);
+        backend.attentionBackward(q.storage(), k.storage(), v.storage(), out.storage(), lse.storage(),
+                grad.to(q.dtype()).storage(), d, scale, causal, dq, dk, dv);
         return new Tensor[] {new Tensor(q.shape, q.device, dq), new Tensor(k.shape, q.device, dk),
                 new Tensor(v.shape, q.device, dv)};
     }
@@ -1227,7 +1297,7 @@ public final class Tensor {
         System.arraycopy(dims, a + 1, outDims, a + idx.length, dims.length - a - 1);
         Shape outShape = Shape.of(outDims);
         Storage out = backend().allocateUninitialized(outShape.size(), dtype());
-        backend().gather(storage, outer, dims[a], inner, indices.storage, count, out);
+        backend().gather(storage(), outer, dims[a], inner, indices.storage(), count, out);
         return new Tensor(outShape, device, out);
     }
 
@@ -1270,7 +1340,7 @@ public final class Tensor {
         System.arraycopy(dims, a + idxRank, outDims, a + 1, dims.length - a - idxRank);
         Shape outShape = Shape.of(outDims);
         Storage out = backend().allocate(outShape.size(), dtype());
-        backend().scatterAdd(storage, outer, Math.toIntExact(indices.size()), inner, indices.storage, length, out);
+        backend().scatterAdd(storage(), outer, Math.toIntExact(indices.size()), inner, indices.storage(), length, out);
         return new Tensor(outShape, device, out);
     }
 
@@ -1373,7 +1443,7 @@ public final class Tensor {
 
     private Tensor reduceAll(ReduceOp op) {
         Storage out = backend().allocateUninitialized(1, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
-        backend().reduce(op, storage, 1, size(), 1, out);
+        backend().reduce(op, storage(), 1, size(), 1, out);
         return new Tensor(Shape.of(), device, out);
     }
 
@@ -1398,7 +1468,7 @@ public final class Tensor {
             System.arraycopy(dims, a + 1, outDims, a, dims.length - a - 1);
         }
         Storage out = backend().allocateUninitialized(outer * inner, op == ReduceOp.ARGMAX ? DType.FLOAT32 : dtype());
-        backend().reduce(op, storage, outer, dims[a], inner, out);
+        backend().reduce(op, storage(), outer, dims[a], inner, out);
         return new Tensor(Shape.of(outDims), device, out);
     }
 

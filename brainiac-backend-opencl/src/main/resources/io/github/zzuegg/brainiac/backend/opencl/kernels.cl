@@ -40,7 +40,8 @@ ACC unary_op(int op, ACC v) {
         case 9: return v > (ACC) 0 ? (ACC) 1 : (ACC) 0;
         case 10: return v > (ACC) 0 ? (ACC) 1 : v < (ACC) 0 ? (ACC) -1 : v;
         case 11: return erf(v);
-        default: return softplus_(v);
+        case 12: return softplus_(v);
+        default: return rint(v);
     }
 }
 
@@ -596,4 +597,114 @@ __kernel void to_float(__global const T* x, __global float* y, long n) {
 __kernel void from_float(__global const float* x, __global T* y, long n) {
     long i = get_global_id(0);
     if (i < n) STORE(y, i, (ACC) x[i]);
+}
+
+// Packed (quantized) matrices: levels row-major [k, n], one signed byte each, or with
+// nibbles = 1 two per byte, the byte at (r / 2) * n + c holding row r (even) in its low four
+// bits and row r + 1 in its high four bits; one float scale per column for every `group` rows.
+int packed_level(__global const char* q, int r, int c, int n, int nibbles) {
+    if (!nibbles) {
+        return q[(long) r * n + c];
+    }
+    char b = q[(long) (r >> 1) * n + c];
+    return (r & 1) ? (b >> 4) : ((char) (b << 4) >> 4);
+}
+
+__kernel void unpack_packed(__global const char* q, __global const float* scales, __global T* z, int k, int n,
+                            int group, int nibbles) {
+    long idx = get_global_id(0);
+    if (idx >= (long) k * n) return;
+    int r = idx / n;
+    int c = idx % n;
+    STORE(z, idx, (ACC) (packed_level(q, r, c, n, nibbles) * scales[(long) (r / group) * n + c]));
+}
+
+#define PACKED_ROWS 8
+#define PACKED_QUADS 32
+#define PACKED_SLICES 8
+
+// the levels of columns c .. c + 3 at row r, read as one 32-bit word when n is a multiple of 4
+ACC4 packed_levels(__global const uint* q, uint r, uint c, uint n, int nibbles) {
+    uint b = nibbles ? (r >> 1) * n + c : r * n + c;
+    if (n % 4 == 0) {
+        int w = (int) q[b >> 2];
+        if (nibbles) {
+            int s = (r & 1) * 4;
+            uint u = (uint) w;
+            return (ACC4) ((int) (u << (28 - s)) >> 28, (int) (u << (20 - s)) >> 28, (int) (u << (12 - s)) >> 28,
+                           (int) (u << (4 - s)) >> 28);
+        }
+        uint u = (uint) w;
+        return (ACC4) ((int) (u << 24) >> 24, (int) (u << 16) >> 24, (int) (u << 8) >> 24, w >> 24);
+    }
+    __global const char* bytes = (__global const char*) q;
+    ACC v[4];
+    for (int j = 0; j < 4; j++) {
+        v[j] = c + j < n ? (ACC) packed_level(bytes, r, c + j, n, nibbles) : (ACC) 0;
+    }
+    return (ACC4) (v[0], v[1], v[2], v[3]);
+}
+
+// z = a x packed for up to PACKED_ROWS rows of a. Each work item computes four adjacent
+// columns; a work group covers 4 * PACKED_QUADS columns with PACKED_SLICES work items per
+// column quad, each over its own run of rows, and dimension 2 picks a piece of `chunk` rows.
+// Sums go to z[piece * m * n + ...], added up afterwards when there are several pieces.
+__kernel __attribute__((reqd_work_group_size(PACKED_QUADS, PACKED_SLICES, 1)))
+void matmul_packed(__global const T* a, __global const uint* q, __global const float* scales, __global T* z,
+                   int m, int k, int n, int group, int nibbles, int chunk) {
+    __local ACC4 sums[PACKED_SLICES][PACKED_QUADS];
+    uint quad = get_local_id(0);
+    uint slice = get_local_id(1);
+    uint c = get_global_id(0) * 4;
+    uint piece = get_global_id(2);
+    uint from = piece * chunk;
+    uint to = min((uint) k, from + chunk);
+    uint run = ((to - from + PACKED_SLICES - 1) / PACKED_SLICES + 1) & ~1u;
+    uint start = min(to, from + slice * run);
+    uint end = min(to, start + run);
+    ACC4 total[PACKED_ROWS];
+    for (int i = 0; i < PACKED_ROWS; i++) {
+        total[i] = (ACC4) 0;
+    }
+    if (c < (uint) n) {
+        uint r = start;
+        while (r < end) {
+            uint g = r / group;
+            uint stop = min(end, (g + 1) * group);
+            ACC4 part[PACKED_ROWS];
+            for (int i = 0; i < PACKED_ROWS; i++) {
+                part[i] = (ACC4) 0;
+            }
+            for (; r < stop; r++) {
+                ACC4 l = packed_levels(q, r, c, n, nibbles);
+                for (int i = 0; i < PACKED_ROWS; i++) {
+                    if (i < m) part[i] = fma((ACC4) LOAD(a, (long) i * k + r), l, part[i]);
+                }
+            }
+            long s = (long) g * n + c;
+            ACC4 sc = (ACC4) (scales[s], c + 1 < n ? scales[s + 1] : 0, c + 2 < n ? scales[s + 2] : 0,
+                              c + 3 < n ? scales[s + 3] : 0);
+            for (int i = 0; i < PACKED_ROWS; i++) {
+                if (i < m) total[i] = fma(part[i], sc, total[i]);
+            }
+        }
+    }
+    long out0 = (long) piece * m * n;
+    for (int i = 0; i < PACKED_ROWS; i++) {
+        if (i >= m) break;
+        sums[slice][quad] = total[i];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (slice == 0 && c < (uint) n) {
+            ACC4 t = sums[0][quad];
+            for (int s = 1; s < PACKED_SLICES; s++) {
+                t += sums[s][quad];
+            }
+            long o = out0 + (long) i * n + c;
+            STORE(z, o, t.x);
+            if (c + 1 < n) STORE(z, o + 1, t.y);
+            if (c + 2 < n) STORE(z, o + 2, t.z);
+            if (c + 3 < n) STORE(z, o + 3, t.w);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
 }

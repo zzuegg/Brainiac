@@ -1,0 +1,21 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "packed.glsl"
+// z = the values of a packed [k, n] matrix: level times its scale, in z's format.
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P { InWords q; InFloats scales; Buf z; uint k; uint n; uint group; uint nibbles; } p;
+void main() {
+    uint i = gid();
+    if (i >= p.k * p.n) return;
+    uint r = i / p.n;
+    uint c = i % p.n;
+    int level;
+    if (p.nibbles != 0) {
+        uint b = (r >> 1) * p.n + c;
+        level = bitfieldExtract(int(p.q.v[b >> 2]), int((b & 3u) * 8u + (r & 1u) * 4u), 4);
+    } else {
+        level = packed_byte(p.q, i);
+    }
+    STORE(p.z, i, ACC(level) * ACC(p.scales.v[(r / p.group) * p.n + c]));
+}

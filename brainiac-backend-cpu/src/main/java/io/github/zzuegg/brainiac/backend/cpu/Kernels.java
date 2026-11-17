@@ -35,6 +35,7 @@ final class Kernels {
             case SIGN -> { for (int i = from; i < to; i++) y[i] = Math.signum(x[i]); }
             case ERF -> { for (int i = from; i < to; i++) y[i] = (float) erf(x[i]); }
             case SOFTPLUS -> { for (int i = from; i < to; i++) y[i] = softplus(x[i]); }
+            case ROUND -> { for (int i = from; i < to; i++) y[i] = (float) Math.rint(x[i]); }
         }
     }
 
@@ -219,6 +220,23 @@ final class Kernels {
     }
 
     // ------------------------------------------------------------------ matmul
+
+    /**
+     * Columns {@code [j0, j1)} of {@code z += x * y} for every row, accumulating each value
+     * in the same order as {@link #matmulRows}; see {@code VectorKernels.matmulColumns}.
+     */
+    static void matmulColumns(float[] x, float[] y, float[] z, int m, int k, int n, int j0, int j1) {
+        for (int p = 0; p < k; p++) {
+            int yRow = p * n;
+            for (int i = 0; i < m; i++) {
+                float a = x[i * k + p];
+                int zRow = i * n;
+                for (int j = j0; j < j1; j++) {
+                    z[zRow + j] += a * y[yRow + j];
+                }
+            }
+        }
+    }
 
     /**
      * Rows {@code [from, to)} of {@code z = x * y}, with {@code x} of shape {@code [m, k]}
