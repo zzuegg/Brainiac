@@ -20,15 +20,40 @@ public final class Rope {
      *
      * @param dim the rotated features per head
      * @param theta the frequency base
-     * @param type {@code "default"}, {@code "linear"} or {@code "llama3"}
-     * @param factor the scaling factor (linear and llama3)
+     * @param type {@code "default"}, {@code "linear"}, {@code "llama3"}, {@code "yarn"} (Peng et
+     *     al., 2023) or {@code "dynamic"} (NTK-aware, the base grows once positions pass
+     *     {@code originalMaxPositions})
+     * @param factor the scaling factor (every type but default)
      * @param lowFreqFactor llama3's low-frequency factor
      * @param highFreqFactor llama3's high-frequency factor
-     * @param originalMaxPositions llama3's original context length
+     * @param originalMaxPositions the original context length (llama3, yarn and dynamic)
      * @param freqFactors divisors per frequency (GGUF's {@code rope_freqs}), or {@code null}
+     * @param betaFast yarn: frequencies with more rotations than this over the original context
+     *     are kept
+     * @param betaSlow yarn: frequencies with fewer rotations than this are interpolated
+     * @param attentionFactor yarn: the factor on cos and sin, or 0 for {@code 0.1 ln(factor) + 1}
      */
     public record Settings(int dim, double theta, String type, double factor, double lowFreqFactor,
-            double highFreqFactor, int originalMaxPositions, float[] freqFactors) {
+            double highFreqFactor, int originalMaxPositions, float[] freqFactors, double betaFast,
+            double betaSlow, double attentionFactor) {
+
+        /**
+         * Settings with yarn's default bands (32 and 1) and attention factor.
+         *
+         * @param dim the rotated features per head
+         * @param theta the frequency base
+         * @param type the scaling type
+         * @param factor the scaling factor
+         * @param lowFreqFactor llama3's low-frequency factor
+         * @param highFreqFactor llama3's high-frequency factor
+         * @param originalMaxPositions the original context length
+         * @param freqFactors divisors per frequency, or {@code null}
+         */
+        public Settings(int dim, double theta, String type, double factor, double lowFreqFactor,
+                double highFreqFactor, int originalMaxPositions, float[] freqFactors) {
+            this(dim, theta, type, factor, lowFreqFactor, highFreqFactor, originalMaxPositions, freqFactors, 32, 1,
+                    0);
+        }
 
         /**
          * Returns these settings with per-frequency divisors.
@@ -38,11 +63,29 @@ public final class Rope {
          */
         public Settings withFreqFactors(float[] factors) {
             return new Settings(dim, theta, type, factor, lowFreqFactor, highFreqFactor, originalMaxPositions,
-                    factors);
+                    factors, betaFast, betaSlow, attentionFactor);
+        }
+
+        /**
+         * Returns these settings with yarn's bands and attention factor.
+         *
+         * @param fast the rotations above which frequencies are kept
+         * @param slow the rotations below which frequencies are interpolated
+         * @param attention the factor on cos and sin, or 0 for the default
+         * @return the new settings
+         */
+        public Settings withYarn(double fast, double slow, double attention) {
+            return new Settings(dim, theta, type, factor, lowFreqFactor, highFreqFactor, originalMaxPositions,
+                    freqFactors, fast, slow, attention);
         }
     }
 
-    private final double[] inv;
+    private final Settings settings;
+    private double[] inv;
+    /** The factor on cos and sin: yarn's attention scaling, otherwise 1. */
+    private final float magnitude;
+    /** The context length the current dynamic frequencies were made for. */
+    private int dynamicLength;
 
     /**
      * Computes the frequencies.
@@ -50,14 +93,35 @@ public final class Rope {
      * @param s the settings
      */
     public Rope(Settings s) {
+        this.settings = s;
+        this.inv = frequencies(s, s.theta());
+        double m = 1;
+        if (s.type().equals("yarn")) {
+            m = s.attentionFactor() > 0 ? s.attentionFactor() : s.factor() <= 1 ? 1 : 0.1 * Math.log(s.factor()) + 1;
+        }
+        this.magnitude = (float) m;
+        this.dynamicLength = s.originalMaxPositions();
+    }
+
+    /** @return the inverse frequencies in use, one per rotated pair */
+    public double[] frequencies() {
+        return inv.clone();
+    }
+
+    /** @return the factor on cos and sin (yarn's attention scaling, otherwise 1) */
+    public double magnitude() {
+        return magnitude;
+    }
+
+    private static double[] frequencies(Settings s, double theta) {
         int half = s.dim() / 2;
-        inv = new double[half];
+        double[] inv = new double[half];
         for (int i = 0; i < half; i++) {
             // as transformers computes it: in float32
-            inv[i] = 1.0 / (float) Math.pow(s.theta(), (float) (2.0 * i) / s.dim());
+            inv[i] = 1.0 / (float) Math.pow(theta, (float) (2.0 * i) / s.dim());
         }
         switch (s.type()) {
-            case "default" -> {
+            case "default", "dynamic" -> {
             }
             case "linear" -> {
                 for (int i = 0; i < half; i++) {
@@ -78,6 +142,22 @@ public final class Rope {
                     inv[i] = f;
                 }
             }
+            case "yarn" -> {
+                // as transformers: pairs with many rotations over the original context keep
+                // their frequency, those with few are interpolated, a linear ramp between
+                double low = Math.max(0, Math.floor(correctionDim(s.betaFast(), s.dim(), theta,
+                        s.originalMaxPositions())));
+                double high = Math.min(s.dim() - 1, Math.ceil(correctionDim(s.betaSlow(), s.dim(), theta,
+                        s.originalMaxPositions())));
+                if (low == high) {
+                    high += 0.001;
+                }
+                for (int i = 0; i < half; i++) {
+                    double ramp = Math.clamp((i - low) / (high - low), 0, 1);
+                    double keep = 1 - ramp;
+                    inv[i] = inv[i] / s.factor() * (1 - keep) + inv[i] * keep;
+                }
+            }
             default -> throw new IllegalArgumentException("rope scaling " + s.type() + " is not supported yet");
         }
         if (s.freqFactors() != null) {
@@ -85,6 +165,35 @@ public final class Rope {
                 inv[i] /= s.freqFactors()[i];
             }
         }
+        return inv;
+    }
+
+    /** The pair index whose wavelength fits {@code rotations} times into {@code positions}. */
+    private static double correctionDim(double rotations, int dim, double theta, int positions) {
+        return dim * Math.log(positions / (rotations * 2 * Math.PI)) / (2 * Math.log(theta));
+    }
+
+    /**
+     * Dynamic NTK: once positions reach past the original context, the base grows to
+     * {@code theta (factor L / original - (factor - 1))^(dim / (dim - 2))} for length {@code L},
+     * as transformers does. Keys already cached keep the angles they were read with.
+     */
+    private void grow(int[][] positions) {
+        int longest = 0;
+        for (int[] row : positions) {
+            for (int p : row) {
+                longest = Math.max(longest, p + 1);
+            }
+        }
+        if (longest <= dynamicLength) {
+            return;
+        }
+        dynamicLength = longest;
+        Settings s = settings;
+        double base = s.theta() * Math.pow(s.factor() * longest / s.originalMaxPositions() - (s.factor() - 1),
+                s.dim() / (s.dim() - 2.0));
+        inv = frequencies(s, base);
+        last = null;
     }
 
     /**
@@ -100,6 +209,10 @@ public final class Rope {
         int steps = s.dim(2);
         int d = s.dim(3);
         int half = d / 2;
+        if (settings.type().equals("dynamic")) {
+            grow(positions);
+        }
+        double[] inv = this.inv;
         Device device = x.value().device();
         DType type = x.value().dtype();
         Tensor[] cached = last;
@@ -115,8 +228,8 @@ public final class Rope {
                 int row = (b * steps + t) * d;
                 for (int i = 0; i < half; i++) {
                     float angle = (float) positions[b][t] * (float) inv[i];
-                    float cs = (float) Math.cos(angle);
-                    float sn = (float) Math.sin(angle);
+                    float cs = (float) Math.cos(angle) * magnitude;
+                    float sn = (float) Math.sin(angle) * magnitude;
                     cos[row + i] = cs;
                     cos[row + half + i] = cs;
                     sin[row + i] = -sn;
