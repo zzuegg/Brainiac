@@ -170,6 +170,11 @@ public final class LearnedOptimizer implements Optimizer {
     }
 
     @Override
+    public void forget(Var parameter) {
+        state.remove(parameter);
+    }
+
+    @Override
     public float learningRate() {
         return learningRate;
     }

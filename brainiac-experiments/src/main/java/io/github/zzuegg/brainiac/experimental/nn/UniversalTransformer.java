@@ -90,6 +90,11 @@ public final class UniversalTransformer implements Layer {
     }
 
     @Override
+    public Var auxiliaryLoss() {
+        return loop.auxiliaryLoss();
+    }
+
+    @Override
     public List<Var> parameters() {
         return loop.parameters();
     }

@@ -101,6 +101,11 @@ public final class SharpnessAware implements Optimizer {
         base.step(parameters);
     }
 
+    @Override
+    public void forget(Var parameter) {
+        base.forget(parameter);
+    }
+
     /**
      * One full SAM step.
      *

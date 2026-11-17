@@ -1,12 +1,15 @@
 package io.github.zzuegg.brainiac.experimental.tensor;
 
+import io.github.zzuegg.brainiac.tensor.DType;
+import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 /**
  * The thin singular value decomposition {@code A = U diag(s) V^T} of an {@code [m, n]}
- * matrix, from the eigendecomposition of the smaller Gram matrix ({@link SymmetricEigen}), in
- * double precision on the host. Enough for the weight matrices of small models: low-rank
+ * matrix, from the eigendecomposition of the smaller Gram matrix (core
+ * {@link Linalg#eigh}), in double precision on the host. Core {@code Linalg} has no SVD yet. Enough for the weight matrices of small models: low-rank
  * factorization, PiSSA's principal adapters, rank selection by energy.
  *
  * @param u the left singular vectors {@code [m][k]}, {@code k = min(m, n)}
@@ -36,20 +39,31 @@ public record ThinSvd(double[][] u, double[] s, double[][] v) {
                     g[j][i] = sum;
                 }
             }
-            SymmetricEigen e = SymmetricEigen.of(g);
+            double[] flat = new double[n * n];
+            for (int i = 0; i < n; i++) {
+                System.arraycopy(g[i], 0, flat, i * n, n);
+            }
+            Tensor[] e = Linalg.eigh(Tensor.of(Shape.of(n, n), flat, DType.FLOAT64, Device.cpu()));
+            double[] values = e[0].toDoubleArray();
+            double[] vectors = e[1].toDoubleArray();
             double[] s = new double[n];
             double[][] u = new double[m][n];
+            double[][] v = new double[n][n];
             for (int k = 0; k < n; k++) {
-                s[k] = Math.sqrt(Math.max(0, e.values()[k]));
+                int c = n - 1 - k;   // eigh is ascending, singular values descend
+                s[k] = Math.sqrt(Math.max(0, values[c]));
+                for (int j = 0; j < n; j++) {
+                    v[j][k] = vectors[j * n + c];
+                }
                 for (int r = 0; r < m; r++) {
                     double sum = 0;
                     for (int j = 0; j < n; j++) {
-                        sum += a[r][j] * e.vectors()[j][k];
+                        sum += a[r][j] * v[j][k];
                     }
                     u[r][k] = s[k] > 1e-12 ? sum / s[k] : 0;
                 }
             }
-            return new ThinSvd(u, s, e.vectors());
+            return new ThinSvd(u, s, v);
         }
         double[][] t = new double[n][m];
         for (int i = 0; i < m; i++) {
@@ -66,7 +80,22 @@ public record ThinSvd(double[][] u, double[] s, double[][] v) {
      * @return its decomposition
      */
     public static ThinSvd of(Tensor a) {
-        return of(SymmetricEigen.toMatrix(a));
+        return of(toMatrix(a));
+    }
+
+    /**
+     * @param t a 2-D tensor
+     * @return its values as rows
+     */
+    public static double[][] toMatrix(Tensor t) {
+        int rows = t.shape().dim(0);
+        int cols = t.shape().dim(1);
+        double[] v = t.toDoubleArray();
+        double[][] m = new double[rows][cols];
+        for (int i = 0; i < rows; i++) {
+            System.arraycopy(v, i * cols, m[i], 0, cols);
+        }
+        return m;
     }
 
     /** @return the number of singular values */

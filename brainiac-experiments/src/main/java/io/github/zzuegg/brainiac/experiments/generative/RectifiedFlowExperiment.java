@@ -110,7 +110,8 @@ public final class RectifiedFlowExperiment {
      */
     public float[][] sampleEuler(float[][] start, int[] labels, int steps, float guidance, List<float[][]> trajectory) {
         List<Tensor> t = trajectory == null ? null : new ArrayList<>();
-        Tensor x = RectifiedFlow.sampleEuler(net.guided(labels, guidance), Nets.matrix(start), steps, t);
+        Tensor x = FlowMatching.sample(net.guided(labels, guidance), Nets.matrix(start), steps,
+                FlowMatching.Solver.EULER, t);
         copy(t, trajectory);
         return Nets.rows(x);
     }
@@ -127,14 +128,16 @@ public final class RectifiedFlowExperiment {
      */
     public float[][] sampleHeun(float[][] start, int[] labels, int steps, float guidance, List<float[][]> trajectory) {
         List<Tensor> t = trajectory == null ? null : new ArrayList<>();
-        Tensor x = RectifiedFlow.sampleHeun(net.guided(labels, guidance), Nets.matrix(start), steps, t);
+        Tensor x = FlowMatching.sample(net.guided(labels, guidance), Nets.matrix(start), steps,
+                FlowMatching.Solver.HEUN, t);
         copy(t, trajectory);
         return Nets.rows(x);
     }
 
+    /** Copies the states after each step; the core trajectory starts with the noise itself. */
     private static void copy(List<Tensor> from, List<float[][]> to) {
         if (from != null) {
-            for (Tensor x : from) {
+            for (Tensor x : from.subList(1, from.size())) {
                 to.add(Nets.rows(x));
             }
         }

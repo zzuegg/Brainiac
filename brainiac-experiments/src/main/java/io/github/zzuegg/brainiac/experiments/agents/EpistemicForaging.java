@@ -50,7 +50,7 @@ public final class EpistemicForaging {
         int rewarded = 0;
         int cue = 0;
         for (int e = 0; e < episodes; e++) {
-            agent.beginEpisode();
+            agent.startEpisode();
             float[] obs = env.reset(random.split());
             boolean done = false;
             boolean first = true;

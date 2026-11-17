@@ -1,10 +1,12 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
-/** Dense double-precision helpers shared by the post-training quantizers. */
+/** Dense double-precision helpers shared by the post-training quantizers and editors, on core {@link Linalg}. */
 final class QuantMath {
 
     private QuantMath() {
@@ -92,68 +94,43 @@ final class QuantMath {
         return h;
     }
 
-    /** Inverse of a symmetric positive definite matrix by Gauss-Jordan elimination. */
-    static double[][] inverse(double[][] a) {
-        int n = a.length;
-        double[][] m = new double[n][2 * n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m[i], 0, n);
-            m[i][n + i] = 1;
+    /** A double-precision host tensor of a matrix, for core {@link Linalg}. */
+    static Tensor float64(double[][] a) {
+        int rows = a.length;
+        int cols = a[0].length;
+        double[] flat = new double[rows * cols];
+        for (int r = 0; r < rows; r++) {
+            System.arraycopy(a[r], 0, flat, r * cols, cols);
         }
-        for (int col = 0; col < n; col++) {
-            int pivot = col;
-            for (int r = col + 1; r < n; r++) {
-                if (Math.abs(m[r][col]) > Math.abs(m[pivot][col])) {
-                    pivot = r;
-                }
-            }
-            double[] t = m[col];
-            m[col] = m[pivot];
-            m[pivot] = t;
-            double p = m[col][col];
-            for (int c = 0; c < 2 * n; c++) {
-                m[col][c] /= p;
-            }
-            for (int r = 0; r < n; r++) {
-                if (r != col && m[r][col] != 0) {
-                    double f = m[r][col];
-                    for (int c = 0; c < 2 * n; c++) {
-                        m[r][c] -= f * m[col][c];
-                    }
-                }
-            }
-        }
-        double[][] inv = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(m[i], n, inv[i], 0, n);
-        }
-        return inv;
+        return Tensor.of(Shape.of(rows, cols), flat, DType.FLOAT64, Device.cpu());
     }
 
-    /** The upper Cholesky factor {@code U} with {@code a = U^T U}. */
+    /** The rows of a 2-D tensor, in double precision. */
+    static double[][] rows(Tensor t) {
+        int rows = t.shape().dim(0);
+        int cols = t.shape().dim(1);
+        double[] v = t.toDoubleArray();
+        double[][] m = new double[rows][cols];
+        for (int r = 0; r < rows; r++) {
+            System.arraycopy(v, r * cols, m[r], 0, cols);
+        }
+        return m;
+    }
+
+    /** Inverse of a square matrix ({@link Linalg#inverse}). */
+    static double[][] inverse(double[][] a) {
+        return rows(Linalg.inverse(float64(a)));
+    }
+
+    /** Solves {@code a x = b} for square {@code a} ({@link Linalg#solve}). */
+    static double[] solve(double[][] a, double[] b) {
+        Tensor rhs = Tensor.of(Shape.of(b.length, 1), b, DType.FLOAT64, Device.cpu());
+        return Linalg.solve(float64(a), rhs).toDoubleArray();
+    }
+
+    /** The upper Cholesky factor {@code U} with {@code a = U^T U} ({@link Linalg#cholesky}). */
     static double[][] choleskyUpper(double[][] a) {
-        int n = a.length;
-        double[][] l = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j <= i; j++) {
-                double s = a[i][j];
-                for (int k = 0; k < j; k++) {
-                    s -= l[i][k] * l[j][k];
-                }
-                if (i == j) {
-                    l[i][i] = Math.sqrt(Math.max(s, 1e-12));
-                } else {
-                    l[i][j] = s / l[j][j];
-                }
-            }
-        }
-        double[][] u = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                u[i][j] = l[j][i];
-            }
-        }
-        return u;
+        return rows(Linalg.cholesky(float64(a)).transpose());
     }
 
     /** {@code ||x a - x b||_F^2 / n}: the mean squared output error of two weights on inputs x. */

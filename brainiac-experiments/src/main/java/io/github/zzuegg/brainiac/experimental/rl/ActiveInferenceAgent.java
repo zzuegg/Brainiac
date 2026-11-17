@@ -20,8 +20,8 @@ import java.util.SplittableRandom;
  * By default it plans by {@link #sophisticated(boolean) sophisticated inference}, which also
  * anticipates the belief updates to come.
  *
- * <p>Belief state is per episode; call {@link #beginEpisode()} before each one (the core
- * {@link Agent} has no episode-start hook).
+ * <p>Belief state is per episode: {@link #startEpisode()} forgets it, which the core rollouts
+ * call before each episode.
  */
 public final class ActiveInferenceAgent implements Agent {
 
@@ -104,7 +104,8 @@ public final class ActiveInferenceAgent implements Agent {
     }
 
     /** Forgets the belief, before a new episode. */
-    public void beginEpisode() {
+    @Override
+    public void startEpisode() {
         belief = null;
         lastAction = -1;
         step = 0;

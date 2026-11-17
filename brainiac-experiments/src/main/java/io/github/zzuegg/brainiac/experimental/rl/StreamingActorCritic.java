@@ -25,8 +25,8 @@ import java.util.SplittableRandom;
  * scaled by the running standard deviation of the discounted return, and an entropy bonus
  * whose sign follows the TD error.
  *
- * <p>{@link #fit} returns an {@link RlResult} without episodes (its builder is package-private
- * in the core); listeners are told about every episode.
+ * <p>{@link #fit} returns the episodes as an {@link RlResult}; listeners are told about every
+ * episode.
  */
 public final class StreamingActorCritic implements Learner {
 
@@ -137,6 +137,7 @@ public final class StreamingActorCritic implements Learner {
             float[] x = normalize(obs);
             int a = Math.round(act(obs, true)[0]);
             Environment.Step s = env.step(new float[] {a});
+            result.steps(t);
             observe(s.observation());
             episodeReturn += s.reward();
             episodeSteps++;
@@ -146,8 +147,10 @@ public final class StreamingActorCritic implements Learner {
             learn(x, a, r, normalize(s.observation()), s.terminated());
             if (s.done()) {
                 returns.add(episodeReturn);
+                Episode e = new Episode(returns.size(), episodeSteps, episodeReturn, t);
+                result.add(e);
                 if (listener != null) {
-                    listener.onEpisode(new Episode(returns.size(), episodeSteps, episodeReturn, t), result);
+                    listener.onEpisode(e, result);
                 }
                 actorTraces.reset();
                 criticTraces.reset();

@@ -25,7 +25,7 @@ import java.util.random.RandomGenerator;
  *
  * <p>Shapes stay static (always {@code c} tokens), so the compute saving is real. Top-c over
  * the sequence looks at future tokens, so for autoregressive sampling a small causal
- * predictor learns, from {@link #predictorLoss()}, whether a token would be in the top c;
+ * predictor learns, from {@link #auxiliaryLoss()}, whether a token would be in the top c;
  * {@code forward(x, false)} with {@link #useCausalPredictor(boolean)} routes with it.
  *
  * <p>The wrapped block maps {@code [b, c, features]} to its residual update of the same shape
@@ -96,11 +96,13 @@ public final class MixtureOfDepths implements Layer {
 
     /**
      * The binary cross-entropy of the causal predictor against the top-c choices of the
-     * last training forward pass; its input is detached, so it does not disturb the model.
+     * last training forward pass, which the core trainer adds to the loss; its input is
+     * detached, so it trains only the predictor and does not disturb the model.
      *
      * @return a scalar, or {@code null} if none was computed yet
      */
-    public Var predictorLoss() {
+    @Override
+    public Var auxiliaryLoss() {
         return lastPredictorLoss;
     }
 

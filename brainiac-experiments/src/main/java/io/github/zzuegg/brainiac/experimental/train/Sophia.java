@@ -136,6 +136,12 @@ public final class Sophia extends SlotOptimizer {
         }
     }
 
+    @Override
+    public void forget(Var parameter) {
+        super.forget(parameter);
+        hessian.remove(parameter);
+    }
+
     private void blend(Var p, Tensor estimate) {
         Tensor h = hessian.get(p);
         hessian.put(p, h == null ? estimate.mul(1 - beta2) : h.mul(beta2).add(estimate.mul(1 - beta2)));

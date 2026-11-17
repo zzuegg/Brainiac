@@ -127,6 +127,17 @@ public final class ContinuumOptimizer implements Optimizer {
     }
 
     @Override
+    public void forget(Var parameter) {
+        Group g = owner.get(parameter);
+        if (g == null) {
+            rest.forget(parameter);
+        } else {
+            g.sums.remove(parameter);
+            g.inner.forget(parameter);
+        }
+    }
+
+    @Override
     public float learningRate() {
         return learningRate;
     }

@@ -1,7 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
-import io.github.zzuegg.brainiac.experimental.tensor.SymmetricEigen;
 import io.github.zzuegg.brainiac.experimental.tensor.ThinSvd;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Dense;
@@ -59,8 +58,8 @@ public final class LowRankDense implements Layer {
      * @return the activation-aware factorization
      */
     public static LowRankDense activationAware(Dense base, Tensor inputs, int rank) {
-        double[][] w = SymmetricEigen.toMatrix(base.weight().value());
-        double[][] x = SymmetricEigen.toMatrix(inputs);
+        double[][] w = ThinSvd.toMatrix(base.weight().value());
+        double[][] x = ThinSvd.toMatrix(inputs);
         int in = w.length;
         double[] s = new double[in];
         for (double[] row : x) {

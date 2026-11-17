@@ -182,6 +182,22 @@ class OptimizerZooTest {
     }
 
     @Test
+    void forgettingAParameterDropsItsSlotsInWrappersToo() {
+        Var a = Var.param(Tensor.of(1, 2));
+        Var b = Var.param(Tensor.of(3, 4));
+        List<Var> params = List.of(a, b);
+        Lamb inner = Lamb.of(0.01f, 0);
+        Optimizer wrapped = new Lookahead(inner, 5, 0.5f);
+        a.setGrad(Tensor.of(1, 1));
+        b.setGrad(Tensor.of(1, 1));
+        wrapped.step(params);
+        assertTrue(inner.state(params).containsKey("0.m"));
+        wrapped.forget(a);
+        assertTrue(!inner.state(params).containsKey("0.m") && inner.state(params).containsKey("1.m"),
+                "the core Optimizer.forget hook reaches the slots: " + inner.state(params).keySet());
+    }
+
+    @Test
     void galoreKeepsLowRankStateAndPreconditionersAreCorrect() {
         GaLore g = new GaLore(0.01f, 4, 50, 1, 0);
         assertTrue(g.stateSize(256, 512) < 2L * 256 * 512 / 10);

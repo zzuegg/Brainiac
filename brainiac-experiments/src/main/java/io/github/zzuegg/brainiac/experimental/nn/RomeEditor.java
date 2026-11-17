@@ -6,8 +6,6 @@ import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
-import io.github.zzuegg.brainiac.tensor.Device;
-import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -143,16 +141,12 @@ public final class RomeEditor {
         return new Edit(k, old, vStar);
     }
 
-    /** Solves {@code A x = b} in double precision (core {@link Linalg#solve}). */
+    /** Solves {@code A x = b} in double precision. */
     static double[] solve(double[][] a, float[] b) {
-        int n = b.length;
-        double[] m = new double[n * n];
-        double[] r = new double[n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m, i * n, n);
+        double[] r = new double[b.length];
+        for (int i = 0; i < r.length; i++) {
             r[i] = b[i];
         }
-        return Linalg.solve(Tensor.of(Shape.of(n, n), m, DType.FLOAT64, Device.cpu()),
-                Tensor.of(Shape.of(n, 1), r, DType.FLOAT64, Device.cpu())).toDoubleArray();
+        return QuantMath.solve(a, r);
     }
 }

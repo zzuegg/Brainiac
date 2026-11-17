@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn.diffusion;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.diffusion.Denoiser;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.List;
@@ -12,11 +13,13 @@ import java.util.List;
  * makes one network both conditional and unconditional, which is what classifier-free
  * guidance needs (Ho and Salimans, <a href="https://arxiv.org/abs/2207.12598">2207.12598</a>).
  *
- * <p>{@link #bind} turns it into a plain core {@link Denoiser} for fixed labels, so it
- * trains with core {@code Diffusion.loss} / {@code FlowMatching.loss} and samples with
- * their samplers; {@link #guided} does the same with guidance.
+ * <p>It is a core {@link Denoiser.Conditional} whose condition is the label of each example
+ * as a number. {@link #bind} turns it into a plain core {@link Denoiser} for fixed labels
+ * ({@link Denoiser.Conditional#given}), so it trains with core {@code Diffusion.loss} /
+ * {@code FlowMatching.loss} and samples with their samplers; {@link #guided} does the same
+ * with core guidance ({@link Denoiser.Conditional#guided}).
  */
-public interface ConditionalDenoiser {
+public interface ConditionalDenoiser extends Denoiser.Conditional {
 
     /**
      * Runs the network.
@@ -27,6 +30,37 @@ public interface ConditionalDenoiser {
      * @return the prediction, the shape of {@code noisy}
      */
     Var apply(Var noisy, Tensor time, int[] labels);
+
+    /**
+     * Runs the network with the labels given as a tensor, as core conditional denoisers
+     * are called.
+     *
+     * @param noisy the noisy data
+     * @param time per example
+     * @param condition the class of each example as a number {@code [batch]}, {@code -1} for none
+     * @return the prediction
+     */
+    @Override
+    default Var apply(Var noisy, Tensor time, Tensor condition) {
+        float[] c = condition.toArray();
+        int[] labels = new int[c.length];
+        for (int i = 0; i < c.length; i++) {
+            labels[i] = Math.round(c[i]);
+        }
+        return apply(noisy, time, labels);
+    }
+
+    /**
+     * @param labels class per example, {@code -1} for none
+     * @return the labels as a core condition tensor {@code [batch]}
+     */
+    static Tensor condition(int[] labels) {
+        float[] f = new float[labels.length];
+        for (int i = 0; i < f.length; i++) {
+            f[i] = labels[i];
+        }
+        return Tensor.of(Shape.of(f.length), f);
+    }
 
     /** @return the trainable parameters */
     List<Var> parameters();
@@ -44,8 +78,7 @@ public interface ConditionalDenoiser {
      * @return a core denoiser
      */
     default Denoiser bind(int[] labels) {
-        int[] l = labels.clone();
-        return (noisy, time) -> apply(noisy, time, l);
+        return given(condition(labels));
     }
 
     /**
@@ -57,17 +90,12 @@ public interface ConditionalDenoiser {
      * @return a core denoiser
      */
     default Denoiser guided(int[] labels, float weight) {
-        int[] l = labels.clone();
-        int[] none = new int[l.length];
+        if (weight == 1f) {
+            return bind(labels);
+        }
+        int[] none = new int[labels.length];
         java.util.Arrays.fill(none, -1);
-        return (noisy, time) -> {
-            Tensor cond = apply(noisy, time, l).value();
-            if (weight == 1f) {
-                return Var.of(cond);
-            }
-            Tensor unc = apply(noisy, time, none).value();
-            return Var.of(unc.add(cond.sub(unc).mul(weight)));
-        };
+        return guided(condition(labels), condition(none), weight);
     }
 
     /**

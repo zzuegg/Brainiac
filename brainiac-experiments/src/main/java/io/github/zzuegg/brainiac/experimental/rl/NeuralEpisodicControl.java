@@ -27,8 +27,8 @@ import java.util.SplittableRandom;
  * backpropagating the lookup error, and the stored keys are re-embedded after every update so
  * they never go stale (the paper instead updates the keys by gradient).
  *
- * <p>{@link #fit} returns an {@link RlResult} without episodes (its builder is package-private
- * in the core); listeners are told about every episode.
+ * <p>{@link #fit} returns the episodes as an {@link RlResult}; listeners are told about every
+ * episode.
  */
 public final class NeuralEpisodicControl implements Learner {
 
@@ -165,9 +165,12 @@ public final class NeuralEpisodicControl implements Learner {
         List<Float> rewards = new ArrayList<>();
         float[] o = env.reset(random.split());
         double episodeReturn = 0;
+        int episodeSteps = 0;
         for (long t = 1; t <= steps; t++) {
             int a = Math.round(act(o, true)[0]);
             Environment.Step s = env.step(new float[] {a});
+            result.steps(t);
+            episodeSteps++;
             obs.add(o);
             acts.add(a);
             rewards.add(s.reward());
@@ -187,10 +190,13 @@ public final class NeuralEpisodicControl implements Learner {
                     rewards.removeFirst();
                 }
                 returns.add(episodeReturn);
+                Episode e = new Episode(returns.size(), episodeSteps, episodeReturn, t);
+                result.add(e);
                 if (listener != null) {
-                    listener.onEpisode(new Episode(returns.size(), 0, episodeReturn, t), result);
+                    listener.onEpisode(e, result);
                 }
                 episodeReturn = 0;
+                episodeSteps = 0;
                 o = env.reset(random.split());
             } else {
                 o = s.observation();

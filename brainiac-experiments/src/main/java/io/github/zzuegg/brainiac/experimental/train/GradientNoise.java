@@ -59,6 +59,11 @@ public final class GradientNoise implements Optimizer {
     }
 
     @Override
+    public void forget(Var parameter) {
+        inner.forget(parameter);
+    }
+
+    @Override
     public float learningRate() {
         return inner.learningRate();
     }

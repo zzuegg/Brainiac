@@ -5,9 +5,6 @@ import io.github.zzuegg.brainiac.nn.Dense;
 import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.DType;
-import io.github.zzuegg.brainiac.tensor.Device;
-import io.github.zzuegg.brainiac.tensor.Linalg;
-import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.List;
@@ -157,7 +154,7 @@ public final class LastLayerLaplace {
             h[i] = ggn[i].clone();
             h[i][i] += precision;
         }
-        covariance = invert(h);
+        covariance = QuantMath.inverse(h);
     }
 
     /** @return the prior precision */
@@ -231,21 +228,6 @@ public final class LastLayerLaplace {
                 z[c] = mu[c] / Math.sqrt(1 + Math.PI / 8 * Math.max(var, 0));
             }
             out[s] = softmax(z);
-        }
-        return out;
-    }
-
-    /** Inverts a symmetric positive definite matrix in double precision (core {@link Linalg#inverse}). */
-    static double[][] invert(double[][] a) {
-        int n = a.length;
-        double[] m = new double[n * n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(a[i], 0, m, i * n, n);
-        }
-        double[] inv = Linalg.inverse(Tensor.of(Shape.of(n, n), m, DType.FLOAT64, Device.cpu())).toDoubleArray();
-        double[][] out = new double[n][n];
-        for (int i = 0; i < n; i++) {
-            System.arraycopy(inv, i * n, out[i], 0, n);
         }
         return out;
     }
