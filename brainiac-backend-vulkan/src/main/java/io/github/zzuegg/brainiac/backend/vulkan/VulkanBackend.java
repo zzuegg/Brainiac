@@ -26,7 +26,8 @@ import java.util.Map;
  *
  * <p>System properties: {@code brainiac.vulkan.device} picks a device by index (the list is
  * in {@link #status()}); {@code brainiac.vulkan.devices=all} also allows CPU drivers such as
- * lavapipe; {@code brainiac.vulkan.memory} sets the memory budget in MB.
+ * lavapipe; {@code brainiac.vulkan.memory} sets the memory budget in MB;
+ * {@code brainiac.vulkan.statistics=true} prints {@link #statistics()} at exit.
  */
 public final class VulkanBackend implements Backend {
 
@@ -50,6 +51,18 @@ public final class VulkanBackend implements Backend {
     private record Tables(VkStorage im2col, VkStorage offsets, VkStorage entries) {
     }
 
+    private static VulkanBackend first;
+
+    /**
+     * The first instance that found a device, normally the one behind the {@code vulkan}
+     * {@link Device}; for {@link #statistics()}.
+     *
+     * @return the instance, if any
+     */
+    public static synchronized java.util.Optional<VulkanBackend> loaded() {
+        return java.util.Optional.ofNullable(first);
+    }
+
     /** Creates the backend; called by {@link java.util.ServiceLoader}. */
     public VulkanBackend() {
     }
@@ -70,6 +83,15 @@ public final class VulkanBackend implements Backend {
             initialized = true;
             try {
                 vk = new VkContext();
+                synchronized (VulkanBackend.class) {
+                    if (first == null) {
+                        first = this;
+                    }
+                }
+                if (Boolean.getBoolean("brainiac.vulkan.statistics")) {
+                    Runtime.getRuntime().addShutdownHook(new Thread(
+                            () -> System.err.println(name() + ": " + statistics()), "vulkan-statistics"));
+                }
             } catch (RuntimeException | LinkageError e) {
                 unavailable = e.getMessage() == null ? e.toString() : e.getMessage();
                 vk = null;
@@ -101,7 +123,7 @@ public final class VulkanBackend implements Backend {
             return "not initialized";
         }
         return vk.dispatches + " dispatches, " + vk.barriers + " barriers, " + vk.submits + " submits, " + vk.waits
-                + " waits, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.peakInUse() >> 20) + " MB peak in use";
+                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.peakInUse() >> 20) + " MB peak in use";
     }
 
     /** Waits until all recorded work is done; for timing. */

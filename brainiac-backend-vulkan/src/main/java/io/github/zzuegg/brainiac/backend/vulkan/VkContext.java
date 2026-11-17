@@ -144,6 +144,9 @@ final class VkContext {
     long barriers;
     long submits;
     long waits;
+    long reclaims;
+    long collections;
+    private long createdSinceCollect;
 
     /** Commands recorded together, submitted with one fence. */
     private static final class Batch {
@@ -304,7 +307,8 @@ final class VkContext {
             VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.calloc(st);
             vkGetPhysicalDeviceProperties(pd, props);
             String name = props.deviceNameString();
-            int maxGroups = props.limits().maxComputeWorkGroupCount(0);
+            // unsigned: AMD reports 2^32 - 1 here, which as an int would be -1
+            int maxGroups = (int) Math.min(Integer.toUnsignedLong(props.limits().maxComputeWorkGroupCount(0)), 65535);
             String problem = null;
             if (VK_API_VERSION_MAJOR(props.apiVersion()) == 1 && VK_API_VERSION_MINOR(props.apiVersion()) < 2) {
                 problem = "needs Vulkan 1.2";
@@ -383,6 +387,21 @@ final class VkContext {
     }
 
     private Slot create(long size) {
+        createdSinceCollect += size;
+        if (createdSinceCollect > Math.min(128L << 20, budget / 16)) {
+            // Slots return to the pool only once the JVM collects their tensors, which can
+            // take long when little Java memory is allocated (inference queues many batches
+            // and releases nothing). Ask for it rather than filling the device with new blocks.
+            createdSinceCollect = 0;
+            collections++;
+            System.gc();
+            drainReleased();
+            ArrayDeque<Slot> list = free.get(size);
+            Slot s = list == null ? null : list.poll();
+            if (s != null) {
+                return s;
+            }
+        }
         if (size > SMALL_SLOT) {
             Block b = block(size, deviceLocalType, false);
             dedicated.add(b);
@@ -411,6 +430,7 @@ final class VkContext {
 
     /** Frees unused dedicated blocks after collecting garbage, to stay within the budget. */
     private void reclaim() {
+        reclaims++;
         finish();
         System.gc();
         try {

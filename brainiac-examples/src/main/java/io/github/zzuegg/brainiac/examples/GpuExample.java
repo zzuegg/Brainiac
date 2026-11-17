@@ -34,7 +34,7 @@ public final class GpuExample {
         int size = args.length > 0 ? Integer.parseInt(args[0]) : 1024;
         System.out.println("devices: " + Device.available());
         System.out.println("OpenCL: " + new OpenClBackend().status());
-        System.out.println("Vulkan: " + new VulkanBackend().status());
+        System.out.println("Vulkan: " + VulkanBackend.loaded().orElseGet(VulkanBackend::new).status());
         Tensor a = Tensor.uniform(Shape.of(size, size), -1, 1, new SplittableRandom(1));
         Tensor b = Tensor.uniform(Shape.of(size, size), -1, 1, new SplittableRandom(2));
         for (Device d : Device.available()) {
@@ -58,5 +58,6 @@ public final class GpuExample {
         }
         System.out.println();
         System.out.print(Benchmark.table(reports));
+        VulkanBackend.loaded().ifPresent(v -> System.out.println("Vulkan: " + v.statistics()));
     }
 }

@@ -639,7 +639,8 @@ back. Tensors are slots in large device memory blocks, pooled by size. It stores
 only and does not fuse operations (yet). System properties: `brainiac.vulkan.devices`
 (`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
 (index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
-validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests).
+validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
+`brainiac.vulkan.statistics` (`true` prints the counts below at exit).
 `VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
 barriers and submits. The examples take `--device vulkan` or `--device opencl` to pick one
 GPU backend when both are present. CI runs the tests on lavapipe.
