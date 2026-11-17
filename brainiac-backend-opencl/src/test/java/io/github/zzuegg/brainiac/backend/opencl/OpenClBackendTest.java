@@ -158,6 +158,18 @@ class OpenClBackendTest {
                 .reshape(1, 37, 50).expand(Shape.of(3, 37, 50)).add(0)), n1);
         Tensor midK = random(13, 40, 9000);
         same(DType.FLOAT32, "mid-tile split", t -> t.matmul(t.transpose()), midK);
+        // a few rows (decoding a token): matmul_rows, ragged column quads, pieces of k, batches
+        Tensor row = random(14, 1, 4100);
+        Tensor rows = random(15, 8, 300);
+        Tensor weights = random(16, 4100, 131);
+        same(DType.FLOAT32, "one-row matmul", t -> t.matmul(weights.to(t.device())), row);
+        same(DType.FLOAT16, "one-row half matmul", t -> t.matmul(weights.to(DType.FLOAT16).to(t.device())), row);
+        same(DType.FLOAT32, "eight-row matmul", t -> t.matmul(weights.slice(0, 0, 300).add(0).to(t.device())), rows);
+        same(DType.FLOAT32, "few rows, transposed a", t -> t.transpose().add(0).transpose()
+                .matmul(weights.slice(0, 0, 300).slice(1, 0, 6).add(0).to(t.device())), rows);
+        same(DType.FLOAT32, "few rows, transposed b", t -> t.matmul(t.transpose().slice(1, 0, 3)), rows);
+        same(DType.FLOAT32, "few-row batched", t -> t.reshape(2, 4, 300).matmul(weights.slice(0, 0, 300)
+                .to(t.device()).reshape(1, 300, 131).expand(Shape.of(2, 300, 131)).mul(2)), rows);
         Tensor big = random(5, 300_000);
         same(DType.FLOAT32, "long sum", t -> t.sum().reshape(1).mul(1e-3f), big);
         same(DType.FLOAT32, "long max", Tensor::max, big);

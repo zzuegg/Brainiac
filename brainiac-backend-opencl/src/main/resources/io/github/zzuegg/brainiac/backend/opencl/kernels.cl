@@ -708,3 +708,69 @@ void matmul_packed(__global const T* a, __global const uint* q, __global const f
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 }
+
+// z = a x b for up to PACKED_ROWS rows of a, the shape of decoding a token: one tile per
+// output column would leave most of the device idle and read b in short runs. As in
+// matmul_packed, each work item computes four adjacent columns (b's columns adjacent, bCol 1)
+// over its own run of rows of b, PACKED_SLICES items per column quad add theirs up in order,
+// and dimension 2 picks batch entry and piece of `chunk` rows: sums go to
+// z[(batch * pieces + piece) * m * n + ...], added up afterwards when there are several pieces.
+__kernel __attribute__((reqd_work_group_size(PACKED_QUADS, PACKED_SLICES, 1)))
+void matmul_rows(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
+                 long strideA, long strideB, long aOff, long aRow, long aCol, long bOff, long bRow,
+                 int pieces, int chunk) {
+    __local ACC4 sums[PACKED_SLICES][PACKED_QUADS];
+    uint quad = get_local_id(0);
+    uint slice = get_local_id(1);
+    uint c = get_global_id(0) * 4;
+    uint g = get_global_id(2);
+    uint piece = g % (uint) pieces;
+    long batch = g / (uint) pieces;
+    uint from = piece * chunk;
+    uint to = min((uint) k, from + chunk);
+    uint run = (to - from + PACKED_SLICES - 1) / PACKED_SLICES;
+    uint start = min(to, from + slice * run);
+    uint end = min(to, start + run);
+    long aBase = aOff + batch * strideA;
+    long bBase = bOff + batch * strideB + c;
+    ACC4 total[PACKED_ROWS];
+    for (int i = 0; i < PACKED_ROWS; i++) {
+        total[i] = (ACC4) 0;
+    }
+    if (c + 3 < (uint) n) {
+        for (uint r = start; r < end; r++) {
+            long o = bBase + (long) r * bRow;
+            ACC4 l = (ACC4) (LOAD(b, o), LOAD(b, o + 1), LOAD(b, o + 2), LOAD(b, o + 3));
+            for (int i = 0; i < PACKED_ROWS; i++) {
+                if (i < m) total[i] = fma((ACC4) LOAD(a, aBase + i * aRow + (long) r * aCol), l, total[i]);
+            }
+        }
+    } else if (c < (uint) n) {
+        for (uint r = start; r < end; r++) {
+            long o = bBase + (long) r * bRow;
+            ACC4 l = (ACC4) (LOAD(b, o), c + 1 < (uint) n ? LOAD(b, o + 1) : (ACC) 0,
+                             c + 2 < (uint) n ? LOAD(b, o + 2) : (ACC) 0, (ACC) 0);
+            for (int i = 0; i < PACKED_ROWS; i++) {
+                if (i < m) total[i] = fma((ACC4) LOAD(a, aBase + i * aRow + (long) r * aCol), l, total[i]);
+            }
+        }
+    }
+    long out0 = ((long) batch * pieces + piece) * m * n;
+    for (int i = 0; i < PACKED_ROWS; i++) {
+        if (i >= m) break;
+        sums[slice][quad] = total[i];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (slice == 0 && c < (uint) n) {
+            ACC4 t = sums[0][quad];
+            for (int s = 1; s < PACKED_SLICES; s++) {
+                t += sums[s][quad];
+            }
+            long o = out0 + (long) i * n + c;
+            STORE(z, o, t.x);
+            if (c + 1 < (uint) n) STORE(z, o + 1, t.y);
+            if (c + 2 < (uint) n) STORE(z, o + 2, t.z);
+            if (c + 3 < (uint) n) STORE(z, o + 3, t.w);
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+}

@@ -458,7 +458,7 @@ public final class OpenClBackend implements Backend {
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "matmul_mid", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
-                "attention_dkv", "unpack_packed", "matmul_packed")) {
+                "attention_dkv", "unpack_packed", "matmul_packed", "matmul_rows")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -2088,6 +2088,9 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
         ClStorage o = cl(out);
+        if (m <= PACKED_ROWS && ROWS_KERNEL && k >= ROWS_MIN_K && rowsProduct(a, b, o, batch, m, k, n)) {
+            return;
+        }
         int w = tileWidth(batch, m, n);
         // a work item computes tile / 4 rows of a column, or w x w outputs of a 16w x 16w tile
         long[] global = w > 0 ? new long[] {roundUp(n, 16 * w) / w, roundUp(m, 16 * w) / w, batch}
@@ -2124,6 +2127,47 @@ public final class OpenClBackend implements Backend {
         String name = kernelName(w);
         launchMatMul(o, name, program(o.dtype).kernels().get(name), global, local, args, 0);
         generation++;
+    }
+
+    /**
+     * {@code -Dbrainiac.opencl.rowsKernel=false} keeps products of a few rows (decoding a token)
+     * on the tiled kernels instead of {@code matmul_rows}.
+     */
+    private static final boolean ROWS_KERNEL =
+            !"false".equalsIgnoreCase(System.getProperty("brainiac.opencl.rowsKernel"));
+
+    /** The shortest sums {@code matmul_rows} takes: shorter ones are too little work to split. */
+    private static final int ROWS_MIN_K = 64;
+
+    /**
+     * Computes a product of at most {@link #PACKED_ROWS} rows with {@code matmul_rows}, which
+     * spreads each column's sum over a work group (and, for wide types, over pieces of k) and
+     * reads b's rows in long runs, instead of one 16 x 16 tile per 16 columns with 15 of its 16
+     * rows idle. Not recorded for fusion: the chain using the product runs as its own kernel.
+     * False when b's columns are not adjacent (a transposed view), which it would read scattered.
+     */
+    private boolean rowsProduct(Storage a, Storage b, ClStorage o, int batch, int m, int k, int n) {
+        Operand y = operand(b, o.dtype, batch, k, n, 1);
+        if (y.col() != 1 && n > 1) {
+            return false;
+        }
+        Operand x = operand(a, o.dtype, batch, m, k, 1);
+        long columnGroups = (n + 127) / 128;
+        boolean wide = o.dtype == DType.FLOAT32 || o.dtype == DType.FLOAT64;
+        // narrow types would round the partial sums of pieces: one piece, summed in ACC
+        int pieces = wide ? packedPieces(k, columnGroups * batch) : 1;
+        int chunk = (k + pieces - 1) / pieces;
+        pieces = (k + chunk - 1) / chunk;
+        long mn = (long) m * n;
+        ClStorage target = pieces == 1 ? o : raw(batch * pieces * mn, o.dtype);
+        run(o.dtype, "matmul_rows", new long[] {columnGroups * 32, 8, (long) batch * pieces}, new long[] {32, 8, 1},
+                x.storage(), y.storage(), target, m, k, n, x.batch(), y.batch(), x.offset(), x.row(), x.col(),
+                y.offset(), y.row(), pieces, chunk);
+        if (pieces > 1) {
+            reduce(ReduceOp.SUM, target, batch, pieces, mn, o);
+            // not released here: the reduction may be deferred
+        }
+        return true;
     }
 
     /**
