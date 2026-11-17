@@ -673,6 +673,512 @@
     });
   }
 
+  // ---------- live builder ----------
+  // Served by the studio, the builder offers every layer the installed modules have, found from
+  // their API, and checks each change with the core's own shape rules: a wire or a value that
+  // would break a block that worked is refused, and the reason is shown.
+  const B = {
+    catalog: null,                        // GET /api/builder/layers
+    graph: store.get("builderDraft", null) || { name: "my-model", nodes: [{ id: "in", op: "input", shape: [3, 32, 32], x: 40, y: 120 }] },
+    check: null,                          // the last check: {ok, nodes: {id: {shape} | {error}}, input, output, outputShape}
+    sel: null,                            // the selected block's id
+    search: "",
+    refusal: null,                        // {id, text}: the last change that was refused, and why
+    built: null,                          // the last build: {parameters, file, summary, ...}
+    building: false,
+    graphs: [],                           // saved graphs
+    view: store.get("builderView", { x: 0, y: 0, s: 1 }),
+    openGroups: new Set(),
+  };
+  const opLabel = { input: "Input", add: "Add", multiply: "Multiply", concat: "Concat" };
+  // a block still being wired: not an error to refuse, only something to finish
+  const incomplete = err => /not connected|needs at least two inputs/.test(err || "");
+  const entryOf = n => n.op === "layer" ? B.catalog?.entries.find(e => e.key === n.entry) : null;
+  const entryLabel = e => e.group + (["new", "of"].includes(e.name) ? "" : "." + e.name);
+  const nodeLabel = n => n.op === "layer" ? (entryOf(n) ? entryLabel(entryOf(n)) : n.entry.split("#").pop()) : opLabel[n.op];
+  const shapeOf = id => B.check?.nodes?.[id]?.shape || null;
+  const errorOf = id => B.check?.nodes?.[id]?.error || null;
+  const kindOf = s => !s ? "vector" : s.length >= 3 ? "image" : s.length === 2 ? "seq" : "vector";
+  const fmtShape = s => s ? s.join(" × ") : "?";
+  const multiIn = n => n.op === "add" || n.op === "multiply" || n.op === "concat" || (n.op === "layer" && entryOf(n)?.multiInput);
+  const fmtCount = n => n >= 1e9 ? (n / 1e9).toFixed(2) + " B" : n >= 1e6 ? (n / 1e6).toFixed(2) + " M" : n >= 1e3 ? (n / 1e3).toFixed(1) + " k" : String(n);
+  function saveDraft() { store.set("builderDraft", B.graph); }
+
+  // A first value for each parameter, so a new block works at once; the person changes it after.
+  function guess(p) {
+    const n = p.name.toLowerCase();
+    if (p.kind === "random") return null;
+    if (p.kind === "choice") return p.choices.includes("RELU") ? "RELU" : p.choices.includes("HE") ? "HE" : p.choices[0];
+    if (p.kind === "boolean") return false;
+    if (p.kind === "string") return "";
+    let v = 1;
+    if (p.kind === "float" || p.kind === "double") v = /rate|drop|prob|eps|alpha|slope|momentum/.test(n) ? 0.1 : 1;
+    else if (/kernel|window|size$/.test(n) && p.array) v = 3;
+    else if (/kernel|window/.test(n)) v = 3;
+    else if (/head/.test(n)) v = 4;
+    else if (/units|filters|features|dim|channels|hidden|width|out|size|vocab|capacity|experts|slots/.test(n)) v = 64;
+    else if (/group|stride|dilation|multiplier/.test(n)) v = 1;   // the values that change nothing
+    else if (/factor|scale/.test(n)) v = 2;
+    return p.array ? (/kernel|window/.test(n) ? [v, v] : [v]) : v;
+  }
+
+  // The graph as the studio reads it: no positions, options only when switched on.
+  function wireGraph(g) {
+    return {
+      output: g.output || undefined,
+      nodes: g.nodes.map(n => ({
+        id: n.id, op: n.op, shape: n.shape, entry: n.entry, inputs: n.inputs || [],
+        args: n.args, options: Object.entries(n.options || {}).map(([key, args]) => ({ key, args })),
+      })),
+    };
+  }
+
+  let checkSeq = 0;
+  async function runCheck(g) {
+    const seq = ++checkSeq;
+    const r = await postJson("/api/builder/check", { graph: wireGraph(g) });
+    return seq === checkSeq ? r : null;
+  }
+
+  // Applies a change, checks it, and keeps it only if no block that worked stops working (and
+  // the block it is aimed at works). Returns true if it was kept.
+  async function tryChange(change, focus) {
+    const before = JSON.parse(JSON.stringify(B.graph)), was = B.check;
+    change(B.graph);
+    let r;
+    try { r = await runCheck(B.graph); } catch (e) { B.graph = before; B.refusal = { id: focus, text: e.message }; renderBuilder(); return false; }
+    if (!r) return false;
+    const broken = Object.entries(r.nodes).filter(([id, v]) => v.error && (!was || was.nodes[id]?.shape || id === focus))
+      .filter(([id, v]) => !(id === focus && incomplete(v.error)));
+    if (broken.length) {
+      B.graph = before;
+      const [id, v] = broken.find(([id]) => id === focus) || broken[0];
+      B.refusal = { id: focus || id, text: `${nodeLabel(B.graph.nodes.find(n => n.id === id) || { op: "input" })}: ${v.error}` };
+      renderBuilder();
+      return false;
+    }
+    B.check = r; B.refusal = null; B.built = null;
+    saveDraft();
+    renderBuilder();
+    return true;
+  }
+
+  async function recheck() {
+    try { const r = await runCheck(B.graph); if (r) { B.check = r; renderBuilder(); } } catch (e) { console.warn("cannot check the graph", e); }
+  }
+
+  async function loadBuilder() {
+    try {
+      const [cat, gs] = await Promise.all([api("/api/builder/layers"), api("/api/builder/graphs")]);
+      B.catalog = cat; B.graphs = gs.graphs || [];
+      await recheck();
+      if (state.view === "builder") render();
+    } catch (e) { console.warn("cannot load the builder", e); }
+  }
+
+  function newId(base) {
+    const b = base.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 12) || "block";
+    for (let i = 1; ; i++) if (!B.graph.nodes.some(n => n.id === b + i)) return b + i;
+  }
+
+  // Adds a block; from the selected block when there is one and the wire works.
+  async function addBlock(spec, at) {
+    const sel = B.graph.nodes.find(n => n.id === B.sel);
+    const node = { id: newId(spec.label), inputs: [], x: 0, y: 0, ...spec.node };
+    delete node.label;
+    if (at) { node.x = at.x; node.y = at.y; }
+    else if (sel) { node.x = sel.x + 240; node.y = sel.y; }
+    else { node.x = 40 + 240 * Math.min(6, B.graph.nodes.length); node.y = 120; }
+    // nudge it off any block already there
+    while (B.graph.nodes.some(n => Math.abs(n.x - node.x) < 60 && Math.abs(n.y - node.y) < 60)) node.y += 90;
+    B.graph.nodes.push(node);
+    B.sel = node.id;
+    if (sel && !at && node.op !== "input") {
+      const ok = await tryChange(g => { g.nodes.find(n => n.id === node.id).inputs = [sel.id]; }, node.id);
+      if (ok) return;
+    }
+    saveDraft();
+    await recheck();
+    renderBuilder();
+  }
+
+  function paletteSpec(e) {
+    return { label: e.group, node: { op: "layer", entry: e.key, args: e.params.map(guess), options: {} } };
+  }
+
+  function liveBuilderView() {
+    if (!B.catalog) return `<div class="builder live-builder"><div class="empty" style="grid-column:1/-1"><span class="typing"><i></i><i></i><i></i></span><div class="muted">Looking for every layer the installed modules offer…</div></div></div>`;
+    return `<div class="builder live-builder">${builderPalette()}${builderCanvas()}${builderProps()}</div>`;
+  }
+
+  function builderPalette() {
+    const q = B.search.toLowerCase();
+    const match = e => !q || (e.group + " " + e.name + " " + e.params.map(p => p.name).join(" ")).toLowerCase().includes(q);
+    const groups = new Map();
+    B.catalog.entries.filter(match).forEach(e => { const k = (e.experimental ? "x:" : "c:") + e.group; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); });
+    const item = e => `<button class="pal-item" draggable="true" data-entry="${esc(e.key)}" title="${esc(e.key)}">
+        <span class="sw">${esc(e.group.slice(0, 2))}</span><span class="pn">${esc(["new", "of"].includes(e.name) ? e.group : e.name)}</span>
+        <span class="sig">${esc(e.params.filter(p => p.kind !== "random").map(p => p.name + (p.array ? "…" : "")).join(", "))}</span></button>`;
+    const section = (title, exp) => {
+      const gs = [...groups].filter(([k]) => k.startsWith(exp ? "x:" : "c:"));
+      if (!gs.length) return "";
+      return `<div class="pal-sec"><span class="eyebrow">${title} <span class="faint">${gs.reduce((a, [, l]) => a + l.length, 0)}</span></span>
+        ${gs.map(([k, list]) => {
+          const name = k.slice(2), open = q || B.openGroups.has(k) || list.length === 1;
+          return list.length === 1 ? item(list[0]) : `<div class="pal-fold ${open ? "open" : ""}">
+            <button class="pal-head" data-pal-group="${esc(k)}" aria-expanded="${!!open}">${icon("chev")}<span>${esc(name)}</span><span class="faint">${list.length}</span></button>
+            ${open ? list.map(item).join("") : ""}</div>`;
+        }).join("")}</div>`;
+    };
+    return `<aside class="palette" aria-label="Blocks">
+      <div class="col-head"><span class="h3">Blocks</span><span class="grow"></span><span class="mono faint" title="Found in the installed modules' API${B.catalog.skipped ? `; ${B.catalog.skipped} left out because they need something the builder cannot fill in, such as a tensor of weights` : ""}">${B.catalog.entries.length} found</span></div>
+      <div class="search">${icon("search")}<input class="input" id="block-search" placeholder="Search blocks and options" value="${esc(B.search)}"></div>
+      <div class="pal-sec"><span class="eyebrow">Wiring</span>
+        ${[["input", "Input", "shape"], ["add", "Add", "same shapes"], ["multiply", "Multiply", "same shapes"], ["concat", "Concat", "along the first dim"]].map(([op, name, sig]) =>
+          `<button class="pal-item" draggable="true" data-op="${op}"><span class="sw">${name.slice(0, 2)}</span><span class="pn">${name}</span><span class="sig">${sig}</span></button>`).join("")}
+      </div>
+      ${section("Core", false)}${section("Experimental", true)}
+      ${groups.size ? "" : `<div class="muted" style="padding:8px 16px;font-size:12.5px">Nothing matches.</div>`}
+    </aside>`;
+  }
+
+  function builderCanvas() {
+    const v = B.view, nodes = B.graph.nodes;
+    const errs = nodes.filter(n => errorOf(n.id)), loose = errs.filter(n => incomplete(errorOf(n.id)));
+    const outId = B.check?.output;
+    return `<section class="canvas-wrap" id="canvas" aria-label="Model graph">
+      <div class="canvas-tools">
+        <input class="input mono" id="graph-name" aria-label="Model name" value="${esc(B.graph.name || "")}" style="width:180px;height:32px">
+        <select class="input" id="graph-open" aria-label="Open a saved model" style="width:auto;height:32px">
+          <option value="">Open…</option>${B.graphs.map(g => `<option value="${esc(g.name)}">${esc(g.name)}${g.built ? " · built" : ""}</option>`).join("")}
+          <option value="__new">New, empty</option></select>
+        <button class="btn" id="arrange">${icon("wand")}Arrange</button>
+        <div class="seg"><button id="zoom-out" aria-label="Zoom out">−</button><button id="zoom-fit">${Math.round(v.s * 100)}%</button><button id="zoom-in" aria-label="Zoom in">+</button></div>
+      </div>
+      <div class="world" id="world" style="transform:translate(${v.x}px,${v.y}px) scale(${v.s})">
+        <svg class="edges" id="edges"></svg>
+        ${nodes.map(n => liveNode(n, n.id === outId)).join("")}
+      </div>
+      <div class="canvas-status">
+        ${!B.check ? `<span class="chip plain">checking…</span>` : B.check.ok ? `<span class="chip c-ok">${icon("check")}${nodes.length} blocks · checks out · output ${fmtShape(B.check.outputShape)}</span>`
+          : `<span class="chip c-warn">${errs.length ? `${errs.length} block${errs.length === 1 ? "" : "s"} ${loose.length === errs.length ? "not connected" : "to fix"}` : esc(B.check.problem || "not finished")}</span>`}
+        ${B.refusal ? `<span class="chip c-bad" title="${esc(B.refusal.text)}">Refused: ${esc(B.refusal.text.length > 90 ? B.refusal.text.slice(0, 90) + "…" : B.refusal.text)}</span>` : ""}
+        <span class="legend-k"><i class="sock image on"></i>image [C,H,W]<i class="sock vector on"></i>vector [N]<i class="sock seq on"></i>sequence [T,D]</span>
+        <span class="grow"></span>
+        <span class="mono muted">drag a block in · drag from an output to an input · Delete removes</span>
+      </div>
+    </section>`;
+  }
+
+  function liveNode(n, isOut) {
+    const e = entryOf(n), err = errorOf(n.id), shp = shapeOf(n.id);
+    const ins = n.op === "input" ? [] : multiIn(n) ? [...(n.inputs || []), null] : [(n.inputs || [])[0] || null];
+    const vals = [];
+    if (n.op === "input") vals.push(["shape", fmtShape(n.shape)]);
+    if (e) e.params.forEach((p, i) => { if (p.kind !== "random") vals.push([p.name, fmtVal(n.args?.[i])]); });
+    Object.entries(n.options || {}).forEach(([k, a]) => vals.push([k.replace(/\(.*$/, ""), a.map(fmtVal).join(", ") || "on"]));
+    return `<div class="gnode live ${n.id === B.sel ? "selected" : ""} ${err ? (incomplete(err) ? "loose" : "bad") : ""} ${e?.experimental ? "exp" : ""}"
+        data-node="${esc(n.id)}" style="left:${n.x}px;top:${n.y}px;--c:var(--cap-${n.op === "input" ? "vision" : n.op === "layer" ? (e?.experimental ? "train" : "text") : "agent"})">
+      <div class="nh"><span class="sw"></span><b>${esc(nodeLabel(n))}</b><span class="grow"></span>${isOut ? `<span class="chip c-ok" style="font-size:10px">output</span>` : `<span class="mono faint">${esc(n.id)}</span>`}</div>
+      ${ins.map((src, i) => `<div class="row in"><span class="sock ${kindOf(shapeOf(src))} ${src ? "on" : ""}" data-in="${esc(n.id)}" data-slot="${i}" title="${src ? "from " + esc(src) : "drop a wire here"}"></span>
+        <span class="nm">${src ? esc(src) : multiIn(n) && i ? "+" : "in"}</span><span class="shp">${src ? fmtShape(shapeOf(src)) : ""}</span></div>`).join("")}
+      ${vals.length ? `<div class="params">${vals.slice(0, 6).map(([k, v]) => `<div><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join("")}${vals.length > 6 ? `<div><span>+${vals.length - 6} more</span><span></span></div>` : ""}</div>` : ""}
+      ${err ? `<div class="nerr">${esc(err)}</div>` : ""}
+      <div class="row out"><span class="shp">${shp ? fmtShape(shp) : ""}</span><span class="nm">out</span><span class="sock ${kindOf(shp)} ${shp ? "on" : ""}" data-out="${esc(n.id)}" title="drag to an input"></span></div>
+    </div>`;
+  }
+
+  function fmtVal(v) {
+    if (v == null || v === "") return "–";
+    if (Array.isArray(v)) return v.join(" × ");
+    if (typeof v === "boolean") return v ? "yes" : "no";
+    return String(v);
+  }
+
+  function fieldFor(p, v, path) {
+    const id = "f-" + path.replace(/[^a-z0-9]/gi, "_");
+    const label = `<label for="${id}">${esc(p.name)} <span class="faint mono">${esc(p.type)}</span></label>`;
+    if (p.kind === "random") return "";
+    if (p.kind === "boolean" && !p.array) return `<label class="check"><input type="checkbox" id="${id}" data-field="${esc(path)}" ${v ? "checked" : ""}> ${esc(p.name)}</label>`;
+    if (p.kind === "choice" && !p.array) return `<div class="field">${label}<select class="input" id="${id}" data-field="${esc(path)}">${p.choices.map(c => `<option ${c === v ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>`;
+    const shown = Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v);
+    return `<div class="field">${label}<input class="input mono" id="${id}" data-field="${esc(path)}" value="${esc(shown)}" ${p.array ? `placeholder="${p.kind === "choice" ? "names, comma separated" : "numbers, comma separated"}"` : ""} spellcheck="false"></div>`;
+  }
+
+  function parseVal(p, raw) {
+    if (p.kind === "boolean") return !!raw;
+    if (p.kind === "choice" && !p.array) return raw;
+    const one = s => p.kind === "string" || p.kind === "choice" ? s : s === "" ? null : Number(s);
+    if (p.array) return String(raw).split(/[\s,×x]+/).filter(Boolean).map(one);
+    return one(String(raw).trim());
+  }
+
+  function builderProps() {
+    const n = B.graph.nodes.find(x => x.id === B.sel);
+    if (!n) {
+      const c = B.check, b = B.built;
+      return `<aside class="props" aria-label="Model">
+        <div><span class="eyebrow">Whole model</span><div class="h2" style="margin-top:4px">${esc(B.graph.name || "Untitled")}</div></div>
+        <div class="sum">
+          <div><b class="tnum">${B.graph.nodes.length}</b><span>blocks</span></div>
+          <div><b class="tnum">${c?.input ? fmtShape(shapeOf(c.input)) : "–"}</b><span>input</span></div>
+          <div><b class="tnum">${c?.outputShape ? fmtShape(c.outputShape) : "–"}</b><span>output</span></div>
+          <div><b class="tnum">${b ? fmtCount(b.parameters) : "–"}</b><span>${b ? `parameters · ${fmtCount(b.parameters * 4)}B float32` : "parameters, once built"}</span></div>
+        </div>
+        ${c && !c.ok ? `<div class="flag">${icon("flask")}<div>${esc(c.problem || "Some blocks do not check out yet; they are marked on the canvas.")}</div></div>` : ""}
+        <button class="btn primary" id="build" style="justify-content:center;height:38px" ${c?.ok && !B.building ? "" : "disabled"}>${icon("build")}${B.building ? "Building…" : "Build and save"}</button>
+        ${b ? `<div class="flag ok">${icon("check")}<div><b>Built.</b> ${b.file ? `Saved to <code>${esc(b.file)}</code>.` : esc(b.note || "")}</div></div>
+          <details class="tool"><summary>${icon("layout")}<span><b>Summary</b></span></summary><pre>${esc(b.summary)}</pre></details>` : ""}
+        <p class="muted" style="font-size:12px;margin:0">Click a block to change it. Every layer and option here comes from the installed modules; a change that would break a block that works is refused.</p>
+      </aside>`;
+    }
+    const e = entryOf(n), err = errorOf(n.id), refused = B.refusal && B.refusal.id === n.id ? B.refusal.text : null;
+    const inShape = (n.inputs || []).map(shapeOf).filter(Boolean).map(fmtShape).join(" + ");
+    const opts = e ? e.options : [];
+    const oq = (B.optSearch || "").toLowerCase();
+    return `<aside class="props" aria-label="Block settings">
+      <div><span class="eyebrow">${n.op === "layer" ? esc(e?.module?.replace("io.github.zzuegg.", "") || "") : "wiring"}${e?.experimental ? ` · <span class="chip c-train" style="font-size:10px">experimental</span>` : ""}</span>
+        <div class="h2" style="margin-top:4px">${esc(nodeLabel(n))}</div>${e ? `<div class="mono faint" style="font-size:11px;overflow-wrap:anywhere">${esc(e.key.replace(/^io\.github\.zzuegg\.brainiac\./, ""))}</div>` : ""}</div>
+      <div class="field"><label>Shape</label><div class="mono" style="display:flex;gap:8px;align-items:center;color:var(--fg-2)">${esc(inShape || (n.op === "input" ? "" : "not connected"))} ${n.op === "input" ? "" : icon("chev")} <b style="color:var(--fg)">${esc(fmtShape(shapeOf(n.id)))}</b></div></div>
+      ${refused ? `<div class="flag bad">${icon("flask")}<div><b>Refused.</b> ${esc(refused)}</div></div>` : err ? `<div class="flag">${icon("flask")}<div>${esc(err)}</div></div>` : ""}
+      ${n.op === "input" ? `<div class="field"><label for="f-shape">Shape of one sample <span class="faint">channels first, e.g. 3, 32, 32</span></label><input class="input mono" id="f-shape" data-field="shape" value="${esc((n.shape || []).join(", "))}"></div>` : ""}
+      ${e ? e.params.map((p, i) => fieldFor(p, n.args?.[i], "arg." + i)).join("") : ""}
+      ${opts.length ? `<div class="optbox"><div class="optbox-head"><span class="eyebrow">Options <span class="faint">${Object.keys(n.options || {}).length} of ${opts.length} on</span></span></div>
+        ${opts.length > 6 ? `<input class="input" id="opt-search" placeholder="Find an option" value="${esc(B.optSearch || "")}" style="height:30px">` : ""}
+        ${opts.filter(o => !oq || o.key.toLowerCase().includes(oq)).map(o => {
+          const on = n.options && o.key in n.options;
+          return `<div class="opt ${on ? "on" : ""}"><label class="check"><input type="checkbox" data-opt="${esc(o.key)}" ${on ? "checked" : ""}> <span class="mono">${esc(o.name)}</span><span class="faint mono" style="font-size:10.5px">(${esc(o.params.map(p => p.type).join(", "))})</span></label>
+            ${on ? o.params.map((p, i) => fieldFor(p, n.options[o.key][i], "opt." + o.key + "." + i)).join("") : ""}</div>`;
+        }).join("")}</div>` : ""}
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${n.op !== "input" ? `<button class="btn ghost sm" id="mark-output">${B.graph.output === n.id ? "Output (chosen)" : "Make this the output"}</button>` : ""}
+        <button class="btn ghost sm" id="del-block">Remove block</button>
+      </div>
+    </aside>`;
+  }
+
+  function renderBuilder() {
+    if (state.view !== "builder" || !isLive() || !B.catalog) return;
+    const keep = document.activeElement?.id, pos = document.activeElement?.selectionStart;
+    const pal = $(".palette")?.scrollTop, props = $(".props")?.scrollTop;
+    $("#main .view").innerHTML = liveBuilderView();
+    if ($(".palette")) $(".palette").scrollTop = pal || 0;
+    if ($(".props")) $(".props").scrollTop = props || 0;
+    bindLiveBuilder();
+    if (keep) { const el = document.getElementById(keep); if (el) { el.focus({ preventScroll: true }); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* not a text field */ } } }
+  }
+
+  function sockXY(el) {
+    const world = $("#world"), wr = world.getBoundingClientRect(), r = el.getBoundingClientRect(), s = B.view.s;
+    return { x: (r.left + r.width / 2 - wr.left) / s, y: (r.top + r.height / 2 - wr.top) / s };
+  }
+
+  function drawLiveEdges(extra) {
+    const svg = $("#edges"); if (!svg) return;
+    let out = "";
+    B.graph.nodes.forEach(n => (n.inputs || []).forEach((src, i) => {
+      const a = $(`[data-out="${CSS.escape(src)}"]`), b = $(`[data-in="${CSS.escape(n.id)}"][data-slot="${i}"]`);
+      if (!a || !b) return;
+      out += `<path d="${wire(sockXY(a), sockXY(b))}" class="wire k-${kindOf(shapeOf(src))}"/>`;
+    }));
+    if (extra) out += `<path d="${wire(extra.a, extra.b)}" class="wire drafting k-${extra.kind}"/>`;
+    svg.innerHTML = out;
+  }
+
+  function setView(v) {
+    B.view = v; store.set("builderView", v);
+    const w = $("#world"); if (w) w.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.s})`;
+    const z = $("#zoom-fit"); if (z) z.textContent = Math.round(v.s * 100) + "%";
+  }
+
+  function fitLive() {
+    const c = $("#canvas"), nodes = $$(".gnode.live"); if (!c || !nodes.length) return;
+    const xs = nodes.map(n => n.offsetLeft), ys = nodes.map(n => n.offsetTop);
+    const x2 = Math.max(...nodes.map(n => n.offsetLeft + n.offsetWidth)), y2 = Math.max(...nodes.map(n => n.offsetTop + n.offsetHeight));
+    const x1 = Math.min(...xs), y1 = Math.min(...ys);
+    const s = Math.max(0.3, Math.min(1.25, (c.clientWidth - 48) / (x2 - x1 + 1), (c.clientHeight - 130) / (y2 - y1 + 1)));
+    setView({ s, x: 24 - x1 * s, y: 60 - y1 * s });
+    drawLiveEdges();
+  }
+
+  // Lays the blocks out left to right by depth.
+  function arrange() {
+    const depth = {}, byId = Object.fromEntries(B.graph.nodes.map(n => [n.id, n]));
+    const d = (id, seen = new Set()) => {
+      if (depth[id] != null) return depth[id];
+      if (seen.has(id)) return 0;
+      seen.add(id);
+      const n = byId[id];
+      return depth[id] = n && n.inputs?.length ? 1 + Math.max(...n.inputs.map(s => d(s, seen))) : 0;
+    };
+    const cols = {};
+    B.graph.nodes.forEach(n => { const k = d(n.id); (cols[k] ||= []).push(n); });
+    Object.entries(cols).forEach(([k, list]) => list.forEach((n, i) => { n.x = 40 + k * 250; n.y = 80 + i * 210; }));
+    saveDraft();
+    renderBuilder();
+    requestAnimationFrame(fitLive);
+  }
+
+  async function removeBlock(id) {
+    B.graph.nodes = B.graph.nodes.filter(n => n.id !== id);
+    B.graph.nodes.forEach(n => { n.inputs = (n.inputs || []).filter(s => s !== id); });
+    if (B.graph.output === id) delete B.graph.output;
+    B.sel = null; B.refusal = null; B.built = null;
+    saveDraft();
+    await recheck();
+    renderBuilder();
+  }
+
+  async function connect(src, dst, slot) {
+    if (src === dst) return;
+    const target = B.graph.nodes.find(n => n.id === dst);
+    if (!target || target.op === "input") return;
+    await tryChange(g => {
+      const t = g.nodes.find(n => n.id === dst);
+      const ins = [...(t.inputs || [])];
+      if (multiIn(t)) { if (slot < ins.length) ins[slot] = src; else ins.push(src); } else ins[0] = src;
+      t.inputs = [...new Set(ins)];
+    }, dst);
+  }
+
+  function bindLiveBuilder() {
+    $("#block-search")?.addEventListener("input", e => { B.search = e.target.value; renderBuilder(); });
+    $$("[data-pal-group]").forEach(b => b.addEventListener("click", () => { const k = b.dataset.palGroup; B.openGroups.has(k) ? B.openGroups.delete(k) : B.openGroups.add(k); renderBuilder(); }));
+    const specOf = el => el.dataset.op ? { label: el.dataset.op, node: el.dataset.op === "input" ? { op: "input", shape: [16] } : { op: el.dataset.op } }
+      : paletteSpec(B.catalog.entries.find(e => e.key === el.dataset.entry));
+    $$(".pal-item").forEach(el => {
+      el.addEventListener("click", () => addBlock(specOf(el)));
+      el.addEventListener("dragstart", e => { e.dataTransfer.setData("text/x-block", el.dataset.entry || "op:" + el.dataset.op); e.dataTransfer.effectAllowed = "copy"; });
+    });
+    const canvas = $("#canvas");
+    if (canvas) {
+      canvas.addEventListener("dragover", e => { if (e.dataTransfer.types.includes("text/x-block")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
+      canvas.addEventListener("drop", e => {
+        const k = e.dataTransfer.getData("text/x-block"); if (!k) return;
+        e.preventDefault();
+        const wr = $("#world").getBoundingClientRect();
+        const at = { x: (e.clientX - wr.left) / B.view.s - 90, y: (e.clientY - wr.top) / B.view.s - 20 };
+        const el = k.startsWith("op:") ? { dataset: { op: k.slice(3) } } : { dataset: { entry: k } };
+        addBlock(specOf(el), at);
+      });
+      // pan on the background, zoom with the wheel
+      canvas.addEventListener("pointerdown", e => {
+        if (e.button !== 0 || e.target.closest(".gnode, .canvas-tools, .canvas-status")) return;
+        B.sel = null; B.refusal = null;
+        const sx = e.clientX, sy = e.clientY, v0 = { ...B.view };
+        let moved = false;
+        canvas.setPointerCapture(e.pointerId);
+        const move = ev => { moved = true; setView({ ...v0, x: v0.x + ev.clientX - sx, y: v0.y + ev.clientY - sy }); };
+        const up = () => { canvas.removeEventListener("pointermove", move); canvas.removeEventListener("pointerup", up); if (!moved) renderBuilder(); };
+        canvas.addEventListener("pointermove", move); canvas.addEventListener("pointerup", up);
+      });
+      canvas.addEventListener("wheel", e => {
+        e.preventDefault();
+        const r = canvas.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top, v = B.view;
+        const s = Math.max(0.25, Math.min(2, v.s * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+        setView({ s, x: px - (px - v.x) * s / v.s, y: py - (py - v.y) * s / v.s });
+        drawLiveEdges();
+      }, { passive: false });
+    }
+    $("#zoom-in")?.addEventListener("click", () => { setView({ ...B.view, s: Math.min(2, B.view.s * 1.2) }); drawLiveEdges(); });
+    $("#zoom-out")?.addEventListener("click", () => { setView({ ...B.view, s: Math.max(0.25, B.view.s / 1.2) }); drawLiveEdges(); });
+    $("#zoom-fit")?.addEventListener("click", fitLive);
+    $("#arrange")?.addEventListener("click", arrange);
+    $("#graph-name")?.addEventListener("change", e => { B.graph.name = e.target.value.trim() || "my-model"; saveDraft(); });
+    $("#graph-open")?.addEventListener("change", async e => {
+      const v = e.target.value; if (!v) return;
+      if (v === "__new") B.graph = { name: "my-model", nodes: [{ id: "in", op: "input", shape: [3, 32, 32], x: 40, y: 120 }] };
+      else { const g = B.graphs.find(x => x.name === v); if (g) B.graph = { name: g.name, output: g.output, nodes: g.nodes.map((n, i) => ({ x: 40 + i * 250, y: 120, ...n, options: Array.isArray(n.options) ? Object.fromEntries(n.options.map(o => [o.key, o.args])) : n.options || {} })) }; }
+      B.sel = null; B.built = null; B.refusal = null;
+      saveDraft(); await recheck(); renderBuilder();
+    });
+    // blocks: select and move; wires from an output socket to an input socket
+    $$(".gnode.live").forEach(el => {
+      el.addEventListener("pointerdown", e => {
+        if (e.button !== 0) return;
+        const out = e.target.closest("[data-out]");
+        const n = B.graph.nodes.find(x => x.id === el.dataset.node);
+        e.stopPropagation();
+        if (out) {
+          const a = sockXY(out), kind = kindOf(shapeOf(n.id));
+          const move = ev => { const wr = $("#world").getBoundingClientRect(); drawLiveEdges({ a, b: { x: (ev.clientX - wr.left) / B.view.s, y: (ev.clientY - wr.top) / B.view.s }, kind }); };
+          const up = ev => {
+            document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up);
+            const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+            const sock = hit?.closest("[data-in]"), node = hit?.closest(".gnode.live");
+            drawLiveEdges();
+            if (sock) connect(n.id, sock.dataset.in, +sock.dataset.slot);
+            else if (node && node.dataset.node !== n.id) connect(n.id, node.dataset.node, 99);
+          };
+          document.addEventListener("pointermove", move); document.addEventListener("pointerup", up);
+          return;
+        }
+        const inSock = e.target.closest("[data-in]");
+        if (inSock && inSock.classList.contains("on")) {
+          // pulling a wire off an input disconnects it
+          const slot = +inSock.dataset.slot;
+          n.inputs = n.inputs.filter((_, i) => i !== slot);
+          B.built = null; saveDraft(); recheck().then(renderBuilder);
+          return;
+        }
+        if (B.sel !== n.id) { B.sel = n.id; B.optSearch = ""; B.refusal = B.refusal && B.refusal.id === n.id ? B.refusal : null; }
+        const sx = e.clientX, sy = e.clientY, ox = n.x, oy = n.y;
+        let moved = false;
+        el.setPointerCapture(e.pointerId);
+        const move = ev => {
+          moved = true;
+          n.x = Math.round(ox + (ev.clientX - sx) / B.view.s); n.y = Math.round(oy + (ev.clientY - sy) / B.view.s);
+          el.style.left = n.x + "px"; el.style.top = n.y + "px"; drawLiveEdges();
+        };
+        const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); saveDraft(); renderBuilder(); };
+        el.addEventListener("pointermove", move); el.addEventListener("pointerup", up);
+      });
+    });
+    // the settings of the selected block
+    const n = B.graph.nodes.find(x => x.id === B.sel), e = n && entryOf(n);
+    $$("[data-field]").forEach(f => f.addEventListener("change", () => {
+      const path = f.dataset.field, raw = f.type === "checkbox" ? f.checked : f.value;
+      if (path === "shape") {
+        const dims = String(raw).split(/[\s,×x]+/).filter(Boolean).map(Number);
+        tryChange(g => { g.nodes.find(x => x.id === n.id).shape = dims; }, n.id);
+      } else if (path.startsWith("arg.")) {
+        const i = +path.slice(4), p = e.params[i];
+        tryChange(g => { const t = g.nodes.find(x => x.id === n.id); t.args = [...(t.args || [])]; t.args[i] = parseVal(p, raw); }, n.id);
+      } else if (path.startsWith("opt.")) {
+        const rest = path.slice(4), at = rest.lastIndexOf("."), key = rest.slice(0, at), i = +rest.slice(at + 1);
+        const p = e.options.find(o => o.key === key).params[i];
+        tryChange(g => { const t = g.nodes.find(x => x.id === n.id); t.options[key] = [...t.options[key]]; t.options[key][i] = parseVal(p, raw); }, n.id);
+      }
+    }));
+    $$("[data-opt]").forEach(c => c.addEventListener("change", () => {
+      const o = e.options.find(x => x.key === c.dataset.opt);
+      tryChange(g => {
+        const t = g.nodes.find(x => x.id === n.id); t.options = { ...(t.options || {}) };
+        if (c.checked) t.options[o.key] = o.params.map(guess); else delete t.options[o.key];
+      }, n.id);
+    }));
+    $("#opt-search")?.addEventListener("input", ev => { B.optSearch = ev.target.value; renderBuilder(); });
+    $("#mark-output")?.addEventListener("click", () => tryChange(g => { g.output = g.output === n.id ? undefined : n.id; }, n.id));
+    $("#del-block")?.addEventListener("click", () => removeBlock(n.id));
+    $("#build")?.addEventListener("click", async () => {
+      B.building = true; renderBuilder();
+      try {
+        B.built = await postJson("/api/builder/build", { name: B.graph.name || "my-model", graph: wireGraph(B.graph) });
+        await postJson("/api/builder/graphs", { name: B.graph.name || "my-model", graph: { output: B.graph.output, nodes: B.graph.nodes } });
+        B.graphs = (await api("/api/builder/graphs")).graphs || [];
+      } catch (err) { B.built = null; B.refusal = { id: null, text: err.message }; }
+      B.building = false; renderBuilder();
+    });
+    requestAnimationFrame(() => drawLiveEdges());
+  }
+  document.addEventListener("keydown", e => {
+    if (state.view !== "builder" || !isLive() || !B.sel || !["Delete", "Backspace", "Escape"].includes(e.key)) return;
+    if (e.target.closest("input, textarea, select") || document.querySelector(".cmdk-back, #pop")) return;
+    if (e.key === "Escape") { B.sel = null; B.refusal = null; renderBuilder(); return; }
+    e.preventDefault();
+    removeBlock(B.sel);
+  });
+
   // ---------- TRAIN (hosts, launch, live runs) ----------
   function spark(pts, c, w = 120, h = 28) {
     if (!pts.length) return `<svg width="${w}" height="${h}" aria-hidden="true"></svg>`;
@@ -895,7 +1401,7 @@
   }
 
   // ---------- render ----------
-  const views = { chat: chatView, agents: agentsView, create: createView, voice: voiceView, builder: builderView, train: trainView, library: libraryView, mcp: mcpView };
+  const views = { chat: chatView, agents: agentsView, create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: trainView, library: libraryView, mcp: mcpView };
   const crumbs = {
     chat: `Chat <span class="muted">· Voiceover for the builder demo</span>`, agents: `Agents <span class="muted">· 4 running · 2 waiting for you</span>`, create: `Images <span class="muted">· thumb-dit-64</span>`,
     voice: `Voice <span class="muted">· Builder demo voiceover</span>`, builder: `Model builder <span class="muted">· resnet-s</span>`,
@@ -906,26 +1412,34 @@
     builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "2 hosts busy"], library: ["c-text", "Qwen2.5 7B Instruct"], mcp: ["c-agent", "per call"],
   };
 
+  let builderLoading = false;
   function render() {
     applyFrame();
     $("#main").innerHTML = `<div class="view">${views[state.view]()}</div>`;
     const liveChat = isLive() && state.view === "chat" && L.sel !== "example";
     const liveLib = isLive() && state.view === "library";
     const liveMedia = isLive() && (state.view === "create" || state.view === "voice");
+    const liveBuilder = isLive() && state.view === "builder";
     const ready = (L.info?.providers || []).filter(p => p.ready).length;
     $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
       : liveMedia ? (state.view === "create" ? `Images <span class="muted">· ${G.batches.length} batch${G.batches.length === 1 ? "" : "es"} this session</span>` : `Voice <span class="muted">· ${G.takes.length} take${G.takes.length === 1 ? "" : "s"} this session</span>`)
-      : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>` : crumbs[state.view];
+      : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>`
+      : liveBuilder ? `Model builder <span class="muted">· ${esc(B.graph.name || "Untitled")}</span>` : crumbs[state.view];
     const picked = liveChat ? paneModel(L.active) : "auto";
     const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
     const [c, n] = liveMedia ? [state.view === "create" ? "c-image" : "c-speech", mediaModel ? mediaModel.name : L.info ? "no model yet" : "…"]
-      : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"] : routes[state.view];
+      : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"]
+      : liveBuilder ? ["c-train", B.catalog ? `${B.catalog.entries.length} layers found` : "…"] : routes[state.view];
     $("#router .chip").className = "chip " + c; $("#router .chip").textContent = n;
     $$(".rail a").forEach(a => { if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     paintAll();
     renderDataNote();
-    if (state.view === "builder") { drawEdges(); fitWorld(); enableDrag(); }
+    if (state.view === "builder") {
+      if (!isLive()) { drawEdges(); fitWorld(); enableDrag(); }
+      else if (B.catalog) bindLiveBuilder();
+      else if (!builderLoading) { builderLoading = true; loadBuilder().finally(() => { builderLoading = false; }); }
+    }
     if (state.view === "chat") bindChat();
     if (state.view === "library" && isLive()) bindLiveLibrary();
     if (state.view === "create" && isLive()) bindLiveCreate();
@@ -1033,7 +1547,7 @@
 
   // ---------- wiring ----------
   window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; render(); } });
-  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
+  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") { if (isLive()) drawLiveEdges(); else fitWorld(); } else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
   $("#cmdk-open").addEventListener("click", openCmdk);
@@ -2159,7 +2673,7 @@
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
   // screens that show only real data
-  const showsLiveData = () => ["library", "create", "voice"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
+  const showsLiveData = () => ["library", "create", "voice", "builder"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });

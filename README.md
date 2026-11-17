@@ -800,6 +800,13 @@ layer shows up by itself; factories that need something the builder cannot fill 
 tensor of weights, are left out. Parameter names come from the class files, which the build
 compiles with `-parameters`.
 
+On the Builder screen you drag blocks in from the palette, or click one to add it after the
+selected block, and drag from an output to an input to wire them. Every block shows its output
+shape. Its settings and options are in the side panel, and an option is a checkbox. A change
+that would make a working block fail is refused and shown with the core's reason, so the canvas
+never holds a broken model. **Build and save** writes the model to `models/` and the drawing to
+`graphs/`, and **Open** brings a saved drawing back.
+
 **Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
 `gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
 with its 30 voices), with the same keys. The screens only show settings the chosen model has.
