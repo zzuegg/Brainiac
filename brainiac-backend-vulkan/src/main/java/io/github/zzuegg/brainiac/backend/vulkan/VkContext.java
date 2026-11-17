@@ -424,7 +424,7 @@ final class VkContext {
                     .pNext(sp.address()));
             if (!sf.subgroupSizeControl() || !sf.computeFullSubgroups() || sp.minSubgroupSize() > 32
                     || sp.maxSubgroupSize() < 32 || (sp.requiredSubgroupSizeStages() & VK_SHADER_STAGE_COMPUTE_BIT) == 0
-                    || sp.maxComputeWorkgroupSubgroups() < 8) {
+                    || Integer.toUnsignedLong(sp.maxComputeWorkgroupSubgroups()) < 8) {
                 return false;
             }
             KHRCooperativeMatrix.vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(pd, ip, null);

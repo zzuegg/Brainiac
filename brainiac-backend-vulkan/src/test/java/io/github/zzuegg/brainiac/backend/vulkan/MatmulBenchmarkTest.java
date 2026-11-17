@@ -26,8 +26,8 @@ class MatmulBenchmarkTest {
         Device gpu = Device.available().stream().filter(d -> d.name().startsWith("vulkan")).findFirst().orElseThrow();
         System.out.println(gpu.name() + "; " + new VulkanBackend().status());
         for (int[] s : List.of(new int[] {512, 512, 512}, new int[] {2048, 2048, 2048}, new int[] {4096, 4096, 4096},
-                new int[] {128, 4096, 4096}, new int[] {16, 4096, 4096})) {
-            for (String mode : List.of("f32", "f16", "f16 coopmat")) {
+                new int[] {128, 4096, 4096}, new int[] {64, 4096, 4096}, new int[] {16, 4096, 4096})) {
+            for (String mode : List.of("f16 coopmat", "f32", "f16")) {
                 DType type = mode.equals("f32") ? DType.FLOAT32 : DType.FLOAT16;
                 System.setProperty("brainiac.vulkan.coopmat", String.valueOf(mode.endsWith("coopmat")));
                 Tensor a = Tensor.uniform(Shape.of(s[0], s[1]), -1, 1, new SplittableRandom(1)).to(type).to(gpu);
