@@ -1055,7 +1055,7 @@ public final class VulkanBackend implements Backend {
             return;
         }
         // few rows times a transposed matrix (a tied output head): its rows read in place
-        if (m <= VEC_ROWS && batch == 1 && k > 0) {
+        if (m <= Math.min(VEC_ROWS, VECT_ROWS) && batch == 1 && k > 0) {
             Operand vb = view(vs(b), 1, k, n, z.dtype);
             if (vb != null && vb.row() == 1 && vb.col() != 1) {
                 eager(vs(a), vb.values(), z);
@@ -1066,7 +1066,7 @@ public final class VulkanBackend implements Backend {
             }
         }
         // a transposed or otherwise strided operand still pending is read in place by the tiles
-        boolean tiled = k > 0 && !(m <= VEC_ROWS && batch == 1) && !coop(z.dtype, m);
+        boolean tiled = k > 0 && !(m <= VEC_ROWS && m <= VECT_ROWS && batch == 1) && !coop(z.dtype, m);
         Operand va = tiled ? view(vs(a), batch, m, k, z.dtype) : null;
         Operand vb = tiled ? view(vs(b), batch, k, n, z.dtype) : null;
         if (va != null || vb != null) {
@@ -1139,6 +1139,8 @@ public final class VulkanBackend implements Backend {
     }
 
     /** Products of at most this many rows read the matrix once ({@code -Dbrainiac.vulkan.matvec=false}: never). */
+    // the most rows of a product with a transposed matrix read by matmul_vect
+    private static final int VECT_ROWS = Integer.getInteger("brainiac.vulkan.vectRows", 8);
     private static final int VEC_ROWS = "false".equals(System.getProperty("brainiac.vulkan.matvec")) ? 0 : 8;
 
     private void matmul(VkStorage x, VkStorage y, int batch, int m, int k, int n, VkStorage z) {
@@ -1196,8 +1198,9 @@ public final class VulkanBackend implements Backend {
         VkStorage y = b.values();
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         long first = y.address(b.offset());
-        boolean vectors = k % 4 == 0 && b.col() % 4 == 0 && first % (4L * y.dtype.bytes()) == 0;
-        vk.push().putLong(x.address()).putLong(first).putLong(first).putLong(z.address()).putInt(m).putInt(k)
+        long align = 4L * y.dtype.bytes();
+        boolean vectors = k % 4 == 0 && b.col() % 4 == 0 && first % align == 0 && x.address() % align == 0;
+        vk.push().putLong(x.address()).putLong(x.address()).putLong(first).putLong(first).putLong(z.address()).putInt(m).putInt(k)
                 .putInt(n).putInt((int) b.col()).putInt(vectors ? 1 : 0);
         vk.dispatch(shader("matmul_vect" + rows, z.dtype), ceil(n, 4), z.slot(), x.slot(), y.slot());
     }
