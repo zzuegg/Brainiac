@@ -155,10 +155,13 @@ public final class VulkanBackend implements Backend {
                 + vk.pipelineNanos / 1_000_000 + " ms, waiting " + vk.waitNanos / 1_000_000 + " ms; "
                 + vk.dispatches + " dispatches (" + fusedDispatches + " fused, " + fusedShaders.size()
                 + " shaders generated in " + compileNanos / 1_000_000 + " ms), " + vk.barriers + " barriers, " + vk.submits + " submits, " + vk.waits
-                + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.spilled() >> 20) + " MB spilled, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
+                + " waits, " + vk.finishes + " full waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.spilled() >> 20) + " MB spilled, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
                 + vk.perShader.entrySet().stream().sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
                         .limit(12).map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", "))
-                + (VkContext.PROFILE ? profile() : "");
+                + (VkContext.PROFILE ? profile() : "")
+                + (VkContext.TRACE_FINISH ? "; full waits from: " + vk.finishCallers.entrySet().stream()
+                        .sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed()).limit(10)
+                        .map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", ")) : "");
     }
 
     /** Device time per shader ({@code -Dbrainiac.vulkan.profile=true}): total, then the largest. */
