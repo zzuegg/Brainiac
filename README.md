@@ -394,6 +394,9 @@ List<Generator.Output> many = gen.generate(List.of("Once", "In a land"), Generat
 int[] best = gen.beamSearch(tok.encode("The capital of France is"), 4, 10, 1.0, null);
 ```
 
+The model tests run on the CPU by default; `./gradlew :brainiac-llm:test -PtestDevice=vulkan`
+(or `opencl`, or part of a device name such as `9070`) runs them on that device.
+
 ## Reinforcement learning
 
 `brainiac-rl` has environments to act in and agents that learn from rewards.

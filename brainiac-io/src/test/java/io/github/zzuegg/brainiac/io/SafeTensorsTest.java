@@ -30,7 +30,7 @@ class SafeTensorsTest {
     @TempDir
     Path dir;
 
-    private static final Device CPU = Device.cpu();
+    private static final Device DEVICE = TestDevice.get();
 
     private static Tensor random(long seed, int... dims) {
         return Tensor.uniform(Shape.of(dims), -2, 2, new SplittableRandom(seed));
@@ -53,14 +53,14 @@ class SafeTensorsTest {
                 String n = "w_" + t;
                 assertEquals(Shape.of(3, 5), in.shape(n));
                 assertEquals(t, in.naturalType(n));
-                Tensor back = in.tensor(n, CPU);
+                Tensor back = in.tensor(n, DEVICE);
                 assertEquals(t, back.dtype());
                 assertArrayEquals(out.get(n).toDoubleArray(), back.toDoubleArray(), n);
                 // converted while loading
-                assertArrayEquals(out.get(n).to(DType.FLOAT32).toArray(), in.tensor(n, CPU, DType.FLOAT32).toArray());
+                assertArrayEquals(out.get(n).to(DType.FLOAT32).toArray(), in.tensor(n, DEVICE, DType.FLOAT32).toArray());
             }
             assertEquals(Shape.of(), in.shape("scalar"));
-            assertEquals(4.5f, in.tensor("scalar", CPU).item());
+            assertEquals(4.5f, in.tensor("scalar", DEVICE).item());
         }
     }
 
@@ -90,11 +90,11 @@ class SafeTensorsTest {
         try (SafeTensors in = SafeTensors.open(handMade())) {
             assertEquals(Map.of("k", "v"), in.metadata());
             assertEquals(DType.FLOAT32, in.naturalType("ids"));
-            assertArrayEquals(new float[] {-1, 7, 1L << 40}, in.tensor("ids", CPU).toArray());
-            assertArrayEquals(new float[] {1, 0}, in.tensor("mask", CPU).toArray());
-            assertArrayEquals(new float[] {1, -2, 0x1p-9f, 448}, in.tensor("e4", CPU).toArray());
-            assertArrayEquals(new float[] {1, -4}, in.tensor("e5", CPU).toArray());
-            assertArrayEquals(new double[] {1.5, -3}, in.tensor("bf", CPU, DType.FLOAT64).toDoubleArray());
+            assertArrayEquals(new float[] {-1, 7, 1L << 40}, in.tensor("ids", DEVICE).toArray());
+            assertArrayEquals(new float[] {1, 0}, in.tensor("mask", DEVICE).toArray());
+            assertArrayEquals(new float[] {1, -2, 0x1p-9f, 448}, in.tensor("e4", DEVICE).toArray());
+            assertArrayEquals(new float[] {1, -4}, in.tensor("e5", DEVICE).toArray());
+            assertArrayEquals(new double[] {1.5, -3}, in.tensor("bf", DEVICE, DType.FLOAT64).toDoubleArray());
             assertEquals(4, in.raw("bf").byteSize());
         }
     }
@@ -141,9 +141,9 @@ class SafeTensorsTest {
             assertFalse(w.contains("model.rotary_emb.inv_freq"));
             assertEquals(Shape.of(3), w.shape("block1.query"));
             assertEquals("F32", w.format("block1.query"));
-            assertArrayEquals(a.toArray(), w.tensor("block0.query", CPU).toArray());
-            assertArrayEquals(b.toArray(), w.tensor("block1.query", CPU).toArray());
-            assertEquals(2, w.loadAll(CPU, DType.FLOAT32).size());
+            assertArrayEquals(a.toArray(), w.tensor("block0.query", DEVICE).toArray());
+            assertArrayEquals(b.toArray(), w.tensor("block1.query", DEVICE).toArray());
+            assertEquals(2, w.loadAll(DEVICE, DType.FLOAT32).size());
         }
         // a directory of shards without an index works too
         Files.delete(model.resolve("model.safetensors.index.json"));

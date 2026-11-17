@@ -26,7 +26,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 class LlamaTest {
 
-    static final Device CPU = Device.cpu();
+    static final Device DEVICE = TestDevice.get();
 
     static Path resource(String name) {
         try {
@@ -71,7 +71,7 @@ class LlamaTest {
     @ValueSource(strings = {"llama", "llama3-rope", "qwen2"})
     void matchesTransformersLogits(String name) throws IOException {
         Map<String, Object> e = expected(name + "/expected.json");
-        Llama model = Llama.load(resource(name), CPU, DType.FLOAT32);
+        Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
         int[] ids = ints(e.get("ids"));
         float[] logits = model.forward(new int[][] {ids}).value().toArray();
         assertArrayEquals(rows(e.get("logits")), logits, 1e-4f, name);
@@ -81,7 +81,7 @@ class LlamaTest {
     @ValueSource(strings = {"llama", "llama3-rope", "qwen2"})
     void greedyDecodingWithTheCacheMatchesTransformers(String name) throws IOException {
         Map<String, Object> e = expected(name + "/expected.json");
-        Llama model = Llama.load(resource(name), CPU, DType.FLOAT32);
+        Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
         int[] ids = ints(e.get("ids"));
         int[] greedy = ints(e.get("greedy"));
         LanguageModel.State state = model.newState(1);
@@ -98,7 +98,7 @@ class LlamaTest {
     @Test
     void readsQuantizedGguf() throws IOException {
         Map<String, Object> e = expected("llama.gguf.expected.json");
-        Llama model = Llama.load(resource("llama.gguf"), CPU, DType.FLOAT32);
+        Llama model = Llama.load(resource("llama.gguf"), DEVICE, DType.FLOAT32);
         float[] logits = model.forward(new int[][] {ints(e.get("ids"))}).value().toArray();
         // the reference used the dequantized weights; activations are rounded differently
         assertArrayEquals(rows(e.get("logits")), logits, 2e-3f);
@@ -106,7 +106,7 @@ class LlamaTest {
 
     @Test
     void leftPaddedBatchMatchesSingleSequences() {
-        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 3, CPU, DType.FLOAT32);
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 3, DEVICE, DType.FLOAT32);
         int[] a = {5, 9, 3, 7, 2};
         int[] b = {8, 1, 4};
         int[][] batch = {a, {0, 0, 8, 1, 4}};
@@ -127,7 +127,7 @@ class LlamaTest {
 
     @Test
     void selectReordersRows() {
-        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, CPU, DType.FLOAT32);
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
         LanguageModel.State s = model.newState(2);
         model.next(s, new int[][] {{1, 2, 3}, {4, 5, 6}}, null);
         s = s.select(new int[] {1, 1});
@@ -142,9 +142,9 @@ class LlamaTest {
 
     @Test
     void savesAndLoads(@TempDir Path dir) {
-        Llama model = Llama.load(resource("qwen2"), CPU, DType.FLOAT32);
+        Llama model = Llama.load(resource("qwen2"), DEVICE, DType.FLOAT32);
         model.save(dir);
-        Llama back = Llama.load(dir, CPU, DType.FLOAT32);
+        Llama back = Llama.load(dir, DEVICE, DType.FLOAT32);
         int[][] ids = {{1, 2, 3, 4}};
         assertEquals(model.config(), back.config());
         assertArrayEquals(model.forward(ids).value().toArray(), back.forward(ids).value().toArray());

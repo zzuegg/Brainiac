@@ -23,18 +23,18 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class GeneratorTest {
 
-    static final Device CPU = Device.cpu();
+    static final Device DEVICE = TestDevice.get();
     static final String LETTERS = "abcdefghijklmnopqrstuvwxyz";
 
     static Llama letters(long seed) {
-        return Llama.random(LlamaConfig.small(26, 32, 2, 4, 2), seed, CPU, DType.FLOAT32);
+        return Llama.random(LlamaConfig.small(26, 32, 2, 4, 2), seed, DEVICE, DType.FLOAT32);
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"llama", "llama3-rope", "qwen2"})
     void greedyAndBeamSearchMatchTransformers(String name) throws IOException {
         Map<String, Object> e = LlamaTest.expected(name + "/expected.json");
-        Generator gen = new Generator(Llama.load(LlamaTest.resource(name), CPU, DType.FLOAT32), null);
+        Generator gen = new Generator(Llama.load(LlamaTest.resource(name), DEVICE, DType.FLOAT32), null);
         int[] ids = LlamaTest.ints(e.get("ids"));
         Generator.Output out = gen.generate(new int[][] {ids}, Generator.Options.greedy(6).withStopTokens(Set.of()),
                 null).getFirst();
