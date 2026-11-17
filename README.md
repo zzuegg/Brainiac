@@ -697,25 +697,29 @@ normalization and activation parameters stay in floating point. A quantized mode
 computing in its own number format with the rounded values, so it runs unchanged on the
 CPU and the GPU. To also save memory and time, pack it: dense-like weights (dense,
 attention, recurrent) then stay in memory as their 8- or 4-bit levels plus scales
-(`Tensor.packed`), and matrix products read the levels directly, on the CPU (SIMD) and
-in OpenCL. That pays off when generating text one token at a time, which waits on reading
-the weights:
+(`Tensor.packed`), and matrix products read the levels directly, on the CPU (SIMD), in
+OpenCL and in Vulkan. That pays off when generating text one token at a time, which waits
+on reading the weights:
 
 ```java
 model.quantize(Quantization.int4().groups(32)).pack();   // or Model.load(path).pack()
 model.bytes();                                           // ~7x less weight memory
 ```
 
-| 4-core machine, Vector API | float32 | int8 packed | int4 packed |
-| --- | --- | --- | --- |
-| one row x 4096x4096 weights | 2.4 ms | 0.9 ms | 1.4 ms |
-| generating with 6 transformer blocks of 768 | 47 tokens/s | 141 tokens/s | 116 tokens/s (groups of 32) |
+Generating with 6 transformer blocks of 768 (a GPT-2-small-sized model), tokens/s:
 
-Products of more than a few rows (training, batch inference) unpack the weights first,
-and any other operation on a packed weight sees its values; `unpack()` turns them back
-into float32 tensors. Half-byte levels need more arithmetic to unpack on the CPU, so int4
-saves memory but runs a little slower than int8. On a GPU, packing saves memory; for small
-models the generation speed is about the same as float32.
+| device | float32 | int8 packed | int4 packed (groups of 32) |
+| --- | --- | --- | --- |
+| CPU, 32 threads, Vector API | 124 | 307 | 282 |
+| RX 9070 XT, Vulkan | 355 | 802 | 888 |
+
+One row times 4096x4096 weights takes 0.24 ms in float32 on that GPU and 25 µs in int8
+(20 µs in int4); on the CPU 1.2 ms in float32 and about 0.12 ms packed.
+
+Products of more rows (over 8 on a GPU, 16 on the CPU: training, batch inference) unpack the weights first, and
+any other operation on a packed weight sees its values; `unpack()` turns them back into
+float32 tensors. Models too small to wait on their weights, such as the Shakespeare
+example, gain memory but not speed: there the cost per token is in launching work.
 
 Files with quantized weights are format version 5; others are still written as version 4.
 Compare schemes on any benchmark task:
