@@ -103,6 +103,8 @@ public final class PagedLlama implements LanguageModel {
     private final Device device;
     private long passes;
     private long tokensRead;
+    private int[] taps = new int[0];
+    private float[][] tapped = new float[0][];
 
     /**
      * @param model the weights; any type, computed in float32
@@ -188,6 +190,33 @@ public final class PagedLlama implements LanguageModel {
      */
     public float[] embed(int... tokens) {
         return weight("model.embed_tokens.weight").gather(0, indices(tokens)).value().toArray();
+    }
+
+    /**
+     * Records the residual stream after the given layers on every later {@link #forward}, for
+     * draft heads that fuse low-, mid- and high-level features (EAGLE-3).
+     *
+     * @param layers layer indices, or none to stop recording
+     */
+    public void tap(int... layers) {
+        for (int l : layers) {
+            if (l < 0 || l >= config.layers()) {
+                throw new IllegalArgumentException("no layer " + l);
+            }
+        }
+        this.taps = layers.clone();
+        this.tapped = new float[layers.length][];
+    }
+
+    /**
+     * The residual stream the last {@link #forward} left after a tapped layer: every new token
+     * of every pass, in pass order, whether or not {@code everyStep} was set.
+     *
+     * @param tap the index into the layers given to {@link #tap}
+     * @return {@code [tokens * hidden]}
+     */
+    public float[] tapped(int tap) {
+        return tapped[tap];
     }
 
     /**
@@ -279,6 +308,11 @@ public final class PagedLlama implements LanguageModel {
             Var gated = linear(h, pre + "mlp.gate_proj").activation(ActivationOp.SILU, 0)
                     .mul(linear(h, pre + "mlp.up_proj"));
             x = x.add(linear(gated, pre + "mlp.down_proj"));
+            for (int i = 0; i < taps.length; i++) {
+                if (taps[i] == l) {
+                    tapped[i] = x.value().to(DType.FLOAT32).toArray();
+                }
+            }
         }
         if (!everyStep) {
             Var[] last = new Var[count];
