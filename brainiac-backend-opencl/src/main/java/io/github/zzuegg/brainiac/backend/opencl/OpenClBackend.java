@@ -459,7 +459,7 @@ public final class OpenClBackend implements Backend {
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
                 "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "matmul_mid", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
-                "attention_dkv", "unpack_packed", "matmul_packed", "matmul_rows", "sum_pieces", "attention_rows")) {
+                "attention_dkv", "unpack_packed", "matmul_packed", "matmul_rows", "attention_rows")) {
             kernels.put(name, cl.createKernel(program, name));
         }
         p = new Program(program, kernels);
@@ -479,7 +479,6 @@ public final class OpenClBackend implements Backend {
                     #define ACC float
                     #define ACC4 float4
                     #define LOAD(p, i) ((p)[i])
-                    #define LOAD4(p, i) vload4(0, (p) + (i))
                     #define STORE(p, i, v) ((p)[i] = (v))
                     """;
             case FLOAT64 -> """
@@ -489,7 +488,6 @@ public final class OpenClBackend implements Backend {
                     #define ACC double
                     #define ACC4 double4
                     #define LOAD(p, i) ((p)[i])
-                    #define LOAD4(p, i) vload4(0, (p) + (i))
                     #define STORE(p, i, v) ((p)[i] = (v))
                     """;
             case FLOAT16 -> """
@@ -498,7 +496,6 @@ public final class OpenClBackend implements Backend {
                     #define ACC float
                     #define ACC4 float4
                     #define LOAD(p, i) vload_half((i), (p))
-                    #define LOAD4(p, i) vload_half4(0, (p) + (i))
                     #define STORE(p, i, v) vstore_half_rte((v), (i), (p))
                     """;
             case BFLOAT16 -> """
@@ -513,7 +510,6 @@ public final class OpenClBackend implements Backend {
                         return (ushort) (b >> 16);
                     }
                     #define LOAD(p, i) as_float(((uint) (p)[i]) << 16)
-                    #define LOAD4(p, i) as_float4(convert_uint4(vload4(0, (p) + (i))) << 16)
                     #define STORE(p, i, v) ((p)[i] = to_bf16(v))
                     """;
         };
@@ -2209,19 +2205,19 @@ public final class OpenClBackend implements Backend {
         }
         Operand x = operand(a, o.dtype, batch, m, k, 1);
         long columnGroups = (n + 127) / 128;
-        int pieces = packedPieces(k, columnGroups * batch);
+        boolean wide = o.dtype == DType.FLOAT32 || o.dtype == DType.FLOAT64;
+        // narrow types would round the partial sums of pieces: one piece, summed in ACC
+        int pieces = wide ? packedPieces(k, columnGroups * batch) : 1;
         int chunk = (k + pieces - 1) / pieces;
         pieces = (k + chunk - 1) / chunk;
         long mn = (long) m * n;
-        // pieces add up unrounded, in the type computed in, then in order into the output
-        ClStorage parts = pieces == 1 ? o : raw(batch * pieces * mn, o.dtype == DType.FLOAT64 ? DType.FLOAT64
-                : DType.FLOAT32);
+        ClStorage target = pieces == 1 ? o : raw(batch * pieces * mn, o.dtype);
         run(o.dtype, "matmul_rows", new long[] {columnGroups * 32, 8, (long) batch * pieces}, new long[] {32, 8, 1},
-                x.storage(), y.storage(), o, parts, m, k, n, x.batch(), y.batch(), x.offset(), x.row(), x.col(),
+                x.storage(), y.storage(), target, m, k, n, x.batch(), y.batch(), x.offset(), x.row(), x.col(),
                 y.offset(), y.row(), pieces, chunk);
         if (pieces > 1) {
-            run(o.dtype, "sum_pieces", batch * mn, parts, o, mn, pieces, batch * mn);
-            release(parts);
+            reduce(ReduceOp.SUM, target, batch, pieces, mn, o);
+            // not released here: the reduction may be deferred
         }
         return true;
     }

@@ -711,14 +711,13 @@ void matmul_packed(__global const T* a, __global const uint* q, __global const f
 
 // z = a x b for up to PACKED_ROWS rows of a, the shape of decoding a token: one tile per
 // output column would leave most of the device idle and read b in short runs. As in
-// matmul_packed, each work item computes four adjacent columns (b's columns adjacent, bCol 1,
-// read as one vector) over its own run of rows of b, PACKED_SLICES items per column quad add
-// theirs up in order, and dimension 2 picks batch entry and piece of `chunk` rows. With one
-// piece the sums go to z; with several, unrounded to parts[(batch * pieces + piece) * m * n
-// + ...], which sum_pieces adds up in order.
+// matmul_packed, each work item computes four adjacent columns (b's columns adjacent, bCol 1)
+// over its own run of rows of b, PACKED_SLICES items per column quad add theirs up in order,
+// and dimension 2 picks batch entry and piece of `chunk` rows: sums go to
+// z[(batch * pieces + piece) * m * n + ...], added up afterwards when there are several pieces.
 __kernel __attribute__((reqd_work_group_size(PACKED_QUADS, PACKED_SLICES, 1)))
-void matmul_rows(__global const T* a, __global const T* b, __global T* z, __global ACC* parts, int m, int k,
-                 int n, long strideA, long strideB, long aOff, long aRow, long aCol, long bOff, long bRow,
+void matmul_rows(__global const T* a, __global const T* b, __global T* z, int m, int k, int n,
+                 long strideA, long strideB, long aOff, long aRow, long aCol, long bOff, long bRow,
                  int pieces, int chunk) {
     __local ACC4 sums[PACKED_SLICES][PACKED_QUADS];
     uint quad = get_local_id(0);
@@ -740,7 +739,8 @@ void matmul_rows(__global const T* a, __global const T* b, __global T* z, __glob
     }
     if (c + 3 < (uint) n) {
         for (uint r = start; r < end; r++) {
-            ACC4 l = LOAD4(b, bBase + (long) r * bRow);
+            long o = bBase + (long) r * bRow;
+            ACC4 l = (ACC4) (LOAD(b, o), LOAD(b, o + 1), LOAD(b, o + 2), LOAD(b, o + 3));
             for (int i = 0; i < PACKED_ROWS; i++) {
                 if (i < m) total[i] = fma((ACC4) LOAD(a, aBase + i * aRow + (long) r * aCol), l, total[i]);
             }
@@ -755,50 +755,24 @@ void matmul_rows(__global const T* a, __global const T* b, __global T* z, __glob
             }
         }
     }
-    // the slices' sums added up in order (slice 0 keeps them); stored after the loop, so that
-    // no branch on the number of pieces sits between its barriers
-    ACC4 res[PACKED_ROWS];
+    long out0 = ((long) batch * pieces + piece) * m * n;
     for (int i = 0; i < PACKED_ROWS; i++) {
+        if (i >= m) break;
         sums[slice][quad] = total[i];
         barrier(CLK_LOCAL_MEM_FENCE);
-        ACC4 t = sums[0][quad];
-        for (int s = 1; s < PACKED_SLICES; s++) {
-            t += sums[s][quad];
-        }
-        res[i] = t;
-        barrier(CLK_LOCAL_MEM_FENCE);
-    }
-    if (slice != 0 || c >= (uint) n) return;
-    long out0 = (pieces > 1 ? (long) batch * pieces + piece : batch) * m * n;
-    for (int i = 0; i < m && i < PACKED_ROWS; i++) {
-        ACC4 t = res[i];
-        long o = out0 + (long) i * n + c;
-        if (pieces > 1) {
-            parts[o] = t.x;
-            if (c + 1 < (uint) n) parts[o + 1] = t.y;
-            if (c + 2 < (uint) n) parts[o + 2] = t.z;
-            if (c + 3 < (uint) n) parts[o + 3] = t.w;
-        } else {
+        if (slice == 0 && c < (uint) n) {
+            ACC4 t = sums[0][quad];
+            for (int s = 1; s < PACKED_SLICES; s++) {
+                t += sums[s][quad];
+            }
+            long o = out0 + (long) i * n + c;
             STORE(z, o, t.x);
             if (c + 1 < (uint) n) STORE(z, o + 1, t.y);
             if (c + 2 < (uint) n) STORE(z, o + 2, t.z);
             if (c + 3 < (uint) n) STORE(z, o + 3, t.w);
         }
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
-}
-
-// z[b, e] = the sum over pieces p, in order, of parts[(b * pieces + p) * count + e]
-__kernel void sum_pieces(__global const ACC* parts, __global T* z, long count, int pieces, long total) {
-    long g = get_global_id(0);
-    if (g >= total) return;
-    long b = g / count;
-    long e = g % count;
-    __global const ACC* p = parts + b * pieces * count + e;
-    ACC s = p[0];
-    for (int i = 1; i < pieces; i++) {
-        s += p[i * count];
-    }
-    STORE(z, g, s);
 }
 
 // Attention forward with one work group per query row, the keys taken ATT_GROUP at a time:
