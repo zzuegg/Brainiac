@@ -98,7 +98,7 @@ public final class VastCli {
 
     private static void usage() {
         System.out.println("""
-                usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--min-gpu-ram GB] [--limit N]
+                usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--gpus N] [--min-gpu-ram GB] [--limit N]
                        vast run (--offer ID | --cheapest | --instance ID) [--job check|smoke|tests|bench|run]
                                 [--image IMAGE] [--disk GB] [--max-minutes N] [--keep] [--yes] [--identity KEY]
                                 [-- ARGS for the job, e.g. the command for --job run]
@@ -119,6 +119,7 @@ public final class VastCli {
                 case "--cheapest" -> o.cheapest = true;
                 case "--job" -> o.job = args[++i];
                 case "--gpu" -> o.query = o.query.withGpus(List.of(args[++i].split("\\s*,\\s*")));
+                case "--gpus" -> o.query = o.query.withGpuCount(Integer.parseInt(args[++i]));
                 case "--min-gpu-ram" -> o.query = o.query.withMinGpuMemory(Double.parseDouble(args[++i]));
                 case "--max-price" -> o.query = o.query.withMaxPrice(Double.parseDouble(args[++i]));
                 case "--limit" -> o.query = o.query.withLimit(Integer.parseInt(args[++i]));

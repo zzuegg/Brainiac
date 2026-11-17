@@ -48,6 +48,16 @@ public record VastQuery(List<String> gpuNames, int gpus, double maxDollarsPerHou
     }
 
     /**
+     * Returns this search for machines with another number of GPUs.
+     *
+     * @param n GPUs per machine
+     * @return the changed search
+     */
+    public VastQuery withGpuCount(int n) {
+        return new VastQuery(gpuNames, n, maxDollarsPerHour, minReliability, minDownloadMbps, minDiskGb, minGpuMemoryGb, limit);
+    }
+
+    /**
      * Returns this search for other GPU models.
      *
      * @param names GPU models as Vast names them
