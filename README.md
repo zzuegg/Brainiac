@@ -698,11 +698,19 @@ only its name and last four characters. Auto sends a conversation to a model on 
 there is one, then to Anthropic, OpenAI and Google. A gateway or proxy in front of a provider
 is set with `-Dstudio.anthropic.url=`, `-Dstudio.openai.url=` or `-Dstudio.google.url=`.
 
+**Images and Voice** draw and speak through OpenAI (GPT image and DALL-E models, `tts-1` and
+`gpt-4o-mini-tts` with their voices) and Google (Imagen and Gemini image models, Gemini speech
+with its 30 voices), with the same keys. The screens only show settings the chosen model has.
+Every picture and take is also saved to `~/.brainiac/studio/outputs`. A video added to the
+Voice screen plays in the browser under each take and is never uploaded.
+
 ```
 GET  /api/models            providers, their keys (names only) and models, and what Auto picks
 POST /api/keys              {"provider":"anthropic","label":"work","key":"..."} ("remove" or "first": true)
 POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"Hi"}]} -> event stream:
                             route, thinking, text ..., done or error
+POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","count":2}
+POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
 ```
 
 The other surfaces are being connected one at a time; until a surface reads real data it

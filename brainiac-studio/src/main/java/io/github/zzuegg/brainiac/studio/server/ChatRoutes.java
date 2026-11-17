@@ -29,6 +29,10 @@ import java.util.Map;
  *       optional) answers as a server-sent event
  *       stream: {@code route} (the model chosen), then {@code text} and {@code thinking} pieces,
  *       then {@code done} or {@code error}.
+ *   <li>{@code POST /api/images} with {@code {"model": "auto", "prompt": "...", "aspect": "16:9",
+ *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
+ *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
+ *       Both answer with the model used and each file, base64 encoded, and where it was saved.
  * </ul>
  */
 final class ChatRoutes {
@@ -48,6 +52,63 @@ final class ChatRoutes {
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
         server.post("/api/keys", this::keys);
         server.post("/api/chat", this::chat);
+        server.post("/api/images", this::images);
+        server.post("/api/speech", this::speech);
+    }
+
+    private void images(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 256 * 1024);
+        long start = System.nanoTime();
+        generated(ex, start, () -> chat.images(Json.string(body, "model", ChatService.AUTO),
+                Json.string(body, "prompt", ""), Json.string(body, "aspect", "1:1"),
+                (int) Json.integer(body, "count", 1), Json.string(body, "key", null)));
+    }
+
+    private void speech(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 1024 * 1024);
+        long start = System.nanoTime();
+        generated(ex, start, () -> chat.speech(Json.string(body, "model", ChatService.AUTO),
+                Json.string(body, "text", ""), Json.string(body, "voice", ""), Json.number(body, "speed", 1),
+                Json.string(body, "instructions", ""), Json.string(body, "format", "mp3"),
+                Json.string(body, "key", null)));
+    }
+
+    /** Makes something with a provider. */
+    @FunctionalInterface
+    private interface Generation {
+        ChatService.Generated run() throws IOException, InterruptedException;
+    }
+
+    // A provider failure is a 502 with the provider's own words; a bad request was already a 400.
+    private static void generated(HttpExchange ex, long start, Generation g) throws IOException {
+        ChatService.Generated out;
+        try {
+            out = g.run();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Exchanges.error(ex, 503, "stopped");
+            return;
+        } catch (IOException e) {
+            Exchanges.error(ex, 502, String.valueOf(e.getMessage()));
+            return;
+        }
+        List<Object> items = new ArrayList<>();
+        for (int i = 0; i < out.media().size(); i++) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("mime", out.media().get(i).mime());
+            m.put("data", java.util.Base64.getEncoder().encodeToString(out.media().get(i).data()));
+            m.put("file", out.files().get(i).toString());
+            items.add(m);
+        }
+        Map<String, Object> model = new LinkedHashMap<>();
+        model.put("key", out.model().key());
+        model.put("name", out.model().name());
+        model.put("provider", out.model().provider());
+        Map<String, Object> answer = new LinkedHashMap<>();
+        answer.put("model", model);
+        answer.put("items", items);
+        answer.put("seconds", (System.nanoTime() - start) / 1e9);
+        Exchanges.json(ex, 200, answer);
     }
 
     private void keys(HttpExchange ex) throws IOException {

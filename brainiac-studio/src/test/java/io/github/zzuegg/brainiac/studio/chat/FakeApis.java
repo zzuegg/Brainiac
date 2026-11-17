@@ -35,8 +35,17 @@ final class FakeApis implements AutoCloseable {
         return URI.create("http://127.0.0.1:" + http.getAddress().getPort() + "/" + prefix + "/");
     }
 
+    /** How many calls each path got. */
+    final Map<String, Integer> calls = new ConcurrentHashMap<>();
+
     ChatService service(Keys keys, List<java.nio.file.Path> folders) {
-        return ChatService.at(keys, folders, base("a"), base("o"), base("g"));
+        return ChatService.at(keys, folders, base("a"), base("o"), base("g"),
+                folders.isEmpty() ? java.nio.file.Path.of(System.getProperty("java.io.tmpdir"), "studio-test-outputs")
+                        : folders.getFirst().resolve("outputs"));
+    }
+
+    private static String b64(String s) {
+        return java.util.Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8));
     }
 
     private void handle(HttpExchange ex, String p) throws IOException {
@@ -44,6 +53,7 @@ final class FakeApis implements AutoCloseable {
         bodies.put(p + " " + ex.getRequestMethod(),
                 new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
         headers.put(p, ex.getRequestHeaders());
+        calls.merge(p + " " + path, 1, Integer::sum);
         String auth = String.valueOf(ex.getRequestHeaders().getFirst("x-api-key")) + " "
                 + ex.getRequestHeaders().getFirst("Authorization") + " " + ex.getRequestHeaders().getFirst("x-goog-api-key");
         if (failKey != null && auth.contains(failKey)) {
@@ -86,7 +96,7 @@ final class FakeApis implements AutoCloseable {
             case "o /v1/models" -> send(ex, 200, "application/json", """
                     {"object":"list","data":[{"id":"gpt-5","created":1754000000},{"id":"gpt-5-mini","created":1754000001},
                      {"id":"tts-1","created":1},{"id":"whisper-1","created":1},{"id":"text-embedding-3-large","created":1},
-                     {"id":"gpt-image-1","created":2},{"id":"gpt-4o-realtime-preview","created":3}]}""");
+                     {"id":"gpt-image-1","created":2},{"id":"dall-e-3","created":1},{"id":"gpt-4o-mini-tts","created":4},{"id":"gpt-4o-realtime-preview","created":3}]}""");
             case "o /v1/chat/completions" -> send(ex, 200, "text/event-stream", """
                     data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
 
@@ -104,6 +114,8 @@ final class FakeApis implements AutoCloseable {
                        "supportedGenerationMethods":["generateContent","countTokens"]},
                      {"name":"models/gemini-3-pro","displayName":"Gemini 3 Pro","supportedGenerationMethods":["generateContent"]},
                      {"name":"models/imagen-4.0-generate-001","displayName":"Imagen 4","supportedGenerationMethods":["predict"]},
+                     {"name":"models/gemini-2.5-flash-preview-tts","displayName":"Gemini 2.5 Flash TTS",
+                       "supportedGenerationMethods":["generateContent"]},
                      {"name":"models/veo-3.0-generate-001","displayName":"Veo 3","supportedGenerationMethods":["predictLongRunning"]},
                      {"name":"models/gemini-embedding-001","supportedGenerationMethods":["embedContent"]}]}""");
             case "g /v1beta/models/gemini-3-pro:streamGenerateContent" -> send(ex, 200, "text/event-stream", """
@@ -115,6 +127,22 @@ final class FakeApis implements AutoCloseable {
                     data:  "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"thoughtsTokenCount":4}}
 
                     """);
+            case "o /v1/images/generations" -> {
+                int n = ((Number) io.github.zzuegg.brainiac.io.Json.object(io.github.zzuegg.brainiac.io.Json.parse(
+                        bodies.get("o POST"))).get("n")).intValue();
+                StringBuilder data = new StringBuilder();
+                for (int i = 0; i < n; i++) {
+                    data.append(i == 0 ? "" : ",").append("{\"b64_json\":\"").append(b64("PNG" + i)).append("\"}");
+                }
+                send(ex, 200, "application/json", "{\"created\":1,\"data\":[" + data + "]}");
+            }
+            case "o /v1/audio/speech" -> send(ex, 200, "audio/mpeg", "ID3 fake mp3");
+            case "g /v1beta/models/imagen-4.0-generate-001:predict" -> send(ex, 200, "application/json",
+                    "{\"predictions\":[{\"bytesBase64Encoded\":\"" + b64("IMG-A") + "\",\"mimeType\":\"image/png\"},"
+                    + "{\"bytesBase64Encoded\":\"" + b64("IMG-B") + "\",\"mimeType\":\"image/png\"}]}");
+            case "g /v1beta/models/gemini-2.5-flash-preview-tts:generateContent" -> send(ex, 200, "application/json",
+                    "{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":"
+                    + "\"audio/L16;codec=pcm;rate=24000\",\"data\":\"" + b64("abcd") + "\"}}]}}]}");
             default -> send(ex, 404, "application/json", "{\"error\":{\"message\":\"no route " + path + "\"}}");
         }
     }
