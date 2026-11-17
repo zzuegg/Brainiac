@@ -310,6 +310,16 @@ class LlamaTest {
     }
 
     @Test
+    void hiddenStatesComeWithTheLogits() {
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 16, DEVICE, DType.FLOAT32);
+        int[][] prompt = {{1, 2, 3}, {4, 5, 6}};
+        float[] plain = model.next(model.newState(2), prompt, null).toArray();
+        Tensor[] both = model.nextWithHidden(model.newState(2), prompt, null);
+        assertArrayEquals(plain, both[0].toArray(), 1e-6f);
+        assertEquals(io.github.zzuegg.brainiac.tensor.Shape.of(2, 3, 32), both[1].shape());
+    }
+
+    @Test
     void selectReordersRows() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
         LanguageModel.State s = model.newState(2);
