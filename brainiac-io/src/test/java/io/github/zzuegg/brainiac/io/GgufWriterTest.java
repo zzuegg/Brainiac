@@ -217,5 +217,9 @@ class GgufWriterTest {
         assertArrayEquals(new int[] {1, 314, 627, 306, 307, 315, 355, 295, 325, 355, 314, 272, 627, 306, 307, 315, 355,
             302, 327, 2, 314, 627, 306, 307, 315, 355, 288, 323, 317, 378, 314, 272, 627, 306, 307, 315},
                 back.encode("<s>[INST] Hi [/INST] Ok</s>[INST] Again[/INST]"));
+        // and decodes as transformers does, writing control tokens unless asked to skip them
+        int[] chat = back.encode("<s>[INST] Hi [/INST] Ok</s>[INST] Again[/INST]");
+        assertEquals("<s>[INST] Hi [/INST] Ok</s>[INST] Again[/INST]", back.decode(chat));
+        assertEquals("[INST] Hi [/INST] Ok[INST] Again[/INST]", back.decode(chat, true));
     }
 }
