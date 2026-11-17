@@ -25,6 +25,9 @@ import java.util.regex.Pattern;
  * Agent agent = new Agent(generator, tokenizer, List.of(weather), Generator.Options.greedy(256).withStopTokens(stops));
  * Agent.Result r = agent.run(List.of(ChatTemplate.message("user", "How warm is it in Vienna?")), 4);
  * }</pre>
+ *
+ * <p>{@link Tools} makes tools from annotated methods and records, with the schema derived
+ * from their types.
  */
 public final class Agent {
 
