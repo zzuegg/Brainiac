@@ -3,8 +3,15 @@
 #include "common.glsl"
 layout(local_size_x = GROUP) in;
 #include "math.glsl"
+// float64 is also built once per operation (-DOP=n): AMD's LLPC compiler crashes on the
+// switch over every double function in one shader
+#ifdef OP
+#define OP_ uint(OP)
+#else
+#define OP_ p.op
+#endif
 layout(push_constant) uniform P { In x; Buf y; uint n; uint op; } p;
 void main() {
     uint i = gid();
-    if (i < p.n) STORE(p.y, i, unary_op(p.op, LOAD(p.x, i)));
+    if (i < p.n) STORE(p.y, i, unary_op(OP_, LOAD(p.x, i)));
 }

@@ -619,8 +619,8 @@ CI runs them on PoCL.
 ### Vulkan
 
 `brainiac-backend-vulkan` is a second GPU backend, on Vulkan compute shaders called through
-LWJGL (its only dependency; the natives jar for the build platform is picked
-automatically). It needs a Vulkan 1.2 driver with buffer device addresses and 64-bit shader
+LWJGL (its only dependency, with LWJGL's shaderc bindings; the natives jars for the build
+platform are picked automatically). It needs a Vulkan 1.2 driver with buffer device addresses and 64-bit shader
 integers, which current AMD, NVIDIA and Intel drivers have. Allow LWJGL to call native code
 with `--enable-native-access=org.lwjgl`.
 
@@ -639,7 +639,19 @@ back. Tensors are slots in large device memory blocks, pooled by size. Every sha
 compiled once per number format: float32 always; float64 (computed in double precision, with
 the shaders' own exp and log, since GLSL has none for doubles) where the device has
 `shaderFloat64`; float16 and bfloat16 (stored in 16 bits, computed in float32) where it has
-16-bit storage buffers. System properties: `brainiac.vulkan.devices`
+16-bit storage buffers (AMD's LLPC compiler crashes on one float64 shader switching over every
+function, so float64 unary operations and activations have one shader each).
+
+Element-wise operations in float32 and float64 are fused, as on OpenCL: a result is recorded
+instead of computed, later element-wise operations build on it, and when something else needs
+the values (a matmul, a reduction, a download) the whole chain becomes one GLSL shader,
+compiled at run time with shaderc. Transposes, slices and broadcasts are part of the chain and
+are read in place through their strides. Pointers, shapes and constants are read from a small
+table, so one shader serves every batch size and learning rate, and compiled shaders are kept
+in `~/.cache/brainiac/vulkan` between runs. `brainiac.vulkan.fusion=false` runs every step on
+its own; `brainiac.vulkan.cache` moves the cache (`none` for no cache).
+
+System properties: `brainiac.vulkan.devices`
 (`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
 (index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
 validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
@@ -652,7 +664,9 @@ On an RX 9070 XT (2 epochs of MNIST; OpenCL in brackets): the MLP trains in 1.7 
 and infers 600k samples/s (90-117k); the CNN trains in 3.2 s (3.1 s) and infers 130k
 samples/s (158-227k). A 2048 x 2048 matmul reaches 0.9-1.1 TFLOP/s (1.8-1.9). Vulkan wins
 where many small operations dominate; OpenCL's fused kernels win on large matmuls and
-convolutions.
+convolutions. With fusion, a long element-wise chain over 4M values runs at
+2,572 M elements/s (1,237 without; OpenCL's fused chain 849), MNIST inference gains 35-60%,
+and a transformer on Shakespeare trains 3 epochs in 10.8 s (OpenCL 17.5 s).
 
 Tensors and models come in four number formats:
 

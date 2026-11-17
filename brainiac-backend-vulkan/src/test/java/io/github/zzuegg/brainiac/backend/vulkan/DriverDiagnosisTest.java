@@ -42,6 +42,9 @@ class DriverDiagnosisTest {
         c.put("divide", "K(1.0) / (K(1.0) + v)");
         c.put("floor", "floor(v)");
         c.put("mod", "mod(v, K(2.0))");
+        c.put("exp+tanh", "exp_(v) + tanh_(v)");
+        c.put("exp+log", "exp_(v) + log_(K(1.0) + v * v)");
+        c.put("exp+exp", "exp_(v) + exp_(v * K(0.5))");
         return c;
     }
 

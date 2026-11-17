@@ -1,5 +1,9 @@
 package io.github.zzuegg.brainiac.backend.vulkan;
 
+import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
+import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -162,6 +166,33 @@ final class Fusion {
             case Act a -> 1 + cost(a.x(), seen);
             case ActBack a -> 1 + cost(a.x(), seen) + cost(a.grad(), seen);
             case Bin b -> 1 + cost(b.a(), seen) + cost(b.b(), seen);
+        };
+    }
+
+    /**
+     * The functions built on the shaders' own exp and log (exp, log, tanh, sigmoid, erf, pow and
+     * the smooth activations) in an expression, a pending input counted once. AMD's LLPC compiler
+     * crashes on float64 shaders that combine several, so float64 chains hold at most one.
+     */
+    private static final Set<UnaryOp> TRANSCENDENTAL = java.util.EnumSet.of(UnaryOp.EXP, UnaryOp.LOG, UnaryOp.TANH,
+            UnaryOp.SIGMOID, UnaryOp.ERF, UnaryOp.SOFTPLUS);
+
+    static int transcendentals(Expr e) {
+        return transcendentals(e, Collections.newSetFromMap(new IdentityHashMap<>()));
+    }
+
+    private static int transcendentals(Expr e, Set<VkStorage> seen) {
+        return switch (e) {
+            case Src s -> s.storage().pending != null && seen.add(s.storage())
+                    ? transcendentals(s.storage().pending, seen) : 0;
+            case Const c -> 0;
+            case Random r -> 0;
+            case Un u -> (TRANSCENDENTAL.contains(UnaryOp.values()[u.op()]) ? 1 : 0) + transcendentals(u.x(), seen);
+            case Act a -> (ActivationOp.values()[a.op()].transcendental() ? 1 : 0) + transcendentals(a.x(), seen);
+            case ActBack a -> (ActivationOp.values()[a.op()].transcendental() ? 1 : 0) + transcendentals(a.x(), seen)
+                    + transcendentals(a.grad(), seen);
+            case Bin b -> (b.op() == BinaryOp.POW.ordinal() ? 1 : 0) + transcendentals(b.a(), seen)
+                    + transcendentals(b.b(), seen);
         };
     }
 
