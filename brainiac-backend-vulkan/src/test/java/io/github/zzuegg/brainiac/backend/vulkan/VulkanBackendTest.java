@@ -771,6 +771,40 @@ class VulkanBackendTest {
         packedMatches(bits, group, m, 768, 256, withOffsets, true);
     }
 
+    /** 8-bit levels of at most 16 values (IQ4_NL's table), kept as 4-bit indices on the device. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 8, 12})
+    void packedMatricesOfFewLevelsMatchTheCpu(int m) {
+        int[] table = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+        for (int[] dims : new int[][] {{192, 77}, {768, 256}}) {
+            int rows = dims[0];
+            int cols = dims[1];
+            SplittableRandom r = new SplittableRandom(m + rows);
+            byte[] levels = new byte[rows * cols];
+            for (int i = 0; i < levels.length; i++) {
+                levels[i] = (byte) table[r.nextInt(16)];
+            }
+            float[] scales = new float[rows / 32 * cols];
+            for (int i = 0; i < scales.length; i++) {
+                scales[i] = Float.float16ToFloat(Float.floatToFloat16((float) r.nextDouble(1e-4, 1e-3)));
+            }
+            Tensor onCpu = Tensor.packed(PackedMatrix.of(levels, scales, rows, cols, 8, 32), CPU);
+            Tensor onGpu = onCpu.to(gpu);
+            Tensor x = random(5, m, rows);
+            float[] expected = x.matmul(onCpu).toArray();
+            double scale = 1;
+            for (float v : expected) {
+                scale = Math.max(scale, Math.abs(v));
+            }
+            String what = "table levels, " + m + " x " + rows + " x " + cols;
+            org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
+            org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(),
+                    (float) (5e-5 * scale), what);
+            assertTrue(onGpu.bytes()
+                    < (long) rows * cols * 3 / 4, what + ": 4-bit indices and float16 scales");
+        }
+    }
+
     private static void packedMatches(int bits, int group, int m, int rows, int cols, boolean withOffsets) {
         packedMatches(bits, group, m, rows, cols, withOffsets, false);
     }

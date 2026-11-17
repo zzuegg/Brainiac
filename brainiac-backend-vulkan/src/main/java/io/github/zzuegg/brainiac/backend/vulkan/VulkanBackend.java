@@ -1579,6 +1579,7 @@ public final class VulkanBackend implements Backend {
         static final int SCALE_CODES = 4;
         static final int OFFSET_CODES = 8;
         static final int HALF = 16;
+        static final int CODEBOOK = 32;
 
         @Override
         public long size() {
@@ -1596,7 +1597,7 @@ public final class VulkanBackend implements Backend {
 
         /** @return the flags the shaders read: the above, the plane bits from bit 8 and the level bits from bit 12 */
         int layout() {
-            int planeBits = hi == null ? 0 : bits - 4;
+            int planeBits = hi == null || (flags & CODEBOOK) != 0 ? 0 : bits - 4;
             return flags | planeBits << 8 | bits << 12;
         }
 
@@ -1636,6 +1637,8 @@ public final class VulkanBackend implements Backend {
 
     /** Whether 5- and 6-bit levels are kept as nibbles plus high-bit planes ({@code -Dbrainiac.vulkan.packedPlanes=false}: a byte each). */
     private static final boolean PACKED_PLANES = !"false".equals(System.getProperty("brainiac.vulkan.packedPlanes"));
+    /** Whether levels of at most 16 distinct values go as 4-bit indices into a table ({@code -Dbrainiac.vulkan.packedCodebook=false}: never). */
+    private static final boolean PACKED_CODEBOOK = !"false".equals(System.getProperty("brainiac.vulkan.packedCodebook"));
     /** Whether factored scales stay factored on the device ({@code -Dbrainiac.vulkan.packedFactors=false}: float32 per group). */
     private static final boolean PACKED_FACTORS = !"false".equals(System.getProperty("brainiac.vulkan.packedFactors"));
 
@@ -1663,6 +1666,23 @@ public final class VulkanBackend implements Backend {
             }
             levels = uploadBytes(low);
             hi = uploadBytes(high);
+        } else if (PACKED_CODEBOOK && !matrix.nibbles() && rows % 2 == 0 && codebook(matrix.data()) != null) {
+            // at most 16 distinct levels (IQ4_NL, IQ4_XS, MXFP4): a 4-bit index each into a table
+            byte[] table = codebook(matrix.data());
+            int[] index = new int[256];
+            for (int i = 0; i < table.length; i++) {
+                index[table[i] & 0xFF] = i;
+            }
+            byte[] data = matrix.data();
+            byte[] packed = new byte[rows / 2 * cols];
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    packed[r / 2 * cols + c] |= (byte) (index[data[r * cols + c] & 0xFF] << ((r & 1) * 4));
+                }
+            }
+            levels = uploadBytes(packed);
+            hi = uploadBytes(java.util.Arrays.copyOf(table, 16));
+            flags |= Packed.CODEBOOK;
         } else {
             levels = uploadBytes(matrix.data());
         }
@@ -1683,6 +1703,28 @@ public final class VulkanBackend implements Backend {
         }
         return new Packed(rows, cols, bits, matrix.group(), flags, 1, 0, matrix, levels, hi, null, null,
                 vs(upload(matrix.scales())), matrix.offsets() == null ? null : vs(upload(matrix.offsets())));
+    }
+
+    /** @return the distinct levels in increasing order if there are at most 16, else null */
+    private static byte[] codebook(byte[] levels) {
+        boolean[] seen = new boolean[256];
+        int count = 0;
+        for (byte b : levels) {
+            if (!seen[b & 0xFF]) {
+                seen[b & 0xFF] = true;
+                if (++count > 16) {
+                    return null;
+                }
+            }
+        }
+        byte[] table = new byte[count];
+        int at = 0;
+        for (int v = -128; v < 128; v++) {
+            if (seen[v & 0xFF]) {
+                table[at++] = (byte) v;
+            }
+        }
+        return table;
     }
 
     /** Whether every value is exactly a float16. */

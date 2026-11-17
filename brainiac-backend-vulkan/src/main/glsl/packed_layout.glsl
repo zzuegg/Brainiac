@@ -1,15 +1,23 @@
 // Reading a packed matrix (see VulkanBackend.Packed), included after a push constant block p
 // with: InWords q, hi, scaleCodes, offsetCodes, scales, offsets; uint n, group, flags,
 // perSuper; float shift. flags: 1 nibbles, 2 offsets, 4 scale codes, 8 offset codes,
-// 16 float16 scales and offsets; bits 8-11 the high bits per level kept in the hi plane,
+// 16 float16 scales and offsets, 32 4-bit indices (as nibbles) into a table of 16 signed bytes in hi; bits 8-11 the high bits per level kept in the hi plane,
 // bits 12-15 the bits per level.
 
 uint ubyteAt(InWords w, uint b) {
     return bitfieldExtract(w.v[b >> 2], int((b & 3u) * 8u), 8);
 }
 
+int tableAt(uint i) {
+    return bitfieldExtract(int(p.hi.v[i >> 2]), int((i & 3u) * 8u), 8);
+}
+
 // the level at row r, column c
 int levelAt(uint r, uint c) {
+    if ((p.flags & 32u) != 0) {
+        uint b = (r >> 1) * p.n + c;
+        return tableAt(bitfieldExtract(p.q.v[b >> 2], int((b & 3u) * 8u + (r & 1u) * 4u), 4));
+    }
     uint planeBits = (p.flags >> 8) & 15u;
     if (planeBits != 0) {
         uint lb = (r >> 1) * p.n + c;
@@ -29,6 +37,12 @@ int levelAt(uint r, uint c) {
 
 // the levels of columns c .. c + 3 at row r, c a multiple of 4 and n of 4 (one word each)
 ivec4 levels4At(uint r, uint c) {
+    if ((p.flags & 32u) != 0) {
+        uint w = p.q.v[((r >> 1) * p.n + c) >> 2];
+        int s = int((r & 1u) * 4u);
+        return ivec4(tableAt(bitfieldExtract(w, s, 4)), tableAt(bitfieldExtract(w, 8 + s, 4)),
+                     tableAt(bitfieldExtract(w, 16 + s, 4)), tableAt(bitfieldExtract(w, 24 + s, 4)));
+    }
     uint planeBits = (p.flags >> 8) & 15u;
     if (planeBits != 0) {
         uint lw = p.q.v[((r >> 1) * p.n + c) >> 2];
