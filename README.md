@@ -755,6 +755,11 @@ say whether they run, and why not, such as a quantization `Gguf.formats()` does 
 split into parts. The studio keeps no list of its own, so a family or format the
 core learns shows up there by itself. A GGUF file's architecture is also read from its first
 megabyte before anything is downloaded.
+Gated models (Llama, Gemma) need a Hugging Face read token and the model's license accepted on
+its page. Paste the token in the Hugging Face panel: it is kept in `~/.brainiac/hf_token`, readable
+only by your account, where the core's downloader finds it too. A key saved under the Hugging Face
+provider comes first, then that file, then `HF_TOKEN`, then the file `huggingface-cli login` writes.
+The token is sent only to huggingface.co, never to the download servers it redirects to.
 Downloads go to `downloads/` in the data folder, resume where they stopped, are checked against
 the Hub's SHA-256, and use your Hugging Face key, if you added one, for gated models; the key
 goes only to huggingface.co, never to the file servers it sends downloads from. A finished
@@ -889,6 +894,8 @@ POST /api/hub/files         {"repo":"Qwen/Qwen2.5-0.5B-Instruct-GGUF"} -> its GG
 POST /api/hub/download      {"repo":"...","option":"qwen2.5-0.5b-instruct-q8_0.gguf"} ("folder" for the whole model)
 GET  /api/hub/downloads     every download with its progress; POST /api/hub/cancel {"id":"1"} stops one,
                             POST /api/hub/delete {"name":"..."} deletes a downloaded model
+POST /api/hub/token         {"token":"hf_..."} saves the Hugging Face token to ~/.brainiac/hf_token ("remove": true
+                            deletes it); GET /api/hub/downloads says which token is used, by its last 4 characters
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
 GET  /api/balances          what is left on each key, at providers that report it
 GET  /api/chats             the saved conversations, newest first

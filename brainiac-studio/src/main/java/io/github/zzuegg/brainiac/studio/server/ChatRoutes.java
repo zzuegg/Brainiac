@@ -54,6 +54,9 @@ import java.util.Map;
  *       download into {@code downloads} in the data folder; {@code GET /api/hub/downloads} shows them;
  *       {@code POST /api/hub/cancel} with {@code {"id": "1"}} stops one, and {@code POST
  *       /api/hub/delete} with {@code {"name": "..."}} deletes a downloaded model.
+ *   <li>{@code POST /api/hub/token} with {@code {"token": "hf_..."}} saves the Hugging Face token to
+ *       {@code ~/.brainiac/hf_token}, readable only by this account, where the core's downloader
+ *       finds it too; {@code {"remove": true}} deletes that file. Only its last four characters come back.
  *   <li>{@code GET /api/usage} sums every call by provider, key, model and day;
  *       {@code GET /api/balances} asks the providers that report one what is left on each key.
  * </ul>
@@ -126,8 +129,23 @@ final class ChatRoutes {
         server.post("/api/hub/files", ex -> hub(ex, body -> chat.hub().files(Json.string(body, "repo", "").strip())));
         server.post("/api/hub/download", ex -> hub(ex, body -> chat.hub().download(Json.string(body, "repo", "").strip(),
                 Json.string(body, "option", ""))));
-        server.get("/api/hub/downloads", ex -> Exchanges.json(ex, 200, Map.of("downloads", chat.hub().downloads(),
-                "folder", chat.hub().folder().toString(), "runs", chat.hub().runs())));
+        server.get("/api/hub/downloads", ex -> {
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("downloads", chat.hub().downloads());
+            out.put("folder", chat.hub().folder().toString());
+            out.put("runs", chat.hub().runs());
+            out.put("token", chat.hubToken());
+            Exchanges.json(ex, 200, out);
+        });
+        server.post("/api/hub/token", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 8192);
+            boolean remove = Boolean.TRUE.equals(body.get("remove"));
+            boolean ok = chat.saveHubToken(remove ? null : Json.string(body, "token", ""));
+            Map<String, Object> out = new java.util.LinkedHashMap<>();
+            out.put("ok", ok);
+            out.put("token", chat.hubToken());
+            Exchanges.json(ex, 200, out);
+        });
         server.post("/api/hub/cancel", ex -> hub(ex, body -> Map.of("ok", chat.hub().cancel(Json.string(body, "id", "")))));
         server.post("/api/hub/delete", ex -> hub(ex, body -> Map.of("ok", chat.hub().delete(Json.string(body, "name", "")))));
         server.post("/api/local/browse", ex -> {

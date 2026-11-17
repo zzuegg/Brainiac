@@ -149,7 +149,8 @@ public final class Studio implements AutoCloseable {
      */
     public static Studio start(Settings settings) throws IOException {
         CapabilityRegistry capabilities = CapabilityRegistry.discover();
-        Keys keys = new Keys(settings.keyFile(), settings.environment());
+        Keys keys = new Keys(settings.keyFile(), settings.environment(),
+                Keys.standardFiles(Path.of(System.getProperty("user.home")), settings.environment()));
         // -Dstudio.<provider>.url=... points a provider at a proxy or gateway, such as
         // -Dstudio.openai.url=https://gateway.example/v1/
         Map<String, URI> bases = new java.util.HashMap<>();

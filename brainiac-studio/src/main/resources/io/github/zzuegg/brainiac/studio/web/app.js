@@ -3227,6 +3227,21 @@
   const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
   const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
   const hubActive = d => d.state === "queued" || d.state === "downloading" || d.state === "checking";
+  // The token the downloader sends to huggingface.co, shown only by its last four characters.
+  function hubToken() {
+    const t = H.token;
+    const where = !t ? "" : t.source === "saved" ? `saved as key “${esc(t.label)}” under Hugging Face`
+      : t.managed ? "in <code>~/.brainiac/hf_token</code>, which the core's downloader reads too"
+      : t.source === "environment" ? `from <code>${esc(t.label)}</code> in the environment` : "from <code>huggingface-cli login</code>";
+    if (t && !H.tokenEdit) return `<div class="hub-token">${icon("lock")}<span>Token <code>${esc(t.hint)}</code> ${where}.</span><span class="grow"></span>
+      <button type="button" class="btn ghost sm" id="hub-token-change">Change</button>${t.managed ? `<button type="button" class="btn ghost sm" id="hub-token-forget">${H.tokenForget ? "Click again to forget" : "Forget"}</button>` : ""}</div>`;
+    return `<form class="hub-token edit" id="hub-token-form" autocomplete="off">${icon("lock")}
+      <span>${t ? "A new token replaces the one " + where + "." : `Gated models such as Llama or Gemma need a token. <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">Make a read token</a>, accept the model's license on its page, and paste the token here.`}</span>
+      <input class="input mono" id="hub-token" type="password" placeholder="hf_…" spellcheck="false" aria-label="Hugging Face token">
+      <button class="btn" type="submit">Save</button>${t ? `<button type="button" class="btn ghost" id="hub-token-cancel">Cancel</button>` : ""}
+      ${H.tokenError ? `<div class="flag bad">${icon("alert")}<span>${esc(H.tokenError)}</span></div>` : ""}</form>`;
+  }
+
   function hubPanel() {
     const res = H.results;
     const list = H.searching ? `<div class="faint pad">Searching…</div>`
@@ -3235,12 +3250,13 @@
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
           <span class="meta">${r.family ? `<span class="chip c-ok">${esc(r.family)}</span>` : ""}${r.gguf ? `<span class="chip c-text">GGUF</span>` : ""}${r.safetensors ? `<span class="chip c-text">safetensors</span>` : ""}
-            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add a Hugging Face key first">gated</span>` : ""}
+            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add your token above">gated</span>` : ""}
             <span class="faint tnum" title="downloads">${icon("download")}${fmtCount(r.downloads)}</span></span></button>`).join("")
         + (H.hidden ? `<div class="faint pad">${H.hidden} more found that the studio cannot run yet.</div>` : "");
     return `<section class="placebox hubbox" id="hub-box" aria-label="Download from Hugging Face">
       <div class="place-head"><div><b>Download from Hugging Face</b> <span class="muted">Shows only models the studio runs${H.runs ? `: ${esc(H.runs.families.join(", "))} model folders, and ${esc(H.runs.architectures.join(" and "))} GGUF files` : ""}. When the core learns more, more show up. Downloads go to <code>${esc(H.folder || "downloads")}</code>.</span></div>
         <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
+      <div id="hub-token-box">${hubToken()}</div>
       <form class="place-path" id="hub-search" autocomplete="off">
         <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
         <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
@@ -3314,6 +3330,7 @@
       const j = await api("/api/hub/downloads");
       const before = new Map(H.downloads.map(d => [d.id, d.state]));
       H.downloads = j.downloads || []; H.folder = j.folder || H.folder; H.runs = j.runs || H.runs;
+      if ("token" in j && JSON.stringify(j.token) !== JSON.stringify(H.token)) { H.token = j.token; if (!H.tokenEdit && $("#hub-token-box")) { $("#hub-token-box").innerHTML = hubToken(); bindHubToken(); } }
       const finished = H.downloads.some(d => d.state === "done" && before.has(d.id) && before.get(d.id) !== "done");
       if (finished) {
         if (H.listing) H.listing.options.forEach(o => { if (H.downloads.some(d => d.state === "done" && d.repo === H.repo && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name))) o.have = true; });
@@ -3327,7 +3344,34 @@
     L.panes[L.active].model = key; L.model = key; store.set("chatModel", key); savePanes(); render();
     $(`.pane[data-pane="${L.active}"] textarea`)?.focus();
   }
+  function bindHubToken() {
+    const redraw = () => { $("#hub-token-box").innerHTML = hubToken(); bindHubToken(); };
+    $("#hub-token-change")?.addEventListener("click", () => { H.tokenEdit = true; H.tokenError = null; redraw(); $("#hub-token")?.focus(); });
+    $("#hub-token-cancel")?.addEventListener("click", () => { H.tokenEdit = false; H.tokenError = null; redraw(); });
+    $("#hub-token-forget")?.addEventListener("click", async () => {
+      if (!H.tokenForget) { H.tokenForget = true; redraw(); setTimeout(() => { if (H.tokenForget) { H.tokenForget = false; redraw(); } }, 4000); return; }
+      H.tokenForget = false;
+      try { H.token = (await postJson("/api/hub/token", { remove: true })).token; } catch (e) { H.tokenError = e.message; }
+      redraw(); loadModels(false);
+    });
+    $("#hub-token-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const input = $("#hub-token"), token = input.value.trim();
+      if (!token) { H.tokenError = "Paste the token first."; redraw(); return; }
+      try {
+        // a token saved as a key comes first, so a new one replaces that key
+        if (H.token?.source === "saved") { await postJson("/api/keys", { provider: "huggingface", label: H.token.label, key: token }); H.token = (await api("/api/hub/downloads")).token; }
+        else H.token = (await postJson("/api/hub/token", { token })).token;
+        H.tokenEdit = false; H.tokenError = null;
+        if (H.repo) hubRepo(H.repo);
+      } catch (err) { H.tokenError = err.message; }
+      input.value = "";
+      redraw(); loadModels(false);
+    });
+  }
+
   function bindHub() {
+    bindHubToken();
     $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
     $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
     $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });

@@ -1112,3 +1112,9 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
   .agent-detail { border-left: 0; border-top: 1px solid var(--line-soft); }
   .ag-steps-list { overflow: visible; }
 }
+
+.hub-token { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; color: var(--fg-2); padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel); }
+.hub-token > svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.hub-token > span { min-width: 0; flex: 1 1 240px; }
+.hub-token.edit input { flex: 1 1 220px; min-width: 0; height: 30px; }
+.hub-token .flag { flex-basis: 100%; }
