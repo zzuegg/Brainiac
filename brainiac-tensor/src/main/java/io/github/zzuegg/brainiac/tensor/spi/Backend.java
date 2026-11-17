@@ -493,6 +493,50 @@ public interface Backend {
     }
 
     /**
+     * Discrete Fourier transforms of rows of complex values stored as (real, imaginary)
+     * pairs: {@code X[k] = sum_j x[j] e^(-2 pi i jk / n)}; the inverse uses the conjugate
+     * exponent and divides by {@code n}. By default computed on the host with {@link Fft}.
+     *
+     * @param in {@code rows * n * 2} contiguous values
+     * @param rows the number of rows
+     * @param n the complex values per row
+     * @param inverse whether to compute the inverse transform
+     * @return new float32 storage of the same size
+     */
+    default Storage fft(Storage in, long rows, int n, boolean inverse) {
+        float[] data = download(in);
+        Fft.transform(data, rows, n, inverse);
+        return upload(data);
+    }
+
+    /**
+     * Whether {@link #rmsNorm} has a kernel for this type.
+     *
+     * @param type the element type
+     * @return whether to call it
+     */
+    default boolean hasRmsNorm(DType type) {
+        return false;
+    }
+
+    /**
+     * RMSNorm of each row in one pass, for inference:
+     * {@code out = round(x / sqrt(mean(x^2) + eps)) * weight}, computed in float32, the
+     * normalized value rounded to the storage type before the scale. All arrays are
+     * contiguous and of one type.
+     *
+     * @param x {@code [rows, cols]}
+     * @param weight {@code [cols]}
+     * @param rows the rows
+     * @param cols the values per row
+     * @param eps added to the mean square
+     * @param out {@code [rows, cols]}
+     */
+    default void rmsNorm(Storage x, Storage weight, long rows, int cols, float eps, Storage out) {
+        throw unsupported("fused RMSNorm");
+    }
+
+    /**
      * Whether {@link #attention} (and, when {@code backward}, {@link #attentionBackward}) are
      * worth using for these sizes; callers take another path when not.
      *

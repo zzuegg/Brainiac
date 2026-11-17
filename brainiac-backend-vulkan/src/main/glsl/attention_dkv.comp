@@ -1,0 +1,61 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// Gradient of fused attention (Backend.attentionBackward) for the keys and values: one
+// invocation per key row, summing over the queries of every head that shares it:
+// dv_j = sum p dO, dk_j = scale * sum p (dO . v_j - D) q, with D from attention_dq.
+#define ATT_D 64
+layout(local_size_x = GROUP) in;
+#include "math.glsl"
+layout(push_constant) uniform P {
+    In q; In k; In v; In lse; In dout; In dsum; Buf gk; Buf gv;
+    uint heads; uint kvHeads; uint tq; uint tk; uint dk; uint dv; float scale; uint causal; uint rows;
+} p;
+void main() {
+    uint g = gid();
+    if (g >= p.rows) return;
+    uint j = g % p.tk;
+    uint kh = (g / p.tk) % p.kvHeads;
+    uint b = g / (p.tk * p.kvHeads);
+    uint group = p.heads / p.kvHeads;
+    ACC kr[ATT_D];
+    ACC vr[ATT_D];
+    ACC dk_[ATT_D];
+    ACC dv_[ATT_D];
+    for (uint d = 0; d < p.dk; d++) {
+        kr[d] = LOAD(p.k, g * p.dk + d);
+        dk_[d] = ACC(0);
+    }
+    for (uint d = 0; d < p.dv; d++) {
+        vr[d] = LOAD(p.v, g * p.dv + d);
+        dv_[d] = ACC(0);
+    }
+    uint first = p.causal != 0 ? uint(max(0, int(j) - int(p.tk - p.tq))) : 0u;
+    for (uint hh = 0; hh < group; hh++) {
+        uint qh = b * p.heads + kh * group + hh;
+        for (uint i = first; i < p.tq; i++) {
+            uint r = qh * p.tq + i;
+            ACC s = ACC(0);
+            for (uint d = 0; d < p.dk; d++) {
+                s += LOAD(p.q, r * p.dk + d) * kr[d];
+            }
+            ACC pr = exp_(s * ACC(p.scale) - LOAD(p.lse, r));
+            ACC dp = ACC(0);
+            for (uint d = 0; d < p.dv; d++) {
+                ACC od = LOAD(p.dout, r * p.dv + d);
+                dv_[d] += pr * od;
+                dp += od * vr[d];
+            }
+            ACC ds = pr * (dp - LOAD(p.dsum, r)) * ACC(p.scale);
+            for (uint d = 0; d < p.dk; d++) {
+                dk_[d] += ds * LOAD(p.q, r * p.dk + d);
+            }
+        }
+    }
+    for (uint d = 0; d < p.dk; d++) {
+        STORE(p.gk, g * p.dk + d, dk_[d]);
+    }
+    for (uint d = 0; d < p.dv; d++) {
+        STORE(p.gv, g * p.dv + d, dv_[d]);
+    }
+}

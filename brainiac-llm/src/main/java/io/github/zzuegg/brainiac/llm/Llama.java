@@ -357,7 +357,14 @@ public final class Llama implements LanguageModel {
         return List.copyOf(named.values());
     }
 
-    private Var rmsNorm(Var x, Var weight) {
+    /** {@code -Dbrainiac.llm.fusedNorm=false}: RMSNorm from separate operations while decoding too. */
+    private static final boolean FUSED_NORM = !"false".equals(System.getProperty("brainiac.llm.fusedNorm"));
+
+    private Var rmsNorm(Var x, Var weight, boolean decoding) {
+        if (decoding && FUSED_NORM && x.value().hasRmsNorm()) {
+            // no gradients while decoding: one kernel instead of a reduction and its chains
+            return Var.of(x.value().rmsNorm(weight.value(), config.rmsEps()));
+        }
         Var x32 = x.to(DType.FLOAT32);
         int last = x.shape().rank() - 1;
         Var y = x32.div(x32.square().mean(last, true).add(config.rmsEps()).sqrt());
@@ -565,7 +572,7 @@ public final class Llama implements LanguageModel {
         float scale = (float) (1 / Math.sqrt(hd));
         for (int l = 0; l < blocks.size(); l++) {
             Block blk = blocks.get(l);
-            Var h = rmsNorm(x, blk.attnNorm);
+            Var h = rmsNorm(x, blk.attnNorm, cache != null);
             Var q = blk.q.apply(h).reshape(batch, steps, config.heads(), hd).permute(0, 2, 1, 3);
             Var k = blk.k.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
             Var v = blk.v.apply(h).reshape(batch, steps, config.kvHeads(), hd).permute(0, 2, 1, 3);
@@ -583,11 +590,14 @@ public final class Llama implements LanguageModel {
                     : Functional.attention(q, k, v, causal, scale);
             a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
             x = x.add(blk.o.apply(a));
-            h = rmsNorm(x, blk.ffnNorm);
-            Var gated = blk.gate.apply(h).activation(ActivationOp.SILU, 0).mul(blk.up.apply(h));
+            h = rmsNorm(x, blk.ffnNorm, cache != null);
+            // both products first: the activation and the product then run as one chain
+            Var gate = blk.gate.apply(h);
+            Var up = blk.up.apply(h);
+            Var gated = gate.activation(ActivationOp.SILU, 0).mul(up);
             x = x.add(blk.down.apply(gated));
         }
-        return rmsNorm(x, norm);
+        return rmsNorm(x, norm, cache != null);
     }
 
     private Tensor headSource;
