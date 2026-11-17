@@ -191,6 +191,10 @@ final class VkContext {
     long barriers;
     long submits;
     long waits;
+    /** Full waits for the device ({@link #finish}), and their callers with {@code -Dbrainiac.vulkan.traceFinish=true}. */
+    long finishes;
+    static final boolean TRACE_FINISH = Boolean.getBoolean("brainiac.vulkan.traceFinish");
+    final java.util.Map<String, Long> finishCallers = new java.util.HashMap<>();
     /** Nanoseconds spent waiting for the device, allocating device memory, creating pipelines, writing uploads. */
     long waitNanos, allocNanos, pipelineNanos, uploadNanos;
     /** Bytes uploaded from the host. */
@@ -1216,12 +1220,26 @@ final class VkContext {
 
     /** Submits everything recorded and waits until the device has run it. */
     void finish() {
+        finishes++;
+        if (TRACE_FINISH) {
+            finishCallers.merge(caller(), 1L, Long::sum);
+        }
         submit();
         while (!inFlight.isEmpty()) {
             complete(inFlight.poll());
         }
         written.clear();
         read.clear();
+    }
+
+    /** The first frames outside the Vulkan backend and the tensor core: who asked to wait. */
+    private static String caller() {
+        return StackWalker.getInstance().walk(f -> f
+                .filter(x -> !x.getClassName().startsWith("io.github.zzuegg.brainiac.backend.")
+                        && !x.getClassName().startsWith("io.github.zzuegg.brainiac.tensor."))
+                .limit(2).map(x -> x.getClassName().substring(x.getClassName().lastIndexOf('.') + 1) + "."
+                        + x.getMethodName() + ":" + x.getLineNumber())
+                .collect(java.util.stream.Collectors.joining(" < ")));
     }
 
     static void check(int result, String what) {

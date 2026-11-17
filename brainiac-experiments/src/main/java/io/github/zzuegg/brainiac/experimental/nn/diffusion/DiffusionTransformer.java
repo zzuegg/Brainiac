@@ -22,7 +22,8 @@ import java.util.SplittableRandom;
  * {@code x += gate * Attention(LayerNorm(x) * (1 + scale) + shift)} (and the same for the
  * MLP). Those maps start at exactly zero, so every block starts as the identity and the
  * whole network starts by predicting 0: the property that made DiT train stably, and that
- * {@link #apply} shows on a fresh network.
+ * {@link #apply} shows on a fresh network. The modulation and the gates are the core
+ * {@code Functional.adaLayerNorm} and {@code Functional.gate}.
  *
  * <pre>{@code
  * DiffusionTransformer dit = DiffusionTransformer.builder(8, 8).patch(2).width(32).depth(2).heads(2).classes(4).build();
@@ -30,6 +31,7 @@ import java.util.SplittableRandom;
  */
 public final class DiffusionTransformer implements ConditionalDenoiser {
     private static final int TIME_FEATURES = 32;
+    private static final float EPS = 1e-6f;
     private final int height;
     private final int width;
     private final int patch;
@@ -171,13 +173,12 @@ public final class DiffusionTransformer implements ConditionalDenoiser {
         }
 
         Var forward(Var x, Var c) {
-            int b = x.shape().dim(0);
-            Var m = modulation.forward(GenBlocks.silu(c));   // [b, 6 dim]
-            Var h = modulate(layerNorm(x), slice(m, 0, b), slice(m, 1, b));
-            x = x.add(attention(h).mul(slice(m, 2, b)));
-            h = modulate(layerNorm(x), slice(m, 3, b), slice(m, 4, b));
-            return x.add(down.forward(up.forward(h).activation(io.github.zzuegg.brainiac.tensor.spi.ActivationOp.GELU, 0))
-                    .mul(slice(m, 5, b)));
+            Var m = modulation.forward(GenBlocks.silu(c));   // [b, 6 dim]: shift, scale, gate twice
+            Var h = Functional.adaLayerNorm(x, chunk(m, 1), chunk(m, 0), EPS);
+            x = Functional.gate(x, attention(h), chunk(m, 2));
+            h = Functional.adaLayerNorm(x, chunk(m, 4), chunk(m, 3), EPS);
+            return Functional.gate(x, down.forward(up.forward(h)
+                    .activation(io.github.zzuegg.brainiac.tensor.spi.ActivationOp.GELU, 0)), chunk(m, 5));
         }
 
         Var attention(Var h) {
@@ -192,20 +193,9 @@ public final class DiffusionTransformer implements ConditionalDenoiser {
         }
     }
 
-    /** The i-th {@code dim}-wide chunk of a modulation vector, as {@code [b, 1, dim]}. */
-    private Var slice(Var m, int i, int b) {
-        return m.slice(1, i * dim, (i + 1) * dim).reshape(b, 1, dim);
-    }
-
-    private static Var modulate(Var x, Var shift, Var scale) {
-        return x.mul(scale.add(1f)).add(shift);
-    }
-
-    /** LayerNorm over the last axis without affine parameters (adaLN supplies them). */
-    private static Var layerNorm(Var x) {
-        int last = x.shape().rank() - 1;
-        Var centred = x.sub(x.mean(last, true));
-        return centred.div(centred.square().mean(last, true).add(1e-6f).sqrt());
+    /** The i-th {@code dim}-wide chunk of a modulation vector, {@code [b, dim]}. */
+    private Var chunk(Var m, int i) {
+        return m.slice(1, i * dim, (i + 1) * dim);
     }
 
     /** Cuts {@code [b, h*w]} images into {@code [b, tokens, patch*patch]}. */
@@ -226,7 +216,6 @@ public final class DiffusionTransformer implements ConditionalDenoiser {
 
     @Override
     public Var apply(Var x, Tensor time, int[] labels) {
-        int b = x.shape().dim(0);
         float[] t = time.toArray();
         for (int i = 0; i < t.length; i++) {
             t[i] *= timeScale;
@@ -239,7 +228,7 @@ public final class DiffusionTransformer implements ConditionalDenoiser {
             h = block.forward(h, c);
         }
         Var m = finalModulation.forward(GenBlocks.silu(c));
-        h = modulate(layerNorm(h), slice(m, 0, b), slice(m, 1, b));
+        h = Functional.adaLayerNorm(h, chunk(m, 1), chunk(m, 0), EPS);
         return unpatchify(finalLinear.forward(h));
     }
 

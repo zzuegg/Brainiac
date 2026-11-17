@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.rl;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Loss;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.rl.Environment;
 import io.github.zzuegg.brainiac.rl.Learner;
@@ -187,7 +188,7 @@ public final class HindsightReplay implements Learner {
         Tensor y = b.rewards().add(b.discounts().mul(b.notDone()).mul(next));
         Var q = online.forward(Var.of(b.observations()), true)
                 .mul(RlTensors.oneHot(b.actions().toArray(), actions, device)).sum(1, true);
-        Var loss = RlTensors.huber(q.sub(y), 1f).mean();
+        Var loss = Loss.huber(1f).compute(q, y);
         loss.backward();
         optimizer.step(online.parameters());
         if (++updates % targetEvery == 0) {

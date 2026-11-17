@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Graphs;
 import io.github.zzuegg.brainiac.nn.MultiInputLayer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -14,7 +15,8 @@ import java.util.Objects;
  * {@code [n, f]} and a membership matrix {@code [graphs, n]} (1 where a node belongs to a
  * graph). {@link Mode#SUM} keeps graph size and counts (the injective choice of GIN),
  * {@link Mode#MEAN} is size-invariant, {@link Mode#MAX} picks the strongest node per
- * feature.
+ * feature. Sum and mean pooling are the core {@link Graphs#pool}; membership is read as
+ * 0/1, each node in one graph.
  */
 public final class GraphReadout implements MultiInputLayer {
 
@@ -44,8 +46,11 @@ public final class GraphReadout implements MultiInputLayer {
         Var h = inputs.get(0);
         Tensor m = inputs.get(1).value();
         return switch (mode) {
-            case SUM -> Var.of(m).matmul(h);
-            case MEAN -> Var.of(m.div(m.sum(1, true).maximum(Tensor.full(Shape.of(1, 1), 1f)))).matmul(h);
+            case SUM, MEAN -> {
+                int g = m.shape().dim(0);
+                Var pooled = Graphs.pool(h, new Graphs.Batch(null, owners(m), g + 1), mode == Mode.MEAN);
+                yield pooled.slice(0, 0, g);   // the last row collects nodes of no graph
+            }
             case MAX -> {
                 int g = m.shape().dim(0);
                 int n = m.shape().dim(1);
@@ -55,6 +60,24 @@ public final class GraphReadout implements MultiInputLayer {
                 yield all.max(1, false);
             }
         };
+    }
+
+    /** Per node the graph it belongs to (its first one), or {@code graphs} for none. */
+    private static Tensor owners(Tensor membership) {
+        int g = membership.shape().dim(0);
+        int n = membership.shape().dim(1);
+        float[] m = membership.toArray();
+        float[] owner = new float[n];
+        for (int j = 0; j < n; j++) {
+            owner[j] = g;
+            for (int i = 0; i < g; i++) {
+                if (m[i * n + j] != 0) {
+                    owner[j] = i;
+                    break;
+                }
+            }
+        }
+        return Tensor.of(Shape.of(n), owner, membership.device());
     }
 
     @Override

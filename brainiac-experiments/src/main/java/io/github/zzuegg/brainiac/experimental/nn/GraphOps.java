@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.nn.Graphs;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -11,11 +12,50 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
  * {@code [n, features]} node features; a batch of graphs is one block-diagonal graph
  * (see {@code GraphBatch} in {@code experimental.data}). Dense adjacency keeps
  * everything plain matrix products, which is the fastest choice for the small graphs
- * these layers are meant for.
+ * these layers are meant for. {@link #toGraph} turns a dense adjacency into the edge lists
+ * of the core {@link Graphs}, which the GCN and GraphSAGE layers delegate to.
  */
 public final class GraphOps {
 
     private GraphOps() {
+    }
+
+    /**
+     * The edge lists of a dense adjacency, as the core {@link Graphs} takes them: every
+     * non-zero {@code A[i][j]} is an edge from {@code j} to {@code i} (node {@code i} reads
+     * node {@code j}, as {@code A x} does). Edge weights are not kept.
+     *
+     * @param nodes node features {@code [n, features]}
+     * @param adjacency {@code [n, n]}
+     * @param diagonal whether non-zero diagonal entries become self-loop edges (leave them out
+     *     for {@link Graphs#gcn} and {@link Graphs#gat}, which add their own)
+     * @return the graph, or {@code null} when there is no edge (the core keeps no empty tensors)
+     */
+    public static Graphs.Graph toGraph(Tensor nodes, Tensor adjacency, boolean diagonal) {
+        int n = adjacency.shape().dim(0);
+        float[] a = adjacency.toArray();
+        int count = 0;
+        for (int i = 0; i < n * n; i++) {
+            if (a[i] != 0 && (diagonal || i / n != i % n)) {
+                count++;
+            }
+        }
+        if (count == 0) {
+            return null;
+        }
+        float[] sources = new float[count];
+        float[] targets = new float[count];
+        int e = 0;
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                if (a[i * n + j] != 0 && (diagonal || i != j)) {
+                    sources[e] = j;
+                    targets[e++] = i;
+                }
+            }
+        }
+        return new Graphs.Graph(nodes, Tensor.of(Shape.of(count), sources, adjacency.device()),
+                Tensor.of(Shape.of(count), targets, adjacency.device()));
     }
 
     /**

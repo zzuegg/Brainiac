@@ -1,5 +1,7 @@
 package io.github.zzuegg.brainiac.experimental.llm;
 
+import io.github.zzuegg.brainiac.llm.Constraint;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -29,7 +31,7 @@ public final class JsonSchemaLite {
     }
 
     private JsonSchemaLite property(String name, String valueRegex) {
-        parts.add("\"" + quote(name) + "\":" + valueRegex);
+        parts.add("\"" + Constraint.quote(name) + "\":" + valueRegex);
         return this;
     }
 
@@ -75,7 +77,7 @@ public final class JsonSchemaLite {
     public JsonSchemaLite enumeration(String name, String... values) {
         StringBuilder b = new StringBuilder("(");
         for (int i = 0; i < values.length; i++) {
-            b.append(i > 0 ? "|" : "").append('"').append(quote(values[i])).append('"');
+            b.append(i > 0 ? "|" : "").append('"').append(Constraint.quote(values[i])).append('"');
         }
         return property(name, b.append(')').toString());
     }
@@ -96,21 +98,21 @@ public final class JsonSchemaLite {
         return "\\{" + String.join(",", parts) + "\\}";
     }
 
+    /**
+     * The schema as a core constraint, for {@code Generator.Options.withConstraint} or
+     * {@link GrammarConstraint#of(Constraint, io.github.zzuegg.brainiac.data.Tokenizer, int)}.
+     * Unlike {@code Constraint.jsonSchema}, it accepts only compact JSON (no spaces) and
+     * strings of {@code [a-zA-Z0-9 _.-]} with length bounds.
+     *
+     * @return {@code Constraint.regex(toRegex())}
+     */
+    public Constraint toConstraint() {
+        return Constraint.regex(toRegex());
+    }
+
     private static final String INTEGER = "(-?(0|[1-9][0-9]{0,8}))";
 
     private static String stringValue(int min, int max) {
         return "\"[a-zA-Z0-9 _.-]{" + min + "," + max + "}\"";
-    }
-
-    /** Escapes regex metacharacters in a literal. */
-    private static String quote(String s) {
-        StringBuilder b = new StringBuilder();
-        for (char c : s.toCharArray()) {
-            if ("\\.[]{}()*+?|^$-".indexOf(c) >= 0) {
-                b.append('\\');
-            }
-            b.append(c);
-        }
-        return b.toString();
     }
 }
