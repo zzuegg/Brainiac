@@ -153,8 +153,13 @@ public final class Agent {
         return m;
     }
 
-    /** The text outside the tool calls. */
-    static String content(String text) {
+    /**
+     * The text of a turn outside its {@code <tool_call>} blocks.
+     *
+     * @param text the model's turn
+     * @return the rest, stripped
+     */
+    public static String content(String text) {
         return HERMES.matcher(text).replaceAll("").strip();
     }
 
@@ -165,7 +170,7 @@ public final class Agent {
      * @param text the model's turn
      * @return each call as {@code {"name": ..., "arguments": {...}}}
      */
-    static List<Map<String, Object>> calls(String text) {
+    public static List<Map<String, Object>> calls(String text) {
         List<Map<String, Object>> out = new ArrayList<>();
         Matcher m = HERMES.matcher(text);
         while (m.find()) {
