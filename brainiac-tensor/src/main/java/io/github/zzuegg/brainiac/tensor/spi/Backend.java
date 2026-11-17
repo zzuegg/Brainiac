@@ -237,6 +237,20 @@ public interface Backend {
     }
 
     /**
+     * The device memory this backend holds for tensors, or {@code null} when it does not count
+     * it (the CPU's memory is the Java heap's).
+     *
+     * @return the use, or {@code null}
+     */
+    default Device.Memory memory() {
+        return null;
+    }
+
+    /** Starts measuring {@link Device.Memory#peak()} again from the current use. */
+    default void resetPeakMemory() {
+    }
+
+    /**
      * Allocates storage whose contents are undefined, for results that an operation
      * overwrites completely. Backends where clearing costs a device command (such as a GPU)
      * skip it; the default clears anyway.

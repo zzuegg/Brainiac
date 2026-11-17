@@ -135,6 +135,32 @@ public final class Device {
         return backend().supports(dtype);
     }
 
+    /**
+     * How much device memory tensors use, for finding what a model or a training step needs.
+     *
+     * @param inUse bytes held by live tensors now
+     * @param peak the most bytes held at once since the start or {@link #resetPeakMemory()}
+     * @param reserved bytes the backend has taken from the device, in use or pooled for reuse
+     * @param budget the most bytes the backend means to take
+     */
+    public record Memory(long inUse, long peak, long reserved, long budget) {
+    }
+
+    /**
+     * Device memory use. Freed tensors count until they are released (see
+     * {@link Tensor#release()}) or garbage collected.
+     *
+     * @return the use, or empty for devices that do not count it, such as the CPU
+     */
+    public Optional<Memory> memory() {
+        return Optional.ofNullable(backend.memory());
+    }
+
+    /** Starts measuring the peak in {@link #memory()} again from the current use. */
+    public void resetPeakMemory() {
+        backend.resetPeakMemory();
+    }
+
     Backend backend() {
         return backend;
     }

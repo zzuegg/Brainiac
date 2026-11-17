@@ -385,6 +385,54 @@ class VulkanBackendTest {
         }
     }
 
+    /** Transposed and sliced operands, read in place by the tiled product. */
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
+    void productsOfTransposedOperandsMatchTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        for (int[] mkn : new int[][] {{70, 33, 45}, {130, 1500, 20}, {9, 64, 300}, {200, 70, 130}}) {
+            int m = mkn[0];
+            int k = mkn[1];
+            int n = mkn[2];
+            Tensor at = random(m + 3L * k, k, m);   // a, stored transposed
+            Tensor bt = random(n + 5L * k, n, k);   // b, stored transposed
+            Tensor a = random(m + 7L * k, m, k);
+            Tensor b = random(n + 11L * k, k, n);
+            String at_ = m + "x" + k + "x" + n;
+            same(type, "aT b " + at_, t -> t.transpose().matmul(b.to(type).to(t.device())), at);
+            same(type, "a bT " + at_, t -> a.to(type).to(t.device()).matmul(t.transpose()), bt);
+            same(type, "aT bT " + at_, t -> t.transpose().matmul(bt.to(type).to(t.device()).transpose()), at);
+            Tensor batched = random(m * 13L + k, 3, k, m);
+            same(type, "batched aT b " + at_, t -> t.transpose().matmul(b.to(type).to(t.device())
+                    .reshape(1, k, n).expand(Shape.of(3, k, n)).add(0)), batched);
+            same(type, "sliced a " + at_, t -> t.slice(1, 1, k - 1).matmul(b.to(type).to(t.device())
+                    .slice(0, 1, k - 1)), a);
+        }
+    }
+
+    /** Embedding gradients of a small vocabulary: long index lists, added up in slices. */
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
+    void scatterAddOfLongIndexListsMatchesTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        for (int[] dims : new int[][] {{4000, 16, 5}, {3000, 130, 65}, {700, 3, 2}, {2, 4000, 7}}) {
+            int count = dims[0];
+            int length = dims[2];
+            float[] idx = new float[count];
+            java.util.Random r = new java.util.Random(count);
+            for (int i = 0; i < count; i++) {
+                idx[i] = i % 3 == 0 ? 0 : r.nextInt(length);   // one frequent target
+            }
+            Tensor indices = Tensor.of(idx);
+            Tensor x = random(count + length, count, dims[1]);
+            same(type, "scatterAdd " + count + "x" + dims[1] + " into " + length,
+                    t -> t.scatterAdd(0, indices.to(t.device()), length), x);
+            Tensor y = random(count * 3L, 2, count, dims[1]);
+            same(type, "scatterAdd middle " + count + "x" + dims[1] + " into " + length,
+                    t -> t.scatterAdd(1, indices.to(t.device()), length), y);
+        }
+    }
+
     @Test
     void manyTemporaryTensorsAreFreed() {
         Tensor t = Tensor.zeros(Shape.of(1 << 18), gpu);

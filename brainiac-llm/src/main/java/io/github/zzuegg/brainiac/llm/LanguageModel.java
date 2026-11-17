@@ -79,5 +79,18 @@ public interface LanguageModel {
         default State truncate(int length) {
             throw new UnsupportedOperationException("this model's state cannot go back");
         }
+
+        /**
+         * Puts another state's sequences after this one's, as continuous batching does when
+         * new requests join the ones being decoded. The shorter side is padded on the left,
+         * so the result is as long as the longer one; each sequence keeps its positions.
+         *
+         * @param other a state of the same model; it is no longer used
+         * @return the joined state; this one is no longer used
+         * @throws UnsupportedOperationException if the model cannot join states
+         */
+        default State join(State other) {
+            throw new UnsupportedOperationException("this model's states cannot be joined");
+        }
     }
 }

@@ -460,6 +460,38 @@ directories and `.gguf` files): each must answer a question correctly, and where
 `reference_models.py` (in the test resources) has written transformers' output next to a
 model, its logits and greedy answer must match.
 
+### Serving, constrained output, long context and evaluation
+
+`OpenAiServer` answers the OpenAI API's `/v1/models`, `/v1/completions` and
+`/v1/chat/completions`, with streaming as server-sent events, so existing clients work with a
+local model. With a batch size above one it decodes concurrent requests together:
+`Generator.batcher` prefills each new request and joins it to the running batch, and a
+finished request leaves at once. A chat's `response_format` with a JSON schema constrains the
+answer, as `Constraint` does for `Generator`.
+
+```java
+Set<Integer> stops = Generator.stopTokens(dir, tok);
+try (OpenAiServer server = OpenAiServer.start(new InetSocketAddress("127.0.0.1", 8080), "qwen", gen, tok,
+        stops, 8)) {
+    // curl localhost:8080/v1/chat/completions -d '{"messages":[{"role":"user","content":"Hi"}]}'
+}
+
+Constraint person = Constraint.jsonSchema("""
+        {"type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+         "required": ["name", "age"]}""");
+String json = gen.generate(prompt, Generator.Options.greedy(80).withStopTokens(stops).withConstraint(person));
+
+try (Generator.Batcher batcher = gen.batcher(8)) {
+    CompletableFuture<Generator.Output> answer = batcher.submit(prompt, Generator.Options.greedy(100), null);
+}
+```
+
+Longer contexts: `LlamaConfig` reads YaRN and dynamic rope scaling, `model.slidingWindow(n)`
+attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompts in pieces.
+`model.saveGguf(file, tok, true)` writes a GGUF file (float16 matrices) that llama.cpp and
+`Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
+`multipleChoice` and `needleInHaystack`.
+
 ## Reinforcement learning
 
 `brainiac-rl` has environments to act in and agents that learn from rewards.
