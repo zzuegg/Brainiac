@@ -155,4 +155,19 @@ class ChatApiTest {
         r = call("POST", "/api/providers", "{\"provider\":\"anthropic\",\"models\":null}");
         assertEquals(Map.of("text", "anthropic/claude-opus-5-5"), Json.object(Json.parse(r.body())).get("auto"));
     }
+
+    @Test
+    void conversationsAreSavedListedAndDeletedThroughTheApi() throws Exception {
+        assertEquals(List.of(), Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
+        HttpResponse<String> r = call("POST", "/api/chats",
+                "{\"id\":\"k3x9a\",\"title\":\"Plan\",\"status\":\"finished\",\"updated\":7,\"messages\":[{\"role\":\"user\",\"text\":\"hi\"}]}");
+        assertEquals(200, r.statusCode(), r.body());
+        List<Object> chats = Json.array(Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
+        assertEquals(1, chats.size());
+        assertEquals("finished", Json.object(chats.getFirst()).get("status"));
+        assertEquals(400, call("POST", "/api/chats", "{\"id\":\"../keys\",\"title\":\"x\",\"messages\":[]}").statusCode());
+        assertEquals(400, call("POST", "/api/chats", "{\"id\":\"k3x9a\",\"title\":\"x\",\"messages\":[],\"status\":\"gone\"}").statusCode());
+        assertEquals(200, call("POST", "/api/chats", "{\"id\":\"k3x9a\",\"delete\":true}").statusCode());
+        assertEquals(List.of(), Json.object(Json.parse(call("GET", "/api/chats", null).body())).get("chats"));
+    }
 }

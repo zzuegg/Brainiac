@@ -869,7 +869,8 @@
     $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
       : liveMedia ? (state.view === "create" ? `Images <span class="muted">· ${G.batches.length} batch${G.batches.length === 1 ? "" : "es"} this session</span>` : `Voice <span class="muted">· ${G.takes.length} take${G.takes.length === 1 ? "" : "s"} this session</span>`)
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>` : crumbs[state.view];
-    const autoModel = (liveChat || liveLib) && L.info ? modelByKey(L.model === "auto" || liveLib ? L.info.auto.text : L.model) : null;
+    const picked = liveChat ? paneModel(L.active) : "auto";
+    const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
     const [c, n] = liveMedia ? [state.view === "create" ? "c-image" : "c-speech", mediaModel ? mediaModel.name : L.info ? "no model yet" : "…"]
       : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"] : routes[state.view];
@@ -985,7 +986,7 @@
 
   // ---------- wiring ----------
   window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (views[v]) { if (v === "library" && state.view !== "library") L.usage = null; state.view = v; render(); } });
-  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); });
+  window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") fitWorld(); else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
   $("#cmdk-open").addEventListener("click", openCmdk);
@@ -1015,9 +1016,15 @@
   const L = {
     info: null,                           // GET /api/models: providers, models, what auto picks
     convos: store.get("convos", []),
-    sel: store.get("convo", null),        // a conversation id, "example", or null for a new one
-    model: store.get("chatModel", "auto"),
-    busy: null,                           // the AbortController of the answer being written
+    sel: store.get("convo", null) === "example" ? "example" : null,   // "example" while the design preview shows
+    model: store.get("chatModel", "auto"),  // what a new conversation starts with
+    tabs: store.get("chatTabs", []),      // open conversations, in tab order
+    panes: store.get("chatPanes", [{ id: store.get("convo", null) === "example" ? null : store.get("convo", null) }]),
+    active: store.get("chatActive", 0),   // the pane that has the focus
+    running: {},                          // conversation id: the AbortController of the answer being written
+    drafts: {},                           // conversation id ("#" and the pane for a new one): what is typed but not sent
+    scroll: {},                           // conversation id: where its transcript was scrolled to
+    showFinished: false,
     usage: null,                          // GET /api/usage: calls and tokens by provider, key, model, day
     balances: null,                       // GET /api/balances: what is left per key, where providers say
     editing: null,                        // the provider open in the editor, and its unsaved draft
@@ -1025,9 +1032,8 @@
     adding: null,                         // the provider whose key form is open
   };
   const isLive = () => !!document.querySelector('meta[name="studio-token"]');
-  const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
-  const current = () => L.convos.find(c => c.id === L.sel) || null;
-  const chatModels = () => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === L.model));
+  const current = () => paneConvo(L.active);
+  const chatModels = sel => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === sel));
   const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
   const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
   const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
@@ -1074,24 +1080,158 @@
     return d.toDateString() === now.toDateString() ? d.toTimeString().slice(0, 5) : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
+  // ---------- live chat: tabs, side-by-side panes, finished conversations ----------
+  // Open conversations sit in tabs above one or more panes; each pane shows one conversation
+  // (or a new one) and answers on its own, so several can stream at once. A finished
+  // conversation leaves the tabs and waits under Finished until it is reopened.
+  const convoById = id => L.convos.find(c => c.id === id) || null;
+  const paneConvo = i => convoById((L.panes[i] || {}).id);
+  const running = id => !!L.running[id];
+  const draftKey = i => (paneConvo(i) || {}).id || "#" + i;   // a new conversation's draft belongs to its pane
+  const anyRunning = () => Object.keys(L.running).length > 0;
+  // a model that went away (key removed, provider edited) falls back to Auto
+  const usable = k => !k || (L.info && k !== "auto" && !modelByKey(k)) ? "auto" : k;
+  const paneModel = i => { const c = paneConvo(i); return usable((c ? c.model : (L.panes[i] || {}).model) || L.model); };
+  const maxPanes = () => {
+    if (effectiveLayout() === "focus") return 1;
+    const w = window.innerWidth / state.scale - 64 - 268;
+    return Math.max(1, Math.min(4, Math.floor(w / 480)));
+  };
+  function savePanes() {
+    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null })));
+    store.set("chatTabs", L.tabs);
+    store.set("chatActive", L.active);
+  }
+  function fitPanes() {
+    L.tabs = L.tabs.filter(id => { const c = convoById(id); return c && c.status !== "finished"; });
+    L.panes = L.panes.filter(p => !p.id || convoById(p.id)).slice(0, maxPanes());
+    if (!L.panes.length) L.panes = [{ id: L.tabs[0] || null }];
+    L.active = Math.min(Math.max(0, L.active), L.panes.length - 1);
+  }
+  // Shows a conversation: focuses the pane that has it, or puts it in the active pane.
+  function openConvo(id, beside) {
+    const c = convoById(id);
+    if (!c) return;
+    L.sel = null;
+    if (c.status !== "finished" && !L.tabs.includes(id)) L.tabs.push(id);
+    const at = L.panes.findIndex(p => p.id === id);
+    if (at >= 0) L.active = at;
+    else if (beside && L.panes.length < maxPanes()) { L.panes.push({ id }); L.active = L.panes.length - 1; }
+    else L.panes[L.active] = { id };
+    savePanes();
+    render();
+  }
+  function newChat(beside) {
+    L.sel = null; store.set("convo", null);
+    const empty = L.panes.findIndex(p => !p.id);
+    if (beside && L.panes.length < maxPanes()) { L.panes.push({ id: null }); L.active = L.panes.length - 1; }
+    else if (empty >= 0) L.active = empty;
+    else L.panes[L.active] = { id: null };
+    savePanes();
+    render();
+    $(`.pane[data-pane="${L.active}"] textarea`)?.focus();
+  }
+  function closeTab(id) {
+    L.tabs = L.tabs.filter(t => t !== id);
+    const at = L.panes.findIndex(p => p.id === id);
+    if (at >= 0) {
+      if (L.panes.length > 1) { L.panes.splice(at, 1); if (L.active >= at) L.active = Math.max(0, L.active - 1); }
+      else L.panes[0] = { id: L.tabs.find(t => !L.panes.some(p => p.id === t)) || null };
+    }
+    savePanes();
+    render();
+  }
+  function closePane(i) {
+    if (L.panes.length < 2) return;
+    L.panes.splice(i, 1);
+    if (L.active >= i) L.active = Math.max(0, L.active - 1);
+    savePanes();
+    render();
+  }
+  function setFinished(id, done) {
+    const c = convoById(id);
+    if (!c) return;
+    c.status = done ? "finished" : "open";
+    c.finishedAt = done ? Date.now() : undefined;
+    if (done) L.tabs = L.tabs.filter(t => t !== id);
+    else if (!L.tabs.includes(id)) L.tabs.push(id);
+    persist(c);
+    savePanes();
+    render();
+  }
+
+  // Conversations live in the studio (one file each, next to the keys); this browser keeps a copy.
+  const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
+  const pending = new Map();
+  function persist(c) {
+    saveConvos();
+    if (!isLive()) return;
+    clearTimeout(pending.get(c.id));
+    pending.set(c.id, setTimeout(() => {
+      pending.delete(c.id);
+      const body = { ...c, messages: c.messages.map(m => { const { streaming, ...rest } = m; return rest; }) };
+      fetch("/api/chats", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        .then(r => { if (!r.ok) console.warn("cannot save the conversation", r.status); })
+        .catch(e => console.warn("cannot save the conversation", e));
+    }, 400));
+  }
+  async function deleteConvo(id) {
+    L.convos = L.convos.filter(c => c.id !== id);
+    L.tabs = L.tabs.filter(t => t !== id);
+    L.panes = L.panes.map(p => p.id === id ? { id: null } : p);
+    saveConvos(); savePanes();
+    render();
+    try {
+      await fetch("/api/chats", { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify({ id, delete: true }) });
+    } catch (e) { console.warn("cannot delete the conversation", e); }
+  }
+  // The studio's copy wins; conversations only this browser has (from before) are sent up once.
+  async function loadConvos() {
+    try {
+      const saved = (await api("/api/chats")).chats || [];
+      const known = new Set(saved.map(c => c.id));
+      const onlyHere = L.convos.filter(c => !known.has(c.id) && /^[a-z0-9]{4,40}$/.test(c.id));
+      L.convos = [...saved, ...onlyHere].sort((a, b) => b.updated - a.updated);
+      onlyHere.forEach(persist);
+      saveConvos();
+      // a browser that has not opened any tabs yet starts with the open conversations as tabs
+      if (store.get("chatTabs", null) === null) L.tabs = L.convos.filter(c => c.status !== "finished").slice(0, 6).map(c => c.id);
+      fitPanes();
+      if (state.view === "chat" && !anyRunning()) render();
+    } catch (e) { console.warn("cannot read conversations", e); }
+  }
+
   function liveThreadList() {
     const q = (L.search || "").toLowerCase();
-    const list = L.convos.filter(c => !q || c.title.toLowerCase().includes(q)).sort((a, b) => b.updated - a.updated);
+    const match = c => !q || c.title.toLowerCase().includes(q);
+    const open = L.convos.filter(c => c.status !== "finished" && match(c)).sort((a, b) => b.updated - a.updated);
+    const done = L.convos.filter(c => c.status === "finished" && match(c)).sort((a, b) => (b.finishedAt || b.updated) - (a.finishedAt || a.updated));
+    const shownIn = id => L.panes.findIndex(p => p.id === id);
+    const item = c => {
+      const last = c.messages.findLast(m => m.role === "assistant" && m.model);
+      const at = shownIn(c.id), fin = c.status === "finished";
+      return `<div class="titem ${at === L.active && L.sel !== "example" ? "active" : at >= 0 ? "shown" : ""} ${fin ? "done" : ""}" data-convo="${c.id}" tabindex="0">
+        ${running(c.id) ? `<span class="live-dot" title="Answering"></span>` : fin ? `<span class="ic donemark">${icon("check")}</span>` : `<span class="dot ic" style="--c:var(--cap-text)"></span>`}
+        <div style="min-width:0"><div class="t">${esc(c.title)}</div><div class="s">${esc(last ? last.model.name : "no answer yet")}</div></div>
+        <span class="when">${when(fin ? c.finishedAt || c.updated : c.updated)}</span>
+        <span class="tacts">
+          ${!fin && maxPanes() > 1 && at < 0 ? `<button class="iconbtn sm" data-beside="${c.id}" aria-label="Open beside" title="Open beside">${icon("panel")}</button>` : ""}
+          ${fin ? `<button class="iconbtn sm" data-reopen="${c.id}" aria-label="Reopen" title="Reopen">${icon("retry")}</button>
+            <button class="iconbtn sm" data-delete="${c.id}" aria-label="Delete" title="Delete">${icon("stop")}</button>`
+            : `<button class="iconbtn sm" data-finish="${c.id}" aria-label="Mark finished" title="Mark finished">${icon("check")}</button>`}
+        </span></div>`;
+    };
     return `
     <aside class="threads" aria-label="Conversations">
       <div class="col-head"><span class="h3">Threads</span><span class="grow"></span>
-        <button class="iconbtn" id="new-convo" aria-label="New conversation">${icon("plus")}</button></div>
+        <button class="iconbtn" id="new-convo" aria-label="New conversation" title="New conversation">${icon("plus")}</button></div>
       <div class="search">${icon("search")}<input class="input" id="thread-search" placeholder="Search conversations" value="${esc(L.search || "")}"></div>
       <div class="scroll">
-        <div class="tgroup"><span class="eyebrow">Conversations</span>
-          ${list.length ? list.map(c => {
-            const last = c.messages.findLast(m => m.role === "assistant" && m.model);
-            return `<div class="titem ${c.id === L.sel ? "active" : ""}" data-convo="${c.id}" tabindex="0">
-              <span class="dot ic" style="--c:var(--cap-text)"></span>
-              <div style="min-width:0"><div class="t">${esc(c.title)}</div><div class="s">${esc(last ? last.model.name : "no answer yet")}</div></div>
-              <span class="when">${when(c.updated)}</span></div>`;
-          }).join("") : `<div class="muted" style="padding:2px 8px 8px;font-size:12.5px">${q ? "Nothing matches." : "Your conversations appear here."}</div>`}
+        <div class="tgroup"><span class="eyebrow">Open <span class="faint">${open.length || ""}</span></span>
+          ${open.length ? open.map(item).join("") : `<div class="muted" style="padding:2px 8px 8px;font-size:12.5px">${q ? "Nothing matches." : "Your conversations appear here."}</div>`}
         </div>
+        ${done.length ? `<div class="tgroup"><button class="eyebrow fold" id="fold-finished" aria-expanded="${!!(L.showFinished || q)}">${icon("chev")}Finished <span class="faint">${done.length}</span></button>
+          ${L.showFinished || q ? done.map(item).join("") : ""}</div>` : ""}
         <div class="tgroup"><span class="eyebrow">Example</span>
           <div class="titem ${L.sel === "example" ? "active" : ""}" data-convo="example" tabindex="0">
             <span class="dot ic" style="--c:var(--cap-agent)"></span>
@@ -1132,22 +1272,23 @@
       </div></div>`;
   }
 
-  function routeLine() {
+  function routeLine(model) {
     if (!L.info) return `${icon("wand")}<span>Looking for models on this PC and at your providers…</span>`;
-    const key = L.model === "auto" ? L.info.auto.text : L.model;
+    const key = model === "auto" ? L.info.auto.text : model;
     const m = modelByKey(key);
     if (!key) return `${icon("wand")}<span>No chat model yet.</span>`;
     const where = m && m.provider === "local" ? "this PC · nothing leaves it" : `${providerName(m ? m.provider : key.split("/")[0])} · uses your key`;
-    return `${icon("wand")}<span>${L.model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
+    return `${icon("wand")}<span>${model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
   }
 
-  function modelPicker() {
+  function modelPicker(i) {
+    const sel = paneModel(i);
     const groups = {};
-    chatModels().forEach(m => (groups[m.provider] ||= []).push(m));
+    chatModels(sel).forEach(m => (groups[m.provider] ||= []).push(m));
     const auto = L.info && L.info.auto.text ? modelByKey(L.info.auto.text) : null;
-    return `<select class="input model-pick" id="model-pick" aria-label="Model">
-      <option value="auto" ${L.model === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
-      ${Object.entries(groups).map(([p, ms]) => `<optgroup label="${esc(providerName(p))}">${ms.map(m => `<option value="${esc(m.key)}" ${m.key === L.model ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</optgroup>`).join("")}
+    return `<select class="input model-pick" data-pick-model="${i}" aria-label="Model">
+      <option value="auto" ${sel === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
+      ${Object.entries(groups).map(([p, ms]) => `<optgroup label="${esc(providerName(p))}">${ms.map(m => `<option value="${esc(m.key)}" ${m.key === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</optgroup>`).join("")}
     </select>`;
   }
 
@@ -1159,51 +1300,79 @@
     }
     const local = L.info.providers.find(p => p.local);
     return `<div class="empty"><div class="flag">${icon("flask")}<div><b>No chat model yet.</b> Put a Hugging Face model folder or a <code>.gguf</code> file in
-      ${(local?.folders || []).map(f => `<code>${esc(f)}</code>`).join(" or ")}, or add an API key for Anthropic, OpenAI or Google.
+      ${(local?.folders || []).map(f => `<code>${esc(f)}</code>`).join(" or ")}, or add an API key under Models.
       <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
   }
 
-  function liveStage() {
-    const c = current();
+  function paneHtml(i) {
+    const c = paneConvo(i), fin = c && c.status === "finished", busy = c && running(c.id);
+    const key = c ? c.id : "";
     return `
-    <section class="stage" aria-label="Conversation">
+    <section class="stage pane ${i === L.active ? "active" : ""}" data-pane="${i}" data-convo="${key}" aria-label="${esc(c ? c.title : "New conversation")}">
       <div class="stage-head">
         <span class="title">${c ? esc(c.title) : "New conversation"}</span>
+        ${fin ? `<span class="chip c-ok">finished</span>` : ""}
         <span class="grow"></span>
-        ${modelPicker()}
+        ${fin ? "" : modelPicker(i)}
+        ${c ? (fin ? `<button class="btn sm" data-reopen="${c.id}">${icon("retry")}Reopen</button>`
+          : `<button class="btn ghost sm" data-finish="${c.id}" title="Mark finished: it leaves the tabs and waits under Finished">${icon("check")}Finish</button>`) : ""}
+        ${L.panes.length > 1 ? `<button class="iconbtn" data-close-pane="${i}" aria-label="Close this pane" title="Close this pane"><span aria-hidden="true" style="font-size:17px;line-height:1">×</span></button>` : ""}
       </div>
-      <div class="transcript" id="transcript"><div class="lane" id="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
+      <div class="transcript" data-transcript="${i}"><div class="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
       <div class="composer-wrap">
-        <div class="composer">
-          <div class="route-hint" id="route-hint">${routeLine()}</div>
-          <textarea id="prompt" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.draft || "")}</textarea>
+        ${fin ? `<div class="finished-bar">${icon("check")}<span>Finished ${when(c.finishedAt || c.updated)}. Reopen it to keep going.</span><span class="grow"></span>
+            <button class="btn sm" data-reopen="${c.id}">Reopen</button></div>`
+        : `<div class="composer">
+          <div class="route-hint" data-route="${i}">${routeLine(paneModel(i))}</div>
+          <textarea data-prompt="${i}" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.drafts[draftKey(i)] || "")}</textarea>
           <div class="row">
-            <span class="faint" style="font-size:12px;padding-left:6px">Kept in this browser</span>
+            <span class="faint" style="font-size:12px;padding-left:6px">Saved in the studio</span>
             <span class="grow"></span>
-            ${L.busy ? `<button class="send stop" id="stop" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" id="send" aria-label="Send">${icon("send")}</button>`}
+            ${busy ? `<button class="send stop" data-stop="${key}" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" data-send="${i}" aria-label="Send">${icon("send")}</button>`}
           </div>
-        </div>
+        </div>`}
       </div>
     </section>`;
   }
 
-  function liveChatView() {
-    return `<div class="chat lay-${effectiveLayout()} no-inspector">${liveThreadList()}${liveStage()}</div>`;
+  function tabsBar() {
+    const tabs = L.tabs.map(convoById).filter(Boolean);
+    const room = L.panes.length < maxPanes();
+    return `<div class="chattabs" role="tablist" aria-label="Open conversations">
+      <button class="iconbtn sm threads-toggle" id="threads-toggle" aria-label="All conversations" title="All conversations, open and finished" aria-expanded="${!!L.showThreads}">${icon("chat")}</button>
+      ${tabs.map(c => {
+        const at = L.panes.findIndex(p => p.id === c.id);
+        return `<div class="ctab ${at === L.active ? "active" : at >= 0 ? "shown" : ""}" role="tab" aria-selected="${at === L.active}">
+          <button class="ctab-open" data-tab="${c.id}" title="${esc(c.title)}">${running(c.id) ? `<span class="live-dot"></span>` : ""}<span>${esc(c.title)}</span></button>
+          <button class="ctab-x" data-close-tab="${c.id}" aria-label="Close tab ${esc(c.title)}" title="Close tab (the conversation stays under Open)">×</button></div>`;
+      }).join("")}
+      <button class="ctab-new" id="tab-new" aria-label="New conversation" title="New conversation">${icon("plus")}</button>
+      <span class="grow"></span>
+      ${maxPanes() > 1 ? `<button class="btn ghost sm" id="split" ${room ? "" : "disabled"} title="${room ? "Open a new conversation beside this one" : "No room for another pane at this width"}">${icon("panel")}Split</button>` : ""}
+    </div>`;
   }
 
-  // Repaints one message while it streams, at most once a frame, keeping the view at the bottom.
-  let paintQueued = null;
+  function liveChatView() {
+    fitPanes();
+    return `<div class="chat livechat lay-${effectiveLayout()} no-inspector ${L.showThreads ? "show-threads" : ""}">${liveThreadList()}
+      <div class="chatmain">${tabsBar()}<div class="panes" style="--n:${L.panes.length}">${L.panes.map((_, i) => paneHtml(i)).join("")}</div></div></div>`;
+  }
+
+  // Repaints one message while it streams, at most once a frame, in every pane that shows it.
+  const paintQueued = new Map();
   function paintMsg(c, i) {
-    if (paintQueued) return;
-    paintQueued = requestAnimationFrame(() => {
-      paintQueued = null;
-      if (state.view !== "chat" || L.sel !== c.id) return;
-      const el = $(`#lane .msg[data-i="${i}"]`), box = $("#transcript");
-      if (!el || !box) return;
-      const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-      el.outerHTML = msgHtml(c.messages[i], i);
-      if (stick) box.scrollTop = box.scrollHeight;
-    });
+    if (paintQueued.has(c.id)) return;
+    paintQueued.set(c.id, requestAnimationFrame(() => {
+      paintQueued.delete(c.id);
+      if (state.view !== "chat") return;
+      $$(`.pane[data-convo="${c.id}"]`).forEach(pane => {
+        const el = pane.querySelector(`.msg[data-i="${i}"]`), box = pane.querySelector(".transcript");
+        if (!el || !box) return;
+        const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+        el.outerHTML = msgHtml(c.messages[i], i);
+        if (stick) box.scrollTop = box.scrollHeight;
+      });
+    }));
   }
 
   // The provider wants alternating turns: a failed answer is left out and the user's turns around it are joined.
@@ -1223,9 +1392,8 @@
     c.messages.push(a);
     const i = c.messages.length - 1;
     const ctrl = new AbortController();
-    L.busy = ctrl;
+    L.running[c.id] = ctrl;
     render();
-    const box = $("#transcript"); if (box) box.scrollTop = box.scrollHeight;
     const onEvent = (event, d) => {
       if (event === "route") a.model = d;
       else if (event === "text") a.text += d.text;
@@ -1238,7 +1406,7 @@
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal,
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: L.model, messages: history }),
+        body: JSON.stringify({ model: usable(c.model || L.model), messages: history }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
       const reader = r.body.getReader(), dec = new TextDecoder();
@@ -1262,57 +1430,103 @@
       if (e.name === "AbortError") a.stopped = true; else a.error = e.message;
     }
     a.streaming = false;
-    L.busy = null;
+    delete L.running[c.id];
     c.updated = Date.now();
-    saveConvos();
+    persist(c);
     if (state.view === "chat") render();
   }
 
-  function send() {
-    const p = $("#prompt"), text = (p?.value || "").trim();
-    if (!text || L.busy || !L.info) return;
-    let c = current();
+  function send(i) {
+    const p = $(`[data-prompt="${i}"]`), text = (p?.value || "").trim();
+    let c = paneConvo(i);
+    if (!text || !L.info || (c && running(c.id))) return;
     if (!c) {
-      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70), messages: [], updated: Date.now() };
+      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70),
+        messages: [], updated: Date.now(), status: "open", model: L.panes[i].model || L.model };
       L.convos.unshift(c);
-      L.sel = c.id; store.set("convo", c.id);
+      L.panes[i] = { id: c.id };
+      L.tabs.push(c.id);
+      L.drafts["#" + i] = "";
+      savePanes();
     }
+    L.active = i;
+    L.drafts[c.id] = "";
     c.messages.push({ role: "user", text, at: Date.now() });
-    L.draft = "";
+    persist(c);
     answer(c);
   }
 
   function bindLiveChat() {
-    $$("[data-convo]").forEach(el => {
-      const open = () => { if (L.busy) return; L.sel = el.dataset.convo; store.set("convo", L.sel); render(); };
+    $$(".titem[data-convo]").forEach(el => {
+      const open = e => {
+        if (e.target.closest(".tacts")) return;
+        if (el.dataset.convo === "example") { L.sel = "example"; store.set("convo", "example"); render(); return; }
+        store.set("convo", null);
+        L.showThreads = false;
+        openConvo(el.dataset.convo, e.ctrlKey || e.metaKey);
+      };
       el.addEventListener("click", open);
-      el.addEventListener("keydown", e => { if (e.key === "Enter") open(); });
+      el.addEventListener("keydown", e => { if (e.key === "Enter") open(e); });
     });
-    $("#new-convo")?.addEventListener("click", () => { if (L.busy) return; L.sel = null; store.set("convo", null); render(); $("#prompt")?.focus(); });
+    $$("[data-beside]").forEach(b => b.addEventListener("click", () => openConvo(b.dataset.beside, true)));
+    $$("[data-finish]").forEach(b => b.addEventListener("click", () => setFinished(b.dataset.finish, true)));
+    $$("[data-reopen]").forEach(b => b.addEventListener("click", () => { setFinished(b.dataset.reopen, false); openConvo(b.dataset.reopen); }));
+    $$("[data-delete]").forEach(b => b.addEventListener("click", () => {
+      const c = convoById(b.dataset.delete);
+      if (c && confirmDelete(b)) deleteConvo(c.id);
+    }));
+    $("#threads-toggle")?.addEventListener("click", () => { L.showThreads = !L.showThreads; render(); });
+    $("#fold-finished")?.addEventListener("click", () => { L.showFinished = !L.showFinished; render(); });
+    $("#new-convo")?.addEventListener("click", () => newChat(false));
+    $("#tab-new")?.addEventListener("click", () => newChat(false));
+    $("#split")?.addEventListener("click", () => newChat(true));
+    $$("[data-tab]").forEach(b => b.addEventListener("click", () => openConvo(b.dataset.tab)));
+    $$("[data-close-tab]").forEach(b => b.addEventListener("click", () => closeTab(b.dataset.closeTab)));
+    $$("[data-close-pane]").forEach(b => b.addEventListener("click", () => closePane(+b.dataset.closePane)));
     $("#thread-search")?.addEventListener("input", e => {
       L.search = e.target.value; const at = e.target.selectionStart; render();
       const s = $("#thread-search"); s.focus(); s.setSelectionRange(at, at);
     });
-    $("#model-pick")?.addEventListener("change", e => { L.model = e.target.value; store.set("chatModel", L.model); $("#route-hint").innerHTML = routeLine(); });
-    const p = $("#prompt");
-    if (p) {
-      p.addEventListener("input", () => { L.draft = p.value; });
-      p.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
-    }
-    $("#send")?.addEventListener("click", send);
-    $("#stop")?.addEventListener("click", () => L.busy?.abort());
+    $$(".pane").forEach(pane => {
+      const i = +pane.dataset.pane;
+      pane.addEventListener("focusin", () => { if (L.active !== i) { L.active = i; savePanes(); $$(".pane").forEach(x => x.classList.toggle("active", +x.dataset.pane === i)); } });
+      const box = pane.querySelector(".transcript"), key = pane.dataset.convo;
+      if (box) {
+        box.scrollTop = key && L.scroll[key] != null ? L.scroll[key] : box.scrollHeight;
+        box.addEventListener("scroll", () => { if (key) L.scroll[key] = box.scrollHeight - box.scrollTop - box.clientHeight < 80 ? null : box.scrollTop; }, { passive: true });
+      }
+    });
+    $$("[data-pick-model]").forEach(s => s.addEventListener("change", () => {
+      const i = +s.dataset.pickModel, c = paneConvo(i);
+      if (c) { c.model = s.value; persist(c); } else { L.panes[i].model = s.value; L.model = s.value; store.set("chatModel", s.value); savePanes(); }
+      $(`[data-route="${i}"]`).innerHTML = routeLine(s.value);
+    }));
+    $$("[data-prompt]").forEach(p => {
+      const i = +p.dataset.prompt;
+      p.addEventListener("input", () => { L.drafts[draftKey(i)] = p.value; });
+      p.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(i); } });
+    });
+    $$("[data-send]").forEach(b => b.addEventListener("click", () => send(+b.dataset.send)));
+    $$("[data-stop]").forEach(b => b.addEventListener("click", () => L.running[b.dataset.stop]?.abort()));
     $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $$("[data-copy]").forEach(b => b.addEventListener("click", () => {
-      const m = current()?.messages[+b.dataset.copy];
+      const m = convoById(b.closest(".pane")?.dataset.convo)?.messages[+b.dataset.copy];
       if (m) navigator.clipboard?.writeText(m.text).then(() => { b.innerHTML = icon("check"); setTimeout(() => { b.innerHTML = icon("copy"); }, 1200); });
     }));
     $$("[data-retry]").forEach(b => b.addEventListener("click", () => {
-      const c = current(); if (!c || L.busy) return;
+      const c = convoById(b.closest(".pane")?.dataset.convo); if (!c || running(c.id)) return;
       c.messages.splice(+b.dataset.retry);
       answer(c);
     }));
-    const box = $("#transcript"); if (box && !L.busy) box.scrollTop = box.scrollHeight;
-    if (!L.busy) p?.focus({ preventScroll: true });
+    const a = document.activeElement;
+    if (!a || a === document.body) $(`[data-prompt="${L.active}"]`)?.focus({ preventScroll: true });
+  }
+  // Deleting asks twice on the same button: the first press arms it for three seconds.
+  function confirmDelete(b) {
+    if (b.dataset.armed) return true;
+    b.dataset.armed = "1"; b.classList.add("armed"); b.title = "Press again to delete";
+    setTimeout(() => { delete b.dataset.armed; b.classList.remove("armed"); b.title = "Delete"; }, 3000);
+    return false;
   }
 
   // ---------- live images and voice ----------
@@ -1879,7 +2093,7 @@
     try {
       L.info = await api("/api/models" + (refresh ? "?refresh=1" : ""));
       if (L.model !== "auto" && !modelByKey(L.model)) L.model = "auto";
-      if (["chat", "library", "create", "voice"].includes(state.view) && !(state.view === "chat" && L.busy)) render();
+      if (["chat", "library", "create", "voice"].includes(state.view) && !(state.view === "chat" && anyRunning())) render();
     } catch (e) {
       console.warn("cannot list models", e);
     }
@@ -1923,6 +2137,7 @@
       renderDevices();
       render();
       loadModels(false);
+      loadConvos();
     } catch (e) {
       console.warn("studio API not reachable, showing example data", e);
     }

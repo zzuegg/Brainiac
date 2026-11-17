@@ -845,3 +845,71 @@ button.linkchip:hover { filter: brightness(1.15); text-decoration: underline; te
 @media (prefers-reduced-motion: reduce) { .gtoggle svg { transition: none; } }
 .ghead-in .grow, .modelbar .grow { flex: 1; }
 .modelbar #model-find { margin-left: 0; width: min(360px, 100%); }
+
+/* ---------- live chat: tabs, panes, finished ---------- */
+.chat.livechat, .chat.livechat.lay-ultra, .chat.livechat.lay-wide { grid-template-columns: 268px minmax(0, 1fr); position: relative; }
+.chat.livechat.lay-ultra { grid-template-columns: 300px minmax(0, 1fr); }
+[data-layout="focus"] .chat.livechat { grid-template-columns: minmax(0, 1fr); }
+.chatmain { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.chattabs { display: flex; align-items: center; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.chattabs .grow { flex: 1; }
+.ctab { display: inline-flex; align-items: center; max-width: 220px; min-width: 0; flex: 0 1 auto; border: 1px solid transparent; border-radius: 8px; color: var(--muted); }
+.ctab:hover { background: var(--panel-2); color: var(--fg-2); }
+.ctab.shown { color: var(--fg-2); border-color: var(--line-soft); }
+.ctab.active { background: var(--panel); color: var(--fg); border-color: var(--line); box-shadow: inset 0 -2px 0 var(--accent); }
+.ctab-open { display: inline-flex; align-items: center; gap: 6px; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 12.5px; padding: 5px 4px 5px 10px; cursor: pointer; }
+.ctab-open span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctab-x { border: 0; background: transparent; color: var(--faint); font-size: 15px; line-height: 1; width: 22px; height: 22px; border-radius: 6px; margin-right: 3px; cursor: pointer; flex: none; }
+.ctab-x:hover { background: var(--raise); color: var(--fg); }
+.ctab-new { border: 1px dashed var(--line); background: transparent; color: var(--muted); width: 28px; height: 28px; border-radius: 8px; display: inline-grid; place-items: center; flex: none; cursor: pointer; }
+.ctab-new:hover { color: var(--fg); border-color: var(--muted); }
+.ctab-new svg { width: 14px; height: 14px; }
+.ctab-open:focus-visible, .ctab-x:focus-visible, .ctab-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chattabs .btn { flex: none; }
+.threads-toggle { display: none; flex: none; }
+.panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr)); }
+.pane { border-left: 1px solid var(--line-soft); }
+.pane:first-child { border-left: 0; }
+.panes[style*="--n:1"] .pane { border-left: 0; }
+.pane .stage-head { padding: 8px 14px; }
+.pane .model-pick { width: auto; max-width: 260px; }
+.panes:not([style*="--n:1"]) .pane.active .stage-head { box-shadow: inset 0 2px 0 var(--accent); }
+.panes:not([style*="--n:1"]) .pane:not(.active) .stage-head .title { color: var(--fg-2); }
+.panes:not([style*="--n:1"]) .lane { padding: 0 18px; }
+.panes:not([style*="--n:1"]) .composer-wrap { padding: 0 14px 14px; }
+.finished-bar { display: flex; align-items: center; gap: 10px; max-width: 760px; margin: 0 auto; padding: 10px 14px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--panel-2); color: var(--fg-2); font-size: 13px; }
+.finished-bar > svg { width: 16px; height: 16px; color: var(--ok); flex: none; }
+.finished-bar .grow { flex: 1; }
+.iconbtn.sm { width: 24px; height: 24px; border-radius: 6px; }
+.iconbtn.sm svg { width: 14px; height: 14px; }
+.iconbtn.armed { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.titem { position: relative; }
+.titem.shown { border-color: var(--line-soft); }
+.titem.done .t { color: var(--muted); }
+.titem .tacts { display: none; position: absolute; right: 6px; top: 50%; transform: translateY(-50%); gap: 2px; padding: 2px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line-soft); }
+.titem:hover .tacts, .titem:focus-within .tacts { display: inline-flex; }
+@media (hover: none) { .titem .tacts { display: inline-flex; position: static; transform: none; grid-column: 2 / -1; justify-self: end; } }
+.donemark { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; color: var(--ok); }
+.donemark svg { width: 13px; height: 13px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cap-text); display: inline-block; flex: none; animation: livedot 1.2s infinite ease-in-out; }
+.titem .live-dot { margin-top: 5px; }
+@keyframes livedot { 50% { opacity: .3; transform: scale(.75); } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.eyebrow.fold { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; cursor: pointer; padding: 4px 8px 6px; font: inherit; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.eyebrow.fold:hover { color: var(--fg-2); }
+.eyebrow.fold svg { width: 12px; height: 12px; transition: transform .15s; }
+.eyebrow.fold[aria-expanded="true"] svg { transform: rotate(90deg); }
+/* narrow screens and the focus layout: the list of conversations opens over the panes */
+[data-layout="focus"] .threads-toggle { display: inline-grid; }
+[data-layout="focus"] .chat.livechat.show-threads .threads { display: flex; position: absolute; left: 0; top: 0; bottom: 0; width: min(320px, 92%); z-index: 20; box-shadow: var(--shadow); }
+@media (max-width: 1080px) {
+  .chat.livechat, .chat.livechat.lay-ultra, .chat.livechat.lay-wide { grid-template-columns: minmax(0, 1fr); }
+  .threads-toggle { display: inline-grid; }
+  .chat.livechat.show-threads .threads { display: flex; position: absolute; left: 0; top: 0; bottom: 0; width: min(320px, 92%); z-index: 20; box-shadow: var(--shadow); }
+}
+@media (max-width: 720px) {
+  .chattabs { padding: 6px 10px; }
+  .ctab { max-width: 160px; }
+  .pane .stage-head { padding: 8px 12px; flex-wrap: wrap; }
+  .pane .model-pick { max-width: 100%; flex: 1 1 160px; }
+}
