@@ -520,10 +520,12 @@ public final class PretrainedTokenizer implements Tokenizer {
 
     /**
      * The {@code tokenizer.ggml.*} metadata that describes this tokenizer in a GGUF file, so
-     * llama.cpp (and {@link #fromGguf}) can rebuild it: SentencePiece models as
-     * {@code "llama"}, byte-level BPE from {@code tokenizer.json} as {@code "gpt2"}. GGUF has no
-     * place for a few rarer settings: a byte-level {@code add_prefix_space}, and SentencePiece's
-     * removal of extra whitespace, so texts that depend on them encode differently there.
+     * llama.cpp (and {@link #fromGguf}) can rebuild it: SentencePiece models and
+     * SentencePiece-style BPE {@code tokenizer.json} files (Llama 2, Mistral) as
+     * {@code "llama"}, byte-level BPE as {@code "gpt2"}. GGUF has no place for a few rarer
+     * settings: a byte-level {@code add_prefix_space}, SentencePiece's removal of extra
+     * whitespace, and how transformers treats spaces at the start of a Llama text, so texts
+     * that begin with or double spaces can encode differently there (as in llama.cpp).
      *
      * @return the keys and values, in order
      * @throws IllegalArgumentException for WordPiece and Unigram {@code tokenizer.json} models

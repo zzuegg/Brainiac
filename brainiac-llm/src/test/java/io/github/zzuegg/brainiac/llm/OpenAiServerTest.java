@@ -27,6 +27,7 @@ class OpenAiServerTest {
     private static final String CHARS = "abcdefghijklmnopqrstuvwxyz :{}\"0123456789,\n";
     private static OpenAiServer server;
     private static Generator generator;
+    private static PretrainedTokenizer tokenizer;
 
     @BeforeAll
     static void start() {
@@ -42,6 +43,7 @@ class OpenAiServerTest {
         Llama model = Llama.random(LlamaConfig.small(CHARS.length() + 1, 32, 2, 4, 2), 5, GeneratorTest.DEVICE,
                 DType.FLOAT32);
         generator = new Generator(model, tok);
+        tokenizer = tok;
         server = OpenAiServer.start(new InetSocketAddress("127.0.0.1", 0), "tiny", generator, tok, null);
     }
 
@@ -127,5 +129,33 @@ class OpenAiServerTest {
         assertTrue(call("POST", "/v1/completions", "not json").startsWith("400 "));
         assertTrue(call("POST", "/v1/chat/completions", "{\"messages\":[]}").startsWith("400 "));
         assertTrue(call("GET", "/v1/completions", null).startsWith("405 "));
+    }
+
+    @Test
+    void batchedServerAnswersConcurrentRequestsLikeTheGenerator() throws Exception {
+        try (OpenAiServer batched = OpenAiServer.start(new InetSocketAddress("127.0.0.1", 0), "tiny", generator,
+                tokenizer, null, 4)) {
+            OpenAiServer saved = server;
+            server = batched;
+            try {
+                String[] prompts = {"abc", "hello world", "q", "zebra"};
+                java.util.List<java.util.concurrent.Future<String>> answers = new java.util.ArrayList<>();
+                java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+                for (String p : prompts) {
+                    answers.add(pool.submit(() -> call("POST", "/v1/completions", "{\"prompt\":\"" + p
+                            + "\",\"max_tokens\":10,\"temperature\":0}")));
+                }
+                for (int i = 0; i < prompts.length; i++) {
+                    String r = answers.get(i).get();
+                    assertTrue(r.startsWith("200 "), r);
+                    Map<String, Object> choice = Json.object(Json.array(Json.object(Json.parse(r.substring(4)))
+                            .get("choices")).getFirst());
+                    assertEquals(generator.generate(prompts[i], Generator.Options.greedy(10)), choice.get("text"));
+                }
+                pool.shutdown();
+            } finally {
+                server = saved;
+            }
+        }
     }
 }
