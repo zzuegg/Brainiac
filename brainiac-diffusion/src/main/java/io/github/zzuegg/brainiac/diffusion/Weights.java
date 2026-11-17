@@ -97,10 +97,9 @@ final class Weights {
     /** {@code name.weight} {@code [out, in]} as {@code [in, out]} and {@code name.bias} if present. */
     Nn.Linear linear(String name) {
         Tensor w = get(name + ".weight");
-        if (w.rank() == 4) {   // a 1x1 convolution used as a projection
-            w = replace(w, w.reshape(w.shape().dim(0), w.shape().dim(1)));
-        }
-        Tensor t = replace(w, w.transpose());
+        // a 1x1 convolution used as a projection is the same matrix; the reshape shares memory
+        Tensor matrix = w.rank() == 4 ? w.reshape(w.shape().dim(0), w.shape().dim(1)) : w;
+        Tensor t = replace(w, matrix.transpose());
         Tensor b = has(name + ".bias") ? get(name + ".bias") : null;
         return new Nn.Linear(t, b);
     }

@@ -426,7 +426,7 @@ public final class StableDiffusion implements AutoCloseable {
                 }
                 case DPM_PP_2M, DPM_PP_2M_KARRAS -> dpmSolver2m(xi, denoised, prev, sigma, next, last);
             }, xi, denoised, prev);
-            if (previous != null) {
+            if (previous != null && previous != nextX) {
                 previous.release();
             }
             previous = denoised;
@@ -434,11 +434,14 @@ public final class StableDiffusion implements AutoCloseable {
             x = nextX;
             if (!listener.step(i + 1, plan.steps(), denoised)) {
                 x.release();
-                denoised.release();
+                if (denoised != x) {
+                    denoised.release();
+                }
                 throw new CancellationException("image generation stopped at step " + (i + 1));
             }
         }
-        if (previous != null) {
+        // DPM-Solver++ ends on the denoised latents themselves
+        if (previous != null && previous != x) {
             previous.release();
         }
         return x;
@@ -497,9 +500,12 @@ public final class StableDiffusion implements AutoCloseable {
         }
         Tensor.evaluate(List.of(context, pooled));
         for (ClipTextModel.Output o : new ClipTextModel.Output[] {a, b}) {
-            release(o.last());
-            release(o.penultimate());
-            release(o.pooled());
+            for (Tensor t : new Tensor[] {o.last(), o.penultimate(), o.pooled()}) {
+                // a conversion to the same type returns the tensor itself
+                if (t != null && t != context && t != pooled) {
+                    t.release();
+                }
+            }
         }
         return new Conditioning(context, pooled);
     }
