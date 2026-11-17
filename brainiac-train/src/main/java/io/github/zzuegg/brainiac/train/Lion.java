@@ -20,7 +20,7 @@ final class Lion extends StatefulOptimizer {
     }
 
     @Override
-    Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
+    protected Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
         float lr = learningRate();
         Tensor mixed = s[0] == null ? g.mul(1 - beta1) : s[0].mul(beta1).add(g.mul(1 - beta1));
         Tensor w = weightDecay > 0 ? p.value().mul(1 - lr * weightDecay) : p.value();

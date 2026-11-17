@@ -47,7 +47,7 @@ final class Muon extends StatefulOptimizer {
     }
 
     @Override
-    Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
+    protected Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
         if (g.rank() != 2) {
             throw new IllegalArgumentException("Muon updates matrices only, got a parameter of shape " + g.shape()
                     + "; use Optimizer.groups to give the rest to AdamW");

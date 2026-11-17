@@ -46,6 +46,7 @@ public final class TrainingLoop {
     private int step;
     private boolean stepped;
     private Tensor lastNorm;
+    private java.util.function.Consumer<List<Var>> beforeStep;
 
     private TrainingLoop(Map<String, Var> parameters, Optimizer optimizer) {
         this.parameters = new LinkedHashMap<>(parameters);
@@ -154,6 +155,31 @@ public final class TrainingLoop {
      * @return the loss
      */
     public float microBatch(Supplier<Var> loss) {
+        current = loss;
+        try {
+            return run(loss);
+        } finally {
+            current = null;
+        }
+    }
+
+    /** The micro-batch's loss, for optimizers that evaluate it again within a step. */
+    private Supplier<Var> current;
+
+    /**
+     * Calls {@code hook} before each optimizer step, after clipping, with the parameters and
+     * their gradients ({@link Var#grad}), for example to prune or regrow connections from
+     * them or to change the gradients.
+     *
+     * @param hook receives the parameters
+     * @return this loop
+     */
+    public TrainingLoop beforeStep(java.util.function.Consumer<List<Var>> hook) {
+        this.beforeStep = hook;
+        return this;
+    }
+
+    private float run(Supplier<Var> loss) {
         Var[] l = new Var[1];
         List<Tensor> work = Tensor.created(() -> l[0] = loss.get());
         Var scaled = accumulate == 1 ? l[0] : l[0].div(accumulate);
@@ -174,6 +200,25 @@ public final class TrainingLoop {
             update();
             stepped = true;
         }
+        return out;
+    }
+
+    /** The loss and gradients again at the current weights, for {@link Optimizer#step(List, Supplier)}. */
+    private float reevaluate(Supplier<Var> loss) {
+        for (Var p : params) {
+            p.zeroGrad();
+        }
+        Var[] l = new Var[1];
+        List<Tensor> work = Tensor.created(() -> l[0] = loss.get());
+        l[0].backward();
+        Tensor.evaluate(gradients());
+        float out = l[0].value().item();
+        l[0].release();
+        List<Tensor> keep = new ArrayList<>(gradients());
+        for (Var p : params) {
+            keep.add(p.value());
+        }
+        Tensor.release(work, keep);
         return out;
     }
 
@@ -199,7 +244,15 @@ public final class TrainingLoop {
         for (Var p : params) {
             replaced.add(p.value());
         }
-        optimizer.step(params);
+        if (beforeStep != null) {
+            beforeStep.accept(params);
+        }
+        Supplier<Var> loss = current;
+        if (accumulate == 1 && loss != null) {
+            optimizer.step(params, () -> reevaluate(loss));
+        } else {
+            optimizer.step(params);
+        }
         List<Tensor> kept = new ArrayList<>(params.size());
         for (Var p : params) {
             kept.add(p.value());
