@@ -235,8 +235,18 @@ final class LocalProvider implements ChatProvider {
             DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
                     : DType.FLOAT32;
             Llama model = Llama.load(path, device, dtype);
+            if (device.kind() == Device.Kind.GPU) {
+                // two products per block instead of five: the same answers, much less GPU overhead
+                try {
+                    model.fuseProjections();
+                } catch (RuntimeException e) {
+                    LOG.log(System.Logger.Level.INFO, "running " + path.getFileName() + " unfused: " + e.getMessage());
+                }
+            }
             PretrainedTokenizer tok = PretrainedTokenizer.load(path);
-            loaded = new Loaded(path, new Generator(model, tok), tok, Generator.stopTokens(path, tok));
+            // a chat sends its whole history each turn; only the new part is read again
+            Generator generator = new Generator(model, tok).cachePrefixes(4);
+            loaded = new Loaded(path, generator, tok, Generator.stopTokens(path, tok));
         }
         List<Map<String, Object>> history = new ArrayList<>();
         if (!request.system().isBlank()) {
