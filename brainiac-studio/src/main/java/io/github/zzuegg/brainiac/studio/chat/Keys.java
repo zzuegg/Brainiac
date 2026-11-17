@@ -43,6 +43,7 @@ public final class Keys {
         m.put(Preset.OPENAI.id(), Preset.OPENAI.env());
         m.put("google", List.of("GEMINI_API_KEY", "GOOGLE_API_KEY"));
         Preset.COMPATIBLE.forEach(p -> m.put(p.id(), p.env()));
+        m.put(VastAi.PROVIDER, List.of("VAST_API_KEY"));   // GPUs to rent, not a chat provider
         return Map.copyOf(m);
     }
 

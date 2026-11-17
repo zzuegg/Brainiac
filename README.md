@@ -868,6 +868,12 @@ may cost money); Allow or Deny it, with a note if you like. In **Auto** it calls
 itself. A finished agent takes another message and goes on. Programs that bring their own agent
 call the same tools over `/api/tools` with the studio's token.
 
+**Vast.ai** rents GPU machines by the hour. Paste an API key on the Training screen (it is kept in
+`keys.properties`, or comes from `VAST_API_KEY`, and is sent only to Vast.ai) to see your balance,
+the machines you rent, and verified offers to rent, cheapest first, filtered by GPU, memory, count
+and price. The studio only reads there for now; renting will ask you each time before anything is
+billed.
+
 **Ctrl K** finds anything: a screen, a conversation, a chat model, a saved model in the
 builder, a training run, or a command such as a new conversation, a new model or another layout.
 
@@ -894,6 +900,9 @@ POST /api/hub/files         {"repo":"Qwen/Qwen2.5-0.5B-Instruct-GGUF"} -> its GG
 POST /api/hub/download      {"repo":"...","option":"qwen2.5-0.5b-instruct-q8_0.gguf"} ("folder" for the whole model)
 GET  /api/hub/downloads     every download with its progress; POST /api/hub/cancel {"id":"1"} stops one,
                             POST /api/hub/delete {"name":"..."} deletes a downloaded model
+GET  /api/vast              the Vast.ai key (last 4 characters), balance and rented machines
+POST /api/vast/key          {"key":"..."} saves the Vast.ai key in keys.properties ("remove": true removes it)
+POST /api/vast/offers       {"gpu":"4090","minGpuRam":24,"gpus":1,"maxPrice":0.5} -> machines to rent, cheapest first
 POST /api/hub/token         {"token":"hf_..."} saves the Hugging Face token to ~/.brainiac/hf_token ("remove": true
                             deletes it); GET /api/hub/downloads says which token is used, by its last 4 characters
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls

@@ -36,6 +36,7 @@ public final class ChatService {
     private final UsageLog usage;
     private final ProviderSettings settings;
     private Hub hub;
+    private VastAi vast;
     private final Conversations conversations;
     private final PageState page;
     private final Map<String, Listing> listings = new ConcurrentHashMap<>();
@@ -327,7 +328,17 @@ public final class ChatService {
         }
         ChatService service = new ChatService(keys, ps, outputs);
         service.hub = new Hub(keys, downloads, bases.getOrDefault("hub", Hub.BASE));
+        service.vast = new VastAi(keys, bases.getOrDefault(VastAi.PROVIDER, VastAi.BASE));
         return service;
+    }
+
+    /**
+     * Returns the Vast.ai client, which reads the user's account and the GPU machines to rent.
+     *
+     * @return the client
+     */
+    public VastAi vast() {
+        return vast;
     }
 
     /**
