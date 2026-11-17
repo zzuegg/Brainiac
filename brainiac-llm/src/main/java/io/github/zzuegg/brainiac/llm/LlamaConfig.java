@@ -31,6 +31,15 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         int maxPositions) {
 
     /**
+     * The Hugging Face {@code model_type} values whose {@code config.json} this reads and whose
+     * weights {@link Llama} loads from a model folder.
+     */
+    public static final java.util.Set<String> MODEL_TYPES = java.util.Set.of("llama", "mistral", "qwen2");
+
+    /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
+    public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2");
+
+    /**
      * Reads a Hugging Face {@code config.json} (transformers 4 or 5 layout).
      *
      * @param config the parsed file
@@ -71,7 +80,7 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
     public static LlamaConfig fromGguf(Gguf gguf) {
         Map<String, Object> m = gguf.metadata();
         String a = gguf.architecture();
-        if (!a.equals("llama") && !a.equals("qwen2")) {
+        if (!GGUF_ARCHITECTURES.contains(a)) {
             throw new IllegalArgumentException("GGUF architecture " + a + " is not supported; llama and qwen2 are");
         }
         int hidden = (int) number(m, a + ".embedding_length", -1);
