@@ -408,8 +408,11 @@ public final class MultiHeadAttention implements MultiInputLayer {
      * step attends to them without computing them again. Made by {@link KvCache}. Keys are
      * kept before their rotary rotation, which is applied by position within the cache, so
      * a cache that drops steps from the middle still has contiguous positions.
+     *
+     * <p>Code outside the module can make one to run {@link MultiHeadAttention#step} or
+     * {@link TransformerBlock#step} itself, such as a recurrent or retrieval experiment.
      */
-    static final class Cache {
+    public static final class Cache {
 
         private final int window;
         private final KvCache.Strategy strategy;
@@ -419,19 +422,31 @@ public final class MultiHeadAttention implements MultiInputLayer {
         /** For heavy hitters: the attention each cached step has received so far. */
         private float[] received = new float[0];
 
-        Cache(int window, KvCache.Strategy strategy, io.github.zzuegg.brainiac.tensor.DType storage) {
+        /**
+         * Creates an empty cache.
+         *
+         * @param window the most steps it holds
+         * @param strategy which steps it drops when full
+         * @param storage the type keys and values are kept in
+         */
+        public Cache(int window, KvCache.Strategy strategy, io.github.zzuegg.brainiac.tensor.DType storage) {
+            if (window < 1) {
+                throw new IllegalArgumentException("window must be positive: " + window);
+            }
             this.window = window;
             this.strategy = strategy;
             this.storage = storage;
         }
 
-        void reset() {
+        /** Forgets every step. */
+        public void reset() {
             keys = null;
             values = null;
             received = new float[0];
         }
 
-        int size() {
+        /** @return the steps held */
+        public int size() {
             return keys == null ? 0 : keys.shape().dim(2);
         }
 
@@ -509,7 +524,7 @@ public final class MultiHeadAttention implements MultiInputLayer {
      * @param cache the earlier steps; updated
      * @return the output for the new steps
      */
-    Var step(Var input, Cache cache) {
+    public Var step(Var input, Cache cache) {
         Settings s = settings;
         if (s.keyMask() || s.queryFeatures() != s.kvFeatures()) {
             throw new IllegalStateException(this + ": only self-attention without a key mask can be cached");

@@ -123,11 +123,66 @@ public interface Tokenizer {
                 case "bpe" -> BytePairTokenizer.read(body);
                 case "wordpiece" -> WordPieceTokenizer.read(body);
                 case "unigram" -> UnigramTokenizer.read(body);
-                default -> throw new IOException(path + " has an unknown tokenizer kind " + kind);
+                default -> {
+                    Reader reader = Pretokenizer.READERS.get(kind);
+                    if (reader == null) {
+                        throw new IOException(path + " has an unknown tokenizer kind " + kind);
+                    }
+                    yield reader.read(body);
+                }
             };
         } catch (RuntimeException e) {
             throw new IOException(path + ": " + e.getMessage(), e);
         }
+    }
+
+    /** Reads the body of a tokenizer file, the lines after the header. */
+    @FunctionalInterface
+    interface Reader {
+        /**
+         * @param lines the lines {@link #write} was given
+         * @return the tokenizer
+         * @throws IOException if the lines do not describe one
+         */
+        Tokenizer read(List<String> lines) throws IOException;
+    }
+
+    /**
+     * Makes {@link #load} read files of a tokenizer kind defined outside this module. Its
+     * {@link #save} writes them with {@link #write}.
+     *
+     * @param kind the kind, as {@link #kind()} returns it; not a built-in one
+     * @param reader reads the lines back
+     */
+    static void register(String kind, Reader reader) {
+        if (KINDS.contains(kind) || kind.isEmpty() || kind.contains(" ")) {
+            throw new IllegalArgumentException("cannot register tokenizer kind '" + kind + "'");
+        }
+        Pretokenizer.READERS.put(kind, java.util.Objects.requireNonNull(reader, "reader"));
+    }
+
+    /**
+     * Writes a tokenizer file in the format {@link #load} reads: a header with the kind,
+     * then the lines, which must not contain line breaks.
+     *
+     * @param path the file
+     * @param kind the kind
+     * @param lines the tokenizer's own data
+     * @throws IOException if it cannot be written
+     */
+    static void write(Path path, String kind, List<String> lines) throws IOException {
+        Pretokenizer.write(path, kind, lines);
+    }
+
+    /**
+     * Cuts a text into the chunks the built-in tokenizers never merge across: words with
+     * their leading space, numbers, punctuation runs and spaces, as in GPT-2.
+     *
+     * @param text the text
+     * @return the chunks, in order; they join to the text
+     */
+    static List<String> pretokenize(String text) {
+        return Pretokenizer.chunks(text);
     }
 
     /**
