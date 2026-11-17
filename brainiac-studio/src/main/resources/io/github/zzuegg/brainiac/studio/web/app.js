@@ -1278,6 +1278,7 @@
     options: null, data: null, models: null, runs: [], active: 0, loaded: false, loading: false,
     sel: store.get("trainSel", null), form: store.get("trainForm", null), check: null, checkSeq: 0,
     starting: false, error: null, timer: 0, scale: store.get("trainScale", "linear"), show: "all", hover: null,
+    hosts: [], hostsAt: 0, addingHost: false, hostDraft: { name: "", url: "", token: "" }, hostError: null, hostBusy: false, removing: null,
   };
   const SERIES = 8;
   const runColor = r => `var(--series-${((parseInt(r.id, 10) || 1) - 1) % SERIES + 1})`;
@@ -1329,6 +1330,8 @@
     if (!f.data) f.data = { kind: "builtin", name: "spirals" };
     if (!f.optimizer || !trainEntry("optimizer", f.optimizer.entry)) f.optimizer = choiceFor("optimizer", pickKey("optimizer", "Optimizer#adamW(float,float)", "Optimizer#adam(float)"));
     if (f.schedule && !trainEntry("schedule", f.schedule.entry)) f.schedule = null;
+    if (f.host && f.host !== "local" && !T.hosts.some(h => h.id === f.host)) f.host = "local";
+    f.host ??= "local";
     f.epochs ??= 20; f.batchSize ??= 32; f.validation ??= 0.1; f.patience ??= 0; f.seed ??= 42; f.device ??= "best"; f.clipNorm ??= 0; f.sweep ??= "";
     T.form = f;
     if (!f.loss || !trainEntry("loss", f.loss.entry)) Object.assign(f, { loss: defaultsFor(classesData()).loss });
@@ -1342,6 +1345,7 @@
     if (f.schedule) s.schedule = f.schedule;
     if (+f.clipNorm > 0) s.clipNorm = +f.clipNorm;
     if (f.name) s.name = f.name;
+    if (f.host && f.host !== "local") s.host = f.host;
     return s;
   }
 
@@ -1349,8 +1353,8 @@
     if (T.loading) return;
     T.loading = true;
     try {
-      const [o, d, m] = await Promise.all([api("/api/train/options"), api("/api/train/data"), api("/api/train/models")]);
-      T.options = o; T.data = d; T.models = m.models || [];
+      const [o, d, m, h] = await Promise.all([api("/api/train/options"), api("/api/train/data"), api("/api/train/models"), api("/api/hosts")]);
+      T.options = o; T.data = d; T.models = m.models || []; T.hosts = h.hosts || []; T.hostsAt = Date.now();
       ensureForm();
       T.loaded = true;
       await pollRuns(true);
@@ -1363,7 +1367,8 @@
   async function pollRuns(once) {
     clearTimeout(T.timer);
     try {
-      const j = await api("/api/train/runs");
+      const [j, h] = await Promise.all([api("/api/train/runs"), Date.now() - T.hostsAt > 4000 && T.hosts.length ? api("/api/hosts") : null]);
+      if (h) { T.hosts = h.hosts || []; T.hostsAt = Date.now(); }
       const wasActive = T.active;
       T.runs = j.runs || []; T.active = j.active || 0;
       if (wasActive && !T.active) api("/api/train/models").then(m => { T.models = m.models || []; if (state.view === "train") renderTrainForm(); });
@@ -1405,14 +1410,36 @@
 
   function trainHosts() {
     const devs = M.system?.devices || [];
-    const run = T.runs.find(r => r.state === "running" || r.state === "loading");
-    const queued = T.runs.filter(r => r.state === "queued").length;
-    return `<div class="host ${run ? "busy" : "idle"}">
+    const run = T.runs.find(r => r.host === "This PC" && (r.state === "running" || r.state === "loading"));
+    const queued = T.runs.filter(r => r.host === "This PC" && r.state === "queued").length;
+    const here = `<div class="host ${run ? "busy" : "idle"}">
       <div class="host-head"><span class="dot ${run ? "pulse" : ""}" style="--c:var(--${run ? "accent" : "ok"})"></span><b>This PC</b>
         <span class="chip ${run ? "c-text" : "c-ok"}">${run ? "training" : "idle"}</span><span class="grow"></span><span class="mono faint">${queued ? queued + " queued" : "one run at a time"}</span></div>
-      ${devs.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${run && run.device === d.name ? fmtCount(run.samplesPerSecond || 0) + "/s" : ""}</span></div>`).join("")}
+      ${devs.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${run && run.device === d.name && run.samplesPerSecond ? fmtCount(run.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
       <div class="host-foot"><span class="muted">${run ? `${esc(run.name)} · epoch ${run.epoch + (run.state === "running" ? 1 : 0)} of ${run.epochs}` : "Ready for a run."}</span></div>
     </div>`;
+    const remote = T.hosts.map(h => {
+      const st = !h.online ? ["c-bad", "offline", "bad"] : h.active ? ["c-text", "training", "accent"] : ["c-ok", "idle", "ok"];
+      const tr = h.training;
+      return `<div class="host ${h.online ? h.active ? "busy" : "idle" : "offline"}">
+        <div class="host-head"><span class="dot ${h.active ? "pulse" : ""}" style="--c:var(--${st[2]})"></span><b>${esc(h.name)}</b><span class="chip ${st[0]}">${st[1]}</span><span class="grow"></span>
+          <span class="mono faint" title="Token ${esc(h.token)}">${esc(h.url.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</span>
+          <button class="iconbtn sm" data-host-remove="${esc(h.id)}" aria-label="Forget ${esc(h.name)}" title="${T.removing === h.id ? "Click again to forget it" : "Forget this host"}">${T.removing === h.id ? icon("check") : icon("trash")}</button></div>
+        ${(h.devices || []).map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${tr && tr.samplesPerSecond && d.kind === "gpu" ? fmtCount(tr.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
+        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span></div>
+      </div>`;
+    }).join("");
+    const add = T.addingHost ? `<form class="host add-form" id="host-form" autocomplete="off">
+        <div class="host-head"><b>Add a host</b><span class="grow"></span><button type="button" class="iconbtn sm" id="host-cancel" aria-label="Cancel">${icon("stop")}</button></div>
+        <span class="muted" style="font-size:12px">On the other machine run <code>brainiac-studio --worker</code>. It prints its addresses and a token.</span>
+        <input class="input" id="host-url" placeholder="Address, such as 192.168.1.20:7870" value="${esc(T.hostDraft.url)}" spellcheck="false">
+        <input class="input mono" id="host-token" placeholder="Token" value="${esc(T.hostDraft.token)}" spellcheck="false" type="password">
+        <input class="input" id="host-name" placeholder="Name (optional)" value="${esc(T.hostDraft.name)}">
+        ${T.hostError ? `<div class="flag bad">${icon("alert")}<span>${esc(T.hostError)}</span></div>` : ""}
+        <button class="btn primary" type="submit" ${T.hostBusy ? "disabled" : ""}>${T.hostBusy ? "Connecting…" : "Connect"}</button>
+      </form>`
+      : `<button class="host add" id="host-add" aria-label="Add a host">${icon("plus")}<b>Add a host</b><span class="muted">Run <code>brainiac-studio --worker</code> on another machine and paste its address and token.</span></button>`;
+    return here + remote + add;
   }
 
   function entrySelect(kind, cur, label, allowNone) {
@@ -1480,10 +1507,21 @@
         <div class="field"><label for="t-clip">Clip gradients <span class="faint">0 = off</span></label><input class="input mono" id="t-clip" data-tf="clipNorm" value="${esc(f.clipNorm)}"></div>
       </div>
       ${metrics.length ? `<div class="field"><label>Metrics</label><div class="metric-picks">${metrics.map(e => `<label class="check"><input type="checkbox" data-metric="${esc(e.key)}" ${f.metrics.includes(e.key) ? "checked" : ""}> ${esc(optLabel(e).toLowerCase().replace(/_/g, " "))}</label>`).join("")}</div></div>` : ""}
-      <div class="field"><label for="t-device">Device</label><select class="input" id="t-device" data-tf="device">${T.options.devices.map(d => `<option value="${esc(d.key)}" ${d.key === f.device ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>
+      <div class="two">
+        <div class="field"><label for="t-host">Train on</label><select class="input" id="t-host" data-tf="host"><option value="local" ${f.host === "local" ? "selected" : ""}>This PC</option>
+          ${T.hosts.map(h => `<option value="${esc(h.id)}" ${f.host === h.id ? "selected" : ""} ${h.online ? "" : "disabled"}>${esc(h.name)}${h.online ? "" : " (offline)"}</option>`).join("")}</select></div>
+        <div class="field"><label for="t-device">Device</label><select class="input" id="t-device" data-tf="device">${deviceOptions(f).map(d => `<option value="${esc(d.key)}" ${d.key === f.device ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>
+      </div>
       <div class="field"><label for="t-sweep">Also try learning rates <span class="faint">one run each</span></label><input class="input mono" id="t-sweep" data-tf="sweep" value="${esc(f.sweep)}" placeholder="for example 3e-4, 3e-3"></div>
       <div id="train-check">${trainCheckLine()}</div>
       <button class="btn primary" id="train-start" style="height:38px;justify-content:center" ${T.starting || !T.check?.ok ? "disabled" : ""}>${icon("train")}${startLabel()}</button>`;
+  }
+  function deviceOptions(f) {
+    if (!f.host || f.host === "local") return T.options.devices;
+    const h = T.hosts.find(x => x.id === f.host), devs = h?.devices || [];
+    const gpu = devs.find(d => d.kind === "gpu");
+    return [{ key: "best", name: `Best available (${gpu ? gpu.name : "cpu"})` }, ...devs.map(d => ({ key: d.kind, name: d.name }))]
+      .filter((d, i, all) => all.findIndex(x => x.key === d.key) === i);
   }
   const sweepRates = () => String(T.form.sweep || "").split(/[\s,;]+/).filter(Boolean).map(Number).filter(v => isFinite(v) && v > 0);
   const startLabel = () => { const n = 1 + sweepRates().length; return T.starting ? "Starting…" : n > 1 ? `Start ${n} runs` : "Start training"; };
@@ -1491,7 +1529,8 @@
     const c = T.check;
     if (!c) return `<div class="faint" style="font-size:12px">Checking the model against the data…</div>`;
     if (!c.ok) return `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(c.problem || "The model and the data do not fit together.")}</span></div>`;
-    const busy = T.runs.some(r => r.state === "running" || r.state === "loading");
+    const where = !T.form.host || T.form.host === "local" ? "This PC" : T.hosts.find(h => h.id === T.form.host)?.name;
+    const busy = where === "This PC" ? T.runs.some(r => r.host === "This PC" && (r.state === "running" || r.state === "loading")) : (T.hosts.find(h => h.id === T.form.host)?.active > 0);
     return `<div class="muted" style="font-size:12px">${(c.trainSamples || 0).toLocaleString()} samples to learn from${+T.form.validation > 0 ? `, ${((c.samples || 0) - (c.trainSamples || 0)).toLocaleString()} to check` : ""} · ${(c.stepsPerEpoch || 0).toLocaleString()} steps per epoch${c.classes?.length ? ` · ${c.classes.length} classes` : ""}${busy ? " · queued behind the run training now" : ""}</div>`;
   }
   function renderTrainCheck() {
@@ -1612,12 +1651,15 @@
   function renderTrainLive() {
     if (state.view !== "train" || !T.loaded) return;
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
-    set("train-hosts", trainHosts()); set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
+    const typing = !!document.activeElement?.matches?.("#host-form input");
+    if (!typing) set("train-hosts", trainHosts());
+    set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
     const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
     const tip = $("#lc-tip");
     if (!tip || tip.hidden) { set("train-chart", trainChartFrame()); drawLossChart(); }
     renderTrainCheck();
     bindTrainLists();
+    if (!typing) bindHosts();
   }
   function renderTrainForm() {
     const box = $("#train-form"); if (!box) return;
@@ -1668,6 +1710,7 @@
         if (numeric.has(path)) v = v === "" ? "" : Number(v);
         setPath(T.form, path, v);
         if (path === "data.classes" && !T.form.lossTouched) Object.assign(T.form, defaultsFor(classesData()));
+        if (path === "host") T.form.device = "best";
         saveForm();
         if (path === "sweep") { renderTrainCheck(); return; }
         if (el.tagName === "SELECT" || el.type === "checkbox") renderTrainForm();
@@ -1684,6 +1727,37 @@
       });
     });
     $("#train-start")?.addEventListener("click", startTraining);
+  }
+  function renderHosts(focus) {
+    const box = $("#train-hosts"); if (!box) return;
+    box.innerHTML = trainHosts(); bindHosts();
+    if (focus) $(focus)?.focus();
+  }
+  function bindHosts() {
+    $("#host-add")?.addEventListener("click", () => { T.addingHost = true; T.hostError = null; renderHosts("#host-url"); });
+    $("#host-cancel")?.addEventListener("click", () => { T.addingHost = false; T.hostError = null; renderHosts(); });
+    ["url", "token", "name"].forEach(k => $("#host-" + k)?.addEventListener("input", e => { T.hostDraft[k] = e.target.value; }));
+    $("#host-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      T.hostBusy = true; T.hostError = null; renderHosts();
+      try {
+        await postJson("/api/hosts", T.hostDraft);
+        T.addingHost = false; T.hostDraft = { name: "", url: "", token: "" };
+        T.hostsAt = 0;
+        const h = await api("/api/hosts"); T.hosts = h.hosts || []; T.hostsAt = Date.now();
+        renderTrainForm();
+      } catch (err) { T.hostError = String(err.message || err).replace(/^\/api\/hosts: /, ""); }
+      finally { T.hostBusy = false; renderHosts(T.addingHost ? "#host-token" : null); }
+    });
+    $$("[data-host-remove]").forEach(b => b.addEventListener("click", async () => {
+      const id = b.dataset.hostRemove;
+      if (T.removing !== id) { T.removing = id; renderHosts(); setTimeout(() => { if (T.removing === id) { T.removing = null; renderHosts(); } }, 4000); return; }
+      T.removing = null;
+      await postJson("/api/hosts", { id, remove: true }).catch(() => {});
+      T.hosts = T.hosts.filter(h => h.id !== id);
+      if (T.form.host === id) { T.form.host = "local"; saveForm(); }
+      renderHosts(); renderTrainForm();
+    }));
   }
   function bindTrainLists() {
     $$("[data-tshow]").forEach(b => b.addEventListener("click", () => { T.show = b.dataset.tshow; renderTrainLive(); }));
@@ -1721,7 +1795,7 @@
     }
   }
   function bindLiveTrain() {
-    bindTrainForm(); bindTrainLists(); drawLossChart();
+    bindTrainForm(); bindTrainLists(); bindHosts(); drawLossChart();
     if (!T.timer) pollRuns(false);
   }
 

@@ -230,8 +230,14 @@ public final class Keys {
         }
     }
 
-    // POSIX: rw-------. Windows: an ACL with only the owner.
-    private static void ownerOnly(Path p) throws IOException {
+    /**
+     * Makes a file readable and writable only by this account: rw------- on POSIX, an ACL with
+     * only the owner on Windows.
+     *
+     * @param p the file
+     * @throws IOException if its permissions cannot be set
+     */
+    public static void ownerOnly(Path p) throws IOException {
         if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
             Files.setPosixFilePermissions(p, PosixFilePermissions.fromString("rw-------"));
             return;
