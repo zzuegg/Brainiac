@@ -229,17 +229,30 @@ public final class ModelGraph {
                 }
                 Entry entry = catalog.entry(String.valueOf(n.get("entry")))
                         .orElseThrow(() -> new IllegalArgumentException("no layer " + n.get("entry")));
-                Object made = create(entry, n.get("args"), random);
-                for (Object o : n.get("options") == null ? List.of() : Json.array(n.get("options"))) {
-                    Map<String, Object> opt = Json.object(o);
-                    Option option = entry.option(String.valueOf(opt.get("key")))
-                            .orElseThrow(() -> new IllegalArgumentException(entry.group() + " has no option " + opt.get("key")));
-                    made = invoke(option.method(), made, values(option.params(), opt.get("args"), random));
-                }
-                return attach(entry, made, from);
+                return attach(entry, make(entry, n.get("args"), n.get("options"), random), from);
             }
             default -> throw new IllegalArgumentException("unknown block type " + op);
         }
+    }
+
+    /**
+     * Makes what a catalog entry describes, with its options applied in order.
+     *
+     * @param entry the factory, constructor or constant
+     * @param args its arguments, a list aligned with its parameters
+     * @param options a list of {@code {"key": ..., "args": [...]}}, or null
+     * @param random fills in random sources
+     * @return the made object
+     */
+    public static Object make(Entry entry, Object args, Object options, SplittableRandom random) {
+        Object made = create(entry, args, random);
+        for (Object o : options == null ? List.of() : Json.array(options)) {
+            Map<String, Object> opt = Json.object(o);
+            Option option = entry.option(String.valueOf(opt.get("key")))
+                    .orElseThrow(() -> new IllegalArgumentException(entry.group() + " has no option " + opt.get("key")));
+            made = invoke(option.method(), made, values(option.params(), opt.get("args"), random));
+        }
+        return made;
     }
 
     private static Node attach(Entry entry, Object made, List<Node> from) {
