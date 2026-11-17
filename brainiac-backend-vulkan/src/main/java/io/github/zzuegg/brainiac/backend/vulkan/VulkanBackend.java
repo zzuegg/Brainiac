@@ -1110,6 +1110,8 @@ public final class VulkanBackend implements Backend {
 
     /** The largest head size of the backward shaders ({@code ATT_D} in attention_dq.comp). */
     private static final int BACKWARD_SIZE = 64;
+    /** Rows per work group of attention_dq and attention_dkv (their ROWS). */
+    private static final int BACKWARD_ROWS = 64;
 
     @Override
     public boolean hasAttention(int[] shape, DType type, boolean backward) {
@@ -1145,13 +1147,18 @@ public final class VulkanBackend implements Backend {
                 .putLong(xl.address()).putLong(xg.address()).putLong(gq.address()).putLong(dsum.address())
                 .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
                 .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(rows));
-        vk.dispatch(shader("attention_dq", type), groups(rows), new VkContext.Slot[] {gq.slot(), dsum.slot()},
+        String size = Math.max(shape[5], shape[6]) <= 32 ? "32" : "";   // smaller register arrays
+        long heads = (long) shape[0] * shape[1];
+        long keyHeads = (long) shape[0] * shape[2];
+        vk.dispatch(shader("attention_dq" + size, type), heads * ((shape[3] + BACKWARD_ROWS - 1) / BACKWARD_ROWS),
+                new VkContext.Slot[] {gq.slot(), dsum.slot()},
                 xq.slot(), xk.slot(), xv.slot(), xo.slot(), xl.slot(), xg.slot());
         vk.push().putLong(xq.address()).putLong(xk.address()).putLong(xv.address()).putLong(xl.address())
                 .putLong(xg.address()).putLong(dsum.address()).putLong(gk.address()).putLong(gv.address())
                 .putInt(shape[1]).putInt(shape[2]).putInt(shape[3]).putInt(shape[4]).putInt(shape[5])
                 .putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0).putInt(Math.toIntExact(keys));
-        vk.dispatch(shader("attention_dkv", type), groups(keys), new VkContext.Slot[] {gk.slot(), gv.slot()},
+        vk.dispatch(shader("attention_dkv" + size, type), keyHeads * ((shape[4] + BACKWARD_ROWS - 1) / BACKWARD_ROWS),
+                new VkContext.Slot[] {gk.slot(), gv.slot()},
                 xq.slot(), xk.slot(), xv.slot(), xl.slot(), xg.slot(), dsum.slot());
         dsum.release();
         done(xq, vs(q));

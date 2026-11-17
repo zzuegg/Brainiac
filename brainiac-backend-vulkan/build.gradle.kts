@@ -81,6 +81,9 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
             "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")),
             "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
             "matmul_vec" to listOf(1, 2, 4, 8).map { "matmul_vec$it" to listOf("-DROWS=$it") },
+            // register arrays sized for the head: 32 keeps more work groups resident
+            "attention_dq" to listOf("attention_dq" to emptyList(), "attention_dq32" to listOf("-DATT_D=32")),
+            "attention_dkv" to listOf("attention_dkv" to emptyList(), "attention_dkv32" to listOf("-DATT_D=32")),
         )
         val dir = sources.get().asFile
         output.get().asFile.listFiles { f -> f.name.endsWith(".spv") }?.forEach { it.delete() }
