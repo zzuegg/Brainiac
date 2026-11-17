@@ -1,0 +1,56 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// Gradient of fused attention (Backend.attentionBackward) for the queries: one invocation per
+// query row, recomputing each weight from lse: dq = scale * sum_j p_j (dO . v_j - D) k_j with
+// D = dO . out, which it also stores for attention_dkv. Head sizes up to ATT_D.
+#define ATT_D 64
+layout(local_size_x = GROUP) in;
+#include "math.glsl"
+layout(push_constant) uniform P {
+    In q; In k; In v; In o; In lse; In dout; Buf dq; Buf dsum;
+    uint heads; uint kvHeads; uint tq; uint tk; uint dk; uint dv; float scale; uint causal; uint rows;
+} p;
+void main() {
+    uint g = gid();
+    if (g >= p.rows) return;
+    uint i = g % p.tq;
+    uint h = (g / p.tq) % p.heads;
+    uint b = g / (p.tq * p.heads);
+    uint kv = b * p.kvHeads + h / (p.heads / p.kvHeads);
+    uint kOff = kv * p.tk * p.dk;
+    uint vOff = kv * p.tk * p.dv;
+    ACC qv[ATT_D];
+    ACC dov[ATT_D];
+    ACC acc[ATT_D];
+    for (uint d = 0; d < p.dk; d++) {
+        qv[d] = LOAD(p.q, g * p.dk + d);
+        acc[d] = ACC(0);
+    }
+    ACC dd = ACC(0);
+    for (uint d = 0; d < p.dv; d++) {
+        dov[d] = LOAD(p.dout, g * p.dv + d);
+        dd += dov[d] * LOAD(p.o, g * p.dv + d);
+    }
+    ACC row = LOAD(p.lse, g);
+    int seen = p.causal != 0 ? clamp(int(i + p.tk) - int(p.tq) + 1, 0, int(p.tk)) : int(p.tk);
+    for (uint j = 0; j < uint(seen); j++) {
+        ACC s = ACC(0);
+        for (uint d = 0; d < p.dk; d++) {
+            s += qv[d] * LOAD(p.k, kOff + j * p.dk + d);
+        }
+        ACC pr = exp_(s * ACC(p.scale) - row);
+        ACC dp = ACC(0);
+        for (uint d = 0; d < p.dv; d++) {
+            dp += dov[d] * LOAD(p.v, vOff + j * p.dv + d);
+        }
+        ACC ds = pr * (dp - dd) * ACC(p.scale);
+        for (uint d = 0; d < p.dk; d++) {
+            acc[d] += ds * LOAD(p.k, kOff + j * p.dk + d);
+        }
+    }
+    for (uint d = 0; d < p.dk; d++) {
+        STORE(p.dq, g * p.dk + d, acc[d]);
+    }
+    STORE(p.dsum, g, dd);
+}
