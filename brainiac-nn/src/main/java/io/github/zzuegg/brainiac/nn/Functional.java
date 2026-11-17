@@ -742,6 +742,34 @@ public final class Functional {
     }
 
     /**
+     * The reparameterization trick of variational autoencoders (Kingma and Welling, 2014): a
+     * sample {@code mu + exp(logVar / 2) * eps} with {@code eps ~ N(0, 1)}, differentiable in
+     * the mean and the log-variance.
+     *
+     * @param mu the means
+     * @param logVar the log-variances, same shape
+     * @param random draws {@code eps}
+     * @return a sample of that shape
+     */
+    public static Var reparameterize(Var mu, Var logVar, java.util.random.RandomGenerator random) {
+        Tensor eps = Tensor.normal(mu.shape(), 0, 1, random).to(mu.value().device()).to(mu.value().dtype());
+        return mu.add(logVar.mul(0.5f).exp().mul(eps));
+    }
+
+    /**
+     * The KL divergence of {@code N(mu, exp(logVar))} from the standard normal, summed over the
+     * last axis and averaged over the rest: a VAE's regularizer, often weighted ("beta").
+     *
+     * @param mu the means {@code [..., latent]}
+     * @param logVar the log-variances, same shape
+     * @return the divergence, a scalar
+     */
+    public static Var gaussianKl(Var mu, Var logVar) {
+        Var perDim = mu.square().add(logVar.exp()).sub(logVar).sub(1).mul(0.5f);
+        return perDim.sum(-1, false).mean();
+    }
+
+    /**
      * The InfoNCE (contrastive) loss of paired embeddings, as in CLIP and SimCLR: row
      * {@code i} of {@code a} should be most similar to row {@code i} of {@code b} among all
      * rows of {@code b}, and the other way round. Rows are normalized first, and the other
