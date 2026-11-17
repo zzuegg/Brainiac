@@ -37,6 +37,10 @@ tasks.withType<Test>().configureEach {
                 && !test.environment.containsKey("LD_PRELOAD")) {
             test.environment("LD_PRELOAD", jsig.absolutePath)
         }
+        // LWJGL extracts its natives to one shared folder by default; test JVMs of several
+        // modules starting together then rewrote a library another one was loading (SIGBUS in
+        // dlopen). Each test task extracts into its own folder.
+        test.systemProperty("org.lwjgl.system.SharedLibraryExtractPath", File(test.temporaryDir, "lwjgl").absolutePath)
     }
 }
 

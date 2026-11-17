@@ -25,7 +25,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Real models downloaded from Hugging Face, when {@code -PtestModels=<folder>} names a folder
  * of them: each model directory (with {@code config.json}) and each {@code .gguf} file in it.
- * Skipped otherwise.
+ * It may also name one model directly. Skipped otherwise.
  *
  * <p>Each model answers a question it knows, greedily. When the folder has a {@code
  * <model>.expected.json} written by {@code reference_models.py} (transformers), the
@@ -40,10 +40,23 @@ class PretrainedModelsTest {
         if (dir.isEmpty()) {
             return Stream.of((Path) null);   // one skipped run: JUnit wants at least one
         }
-        try (Stream<Path> s = Files.list(Path.of(dir))) {
-            return s.filter(p -> Files.isRegularFile(p.resolve("config.json")) || p.toString().endsWith(".gguf"))
-                    .sorted().toList().stream();
+        Path folder = Path.of(dir);
+        if (isModel(folder)) {
+            return Stream.of(folder);   // a model itself rather than a folder of them
         }
+        List<Path> models;
+        try (Stream<Path> s = Files.list(folder)) {
+            models = s.filter(PretrainedModelsTest::isModel).sorted().toList();
+        }
+        if (models.isEmpty()) {
+            throw new IllegalArgumentException("no models in " + folder.toAbsolutePath()
+                    + ": -PtestModels takes a model directory (with config.json), a .gguf file, or a folder of them");
+        }
+        return models.stream();
+    }
+
+    static boolean isModel(Path p) {
+        return Files.isRegularFile(p.resolve("config.json")) || p.toString().endsWith(".gguf") && Files.isRegularFile(p);
     }
 
     static DType dtype() {
