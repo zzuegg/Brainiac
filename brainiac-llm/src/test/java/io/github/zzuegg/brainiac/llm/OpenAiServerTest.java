@@ -69,6 +69,33 @@ class OpenAiServerTest {
     }
 
     @Test
+    void healthTokensSeveralAnswersAndKeys() throws IOException {
+        assertTrue(call("GET", "/health", null).startsWith("200 {\"status\":\"ok\"}"));
+        String t = call("POST", "/tokenize", "{\"content\":\"hello\"}");
+        assertTrue(t.startsWith("200 "), t);
+        String ids = Json.write(Json.object(Json.parse(t.substring(4))).get("tokens"));
+        assertEquals("200 {\"content\":\"hello\"}", call("POST", "/detokenize", "{\"tokens\":" + ids + "}"));
+
+        String r = call("POST", "/v1/completions", "{\"prompt\":\"hello\",\"max_tokens\":4,\"n\":3,\"seed\":7}");
+        assertTrue(r.startsWith("200 "), r);
+        List<Object> choices = Json.array(Json.object(Json.parse(r.substring(4))).get("choices"));
+        assertEquals(3, choices.size());
+        assertEquals(2L, ((Number) Json.object(choices.get(2)).get("index")).longValue());
+        assertTrue(call("POST", "/v1/completions", "{\"prompt\":\"x\",\"n\":2,\"stream\":true}").startsWith("400 "));
+
+        server.requireApiKey("secret");
+        try {
+            assertTrue(call("GET", "/v1/models", null).startsWith("401 "));
+            HttpURLConnection c = (HttpURLConnection) URI.create("http://127.0.0.1:" + server.port() + "/v1/models")
+                    .toURL().openConnection();
+            c.setRequestProperty("Authorization", "Bearer secret");
+            assertEquals(200, c.getResponseCode());
+        } finally {
+            server.requireApiKey(null);
+        }
+    }
+
+    @Test
     void listsTheModel() throws IOException {
         String r = call("GET", "/v1/models", null);
         assertTrue(r.startsWith("200 "), r);
