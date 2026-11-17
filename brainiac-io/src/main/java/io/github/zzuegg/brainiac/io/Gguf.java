@@ -403,15 +403,26 @@ public final class Gguf implements WeightSource {
         byte[] levels = new byte[in * out];
         float[] scales = new float[in / group * out];
         float[] offsets = shifted ? new float[scales.length] : null;
-        GgmlQuants.levels(e.format, raw(name), (long) in * out, (i, q, scale, offset) -> {
-            int c = column[i / in];
-            int r = i % in;
-            levels[r * out + c] = (byte) (q - shift);
-            if (r % group == 0) {
-                int g = r / group * out + c;
-                scales[g] = scale;
-                if (shifted) {
-                    offsets[g] = (float) (offset + (double) scale * shift);
+        MemorySegment m = raw(name);
+        long rowBytes = (long) in / e.format.block * e.format.bytes;
+        int perTask = 64;
+        // stored rows decoded in parallel, each into one output column
+        java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
+            GgmlQuants.Row row = new GgmlQuants.Row(in, group);
+            for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
+                GgmlQuants.levels(e.format, m.asSlice(o * rowBytes, rowBytes), in, row);
+                int c = column[o];
+                byte[] q = row.levels();
+                for (int r = 0; r < in; r++) {
+                    levels[r * out + c] = (byte) (q[r] - shift);
+                }
+                float[] s = row.scales();
+                float[] f = row.offsets();
+                for (int g = 0; g < s.length; g++) {
+                    scales[g * out + c] = s[g];
+                    if (shifted) {
+                        offsets[g * out + c] = (float) (f[g] + (double) s[g] * shift);
+                    }
                 }
             }
         });

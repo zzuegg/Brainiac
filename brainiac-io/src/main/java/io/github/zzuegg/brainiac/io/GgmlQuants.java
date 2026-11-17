@@ -20,11 +20,28 @@ final class GgmlQuants {
         void put(int i, int q, float scale, float offset);
     }
 
-    /** A sink that only computes the values, rounding as llama.cpp does. */
-    private record Values(double[] y) implements Sink {
+    /** A sink that keeps the levels of a row and the scale and offset of each of its groups. */
+    record Row(byte[] levels, float[] scales, float[] offsets, int group) implements Sink {
+
+        Row(int length, int group) {
+            this(new byte[length], new float[length / group], new float[length / group], group);
+        }
+
         @Override
         public void put(int i, int q, float scale, float offset) {
-            y[i] = offset == 0 ? q * scale : q * scale + offset;
+            levels[i] = (byte) q;
+            if (i % group == 0) {
+                scales[i / group] = scale;
+                offsets[i / group] = offset;
+            }
+        }
+    }
+
+    /** A sink that only computes the values, rounding as llama.cpp does. */
+    private record Values(double[] y, int base) implements Sink {
+        @Override
+        public void put(int i, int q, float scale, float offset) {
+            y[base + i] = offset == 0 ? q * scale : q * scale + offset;
         }
     }
 
@@ -46,7 +63,15 @@ final class GgmlQuants {
             default -> {
             }
         }
-        levels(format, m, count, new Values(y));
+        // in pieces of whole blocks, in parallel
+        int blocks = Math.toIntExact(count / format.block);
+        int perTask = Math.max(1, 65536 / format.block);
+        java.util.stream.IntStream.range(0, Math.ceilDiv(blocks, perTask)).parallel().forEach(task -> {
+            int first = task * perTask;
+            int n = Math.min(blocks, first + perTask) - first;
+            levels(format, m.asSlice((long) first * format.bytes, (long) n * format.bytes), (long) n * format.block,
+                    new Values(y, first * format.block));
+        });
         return y;
     }
 
