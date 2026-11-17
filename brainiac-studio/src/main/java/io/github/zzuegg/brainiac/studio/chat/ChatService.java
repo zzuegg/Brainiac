@@ -391,6 +391,42 @@ public final class ChatService {
     }
 
     /**
+     * Describes the Hugging Face token the downloader sends, without its value.
+     *
+     * @return {@code {label, source, hint}} of the token used, or null if there is none
+     */
+    public Map<String, Object> hubToken() {
+        List<Keys.Entry> list = keys.list("huggingface");
+        if (list.isEmpty()) {
+            return null;
+        }
+        Keys.Entry e = list.getFirst();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("label", e.label());
+        m.put("source", e.source());
+        m.put("hint", e.hint());
+        m.put("managed", e.label().endsWith("/" + Keys.HF_TOKEN_FILE));
+        return m;
+    }
+
+    /**
+     * Saves a Hugging Face token to {@code ~/.brainiac/hf_token}, which the core's downloader
+     * reads too, or deletes that file.
+     *
+     * @param token the token, or null to delete the file
+     * @return whether a file was written or deleted
+     * @throws IOException if the file cannot be changed
+     */
+    public boolean saveHubToken(String token) throws IOException {
+        listings.remove("huggingface");
+        if (token == null) {
+            return keys.removeFile("huggingface");
+        }
+        keys.saveFile("huggingface", token);
+        return true;
+    }
+
+    /**
      * Describes the providers and their models, and what {@code auto} picks for chat.
      *
      * @param refresh true to ask remote providers again instead of using lists up to ten minutes old
