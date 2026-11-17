@@ -226,8 +226,11 @@ public final class BrainMovie implements TrainingListener {
         int plotW = width - 2 * MARGIN - 2;
         int prevY = -1;
         for (int x = 0; x < plotW; x++) {
-            int i = losses.size() == 1 ? 0 : (int) Math.round(x * (losses.size() - 1) / (double) (plotW - 1));
-            double v = Math.log(Math.max(losses.get(i), 1e-12));
+            double pos = losses.size() == 1 ? 0 : x * (losses.size() - 1) / (double) (plotW - 1);
+            int i = Math.min((int) pos, losses.size() - 1);
+            int j = Math.min(i + 1, losses.size() - 1);
+            double v = (1 - (pos - i)) * Math.log(Math.max(losses.get(i), 1e-12))
+                    + (pos - i) * Math.log(Math.max(losses.get(j), 1e-12));
             double t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
             int y = top + 1 + (int) Math.round((1 - t) * (CURVE_HEIGHT - 3));
             int from = prevY < 0 ? y : Math.min(prevY, y);
