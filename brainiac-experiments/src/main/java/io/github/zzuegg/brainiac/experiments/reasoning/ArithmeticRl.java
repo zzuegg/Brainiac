@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experiments.reasoning;
 
 import io.github.zzuegg.brainiac.experimental.llm.GrpoTrainer;
+import io.github.zzuegg.brainiac.experimental.llm.PpoLmTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.WindowLm;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.SplittableRandom;
@@ -8,8 +9,9 @@ import java.util.SplittableRandom;
 /**
  * Experiment X23, tiny reasoning RL: a randomly initialized {@link WindowLm} learns
  * arithmetic from nothing but a programmatic reward, trained with {@link GrpoTrainer} (or
- * its Dr. GRPO and DAPO variants). The accuracy on all puzzles is measured greedily before
- * and after, showing the "accuracy climbs" curve of DeepSeek-R1-Zero in miniature.
+ * its Dr. GRPO, DAPO, RLOO, ReMax, REINFORCE++ and GSPO variants), or with token-level PPO
+ * and a learned critic ({@link #ppo}). The accuracy on all puzzles is measured greedily
+ * before and after, showing the "accuracy climbs" curve of DeepSeek-R1-Zero in miniature.
  */
 public final class ArithmeticRl {
 
@@ -84,6 +86,32 @@ public final class ArithmeticRl {
         GrpoTrainer.Stats stats = null;
         for (int i = 0; i < steps; i++) {
             stats = grpo.step(task::samplePrompt, task::reward, random);
+        }
+        return new Result(before, accuracy(lm, task), stats == null ? 0 : stats.meanReward());
+    }
+
+    /**
+     * Trains a fresh model with token-level PPO and a learned critic ({@link PpoLmTrainer}),
+     * at the same 128 sampled completions per step as the GRPO runs (16 prompts times 8).
+     *
+     * @param task the puzzles
+     * @param steps PPO steps
+     * @param seed the seed
+     * @return accuracy before and after
+     */
+    public static Result ppo(ArithmeticTask task, int steps, long seed) {
+        WindowLm lm = WindowLm.of(task.vocabSize(), 6, 64, seed);
+        double before = accuracy(lm, task);
+        PpoLmTrainer ppo = PpoLmTrainer.of(lm)
+                .optimizers(Optimizer.adam(3e-3f), Optimizer.adam(3e-3f))
+                .batch(128)
+                .innerEpochs(2)
+                .klCoefficient(0.05f)
+                .completions(task.maxAnswerTokens(), task.eos());
+        SplittableRandom random = new SplittableRandom(seed);
+        PpoLmTrainer.Stats stats = null;
+        for (int i = 0; i < steps; i++) {
+            stats = ppo.step(task::samplePrompt, task::reward, random);
         }
         return new Result(before, accuracy(lm, task), stats == null ? 0 : stats.meanReward());
     }
