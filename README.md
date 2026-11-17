@@ -33,7 +33,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
-| `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
+| `brainiac-train` | Optimizers (Adam/AdamW, Lion, Adafactor, Muon, parameter groups), training loops, checkpoints, EMA, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
@@ -160,6 +160,43 @@ Op cube = new Op() {
 assert GradCheck.check(cube, x).passed();
 Activation cubeActivation = Activation.named("cube", v -> Var.apply(cube, v));
 ```
+
+### Optimizers and long training runs
+
+Optimizers: `sgd`, `momentum`, `adam`, `adamW`, `lion`, `adafactor` (factored second
+moment, optionally with relative steps as T5 trained) and `muon` (orthogonalized momentum for
+matrices). Each matches PyTorch's or transformers' implementation on the same gradients.
+Parameter groups give different parameters different optimizers or settings:
+
+```java
+Optimizer opt = Optimizer.groups(Optimizer.adamW(3e-4f, 0.1f),   // biases, norms, embeddings
+        Optimizer.Group.matrices(Optimizer.muon(0.02f)));           // weight matrices
+```
+
+`TrainingLoop` trains step by step on losses you compute, for models that do not fit
+`Trainer`'s epochs, such as language models. It accumulates gradients over micro-batches,
+clips them, schedules the learning rate per step, keeps an exponential moving average of
+the weights, frees each step's memory, and saves checkpoints that resume exactly:
+
+```java
+TrainingLoop loop = TrainingLoop.of(model.namedParameters(), opt)
+        .accumulate(8)                                    // 8 micro-batches per step
+        .clipGradientNorm(1)
+        .schedule(LearningRateSchedule.warmup(200, LearningRateSchedule.cosine(20_000, 3e-5f)))
+        .ema(0.999f);
+loop.resumeIfPresent(Path.of("checkpoints/run1"));        // weights, optimizer, averages, step
+while (loop.step() < 20_000) {
+    loop.microBatch(() -> lossOn(nextBatch()));
+    if (loop.stepped() && loop.step() % 1000 == 0) {
+        loop.save(Path.of("checkpoints/run1"));
+    }
+}
+loop.ema().swap();                                        // use the averaged weights
+```
+
+`Recompute.apply(block, x, block.parameters())` runs a block without keeping what it
+computes inside and recomputes it in the backward pass (activation checkpointing), so deep
+models train in much less memory for about a third more compute.
 
 ## Images: convolution and pooling
 

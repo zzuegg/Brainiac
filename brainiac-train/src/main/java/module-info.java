@@ -4,5 +4,6 @@
 module io.github.zzuegg.brainiac.train {
     requires transitive io.github.zzuegg.brainiac.nn;
     requires transitive io.github.zzuegg.brainiac.data;
+    requires transitive io.github.zzuegg.brainiac.io;
     exports io.github.zzuegg.brainiac.train;
 }
