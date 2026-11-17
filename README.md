@@ -29,7 +29,6 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | --- | --- |
 | `brainiac-tensor` | Shapes, tensors (float32, float64, float16, bfloat16), tensor math, and the `Backend` SPI |
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
-| `brainiac-backend-opencl` | Optional GPU backend: OpenCL through the Foreign Function and Memory API |
 | `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
@@ -451,8 +450,8 @@ To chat with a downloaded model: `./gradlew :brainiac-examples:run --args="chat
 models/Qwen2.5-0.5B-Instruct --device vulkan"` (a model directory or a `.gguf` file).
 
 The model tests run on the CPU by default; `./gradlew :brainiac-llm:test -PtestDevice=vulkan`
-(or `opencl`, or part of a device name such as `9070`) runs them on that device. Each GPU
-backend offers the one device it picked, so a second GPU also needs the backend's own
+(or part of a device name such as `9070`) runs them on that device. The backend offers the
+one device it picked, so a second GPU also needs the backend's own
 choice, such as `-Dbrainiac.vulkan.device=1` in `JAVA_TOOL_OPTIONS`.
 `-PtestModels=<folder>` also runs real models from Hugging Face found in that folder (model
 directories and `.gguf` files): each must answer a question correctly, and where
@@ -612,8 +611,8 @@ Two switches change how candidates train:
   gets a population axis, each projection is one batched matrix product for all
   candidates, and missing neurons and connections are masked. Each candidate still trains
   exactly as it would alone (same start, batches and element-wise optimizer, its own
-  learning rate folded into its weights). On the CPU OpenCL driver a spiral generation
-  needs 2,265 kernel launches instead of 9,464, with identical scores; it is meant for
+  learning rate folded into its weights). On a GPU backend a spiral generation
+  needed 2,265 kernel launches instead of 9,464, with identical scores; it is meant for
   GPUs, where launches dominate for small networks, and is **on by default when training
   on a GPU** (`--one-by-one` turns it off).
 - `inheritWeights(true)` (`--inherit`) starts every child from its parents' trained
@@ -621,7 +620,7 @@ Two switches change how candidates train:
   id); only new parts start random.
 
 Per-neuron activations are computed as `sum_k f_k(x) * mask_k`, element-wise only, so the
-OpenCL backend fuses them: forward and backward each take one kernel launch, the same as a
+Vulkan backend fuses them: forward and backward each take one kernel launch, the same as a
 single shared activation, even with all seven default activations mixed. On a GPU every
 mixed region computes all seven, used or not, so candidates that differ only in their mix
 of activations share one generated kernel instead of compiling new ones every generation.
@@ -708,71 +707,16 @@ From the command line, with built-in models (`default`, `linear`, `mlp`, `cnn`, 
 
 ## GPU and number formats
 
-Add `brainiac-backend-opencl` to run on a GPU. It calls the graphics driver's OpenCL
-library directly through Java's Foreign Function and Memory API, so there is nothing
-native to build. Allow it to call native code with
-`--enable-native-access=io.github.zzuegg.brainiac.backend.opencl` (or `ALL-UNNAMED` on
-the class path).
-
-```java
-Device gpu = Device.best();          // the GPU if OpenCL finds one, else the CPU
-Model model = ... .build().to(gpu);  // parameters move to device memory
-Trainer.of(model).fit(data);         // batches follow the model
-```
-
-The same kernels run every model: layers are written once against tensor operations,
-and each operation launches one precompiled OpenCL kernel. Memory of unreachable tensors
-is returned when they are garbage collected. System properties:
-`brainiac.opencl.devices` (`gpu` by default, `cpu` or `all` to include OpenCL CPU drivers
-such as PoCL), `brainiac.opencl.device` (index; by default a dedicated graphics card is preferred over
-integrated graphics), `brainiac.opencl.memory` (MB budget), `brainiac.opencl.profile` (`true` times every
-kernel on the device and prints the totals at exit; also `OpenClBackend.profile()`).
-`OpenClBackend.status()` lists the devices found. Buffers of collected tensors are pooled and reused, and shape tables
-are cached on the device, so training does not create device memory on every operation.
-Element-wise operations are fused: instead of one kernel per add, multiply or activation,
-the backend records chains of them and generates one OpenCL C kernel per chain when the
-values are needed (by a matmul, a reduction or a download); a reduction also computes its
-input chain on the fly (long rows are split across a work-group), and reductions of the same
-shape that are needed at the same time (such as a layer's gradient sums) run as one kernel. A reduction that reads
-another of the same rows (a variance reading its mean, a softmax sum reading its maximum) runs as a second
-pass of that kernel. A chain on a matrix
-product (bias, activation, optimizer arithmetic) becomes the matmul kernel's epilogue.
-Convolution and pooling windows are never unrolled into memory: the matmul computes each window
-value as it loads it (forward and for the weight gradient), and a pooling reduction as it reduces;
-the backward pass sums windows back into the image (col2im) and finds pooling maxima (argmax) inside
-generated kernels too, together with the chains around them.
-An optimizer step runs as one kernel for all parameters, writing the new values and the
-optimizer state together (`Tensor.evaluate` asks for this from any code).
-Filled tensors and scalar operands are kernel arguments, so a value that changes every step
-neither needs a buffer nor a new kernel, and a result gets a device buffer only when it is
-actually stored (most values in a chain never are).
-Transposes, slices and
-other strided copies are not copied either: they are read in place by the chain or matmul
-that uses them. This works for any model, without per-layer kernels, and the
-generated code is plain OpenCL C 1.2, so it runs on every vendor's driver. Shapes and
-strides are kernel arguments, so a training loop needs a few dozen generated kernels.
-They compile in the background (the operations run one by one until then) and are cached
-on disk, so later runs start at full speed. Results are the same with and without fusion.
-Properties: `brainiac.opencl.fusion` (`false` turns it off), `brainiac.opencl.fusion.async`
-(`false` compiles before running), `brainiac.opencl.cache` (directory, default
-`~/.cache/brainiac/opencl`, or `none`), `brainiac.opencl.flushEvery` (launches between
-explicit queue flushes; some drivers otherwise hold commands back and leave the GPU idle.
-Default 4; `-1` adapts: every launch right after the host waited, then doubling up to 64), `brainiac.opencl.fusion.store` (`true` also stores intermediates so chains
-can span other kernels: fewer launches, but slower on some drivers).
-Without an OpenCL GPU the backend reports itself unavailable and its tests are skipped;
-CI runs them on PoCL.
-
-### Vulkan
-
-`brainiac-backend-vulkan` is a second GPU backend, on Vulkan compute shaders called through
+Add `brainiac-backend-vulkan` to run on a GPU. It runs Vulkan compute shaders called through
 LWJGL (its only dependency, with LWJGL's shaderc bindings; the natives jars for the build
 platform are picked automatically). It needs a Vulkan 1.2 driver with buffer device addresses and 64-bit shader
 integers, which current AMD, NVIDIA and Intel drivers have. Allow LWJGL to call native code
 with `--enable-native-access=org.lwjgl`.
 
 ```java
-Device vulkan = Device.available().stream()
-        .filter(d -> d.name().startsWith("vulkan")).findFirst().orElseThrow();
+Device gpu = Device.best();          // the GPU if Vulkan finds one, else the CPU
+Model model = ... .build().to(gpu);  // parameters move to device memory
+Trainer.of(model).fit(data);         // batches follow the model
 ```
 
 Every operation is one precompiled compute shader (GLSL in `src/main/glsl`, SPIR-V in the
@@ -788,7 +732,7 @@ the shaders' own exp and log, since GLSL has none for doubles) where the device 
 16-bit storage buffers (AMD's LLPC compiler crashes on one float64 shader switching over every
 function, so float64 unary operations and activations have one shader each).
 
-Element-wise operations in float32 and float64 are fused, as on OpenCL: a result is recorded
+Element-wise operations are fused: a result is recorded
 instead of computed, later element-wise operations build on it, and when something else needs
 the values (a matmul, a reduction, a download) the whole chain becomes one GLSL shader,
 compiled at run time with shaderc. Transposes, slices and broadcasts are part of the chain and
@@ -803,16 +747,14 @@ System properties: `brainiac.vulkan.devices`
 validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
 `brainiac.vulkan.statistics` (`true` prints the counts below at exit).
 `VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
-barriers and submits. The examples take `--device vulkan` or `--device opencl` to pick one
-GPU backend when both are present. CI runs the tests on lavapipe.
+barriers and submits. The examples take `--device vulkan` (or `gpu`) to run there. CI runs the tests on lavapipe.
+Without a Vulkan driver the backend reports itself unavailable and its tests are skipped.
 
-On an RX 9070 XT (2 epochs of MNIST; OpenCL in brackets): the MLP trains in 1.7 s (3.0 s)
-and infers 600k samples/s (90-117k); the CNN trains in 3.2 s (3.1 s) and infers 130k
-samples/s (158-227k). A 2048 x 2048 matmul reaches 0.9-1.1 TFLOP/s (1.8-1.9). Vulkan wins
-where many small operations dominate; OpenCL's fused kernels win on large matmuls and
-convolutions. With fusion, a long element-wise chain over 4M values runs at
-2,572 M elements/s (1,237 without; OpenCL's fused chain 849), MNIST inference gains 35-60%,
-and a transformer on Shakespeare trains 3 epochs in 10.8 s (OpenCL 17.5 s).
+On an RX 9070 XT: the MLP trains 2 epochs of MNIST in 1.7 s; a 4096 x 4096 matmul reaches
+6.5 TFLOP/s in float32 and up to 25 TFLOP/s in float16 on cooperative matrices; a
+transformer on Shakespeare trains 3 epochs in 10.7 s; Qwen2.5-0.5B generates 85-95 tokens/s
+in float16. (An OpenCL backend existed until it was retired in favour of this one, which
+was faster on every measure.)
 
 Tensors and models come in four number formats:
 
@@ -825,7 +767,7 @@ Trainer.of(model).mixedPrecision(DType.FLOAT16);      // compute in float16, flo
 
 Mixed types promote to the wider one, gradients keep their value's format, and saved
 models keep each tensor's format. On the CPU, float32 uses the fast kernels and the other
-formats are computed in double precision; on OpenCL, float64 needs `cl_khr_fp64` and
+formats are computed in double precision; on the GPU, float64 needs `shaderFloat64` and
 float16/bfloat16 are stored in 16 bits and computed in float32.
 
 ```
@@ -857,8 +799,8 @@ normalization and activation parameters stay in floating point. A quantized mode
 computing in its own number format with the rounded values, so it runs unchanged on the
 CPU and the GPU. To also save memory and time, pack it: dense-like weights (dense,
 attention, recurrent) then stay in memory as their 8- or 4-bit levels plus scales
-(`Tensor.packed`), and matrix products read the levels directly, on the CPU (SIMD), in
-OpenCL and in Vulkan. That pays off when generating text one token at a time, which waits
+(`Tensor.packed`), and matrix products read the levels directly, on the CPU (SIMD) and
+in Vulkan. That pays off when generating text one token at a time, which waits
 on reading the weights:
 
 ```java
