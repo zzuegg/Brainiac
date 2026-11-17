@@ -8,6 +8,8 @@ import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.QuantizedRows;
+import io.github.zzuegg.brainiac.tensor.spi.RowQuantizedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
@@ -446,6 +448,14 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
+        if (storage instanceof QRows r) {
+            r.levels().release();
+            r.scales().release();
+            return;
+        }
+        if (storage instanceof QuantizedRows) {
+            return;
+        }
         if (storage instanceof Packed p) {
             if (p.host() == null) {   // quantized here, such as optimizer state: freed now
                 p.levels().release();
@@ -1158,6 +1168,97 @@ public final class VulkanBackend implements Backend {
         done(xv, vs(v));
     }
 
+    // ------------------------------------------------------------------ 8-bit rows
+
+    /** Rows of 8-bit levels on the device (raw bytes read as words) with a float scale per row. */
+    private record QRows(int rows, int cols, DType dtype, VkStorage levels, VkStorage scales)
+            implements RowQuantizedStorage {
+
+        @Override
+        public long size() {
+            return (long) rows * cols;
+        }
+
+        @Override
+        public long bytes() {
+            return levels.bytes() + scales.bytes();
+        }
+    }
+
+    @Override
+    public synchronized RowQuantizedStorage allocateQuantizedRows(long rows, int cols, DType dtype) {
+        if (cols % 4 != 0 || cols > 4 * GROUP_SIZE || rows * cols / 4 > Integer.MAX_VALUE || rows > Integer.MAX_VALUE) {
+            return Backend.super.allocateQuantizedRows(rows, cols, dtype);
+        }
+        VkStorage levels = raw(Math.max(1, rows * cols / 4), null);
+        VkStorage scales = raw(Math.max(1, rows), DType.FLOAT32, null);
+        fillNow(levels, 0);   // not deferred: the shaders below write these buffers directly
+        fillNow(scales, 0);
+        return new QRows((int) rows, cols, dtype, levels, scales);
+    }
+
+    @Override
+    public synchronized void writeQuantizedRows(RowQuantizedStorage target, Storage values, long outer,
+            int blockRows, int sourceRows, int start) {
+        if (!(target instanceof QRows t)) {
+            Backend.super.writeQuantizedRows(target, values, outer, blockRows, sourceRows, start);
+            return;
+        }
+        VkStorage x = vs(values);
+        eager(x);
+        long rows = outer * sourceRows;
+        if (rows == 0) {
+            return;
+        }
+        vk.push().putLong(x.address()).putLong(t.levels().address()).putLong(t.scales().address())
+                .putInt(t.cols() / 4).putInt(blockRows).putInt(sourceRows).putInt(start).putInt(Math.toIntExact(rows));
+        vk.dispatch(shader("quantize_rows", x.dtype), rows, new VkContext.Slot[] {t.levels().slot(),
+                t.scales().slot()}, x.slot());
+    }
+
+    private void unpackRows(QRows r, VkStorage z) {
+        eager(z);
+        vk.push().putLong(r.levels().address()).putLong(r.scales().address()).putLong(z.address()).putInt(r.cols())
+                .putInt(Math.toIntExact(r.size()));
+        vk.dispatch(shader("unpack_rows", z.dtype), groups(r.size()), z.slot(), r.levels().slot(), r.scales().slot());
+    }
+
+    @Override
+    public boolean hasQuantizedAttention(int[] shape, DType type) {
+        return hasAttention(shape, type, false) && shape[5] % 4 == 0 && shape[6] % 4 == 0;
+    }
+
+    @Override
+    public synchronized void attentionQuantized(Storage q, RowQuantizedStorage k, RowQuantizedStorage v, int[] shape,
+            float scale, boolean causal, Storage bias, long[] strides, Storage out, Storage lse) {
+        VkStorage z = vs(out);
+        if (!(k instanceof QRows qk && v instanceof QRows qv) || !hasQuantizedAttention(shape, z.dtype)) {
+            Backend.super.attentionQuantized(q, k, v, shape, scale, causal, bias, strides, out, lse);
+            return;
+        }
+        VkStorage l = vs(lse);
+        eager(vs(q), z, l);
+        VkStorage xq = as(vs(q), z.dtype);
+        VkStorage xb = bias == null ? xq : as(vs(bias), z.dtype);   // no bias: an address never read
+        if (bias != null) {
+            eager(vs(bias));
+        }
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        vk.push().putLong(xq.address()).putLong(qk.levels().address()).putLong(qk.scales().address())
+                .putLong(qv.levels().address()).putLong(qv.scales().address()).putLong(z.address())
+                .putLong(l.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+                .putInt(shape[4]).putInt(shape[5]).putInt(shape[6]).putFloat(scale).putInt(causal ? 1 : 0)
+                .putInt((int) rows).putInt(bias != null ? 1 : 0).putInt(Math.toIntExact(strides[0]))
+                .putInt(Math.toIntExact(strides[1])).putInt(Math.toIntExact(strides[2]))
+                .putInt(Math.toIntExact(strides[3]));
+        vk.dispatch(shader("attention_q8", z.dtype), rows, new VkContext.Slot[] {z.slot(), l.slot()}, xq.slot(),
+                qk.levels().slot(), qk.scales().slot(), qv.levels().slot(), qv.scales().slot(), xb.slot());
+        if (bias != null) {
+            done(xb, vs(bias));
+        }
+        done(xq, vs(q));
+    }
+
     /** The longest power-of-two transform one work group computes in shared memory (fft.comp). */
     private static final int FFT_MAX = 2048;
 
@@ -1300,6 +1401,14 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void unpack(PackedStorage packed, Storage out) {
+        if (packed instanceof QRows r) {
+            unpackRows(r, vs(out));
+            return;
+        }
+        if (packed instanceof QuantizedRows) {
+            Backend.super.unpack(packed, out);
+            return;
+        }
         Packed p = packed(packed);
         VkStorage z = vs(out);
         eager(z);

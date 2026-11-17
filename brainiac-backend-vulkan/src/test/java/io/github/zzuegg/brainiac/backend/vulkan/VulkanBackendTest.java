@@ -484,6 +484,54 @@ class VulkanBackendTest {
         }
     }
 
+    /** 8-bit rows: written in pieces, read back and attended over as the CPU does. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 1, 70, 16, 16", "2, 4, 4, 6, 300, 64, 32",
+        "1, 2, 1, 3, 5, 8, 8"})
+    void eightBitRowsMatchTheCpu(int b, int h, int kvh, int tq, int tk, int dk, int dv) {
+        Tensor q = random(51, b, h, tq, dk);
+        Tensor k = random(52, b, kvh, tk, dk);
+        Tensor v = random(53, b, kvh, tk, dv);
+        float[] mask = new float[b * tq * tk];
+        SplittableRandom r = new SplittableRandom(5);
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = r.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) r.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        int split = tk / 3;
+        Tensor kc = Tensor.quantizedRows(k.shape(), DType.FLOAT32, CPU);
+        Tensor vc = Tensor.quantizedRows(v.shape(), DType.FLOAT32, CPU);
+        kc.write(2, 0, k.slice(2, 0, split));
+        kc.write(2, split, k.slice(2, split, tk));
+        vc.write(2, 0, v);
+        float[] kValues = kc.unpacked().toArray();
+        assertArrayEquals(k.toArray(), kValues, 0.01f);   // within half a level of 1/127 of the largest
+        float[] expected = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(q), Var.of(kc), Var.of(vc), bias,
+                scale, 0, null).value().toArray();
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor kg = Tensor.quantizedRows(k.shape(), type, gpu);
+            Tensor vg = Tensor.quantizedRows(v.shape(), type, gpu);
+            assertTrue(kg.isQuantizedRows());
+            assertEquals(k.size() + 4L * k.size() / dk, kg.bytes());
+            kg.write(2, 0, k.slice(2, 0, split).to(type).to(gpu));
+            kg.write(2, split, k.slice(2, split, tk).to(type).to(gpu));
+            vg.write(2, 0, v.to(type).to(gpu));
+            // float16 inputs may round to the neighbouring level
+            float close = type == DType.FLOAT32 ? 1e-6f : 1.1f / 127;
+            assertArrayEquals(kValues, kg.unpacked().toArray(), close, type.toString());
+            assertArrayEquals(kValues, kg.to(CPU).unpacked().toArray(), close, type.toString());
+            Tensor qg = q.to(type).to(gpu);
+            assertTrue(Tensor.hasAttentionWithBias(qg, kg, vg));
+            float[] fused = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(qg), Var.of(kg), Var.of(vg),
+                    bias.to(gpu), scale, 0, null).value().toArray();
+            assertArrayEquals(expected, fused, type == DType.FLOAT32 ? 1e-5f : 3e-2f, type.toString());
+        }
+    }
+
     /** One kernel for RMSNorm, against the operations Llama builds it from; the input a pending sum. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 576", "5, 2048", "3, 100", "2, 7"})

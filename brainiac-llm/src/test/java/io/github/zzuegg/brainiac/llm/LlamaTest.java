@@ -272,6 +272,44 @@ class LlamaTest {
     }
 
     @Test
+    void anEightBitCacheStaysCloseToTheFullOne() {
+        Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 14, DEVICE, DType.FLOAT32);
+        LanguageModel.State full = model.newState(2);
+        LanguageModel.State small = model.quantizeCache(true).newState(2);
+        model.quantizeCache(false);
+        java.util.SplittableRandom r = new java.util.SplittableRandom(15);
+        int[][] prompt = new int[2][12];
+        for (int[] row : prompt) {
+            for (int i = 0; i < row.length; i++) {
+                row[i] = r.nextInt(40);
+            }
+        }
+        boolean[][] padding = new boolean[2][12];
+        padding[1][0] = padding[1][1] = true;
+        float[] a = model.next(full, prompt, padding).toArray();
+        float[] b = model.next(small, prompt, padding).toArray();
+        org.junit.jupiter.api.Assertions.assertFalse(java.util.Arrays.equals(a, b));   // the levels are read, not the values
+        for (int step = 0; step < 80; step++) {
+            double largest = 0;
+            double error = 0;
+            for (int i = 0; i < a.length; i++) {
+                largest = Math.max(largest, Math.abs(a[i]));
+                error = Math.max(error, Math.abs(a[i] - b[i]));
+            }
+            // levels of 1/127 of each row's largest value: errors well under a percent
+            assertTrue(error < 0.01 * largest, "step " + step + ": " + error + " of " + largest);
+            if (step == 40) {
+                small = small.select(new int[] {1, 0});
+                full = full.select(new int[] {1, 0});
+            }
+            int[][] next = {{r.nextInt(40)}, {r.nextInt(40)}};
+            a = model.next(full, next, null).toArray();
+            b = model.next(small, next, null).toArray();
+        }
+        assertEquals(full.length(), small.length());
+    }
+
+    @Test
     void selectReordersRows() {
         Llama model = Llama.random(LlamaConfig.small(40, 32, 2, 4, 2), 4, DEVICE, DType.FLOAT32);
         LanguageModel.State s = model.newState(2);

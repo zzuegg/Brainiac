@@ -380,9 +380,12 @@ public interface Backend {
      * @param out {@code rows * cols} values of any type this backend supports
      */
     default void unpack(PackedStorage packed, Storage out) {
-        PackedMatrix m = unpackToHost(packed);
-        float[] values = new float[Math.toIntExact(m.size())];
-        m.dequantize(values);
+        float[] values = new float[Math.toIntExact(packed.size())];
+        if (packed instanceof QuantizedRows rows) {
+            rows.dequantize(values);
+        } else {
+            unpackToHost(packed).dequantize(values);
+        }
         Storage host = upload(values);
         convert(host, out);
         release(host);
@@ -406,6 +409,72 @@ public interface Backend {
         unpack(b, w);
         matmul(a, w, m, k, n, out);
         // not released here: a backend that defers work may not have read it yet
+    }
+
+    // ---------------------------------------------------------------- rows quantized to 8 bits
+
+    /**
+     * Allocates rows kept as 8-bit levels with a scale per row (see {@link QuantizedRows}),
+     * all zero. The default keeps them in Java memory.
+     *
+     * @param rows the rows
+     * @param cols the values per row
+     * @param dtype the type the values are read as
+     * @return the storage
+     */
+    default RowQuantizedStorage allocateQuantizedRows(long rows, int cols, DType dtype) {
+        return new QuantizedRows(rows, cols, dtype);
+    }
+
+    /**
+     * Quantizes rows into storage from {@link #allocateQuantizedRows}: for each of
+     * {@code outer} blocks of {@code blockRows} rows there, rows {@code [o * sourceRows,
+     * (o + 1) * sourceRows)} of {@code values} go to rows {@code start ..} of block {@code o}.
+     *
+     * @param target the quantized rows
+     * @param values the source rows, of any type
+     * @param outer the blocks
+     * @param blockRows rows per block in {@code target}
+     * @param sourceRows rows per block in {@code values}
+     * @param start the first row written in each block
+     */
+    default void writeQuantizedRows(RowQuantizedStorage target, Storage values, long outer, int blockRows,
+            int sourceRows, int start) {
+        if (!(target instanceof QuantizedRows rows)) {
+            throw unsupported("writing " + target);
+        }
+        rows.write(download(values), outer, blockRows, sourceRows, start);
+    }
+
+    /**
+     * Whether {@link #attentionQuantized} runs for these sizes.
+     *
+     * @param shape {@code batch, heads, kvHeads, tq, tk, dk, dv}
+     * @param type the queries' type
+     * @return whether to call it
+     */
+    default boolean hasQuantizedAttention(int[] shape, DType type) {
+        return false;
+    }
+
+    /**
+     * {@link #attention(Storage, Storage, Storage, int[], float, boolean, Storage, long[], Storage, Storage)}
+     * reading keys and values from {@linkplain #allocateQuantizedRows quantized rows} directly.
+     *
+     * @param q the queries
+     * @param k the keys, rows of {@code dk}
+     * @param v the values, rows of {@code dv}
+     * @param shape {@code batch, heads, kvHeads, tq, tk, dk, dv}
+     * @param scale the score scale
+     * @param causal whether to mask later keys as well
+     * @param bias the bias, of the output's type
+     * @param strides the bias strides, in elements
+     * @param out {@code [batch, heads, tq, dv]}
+     * @param lse {@code [batch, heads, tq]}
+     */
+    default void attentionQuantized(Storage q, RowQuantizedStorage k, RowQuantizedStorage v, int[] shape,
+            float scale, boolean causal, Storage bias, long[] strides, Storage out, Storage lse) {
+        throw unsupported("attention over quantized rows");
     }
 
     // ---------------------------------------------------------------- optional operations

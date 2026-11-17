@@ -1,0 +1,111 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "packed.glsl"
+// attention.comp with keys and values read from 8-bit rows (Backend.attentionQuantized):
+// a key's dot product is taken over its levels and scaled once; each weight is scaled by
+// its value row's scale before the values' levels are summed. Head sizes are multiples of 4.
+// Fused scaled dot-product attention (Backend.attention), forward only: one work group per
+// query row, taking the keys 256 at a time. Each invocation scores one key of a block; the
+// block's maximum and sum come from shared-memory reductions; invocation d keeps output
+// component d, rescaled online as the running maximum grows (as flash attention does).
+// Computed in float32 whatever the format. An optional bias (masks) is added to the scores.
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P {
+    In q; InWords k; InFloats ks; InWords v; InFloats vs; Buf z; Buf lse; In bias;
+    uint heads; uint kvHeads; uint tq; uint tk; uint dk; uint dv; float scale; uint causal; uint rows;
+    uint hasBias; uint sb; uint sh; uint si; uint sj;
+} p;
+shared float qs[GROUP];
+shared float weights[GROUP];
+shared float red[GROUP];
+
+float reduceMax(float x, uint tid) {
+    red[tid] = x;
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red[tid] = max(red[tid], red[tid + s]);
+        }
+        barrier();
+    }
+    float r = red[0];
+    barrier();
+    return r;
+}
+
+float reduceSum(float x, uint tid) {
+    red[tid] = x;
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red[tid] += red[tid + s];
+        }
+        barrier();
+    }
+    float r = red[0];
+    barrier();
+    return r;
+}
+
+void main() {
+    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (row >= p.rows) return;   // whole work groups: barriers stay uniform
+    uint tid = gl_LocalInvocationID.x;
+    uint i = row % p.tq;
+    uint h = (row / p.tq) % p.heads;
+    uint b = row / (p.tq * p.heads);
+    uint kvh = h / (p.heads / p.kvHeads);
+    uint kBase = (b * p.kvHeads + kvh) * p.tk * p.dk;
+    uint vBase = (b * p.kvHeads + kvh) * p.tk * p.dv;
+    if (tid < p.dk) {
+        qs[tid] = float(LOAD(p.q, row * p.dk + tid));
+    }
+    barrier();
+    int seen = p.causal != 0 ? clamp(int(i + p.tk) - int(p.tq) + 1, 0, int(p.tk)) : int(p.tk);
+    uint last = uint(seen);
+    float m = uintBitsToFloat(0xff800000u);
+    float l = 0;
+    float o = 0;
+    for (uint c = 0; c < last; c += GROUP) {
+        uint j = c + tid;
+        float s = uintBitsToFloat(0xff800000u);
+        if (j < last) {
+            float dot = 0;
+            uint kr = kBase + j * p.dk;
+            for (uint d = 0; d < p.dk; d += 4) {
+                int w = int(p.k.v[(kr + d) >> 2]);
+                dot = fma(qs[d], float(bitfieldExtract(w, 0, 8)), dot);
+                dot = fma(qs[d + 1], float(bitfieldExtract(w, 8, 8)), dot);
+                dot = fma(qs[d + 2], float(bitfieldExtract(w, 16, 8)), dot);
+                dot = fma(qs[d + 3], float(bitfieldExtract(w, 24, 8)), dot);
+            }
+            s = dot * p.ks.v[kr / p.dk] * p.scale;
+            if (p.hasBias != 0) {
+                s += float(LOAD(p.bias, b * p.sb + h * p.sh + i * p.si + j * p.sj));
+            }
+        }
+        float mNew = max(m, reduceMax(s, tid));
+        float w = j < last ? exp(s - mNew) : 0.0;
+        weights[tid] = j < last ? w * p.vs.v[vBase / p.dv + j] : 0.0;
+        float alpha = exp(m - mNew);
+        l = l * alpha + reduceSum(w, tid);   // its barriers also publish weights (scaled by the values')
+        if (tid < p.dv) {
+            float acc = o * alpha;
+            uint n = min(uint(GROUP), last - c);
+            uint vr = vBase + c * p.dv + tid;
+            for (uint jj = 0; jj < n; jj++) {
+                acc = fma(weights[jj], float(packed_byte(p.v, vr + jj * p.dv)), acc);
+            }
+            o = acc;
+        }
+        m = mNew;
+        barrier();   // weights are rewritten by the next block
+    }
+    if (tid < p.dv) {
+        STORE(p.z, row * p.dv + tid, ACC(l > 0 ? o / l : 0.0));
+    }
+    if (tid == 0) {
+        STORE(p.lse, row, ACC(l > 0 ? m + log(l) : uintBitsToFloat(0xff800000u)));
+    }
+}
