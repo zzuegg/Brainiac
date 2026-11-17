@@ -444,6 +444,31 @@ class VulkanBackendTest {
         }
     }
 
+    /** One kernel for RMSNorm, against the operations Llama builds it from; the input a pending sum. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1, 576", "5, 2048", "3, 100", "2, 7"})
+    void rmsNormMatchesItsOperations(int rows, int cols) {
+        Tensor a = random(41, rows, cols);
+        Tensor b = random(42, rows, cols);
+        Tensor w = random(43, cols);
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Var x = Var.of(a.to(type).add(b.to(type)));
+            Var x32 = x.to(DType.FLOAT32);
+            float[] expected = x32.div(x32.square().mean(1, true).add(1e-5f).sqrt()).to(type).mul(Var.of(w.to(type)))
+                    .value().toArray();
+            Tensor xg = a.to(type).to(gpu).add(b.to(type).to(gpu));
+            assertTrue(xg.hasRmsNorm());
+            float[] fused = xg.rmsNorm(w.to(gpu), 1e-5f).toArray();
+            float tolerance = type == DType.FLOAT32 ? 1e-5f : type == DType.FLOAT16 ? 4e-3f : 3e-2f;
+            for (int i = 0; i < fused.length; i++) {
+                assertEquals(expected[i], fused[i], tolerance * (1 + Math.abs(expected[i])), type + " at " + i);
+            }
+        }
+    }
+
     /** Float16 products: on cooperative matrices where the device has them (see the status). */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 16, 16, 16", "1, 64, 64, 64", "1, 17, 33, 70", "3, 100, 48, 130",

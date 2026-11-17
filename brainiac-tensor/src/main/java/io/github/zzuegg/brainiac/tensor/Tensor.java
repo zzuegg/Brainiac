@@ -1313,6 +1313,37 @@ public final class Tensor {
     }
 
     /**
+     * Whether {@link #rmsNorm} runs as one kernel on this tensor's backend.
+     *
+     * @return whether to call it
+     */
+    public boolean hasRmsNorm() {
+        return backend().hasRmsNorm(dtype());
+    }
+
+    /**
+     * RMSNorm over the last axis in one kernel, for inference:
+     * {@code (x / sqrt(mean(x^2) + eps)) * weight}, computed in float32 and rounded to this
+     * tensor's type before the scale, as the unfused operations do.
+     *
+     * @param weight the scale {@code [last]}, converted to this tensor's type if needed
+     * @param eps added to the mean square
+     * @return the normalized tensor, of this shape and type
+     * @throws UnsupportedOperationException if the backend has no such kernel
+     */
+    public Tensor rmsNorm(Tensor weight, float eps) {
+        sameDevice(weight);
+        int cols = shape.dim(shape.rank() - 1);
+        if (weight.size() != cols) {
+            throw new IllegalArgumentException("weight " + weight.shape + " for rows of " + cols);
+        }
+        Tensor w = weight.dtype() == dtype() ? weight : weight.to(dtype());
+        Storage out = backend().allocateUninitialized(size(), dtype());
+        backend().rmsNorm(storage(), w.storage(), size() / cols, cols, eps, out);
+        return new Tensor(shape, device, out);
+    }
+
+    /**
      * Whether {@link #attention(Tensor, Tensor, Tensor, Tensor, float, boolean)} runs fused on
      * the backend of {@code q} for these arrays.
      *

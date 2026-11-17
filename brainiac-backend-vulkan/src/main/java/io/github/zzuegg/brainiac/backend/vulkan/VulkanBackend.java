@@ -1051,6 +1051,27 @@ public final class VulkanBackend implements Backend {
         done(xv, vs(v));
     }
 
+    @Override
+    public boolean hasRmsNorm(DType type) {
+        return type != DType.FLOAT64 && supports(type);
+    }
+
+    @Override
+    public synchronized void rmsNorm(Storage x, Storage weight, long rows, int cols, float eps, Storage out) {
+        VkStorage z = vs(out);
+        if (!hasRmsNorm(z.dtype)) {
+            throw new UnsupportedOperationException("fused RMSNorm: " + z.dtype);
+        }
+        eager(vs(x), vs(weight), z);
+        VkStorage xx = as(vs(x), z.dtype);
+        VkStorage xw = as(vs(weight), z.dtype);
+        vk.push().putLong(xx.address()).putLong(xw.address()).putLong(z.address()).putInt(Math.toIntExact(rows))
+                .putInt(cols).putFloat(eps);
+        vk.dispatch(shader("rms_norm", z.dtype), rows, z.slot(), xx.slot(), xw.slot());
+        done(xx, vs(x));
+        done(xw, vs(weight));
+    }
+
     /** The work group size of the shaders ({@code GROUP} in common.glsl). */
     private static final int GROUP_SIZE = 256;
 

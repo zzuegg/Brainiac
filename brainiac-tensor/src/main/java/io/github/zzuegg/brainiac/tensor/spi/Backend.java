@@ -493,6 +493,33 @@ public interface Backend {
     }
 
     /**
+     * Whether {@link #rmsNorm} has a kernel for this type.
+     *
+     * @param type the element type
+     * @return whether to call it
+     */
+    default boolean hasRmsNorm(DType type) {
+        return false;
+    }
+
+    /**
+     * RMSNorm of each row in one pass, for inference:
+     * {@code out = round(x / sqrt(mean(x^2) + eps)) * weight}, computed in float32, the
+     * normalized value rounded to the storage type before the scale. All arrays are
+     * contiguous and of one type.
+     *
+     * @param x {@code [rows, cols]}
+     * @param weight {@code [cols]}
+     * @param rows the rows
+     * @param cols the values per row
+     * @param eps added to the mean square
+     * @param out {@code [rows, cols]}
+     */
+    default void rmsNorm(Storage x, Storage weight, long rows, int cols, float eps, Storage out) {
+        throw unsupported("fused RMSNorm");
+    }
+
+    /**
      * Whether {@link #attention} (and, when {@code backward}, {@link #attentionBackward}) are
      * worth using for these sizes; callers take another path when not.
      *
