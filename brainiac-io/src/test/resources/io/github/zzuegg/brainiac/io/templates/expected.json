@@ -1,0 +1,381 @@
+{
+ "messages": {
+  "basic": [
+   {
+    "role": "system",
+    "content": "You are terse."
+   },
+   {
+    "role": "user",
+    "content": "  Hi there  "
+   },
+   {
+    "role": "assistant",
+    "content": "Hello."
+   },
+   {
+    "role": "user",
+    "content": "Bye ünïcode 🙂"
+   }
+  ],
+  "nosys": [
+   {
+    "role": "user",
+    "content": "Q1"
+   },
+   {
+    "role": "assistant",
+    "content": "A1"
+   },
+   {
+    "role": "user",
+    "content": "Q2"
+   }
+  ],
+  "tools": [
+   {
+    "role": "user",
+    "content": "Weather in Paris?"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "function": {
+       "name": "get_weather",
+       "arguments": {
+        "city": "Paris",
+        "unit": "c"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "content": "{\"temp\": 21}"
+   },
+   {
+    "role": "assistant",
+    "content": "21 degrees."
+   }
+  ]
+ },
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "get_weather",
+    "description": "Get the weather",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "city": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "city"
+     ]
+    }
+   }
+  }
+ ],
+ "cases": [
+  {
+   "template": "chatml",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\n  Hi there  <|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye ünïcode 🙂<|im_end|>\n"
+  },
+  {
+   "template": "chatml",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\n  Hi there  <|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye ünïcode 🙂<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "chatml",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<|im_start|>user\nQ1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n"
+  },
+  {
+   "template": "chatml",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<|im_start|>user\nQ1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "chatml",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<|im_end|>\n<|im_start|>tool\n{\"temp\": 21}<|im_end|>\n<|im_start|>assistant\n21 degrees.<|im_end|>\n"
+  },
+  {
+   "template": "chatml",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<|im_end|>\n<|im_start|>tool\n{\"temp\": 21}<|im_end|>\n<|im_start|>assistant\n21 degrees.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "llama3",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s><|start_header_id|>system<|end_header_id|>\n\nYou are terse.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nHi there<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nHello.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nBye ünïcode 🙂<|eot_id|>"
+  },
+  {
+   "template": "llama3",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s><|start_header_id|>system<|end_header_id|>\n\nYou are terse.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nHi there<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nHello.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nBye ünïcode 🙂<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+  },
+  {
+   "template": "llama3",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s><|start_header_id|>user<|end_header_id|>\n\nQ1<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nA1<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nQ2<|eot_id|>"
+  },
+  {
+   "template": "llama3",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s><|start_header_id|>user<|end_header_id|>\n\nQ1<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nA1<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nQ2<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+  },
+  {
+   "template": "llama3",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s><|start_header_id|>user<|end_header_id|>\n\nWeather in Paris?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|eot_id|><|start_header_id|>tool<|end_header_id|>\n\n{\"temp\": 21}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n21 degrees.<|eot_id|>"
+  },
+  {
+   "template": "llama3",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s><|start_header_id|>user<|end_header_id|>\n\nWeather in Paris?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|eot_id|><|start_header_id|>tool<|end_header_id|>\n\n{\"temp\": 21}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n21 degrees.<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+  },
+  {
+   "template": "mistral",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s> [INST] You are terse.\n\n  Hi there   [/INST] Hello.</s> [INST] Bye ünïcode 🙂 [/INST]"
+  },
+  {
+   "template": "mistral",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s> [INST] You are terse.\n\n  Hi there   [/INST] Hello.</s> [INST] Bye ünïcode 🙂 [/INST]"
+  },
+  {
+   "template": "mistral",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s> [INST] Q1 [/INST] A1</s> [INST] Q2 [/INST]"
+  },
+  {
+   "template": "mistral",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s> [INST] Q1 [/INST] A1</s> [INST] Q2 [/INST]"
+  },
+  {
+   "template": "mistral",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": false,
+   "error": "After the optional system message, conversation roles must alternate user/assistant/user/assistant/..."
+  },
+  {
+   "template": "mistral",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": false,
+   "error": "After the optional system message, conversation roles must alternate user/assistant/user/assistant/..."
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\n  Hi there  <|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye ünïcode 🙂<|im_end|>\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": true,
+   "text": "<|im_start|>system\nYou are terse.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\n  Hi there  <|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye ünïcode 🙂<|im_end|>\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\n  Hi there  <|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye ünïcode 🙂<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": true,
+   "text": "<|im_start|>system\nYou are terse.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\n  Hi there  <|im_end|>\n<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\nBye ünïcode 🙂<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nQ1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": true,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nQ1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nQ1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": true,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nQ1<|im_end|>\n<|im_start|>assistant\nA1<|im_end|>\n<|im_start|>user\nQ2<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"unit\": \"c\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n{\"temp\": 21}\n</tool_response><|im_end|>\n<|im_start|>assistant\n21 degrees.<|im_end|>\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": true,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"unit\": \"c\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n{\"temp\": 21}\n</tool_response><|im_end|>\n<|im_start|>assistant\n21 degrees.<|im_end|>\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"unit\": \"c\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n{\"temp\": 21}\n</tool_response><|im_end|>\n<|im_start|>assistant\n21 degrees.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "qwen-tools",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": true,
+   "text": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Get the weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"unit\": \"c\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\n{\"temp\": 21}\n</tool_response><|im_end|>\n<|im_start|>assistant\n21 degrees.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  {
+   "template": "gemma-ns",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s><start_of_turn>user\nYou are terse.\n\nHi there<end_of_turn>\n<start_of_turn>model\nHello.<end_of_turn>\n<start_of_turn>user\nBye ünïcode 🙂<end_of_turn>\n3"
+  },
+  {
+   "template": "gemma-ns",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s><start_of_turn>user\nYou are terse.\n\nHi there<end_of_turn>\n<start_of_turn>model\nHello.<end_of_turn>\n<start_of_turn>user\nBye ünïcode 🙂<end_of_turn>\n<start_of_turn>model\n3"
+  },
+  {
+   "template": "gemma-ns",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s><start_of_turn>user\nQ1<end_of_turn>\n<start_of_turn>model\nA1<end_of_turn>\n<start_of_turn>user\nQ2<end_of_turn>\n3"
+  },
+  {
+   "template": "gemma-ns",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s><start_of_turn>user\nQ1<end_of_turn>\n<start_of_turn>model\nA1<end_of_turn>\n<start_of_turn>user\nQ2<end_of_turn>\n<start_of_turn>model\n3"
+  },
+  {
+   "template": "gemma-ns",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "<s><start_of_turn>user\nWeather in Paris?<end_of_turn>\n<start_of_turn>model\n<end_of_turn>\n<start_of_turn>tool\n{\"temp\": 21}<end_of_turn>\n<start_of_turn>model\n21 degrees.<end_of_turn>\n4"
+  },
+  {
+   "template": "gemma-ns",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "<s><start_of_turn>user\nWeather in Paris?<end_of_turn>\n<start_of_turn>model\n<end_of_turn>\n<start_of_turn>tool\n{\"temp\": 21}<end_of_turn>\n<start_of_turn>model\n21 degrees.<end_of_turn>\n<start_of_turn>model\n4"
+  },
+  {
+   "template": "misc",
+   "messages": "basic",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "b=2;a=1;<HI!> <YO?>\n3 x-y-z cba ['b', 'c']\n3 1 7 x1None 2.5\nok  [1/3] Hi there  [2/3] Hell0.  [3/3 last] Bye ünïc0de 🙂[\"  Hi there  \", \"Bye ünïcode 🙂\"]\n{\n  \"k\": [\n    1,\n    \"two\",\n    null,\n    true\n  ]\n}\nPad|True|[0, 1, 2]"
+  },
+  {
+   "template": "misc",
+   "messages": "basic",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "b=2;a=1;<HI!> <YO?>\n3 x-y-z cba ['b', 'c']\n3 1 7 x1None 2.5\nok  [1/3] Hi there  [2/3] Hell0.  [3/3 last] Bye ünïc0de 🙂[\"  Hi there  \", \"Bye ünïcode 🙂\"]\n{\n  \"k\": [\n    1,\n    \"two\",\n    null,\n    true\n  ]\n}\nPad|True|[0, 1, 2]"
+  },
+  {
+   "template": "misc",
+   "messages": "nosys",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "b=2;a=1;<HI!> <YO?>\n3 x-y-z cba ['b', 'c']\n3 1 7 x1None 2.5\nok  [1/3] Q1  [2/3] A1  [3/3 last] Q2[\"Q1\", \"Q2\"]\n{\n  \"k\": [\n    1,\n    \"two\",\n    null,\n    true\n  ]\n}\nPad|True|[0, 1, 2]"
+  },
+  {
+   "template": "misc",
+   "messages": "nosys",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "b=2;a=1;<HI!> <YO?>\n3 x-y-z cba ['b', 'c']\n3 1 7 x1None 2.5\nok  [1/3] Q1  [2/3] A1  [3/3 last] Q2[\"Q1\", \"Q2\"]\n{\n  \"k\": [\n    1,\n    \"two\",\n    null,\n    true\n  ]\n}\nPad|True|[0, 1, 2]"
+  },
+  {
+   "template": "misc",
+   "messages": "tools",
+   "add_generation_prompt": false,
+   "tools": false,
+   "text": "b=2;a=1;<HI!> <YO?>\n3 x-y-z cba ['b', 'c']\n3 1 7 x1None 2.5\nok  [1/4] Weather in Paris?  [2/4]   [3/4] {\"temp\": 21}  [4/4 last] 21 degrees.[\"Weather in Paris?\"]\n{\n  \"k\": [\n    1,\n    \"two\",\n    null,\n    true\n  ]\n}\nPad|True|[0, 1, 2]"
+  },
+  {
+   "template": "misc",
+   "messages": "tools",
+   "add_generation_prompt": true,
+   "tools": false,
+   "text": "b=2;a=1;<HI!> <YO?>\n3 x-y-z cba ['b', 'c']\n3 1 7 x1None 2.5\nok  [1/4] Weather in Paris?  [2/4]   [3/4] {\"temp\": 21}  [4/4 last] 21 degrees.[\"Weather in Paris?\"]\n{\n  \"k\": [\n    1,\n    \"two\",\n    null,\n    true\n  ]\n}\nPad|True|[0, 1, 2]"
+  }
+ ]
+}

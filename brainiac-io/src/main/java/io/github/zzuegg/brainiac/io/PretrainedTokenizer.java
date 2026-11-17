@@ -56,6 +56,7 @@ public final class PretrainedTokenizer implements Tokenizer {
     private final Integer bos;
     private final Integer eos;
     private final String chatTemplate;
+    private volatile ChatTemplate template;
 
     /** How text becomes ids and back: the Hugging Face pipeline or SentencePiece's. */
     private sealed interface Engine permits Hf, Spm {
@@ -714,6 +715,30 @@ public final class PretrainedTokenizer implements Tokenizer {
      */
     public String chatTemplate() {
         return chatTemplate;
+    }
+
+    /**
+     * Renders a conversation with the model's {@linkplain #chatTemplate chat template},
+     * with {@code bos_token} and {@code eos_token} set from the vocabulary.
+     *
+     * @param messages the conversation; see {@link ChatTemplate#message}
+     * @param addGenerationPrompt whether to end with the start of an assistant turn
+     * @return the prompt text, ready for {@link #encode(String)}
+     * @throws IllegalStateException if the model has no chat template
+     */
+    public String applyChatTemplate(List<? extends Map<String, ?>> messages, boolean addGenerationPrompt) {
+        if (chatTemplate == null) {
+            throw new IllegalStateException("this tokenizer has no chat template");
+        }
+        ChatTemplate t = template;
+        if (t == null) {
+            t = ChatTemplate.of(chatTemplate);
+            template = t;
+        }
+        Map<String, Object> extra = new HashMap<>();
+        extra.put("bos_token", bos == null ? "" : token(bos));
+        extra.put("eos_token", eos == null ? "" : token(eos));
+        return t.render(messages, addGenerationPrompt, extra);
     }
 
     @Override

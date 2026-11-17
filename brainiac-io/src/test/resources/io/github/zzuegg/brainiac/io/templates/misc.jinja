@@ -1,0 +1,17 @@
+{# a comment #}
+{% macro say(x, y='!') -%}
+  <{{ x | upper }}{{ y }}>
+{%- endmacro %}
+{% for k, v in {'b': 2, 'a': 1}.items() %}{{ k }}={{ v }};{% endfor %}
+{{ say('hi') }} {{ say('yo', y='?') }}
+{{ [3,1,2] | length }} {{ ['x','y','z'] | join('-') }} {{ 'abc'[::-1] }} {{ 'a,b,c'.split(',')[1:] }}
+{{ 7 // 2 }} {{ 7 % 3 }} {{ 2 * 3 + 1 }} {{ 'x' ~ 1 ~ none }} {{ 1.5 + 1 }}
+{% if undefined_thing is not defined and 'b' in 'abc' and 3 not in [1, 2] %}ok{% endif %}
+{%- for m in messages if m.role != 'system' %}
+  [{{ loop.index }}/{{ loop.length }}{{ ' last' if loop.last }}] {{ m.content.strip() | replace('o', '0') }}
+{%- else %}
+none
+{%- endfor %}
+{{ messages | selectattr('role', 'equalto', 'user') | map(attribute='content') | list | tojson }}
+{{ {'k': [1, 'two', none, true]} | tojson(indent=2) }}
+{{ "  pad  " | trim | capitalize }}|{{ "Hello World".startswith("Hell") }}|{{ range(3) | list }}

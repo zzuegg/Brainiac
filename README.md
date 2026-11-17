@@ -361,6 +361,10 @@ PretrainedTokenizer tok = PretrainedTokenizer.load(Path.of("Qwen2.5-0.5B-Instruc
 int[] ids = tok.encode("<|im_start|>user\nHi<|im_end|>\n");   // special tokens in text are recognized
 String text = tok.decode(ids, true);                           // skipping special tokens
 int eos = tok.eos().orElseThrow();
+
+String prompt = tok.applyChatTemplate(List.of(              // the model's own Jinja chat template
+        ChatTemplate.message("system", "You are terse."),
+        ChatTemplate.message("user", "Hi!")), true);
 ```
 
 ## Reinforcement learning
