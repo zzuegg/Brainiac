@@ -56,6 +56,20 @@ public interface ChatProvider {
     }
 
     /**
+     * Picks the model {@code auto} should use for a medium, from this provider's list.
+     *
+     * @param medium {@code text}, {@code image} or {@code speech}
+     * @param models this provider's models
+     * @return the model, or null if none fits
+     */
+    default ModelInfo preferredFor(String medium, List<ModelInfo> models) {
+        if (medium.equals("text")) {
+            return preferred(models);
+        }
+        return models.stream().filter(m -> m.media().contains(medium)).findFirst().orElse(null);
+    }
+
+    /**
      * Writes an answer, passing it to the listener as it arrives.
      *
      * @param request the conversation

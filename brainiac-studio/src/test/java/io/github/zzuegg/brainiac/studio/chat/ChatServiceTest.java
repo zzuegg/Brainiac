@@ -115,7 +115,8 @@ class ChatServiceTest {
         assertFalse(media.containsKey("openai/text-embedding-3-large"));
         assertFalse(media.containsKey("openai/gpt-4o-realtime-preview"));
         // no local models and no Anthropic key: OpenAI comes next, and its newest full-size GPT
-        assertEquals(Map.of("text", "openai/gpt-5"), d.get("auto"));
+        assertEquals(Map.of("text", "openai/gpt-5", "image", "openai/gpt-image-1", "speech", "openai/gpt-4o-mini-tts"),
+                d.get("auto"));
         Map<String, Object> anthropic = Json.array(d.get("providers")).stream().map(Json::object)
                 .filter(p -> p.get("id").equals("anthropic")).findFirst().orElseThrow();
         assertEquals(false, anthropic.get("ready"));
@@ -229,5 +230,69 @@ class ChatServiceTest {
         List<String> seen = new ArrayList<>();
         Sse.read(new ByteArrayInputStream(stream.getBytes(StandardCharsets.UTF_8)), (e, d) -> seen.add(e + "=" + d));
         assertEquals(List.of("a=one\ntwo", "message=three", "message=tail"), seen);
+    }
+
+    @Test
+    void openAiDrawsAndSpeaksAndEverythingIsSaved() throws Exception {
+        ChatService chat = apis.service(keys(Map.of("OPENAI_API_KEY", "o")), List.of(dir));
+        ChatService.Generated pics = chat.images("openai/gpt-image-1", "a lighthouse", "16:9", 2, null);
+        assertEquals(2, pics.media().size());
+        Map<String, Object> body = Json.object(Json.parse(apis.bodies.get("o POST")));
+        assertEquals("1536x1024", body.get("size"));
+        assertFalse(body.containsKey("response_format"), "GPT image models reject response_format");
+        assertEquals("PNG1", Files.readString(pics.files().get(1)));
+        assertTrue(pics.files().getFirst().getFileName().toString().matches("image-\\d{8}-\\d{6}-1\\.png"));
+
+        chat.images("openai/dall-e-3", "a lighthouse", "9:16", 2, null);
+        assertEquals(2, apis.calls.get("o /v1/images/generations") - 1, "DALL-E 3 draws one picture per call");
+        assertEquals("1024x1792", Json.object(Json.parse(apis.bodies.get("o POST"))).get("size"));
+
+        chat.describe(false);
+        ChatService.Generated voice = chat.speech(ChatService.AUTO, "Hello", "coral", 1.1, "calm", "mp3", null);
+        assertEquals("openai/gpt-4o-mini-tts", voice.model().key());
+        assertEquals("audio/mpeg", voice.media().getFirst().mime());
+        assertTrue(voice.files().getFirst().toString().endsWith(".mp3"));
+        Map<String, Object> said = Json.object(Json.parse(apis.bodies.get("o POST")));
+        assertEquals("calm", said.get("instructions"));
+        assertEquals(1.1, ((Number) said.get("speed")).doubleValue(), 1e-9);
+    }
+
+    @Test
+    void googleDrawsWithImagenAndSpeaksAsWav() throws Exception {
+        ChatService chat = apis.service(keys(Map.of("GEMINI_API_KEY", "g")), List.of(dir));
+        Map<String, Object> d = chat.describe(false);
+        assertEquals(Map.of("text", "google/gemini-3-pro", "image", "google/imagen-4.0-generate-001",
+                "speech", "google/gemini-2.5-flash-preview-tts"), d.get("auto"));
+        Map<String, Object> tts = Json.array(d.get("models")).stream().map(Json::object)
+                .filter(m -> m.get("key").equals("google/gemini-2.5-flash-preview-tts")).findFirst().orElseThrow();
+        Map<String, Object> options = Json.object(tts.get("speech"));
+        assertTrue(Json.array(options.get("voices")).contains("Kore"));
+        assertEquals(false, options.get("speed"));
+
+        ChatService.Generated pics = chat.images(ChatService.AUTO, "a lighthouse", "9:16", 2, null);
+        assertEquals(List.of("IMG-A", "IMG-B"), pics.media().stream().map(m -> new String(m.data(), StandardCharsets.UTF_8)).toList());
+        Map<String, Object> params = Json.object(Json.object(Json.parse(apis.bodies.get("g POST"))).get("parameters"));
+        assertEquals("9:16", params.get("aspectRatio"));
+
+        ChatService.Generated voice = chat.speech(ChatService.AUTO, "Hello", "Kore", 1, "cheerfully", "mp3", null);
+        byte[] wav = voice.media().getFirst().data();
+        assertEquals("audio/wav", voice.media().getFirst().mime());
+        assertEquals("RIFF", new String(wav, 0, 4, StandardCharsets.US_ASCII));
+        assertEquals(24000, java.nio.ByteBuffer.wrap(wav, 24, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt());
+        assertEquals("abcd", new String(wav, 44, 4, StandardCharsets.US_ASCII));
+        String text = String.valueOf(Json.object(Json.array(Json.object(Json.array(Json.object(Json.parse(
+                apis.bodies.get("g POST"))).get("contents")).getFirst()).get("parts")).getFirst()).get("text"));
+        assertEquals("cheerfully: Hello", text, "Gemini speech takes its directions in the text");
+    }
+
+    @Test
+    void picturesNeedARemoteProviderAndSaneSettings() {
+        ChatService chat = apis.service(keys(Map.of()), List.of(dir));
+        IOException e = assertThrows(IOException.class, () -> chat.images(ChatService.AUTO, "x", "1:1", 1, null));
+        assertTrue(e.getMessage().contains("OpenAI or Google"), e.getMessage());
+        ChatService withKey = apis.service(keys(Map.of("OPENAI_API_KEY", "o")), List.of(dir));
+        assertThrows(IllegalArgumentException.class, () -> withKey.images("openai/gpt-image-1", "x", "2:1", 1, null));
+        assertThrows(IllegalArgumentException.class, () -> withKey.images("openai/gpt-image-1", "x", "1:1", 9, null));
+        assertThrows(IllegalArgumentException.class, () -> withKey.speech("openai/tts-1", "", "alloy", 1, "", "mp3", null));
     }
 }

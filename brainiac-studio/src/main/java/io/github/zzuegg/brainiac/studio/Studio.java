@@ -43,8 +43,10 @@ public final class Studio implements AutoCloseable {
      * @param keyFile the file API keys saved in the studio go to, readable only by this account
      * @param environment where API keys not saved in the studio are looked up, such as
      *     {@code ANTHROPIC_API_KEY}, {@code OPENAI_API_KEY} and {@code GEMINI_API_KEY}
+     * @param outputs where generated pictures and audio are saved
      */
-    public record Settings(int port, List<Path> modelFolders, Path keyFile, Map<String, String> environment) {
+    public record Settings(int port, List<Path> modelFolders, Path keyFile, Map<String, String> environment,
+            Path outputs) {
 
         /** Copies the lists. */
         public Settings {
@@ -55,7 +57,8 @@ public final class Studio implements AutoCloseable {
         /**
          * Returns the usual settings: port {@value Studio#DEFAULT_PORT}; models in {@code ./models},
          * {@code ~/.brainiac/models} and {@code $BRAINIAC_MODELS}; keys in
-         * {@code ~/.brainiac/studio/keys.properties} or the environment.
+         * {@code ~/.brainiac/studio/keys.properties} or the environment; pictures and audio in
+         * {@code ~/.brainiac/studio/outputs}.
          *
          * @return the settings
          */
@@ -67,7 +70,7 @@ public final class Studio implements AutoCloseable {
                 folders.add(0, Path.of(env).toAbsolutePath());
             }
             return new Settings(DEFAULT_PORT, folders, home.resolve("studio").resolve("keys.properties"),
-                    System.getenv());
+                    System.getenv(), home.resolve("studio").resolve("outputs"));
         }
 
         /**
@@ -77,7 +80,7 @@ public final class Studio implements AutoCloseable {
          * @return the settings
          */
         public Settings withPort(int port) {
-            return new Settings(port, modelFolders, keyFile, environment);
+            return new Settings(port, modelFolders, keyFile, environment, outputs);
         }
 
         /**
@@ -87,7 +90,7 @@ public final class Studio implements AutoCloseable {
          * @return the settings
          */
         public Settings withModelFolders(List<Path> folders) {
-            return new Settings(port, folders, keyFile, environment);
+            return new Settings(port, folders, keyFile, environment, outputs);
         }
     }
 
@@ -116,7 +119,8 @@ public final class Studio implements AutoCloseable {
         ChatService chat = ChatService.at(keys, settings.modelFolders(),
                 URI.create(System.getProperty("studio.anthropic.url", "https://api.anthropic.com/")),
                 URI.create(System.getProperty("studio.openai.url", "https://api.openai.com/")),
-                URI.create(System.getProperty("studio.google.url", "https://generativelanguage.googleapis.com/")));
+                URI.create(System.getProperty("studio.google.url", "https://generativelanguage.googleapis.com/")),
+                settings.outputs());
         return new Studio(StudioServer.start(settings.port(), capabilities, chat), capabilities);
     }
 

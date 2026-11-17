@@ -402,6 +402,7 @@
 
   // ---------- CREATE (images) ----------
   function createView() {
+    if (isLive()) return liveCreateView();
     const batches = [
       { p: "dark node graph, glowing edges, big type “Build it.”, 16:9", seeds: [21, 22, 23, 24, 25, 26, 27, 28], meta: "thumb-dit-64 · 50 steps · DDIM · 9.1 s" },
       { p: "isometric neural network made of glass, soft studio light", seeds: [31, 32, 33, 34], meta: "thumb-dit-64 · 30 steps · flow matching · 5.0 s" },
@@ -438,6 +439,7 @@
 
   // ---------- VOICE ----------
   function voiceView() {
+    if (isLive()) return liveVoiceView();
     const total = 38.4;
     const tags = ["[calm]", "", "[warm]", "", "[smile]", "[slower]"];
     return `
@@ -862,11 +864,15 @@
     $("#main").innerHTML = `<div class="view">${views[state.view]()}</div>`;
     const liveChat = isLive() && state.view === "chat" && L.sel !== "example";
     const liveLib = isLive() && state.view === "library";
+    const liveMedia = isLive() && (state.view === "create" || state.view === "voice");
     const ready = (L.info?.providers || []).filter(p => p.ready).length;
     $("#crumb").innerHTML = liveChat ? `Chat <span class="muted">· ${esc(current()?.title || "New conversation")}</span>`
+      : liveMedia ? (state.view === "create" ? `Images <span class="muted">· ${G.batches.length} batch${G.batches.length === 1 ? "" : "es"} this session</span>` : `Voice <span class="muted">· ${G.takes.length} take${G.takes.length === 1 ? "" : "s"} this session</span>`)
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>` : crumbs[state.view];
     const autoModel = (liveChat || liveLib) && L.info ? modelByKey(L.model === "auto" || liveLib ? L.info.auto.text : L.model) : null;
-    const [c, n] = liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"] : routes[state.view];
+    const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
+    const [c, n] = liveMedia ? [state.view === "create" ? "c-image" : "c-speech", mediaModel ? mediaModel.name : L.info ? "no model yet" : "…"]
+      : liveChat || liveLib ? ["c-text", autoModel ? autoModel.name : L.info ? "no chat model yet" : "…"] : routes[state.view];
     $("#router .chip").className = "chip " + c; $("#router .chip").textContent = n;
     $$(".rail a").forEach(a => { if (a.dataset.view === state.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
     paintAll();
@@ -874,6 +880,8 @@
     if (state.view === "builder") { drawEdges(); fitWorld(); enableDrag(); }
     if (state.view === "chat") bindChat();
     if (state.view === "library" && isLive()) bindLiveLibrary();
+    if (state.view === "create" && isLive()) bindLiveCreate();
+    if (state.view === "voice" && isLive()) bindLiveVoice();
     if (state.view === "agents") document.querySelectorAll(".agent[data-agent]").forEach(el => el.addEventListener("click", () => { if (["script", "voice", "thumb"].includes(el.dataset.agent)) { state.agent = el.dataset.agent; state.inspectorOpen = true; go("chat"); } }));
   }
 
@@ -1277,6 +1285,215 @@
     if (!L.busy) p?.focus({ preventScroll: true });
   }
 
+  // ---------- live images and voice ----------
+  // Pictures and takes stay in this tab (as blob URLs); the studio also saves each file to its
+  // outputs folder, and the tile or take shows where.
+  const G = {
+    imgModel: store.get("imgModel", "auto"), aspect: store.get("aspect", "1:1"), count: store.get("imgCount", 2),
+    prompt: "", batches: [], drawing: null,
+    voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
+    text: "", takes: [], speaking: false, video: null,
+  };
+  const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium));
+  const pickedModel = (sel, medium) => modelByKey(sel === "auto" ? L.info?.auto?.[medium] : sel);
+
+  function mediaPicker(id, medium, sel) {
+    const groups = {};
+    mediaModels(medium).forEach(m => (groups[m.provider] ||= []).push(m));
+    const auto = L.info?.auto?.[medium] ? modelByKey(L.info.auto[medium]) : null;
+    return `<select class="input" id="${id}" aria-label="Model">
+      <option value="auto" ${sel === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
+      ${Object.entries(groups).map(([p, ms]) => `<optgroup label="${esc(providerName(p))}">${ms.map(m => `<option value="${esc(m.key)}" ${m.key === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</optgroup>`).join("")}
+    </select>`;
+  }
+
+  function remoteNote(m, what) {
+    if (!m) return "";
+    return `<div class="flag">${icon("flask")}<div><b>Runs at ${esc(providerName(m.provider))}.</b> ${what} is sent to ${esc(providerName(m.provider))} and billed to your key. No local model offers this yet; one that does will show up here.</div></div>`;
+  }
+
+  function noModel(medium) {
+    return `<div class="empty"><div class="flag">${icon("flask")}<div><b>No ${medium === "image" ? "image" : "speech"} model yet.</b>
+      ${L.info ? `Nothing on this PC can ${medium === "image" ? "draw" : "speak"} yet. Add an OpenAI or Google API key and their ${medium === "image" ? "image" : "voice"} models appear here.` : "Looking for models…"}
+      <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
+  }
+
+  async function postJson(path, body) {
+    const r = await fetch(path, { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `the studio answered ${r.status}`);
+    return j;
+  }
+
+  function blobUrl(item) {
+    const bin = atob(item.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: item.mime }));
+  }
+  const fileName = p => p.split(/[\\/]/).pop();
+  const ratioCss = a => a.replace(":", " / ");
+
+  function liveCreateView() {
+    const m = pickedModel(G.imgModel, "image");
+    const ratios = [["1:1", 14, 14], ["4:3", 16, 12], ["16:9", 18, 10], ["3:4", 12, 16], ["9:16", 10, 18]];
+    return `
+    <div class="create">
+      <aside class="side" aria-label="Image settings">
+        <div style="display:flex;align-items:center;gap:8px"><span class="h2">Images</span><span class="grow"></span>${m ? `<span class="chip c-image">${esc(m.name)}</span>` : ""}</div>
+        <div class="field"><label for="img-model">Model</label>${mediaPicker("img-model", "image", G.imgModel)}</div>
+        ${remoteNote(m, "The prompt")}
+        <div class="prompt-box"><textarea id="img-prompt" aria-label="Prompt" placeholder="What should the picture show?">${esc(G.prompt)}</textarea></div>
+        <div class="field"><label>Aspect</label>
+          <div class="ratio">${ratios.map(([l, w, h]) => `<button data-aspect="${l}" aria-pressed="${G.aspect === l}"><i style="width:${w}px;height:${h}px"></i>${l}</button>`).join("")}</div></div>
+        <div class="field"><label>Pictures</label><div class="seg" style="width:100%">${[1, 2, 3, 4].map(n => `<button data-count="${n}" aria-pressed="${G.count === n}" style="flex:1">${n}</button>`).join("")}</div></div>
+        <button class="btn primary" id="img-go" style="height:40px;justify-content:center" ${!m || G.drawing ? "disabled" : ""}>${icon("wand")}${G.drawing ? "Drawing…" : `Draw ${G.count}`} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>
+      </aside>
+      <section class="gallery" aria-label="Pictures">
+        ${!mediaModels("image").length ? noModel("image") : ""}
+        ${G.drawing ? `<div><div class="batch-head"><span class="eyebrow">Drawing</span><span class="p">${esc(G.drawing.prompt)}</span><span class="mono muted">${esc(G.drawing.model)}</span></div>
+          <div class="batch">${Array.from({ length: G.drawing.count }, () => `<div class="tile wait" style="aspect-ratio:${ratioCss(G.drawing.aspect)}"></div>`).join("")}</div></div>` : ""}
+        ${G.batches.map((b, bi) => `
+          <div>
+            <div class="batch-head"><span class="p">${esc(b.prompt)}</span><span class="mono muted">${esc(b.model)} · ${b.aspect}${b.seconds ? ` · ${b.seconds.toFixed(1)} s` : ""}</span></div>
+            ${b.error ? `<div class="flag bad">${icon("flask")}<div><b>No picture.</b> ${esc(b.error)}</div></div>` : `
+            <div class="batch">${b.items.map(it => `<div class="tile" title="Saved as ${esc(it.file)}"><img src="${it.url}" alt="${esc(b.prompt)}" style="aspect-ratio:${ratioCss(b.aspect)}">
+              <div class="ov"><a href="${it.url}" download="${esc(fileName(it.file))}">Save</a><button data-reuse="${bi}">Reuse prompt</button></div></div>`).join("")}</div>`}
+          </div>`).join("")}
+        ${mediaModels("image").length && !G.batches.length && !G.drawing ? `<div class="empty"><div class="h2">Describe a picture</div><div class="muted">Pictures are also saved in the studio's outputs folder.</div></div>` : ""}
+      </section>
+    </div>`;
+  }
+
+  async function draw() {
+    const m = pickedModel(G.imgModel, "image");
+    const prompt = ($("#img-prompt")?.value || "").trim();
+    if (!m || !prompt || G.drawing) return;
+    G.prompt = prompt;
+    G.drawing = { prompt, model: m.name, aspect: G.aspect, count: G.count };
+    render();
+    const batch = { prompt, model: m.name, aspect: G.aspect, items: [] };
+    try {
+      const j = await postJson("/api/images", { model: G.imgModel, prompt, aspect: G.aspect, count: G.count });
+      batch.model = j.model.name; batch.seconds = j.seconds;
+      batch.items = j.items.map(it => ({ url: blobUrl(it), file: it.file }));
+    } catch (e) { batch.error = e.message; }
+    G.batches.unshift(batch);
+    G.drawing = null;
+    if (state.view === "create") render();
+  }
+
+  function bindLiveCreate() {
+    $("#img-model")?.addEventListener("change", e => { G.imgModel = e.target.value; store.set("imgModel", G.imgModel); G.prompt = $("#img-prompt").value; render(); });
+    $$("[data-aspect]").forEach(b => b.addEventListener("click", () => { G.aspect = b.dataset.aspect; store.set("aspect", G.aspect); G.prompt = $("#img-prompt").value; render(); }));
+    $$("[data-count]").forEach(b => b.addEventListener("click", () => { G.count = +b.dataset.count; store.set("imgCount", G.count); G.prompt = $("#img-prompt").value; render(); }));
+    $("#img-prompt")?.addEventListener("input", e => { G.prompt = e.target.value; });
+    $("#img-prompt")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") draw(); });
+    $("#img-go")?.addEventListener("click", draw);
+    $$("[data-reuse]").forEach(b => b.addEventListener("click", () => { G.prompt = G.batches[+b.dataset.reuse].prompt; render(); $("#img-prompt").focus(); }));
+    $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
+  function hue(name) { let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360; return `oklch(0.78 0.11 ${h})`; }
+
+  function liveVoiceView() {
+    const m = pickedModel(G.voModel, "speech");
+    const opt = m?.speech || { voices: [], speed: false, instructions: false, formats: [] };
+    if (!opt.voices.includes(G.voice)) G.voice = opt.voices[0] || null;
+    if (opt.formats.length && !opt.formats.includes(G.format)) G.format = opt.formats[0];
+    return `
+    <div class="voice">
+      <aside class="voices" aria-label="Voices">
+        <div class="col-head"><span class="h3">Voices</span><span class="grow"></span><span class="mono faint">${opt.voices.length || ""}</span></div>
+        ${opt.voices.map(v => `
+          <div class="vcard ${v === G.voice ? "active" : ""}" data-voice="${esc(v)}" tabindex="0" role="button" aria-pressed="${v === G.voice}">
+            <div class="vface" style="background:${hue(v)}">${esc(v[0].toUpperCase())}</div>
+            <div style="min-width:0"><div class="n">${esc(v[0].toUpperCase() + v.slice(1))}</div><div class="d">${esc(providerName(m.provider))}</div></div>
+            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(v)}" title="Speaks one short sentence, billed to your key">${icon("play")}</button>
+          </div>`).join("")}
+      </aside>
+      <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
+        <div class="stage-head"><span class="title">Voice</span>${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
+          <label class="btn" for="vo-video-file">${icon("video")}${G.video ? "Change video" : "Add a video"}</label><input type="file" id="vo-video-file" accept="video/*" hidden>
+          <button class="btn primary" id="vo-go" ${!m || G.speaking ? "disabled" : ""}>${icon("speech")}${G.speaking ? "Speaking…" : "Speak"}</button></div>
+        ${m ? `<div style="padding:14px 24px 0">${remoteNote(m, "The text")}</div>` : ""}
+        ${!mediaModels("speech").length ? noModel("speech") : `
+        <div class="vo-split">
+          <div class="script">
+            <textarea class="input vo-text" id="vo-text" placeholder="Write what the voice should say. Ctrl+Enter speaks it.">${esc(G.text)}</textarea>
+            ${G.takes.map((t, i) => `<div class="take">
+              <div class="who"><span class="chip c-speech">${esc(t.voice)}</span><span class="mono muted">${esc(t.model)}${t.seconds ? ` · ${t.seconds.toFixed(1)} s` : ""}</span><span class="grow"></span>
+                ${t.url ? `${G.video ? `<button class="btn ghost sm" data-with-video="${i}">${icon("play")}With video</button>` : ""}<a class="btn ghost sm" href="${t.url}" download="${esc(fileName(t.file))}" title="Saved as ${esc(t.file)}">Save</a>` : ""}</div>
+              <div class="muted" style="font-size:13px">${esc(t.text.length > 160 ? t.text.slice(0, 160) + "…" : t.text)}</div>
+              ${t.error ? `<div class="flag bad">${icon("flask")}<div><b>No audio.</b> ${esc(t.error)}</div></div>` : `<audio controls src="${t.url}" data-take="${i}"></audio>`}
+            </div>`).join("")}
+          </div>
+          <div class="vo-video">
+            ${G.video ? `<video id="vo-video" src="${G.video.url}" controls playsinline></video><div class="mono muted" style="font-size:11.5px">${esc(G.video.name)} · plays here only, never uploaded</div>`
+              : `<label class="video-drop" for="vo-video-file">${icon("video")}<b>Voiceover for a video?</b><span class="muted">Add it here to hear takes over the picture. It stays in this browser.</span></label>`}
+          </div>
+        </div>`}
+      </section>
+      <aside class="voice-settings" aria-label="Voice settings">
+        <div class="field"><label for="vo-model">Model</label>${mediaPicker("vo-model", "speech", G.voModel)}</div>
+        <div class="field" ${opt.speed ? "" : `title="${m ? esc(m.name) + " has no pace setting" : ""}"`}><label for="vo-speed">Pace <output>${opt.speed ? G.speed.toFixed(2) + "×" : "not offered"}</output></label>
+          <input type="range" id="vo-speed" min="0.5" max="2" step="0.05" value="${G.speed}" ${opt.speed ? "" : "disabled"}></div>
+        <div class="field"><label for="vo-instr">How to say it ${opt.instructions ? "" : "<output>not offered</output>"}</label>
+          <textarea class="input" id="vo-instr" rows="3" placeholder="Calm narrator, a little slower, warm" ${opt.instructions ? "" : "disabled"}>${esc(G.instructions)}</textarea></div>
+        ${opt.formats.length > 1 ? `<div class="field"><label>File</label><div class="seg">${opt.formats.map(f => `<button data-format="${f}" aria-pressed="${G.format === f}">${f.toUpperCase()}</button>`).join("")}</div></div>`
+          : opt.formats.length ? `<div class="field"><label>File <output>${opt.formats[0].toUpperCase()}</output></label></div>` : ""}
+      </aside>
+    </div>`;
+  }
+
+  async function speak(text, voice, preview) {
+    const m = pickedModel(G.voModel, "speech");
+    if (!m || !text || !voice) return;
+    const take = { text, voice, model: m.name };
+    if (!preview) { G.speaking = true; render(); }
+    try {
+      const j = await postJson("/api/speech", { model: G.voModel, text, voice, speed: G.speed, instructions: G.instructions, format: G.format });
+      Object.assign(take, { url: blobUrl(j.items[0]), file: j.items[0].file, seconds: j.seconds, model: j.model.name });
+    } catch (e) { take.error = e.message; }
+    if (preview) {
+      if (take.url) new Audio(take.url).play().catch(() => {});
+      else { G.takes.unshift(take); render(); }
+      return;
+    }
+    G.takes.unshift(take);
+    G.speaking = false;
+    if (state.view === "voice") render();
+  }
+
+  function bindLiveVoice() {
+    const keep = () => { G.text = $("#vo-text")?.value ?? G.text; G.instructions = $("#vo-instr")?.value ?? G.instructions; };
+    $("#vo-model")?.addEventListener("change", e => { keep(); G.voModel = e.target.value; store.set("voModel", G.voModel); render(); });
+    $$("[data-voice]").forEach(el => el.addEventListener("click", e => {
+      if (e.target.closest("[data-preview]")) return;
+      keep(); G.voice = el.dataset.voice; store.set("voice", G.voice); render();
+    }));
+    $$("[data-preview]").forEach(b => b.addEventListener("click", () => speak(`Hello, I'm ${b.dataset.preview}. This is how I sound.`, b.dataset.preview, true)));
+    $("#vo-speed")?.addEventListener("input", e => { G.speed = +e.target.value; e.target.previousElementSibling.querySelector("output").textContent = G.speed.toFixed(2) + "×"; });
+    $("#vo-instr")?.addEventListener("input", e => { G.instructions = e.target.value; });
+    $("#vo-text")?.addEventListener("input", e => { G.text = e.target.value; });
+    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), G.voice); } });
+    $$("[data-format]").forEach(b => b.addEventListener("click", () => { keep(); G.format = b.dataset.format; render(); }));
+    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), G.voice); });
+    $("#vo-video-file")?.addEventListener("change", e => {
+      const f = e.target.files[0]; if (!f) return;
+      keep();
+      if (G.video) URL.revokeObjectURL(G.video.url);
+      G.video = { url: URL.createObjectURL(f), name: f.name };
+      render();
+    });
+    $$("[data-with-video]").forEach(b => b.addEventListener("click", () => {
+      const v = $("#vo-video"), a = $(`audio[data-take="${b.dataset.withVideo}"]`);
+      if (!v || !a) return;
+      v.currentTime = 0; a.currentTime = 0; v.muted = true;
+      v.play(); a.play();
+    }));
+    $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
   // ---------- live models and providers ----------
   function liveModelsTable() {
     const ms = L.info ? L.info.models : [];
@@ -1351,7 +1568,7 @@
     try {
       L.info = await api("/api/models" + (refresh ? "?refresh=1" : ""));
       if (L.model !== "auto" && !modelByKey(L.model)) L.model = "auto";
-      if (["chat", "library"].includes(state.view) && !(state.view === "chat" && L.busy)) render();
+      if (["chat", "library", "create", "voice"].includes(state.view) && !(state.view === "chat" && L.busy)) render();
     } catch (e) {
       console.warn("cannot list models", e);
     }
@@ -1363,7 +1580,7 @@
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
   // screens that show only real data
-  const showsLiveData = () => state.view === "library" || (state.view === "chat" && L.sel !== "example");
+  const showsLiveData = () => ["library", "create", "voice"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });
