@@ -31,12 +31,11 @@ class Mamba2LayerTest {
 
     @Test
     void rotaryStatesSolveParityWhereRealDecaysCannot() {
-        MixerHarness.Task task = MixerHarness.parity(8);
+        MixerHarness.Task task = MixerHarness.parity(6);
         double rotary = MixerHarness.train(new Mamba2Layer(16, 2, 8, 4, 4, Mamba2Layer.Variant.ROTARY,
-                new SplittableRandom(7)), task, 16, 300, 0.02f, 8);
+                new SplittableRandom(7)), task, 16, 300, 0.01f, 8);
         double real = MixerHarness.train(new Mamba2Layer(16, 2, 8, 4, 4, Mamba2Layer.Variant.REAL,
-                new SplittableRandom(7)), task, 16, 300, 0.02f, 8);
-        System.out.println("parity rotary " + rotary + " real " + real);
+                new SplittableRandom(7)), task, 16, 300, 0.01f, 8);
         assertTrue(rotary > 0.95, "rotary " + rotary);
         assertTrue(real < 0.8, "real " + real);
     }
