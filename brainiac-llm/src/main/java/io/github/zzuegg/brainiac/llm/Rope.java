@@ -6,6 +6,8 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.List;
+
 /**
  * Rotary position embeddings as Llama-family models use them: each head's features are
  * split in two halves, and feature {@code i} of the first half and {@code i} of the second
@@ -98,23 +100,49 @@ public final class Rope {
         int steps = s.dim(2);
         int d = s.dim(3);
         int half = d / 2;
-        float[] cos = new float[batch * steps * half];
-        float[] sin = new float[batch * steps * half];
+        Device device = x.value().device();
+        DType type = x.value().dtype();
+        Tensor[] cached = last;
+        if (cached != null && lastPositions == positions && cached[0].dtype() == type
+                && cached[0].device().equals(device) && cached[0].shape().equals(Shape.of(batch, 1, steps, 2, half))) {
+            return rotate(x, cached[0], cached[1], half);   // every block of one step: the same angles
+        }
+        // per position, both halves: cos and cos, and -sin and sin
+        float[] cos = new float[batch * steps * d];
+        float[] sin = new float[batch * steps * d];
         for (int b = 0; b < batch; b++) {
             for (int t = 0; t < steps; t++) {
+                int row = (b * steps + t) * d;
                 for (int i = 0; i < half; i++) {
                     float angle = (float) positions[b][t] * (float) inv[i];
-                    cos[(b * steps + t) * half + i] = (float) Math.cos(angle);
-                    sin[(b * steps + t) * half + i] = (float) Math.sin(angle);
+                    float cs = (float) Math.cos(angle);
+                    float sn = (float) Math.sin(angle);
+                    cos[row + i] = cs;
+                    cos[row + half + i] = cs;
+                    sin[row + i] = -sn;
+                    sin[row + half + i] = sn;
                 }
             }
         }
-        Device device = x.value().device();
-        DType type = x.value().dtype();
-        Tensor c = Tensor.of(Shape.of(batch, 1, steps, half), cos, device).to(type);
-        Tensor sn = Tensor.of(Shape.of(batch, 1, steps, half), sin, device).to(type);
-        Var x1 = x.slice(3, 0, half);
-        Var x2 = x.slice(3, half, d);
-        return Var.concat(3, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn)));
+        Tensor c = Tensor.of(Shape.of(batch, 1, steps, 2, half), cos, device).to(type);
+        Tensor sn = Tensor.of(Shape.of(batch, 1, steps, 2, half), sin, device).to(type);
+        Tensor.evaluate(List.of(c, sn));
+        last = new Tensor[] {c, sn};
+        lastPositions = positions;
+        return rotate(x, c, sn, half);
+    }
+
+    /** The angles of the last call, which the next call with the same positions array reuses. */
+    private Tensor[] last;
+    private int[][] lastPositions;
+
+    /**
+     * {@code [x1, x2] -> [x1 cos - x2 sin, x2 cos + x1 sin]} as {@code x * c + flip(x) * s} over
+     * the two halves: element-wise only, so a GPU computes it in one pass.
+     */
+    private static Var rotate(Var x, Tensor c, Tensor sn, int half) {
+        int[] s = x.shape().toArray();
+        Var y = x.reshape(s[0], s[1], s[2], 2, half);
+        return y.mul(c).add(y.flip(3).mul(sn)).reshape(s);
     }
 }

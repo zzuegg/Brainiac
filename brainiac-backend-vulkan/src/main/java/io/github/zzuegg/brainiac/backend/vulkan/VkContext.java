@@ -789,7 +789,11 @@ final class VkContext {
         dispatch(shader, (int) x, (int) ((groups + x - 1) / x), 1, writes, reads);
     }
 
+    /** Dispatches per shader, for {@link VulkanBackend#statistics()}. */
+    final java.util.Map<String, Long> perShader = new java.util.HashMap<>();
+
     private void dispatch(String shader, int x, int y, int z, Slot[] writes, Slot... reads) {
+        perShader.merge(shader, 1L, Long::sum);
         long p = pipeline(shader);
         long[] w = addresses(writes);
         boolean hazard = false;
