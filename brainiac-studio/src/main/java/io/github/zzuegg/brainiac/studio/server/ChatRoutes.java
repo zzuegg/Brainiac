@@ -7,6 +7,7 @@ import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
 import io.github.zzuegg.brainiac.studio.chat.ChatResult;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
 import io.github.zzuegg.brainiac.studio.chat.LocalImages;
+import io.github.zzuegg.brainiac.studio.chat.LocalSpeech;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -44,6 +45,13 @@ import java.util.Map;
  *       stops the drawing. Leave {@code seed} out for a random one. {@code POST
  *       /api/images/options} with {@code {"model": "local/sdxl"}} gives the samplers and the
  *       model's usual steps and guidance.
+ *   <li>{@code POST /api/transcribe} with {@code {"model": "auto", "audio": "<base64 WAV>",
+ *       "language": "de", "translate": false, "timestamps": true, "prompt": ""}} writes down what is
+ *       said with a Whisper model on this PC, as a server-sent event stream: {@code route}, one
+ *       {@code segment} ({@code {start, end, text}}) at a time, then {@code done} ({@code {text,
+ *       language, audioSeconds, seconds}}) or {@code error}. Closing the stream stops it. {@code POST
+ *       /api/transcribe/options} with {@code {"model": "local/whisper-base"}} gives its languages
+ *       and whether it translates.
  *   <li>{@code POST /api/providers} with {@code {"provider": "huggingface", "auto": true, "models":
  *       ["openai/gpt-oss-120b"], "url": "", "options": {"billTo": "my-org"}}} changes how a provider is
  *       used: whether Auto may pick it, which models to show ({@code null} for all), its address
@@ -113,6 +121,9 @@ final class ChatRoutes {
         server.post("/api/images/draw", this::draw);
         server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
                 chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
+        server.post("/api/transcribe", this::transcribe);
+        server.post("/api/transcribe/options", ex -> Exchanges.json(ex, 200,
+                chat.transcribeOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.get("/api/usage", ex -> Exchanges.json(ex, 200, chat.usage().summary(java.time.ZoneId.systemDefault())));
         server.get("/api/balances", ex -> {
             try {
@@ -324,6 +335,65 @@ final class ChatRoutes {
                     return;
                 }
                 LOG.log(System.Logger.Level.INFO, "drawing failed: " + e.getMessage());
+                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+            }
+        } catch (IOException closed) {
+            // the page stopped reading
+        }
+    }
+
+    private void transcribe(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 64 * 1024 * 1024);
+        byte[] wav;
+        try {
+            wav = java.util.Base64.getDecoder().decode(Json.string(body, "audio", ""));
+        } catch (IllegalArgumentException e) {
+            throw new Exchanges.BadRequest("send the recording as base64 WAV in \"audio\"");
+        }
+        if (wav.length < 44) {
+            throw new Exchanges.BadRequest("send the recording as base64 WAV in \"audio\"");
+        }
+        String language = Json.string(body, "language", "");
+        LocalSpeech.Listening listening = new LocalSpeech.Listening(language.isBlank() || "auto".equals(language) ? null : language,
+                Boolean.TRUE.equals(body.get("translate")), !Boolean.FALSE.equals(body.get("timestamps")),
+                Json.string(body, "prompt", ""));
+
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, 0);
+        try (OutputStream out = ex.getResponseBody()) {
+            Events events = new Events(out);
+            long start = System.nanoTime();
+            try {
+                ChatService.Transcribed t = chat.transcribe(Json.string(body, "model", ChatService.AUTO), wav, listening, seg -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("start", seg.start());
+                    m.put("end", seg.end());
+                    m.put("text", seg.text());
+                    events.sendQuietly("segment", m);
+                }, m -> {
+                    Map<String, Object> route = new LinkedHashMap<>();
+                    route.put("key", m.key());
+                    route.put("name", m.name());
+                    events.sendQuietly("route", route);
+                }, () -> events.broken);
+                Map<String, Object> done = new LinkedHashMap<>();
+                done.put("text", t.transcription().text());
+                done.put("language", t.transcription().language());
+                done.put("audioSeconds", t.transcription().seconds());
+                done.put("seconds", (System.nanoTime() - start) / 1e9);
+                events.send("done", done);
+            } catch (java.util.concurrent.CancellationException e) {
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (IOException | RuntimeException e) {
+                if (events.broken) {
+                    return;
+                }
+                LOG.log(System.Logger.Level.INFO, "transcribing failed: " + e.getMessage());
                 events.send("error", Map.of("message", String.valueOf(e.getMessage())));
             }
         } catch (IOException closed) {
