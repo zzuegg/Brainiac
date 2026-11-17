@@ -1078,6 +1078,8 @@ Voice screen as a model of This PC, saving WAV files, and Auto picks it. A Whisp
 to **Transcribe**, then drop a recording (any audio or video the browser plays; it is turned into
 16 kHz mono in the browser) or **Record** one with the microphone. The text appears piece by piece,
 with times, in the spoken language or in English, and **To chat** puts it in the chat box.
+**Hugging Face → Speech** on the Models screen finds and downloads Whisper and VITS models with
+the files they need.
 
 ```
 GET  /api/models            providers, their keys (names only) and models, and what Auto picks

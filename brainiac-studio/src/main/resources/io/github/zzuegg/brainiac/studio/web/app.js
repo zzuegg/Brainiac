@@ -3754,7 +3754,7 @@
   }
 
   // ---------- downloading models from Hugging Face ----------
-  const H = { open: false, query: "", results: null, hidden: 0, runs: null, searching: false, error: null,
+  const H = { open: false, query: "", kind: "text", results: null, hidden: 0, runs: null, searching: false, error: null,
     repo: null, listing: null, loadingRepo: false, repoError: null, downloads: [], folder: "", timer: 0, deleting: null };
   const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
   const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
@@ -3777,7 +3777,8 @@
   function hubPanel() {
     const res = H.results;
     const list = H.searching ? `<div class="faint pad">Searching…</div>`
-      : !res ? `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`
+      : !res ? (H.kind === "speech" ? `<div class="faint pad">Whisper models write down what is said (<code>openai/whisper-base</code>), VITS models speak (<code>facebook/mms-tts-eng</code>, one per language). Both work on the Voice screen.</div>`
+        : `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`)
       : !res.length ? `<div class="faint pad">Nothing found that the studio runs${H.hidden ? ` (${H.hidden} other model${H.hidden === 1 ? "" : "s"} found)` : ""}.</div>`
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
@@ -3790,7 +3791,8 @@
         <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
       <div id="hub-token-box">${hubToken()}</div>
       <form class="place-path" id="hub-search" autocomplete="off">
-        <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
+        <div class="seg" role="group" aria-label="What kind of model"><button type="button" data-hub-kind="text" aria-pressed="${H.kind === "text"}">Chat</button><button type="button" data-hub-kind="speech" aria-pressed="${H.kind === "speech"}">Speech</button></div>
+        <input class="input" id="hub-q" type="search" placeholder="${H.kind === "speech" ? "Such as whisper base or mms-tts-deu" : "Find a model on Hugging Face"}" value="${esc(H.query)}" aria-label="Model name">
         <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
       ${H.error ? `<div class="flag bad">${icon("alert")}<span>${esc(H.error)}</span></div>` : ""}
       <div class="hub-cols">
@@ -3827,7 +3829,7 @@
         <div class="meter wide"><i style="width:${pct.toFixed(1)}%;${d.state === "failed" ? "background:var(--bad)" : d.state === "done" ? "background:var(--ok)" : ""}"></i></div>
         <span class="mono faint tnum st">${esc(status)}</span>
         <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}">${icon("stop")}Stop</button>`
-          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button><button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
+          : d.state === "done" ? `${d.family === "whisper" || d.family === "vits" ? `<button class="btn sm" data-voice-with="${esc(d.model)}" data-voice-mode="${d.family === "whisper" ? "listen" : "speak"}">${icon("speech")}${d.family === "whisper" ? "Transcribe with it" : "Speak with it"}</button>` : `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button>`}<button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
           : `<button class="btn sm" data-hub-retry="${esc(d.id)}">${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
         ${d.error ? `<div class="why bad">${esc(d.error)}</div>` : ""}
       </div>`;
@@ -3846,7 +3848,7 @@
   }
   async function hubSearch() {
     H.searching = true; H.error = null; renderHub();
-    try { const r = await postJson("/api/hub/search", { query: H.query }); H.results = r.models || []; H.hidden = r.hidden || 0; }
+    try { const r = await postJson("/api/hub/search", { query: H.query, kind: H.kind }); H.results = r.models || []; H.hidden = r.hidden || 0; }
     catch (e) { H.error = e.message; H.results = null; }
     H.searching = false; renderHub();
   }
@@ -3906,6 +3908,16 @@
     bindHubToken();
     $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
     $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
+    $$("[data-hub-kind]").forEach(b => b.addEventListener("click", () => {
+      if (H.kind === b.dataset.hubKind) return;
+      H.kind = b.dataset.hubKind; H.results = null; H.repo = null; H.listing = null; renderHub(); $("#hub-q")?.focus();
+    }));
+    $$("[data-voice-with]").forEach(b => b.addEventListener("click", () => {
+      G.mode = b.dataset.voiceMode; store.set("voMode", G.mode);
+      if (G.mode === "listen") { G.trModel = b.dataset.voiceWith; store.set("trModel", G.trModel); }
+      else { G.voModel = b.dataset.voiceWith; store.set("voModel", G.voModel); }
+      go("voice");
+    }));
     $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });
     $$("[data-repo]").forEach(b => b.addEventListener("click", () => hubRepo(b.dataset.repo)));
     $$("[data-download]").forEach(b => b.addEventListener("click", async () => {

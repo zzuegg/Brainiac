@@ -65,7 +65,8 @@ import java.util.Map;
  *       models on this PC (a {@code .gguf} file, a Hugging Face model folder or a folder holding them),
  *       and with {@code "remove": true} forgets one; {@code POST /api/local/browse} with {@code {"path":
  *       "D:/models"}} lists that folder's subfolders and models to pick from (no path: where to start).
- *   <li>{@code POST /api/hub/search} with {@code {"query": "qwen2.5"}} finds text generation
+ *   <li>{@code POST /api/hub/search} with {@code {"query": "qwen2.5"}} ({@code "kind": "speech"} for
+ *       Whisper and VITS speech models) finds text generation
  *       models on Hugging Face that the core runs; {@code POST /api/hub/files} with {@code {"repo": "..."}}
  *       lists what can be downloaded from one and whether the studio runs it; {@code POST
  *       /api/hub/download} with {@code {"repo": "...", "option": "folder" or a GGUF file}} starts a
@@ -154,7 +155,7 @@ final class ChatRoutes {
                 Exchanges.error(ex, 400, e.getMessage());
             }
         });
-        server.post("/api/hub/search", ex -> hub(ex, body -> chat.hub().search(Json.string(body, "query", ""))));
+        server.post("/api/hub/search", ex -> hub(ex, body -> chat.hub().search(Json.string(body, "query", ""), Json.string(body, "kind", "text"))));
         server.post("/api/hub/files", ex -> hub(ex, body -> chat.hub().files(Json.string(body, "repo", "").strip())));
         server.post("/api/hub/download", ex -> hub(ex, body -> chat.hub().download(Json.string(body, "repo", "").strip(),
                 Json.string(body, "option", ""))));
