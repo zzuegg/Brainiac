@@ -933,6 +933,21 @@ public final class PretrainedTokenizer implements Tokenizer {
      * @throws IllegalStateException if the model has no chat template
      */
     public String applyChatTemplate(List<? extends Map<String, ?>> messages, boolean addGenerationPrompt) {
+        return applyChatTemplate(messages, addGenerationPrompt, Map.of());
+    }
+
+    /**
+     * Renders a conversation with further template variables, such as the {@code tools} a
+     * model may call ({@code [{"type": "function", "function": {"name": ..., "description":
+     * ..., "parameters": {...}}}]} in the format Hugging Face templates expect).
+     *
+     * @param messages the conversation
+     * @param addGenerationPrompt whether to open the assistant's turn
+     * @param variables more variables for the template
+     * @return the prompt text
+     */
+    public String applyChatTemplate(List<? extends Map<String, ?>> messages, boolean addGenerationPrompt,
+            Map<String, ?> variables) {
         if (chatTemplate == null) {
             throw new IllegalStateException("this tokenizer has no chat template");
         }
@@ -944,6 +959,7 @@ public final class PretrainedTokenizer implements Tokenizer {
         Map<String, Object> extra = new HashMap<>();
         extra.put("bos_token", bos == null ? "" : token(bos));
         extra.put("eos_token", eos == null ? "" : token(eos));
+        variables.forEach(extra::put);
         return t.render(messages, addGenerationPrompt, extra);
     }
 

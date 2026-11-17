@@ -132,4 +132,151 @@ public final class PreferenceLosses {
     public static Var simpo(Var meanLogpChosen, Var meanLogpRejected, float beta, float gamma) {
         return logSigmoid(meanLogpChosen.sub(meanLogpRejected).mul(beta).sub(gamma)).mean().neg();
     }
+
+    /**
+     * The reference-relative log-ratio margin
+     * {@code h = (log pi(w) - log ref(w)) - (log pi(l) - log ref(l))} that every DPO-family
+     * loss is a function of.
+     *
+     * @param policyChosen {@code log pi(y_w | x)}
+     * @param policyRejected {@code log pi(y_l | x)}
+     * @param refChosen {@code log pi_ref(y_w | x)}
+     * @param refRejected {@code log pi_ref(y_l | x)}
+     * @return the margins {@code [batch]}
+     */
+    public static Var margin(Var policyChosen, Var policyRejected, Var refChosen, Var refRejected) {
+        return policyChosen.sub(refChosen).sub(policyRejected.sub(refRejected));
+    }
+
+    /**
+     * Direct preference optimization (Rafailov et al. 2023,
+     * <a href="https://arxiv.org/abs/2305.18290">arXiv:2305.18290</a>),
+     * {@code -log sigmoid(beta h)}.
+     *
+     * @param policyChosen {@code log pi(y_w | x)}
+     * @param policyRejected {@code log pi(y_l | x)}
+     * @param refChosen {@code log pi_ref(y_w | x)}
+     * @param refRejected {@code log pi_ref(y_l | x)}
+     * @param beta the inverse temperature of the implicit reward
+     * @return the DPO loss
+     */
+    public static Var dpo(Var policyChosen, Var policyRejected, Var refChosen, Var refRejected, float beta) {
+        return logSigmoid(margin(policyChosen, policyRejected, refChosen, refRejected).mul(beta)).mean().neg();
+    }
+
+    /**
+     * Conservative DPO (cDPO; Mitchell 2023, "A note on DPO with noisy preferences"): DPO with
+     * label smoothing. Each label is trusted only with probability {@code 1 - epsilon}:
+     * {@code -(1 - eps) log sigmoid(beta h) - eps log sigmoid(-beta h)}. The optimum margin is
+     * finite ({@code log((1 - eps) / eps) / beta}), so flipped labels cannot drive the
+     * margins to infinity and the model does not overfit them.
+     *
+     * @param policyChosen {@code log pi(y_w | x)}
+     * @param policyRejected {@code log pi(y_l | x)}
+     * @param refChosen {@code log pi_ref(y_w | x)}
+     * @param refRejected {@code log pi_ref(y_l | x)}
+     * @param beta the inverse temperature
+     * @param epsilon the assumed share of flipped labels, in {@code [0, 0.5)}
+     * @return the cDPO loss
+     */
+    public static Var conservativeDpo(Var policyChosen, Var policyRejected, Var refChosen, Var refRejected,
+            float beta, float epsilon) {
+        Var h = margin(policyChosen, policyRejected, refChosen, refRejected).mul(beta);
+        return logSigmoid(h).mul(1 - epsilon).add(logSigmoid(h.neg()).mul(epsilon)).mean().neg();
+    }
+
+    /**
+     * Robust DPO (rDPO; Chowdhury et al. 2024,
+     * <a href="https://arxiv.org/abs/2403.00409">arXiv:2403.00409</a>): an unbiased estimate
+     * of the clean-label DPO loss under labels flipped at rate {@code epsilon},
+     * {@code [(1 - eps) l(beta h) - eps l(-beta h)] / (1 - 2 eps)} with
+     * {@code l(x) = -log sigmoid(x)}. Unlike cDPO it is not a smoothed loss but a
+     * de-biased one: its expectation over the noise equals DPO on the true labels.
+     *
+     * @param policyChosen {@code log pi(y_w | x)}
+     * @param policyRejected {@code log pi(y_l | x)}
+     * @param refChosen {@code log pi_ref(y_w | x)}
+     * @param refRejected {@code log pi_ref(y_l | x)}
+     * @param beta the inverse temperature
+     * @param epsilon the known flip rate, in {@code [0, 0.5)}
+     * @return the rDPO loss
+     */
+    public static Var robustDpo(Var policyChosen, Var policyRejected, Var refChosen, Var refRejected, float beta,
+            float epsilon) {
+        if (!(epsilon >= 0 && epsilon < 0.5f)) {
+            throw new IllegalArgumentException("epsilon must be in [0, 0.5), got " + epsilon);
+        }
+        Var h = margin(policyChosen, policyRejected, refChosen, refRejected).mul(beta);
+        Var clean = logSigmoid(h).neg();
+        Var flipped = logSigmoid(h.neg()).neg();
+        return clean.mul(1 - epsilon).sub(flipped.mul(epsilon)).mul(1 / (1 - 2 * epsilon)).mean();
+    }
+
+    /**
+     * DPO-Positive (DPOP, Pal et al. 2024,
+     * <a href="https://arxiv.org/abs/2402.13228">arXiv:2402.13228</a>): plain DPO can widen
+     * the margin while <em>lowering</em> the chosen answer's likelihood (both fall, the
+     * rejected faster). DPOP subtracts a penalty inside the sigmoid whenever the chosen
+     * log-likelihood drops below the reference:
+     * {@code -log sigmoid(beta (h - lambda max(0, log ref(w) - log pi(w))))}.
+     *
+     * @param policyChosen {@code log pi(y_w | x)}
+     * @param policyRejected {@code log pi(y_l | x)}
+     * @param refChosen {@code log pi_ref(y_w | x)}
+     * @param refRejected {@code log pi_ref(y_l | x)}
+     * @param beta the inverse temperature
+     * @param lambda the penalty weight, for example 50 in the paper
+     * @return the DPOP loss
+     */
+    public static Var dpoPositive(Var policyChosen, Var policyRejected, Var refChosen, Var refRejected, float beta,
+            float lambda) {
+        Var h = margin(policyChosen, policyRejected, refChosen, refRejected);
+        Var drop = refChosen.sub(policyChosen).relu();
+        return logSigmoid(h.sub(drop.mul(lambda)).mul(beta)).mean().neg();
+    }
+
+    /**
+     * The batch-adaptive {@code beta} of beta-DPO (Wu et al. 2024,
+     * <a href="https://arxiv.org/abs/2407.08639">arXiv:2407.08639</a>):
+     * {@code beta = beta0 (1 + alpha (mean(M) - M0))}, where {@code M} is the reward gap of
+     * each pair (here the detached implicit margin {@code h}) and {@code M0} a running mean of
+     * it. Batches with a large gap (easy, informative pairs) get a larger {@code beta} (stay
+     * close to the reference), batches with a small gap a smaller one (move more). The
+     * result is clamped to at least {@code beta0 / 10}.
+     *
+     * @param gaps the reward gaps of the batch, without gradient
+     * @param beta0 the base {@code beta}
+     * @param alpha the adaptation strength, for example 0.6
+     * @param m0 the running mean of the gap
+     * @return the batch's {@code beta}
+     */
+    public static float adaptiveBeta(float[] gaps, float beta0, float alpha, float m0) {
+        double mean = 0;
+        for (float g : gaps) {
+            mean += g;
+        }
+        mean /= Math.max(1, gaps.length);
+        return (float) Math.max(beta0 / 10, beta0 * (1 + alpha * (mean - m0)));
+    }
+
+    /**
+     * beta-DPO: DPO with the batch-adaptive {@code beta} of {@link #adaptiveBeta}, computed
+     * from this batch's own detached margins. The caller keeps {@code m0} as a moving average
+     * of {@link #margin} means.
+     *
+     * @param policyChosen {@code log pi(y_w | x)}
+     * @param policyRejected {@code log pi(y_l | x)}
+     * @param refChosen {@code log pi_ref(y_w | x)}
+     * @param refRejected {@code log pi_ref(y_l | x)}
+     * @param beta0 the base {@code beta}
+     * @param alpha the adaptation strength
+     * @param m0 the running mean of the margin
+     * @return the beta-DPO loss
+     */
+    public static Var betaDpo(Var policyChosen, Var policyRejected, Var refChosen, Var refRejected, float beta0,
+            float alpha, float m0) {
+        Var h = margin(policyChosen, policyRejected, refChosen, refRejected);
+        float beta = adaptiveBeta(h.value().toArray(), beta0, alpha, m0);
+        return logSigmoid(h.mul(beta)).mean().neg();
+    }
 }

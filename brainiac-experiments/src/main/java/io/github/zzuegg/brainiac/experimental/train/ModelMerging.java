@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.train;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Model;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.ArrayList;
@@ -24,6 +25,8 @@ import java.util.function.ToDoubleFunction;
  *   <li><b>DARE</b> (Yu et al. 2024, <a href="https://arxiv.org/abs/2311.03099">arXiv:2311.03099</a>):
  *       drop a random share {@code p} of a task vector's entries and rescale the rest by
  *       {@code 1/(1-p)}; delta weights are so redundant that even 90% can go.</li>
+ *   <li><b>SLERP</b>, <b>Fisher-weighted averaging</b> and <b>RegMean</b>: see {@link #slerp},
+ *       {@link #fisher} and {@link #regMean}.</li>
  *   <li><b>Model soups</b> (Wortsman et al. 2022, <a href="https://arxiv.org/abs/2203.05482">arXiv:2203.05482</a>):
  *       the uniform average of fine-tuned models, or the greedy soup that adds a model
  *       only if the held-out score does not drop.</li>
@@ -220,5 +223,162 @@ public final class ModelMerging {
             }
         }
         return uniformSoup(ingredients);
+    }
+
+    /**
+     * Spherical linear interpolation (SLERP, Shoemake 1985; the default two-model merge of
+     * mergekit, Goddard et al. 2024, <a href="https://arxiv.org/abs/2403.13257">arXiv:2403.13257</a>),
+     * per parameter tensor: {@code sin((1-t) w) / sin(w) a + sin(t w) / sin(w) b} with
+     * {@code w} the angle between the flattened tensors. Unlike the linear average it keeps
+     * the norm of the interpolated weights when the two directions differ, instead of
+     * shrinking it by {@code cos(w / 2)}. Nearly parallel tensors are interpolated linearly.
+     * Apply it to task vectors ({@link #taskVector}) and add the result to the base to merge
+     * fine-tunes of one model.
+     *
+     * @param a the first model's tensors
+     * @param b the second model's tensors
+     * @param t the position, 0 gives {@code a} and 1 gives {@code b}
+     * @return the interpolated tensors
+     */
+    public static List<Tensor> slerp(List<Tensor> a, List<Tensor> b, double t) {
+        List<Tensor> out = new ArrayList<>();
+        for (int i = 0; i < a.size(); i++) {
+            float[] x = a.get(i).toArray();
+            float[] y = b.get(i).toArray();
+            double nx = 0;
+            double ny = 0;
+            double dot = 0;
+            for (int k = 0; k < x.length; k++) {
+                nx += (double) x[k] * x[k];
+                ny += (double) y[k] * y[k];
+                dot += (double) x[k] * y[k];
+            }
+            double cos = nx == 0 || ny == 0 ? 1 : dot / Math.sqrt(nx * ny);
+            double ca;
+            double cb;
+            if (Math.abs(cos) > 0.9995) {
+                ca = 1 - t;
+                cb = t;
+            } else {
+                double omega = Math.acos(Math.max(-1, Math.min(1, cos)));
+                double s = Math.sin(omega);
+                ca = Math.sin((1 - t) * omega) / s;
+                cb = Math.sin(t * omega) / s;
+            }
+            float[] m = new float[x.length];
+            for (int k = 0; k < m.length; k++) {
+                m[k] = (float) (ca * x[k] + cb * y[k]);
+            }
+            out.add(Tensor.of(a.get(i).shape(), m));
+        }
+        return out;
+    }
+
+    /**
+     * Fisher-weighted averaging (Matena and Raffel 2022,
+     * <a href="https://arxiv.org/abs/2111.09832">arXiv:2111.09832</a>): each weight is the
+     * average of the models' values weighted by their diagonal Fisher information,
+     * {@code sum_i F_i theta_i / sum_i F_i}. A weight that one task's loss is sensitive to and
+     * the other's is not takes that task's value, instead of being halved.
+     *
+     * @param models the models' tensors
+     * @param fishers the diagonal Fisher of each model, shaped like its tensors (see
+     *     {@link #diagonalFisher})
+     * @param epsilon added to every Fisher value so weights no model cares about become the
+     *     plain average
+     * @return the merged tensors
+     */
+    public static List<Tensor> fisher(List<List<Tensor>> models, List<List<Tensor>> fishers, double epsilon) {
+        List<Tensor> out = new ArrayList<>();
+        for (int p = 0; p < models.get(0).size(); p++) {
+            float[] num = new float[Math.toIntExact(models.get(0).get(p).shape().size())];
+            float[] den = new float[num.length];
+            for (int m = 0; m < models.size(); m++) {
+                float[] w = models.get(m).get(p).toArray();
+                float[] f = fishers.get(m).get(p).toArray();
+                for (int k = 0; k < num.length; k++) {
+                    double fk = f[k] + epsilon;
+                    num[k] += (float) (fk * w[k]);
+                    den[k] += (float) fk;
+                }
+            }
+            for (int k = 0; k < num.length; k++) {
+                num[k] /= den[k];
+            }
+            out.add(Tensor.of(models.get(0).get(p).shape(), num));
+        }
+        return out;
+    }
+
+    /**
+     * The empirical diagonal Fisher: the mean of squared per-example gradients.
+     *
+     * @param perExampleGradients one list of gradient tensors per example
+     * @return the mean squared gradient of each parameter
+     */
+    public static List<Tensor> diagonalFisher(List<List<Tensor>> perExampleGradients) {
+        List<Tensor> out = new ArrayList<>();
+        int n = perExampleGradients.size();
+        for (int p = 0; p < perExampleGradients.get(0).size(); p++) {
+            Tensor sum = null;
+            for (List<Tensor> g : perExampleGradients) {
+                Tensor sq = g.get(p).square();
+                sum = sum == null ? sq : sum.add(sq);
+            }
+            out.add(sum.div(n));
+        }
+        return out;
+    }
+
+    /**
+     * The Gram matrix {@code X^T X} of a linear layer's inputs, the statistic RegMean needs.
+     *
+     * @param inputs the layer's inputs on a task's data {@code [n, in]}
+     * @return {@code [in, in]}
+     */
+    public static Tensor gram(Tensor inputs) {
+        return inputs.transpose().matmul(inputs);
+    }
+
+    /**
+     * RegMean (Jin et al. 2023, <a href="https://arxiv.org/abs/2212.09849">arXiv:2212.09849</a>):
+     * closed-form merging of a linear layer {@code y = x W}. The merged weight minimizes the
+     * summed squared difference to every model's outputs on that model's own inputs,
+     * {@code W = (sum_i G_i)^-1 sum_i G_i W_i} with {@code G_i = X_i^T X_i}. The off-diagonal
+     * entries of each Gram matrix are scaled by {@code alpha} (the paper's regularizer, which
+     * pulls the solution towards a plain average and keeps the sum invertible).
+     *
+     * @param weights each model's weight {@code [in, out]}
+     * @param grams each model's input Gram matrix {@code [in, in]} (see {@link #gram})
+     * @param alpha the off-diagonal scale in {@code [0, 1]}, for example 0.9
+     * @return the merged weight
+     */
+    public static Tensor regMean(List<Tensor> weights, List<Tensor> grams, double alpha) {
+        int in = weights.get(0).shape().dim(0);
+        Tensor lhs = null;
+        Tensor rhs = null;
+        for (int m = 0; m < weights.size(); m++) {
+            float[] g = grams.get(m).toArray();
+            for (int r = 0; r < in; r++) {
+                for (int c = 0; c < in; c++) {
+                    if (r != c) {
+                        g[r * in + c] *= (float) alpha;
+                    }
+                }
+            }
+            Tensor gt = Tensor.of(grams.get(m).shape(), g);
+            Tensor gw = gt.matmul(weights.get(m));
+            lhs = lhs == null ? gt : lhs.add(gt);
+            rhs = rhs == null ? gw : rhs.add(gw);
+        }
+        float[] l = lhs.toArray();
+        double trace = 0;
+        for (int r = 0; r < in; r++) {
+            trace += l[r * in + r];
+        }
+        for (int r = 0; r < in; r++) {
+            l[r * in + r] += (float) (1e-6 * trace / in + 1e-12);   // a whisper of ridge for unseen inputs
+        }
+        return Linalg.solve(Tensor.of(lhs.shape(), l), rhs);
     }
 }
