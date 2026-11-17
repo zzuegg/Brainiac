@@ -48,4 +48,24 @@ class ContinuousControlTest {
         System.out.println("DDPG random " + random + " trained " + trained);
         assertTrue(trained > random + 150, trained + " vs " + random);
     }
+
+    @Test
+    void cemPlanningWithALearnedModelSwingsThePendulum() {
+        Pendulum env = new Pendulum(100);
+        double random = Rl.evaluate(Agent.random(env.actionSpace(), 3), env, 2, 9);
+        CemPlanner.Dynamics model = CemPlanner.learn(env,
+                io.github.zzuegg.brainiac.rl.Nets.mlp(4, 3, Activation.RELU, 1, 64, 64), 3000, 1500, 1);
+        CemPlanner.Reward reward = (o, a) -> {
+            double angle = Math.atan2(o[1], o[0]);
+            double u = Math.max(-2, Math.min(2, a[0]));
+            return -(angle * angle + 0.1 * o[2] * o[2] + 0.001 * u * u);
+        };
+        CemPlanner mpc = CemPlanner.of(model, reward, (io.github.zzuegg.brainiac.rl.Space.Box) env.actionSpace())
+                .horizon(25).search(100, 10, 4).seed(1);
+        long t = System.nanoTime();
+        double planned = Rl.evaluate(mpc, env, 2, 9);
+        System.out.println("CEM-MPC random " + random + " planned " + planned + " " + (System.nanoTime() - t) / 1e9
+                + "s");
+        assertTrue(planned > random + 300, planned + " vs " + random);
+    }
 }

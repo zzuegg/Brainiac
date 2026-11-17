@@ -149,4 +149,51 @@ class ForecastingLayersTest {
         assertTrue(coverage > 0.5 && coverage <= 1.0, "coverage " + coverage);
         assertTrue(err < naiveErr / 2, "median forecast should beat naive");
     }
+
+    @Test
+    void pinballLossLearnsPredictionIntervals() {
+        SplittableRandom r = new SplittableRandom(4);
+        io.github.zzuegg.brainiac.nn.Model m = io.github.zzuegg.brainiac.nn.Model.sequential().input(1)
+                .dense(32, io.github.zzuegg.brainiac.nn.Activation.RELU).dense(3).seed(1).build();
+        Optimizer opt = Optimizer.adam(0.01f);
+        float[] qs = {0.1f, 0.5f, 0.9f};
+        for (int s = 0; s < 800; s++) {
+            float[] x = new float[128];
+            float[] y = new float[128];
+            for (int i = 0; i < 128; i++) {
+                x[i] = (float) r.nextDouble(-2, 2);
+                y[i] = (float) (x[i] + (0.2 + Math.abs(x[i])) * r.nextGaussian());
+            }
+            Var loss = QuantileLoss.pinball(m.forward(Var.of(Tensor.of(Shape.of(128, 1), x)), true),
+                    Tensor.of(Shape.of(128, 1), y), qs);
+            loss.backward();
+            opt.step(m.parameters());
+        }
+        int inside = 0;
+        int below = 0;
+        int n = 2000;
+        float[] x = new float[n];
+        float[] y = new float[n];
+        for (int i = 0; i < n; i++) {
+            x[i] = (float) r.nextDouble(-2, 2);
+            y[i] = (float) (x[i] + (0.2 + Math.abs(x[i])) * r.nextGaussian());
+        }
+        float[] p = m.forward(Var.of(Tensor.of(Shape.of(n, 1), x))).value().toArray();
+        double width0 = 0;
+        double width2 = 0;
+        for (int i = 0; i < n; i++) {
+            inside += y[i] >= p[3 * i] && y[i] <= p[3 * i + 2] ? 1 : 0;
+            below += y[i] < p[3 * i + 1] ? 1 : 0;
+            if (Math.abs(x[i]) < 0.3) {
+                width0 += p[3 * i + 2] - p[3 * i];
+            } else if (Math.abs(x[i]) > 1.7) {
+                width2 += p[3 * i + 2] - p[3 * i];
+            }
+        }
+        System.out.printf("pinball: 80%% interval coverage %.3f, median below-fraction %.3f%n", inside / (double) n,
+                below / (double) n);
+        assertEquals(0.8, inside / (double) n, 0.06);
+        assertEquals(0.5, below / (double) n, 0.06);
+        assertTrue(width2 > width0, "intervals should widen where noise grows");
+    }
 }

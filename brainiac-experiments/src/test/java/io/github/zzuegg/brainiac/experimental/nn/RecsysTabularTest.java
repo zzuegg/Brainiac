@@ -176,4 +176,41 @@ class RecsysTabularTest {
         System.out.printf("two-tower recall@10 on new users %.3f (random %.3f)%n", recall, 10.0 / 300);
         assertTrue(recall > 5 * 10.0 / 300, "recall " + recall);
     }
+
+    @Test
+    void bprMatrixFactorizationRanksHeldOutInteractions() {
+        SyntheticRecsys.Preferences data = SyntheticRecsys.preferences(200, 300, 6, 12, 0.1, 10, 1);
+        BprMatrixFactorization mf = new BprMatrixFactorization(200, 300, 16, 1);
+        SplittableRandom r = new SplittableRandom(2);
+        for (int s = 0; s < 600; s++) {
+            int[] u = new int[128];
+            int[] pos = new int[128];
+            int[] neg = new int[128];
+            for (int i = 0; i < 128; i++) {
+                u[i] = r.nextInt(200);
+                pos[i] = data.relevant()[u[i]][r.nextInt(7)]; // the first 7 are observed, 3 held out
+                neg[i] = r.nextInt(300);
+            }
+            mf.trainStep(u, pos, neg);
+        }
+        double hits = 0;
+        for (int u = 0; u < 200; u++) {
+            float[] sc = mf.scores(u);
+            for (int k = 0; k < 7; k++) {
+                sc[data.relevant()[u][k]] = Float.NEGATIVE_INFINITY;
+            }
+            final float[] score = sc;
+            int[] top = java.util.stream.IntStream.range(0, 300).boxed()
+                    .sorted((a, b) -> Float.compare(score[b], score[a])).limit(10).mapToInt(Integer::intValue)
+                    .toArray();
+            for (int t : top) {
+                for (int k = 7; k < 10; k++) {
+                    hits += data.relevant()[u][k] == t ? 1 : 0;
+                }
+            }
+        }
+        double recall = hits / (200 * 3.0);
+        System.out.printf("BPR-MF held-out recall@10 %.3f (random %.3f)%n", recall, 10.0 / 293);
+        assertTrue(recall > 4 * 10.0 / 293, "recall " + recall);
+    }
 }
