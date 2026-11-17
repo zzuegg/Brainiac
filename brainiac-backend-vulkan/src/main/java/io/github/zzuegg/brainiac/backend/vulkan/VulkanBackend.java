@@ -211,7 +211,8 @@ public final class VulkanBackend implements Backend {
                 ready(st);
             }
         }
-        if (Fusion.cost(e) > Fusion.MAX_NODES) {
+        if (Fusion.cost(e) > Fusion.MAX_NODES
+                || out.dtype == DType.FLOAT64 && Fusion.transcendentals(e) > 1) {
             for (Fusion.Src in : Fusion.sources(e)) {
                 ready(in.storage());
             }
