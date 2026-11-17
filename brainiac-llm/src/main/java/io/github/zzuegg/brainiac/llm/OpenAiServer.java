@@ -224,8 +224,33 @@ public final class OpenAiServer implements AutoCloseable {
         }
     }
 
+    private static final System.Logger LOG = System.getLogger(OpenAiServer.class.getName());
+
     private void complete(HttpExchange e, boolean chat) throws IOException {
         try (e) {
+            try {
+                answer(e, chat);
+            } catch (IOException ex) {
+                throw ex;
+            } catch (RuntimeException | Error ex) {
+                // HttpServer drops a handler's exception and the client sees no answer at all
+                LOG.log(System.Logger.Level.ERROR, "request failed", ex);
+                if (e.getResponseCode() < 0) {
+                    error(e, 500, ex.getClass().getSimpleName() + ": " + ex.getMessage());
+                } else {
+                    e.getResponseBody().write(("data: " + Json.write(Map.of("error", Map.of("message",
+                            String.valueOf(ex.getMessage()), "type", "server_error"))) + "\n\n")
+                            .getBytes(StandardCharsets.UTF_8));
+                }
+                if (ex instanceof Error err && !(ex instanceof OutOfMemoryError)) {
+                    throw err;
+                }
+            }
+        }
+    }
+
+    private void answer(HttpExchange e, boolean chat) throws IOException {
+        {
             if (!e.getRequestMethod().equals("POST")) {
                 error(e, 405, "use POST");
                 return;
@@ -420,6 +445,8 @@ public final class OpenAiServer implements AutoCloseable {
     }
 
     /** The assistant's message: with {@code tool_calls} when tools were offered and it called them. */
+    private static final java.util.regex.Pattern HERMES_OPEN = java.util.regex.Pattern.compile("<tool_call>");
+
     private static Map<String, Object> assistant(String text, boolean tools) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("role", "assistant");
@@ -436,6 +463,9 @@ public final class OpenAiServer implements AutoCloseable {
             return m;
         }
         String rest = Agent.content(text.strip());
+        if (!HERMES_OPEN.matcher(text).find()) {
+            rest = "";   // the whole turn was the call, as JSON
+        }
         m.put("content", rest.isEmpty() ? null : rest);
         List<Object> out = new ArrayList<>();
         for (Map<String, Object> c : calls) {
@@ -666,7 +696,7 @@ public final class OpenAiServer implements AutoCloseable {
     private static void error(HttpExchange e, int status, String message) throws IOException {
         Map<String, Object> err = new LinkedHashMap<>();
         err.put("message", message);
-        err.put("type", "invalid_request_error");
+        err.put("type", status >= 500 ? "server_error" : "invalid_request_error");
         json(e, status, Map.of("error", err));
     }
 }
