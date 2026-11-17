@@ -936,6 +936,12 @@ final class VkContext {
     void dispatch(String shader, int x, int y, int z, Slot[] writes, Slot... reads) {
         perShader.merge(shader, 1L, Long::sum);
         long p = pipeline(shader);
+        boolean timed = PROFILE && recording().timed.size() < SUBMIT_EVERY;
+        if (timed) {
+            // alone: the first timestamp waits for everything before it. Before the hazard
+            // tracking, which a barrier clears: this dispatch's own accesses must stay recorded
+            barrier();
+        }
         long[] w = addresses(writes);
         boolean hazard = false;
         for (long a : w) {
@@ -948,9 +954,7 @@ final class VkContext {
             access(w[i], i == 0 ? addresses(reads) : new long[0]);
         }
         Batch b = recording();
-        boolean timed = PROFILE && b.timed.size() < SUBMIT_EVERY;
         if (timed) {
-            barrier();   // alone: the first timestamp waits for everything before it
             vkCmdWriteTimestamp(b.commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, b.queries, 2 * b.timed.size());
         }
         vkCmdBindPipeline(b.commands, VK_PIPELINE_BIND_POINT_COMPUTE, p);
