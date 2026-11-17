@@ -183,6 +183,11 @@ final class MixerHarness {
      */
     static double train(Layer mixer, Task task, int d, int steps, float lr, long seed,
             java.util.function.Supplier<Var> extraLoss) {
+        return train(mixer, task, d, steps, lr, seed, extraLoss, null);
+    }
+
+    static double train(Layer mixer, Task task, int d, int steps, float lr, long seed,
+            java.util.function.Supplier<Var> extraLoss, Runnable afterStep) {
         SplittableRandom random = new SplittableRandom(seed);
         Harness h = new Harness(mixer, task.vocabulary(), d, random);
         Optimizer opt = Optimizer.adam(lr);
@@ -198,6 +203,9 @@ final class MixerHarness {
             }
             loss.backward();
             opt.step(params);
+            if (afterStep != null) {
+                afterStep.run();
+            }
         }
         Batch test = task.batch(new SplittableRandom(seed + 1000), 256);
         return accuracy(h.logits(test.inputs(), mixer::forward), test.targets());
