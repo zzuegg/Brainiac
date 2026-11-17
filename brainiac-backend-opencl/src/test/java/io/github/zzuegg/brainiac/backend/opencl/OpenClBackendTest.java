@@ -177,6 +177,27 @@ class OpenClBackendTest {
     }
 
     @Test
+    void releasingWhatAnEvaluatedProductReadsKeepsItsValue() {
+        // evaluate leaves a product recorded (a later chain may become its epilogue): releasing
+        // the operands it reads must not free them under it
+        Tensor a = random(17, 20, 30);
+        Tensor b = random(18, 30, 12);
+        Tensor expected = a.matmul(b);
+        Tensor x = a.to(gpu).mul(2);
+        Tensor y = b.to(gpu).add(0);
+        Tensor.evaluate(List.of(x, y));
+        Tensor product = x.matmul(y);
+        Tensor.evaluate(List.of(product));
+        x.release();
+        y.release();
+        double[] e = expected.toDoubleArray();
+        double[] actual = product.toDoubleArray();
+        for (int i = 0; i < e.length; i++) {
+            assertEquals(2 * e[i], actual[i], 1e-4, "at " + i);
+        }
+    }
+
+    @Test
     void networksTrainTheSameOnBothDevices() {
         float[] cpuLoss = train(CPU);
         float[] gpuLoss = train(gpu);

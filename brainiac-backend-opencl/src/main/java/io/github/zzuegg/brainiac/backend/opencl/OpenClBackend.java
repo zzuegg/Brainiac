@@ -40,6 +40,7 @@ import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.WeakHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -1332,6 +1333,13 @@ public final class OpenClBackend implements Backend {
         if (s.pending != null || mem == null || s.released) {
             return;   // pending results may still be inlined elsewhere: left to the collector
         }
+        // a recorded product (left pending by evaluate, to take a later chain as its epilogue)
+        // may still read this buffer: it runs now, before the buffer goes
+        for (ClStorage p : List.copyOf(pendingMatMuls)) {
+            if (p.pending instanceof Fused.MatMul && reads(p, s, Collections.newSetFromMap(new IdentityHashMap<>()))) {
+                ready(p);
+            }
+        }
         s.released = true;
         s.buffer.mem = null;   // the cleaner then has nothing to do
         long bytes = s.buffer.bytes;
@@ -1340,6 +1348,49 @@ public final class OpenClBackend implements Backend {
         } else {
             allocated.addAndGet(-slabs.free(cl, mem, bytes));
         }
+    }
+
+    /**
+     * Products recorded for fusion and not run yet, weakly held: one whose result is dropped
+     * unrun is collected with it.
+     */
+    private final Set<ClStorage> pendingMatMuls = Collections.newSetFromMap(new WeakHashMap<>());
+
+    /** Whether computing {@code p} reads {@code s}'s buffer, directly or through pending inputs. */
+    private static boolean reads(ClStorage p, ClStorage s, Set<ClStorage> seen) {
+        if (p == s) {
+            return true;
+        }
+        if (p.pending == null || !seen.add(p)) {
+            return false;
+        }
+        if (p.pending instanceof Fused.MatMul mm) {
+            for (Object a : mm.args()) {
+                if (a instanceof ClStorage c && reads(c, s, seen)) {
+                    return true;
+                }
+            }
+            return (mm.a() != null && reads(mm.a(), s, seen)) || (mm.b() != null && reads(mm.b(), s, seen));
+        }
+        if (p.pending instanceof Fused.Reduce r) {
+            return reads(r.x(), s, seen);
+        }
+        for (ClStorage c : Fused.inputs(p.pending)) {
+            if (reads(c, s, seen)) {
+                return true;
+            }
+        }
+        for (ClStorage c : Fused.matmuls(p.pending).keySet()) {
+            if (reads(c, s, seen)) {
+                return true;
+            }
+        }
+        for (ClStorage c : Fused.reduces(p.pending)) {
+            if (reads(c, s, seen)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** A device buffer for a storage being written for the first time, from the pool if one fits. */
@@ -2117,6 +2168,7 @@ public final class OpenClBackend implements Backend {
             }
             // not a chain boundary: the chain that uses the product becomes its epilogue
             o.pending = new Fused.MatMul(args, global, local, pa, pb, w);
+            pendingMatMuls.add(o);
             o.pendingNodes = 1;
             o.pendingGeneration = generation;
             return;
