@@ -6,6 +6,7 @@ import static org.lwjgl.vulkan.VK12.*;
 import org.lwjgl.vulkan.EXTSubgroupSizeControl;
 import org.lwjgl.vulkan.KHRCooperativeMatrix;
 import org.lwjgl.vulkan.VkPhysicalDeviceProperties2;
+import org.lwjgl.vulkan.VkQueryPoolCreateInfo;
 import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlFeaturesEXT;
 import org.lwjgl.vulkan.VkPhysicalDeviceSubgroupSizeControlPropertiesEXT;
 import org.lwjgl.vulkan.VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT;
@@ -204,7 +205,21 @@ final class VkContext {
         long fence;
         int count;
         final List<Runnable> done = new ArrayList<>();
+        /** With {@link #PROFILE}: timestamps around each dispatch, and the shaders they time. */
+        long queries;
+        final List<String> timed = new ArrayList<>();
     }
+
+    /**
+     * {@code -Dbrainiac.vulkan.profile=true}: every dispatch runs alone (a barrier before it)
+     * between two timestamps, and the device time per shader is counted. Slower, as nothing
+     * overlaps, but shows which shaders the time goes to.
+     */
+    static final boolean PROFILE = Boolean.getBoolean("brainiac.vulkan.profile");
+    /** Nanoseconds per timestamp tick. */
+    private float timestampPeriod = 1;
+    /** Device nanoseconds per shader, with {@link #PROFILE}. */
+    final Map<String, Long> shaderNanos = new HashMap<>();
 
     VkContext() {
         try (MemoryStack st = stackPush()) {
@@ -240,6 +255,11 @@ final class VkContext {
         try {
             Candidate chosen = choose();
             physical = chosen.device;
+            try (MemoryStack ts = stackPush()) {
+                VkPhysicalDeviceProperties tp = VkPhysicalDeviceProperties.calloc(ts);
+                vkGetPhysicalDeviceProperties(physical, tp);
+                timestampPeriod = tp.limits().timestampPeriod();
+            }
             deviceName = chosen.name;
             deviceList = candidatesText;
             family = chosen.family;
@@ -834,9 +854,18 @@ final class VkContext {
                     check(vkCreateFence(device, VkFenceCreateInfo.calloc(st).sType$Default(), null, lp),
                             "vkCreateFence");
                     b.fence = lp.get(0);
+                    if (PROFILE) {
+                        check(vkCreateQueryPool(device, VkQueryPoolCreateInfo.calloc(st).sType$Default()
+                                .queryType(VK_QUERY_TYPE_TIMESTAMP).queryCount(2 * SUBMIT_EVERY), null, lp),
+                                "vkCreateQueryPool");
+                        b.queries = lp.get(0);
+                    }
                 }
                 check(vkBeginCommandBuffer(b.commands, VkCommandBufferBeginInfo.calloc(st).sType$Default()
                         .flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)), "vkBeginCommandBuffer");
+                if (PROFILE) {
+                    vkCmdResetQueryPool(b.commands, b.queries, 0, 2 * SUBMIT_EVERY);
+                }
             }
             current = b;
         }
@@ -919,10 +948,19 @@ final class VkContext {
             access(w[i], i == 0 ? addresses(reads) : new long[0]);
         }
         Batch b = recording();
+        boolean timed = PROFILE && b.timed.size() < SUBMIT_EVERY;
+        if (timed) {
+            barrier();   // alone: the first timestamp waits for everything before it
+            vkCmdWriteTimestamp(b.commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, b.queries, 2 * b.timed.size());
+        }
         vkCmdBindPipeline(b.commands, VK_PIPELINE_BIND_POINT_COMPUTE, p);
         push.flip();
         vkCmdPushConstants(b.commands, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push);
         vkCmdDispatch(b.commands, x, y, z);
+        if (timed) {
+            vkCmdWriteTimestamp(b.commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, b.queries, 2 * b.timed.size() + 1);
+            b.timed.add(shader);
+        }
         dispatches++;
         recorded(b);
     }
@@ -1144,6 +1182,18 @@ final class VkContext {
                 waitNanos += System.nanoTime() - t;
             }
             check(vkResetFences(device, fence), "vkResetFences");
+        }
+        if (!b.timed.isEmpty()) {
+            try (MemoryStack st = stackPush()) {
+                LongBuffer ticks = st.mallocLong(2 * b.timed.size());
+                check(vkGetQueryPoolResults(device, b.queries, 0, 2 * b.timed.size(), ticks, 8,
+                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT), "vkGetQueryPoolResults");
+                for (int i = 0; i < b.timed.size(); i++) {
+                    long ns = (long) ((ticks.get(2 * i + 1) - ticks.get(2 * i)) * (double) timestampPeriod);
+                    shaderNanos.merge(b.timed.get(i), Math.max(0, ns), Long::sum);
+                }
+            }
+            b.timed.clear();
         }
         check(vkResetCommandBuffer(b.commands, 0), "vkResetCommandBuffer");
         for (Runnable r : b.done) {

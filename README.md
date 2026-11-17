@@ -797,7 +797,9 @@ System properties: `brainiac.vulkan.devices`
 (`gpu` by default, `all` to include CPU drivers such as lavapipe), `brainiac.vulkan.device`
 (index; a dedicated graphics card is preferred), `brainiac.vulkan.memory` (MB budget), `brainiac.vulkan.validate` (`true` turns on the Khronos
 validation layer from the Vulkan SDK; `-Pbrainiac.vulkan.validate=true` for the tests),
-`brainiac.vulkan.statistics` (`true` prints the counts below at exit).
+`brainiac.vulkan.statistics` (`true` prints the counts below at exit), `brainiac.vulkan.profile` (`true` runs
+every dispatch alone between GPU timestamps and adds the device time per shader to the statistics; the
+generated shaders are written to `brainiac-fused` in the temp folder).
 `VulkanBackend.status()` lists the devices found and `statistics()` counts dispatches,
 barriers and submits. The examples take `--device vulkan` (or `gpu`) to run there. CI runs the tests on lavapipe.
 Without a Vulkan driver the backend reports itself unavailable and its tests are skipped.

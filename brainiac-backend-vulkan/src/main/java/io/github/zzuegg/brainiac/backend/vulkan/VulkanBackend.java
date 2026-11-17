@@ -157,8 +157,29 @@ public final class VulkanBackend implements Backend {
                 + " shaders generated in " + compileNanos / 1_000_000 + " ms), " + vk.barriers + " barriers, " + vk.submits + " submits, " + vk.waits
                 + " waits, " + vk.reclaims + " reclaims, " + vk.collections + " collections, " + (vk.allocated() >> 20) + " MB allocated, " + (vk.spilled() >> 20) + " MB spilled, " + (vk.peakInUse() >> 20) + " MB peak in use; most dispatched: "
                 + vk.perShader.entrySet().stream().sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed())
-                        .limit(12).map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", "));
+                        .limit(12).map(e -> e.getKey() + " " + e.getValue()).collect(java.util.stream.Collectors.joining(", "))
+                + (VkContext.PROFILE ? profile() : "");
     }
+
+    /** Device time per shader ({@code -Dbrainiac.vulkan.profile=true}): total, then the largest. */
+    private String profile() {
+        long total = vk.shaderNanos.values().stream().mapToLong(Long::longValue).sum();
+        return String.format(java.util.Locale.ROOT, "; device time %.1f ms: ", total / 1e6)
+                + vk.shaderNanos.entrySet().stream()
+                        .sorted(java.util.Map.Entry.<String, Long>comparingByValue().reversed()).limit(16)
+                        .map(e -> {
+                            long n = vk.perShader.getOrDefault(e.getKey(), 1L);
+                            return String.format(java.util.Locale.ROOT, "%s %.1f ms (%.0f%%, %d x %.1f us)", e.getKey(),
+                                    e.getValue() / 1e6, 100.0 * e.getValue() / Math.max(1, total), n,
+                                    e.getValue() / 1e3 / Math.max(1, n));
+                        })
+                        .collect(java.util.stream.Collectors.joining(", "))
+                + (fusedShaders.isEmpty() ? "" : "; generated shaders in " + FUSED_DUMP);
+    }
+
+    /** Where {@code -Dbrainiac.vulkan.profile=true} writes the generated shaders, by name. */
+    private static final java.nio.file.Path FUSED_DUMP = java.nio.file.Path.of(System.getProperty("java.io.tmpdir"),
+            "brainiac-fused");
 
     /** Tests: new device-local blocks fail from now on, so memory spills; false lifts that. */
     synchronized void simulateFullDevice(boolean full) {
@@ -319,6 +340,14 @@ public final class VulkanBackend implements Backend {
             byte[] code = compiler.compile(compiler.source(body, dtype));
             name = "fused#" + fusedShaders.size();
             vk.register(name, code);
+            if (VkContext.PROFILE) {
+                try {
+                    java.nio.file.Files.createDirectories(FUSED_DUMP);
+                    java.nio.file.Files.writeString(FUSED_DUMP.resolve(name.replace('#', '_') + ".comp"), body);
+                } catch (java.io.IOException e) {
+                    // only a help for reading the profile
+                }
+            }
             compileNanos += System.nanoTime() - start;
             fusedShaders.put(key, name);
         }
