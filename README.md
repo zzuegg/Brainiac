@@ -36,6 +36,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-train` | Optimizers, training loop, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
+| `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -365,6 +366,32 @@ int eos = tok.eos().orElseThrow();
 String prompt = tok.applyChatTemplate(List.of(              // the model's own Jinja chat template
         ChatTemplate.message("system", "You are terse."),
         ChatTemplate.message("user", "Hi!")), true);
+```
+
+### Running a pretrained language model
+
+`Llama` loads Llama-family models (Llama 2 and 3 with their rope scaling, Mistral, Qwen2,
+SmolLM, TinyLlama) from a Hugging Face directory or a GGUF file. Q8_0 and Q4_0 GGUF
+matrices stay packed in memory. Its logits, greedy and beam-search output are checked
+against transformers. `Generator` writes text with it: temperature, top-k, top-p, min-p,
+repetition penalty, stop tokens and stop strings, streaming that never splits a character,
+batches of prompts (padded on the left) and beam search. Each new token costs one step,
+because the model keeps a key/value cache.
+
+```java
+Path dir = Path.of("Qwen2.5-0.5B-Instruct");
+Llama model = Llama.load(dir, Device.best(), DType.FLOAT16);   // or Llama.load(Path.of("model.Q8_0.gguf"), ...)
+PretrainedTokenizer tok = PretrainedTokenizer.load(dir);
+Generator gen = new Generator(model, tok);
+
+String prompt = tok.applyChatTemplate(List.of(ChatTemplate.message("user", "Name three rivers.")), true);
+Generator.Options options = Generator.Options
+        .sampled(200, Sampling.temperature(0.7f).withTopP(0.9f).withRepetitionPenalty(1.1f), 42)
+        .withStopStrings("<|im_end|>");
+gen.generate(prompt, options, (row, text) -> System.out.print(text));   // streams as it writes
+
+List<Generator.Output> many = gen.generate(List.of("Once", "In a land"), Generator.Options.greedy(50), null);
+int[] best = gen.beamSearch(tok.encode("The capital of France is"), 4, 10, 1.0, null);
 ```
 
 ## Reinforcement learning
