@@ -181,6 +181,11 @@ public final class Device {
             for (Backend b : ServiceLoader.load(Backend.class)) {
                 if (b.isAvailable()) {
                     devices.add(new Device(b));
+                    for (Backend sibling : b.siblings()) {
+                        if (sibling.isAvailable()) {
+                            devices.add(new Device(sibling));
+                        }
+                    }
                 }
             }
             // CPUs first; among GPUs the backend named by -Dbrainiac.gpu (such as "cuda"), then

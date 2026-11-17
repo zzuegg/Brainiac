@@ -583,6 +583,454 @@ template <class D> __device__ void matmul_k(const typename D::T* a, const typena
     }
 }
 
+// ---------------------------------------------------------------- products of few rows
+
+// The weights of a few-row product: a dense row-major [k, n] matrix
+template <class D> struct DenseWeights {
+    const typename D::T* p;
+    i64 n;
+    __device__ __forceinline__ typename D::A load(i64 r, i64 c) const { return D::ld(p, r * n + c); }
+};
+
+// ... or a packed one (PackedMatrix): levels of 2 to 8 bits, two to a byte as nibbles when
+// `nibbles` (rows 2i and 2i + 1 in the low and high half), times a scale per group of rows
+// and column, plus an offset when `offsets` is not null
+struct PackedWeights {
+    const signed char* levels;
+    const float* scales;
+    const float* offsets;
+    i64 n;
+    int group;
+    int nibbles;
+    __device__ __forceinline__ float level(i64 r, i64 c) const {
+        if (nibbles) {
+            int b = levels[(r >> 1) * n + c];
+            return (float) ((r & 1) == 0 ? ((int) (signed char) (b << 4)) >> 4 : b >> 4);
+        }
+        return (float) levels[r * n + c];
+    }
+    __device__ __forceinline__ float load(i64 r, i64 c) const {
+        i64 s = (r / group) * n + c;
+        float v = level(r, c) * scales[s];
+        return offsets ? v + offsets[s] : v;
+    }
+};
+
+#define FEW_ROWS 16
+#define FEW_TILE 64
+
+// out[m, n] = a[m, k] x w[k, n] for m <= FEW_ROWS: a thread per column, each reading its column
+// of w once for every row of a. Blocks over columns (x) and pieces of k (y); with several pieces
+// each writes float partial sums to part[piece, m, n], added up in order by few_sum.
+template <class D, class W> __device__ void few_k(const typename D::T* a, W w, float* part, typename D::T* out,
+        int m, int k, int n, int chunk) {
+    typedef typename D::A A;
+    __shared__ A as[FEW_ROWS][FEW_TILE];
+    i64 c = (i64) blockIdx.x * GROUP + threadIdx.x;
+    int k0 = blockIdx.y * chunk;
+    int k1 = min(k, k0 + chunk);
+    A acc[FEW_ROWS];
+#pragma unroll
+    for (int r = 0; r < FEW_ROWS; r++) {
+        acc[r] = A(0);
+    }
+    for (int t = k0; t < k1; t += FEW_TILE) {
+        int len = min(FEW_TILE, k1 - t);
+        for (int i = threadIdx.x; i < FEW_ROWS * FEW_TILE; i += GROUP) {
+            int r = i / FEW_TILE;
+            int kk = i % FEW_TILE;
+            as[r][kk] = r < m && kk < len ? D::ld(a, (i64) r * k + t + kk) : A(0);
+        }
+        __syncthreads();
+        if (c < n) {
+            for (int kk = 0; kk < len; kk++) {
+                A wv = (A) w.load(t + kk, c);
+#pragma unroll
+                for (int r = 0; r < FEW_ROWS; r++) {
+                    acc[r] += as[r][kk] * wv;
+                }
+            }
+        }
+        __syncthreads();
+    }
+    if (c < n) {
+#pragma unroll
+        for (int r = 0; r < FEW_ROWS; r++) {
+            if (r >= m) {
+                break;
+            }
+            if (gridDim.y == 1) {
+                D::st(out, (i64) r * n + c, acc[r]);
+            } else {
+                part[((i64) blockIdx.y * m + r) * n + c] = (float) acc[r];
+            }
+        }
+    }
+}
+
+template <class D> __device__ void few_sum_k(const float* part, typename D::T* out, i64 mn, int pieces) {
+    typedef typename D::A A;
+    FOR_EACH(i, mn) {
+        A acc = A(0);
+        for (int p = 0; p < pieces; p++) {
+            acc += (A) part[(i64) p * mn + i];
+        }
+        D::st(out, i, acc);
+    }
+}
+
+template <class D> __device__ void unpack_packed_k(PackedWeights w, typename D::T* out, i64 rows) {
+    typedef typename D::A A;
+    FOR_EACH(i, rows * w.n) {
+        D::st(out, i, (A) w.load(i / w.n, i % w.n));
+    }
+}
+
+// ---------------------------------------------------------------- attention
+
+// q [batch, heads, tq, dk], k [batch, kvHeads, tk, dk], v [batch, kvHeads, tk, dv];
+// query head h reads key/value head h / (heads / kvHeads); causal: query i sees keys
+// j <= i + tk - tq. A warp per query row (and piece of its keys), lane l holding dimensions
+// l, l + 32, ... of q and of the output, so heads up to 32 * ATT_LANES.
+#define ATT_LANES 8
+
+__device__ __forceinline__ float warp_sum(float v) {
+    for (int o = 16; o > 0; o >>= 1) {
+        v += __shfl_xor_sync(0xffffffffu, v, o);
+    }
+    return v;
+}
+
+__device__ __forceinline__ float neg_inf() { return -__int_as_float(0x7f800000); }
+
+struct AttShape {
+    int heads;
+    int kvHeads;
+    int tq;
+    int tk;
+    int dk;
+    int dv;
+    float scale;
+    int causal;
+};
+
+// the last key query i sees, plus one
+__device__ __forceinline__ int key_end(AttShape s, int i) {
+    return s.causal ? max(0, min(s.tk, i + s.tk - s.tq + 1)) : s.tk;
+}
+
+// rows * parts warps; parts == 1 writes out and lse, otherwise partial (max, sum, acc[dv]) per piece
+template <class D> __device__ void attention_k(const typename D::T* q, const typename D::T* k,
+        const typename D::T* v, typename D::T* out, typename D::T* lse, const typename D::T* bias, float* part,
+        AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3, int parts, int chunk) {
+    int lane = threadIdx.x & 31;
+    i64 w = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    if (w >= rows * parts) {
+        return;
+    }
+    i64 r = w / parts;
+    int p = (int) (w % parts);
+    int i = (int) (r % s.tq);
+    i64 bh = r / s.tq;
+    int h = (int) (bh % s.heads);
+    i64 b = bh / s.heads;
+    i64 kvRow = (b * s.kvHeads + h / (s.heads / s.kvHeads)) * s.tk;
+    float qv[ATT_LANES];
+    float acc[ATT_LANES];
+#pragma unroll
+    for (int t = 0; t < ATT_LANES; t++) {
+        int d = lane + 32 * t;
+        qv[t] = d < s.dk ? (float) D::ld(q, r * s.dk + d) : 0.0f;
+        acc[t] = 0.0f;
+    }
+    float m = neg_inf();
+    float l = 0.0f;
+    int end = min(key_end(s, i), (p + 1) * chunk);
+    for (int j = p * chunk; j < end; j++) {
+        const typename D::T* kr = k + (kvRow + j) * s.dk;
+        float dot = 0.0f;
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < s.dk) {
+                dot += qv[t] * (float) D::ld(kr, d);
+            }
+        }
+        float score = warp_sum(dot) * s.scale;
+        if (hasBias) {
+            score += (float) D::ld(bias, b * b0 + h * b1 + i * b2 + j * b3);
+        }
+        if (score == neg_inf()) {
+            continue;
+        }
+        float mNew = fmaxf(m, score);
+        float correction = expf(m - mNew);
+        float weight = expf(score - mNew);
+        l = l * correction + weight;
+        const typename D::T* vr = v + (kvRow + j) * s.dv;
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < s.dv) {
+                acc[t] = acc[t] * correction + weight * (float) D::ld(vr, d);
+            }
+        }
+        m = mNew;
+    }
+    if (parts == 1) {
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < s.dv) {
+                D::st(out, r * s.dv + d, l > 0 ? acc[t] / l : 0.0f);
+            }
+        }
+        if (lane == 0) {
+            D::st(lse, r, l > 0 ? m + logf(l) : neg_inf());
+        }
+    } else {
+        float* pp = part + w * (s.dv + 2);
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < s.dv) {
+                pp[2 + d] = acc[t];
+            }
+        }
+        if (lane == 0) {
+            pp[0] = m;
+            pp[1] = l;
+        }
+    }
+}
+
+// a warp per row: the pieces' partial results rescaled to a common maximum and added
+template <class D> __device__ void attention_combine_k(const float* part, typename D::T* out, typename D::T* lse,
+        i64 rows, int parts, int dv) {
+    int lane = threadIdx.x & 31;
+    i64 r = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    if (r >= rows) {
+        return;
+    }
+    const float* pr = part + r * parts * (dv + 2);
+    float m = neg_inf();
+    for (int p = 0; p < parts; p++) {
+        if (pr[p * (dv + 2) + 1] > 0) {
+            m = fmaxf(m, pr[p * (dv + 2)]);
+        }
+    }
+    float l = 0.0f;
+    for (int p = 0; p < parts; p++) {
+        float lp = pr[p * (dv + 2) + 1];
+        if (lp > 0) {
+            l += lp * expf(pr[p * (dv + 2)] - m);
+        }
+    }
+    for (int d = lane; d < dv; d += 32) {
+        float acc = 0.0f;
+        for (int p = 0; p < parts; p++) {
+            const float* pp = pr + p * (dv + 2);
+            if (pp[1] > 0) {
+                acc += pp[2 + d] * expf(pp[0] - m);
+            }
+        }
+        D::st(out, r * dv + d, l > 0 ? acc / l : 0.0f);
+    }
+    if (lane == 0) {
+        D::st(lse, r, l > 0 ? m + logf(l) : neg_inf());
+    }
+}
+
+// delta[r] = grad[r] . out[r], a warp per row
+template <class D> __device__ void attention_delta_k(const typename D::T* out, const typename D::T* grad,
+        float* delta, i64 rows, int dv) {
+    int lane = threadIdx.x & 31;
+    i64 r = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    if (r >= rows) {
+        return;
+    }
+    float acc = 0.0f;
+    for (int d = lane; d < dv; d += 32) {
+        acc += (float) D::ld(out, r * dv + d) * (float) D::ld(grad, r * dv + d);
+    }
+    acc = warp_sum(acc);
+    if (lane == 0) {
+        delta[r] = acc;
+    }
+}
+
+// dq[i] = scale * sum_j p_ij (grad_i . v_j - delta_i) k_j, a warp per query row
+template <class D> __device__ void attention_dq_k(const typename D::T* q, const typename D::T* k,
+        const typename D::T* v, const typename D::T* lse, const typename D::T* grad, const float* delta,
+        typename D::T* dq, AttShape s, i64 rows) {
+    int lane = threadIdx.x & 31;
+    i64 r = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    if (r >= rows) {
+        return;
+    }
+    int i = (int) (r % s.tq);
+    i64 bh = r / s.tq;
+    int h = (int) (bh % s.heads);
+    i64 b = bh / s.heads;
+    i64 kvRow = (b * s.kvHeads + h / (s.heads / s.kvHeads)) * s.tk;
+    float qv[ATT_LANES];
+    float gv[ATT_LANES];
+    float acc[ATT_LANES];
+#pragma unroll
+    for (int t = 0; t < ATT_LANES; t++) {
+        int d = lane + 32 * t;
+        qv[t] = d < s.dk ? (float) D::ld(q, r * s.dk + d) : 0.0f;
+        gv[t] = d < s.dv ? (float) D::ld(grad, r * s.dv + d) : 0.0f;
+        acc[t] = 0.0f;
+    }
+    float l = (float) D::ld(lse, r);
+    float dl = delta[r];
+    int end = key_end(s, i);
+    for (int j = 0; j < end; j++) {
+        const typename D::T* kr = k + (kvRow + j) * s.dk;
+        const typename D::T* vr = v + (kvRow + j) * s.dv;
+        float dot = 0.0f;
+        float dp = 0.0f;
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < s.dk) {
+                dot += qv[t] * (float) D::ld(kr, d);
+            }
+            if (d < s.dv) {
+                dp += gv[t] * (float) D::ld(vr, d);
+            }
+        }
+        float pw = expf(warp_sum(dot) * s.scale - l);
+        float ds = pw * (warp_sum(dp) - dl);
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < s.dk) {
+                acc[t] += ds * (float) D::ld(kr, d);
+            }
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < ATT_LANES; t++) {
+        int d = lane + 32 * t;
+        if (d < s.dk) {
+            D::st(dq, r * s.dk + d, acc[t] * s.scale);
+        }
+    }
+}
+
+// dk[j], dv[j] over every query head of the group and every query that sees key j, a warp per key row
+template <class D> __device__ void attention_dkv_k(const typename D::T* q, const typename D::T* k,
+        const typename D::T* v, const typename D::T* lse, const typename D::T* grad, const float* delta,
+        typename D::T* dk, typename D::T* dvOut, AttShape s, i64 keyRows) {
+    int lane = threadIdx.x & 31;
+    i64 kr = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    if (kr >= keyRows) {
+        return;
+    }
+    int j = (int) (kr % s.tk);
+    i64 bkv = kr / s.tk;
+    int kvh = (int) (bkv % s.kvHeads);
+    i64 b = bkv / s.kvHeads;
+    int group = s.heads / s.kvHeads;
+    float kv[ATT_LANES];
+    float vv[ATT_LANES];
+    float accK[ATT_LANES];
+    float accV[ATT_LANES];
+#pragma unroll
+    for (int t = 0; t < ATT_LANES; t++) {
+        int d = lane + 32 * t;
+        kv[t] = d < s.dk ? (float) D::ld(k, kr * s.dk + d) : 0.0f;
+        vv[t] = d < s.dv ? (float) D::ld(v, kr * s.dv + d) : 0.0f;
+        accK[t] = 0.0f;
+        accV[t] = 0.0f;
+    }
+    // query i sees key j when j <= i + tk - tq
+    int first = s.causal ? max(0, j - (s.tk - s.tq)) : 0;
+    for (int h = kvh * group; h < (kvh + 1) * group; h++) {
+        i64 rowBase = (b * s.heads + h) * s.tq;
+        for (int i = first; i < s.tq; i++) {
+            i64 r = rowBase + i;
+            const typename D::T* qr = q + r * s.dk;
+            const typename D::T* gr = grad + r * s.dv;
+            float dot = 0.0f;
+            float dp = 0.0f;
+            float g[ATT_LANES];
+            float qq[ATT_LANES];
+#pragma unroll
+            for (int t = 0; t < ATT_LANES; t++) {
+                int d = lane + 32 * t;
+                qq[t] = d < s.dk ? (float) D::ld(qr, d) : 0.0f;
+                g[t] = d < s.dv ? (float) D::ld(gr, d) : 0.0f;
+                dot += qq[t] * kv[t];
+                dp += g[t] * vv[t];
+            }
+            float pw = expf(warp_sum(dot) * s.scale - (float) D::ld(lse, r));
+            float ds = pw * (warp_sum(dp) - delta[r]);
+#pragma unroll
+            for (int t = 0; t < ATT_LANES; t++) {
+                accV[t] += pw * g[t];
+                accK[t] += ds * qq[t];
+            }
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < ATT_LANES; t++) {
+        int d = lane + 32 * t;
+        if (d < s.dk) {
+            D::st(dk, kr * s.dk + d, accK[t] * s.scale);
+        }
+        if (d < s.dv) {
+            D::st(dvOut, kr * s.dv + d, accV[t]);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Fourier transforms
+
+// A block per row of n complex values (a power of two up to 2048), radix 2 in shared memory,
+// as Fft.radix2 computes it; the inverse uses the conjugate exponent and divides by n
+extern "C" __global__ void fft_rows(const float* in, float* out, i64 rows, int n, int logN, int inverse) {
+    __shared__ float re[2048];
+    __shared__ float im[2048];
+    for (i64 r = blockIdx.x; r < rows; r += gridDim.x) {
+        const float* x = in + r * n * 2;
+        for (int i = threadIdx.x; i < n; i += GROUP) {
+            int j = (int) (__brev((unsigned) i) >> (32 - logN));
+            re[j] = x[2 * i];
+            im[j] = x[2 * i + 1];
+        }
+        __syncthreads();
+        float sign = inverse ? 1.0f : -1.0f;
+        for (int len = 2; len <= n; len <<= 1) {
+            int half = len >> 1;
+            for (int t = threadIdx.x; t < n / 2; t += GROUP) {
+                int kk = t % half;
+                int i = (t / half) * len + kk;
+                int j = i + half;
+                float wr;
+                float wi;
+                sincospif(sign * 2.0f * kk / len, &wi, &wr);
+                float xr = re[j] * wr - im[j] * wi;
+                float xi = re[j] * wi + im[j] * wr;
+                re[j] = re[i] - xr;
+                im[j] = im[i] - xi;
+                re[i] += xr;
+                im[i] += xi;
+            }
+            __syncthreads();
+        }
+        float scale = inverse ? 1.0f / n : 1.0f;
+        float* y = out + r * n * 2;
+        for (int i = threadIdx.x; i < n; i += GROUP) {
+            y[2 * i] = re[i] * scale;
+            y[2 * i + 1] = im[i] * scale;
+        }
+        __syncthreads();
+    }
+}
+
 // ---------------------------------------------------------------- entry points, one per format
 
 #define KERNELS(S, D)                                                                                             \
@@ -644,6 +1092,58 @@ KERNELS(f32, F32)
 KERNELS(f64, F64)
 KERNELS(f16, F16)
 KERNELS(bf16, BF16)
+
+#define FEW_KERNELS(S, D)                                                                                         \
+extern "C" __global__ void few_dense_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m, int k,     \
+        int n, int chunk) {                                                                                       \
+    DenseWeights<D> dw = {w, n};                                                                                  \
+    few_k<D>(a, dw, part, out, m, k, n, chunk);                                                                   \
+}                                                                                                                 \
+extern "C" __global__ void few_packed_##S(const D::T* a, const signed char* levels, const float* scales,          \
+        const float* offsets, int group, int nibbles, float* part, D::T* out, int m, int k, int n, int chunk) {   \
+    PackedWeights pw = {levels, scales, offsets, n, group, nibbles};                                              \
+    few_k<D>(a, pw, part, out, m, k, n, chunk);                                                                   \
+}                                                                                                                 \
+extern "C" __global__ void few_sum_##S(const float* part, D::T* out, i64 mn, int pieces) {                        \
+    few_sum_k<D>(part, out, mn, pieces);                                                                          \
+}                                                                                                                 \
+extern "C" __global__ void unpack_packed_##S(const signed char* levels, const float* scales,                      \
+        const float* offsets, int group, int nibbles, D::T* out, int rows, int cols) {                            \
+    PackedWeights pw = {levels, scales, offsets, cols, group, nibbles};                                           \
+    unpack_packed_k<D>(pw, out, rows);                                                                            \
+}
+
+FEW_KERNELS(f32, F32)
+FEW_KERNELS(f64, F64)
+FEW_KERNELS(f16, F16)
+FEW_KERNELS(bf16, BF16)
+
+#define ATTENTION_KERNELS(S, D)                                                                                   \
+extern "C" __global__ void attention_##S(const D::T* q, const D::T* k, const D::T* v, D::T* out, D::T* lse,       \
+        const D::T* bias, float* part, AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3,         \
+        int parts, int chunk) {                                                                                   \
+    attention_k<D>(q, k, v, out, lse, bias, part, s, rows, hasBias, b0, b1, b2, b3, parts, chunk);               \
+}                                                                                                                 \
+extern "C" __global__ void attention_combine_##S(const float* part, D::T* out, D::T* lse, i64 rows, int parts,    \
+        int dv) {                                                                                                 \
+    attention_combine_k<D>(part, out, lse, rows, parts, dv);                                                      \
+}                                                                                                                 \
+extern "C" __global__ void attention_delta_##S(const D::T* out, const D::T* grad, float* delta, i64 rows,         \
+        int dv) {                                                                                                 \
+    attention_delta_k<D>(out, grad, delta, rows, dv);                                                             \
+}                                                                                                                 \
+extern "C" __global__ void attention_dq_##S(const D::T* q, const D::T* k, const D::T* v, const D::T* lse,         \
+        const D::T* grad, const float* delta, D::T* dq, AttShape s, i64 rows) {                                   \
+    attention_dq_k<D>(q, k, v, lse, grad, delta, dq, s, rows);                                                    \
+}                                                                                                                 \
+extern "C" __global__ void attention_dkv_##S(const D::T* q, const D::T* k, const D::T* v, const D::T* lse,        \
+        const D::T* grad, const float* delta, D::T* dk, D::T* dv, AttShape s, i64 keyRows) {                      \
+    attention_dkv_k<D>(q, k, v, lse, grad, delta, dk, dv, s, keyRows);                                            \
+}
+
+ATTENTION_KERNELS(f32, F32)
+ATTENTION_KERNELS(f16, F16)
+ATTENTION_KERNELS(bf16, BF16)
 
 // uniform in [0, 1): CounterRandom.uniform(seed, i), float32 only
 extern "C" __global__ void random_values(float* y, i64 n, i64 seed) {

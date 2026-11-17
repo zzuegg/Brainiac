@@ -484,6 +484,100 @@ class CudaBackendTest {
         }
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 5, 7, 8, 6, false", "2, 4, 2, 5, 7, 8, 6, true",
+        "1, 2, 2, 1, 600, 64, 64, false", "1, 1, 1, 300, 300, 32, 16, true", "1, 8, 1, 3, 513, 128, 128, true",
+        "1, 2, 1, 2, 9, 256, 3, true", "1, 4, 4, 1, 5000, 64, 64, false", "1, 2, 2, 2, 4100, 128, 256, true",
+        "4, 8, 2, 200, 200, 64, 64, true"})
+    void fusedAttentionMatchesTheDefinition(int b, int h, int kvh, int tq, int tk, int dk, int dv, boolean causal) {
+        Tensor q = random(21, b, h, tq, dk);
+        Tensor k = random(22, b, kvh, tk, dk);
+        Tensor v = random(23, b, kvh, tk, dv);
+        float scale = (float) (1 / Math.sqrt(dk));
+        float[] qa = q.toArray();
+        float[] ka = k.toArray();
+        float[] va = v.toArray();
+        float[] expected = new float[b * h * tq * dv];
+        float[] expectedLse = new float[b * h * tq];
+        for (int row = 0; row < b * h * tq; row++) {
+            int i = row % tq;
+            int hh = row / tq % h;
+            int bb = row / tq / h;
+            int kv = (bb * kvh + hh / (h / kvh)) * tk;
+            int last = causal ? Math.min(tk, i + tk - tq + 1) : tk;
+            double[] sc = new double[last];
+            double max = Double.NEGATIVE_INFINITY;
+            for (int j = 0; j < last; j++) {
+                for (int d = 0; d < dk; d++) {
+                    sc[j] += (double) qa[row * dk + d] * ka[(kv + j) * dk + d];
+                }
+                sc[j] *= scale;
+                max = Math.max(max, sc[j]);
+            }
+            double sum = 0;
+            for (int j = 0; j < last; j++) {
+                sum += Math.exp(sc[j] - max);
+            }
+            expectedLse[row] = (float) (max + Math.log(sum));
+            for (int d = 0; d < dv; d++) {
+                double o = 0;
+                for (int j = 0; j < last; j++) {
+                    o += Math.exp(sc[j] - max) / sum * va[(kv + j) * dv + d];
+                }
+                expected[row * dv + d] = (float) o;
+            }
+        }
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor qg = q.to(type).to(gpu);
+            Tensor kg = k.to(type).to(gpu);
+            Tensor vg = v.to(type).to(gpu);
+            assertTrue(Tensor.hasAttention(qg, kg, vg, false));
+            Tensor[] r = Tensor.attention(qg, kg, vg, scale, causal);
+            float tolerance = type == DType.FLOAT32 ? 1e-5f : type == DType.FLOAT16 ? 3e-3f : 3e-2f;
+            String what = type + " " + b + "x" + h + "/" + kvh + "x" + tq + "x" + tk + "x" + dk + "x" + dv
+                    + (causal ? " causal" : "");
+            assertArrayEquals(expected, r[0].toArray(), tolerance * 4, what);
+            assertArrayEquals(expectedLse, r[1].toArray(), tolerance * 8 + Math.abs(expectedLse[0]) * tolerance, what);
+        }
+    }
+
+    /** A Llama cache's bias [batch, 1, queries, keys] masking padding and unused positions, fused and not. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 1, 70, 16, 16", "2, 4, 4, 6, 300, 64, 32", "1, 2, 1, 3, 5, 8, 8"})
+    void fusedAttentionWithABiasMatchesTheUnfusedOne(int b, int h, int kvh, int tq, int tk, int dk, int dv) {
+        Tensor q = random(31, b, h, tq, dk);
+        Tensor k = random(32, b, kvh, tk, dk);
+        Tensor v = random(33, b, kvh, tk, dv);
+        float[] mask = new float[b * tq * tk];
+        SplittableRandom r = new SplittableRandom(4);
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = r.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) r.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        // on the CPU, which has no fused kernel with a bias: weights built, masked and normalized
+        float[] expected = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(q), Var.of(k), Var.of(v), bias,
+                scale, 0, null).value().toArray();
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor qg = q.to(type).to(gpu);
+            assertTrue(Tensor.hasAttentionWithBias(qg, k.to(type).to(gpu), v.to(type).to(gpu)));
+            float[] fused = Tensor.attention(qg, k.to(type).to(gpu), v.to(type).to(gpu), bias.to(gpu), scale, false)[0]
+                    .toArray();
+            assertArrayEquals(expected, fused, type == DType.FLOAT32 ? 1e-5f : type == DType.FLOAT16 ? 1e-2f : 5e-2f, type.toString());
+            // and through Functional, which picks the fused kernel for inference
+            float[] viaFunctional = io.github.zzuegg.brainiac.nn.Functional.attention(Var.of(qg),
+                    Var.of(k.to(type).to(gpu)), Var.of(v.to(type).to(gpu)), bias.to(gpu), scale, 0, null).value()
+                    .toArray();
+            assertArrayEquals(fused, viaFunctional, 0f, type.toString());
+        }
+    }
+
     /** Decoding's products of a few rows: one pass over the matrix, in pieces of rows added up. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 896, 896", "1, 4864, 896", "2, 64, 7", "3, 1000, 130", "5, 17, 4",

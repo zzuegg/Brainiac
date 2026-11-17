@@ -6,6 +6,9 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
+import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
+import io.github.zzuegg.brainiac.tensor.spi.QuantizedRows;
 import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
@@ -49,7 +52,17 @@ import java.util.Optional;
  * the library files ({@code brainiac.cuda.cublas=none}: no cuBLAS)</li>
  * <li>{@code brainiac.cuda.cache}: where compiled kernels are kept, {@code none} for nowhere</li>
  * <li>{@code brainiac.cuda.statistics=true}: print {@link #statistics()} at exit</li>
+ * <li>{@code brainiac.cuda.devices=one}: only one device, not one per GPU ({@code cuda}, {@code cuda:1}, ...)</li>
+ * <li>{@code brainiac.cuda.nccl}: NCCL's library file, {@code none} to sum gradients between GPUs on
+ * the host</li>
+ * <li>{@code brainiac.cuda.fusedAttention=false}: attention from separate operations</li>
+ * <li>{@code brainiac.cuda.fewRows=false}: products of up to 16 rows in float16 and bfloat16 by
+ * cuBLAS instead of a kernel of its own</li>
  * </ul>
+ *
+ * <p>Attention runs fused (forward, backward, and with a bias) for heads up to 256; packed
+ * weights stay packed on the device, read directly by products of up to 16 rows; Fourier
+ * transforms of power-of-two lengths up to 2048 run on the device.
  */
 public final class CudaBackend implements Backend {
 
@@ -85,13 +98,58 @@ public final class CudaBackend implements Backend {
         return Optional.ofNullable(first);
     }
 
+    /** The device index, or -1 for the one {@code brainiac.cuda.device} names (default 0). */
+    private final int requested;
+    private final boolean primary;
+
     /** Creates the backend; called by {@link java.util.ServiceLoader}. Does not touch the driver. */
     public CudaBackend() {
+        this(-1, true);
     }
 
+    private CudaBackend(int ordinal, boolean primary) {
+        this.requested = ordinal;
+        this.primary = primary;
+    }
+
+    /**
+     * The first device keeps the name {@code cuda (...)}; the others, found by {@link #siblings()},
+     * are {@code cuda:N (...)}.
+     */
     @Override
     public String name() {
-        return cuda == null ? "cuda" : "cuda (" + cuda.deviceName + ")";
+        if (cuda == null) {
+            return primary ? "cuda" : "cuda:" + requested;
+        }
+        return (primary ? "cuda" : "cuda:" + cuda.ordinal) + " (" + cuda.deviceName + ")";
+    }
+
+    /**
+     * The machine's other CUDA devices, each a backend of its own ({@code -Dbrainiac.cuda.devices=one}:
+     * none).
+     */
+    @Override
+    public synchronized java.util.List<Backend> siblings() {
+        if (!primary || !isAvailable() || "one".equals(System.getProperty("brainiac.cuda.devices"))) {
+            return java.util.List.of();
+        }
+        java.util.List<Backend> others = new java.util.ArrayList<>();
+        int count = cuda.cu.deviceCount();
+        for (int i = 0; i < count; i++) {
+            if (i != cuda.ordinal) {
+                others.add(new CudaBackend(i, false));
+            }
+        }
+        return others;
+    }
+
+    /**
+     * The device's index among the driver's devices.
+     *
+     * @return the index
+     */
+    public int ordinal() {
+        return isAvailable() ? cuda.ordinal : requested;
     }
 
     @Override
@@ -105,10 +163,10 @@ public final class CudaBackend implements Backend {
             initialized = true;
             long start = System.nanoTime();
             try {
-                cuda = new CudaContext();
+                cuda = new CudaContext(requested >= 0 ? requested : Integer.getInteger("brainiac.cuda.device", 0));
                 initNanos = System.nanoTime() - start;
                 synchronized (CudaBackend.class) {
-                    if (first == null) {
+                    if (first == null && primary) {
                         first = this;
                     }
                 }
@@ -138,14 +196,14 @@ public final class CudaBackend implements Backend {
         }
         CudaContext c = cuda;
         int driver = c.cu.driverVersion();
-        return c.deviceName + ", compute " + c.computeCapability / 10 + "." + c.computeCapability % 10 + ", "
+        return "device " + c.ordinal + ": " + c.deviceName + ", compute " + c.computeCapability / 10 + "." + c.computeCapability % 10 + ", "
                 + c.multiprocessors + " SMs, " + (c.deviceMemory >> 20) + " MB, " + (c.budget >> 20)
                 + " MB budget; driver CUDA " + driver / 1000 + "." + driver % 1000 / 10 + " (" + c.cu.library
                 + "); NVRTC " + c.nvrtc.version() + " (" + c.nvrtc.library + ", compute_" + c.architecture + ", "
                 + (c.cachedKernels ? "cached" : "compiled in " + c.compileNanos / 1_000_000 + " ms") + "); cuBLAS "
                 + (c.cublas != null ? c.cublas.version() + " (" + c.cublas.library + ")"
                         : "unavailable: " + c.cublasUnavailable)
-                + (CudaContext.DEBUG ? "; debug" : "") + (Binder.CRITICAL ? "; critical downcalls" : "");
+                + "; " + ncclStatus() + (CudaContext.DEBUG ? "; debug" : "") + (Binder.CRITICAL ? "; critical downcalls" : "");
     }
 
     /**
@@ -267,6 +325,9 @@ public final class CudaBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
+        if (storage instanceof Packed) {
+            return;   // weights: freed with the tensor that holds them, by the collector
+        }
         if (storage instanceof CudaStorage s && s.owner == this) {
             s.release();
         }
@@ -571,7 +632,10 @@ public final class CudaBackend implements Backend {
                 && (t == DType.FLOAT32 || t == DType.FLOAT64
                         || (t == DType.FLOAT16 && c.computeCapability >= 53)
                         || (t == DType.BFLOAT16 && c.computeCapability >= 80));
-        if (blas) {
+        if (FEW_ROWS && batch == 1 && m >= 2 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
+            // a handful of rows: cuBLAS runs these 16-bit products slower than float32 ones
+            few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
+        } else if (blas) {
             c.cublas.gemm(t, false, false, m, n, k, x.address(), k, (long) m * k, y.address(), n, (long) k * n,
                     z.address(), (long) m * n, batch);
             c.products++;
@@ -600,6 +664,397 @@ public final class CudaBackend implements Backend {
         }
         done(x, cs(a));
         done(y, cs(b));
+    }
+
+    /** Whether products of a few 16-bit rows use a kernel of their own ({@code -Dbrainiac.cuda.fewRows=false}: cuBLAS). */
+    private static final boolean FEW_ROWS = !"false".equals(System.getProperty("brainiac.cuda.fewRows"));
+    /** The most rows {@code few_dense} and {@code few_packed} take (FEW_ROWS in kernels.cu). */
+    static final int FEW = 16;
+    /** The columns a block of the few-row kernels covers: a thread each. */
+    private static final int FEW_COLUMNS = CudaContext.GROUP;
+
+    /**
+     * {@code out[m, n] = a[m, k] x w[k, n]} for at most {@link #FEW} rows: a thread per column of
+     * {@code w}, the {@code k} rows split into pieces until the device is busy, the pieces' float
+     * sums then added by {@code few_sum}. {@code w} is dense ({@code few_dense}: its address) or
+     * packed ({@code few_packed}: levels, scales, offsets, group, nibbles).
+     */
+    private void few(CudaContext c, String kernel, CudaStorage a, long w, long scales, long offsets, int group,
+            int nibbles, int m, int k, int n, CudaStorage out) {
+        int columnBlocks = (n + FEW_COLUMNS - 1) / FEW_COLUMNS;
+        int target = 4 * c.multiprocessors;
+        int pieces = Math.max(1, Math.min((k + 127) / 128, target / columnBlocks));
+        int chunk = ((k + pieces - 1) / pieces + 63) / 64 * 64;
+        pieces = (k + chunk - 1) / chunk;
+        CudaStorage part = pieces > 1 ? raw((long) pieces * m * n, DType.FLOAT32, null) : null;
+        long partAddress = part != null ? part.address() : 0;
+        c.args().ptr(a.address()).ptr(w);
+        if (kernel.equals("few_packed")) {
+            c.ptr(scales).ptr(offsets).i32(group).i32(nibbles);
+        }
+        c.ptr(partAddress).ptr(out.address()).i32(m).i32(k).i32(n).i32(chunk);
+        c.launch(kernel(kernel, out.dtype), columnBlocks, pieces, 1);
+        if (part != null) {
+            long mn = (long) m * n;
+            c.args().ptr(part.address()).ptr(out.address()).i64(mn).i32(pieces);
+            c.launch(kernel("few_sum", out.dtype), mn);
+            part.release();
+        }
+    }
+
+    // ------------------------------------------------------------------ packed (quantized) weights
+
+    /**
+     * A packed matrix on the device: the levels as PackedMatrix lays them out (a signed byte
+     * each, or two per byte), the scales and offsets as float32 per group.
+     */
+    private record Packed(int rows, int cols, PackedMatrix host, CudaStorage levels, CudaStorage scales,
+            CudaStorage offsets) implements PackedStorage {
+
+        @Override
+        public long size() {
+            return (long) rows * cols;
+        }
+
+        @Override
+        public long bytes() {
+            return levels.bytes() + scales.bytes() + (offsets == null ? 0 : offsets.bytes());
+        }
+
+        int group() {
+            return host.group();
+        }
+
+        int nibbles() {
+            return host.nibbles() ? 1 : 0;
+        }
+    }
+
+    private CudaStorage uploadBytes(byte[] data) {
+        CudaStorage s = raw(Math.max(1, (data.length + 3) / 4), DType.FLOAT32, null);
+        cuda.upload(s.address(), MemorySegment.ofArray(data));
+        return s;
+    }
+
+    @Override
+    public synchronized PackedStorage pack(PackedMatrix matrix) {
+        ctx();
+        CudaStorage levels = uploadBytes(matrix.data());
+        CudaStorage scales = (CudaStorage) upload(matrix.scales());
+        CudaStorage offsets = matrix.offsets() == null ? null : (CudaStorage) upload(matrix.offsets());
+        return new Packed(matrix.rows(), matrix.cols(), matrix, levels, scales, offsets);
+    }
+
+    @Override
+    public PackedMatrix unpackToHost(PackedStorage packed) {
+        if (packed instanceof Packed p) {
+            return p.host();
+        }
+        return Backend.super.unpackToHost(packed);
+    }
+
+    /** {@code s} as this backend's packed form, moved here when it was packed for another backend. */
+    private Packed packed(PackedStorage s) {
+        if (s instanceof Packed p && p.levels().owner == this) {
+            return p;
+        }
+        return (Packed) pack(unpackToHost(s));
+    }
+
+    @Override
+    public synchronized void unpack(PackedStorage packed, Storage out) {
+        if (packed instanceof QuantizedRows) {
+            Backend.super.unpack(packed, out);
+            return;
+        }
+        Packed p = packed(packed);
+        CudaStorage z = cs(out);
+        CudaContext c = ctx();
+        c.args().ptr(p.levels().address()).ptr(p.scales().address())
+                .ptr(p.offsets() == null ? 0 : p.offsets().address()).i32(p.group()).i32(p.nibbles())
+                .ptr(z.address()).i32(p.rows()).i32(p.cols());
+        c.launch(kernel("unpack_packed", z.dtype), p.size());
+    }
+
+    @Override
+    public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (b instanceof QuantizedRows || m == 0 || k == 0) {
+            Backend.super.matmulPacked(a, b, m, k, n, out);
+            return;
+        }
+        CudaStorage z = cs(out);
+        CudaContext c = ctx();
+        if (m > FEW) {
+            // many rows: unpacked into a temporary for cuBLAS, which is then free for the next
+            CudaStorage w = raw((long) k * n, z.dtype, null);
+            unpack(b, w);
+            matmulBatched(a, w, 1, m, k, n, z);
+            w.release();
+            return;
+        }
+        Packed p = packed(b);
+        CudaStorage x = as(cs(a), z.dtype);
+        few(c, "few_packed", x, p.levels().address(), p.scales().address(),
+                p.offsets() == null ? 0 : p.offsets().address(), p.group(), p.nibbles(), m, k, n, z);
+        done(x, cs(a));
+    }
+
+    // ------------------------------------------------------------------ attention
+
+    /** Whether attention runs fused ({@code -Dbrainiac.cuda.fusedAttention=false}: never). */
+    private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.cuda.fusedAttention"));
+    /** The largest head the attention kernels take: 32 lanes times ATT_LANES in kernels.cu. */
+    static final int ATTENTION_HEAD = 256;
+
+    @Override
+    public boolean hasAttention(int[] shape, DType type, boolean backward) {
+        return FUSED_ATTENTION && type != DType.FLOAT64 && shape[5] <= ATTENTION_HEAD && shape[6] <= ATTENTION_HEAD
+                && shape[2] > 0 && shape[1] % shape[2] == 0 && isAvailable();
+    }
+
+    @Override
+    public boolean hasAttentionWithBias(int[] shape, DType type) {
+        return hasAttention(shape, type, false);
+    }
+
+    @Override
+    public void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal, Storage out,
+            Storage lse) {
+        attention(q, k, v, shape, scale, causal, null, new long[4], out, lse);
+    }
+
+    /** {@code batch, heads, kvHeads, tq, tk, dk, dv} and the scale as the kernels' AttShape struct. */
+    private static int[] attShape(int[] shape, float scale, boolean causal) {
+        return new int[] {shape[1], shape[2], shape[3], shape[4], shape[5], shape[6], Float.floatToRawIntBits(scale),
+            causal ? 1 : 0};
+    }
+
+    private void checkAttention(int[] shape, DType type) {
+        if (type == DType.FLOAT64 || shape[5] > ATTENTION_HEAD || shape[6] > ATTENTION_HEAD) {
+            throw new UnsupportedOperationException("fused attention on " + name() + ": " + type + ", heads of "
+                    + shape[5] + " and " + shape[6]);
+        }
+    }
+
+    /** Launches a kernel that runs a warp per item, with as many blocks as that takes. */
+    private static void warps(CudaContext c, String name, long count) {
+        long blocks = (count * 32 + CudaContext.GROUP - 1) / CudaContext.GROUP;
+        c.launch(name, (int) Math.max(1, blocks), 1, 1);
+    }
+
+    @Override
+    public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
+            Storage bias, long[] strides, Storage out, Storage lse) {
+        CudaStorage z = cs(out);
+        DType t = z.dtype;
+        checkAttention(shape, t);
+        CudaStorage l = cs(lse);
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        if (rows == 0) {
+            return;
+        }
+        CudaContext c = ctx();
+        CudaStorage xq = as(cs(q), t);
+        CudaStorage xk = as(cs(k), t);
+        CudaStorage xv = as(cs(v), t);
+        CudaStorage xb = bias == null ? null : as(cs(bias), t);
+        int tk = shape[4];
+        // split each row's keys into pieces when the rows alone leave the device idle
+        long target = 64L * c.multiprocessors;
+        int parts = (int) Math.max(1, Math.min((tk + 63) / 64, (target + rows - 1) / rows));
+        int chunk = Math.max(1, (tk + parts - 1) / parts);
+        parts = Math.max(1, (tk + chunk - 1) / chunk);
+        CudaStorage part = parts > 1 ? raw(rows * parts * (shape[6] + 2), DType.FLOAT32, null) : null;
+        c.args().ptr(xq.address()).ptr(xk.address()).ptr(xv.address()).ptr(z.address()).ptr(l.address())
+                .ptr(xb == null ? 0 : xb.address()).ptr(part == null ? 0 : part.address())
+                .ints(attShape(shape, scale, causal)).i64(rows).i32(xb == null ? 0 : 1).i64(strides[0])
+                .i64(strides[1]).i64(strides[2]).i64(strides[3]).i32(parts).i32(chunk);
+        warps(c, kernel("attention", t), rows * parts);
+        if (part != null) {
+            c.args().ptr(part.address()).ptr(z.address()).ptr(l.address()).i64(rows).i32(parts).i32(shape[6]);
+            warps(c, kernel("attention_combine", t), rows);
+            part.release();
+        }
+        done(xq, cs(q));
+        done(xk, cs(k));
+        done(xv, cs(v));
+        if (xb != null) {
+            done(xb, cs(bias));
+        }
+    }
+
+    @Override
+    public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
+            Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
+        CudaStorage gq = cs(dq);
+        CudaStorage gk = cs(dk);
+        CudaStorage gv = cs(dv);
+        DType t = gq.dtype;
+        checkAttention(shape, t);
+        CudaContext c = ctx();
+        long rows = (long) shape[0] * shape[1] * shape[3];
+        long keyRows = (long) shape[0] * shape[2] * shape[4];
+        if (rows == 0 || keyRows == 0) {
+            fill(gq, 0);
+            fill(gk, 0);
+            fill(gv, 0);
+            return;
+        }
+        CudaStorage xq = as(cs(q), t);
+        CudaStorage xk = as(cs(k), t);
+        CudaStorage xv = as(cs(v), t);
+        CudaStorage xo = as(cs(out), t);
+        CudaStorage xl = as(cs(lse), t);
+        CudaStorage xg = as(cs(grad), t);
+        CudaStorage delta = raw(rows, DType.FLOAT32, null);
+        c.args().ptr(xo.address()).ptr(xg.address()).ptr(delta.address()).i64(rows).i32(shape[6]);
+        warps(c, kernel("attention_delta", t), rows);
+        int[] s = attShape(shape, scale, causal);
+        c.args().ptr(xq.address()).ptr(xk.address()).ptr(xv.address()).ptr(xl.address()).ptr(xg.address())
+                .ptr(delta.address()).ptr(gq.address()).ints(s).i64(rows);
+        warps(c, kernel("attention_dq", t), rows);
+        c.args().ptr(xq.address()).ptr(xk.address()).ptr(xv.address()).ptr(xl.address()).ptr(xg.address())
+                .ptr(delta.address()).ptr(gk.address()).ptr(gv.address()).ints(s).i64(keyRows);
+        warps(c, kernel("attention_dkv", t), keyRows);
+        delta.release();
+        done(xq, cs(q));
+        done(xk, cs(k));
+        done(xv, cs(v));
+        done(xo, cs(out));
+        done(xl, cs(lse));
+        done(xg, cs(grad));
+    }
+
+    // ------------------------------------------------------------------ Fourier transforms
+
+    /** The longest rows {@code fft_rows} transforms, in shared memory. */
+    static final int FFT_LENGTH = 2048;
+
+    @Override
+    public synchronized Storage fft(Storage in, long rows, int n, boolean inverse) {
+        if (n < 2 || n > FFT_LENGTH || Integer.bitCount(n) != 1) {
+            return Backend.super.fft(in, rows, n, inverse);
+        }
+        CudaContext c = ctx();
+        CudaStorage x = as(cs(in), DType.FLOAT32);
+        CudaStorage y = raw(rows * n * 2, DType.FLOAT32, null);
+        c.args().ptr(x.address()).ptr(y.address()).i64(rows).i32(n).i32(Integer.numberOfTrailingZeros(n))
+                .i32(inverse ? 1 : 0);
+        c.launch("fft_rows", (int) Math.max(1, Math.min(rows, 1 << 20)), 1, 1);
+        done(x, cs(in));
+        return y;
+    }
+
+    // ------------------------------------------------------------------ several GPUs
+
+    private static Nccl nccl;
+    private static String ncclUnavailable;
+    /** Communicators by the devices' indices, in the group's order. */
+    private static final Map<String, long[]> COMMUNICATORS = new java.util.HashMap<>();
+
+    /** NCCL, loaded at first use, or {@code null} with the reason in {@link #ncclStatus()}. */
+    private static synchronized Nccl nccl() {
+        if (nccl == null && ncclUnavailable == null) {
+            if ("none".equals(System.getProperty("brainiac.cuda.nccl"))) {
+                ncclUnavailable = "turned off (-Dbrainiac.cuda.nccl=none)";
+            } else {
+                try {
+                    nccl = new Nccl();
+                } catch (CudaException | LinkageError | IllegalArgumentException e) {
+                    ncclUnavailable = e.getMessage();
+                }
+            }
+        }
+        return nccl;
+    }
+
+    /**
+     * Describes NCCL, which sums gradients between GPUs: its version and file, or why it is
+     * unavailable.
+     *
+     * @return for example {@code "NCCL 2.21.5 (libnccl.so.2)"}
+     */
+    public static String ncclStatus() {
+        Nccl n = nccl();
+        return n != null ? "NCCL " + n.version() + " (" + n.library + ")" : "NCCL unavailable: " + ncclUnavailable;
+    }
+
+    /**
+     * Sums across the GPUs of {@code group} with NCCL's all-reduce, each device on its own
+     * stream; returns {@code null} (the host then sums) when NCCL is missing or a backend of
+     * the group is not a CUDA device of this process.
+     */
+    @Override
+    public java.util.List<Storage> allReduceSum(java.util.List<Backend> group, java.util.List<Storage> storages) {
+        java.util.List<CudaBackend> backends = new java.util.ArrayList<>();
+        for (Backend b : group) {
+            if (!(b instanceof CudaBackend c) || !c.isAvailable()) {
+                return null;
+            }
+            backends.add(c);
+        }
+        Nccl n = nccl();
+        if (n == null) {
+            return null;
+        }
+        int[] ordinals = new int[backends.size()];
+        for (int i = 0; i < ordinals.length; i++) {
+            ordinals[i] = backends.get(i).cuda.ordinal;
+        }
+        if (Arrays.stream(ordinals).distinct().count() != ordinals.length) {
+            return null;
+        }
+        // every backend locked, in device order, so no other thread queues work in between
+        Integer[] order = new Integer[ordinals.length];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, java.util.Comparator.comparingInt(i -> ordinals[i]));
+        java.util.List<Storage> out = new java.util.ArrayList<>();
+        locked(backends, order, 0, () -> {
+            long[] comms;
+            synchronized (CudaBackend.class) {
+                comms = COMMUNICATORS.computeIfAbsent(Arrays.toString(ordinals), k -> n.communicators(ordinals));
+            }
+            DType type = storages.get(0).dtype();
+            java.util.List<CudaStorage> ins = new java.util.ArrayList<>();
+            java.util.List<CudaStorage> outs = new java.util.ArrayList<>();
+            for (int i = 0; i < backends.size(); i++) {
+                CudaBackend b = backends.get(i);
+                CudaStorage s = b.cs(storages.get(i));
+                b.ctx();
+                ins.add(s);
+                outs.add(b.raw(s.size, type, null));
+            }
+            n.groupStart();
+            try {
+                for (int i = 0; i < backends.size(); i++) {
+                    CudaContext c = backends.get(i).cuda;
+                    n.allReduceSum(ins.get(i).address(), outs.get(i).address(), ins.get(i).size, type, comms[i],
+                            c.stream);
+                }
+            } finally {
+                n.groupEnd();
+            }
+            if (CudaContext.DEBUG) {
+                for (CudaBackend b : backends) {
+                    b.ctx().debugWait("NCCL all-reduce");
+                }
+            }
+            out.addAll(outs);
+        });
+        return out;
+    }
+
+    /** Runs {@code body} holding the monitors of {@code backends} in the given order. */
+    private static void locked(java.util.List<CudaBackend> backends, Integer[] order, int from, Runnable body) {
+        if (from == order.length) {
+            body.run();
+            return;
+        }
+        synchronized (backends.get(order[from])) {
+            locked(backends, order, from + 1, body);
+        }
     }
 
     // ------------------------------------------------------------------ RMSNorm

@@ -63,7 +63,6 @@ final class CudaContext {
     final long stream;
     private final long module;
     private final Map<String, Long> functions = new HashMap<>();
-    private final ThreadLocal<Boolean> bound = new ThreadLocal<>();
 
     // kernel arguments: values, and the void*[] pointing at each, reused for every launch
     private final MemorySegment argValues;
@@ -81,17 +80,52 @@ final class CudaContext {
     long uploadedBytes;
     long downloadedBytes;
 
-    CudaContext() {
-        cu = new CudaDriver();
-        cu.init();
+    /** The driver and NVRTC, loaded once for every device. */
+    private static CudaDriver sharedDriver;
+    private static Nvrtc sharedNvrtc;
+
+    static synchronized CudaDriver driver() {
+        if (sharedDriver == null) {
+            CudaDriver d = new CudaDriver();
+            d.init();
+            sharedDriver = d;
+        }
+        return sharedDriver;
+    }
+
+    private static synchronized Nvrtc nvrtc() {
+        if (sharedNvrtc == null) {
+            sharedNvrtc = new Nvrtc();
+        }
+        return sharedNvrtc;
+    }
+
+    /** The context current on each thread, as far as this backend knows (NCCL may change it). */
+    private static final ThreadLocal<CudaContext> CURRENT = new ThreadLocal<>();
+
+    /** Forgets which context is current on this thread, after a library that may switch devices. */
+    static void forgetCurrent() {
+        CURRENT.remove();
+    }
+
+    final int ordinal;
+
+    /**
+     * Opens a device.
+     *
+     * @param ordinal its index among the driver's devices
+     */
+    CudaContext(int ordinal) {
+        cu = driver();
         int count = cu.deviceCount();
         if (count == 0) {
             throw new CudaException("the NVIDIA driver found no CUDA device", 0);
         }
-        int ordinal = Integer.getInteger("brainiac.cuda.device", 0);
         if (ordinal < 0 || ordinal >= count) {
-            throw new CudaException("-Dbrainiac.cuda.device=" + ordinal + " but there are " + count + " devices", 0);
+            throw new CudaException("device " + ordinal + " asked for (-Dbrainiac.cuda.device) but there are " + count
+                    + " devices", 0);
         }
+        this.ordinal = ordinal;
         device = cu.device(ordinal);
         deviceName = cu.deviceName(device);
         computeCapability = cu.attribute(device, CudaDriver.ATTR_COMPUTE_CAPABILITY_MAJOR) * 10
@@ -100,14 +134,14 @@ final class CudaContext {
         deviceMemory = cu.totalMemory(device);
         context = cu.primaryContext(device);
         cu.setCurrent(context);
-        bound.set(Boolean.TRUE);
+        CURRENT.set(this);
         stream = cu.createStream(CudaDriver.CU_STREAM_NON_BLOCKING);
 
         long mb = Long.getLong("brainiac.cuda.memory", 0);
         long free = cu.memoryInfo()[0];
         budget = mb > 0 ? mb << 20 : Math.max(256L << 20, free - Math.max(512L << 20, deviceMemory / 16));
 
-        nvrtc = new Nvrtc();
+        nvrtc = nvrtc();
         architecture = nvrtc.architecture(computeCapability);
         long start = System.nanoTime();
         boolean[] cached = new boolean[1];
@@ -139,11 +173,11 @@ final class CudaContext {
         cublasUnavailable = why;
     }
 
-    /** Makes the context current on the calling thread, once per thread. */
+    /** Makes the context current on the calling thread, if it is not already. */
     void bind() {
-        if (bound.get() == null) {
+        if (CURRENT.get() != this) {
             cu.setCurrent(context);
-            bound.set(Boolean.TRUE);
+            CURRENT.set(this);
         }
     }
 
@@ -267,6 +301,15 @@ final class CudaContext {
 
     CudaContext f64(double v) {
         argValues.set(JAVA_DOUBLE, slot(8), v);
+        return this;
+    }
+
+    /** A struct of 4-byte fields passed by value; a float field goes as its raw bits. */
+    CudaContext ints(int... fields) {
+        long at = slot(4 * fields.length);
+        for (int i = 0; i < fields.length; i++) {
+            argValues.set(JAVA_INT, at + 4L * i, fields[i]);
+        }
         return this;
     }
 

@@ -45,4 +45,31 @@ class DataParallelTest {
         assertArrayEquals(wRef.value().toArray(), w.value().toArray(), 1e-5f);
         assertArrayEquals(bRef.value().toArray(), b.value().toArray(), 1e-5f);
     }
+
+    /** Every device once: the gradients are summed with Tensor.sumAcross (NCCL between CUDA GPUs). */
+    @Test
+    void stepsAcrossDifferentDevicesEqualFullBatchSteps() {
+        List<Device> devices = Device.available();
+        SplittableRandom r = new SplittableRandom(3);
+        Tensor x = Tensor.normal(Shape.of(13, 3), 0, 1, r);
+        Tensor y = Tensor.normal(Shape.of(13, 2), 0, 1, r);
+        Tensor w0 = Tensor.normal(Shape.of(3, 2), 0, 0.5f, r);
+        Tensor b0 = Tensor.normal(Shape.of(2), 0, 0.5f, r);
+        Var w = Var.param(w0);
+        Var b = Var.param(b0);
+        Var wRef = Var.param(w0);
+        Var bRef = Var.param(b0);
+        Optimizer ref = Optimizer.adam(0.05f);
+        try (DataParallel dp = new DataParallel(devices, List.of(w, b), DataParallelTest::loss, Optimizer.adam(0.05f))) {
+            for (int step = 0; step < 5; step++) {
+                float l = dp.step(x, y);
+                Var full = loss(List.of(wRef, bRef), x, y);
+                full.backward();
+                assertEquals(full.value().item(), l, 1e-5f, devices.toString());
+                ref.step(List.of(wRef, bRef));
+            }
+        }
+        assertArrayEquals(wRef.value().toArray(), w.value().toArray(), 1e-5f, devices.toString());
+        assertArrayEquals(bRef.value().toArray(), b.value().toArray(), 1e-5f, devices.toString());
+    }
 }
