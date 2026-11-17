@@ -1,56 +1,91 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
-// Gradient of fused attention (Backend.attentionBackward) for the queries: one invocation per
-// query row, recomputing each weight from lse: dq = scale * sum_j p_j (dO . v_j - D) k_j with
-// D = dO . out, which it also stores for attention_dkv. Head sizes up to ATT_D.
+// Gradient of fused attention (Backend.attentionBackward) for the queries: a work group of
+// ROWS invocations takes ROWS query rows of one head, one row each, and walks the keys TILE
+// at a time through shared memory (every invocation reads the same key, so one global read
+// serves the group). Each weight is recomputed from lse: dq = scale * sum_j p_j (dO . v_j - D)
+// k_j with D = dO . out, which is also stored for attention_dkv. Head sizes up to ATT_D.
 #define ATT_D 64
-layout(local_size_x = GROUP) in;
+#define ROWS 64
+#define TILE 32
+layout(local_size_x = ROWS) in;
 #include "math.glsl"
 layout(push_constant) uniform P {
     In q; In k; In v; In o; In lse; In dout; Buf dq; Buf dsum;
     uint heads; uint kvHeads; uint tq; uint tk; uint dk; uint dv; float scale; uint causal; uint rows;
 } p;
+shared ACC ks[TILE * ATT_D];
+shared ACC vs[TILE * ATT_D];
 void main() {
-    uint g = gid();
-    if (g >= p.rows) return;
-    uint i = g % p.tq;
-    uint h = (g / p.tq) % p.heads;
-    uint b = g / (p.tq * p.heads);
+    uint tid = gl_LocalInvocationID.x;
+    uint wg = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    uint blocks = (p.tq + ROWS - 1) / ROWS;
+    uint bh = wg / blocks;   // batch * heads + head
+    if (bh * p.tq >= p.rows) return;   // whole work groups: barriers stay uniform
+    uint i0 = (wg % blocks) * ROWS;
+    uint i = i0 + tid;
+    bool live = i < p.tq;
+    uint g = bh * p.tq + i;
+    uint h = bh % p.heads;
+    uint b = bh / p.heads;
     uint kv = b * p.kvHeads + h / (p.heads / p.kvHeads);
     uint kOff = kv * p.tk * p.dk;
     uint vOff = kv * p.tk * p.dv;
     ACC qv[ATT_D];
     ACC dov[ATT_D];
     ACC acc[ATT_D];
+    ACC dd = ACC(0);
+    ACC row = ACC(0);
     for (uint d = 0; d < p.dk; d++) {
-        qv[d] = LOAD(p.q, g * p.dk + d);
+        qv[d] = live ? LOAD(p.q, g * p.dk + d) : ACC(0);
         acc[d] = ACC(0);
     }
-    ACC dd = ACC(0);
     for (uint d = 0; d < p.dv; d++) {
-        dov[d] = LOAD(p.dout, g * p.dv + d);
-        dd += dov[d] * LOAD(p.o, g * p.dv + d);
+        dov[d] = live ? LOAD(p.dout, g * p.dv + d) : ACC(0);
+        dd += live ? dov[d] * LOAD(p.o, g * p.dv + d) : ACC(0);
     }
-    ACC row = LOAD(p.lse, g);
-    int seen = p.causal != 0 ? clamp(int(i + p.tk) - int(p.tq) + 1, 0, int(p.tk)) : int(p.tk);
-    for (uint j = 0; j < uint(seen); j++) {
-        ACC s = ACC(0);
+    if (live) {
+        row = LOAD(p.lse, g);
+    }
+    // keys this row sees, and the most any row of the group sees (the last one)
+    uint iLast = min(i0 + ROWS, p.tq) - 1;
+    uint seen = p.causal != 0 ? uint(clamp(int(i + p.tk) - int(p.tq) + 1, 0, int(p.tk))) : p.tk;
+    uint groupSeen = p.causal != 0 ? uint(clamp(int(iLast + p.tk) - int(p.tq) + 1, 0, int(p.tk))) : p.tk;
+    if (!live) {
+        seen = 0;
+    }
+    for (uint c = 0; c < groupSeen; c += TILE) {
+        uint n = min(uint(TILE), groupSeen - c);
+        for (uint x = tid; x < n * p.dk; x += ROWS) {
+            ks[x] = LOAD(p.k, kOff + c * p.dk + x);
+        }
+        for (uint x = tid; x < n * p.dv; x += ROWS) {
+            vs[x] = LOAD(p.v, vOff + c * p.dv + x);
+        }
+        barrier();
+        uint mine = seen > c ? min(n, seen - c) : 0u;
+        for (uint jj = 0; jj < mine; jj++) {
+            ACC s = ACC(0);
+            for (uint d = 0; d < p.dk; d++) {
+                s += qv[d] * ks[jj * p.dk + d];
+            }
+            ACC pr = exp_(s * ACC(p.scale) - row);
+            ACC dp = ACC(0);
+            for (uint d = 0; d < p.dv; d++) {
+                dp += dov[d] * vs[jj * p.dv + d];
+            }
+            ACC ds = pr * (dp - dd) * ACC(p.scale);
+            for (uint d = 0; d < p.dk; d++) {
+                acc[d] += ds * ks[jj * p.dk + d];
+            }
+        }
+        barrier();   // the next tile overwrites ks and vs
+    }
+    if (live) {
         for (uint d = 0; d < p.dk; d++) {
-            s += qv[d] * LOAD(p.k, kOff + j * p.dk + d);
+            STORE(p.dq, g * p.dk + d, acc[d]);
         }
-        ACC pr = exp_(s * ACC(p.scale) - row);
-        ACC dp = ACC(0);
-        for (uint d = 0; d < p.dv; d++) {
-            dp += dov[d] * LOAD(p.v, vOff + j * p.dv + d);
-        }
-        ACC ds = pr * (dp - dd) * ACC(p.scale);
-        for (uint d = 0; d < p.dk; d++) {
-            acc[d] += ds * LOAD(p.k, kOff + j * p.dk + d);
-        }
+        STORE(p.dsum, g, dd);
     }
-    for (uint d = 0; d < p.dk; d++) {
-        STORE(p.dq, g * p.dk + d, acc[d]);
-    }
-    STORE(p.dsum, g, dd);
 }

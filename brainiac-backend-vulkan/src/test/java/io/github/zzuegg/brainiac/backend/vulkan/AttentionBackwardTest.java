@@ -34,6 +34,8 @@ class AttentionBackwardTest {
         "1, 3, 1, 1, 9, 4, 5, true",
         "2, 2, 2, 6, 4, 8, 8, false",
         "1, 8, 2, 70, 70, 64, 64, true",
+        "1, 4, 2, 130, 150, 32, 16, true",
+        "2, 2, 1, 100, 40, 16, 32, false",
     })
     void gradientsMatchTheCpu(int batch, int heads, int kvHeads, int tq, int tk, int dk, int dv, boolean causal) {
         SplittableRandom r = new SplittableRandom(batch * 31L + tq);
