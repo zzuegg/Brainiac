@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.List;
@@ -99,6 +100,19 @@ public final class DifferentialAttention implements Layer {
         Var a1 = pair.slice(2, 0, 1).reshape(b, heads, t, t);
         Var a2 = pair.slice(2, 1, 2).reshape(b, heads, t, t);
         return new Var[] {a1, a2, a1.sub(a2.mul(lambdaVar()))};
+    }
+
+    /**
+     * Describes the layer for {@code Model.sequential().add(...)}, reading the width from the
+     * input {@code [steps, features]}.
+     *
+     * @param heads the number of heads
+     * @param causal whether each step only sees earlier ones
+     * @param depth the 1-based layer index, which sets {@code lambdaInit}
+     * @return the spec
+     */
+    public static LayerSpec of(int heads, boolean causal, int depth) {
+        return MixerOps.sameShape((in, r) -> new DifferentialAttention(in.dim(-1), heads, causal, depth, r));
     }
 
     @Override

@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.List;
@@ -89,6 +90,18 @@ public final class ForgettingAttention implements Layer {
         Var ci = c.reshape(b, heads, t, 1);
         Var cj = c.reshape(b, heads, 1, t);
         return ci.sub(cj).add(MixerOps.causal(t));
+    }
+
+    /**
+     * Describes the layer for {@code Model.sequential().add(...)}, reading the width from the
+     * input {@code [steps, features]}. Always causal.
+     *
+     * @param heads the number of heads
+     * @param outputGate whether to add the output gate (FoX "Pro")
+     * @return the spec
+     */
+    public static LayerSpec of(int heads, boolean outputGate) {
+        return MixerOps.sameShape((in, r) -> new ForgettingAttention(in.dim(-1), heads, outputGate, r));
     }
 
     @Override

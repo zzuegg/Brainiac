@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.List;
@@ -74,6 +75,19 @@ public final class GatedAttention implements Layer {
     /** @return the gate bias; a very negative bias closes every gate */
     public Var gateBias() {
         return bg;
+    }
+
+    /**
+     * Describes the layer for {@code Model.sequential().add(...)}, reading the width from the
+     * input {@code [steps, features]}; a drop-in for {@code MultiHeadAttention.of(heads)}.
+     *
+     * @param heads the number of heads
+     * @param causal whether each step only sees earlier ones
+     * @param rotaryBase the RoPE base, or 0 for no positions
+     * @return the spec
+     */
+    public static LayerSpec of(int heads, boolean causal, float rotaryBase) {
+        return MixerOps.sameShape((in, r) -> new GatedAttention(in.dim(-1), heads, causal, rotaryBase, r));
     }
 
     @Override

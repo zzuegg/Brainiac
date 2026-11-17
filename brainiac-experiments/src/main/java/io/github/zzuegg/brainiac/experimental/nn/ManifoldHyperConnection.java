@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -143,6 +144,18 @@ public final class ManifoldHyperConnection implements Layer {
         Var post = flat.matmul(dynPost).mul(gatePost).add(staticPost).sigmoid().mul(2f).reshape(b, t, streams, 1);
         Var resLogits = flat.matmul(dynRes).mul(gateRes).reshape(b, t, streams, streams).add(staticRes);
         return new Var[] {pre, post, sinkhorn(resLogits, sinkhornIterations)};
+    }
+
+    /**
+     * Describes a hyper-connection around a sub-layer for {@code Model.sequential().add(...)};
+     * the input is {@code [steps, streams, features]}.
+     *
+     * @param inner the spec of the wrapped sub-layer, which sees {@code [steps, features]}
+     * @return the spec
+     */
+    public static LayerSpec of(LayerSpec inner) {
+        return MixerOps.sameShape((in, r) -> new ManifoldHyperConnection(
+                inner.create(Shape.of(in.dim(0), in.dim(2)), r), in.dim(1), in.dim(2), r));
     }
 
     @Override

@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -115,6 +116,21 @@ public final class NormalizedTransformerBlock implements Layer {
     /** @return the MLP eigen step sizes, {@code [features]} */
     public Var mlpStep() {
         return alphaM;
+    }
+
+    /**
+     * Describes the block for {@code Model.sequential().add(...)}, reading the width from the
+     * input {@code [steps, features]}; a drop-in for {@code TransformerBlock.of(heads)}.
+     *
+     * @param heads the number of heads
+     * @param hidden the MLP width
+     * @param causal whether each step only sees earlier ones
+     * @param alphaInit the initial eigen step size
+     * @return the spec
+     */
+    public static LayerSpec of(int heads, int hidden, boolean causal, float alphaInit) {
+        return MixerOps.sameShape((in, r) -> new NormalizedTransformerBlock(in.dim(-1), heads, hidden, causal, 0f,
+                alphaInit, r));
     }
 
     @Override

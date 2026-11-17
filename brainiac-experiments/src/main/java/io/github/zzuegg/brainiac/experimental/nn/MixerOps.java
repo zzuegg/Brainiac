@@ -3,9 +3,13 @@ package io.github.zzuegg.brainiac.experimental.nn;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerSpec;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
+import java.util.SplittableRandom;
+import java.util.function.BiFunction;
 import java.util.random.RandomGenerator;
 
 /** Small shared building blocks for this package: parameters, head reshapes, norms. */
@@ -89,5 +93,20 @@ final class MixerOps {
     /** A two-layer SiLU MLP applied to the last axis. */
     static Var mlp(Var x, Var w1, Var w2) {
         return Activation.SILU.forward(x.matmul(w1)).matmul(w2);
+    }
+
+    /** A spec for a layer that keeps its input shape; {@code make} gets the sample shape (no batch). */
+    static LayerSpec sameShape(BiFunction<Shape, SplittableRandom, Layer> make) {
+        return new LayerSpec() {
+            @Override
+            public Shape outputShape(Shape input) {
+                return input;
+            }
+
+            @Override
+            public Layer create(Shape input, SplittableRandom random) {
+                return make.apply(input, random);
+            }
+        };
     }
 }
