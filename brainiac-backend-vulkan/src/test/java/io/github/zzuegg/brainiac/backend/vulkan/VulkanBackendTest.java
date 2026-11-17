@@ -17,6 +17,7 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 
 import java.util.List;
 import java.util.Optional;
@@ -102,7 +103,7 @@ class VulkanBackendTest {
         same(type, "pow", t -> t.abs().pow(1.5f), x);
         same(type, "compare", t -> t.maximum(t.neg()).add(t.minimum(t.square())).add(t.greater(t.square())), x);
         same(type, "unary", t -> t.exp().add(t.tanh()).add(t.sigmoid()).add(t.square().add(1).log())
-                .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()).add(t.step()), x);
+                .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()).add(t.step()).add(t.mul(4).round()), x);
         for (ActivationOp op : ActivationOp.values()) {
             same(type, op.name(), t -> t.activation(op, 0.1f), x);
             same(type, op + " backward", t -> t.activationBackward(op, 0.1f, t.square()), x);
@@ -245,5 +246,40 @@ class VulkanBackendTest {
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "vulkan".length(), status);
         assertTrue(List.of(DType.values()).size() == 4);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
+        "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4"})
+    void packedMatricesMatchTheCpu(int bits, int group, int m) {
+        packedMatches(bits, group, m, group > 192 ? 3072 : 192, 77);
+        packedMatches(bits, group, m, 768, 256);
+    }
+
+    private static void packedMatches(int bits, int group, int m, int rows, int cols) {
+        if (rows % group != 0) {
+            return;
+        }
+        SplittableRandom r = new SplittableRandom(bits * 100L + m + rows);
+        int limit = (1 << (bits - 1)) - 1;
+        byte[] levels = new byte[rows * cols];
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = (byte) r.nextInt(-limit, limit + 1);
+        }
+        float[] scales = new float[rows / group * cols];
+        for (int i = 0; i < scales.length; i++) {
+            scales[i] = (float) r.nextDouble(0.001, 0.05);
+        }
+        PackedMatrix w = PackedMatrix.of(levels, scales, rows, cols, bits, group);
+        Tensor x = random(3, m, rows);
+        Tensor onCpu = Tensor.packed(w, CPU);
+        Tensor onGpu = onCpu.to(gpu);
+        String what = bits + " bits, groups of " + group + ", " + m + " x " + rows + " x " + cols;
+        assertTrue(onGpu.isPacked());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
+        float[] expected = x.matmul(onCpu).toArray();
+        org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), 2e-4f, what);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(),
+                2e-4f, what);
     }
 }

@@ -6,6 +6,8 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
+import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.ReduceOp;
 import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
@@ -175,6 +177,9 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
+        if (storage instanceof Packed) {
+            return;   // weights: freed with the tensor that holds them
+        }
         vs(storage).release();
     }
 
@@ -514,6 +519,98 @@ public final class VulkanBackend implements Backend {
 
     private static int ceil(long a, int b) {
         return (int) ((a + b - 1) / b);
+    }
+
+    // ------------------------------------------------------------------ packed weights
+
+    /** A packed matrix on the device: levels as raw bytes (read as 32-bit words) and scales. */
+    private record Packed(PackedMatrix host, VkStorage levels, VkStorage scales) implements PackedStorage {
+
+        @Override
+        public int rows() {
+            return host.rows();
+        }
+
+        @Override
+        public int cols() {
+            return host.cols();
+        }
+
+        @Override
+        public long size() {
+            return host.size();
+        }
+
+        @Override
+        public long bytes() {
+            return levels.bytes() + scales.bytes();
+        }
+    }
+
+    /** Rows up to which a product reads packed levels directly; more unpack first. */
+    private static final int PACKED_ROWS = 8;
+    /** Products by packed weights split their rows into pieces until about this many work groups run. */
+    private static final int PACKED_GROUPS = Integer.getInteger("brainiac.vulkan.packedGroups", 256);
+
+    @Override
+    public synchronized PackedStorage pack(PackedMatrix matrix) {
+        byte[] data = matrix.data();
+        VkStorage levels = raw(Math.max(1, (data.length + 3) / 4), null);
+        vk.upload(levels.slot, levels.bytes(), b -> b.put(data));
+        return new Packed(matrix, levels, vs(upload(matrix.scales())));
+    }
+
+    @Override
+    public PackedMatrix unpackToHost(PackedStorage packed) {
+        if (packed instanceof Packed p) {
+            return p.host();
+        }
+        return Backend.super.unpackToHost(packed);
+    }
+
+    private Packed packed(PackedStorage s) {
+        if (s instanceof Packed p && p.levels().owner == this) {
+            return p;
+        }
+        return (Packed) pack(unpackToHost(s));   // packed for another backend: bring it here
+    }
+
+    @Override
+    public synchronized void unpack(PackedStorage packed, Storage out) {
+        Packed p = packed(packed);
+        VkStorage z = vs(out);
+        PackedMatrix h = p.host();
+        vk.push().putLong(p.levels().address()).putLong(p.scales().address()).putLong(z.address())
+                .putInt(h.rows()).putInt(h.cols()).putInt(h.group()).putInt(h.nibbles() ? 1 : 0);
+        vk.dispatch("unpack_packed", groups(h.size()), z.slot, p.levels().slot, p.scales().slot);
+    }
+
+    @Override
+    public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
+        if (m > PACKED_ROWS || m == 0 || k == 0) {
+            Backend.super.matmulPacked(a, b, m, k, n, out);
+            return;
+        }
+        Packed p = packed(b);
+        VkStorage x = vs(a);
+        VkStorage z = vs(out);
+        int columnGroups = ceil(n, 128);
+        // pieces of at least 64 rows, enough of them to fill the device
+        int pieces = Math.max(1, Math.min(ceil(k, 64), PACKED_GROUPS / columnGroups));
+        int chunk = ceil(ceil(k, pieces), 2) * 2;
+        pieces = ceil(k, chunk);
+        long mn = (long) m * n;
+        VkStorage target = pieces == 1 ? z : raw(pieces * mn, null);
+        int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        vk.push().putLong(x.address()).putLong(p.levels().address()).putLong(p.scales().address())
+                .putLong(target.address()).putInt(m).putInt(k).putInt(n).putInt(p.host().group())
+                .putInt(p.host().nibbles() ? 1 : 0).putInt(chunk);
+        vk.dispatch("matmul_packed" + rows, columnGroups, 1, pieces, target.slot, x.slot, p.levels().slot,
+                p.scales().slot);
+        if (pieces > 1) {
+            reduce(ReduceOp.SUM.ordinal(), target, z, mn, pieces, mn);
+            target.release();
+        }
     }
 
     // ------------------------------------------------------------------ windows and indices

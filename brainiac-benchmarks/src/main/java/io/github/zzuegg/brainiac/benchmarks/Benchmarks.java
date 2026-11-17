@@ -39,6 +39,7 @@ import java.util.function.UnaryOperator;
  * ./gradlew :brainiac-benchmarks:run --args="--threads 1"     # single-threaded backend
  * ./gradlew :brainiac-benchmarks:run --args="--filter matmul" # cases whose name contains "matmul"
  * ./gradlew :brainiac-benchmarks:run --args="--no-simd"      # plain Java kernels only
+ * ./gradlew :brainiac-benchmarks:run --args="--device vulkan --filter matvec"  # products on a GPU
  * </pre>
  */
 public final class Benchmarks {
@@ -53,10 +54,13 @@ public final class Benchmarks {
     /**
      * Runs the benchmarks.
      *
-     * @param args {@code --quick}, {@code --threads N}, {@code --filter TEXT}, {@code --no-simd}
+     * @param args {@code --quick}, {@code --threads N}, {@code --filter TEXT}, {@code --no-simd},
+     *        {@code --device NAME} (the start of a device name, such as {@code opencl} or
+     *        {@code vulkan}: the matrix-vector and text generation cases run there)
      */
     public static void main(String[] args) {
         boolean quick = false;
+        Device device = Device.cpu();
         String filter = "";
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -64,19 +68,26 @@ public final class Benchmarks {
                 case "--threads" -> System.setProperty("brainiac.cpu.threads", args[++i]);
                 case "--filter" -> filter = args[++i];
                 case "--no-simd" -> System.setProperty("brainiac.cpu.simd", "false");
+                case "--device" -> {
+                    String name = args[++i];
+                    device = Device.available().stream().filter(d -> d.name().startsWith(name)).findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException("no device " + name + "; available: "
+                                    + Device.available()));
+                }
                 default -> throw new IllegalArgumentException("unknown option " + args[i]
-                        + "; use --quick, --threads N, --filter TEXT or --no-simd");
+                        + "; use --quick, --threads N, --filter TEXT, --no-simd or --device NAME");
             }
         }
         String threads = System.getProperty("brainiac.cpu.threads",
                 String.valueOf(Runtime.getRuntime().availableProcessors()));
         boolean simd = ModuleLayer.boot().findModule("jdk.incubator.vector").isPresent()
                 && Boolean.parseBoolean(System.getProperty("brainiac.cpu.simd", "true"));
-        System.out.printf(Locale.ROOT, "Brainiac benchmarks: Java %s, %s threads, SIMD %s%n%n",
-                Runtime.version(), threads, simd ? "on" : "off");
+        System.out.printf(Locale.ROOT, "Brainiac benchmarks: Java %s, %s threads, SIMD %s%s%n%n",
+                Runtime.version(), threads, simd ? "on" : "off",
+                device.kind() == Device.Kind.CPU ? "" : ", products on " + device);
         System.out.printf(Locale.ROOT, "%-36s %12s %16s%n", "case", "median", "throughput");
 
-        for (Case c : cases(quick)) {
+        for (Case c : cases(quick, device)) {
             if (!c.name.contains(filter)) {
                 continue;
             }
@@ -86,7 +97,7 @@ public final class Benchmarks {
         }
     }
 
-    private static List<Case> cases(boolean quick) {
+    private static List<Case> cases(boolean quick, Device device) {
         SplittableRandom random = new SplittableRandom(42);
         List<Case> cases = new ArrayList<>();
         int[] sizes = quick ? new int[] {128, 512} : new int[] {64, 128, 256, 512, 1024};
@@ -101,15 +112,18 @@ public final class Benchmarks {
 
         // one token at a time through a large layer: reading the weights is the cost
         int d = quick ? 2048 : 4096;
-        Tensor big = Tensor.uniform(Shape.of(d, d), -1, 1, random);
+        // on a GPU, each run queues `repeat` products and waits for the last
+        int repeat = device.kind() == Device.Kind.CPU ? 1 : 50;
+        Tensor big = Tensor.uniform(Shape.of(d, d), -1, 1, random).to(device);
         for (int rows : new int[] {1, 8}) {
-            Tensor v = Tensor.uniform(Shape.of(rows, d), -1, 1, random);
-            double flops = 2.0 * rows * d * d / 1e9;
-            cases.add(new Case("matvec " + rows + "x" + d + " f32 weights", flops, "GFLOP/s", () -> v.matmul(big)));
+            Tensor v = Tensor.uniform(Shape.of(rows, d), -1, 1, random).to(device);
+            double flops = 2.0 * rows * d * d * repeat / 1e9;
+            cases.add(new Case("matvec " + rows + "x" + d + " f32 weights", flops, "GFLOP/s",
+                    () -> products(v, big, repeat)));
             for (int bits : new int[] {8, 4}) {
-                Tensor packed = Tensor.packed(packed(d, d, bits, random), Device.cpu());
+                Tensor packed = Tensor.packed(packed(d, d, bits, random), Device.cpu()).to(device);
                 cases.add(new Case("matvec " + rows + "x" + d + " int" + bits + " weights", flops, "GFLOP/s",
-                        () -> v.matmul(packed)));
+                        () -> products(v, packed, repeat)));
             }
         }
 
@@ -119,12 +133,12 @@ public final class Benchmarks {
         for (int i = 0; i < 6; i++) {
             gptBuilder.add(TransformerBlock.of(width / 64).causal(true).rotary(10000).ffnSize(4 * width));
         }
-        Model lm = gptBuilder.layer(LayerNorm.of(width)).dense(256, Activation.SOFTMAX).seed(1).build();
+        Model lm = gptBuilder.layer(LayerNorm.of(width)).dense(256, Activation.SOFTMAX).seed(1).build().to(device);
         int tokens = 16;
         cases.add(new Case("generate " + tokens + " tokens, 6x" + width + " f32", tokens, "tokens/s",
                 () -> generate(lm, tokens)));
         for (Quantization q : List.of(Quantization.int8(), Quantization.int4().groups(32))) {
-            Model packedLm = lm.copy(Device.cpu()).quantize(q).pack();
+            Model packedLm = lm.copy(device).quantize(q).pack();
             cases.add(new Case("generate " + tokens + " tokens, 6x" + width + " " + q.bits() + "-bit packed", tokens,
                     "tokens/s", () -> generate(packedLm, tokens)));
         }
@@ -177,6 +191,17 @@ public final class Benchmarks {
                 .batchSize(128).epochs(1).seed(1);
         cases.add(new Case("train MLP 784-256-128-10, 1 epoch", samples / 1e3, "k samples/s", () -> trainer.fit(data)));
         return cases;
+    }
+
+    /** Multiplies {@code repeat} times and waits for the result. */
+    private static void products(Tensor v, Tensor w, int repeat) {
+        Tensor out = null;
+        for (int i = 0; i < repeat; i++) {
+            out = v.matmul(w);
+        }
+        if (repeat > 1) {
+            out.toArray();
+        }
     }
 
     /** Writes tokens one at a time through a fresh cache. */

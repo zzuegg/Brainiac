@@ -1,0 +1,115 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "packed.glsl"
+// z = a x packed for up to ROWS rows of a (row-major [m, k]) and a packed [k, n] matrix.
+// Each invocation computes four adjacent columns, reading their levels of a row as one
+// 32-bit word when n is a multiple of 4, so neighbouring invocations read neighbouring
+// words. A work group covers 4 * QUADS columns with SLICES invocations per column quad,
+// each over its own run of rows; the work group's z index picks a piece of `chunk` rows.
+// Sums go to z[piece * m * n + ...], added up afterwards when there are several pieces.
+// Levels are summed per scale group and scaled once per group.
+// Compiled for ROWS = 1, 2, 4 and 8; rows past m repeat row 0 and are not stored.
+#ifndef ROWS
+#define ROWS 1
+#endif
+#define QUADS 32
+#define SLICES 8
+layout(local_size_x = QUADS, local_size_y = SLICES) in;
+layout(push_constant) uniform P {
+    In a; InWords q; In scales; Floats z;
+    uint m; uint k; uint n; uint group; uint nibbles; uint chunk;
+} p;
+shared vec4 sums[SLICES][QUADS];
+
+// the levels of columns c .. c + 3 at row r (columns past n read as 0)
+vec4 levels(uint r, uint c, bool words) {
+    uint shift = 0;
+    uint b = r * p.n + c;
+    if (p.nibbles != 0) {
+        b = (r >> 1) * p.n + c;
+        shift = (r & 1u) * 4u;
+    }
+    int bits = p.nibbles != 0 ? 4 : 8;
+    if (words) {
+        int w = int(p.q.v[b >> 2]);
+        return vec4(bitfieldExtract(w, int(shift), bits), bitfieldExtract(w, int(8 + shift), bits),
+                    bitfieldExtract(w, int(16 + shift), bits), bitfieldExtract(w, int(24 + shift), bits));
+    }
+    vec4 v = vec4(0.0);
+    for (uint j = 0; j < 4; j++) {
+        if (c + j < p.n) {
+            uint bj = b + j;
+            v[j] = float(bitfieldExtract(int(p.q.v[bj >> 2]), int((bj & 3u) * 8u + shift), bits));
+        }
+    }
+    return v;
+}
+
+vec4 scalesAt(uint g, uint c) {
+    uint s = g * p.n + c;
+    vec4 v = vec4(0.0);
+    for (uint j = 0; j < 4; j++) {
+        if (c + j < p.n) v[j] = p.scales.v[s + j];
+    }
+    return v;
+}
+
+void main() {
+    uint quad = gl_LocalInvocationID.x;
+    uint slice = gl_LocalInvocationID.y;
+    uint c = (gl_WorkGroupID.x * QUADS + quad) * 4;
+    uint piece = gl_WorkGroupID.z;
+    bool words = p.n % 4 == 0;
+    // rows [from, to) of this piece, cut into SLICES runs of an even number of rows
+    uint from = piece * p.chunk;
+    uint to = min(p.k, from + p.chunk);
+    uint run = ((to - from + SLICES - 1) / SLICES + 1) & ~1u;
+    uint start = min(to, from + slice * run);
+    uint end = min(to, start + run);
+    uint rowOf[ROWS];
+    for (uint i = 0; i < ROWS; i++) {
+        rowOf[i] = (i < p.m ? i : 0) * p.k;
+    }
+    vec4 total[ROWS];
+    for (uint i = 0; i < ROWS; i++) {
+        total[i] = vec4(0.0);
+    }
+    if (c < p.n) {
+        uint r = start;
+        while (r < end) {
+            uint g = r / p.group;
+            uint stop = min(end, (g + 1) * p.group);
+            vec4 part[ROWS];
+            for (uint i = 0; i < ROWS; i++) {
+                part[i] = vec4(0.0);
+            }
+            for (; r < stop; r++) {
+                vec4 l = levels(r, c, words);
+                for (uint i = 0; i < ROWS; i++) {
+                    part[i] = fma(vec4(p.a.v[rowOf[i] + r]), l, part[i]);
+                }
+            }
+            vec4 s = scalesAt(g, c);
+            for (uint i = 0; i < ROWS; i++) {
+                total[i] = fma(part[i], s, total[i]);
+            }
+        }
+    }
+    uint out0 = piece * p.m * p.n;
+    for (uint i = 0; i < ROWS; i++) {
+        sums[slice][quad] = total[i];
+        barrier();
+        if (slice == 0 && i < p.m && c < p.n) {
+            vec4 t = sums[0][quad];
+            for (uint s = 1; s < SLICES; s++) {
+                t += sums[s][quad];
+            }
+            uint o = out0 + i * p.n + c;
+            for (uint j = 0; j < 4; j++) {
+                if (c + j < p.n) p.z.v[o + j] = t[j];
+            }
+        }
+        barrier();
+    }
+}

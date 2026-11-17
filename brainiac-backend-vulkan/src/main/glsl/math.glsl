@@ -83,7 +83,8 @@ float unary_op(uint op, float v) {
         case 9: return v > 0.0 ? 1.0 : 0.0;
         case 10: return v > 0.0 ? 1.0 : v < 0.0 ? -1.0 : v;
         case 11: return erf_(v);
-        default: return softplus_(v);
+        case 12: return softplus_(v);
+        default: return roundEven(v);
     }
 }
 

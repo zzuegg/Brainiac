@@ -51,8 +51,11 @@ abstract class CompileShaders @Inject constructor(private val exec: ExecOperatio
 
     @TaskAction
     fun compile() {
-        // matmul is compiled twice: 64 x 64 and 32 x 32 output tiles
-        val variants = mapOf("matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")))
+        // matmul is compiled twice: 64 x 64 and 32 x 32 output tiles; matmul_packed for 1 to 8 rows
+        val variants = mapOf(
+            "matmul" to listOf("matmul64" to listOf("-DW=4"), "matmul32" to listOf("-DW=2")),
+            "matmul_packed" to listOf(1, 2, 4, 8).map { "matmul_packed$it" to listOf("-DROWS=$it") },
+        )
         val dir = sources.get().asFile
         dir.listFiles { f -> f.name.endsWith(".comp") }!!.sorted().forEach { src ->
             val base = src.name.removeSuffix(".comp")
