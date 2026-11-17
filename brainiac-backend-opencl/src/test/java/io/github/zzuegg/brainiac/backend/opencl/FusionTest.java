@@ -129,6 +129,11 @@ class FusionTest {
                 random(31, 100, 70));
         same(DType.FLOAT32, x -> x.relu().add(0.5f).matmul(w.to(x.device()).tanh()).sigmoid(), random(32, 100, 70));
         same(DType.FLOAT32, x -> x.matmul(x.transpose()).exp().sum(1), random(33, 2, 80, 33));
+        // 32 x 32 tiles
+        Tensor v = random(34, 70, 50);
+        same(DType.FLOAT32, x -> x.matmul(v.to(x.device())).add(bias.to(x.device()).slice(0, 0, 50)).relu(),
+                random(35, 40, 70));
+        same(DType.FLOAT32, x -> x.relu().add(0.5f).matmul(v.to(x.device()).tanh()).sigmoid(), random(36, 40, 70));
     }
 
     @Test
@@ -368,9 +373,10 @@ class FusionTest {
         OpenClBackend backend = (OpenClBackend) backendOf.invoke(gpu);
         java.lang.reflect.Field launches = OpenClBackend.class.getDeclaredField("launchIndex");
         launches.setAccessible(true);
-        // a kernel not compiled yet runs as separate precompiled steps meanwhile: wait for it
+        // a kernel not compiled yet runs as separate precompiled steps meanwhile: wait for it (up to a
+        // minute: after the other tests the compiler queue can be long on a busy machine)
         long used = Long.MAX_VALUE;
-        for (int attempt = 0; attempt < 100 && used > 3; attempt++) {
+        for (int attempt = 0; attempt < 600 && used > 3; attempt++) {
             long before = launches.getLong(backend);
             layer.forward(io.github.zzuegg.brainiac.autograd.Var.of(x)).value().toArray();
             used = launches.getLong(backend) - before;
@@ -378,7 +384,20 @@ class FusionTest {
                 Thread.sleep(100);
             }
         }
-        assertTrue(used <= 3, "forward took " + used + " launches");
+        if (used > 3) {
+            // say why: a generated kernel the driver could not compile, or one still compiling
+            java.lang.reflect.Field failed = OpenClBackend.class.getDeclaredField("fusedFailed");
+            failed.setAccessible(true);
+            java.lang.reflect.Field kernels = OpenClBackend.class.getDeclaredField("fusedKernels");
+            kernels.setAccessible(true);
+            long pending;
+            synchronized (kernels.get(backend)) {
+                pending = ((java.util.Map<?, ?>) kernels.get(backend)).values().stream()
+                        .filter(f -> !((java.util.concurrent.Future<?>) f).isDone()).count();
+            }
+            org.junit.jupiter.api.Assertions.fail("forward took " + used + " launches; generated kernels that failed"
+                    + " to compile: " + failed.getInt(backend) + ", still compiling: " + pending);
+        }
     }
 
     @Test

@@ -453,7 +453,7 @@ public final class OpenClBackend implements Backend {
         MemorySegment program = build(source);
         Map<String, MemorySegment> kernels = new HashMap<>();
         for (String name : List.of("fill", "unary", "activation", "activation_backward", "binary_contiguous",
-                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "im2col",
+                "binary_strided", "copy_strided", "reduce_rows", "reduce_group", "argmax", "matmul", "matmul_big", "matmul_mid", "im2col",
                 "col2im", "gather", "scatter_add", "to_float", "from_float", "random", "attention", "attention_dq",
                 "attention_dkv")) {
             kernels.put(name, cl.createKernel(program, name));
@@ -770,7 +770,7 @@ public final class OpenClBackend implements Backend {
         Fused.Expr pa = prologue(mm.a());
         Fused.Expr pb = prologue(mm.b());
         Fused.Kernel k = Fused.generateMatMul(s.pending, base, storeIntermediates, pa, layout(mm, pa, true), pb,
-                layout(mm, pb, false), big(mm));
+                layout(mm, pb, false), mm.w());
         if (k.argBytes() > Fused.MAX_ARG_BYTES) {
             return false;
         }
@@ -2069,13 +2069,13 @@ public final class OpenClBackend implements Backend {
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
         ClStorage o = cl(out);
-        boolean big = bigTiles(batch, m, n);
-        // a work item computes tile / 4 rows of a column, or 4 x 4 outputs of a 64 x 64 tile
-        long[] global = big ? new long[] {roundUp(n, BIG) / 4, roundUp(m, BIG) / 4, batch}
+        int w = tileWidth(batch, m, n);
+        // a work item computes tile / 4 rows of a column, or w x w outputs of a 16w x 16w tile
+        long[] global = w > 0 ? new long[] {roundUp(n, 16 * w) / w, roundUp(m, 16 * w) / w, batch}
                 : new long[] {roundUp(n, tile), roundUp(m, tile) / (tile / 4), batch};
-        long[] local = big ? new long[] {16, 16, 1} : new long[] {tile, 4, 1};
+        long[] local = w > 0 ? new long[] {16, 16, 1} : new long[] {tile, 4, 1};
         // a work-group per tile of outputs loads each operand value once
-        int span = big ? BIG : tile;
+        int span = w > 0 ? 16 * w : tile;
         long readsA = Math.ceilDiv(n, span);
         long readsB = Math.ceilDiv(m, span);
         Operand x = operand(a, o.dtype, batch, m, k, readsA);
@@ -2094,7 +2094,7 @@ public final class OpenClBackend implements Backend {
                 ready(y.storage());
             }
             // not a chain boundary: the chain that uses the product becomes its epilogue
-            o.pending = new Fused.MatMul(args, global, local, pa, pb);
+            o.pending = new Fused.MatMul(args, global, local, pa, pb, w);
             o.pendingNodes = 1;
             o.pendingGeneration = generation;
             return;
@@ -2102,46 +2102,52 @@ public final class OpenClBackend implements Backend {
         if (global[0] * global[1] * global[2] == 0) {
             return;
         }
-        String name = big ? "matmul_big" : "matmul";
+        String name = kernelName(w);
         launchMatMul(o, name, program(o.dtype).kernels().get(name), global, local, args, 0);
         generation++;
     }
 
-    /** The output tile of {@code matmul_big}: 64 x 64, by 16 x 16 work items of 4 x 4 outputs. */
-    private static final int BIG = 64;
-    /** {@code -Dbrainiac.opencl.bigTiles=false} keeps every product on the 16 x 16 tiles. */
+    /**
+     * {@code -Dbrainiac.opencl.bigTiles=false} keeps every product on the 16 x 16 tiles of
+     * one output column per item.
+     */
     private static final boolean BIG_TILES = !"false".equalsIgnoreCase(System.getProperty("brainiac.opencl.bigTiles"));
 
     /**
-     * The fewest 64 x 64 tiles a product needs to use them: with fewer, too few work-groups
-     * keep the device busy, and the 16 x 16 tiles are faster (on an RX 9070 XT, 4096^2 is
-     * 49% and 2048^2 15% faster on the big tiles, 1024^2 18% slower).
+     * The fewest 64 x 64 tiles a product needs to use them; with fewer, 32 x 32 tiles keep
+     * more work-groups busy. As in the Vulkan backend's identical shader, which on an
+     * RX 9070 XT ran 1024^2 at 2.9 and 4096^2 at 6.3 TFLOP/s this way.
      * {@code -Dbrainiac.opencl.bigTileGroups=n} changes it.
      */
-    private static final long BIG_GROUPS = Long.getLong("brainiac.opencl.bigTileGroups", 1024);
+    private static final long BIG_GROUPS = Long.getLong("brainiac.opencl.bigTileGroups", 128);
 
     /**
-     * Whether a product uses 64 x 64 output tiles: each value a work item loads from local
-     * memory then serves 4 products instead of 1. Needs work-groups of 256 and enough
-     * outputs that the larger tiles are not mostly empty, and enough tiles to fill the device.
+     * How many outputs per row and column a work item computes: 4 on 64 x 64 tiles
+     * ({@code matmul_big}) when there are enough of them, 2 on 32 x 32 tiles
+     * ({@code matmul_mid}) for products of at least 32 x 32, else 0 for the plain kernel.
+     * Each value loaded from local memory then serves w products instead of 1.
      */
-    private boolean bigTiles(int batch, int m, int n) {
-        return BIG_TILES && tile == 16 && m >= BIG && n >= BIG
-                && (long) Math.ceilDiv(m, BIG) * Math.ceilDiv(n, BIG) * batch >= BIG_GROUPS;
+    private int tileWidth(int batch, int m, int n) {
+        if (!BIG_TILES || tile != 16) {
+            return 0;
+        }
+        if (m >= 64 && n >= 64 && (long) Math.ceilDiv(m, 64) * Math.ceilDiv(n, 64) * batch >= BIG_GROUPS) {
+            return 4;
+        }
+        return m >= 32 && n >= 32 ? 2 : 0;
     }
 
-    /** Whether a recorded product was laid out for {@code matmul_big}. */
-    private static boolean big(Fused.MatMul mm) {
-        return mm.local()[1] == 16;
+    private static String kernelName(int w) {
+        return w == 4 ? "matmul_big" : w == 2 ? "matmul_mid" : "matmul";
     }
 
-    /** The work size of a generated matmul (one output per item, or 4 x 4 on big tiles). */
+    /** The work size of a generated matmul (one output per item, or w x w on wide tiles). */
     private long[] fusedGlobal(Fused.MatMul mm) {
-        return big(mm) ? mm.global() : oneOutputEach(mm.global());
+        return mm.w() > 0 ? mm.global() : oneOutputEach(mm.global());
     }
 
     private long[] fusedLocal(Fused.MatMul mm) {
-        return big(mm) ? mm.local() : new long[] {tile, tile, 1};
+        return mm.w() > 0 ? mm.local() : new long[] {tile, tile, 1};
     }
 
     /**
@@ -2211,7 +2217,7 @@ public final class OpenClBackend implements Backend {
         }
         if (pa != null || pb != null) {
             Fused.Kernel k = Fused.generateMatMul(null, s, false, pa, layout(mm, pa, true), pb, layout(mm, pb, false),
-                    big(mm));
+                    mm.w());
             MemorySegment kernel = k.argBytes() > Fused.MAX_ARG_BYTES ? null : fusedKernel(s.dtype, k.source());
             if (kernel != null) {
                 s.pending = null;
@@ -2224,7 +2230,7 @@ public final class OpenClBackend implements Backend {
         }
         s.pending = null;
         s.pendingNodes = 0;
-        String name = big(mm) ? "matmul_big" : "matmul";
+        String name = kernelName(mm.w());
         launchMatMul(s, name, program(s.dtype).kernels().get(name), mm.global(), mm.local(), mm.args(), 0);
     }
 
