@@ -24,6 +24,7 @@ public final class Rl {
         double sum = 0;
         for (int e = 0; e < episodes; e++) {
             float[] obs = env.reset(random.split());
+            agent.startEpisode();
             Environment.Step s;
             do {
                 s = env.step(agent.act(obs, false));
@@ -46,6 +47,7 @@ public final class Rl {
     public static List<String> watch(Agent agent, Environment env, long seed, int maxFrames) {
         List<String> frames = new ArrayList<>();
         float[] obs = env.reset(new SplittableRandom(seed));
+        agent.startEpisode();
         frames.add(env.render());
         Environment.Step s;
         do {

@@ -618,6 +618,53 @@ public final class Functional {
     // ---------------------------------------------------------------- cross-entropy
 
     /**
+     * The value of {@code forward} with the gradient of {@code backward}: the
+     * straight-through estimator, for rounding, sampling or other steps without a useful
+     * gradient.
+     *
+     * @param forward what the result is
+     * @param backward what the gradient flows through; same shape
+     * @return {@code backward + (forward - backward)}, the difference held constant
+     */
+    public static Var straightThrough(Var forward, Var backward) {
+        return backward.add(forward.sub(backward).detach());
+    }
+
+    /**
+     * Samples from the Gumbel-softmax (concrete) distribution over the last axis:
+     * {@code softmax((logits + gumbel noise) / temperature)}. With {@code hard} the result
+     * is the one-hot of the sample, with the soft sample's gradient (straight-through).
+     *
+     * @param logits {@code [..., classes]}
+     * @param temperature positive; lower is closer to one-hot
+     * @param hard whether to return one-hot samples
+     * @param random the noise source
+     * @return {@code [..., classes]}
+     */
+    public static Var gumbelSoftmax(Var logits, float temperature, boolean hard,
+            java.util.random.RandomGenerator random) {
+        if (!(temperature > 0)) {
+            throw new IllegalArgumentException("temperature must be positive: " + temperature);
+        }
+        Tensor u = Tensor.uniform(logits.shape(), 1e-10f, 1, random).to(logits.dtype()).to(logits.value().device());
+        Tensor gumbel = u.log().neg().log().neg();
+        Var soft = Activation.SOFTMAX.forward(logits.add(gumbel).div(temperature));
+        if (!hard) {
+            return soft;
+        }
+        int classes = logits.shape().dim(-1);
+        Tensor oneHot = soft.value().argmax(-1).reshape(appendOne(soft.shape()))
+                .equalTo(Tensor.arange(classes).to(logits.value().device())).to(logits.dtype());
+        return straightThrough(Var.of(oneHot), soft);
+    }
+
+    private static int[] appendOne(Shape s) {
+        int[] dims = s.toArray();
+        dims[dims.length - 1] = 1;
+        return dims;
+    }
+
+    /**
      * Cross-entropy from logits: the mean over rows of {@code logsumexp(logits) - logits[id]},
      * skipping rows whose id is negative (padding, as PyTorch's {@code ignore_index}).
      *

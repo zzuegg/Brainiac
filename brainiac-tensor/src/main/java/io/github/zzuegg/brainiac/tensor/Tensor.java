@@ -1593,6 +1593,51 @@ public final class Tensor {
     }
 
     /**
+     * Picks entries of each row by its own indices: for {@code [..., n]} values and
+     * {@code [..., k]} indices with the same leading dimensions, entry {@code j} of a row is
+     * the row's value at its index {@code j}. For the log-probability of each row's chosen
+     * action or token.
+     *
+     * @param indices whole numbers in {@code [0, n)}, {@code [..., k]}
+     * @return {@code [..., k]}
+     */
+    public Tensor takeAlong(Tensor indices) {
+        return reshape(Math.toIntExact(size())).gather(0, rowIndices(shape, indices)).reshape(indices.shape());
+    }
+
+    /**
+     * Where {@link #takeAlong} reads in the flattened values: each index plus its row's
+     * start. Also used by the autograd version.
+     *
+     * @param values the shape of the values {@code [..., n]}
+     * @param indices {@code [..., k]}
+     * @return flat indices {@code [rows * k]}
+     */
+    public static Tensor rowIndices(Shape values, Tensor indices) {
+        Shape is = indices.shape();
+        if (is.rank() != values.rank()) {
+            throw new IllegalArgumentException("indices " + is + " do not fit values " + values);
+        }
+        for (int i = 0; i < is.rank() - 1; i++) {
+            if (is.dim(i) != values.dim(i)) {
+                throw new IllegalArgumentException("indices " + is + " do not fit values " + values);
+            }
+        }
+        int n = values.dim(-1);
+        int k = is.dim(-1);
+        int rows = Math.toIntExact(values.size() / n);
+        if (values.size() > 1 << 24) {
+            throw new IllegalArgumentException("takeAlong supports up to 2^24 values, got " + values.size());
+        }
+        float[] starts = new float[rows];
+        for (int r = 0; r < rows; r++) {
+            starts[r] = (float) r * n;
+        }
+        Tensor start = of(Shape.of(rows, 1), starts).to(indices.device()).to(indices.dtype());
+        return indices.reshape(rows, k).add(start).reshape(rows * k);
+    }
+
+    /**
      * Picks entries along an axis by index, like a table lookup. The axis is replaced by
      * the dimensions of {@code indices}: a weight table {@code [vocab, dim]} gathered on
      * axis 0 with ids {@code [batch, time]} gives {@code [batch, time, dim]}.

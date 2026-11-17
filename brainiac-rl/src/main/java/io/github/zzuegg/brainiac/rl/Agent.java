@@ -15,6 +15,13 @@ public interface Agent {
     float[] act(float[] observation, boolean explore);
 
     /**
+     * Called when a new episode starts, before its first {@link #act}: an agent with
+     * memory, such as a recurrent policy, clears it here. The default does nothing.
+     */
+    default void startEpisode() {
+    }
+
+    /**
      * An agent that acts uniformly at random, as a baseline.
      *
      * @param actions the action space

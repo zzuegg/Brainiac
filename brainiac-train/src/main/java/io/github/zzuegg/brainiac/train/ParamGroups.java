@@ -48,6 +48,20 @@ final class ParamGroups implements Optimizer {
     }
 
     @Override
+    public void resetState(Var parameter, Tensor keep) {
+        optimizer(split(List.of(parameter)).stream().map(List::isEmpty).toList().indexOf(false))
+                .resetState(parameter, keep);
+    }
+
+    @Override
+    public void forget(Var parameter) {
+        for (Group g : groups) {
+            g.optimizer().forget(parameter);
+        }
+        rest.forget(parameter);
+    }
+
+    @Override
     public float learningRate() {
         return rest.learningRate();
     }

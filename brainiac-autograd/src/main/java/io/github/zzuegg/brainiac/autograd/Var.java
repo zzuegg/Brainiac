@@ -43,23 +43,32 @@ public final class Var {
         Tensor[] apply(Tensor grad);
     }
 
+    /** The same gradients as {@link Backward}, but as values that are differentiable again. */
+    @FunctionalInterface
+    private interface Higher {
+        Var[] apply(Var grad);
+    }
+
     private static final Var[] NO_INPUTS = new Var[0];
 
     private Tensor value;
     private final boolean requiresGrad;
     private final Var[] inputs;
     private final Backward backward;
+    /** For {@link #gradients} with a graph: {@code null} when this operation has no such form. */
+    private final Higher higher;
     private Tensor grad;
     /** Gradients computed by {@link #backward(Tensor)} from this value, for {@link #release()}. */
     private List<Tensor> backwardValues;
     /** The parameters' gradients {@link #backward(Tensor)} computed: never released here. */
     private List<Tensor> backwardGrads;
 
-    private Var(Tensor value, boolean requiresGrad, Var[] inputs, Backward backward) {
+    private Var(Tensor value, boolean requiresGrad, Var[] inputs, Backward backward, Higher higher) {
         this.value = Objects.requireNonNull(value, "value");
         this.requiresGrad = requiresGrad;
         this.inputs = inputs;
         this.backward = backward;
+        this.higher = higher;
     }
 
     /**
@@ -69,7 +78,7 @@ public final class Var {
      * @return a constant {@code Var}
      */
     public static Var of(Tensor value) {
-        return new Var(value, false, NO_INPUTS, null);
+        return new Var(value, false, NO_INPUTS, null, null);
     }
 
     /**
@@ -80,7 +89,7 @@ public final class Var {
      * @return a parameter {@code Var}
      */
     public static Var param(Tensor value) {
-        return new Var(value, true, NO_INPUTS, null);
+        return new Var(value, true, NO_INPUTS, null, null);
     }
 
     /**
@@ -169,7 +178,7 @@ public final class Var {
             return this;
         }
         DType original = value.dtype();
-        return unary(value.to(type), g -> new Tensor[] {g.to(original)});
+        return unary(value.to(type), g -> new Tensor[] {g.to(original)}, g -> new Var[] {g.to(original)});
     }
 
     /** @return the number format of the value */
@@ -336,21 +345,166 @@ public final class Var {
     }
 
     private static Var op(Tensor out, Var[] inputs, Backward backward) {
+        return op(out, inputs, backward, null);
+    }
+
+    private static Var op(Tensor out, Var[] inputs, Backward backward, Higher higher) {
         for (Var in : inputs) {
             if (in.requiresGrad) {
-                return new Var(out, true, inputs, backward);
+                return new Var(out, true, inputs, backward, higher);
             }
         }
         // a constant, but computed in this step: its inputs say so to release()
-        return new Var(out, false, inputs, null);
+        return new Var(out, false, inputs, null, null);
     }
 
-    private Var unary(Tensor out, Backward backward) {
-        return op(out, new Var[] {this}, backward);
+    private Var unary(Tensor out, Backward backward, Higher higher) {
+        return op(out, new Var[] {this}, backward, higher);
     }
 
-    private Var binary(Var other, Tensor out, Backward backward) {
-        return op(out, new Var[] {this, other}, backward);
+    private Var binary(Var other, Tensor out, Backward backward, Higher higher) {
+        return op(out, new Var[] {this, other}, backward, higher);
+    }
+
+    /**
+     * Computes the gradients of a value with respect to chosen values, without touching
+     * {@link #grad()}: {@code seed . d(output)/d(x)} for each {@code x} of {@code wrt}.
+     *
+     * <p>With {@code createGraph} the gradients are recorded like any other computation,
+     * so they can be differentiated again: for meta-learning, test-time training, gradient
+     * penalties, energy-based refinement or Hessian-vector products. Differentiating with
+     * respect to the seed as well gives a Jacobian-vector product. Custom
+     * {@linkplain #apply(Op, Var...) operations} and a few activations have no second
+     * derivative here and fail with a graph.
+     *
+     * @param output the value to differentiate
+     * @param seed the gradient of the final result with respect to {@code output}, same
+     *     shape; may itself depend on parameters
+     * @param wrt the values to differentiate with respect to; parameters or values
+     *     computed from them
+     * @param createGraph whether the gradients are differentiable again
+     * @return one gradient per value of {@code wrt}, zeros for one {@code output} does not
+     *     depend on
+     */
+    public static List<Var> gradients(Var output, Var seed, List<Var> wrt, boolean createGraph) {
+        if (!seed.shape().equals(output.shape())) {
+            throw new IllegalArgumentException("seed shape " + seed.shape() + " does not match " + output.shape());
+        }
+        Map<Var, Var> found = new IdentityHashMap<>();
+        for (Var w : wrt) {
+            found.put(w, null);
+        }
+        if (output.requiresGrad) {
+            Map<Var, Var> grads = new IdentityHashMap<>();
+            grads.put(output, seed);
+            for (Var node : output.topologicalOrder()) {
+                Var g = grads.remove(node);
+                if (g == null) {
+                    continue;
+                }
+                g = g.to(node.value.dtype());
+                if (found.containsKey(node)) {
+                    found.put(node, g);
+                }
+                if (node.backward == null) {
+                    continue;
+                }
+                Var[] inputGrads;
+                if (createGraph) {
+                    if (node.higher == null) {
+                        throw new IllegalStateException("an operation on " + node.shape()
+                                + " has no gradient that can be differentiated again");
+                    }
+                    inputGrads = node.higher.apply(g);
+                } else {
+                    Tensor[] t = node.backward.apply(g.value);
+                    inputGrads = new Var[t.length];
+                    for (int i = 0; i < t.length; i++) {
+                        inputGrads[i] = t[i] == null ? null : of(t[i]);
+                    }
+                }
+                for (int i = 0; i < node.inputs.length; i++) {
+                    Var in = node.inputs[i];
+                    if (in.requiresGrad && inputGrads[i] != null) {
+                        grads.merge(in, inputGrads[i].to(in.value.dtype()), Var::add);
+                    }
+                }
+            }
+        }
+        List<Var> out = new ArrayList<>(wrt.size());
+        for (Var w : wrt) {
+            Var g = found.get(w);
+            out.add(g != null ? g : of(Tensor.zeros(w.shape(), w.dtype(), w.value.device())));
+        }
+        return out;
+    }
+
+    /**
+     * {@link #gradients(Var, Var, List, boolean)} of a scalar, such as a loss.
+     *
+     * @param output a value with one element
+     * @param wrt the values to differentiate with respect to
+     * @param createGraph whether the gradients are differentiable again
+     * @return one gradient per value of {@code wrt}
+     */
+    public static List<Var> gradients(Var output, List<Var> wrt, boolean createGraph) {
+        if (output.value.size() != 1) {
+            throw new IllegalArgumentException("gradients without a seed need a scalar, got shape " + output.shape());
+        }
+        return gradients(output, of(Tensor.full(output.shape(), 1f, output.dtype(), output.value.device())), wrt,
+                createGraph);
+    }
+
+    /**
+     * Keeps values where {@code keep} is non-zero and sets the rest to {@code 0}, even
+     * infinite or NaN ones; see {@link Tensor#mask}.
+     *
+     * @param keep the mask; broadcasts; not differentiated
+     * @return the masked values
+     */
+    public Var mask(Tensor keep) {
+        return unary(value.mask(keep), g -> new Tensor[] {g.mask(keep)}, g -> new Var[] {g.mask(keep)});
+    }
+
+    /** The reverse of broadcasting: sums down to {@code target}; see {@link Tensor#sumTo}. */
+    private Var sumTo(Shape target) {
+        if (shape().equals(target)) {
+            return this;
+        }
+        Var t = this;
+        int extra = shape().rank() - target.rank();
+        for (int i = 0; i < extra; i++) {
+            t = t.sum(0, false);
+        }
+        for (int i = 0; i < target.rank(); i++) {
+            if (target.dim(i) == 1 && t.shape().dim(i) != 1) {
+                t = t.sum(i, true);
+            }
+        }
+        return t.reshape(target.toArray());
+    }
+
+    /** The derivative of an activation, as a differentiable value. */
+    private static Var derivative(Var x, ActivationOp op, float param) {
+        Tensor v = x.value;
+        Tensor zero = Tensor.full(Shape.of(), 0f, v.dtype(), v.device());
+        return switch (op) {
+            case RELU -> of(v.greater(zero).to(v.dtype()));
+            case LEAKY_RELU -> of(v.greater(zero).to(v.dtype()).mul(1 - param).add(param));
+            case SIGMOID -> {
+                Var s = x.sigmoid();
+                yield s.mul(s.neg().add(1));
+            }
+            case TANH -> x.tanh().square().neg().add(1);
+            case SOFTPLUS -> x.sigmoid();
+            case SILU -> {
+                Var s = x.sigmoid();
+                yield s.add(x.mul(s).mul(s.neg().add(1)));
+            }
+            case GELU -> x.mul((float) (1 / Math.sqrt(2))).erf().add(1).mul(0.5f)
+                    .add(x.mul(x.square().mul(-0.5f).exp()).mul((float) (1 / Math.sqrt(2 * Math.PI))));
+            default -> throw new IllegalStateException(op + " has no gradient that can be differentiated again");
+        };
     }
 
     /**
@@ -403,7 +557,8 @@ public final class Var {
     public Var add(Var other) {
         Shape a = shape();
         Shape b = other.shape();
-        return binary(other, value.add(other.value), g -> new Tensor[] {g.sumTo(a), g.sumTo(b)});
+        return binary(other, value.add(other.value), g -> new Tensor[] {g.sumTo(a), g.sumTo(b)},
+                g -> new Var[] {g.sumTo(a), g.sumTo(b)});
     }
 
     /**
@@ -423,7 +578,7 @@ public final class Var {
      * @return {@code this + c}
      */
     public Var add(float c) {
-        return unary(value.add(c), g -> new Tensor[] {g});
+        return unary(value.add(c), g -> new Tensor[] {g}, g -> new Var[] {g});
     }
 
     /**
@@ -435,7 +590,8 @@ public final class Var {
     public Var sub(Var other) {
         Shape a = shape();
         Shape b = other.shape();
-        return binary(other, value.sub(other.value), g -> new Tensor[] {g.sumTo(a), g.neg().sumTo(b)});
+        return binary(other, value.sub(other.value), g -> new Tensor[] {g.sumTo(a), g.neg().sumTo(b)},
+                g -> new Var[] {g.sumTo(a), g.neg().sumTo(b)});
     }
 
     /**
@@ -455,7 +611,7 @@ public final class Var {
      * @return {@code this - c}
      */
     public Var sub(float c) {
-        return unary(value.sub(c), g -> new Tensor[] {g});
+        return unary(value.sub(c), g -> new Tensor[] {g}, g -> new Var[] {g});
     }
 
     /**
@@ -468,7 +624,8 @@ public final class Var {
         Tensor a = value;
         Tensor b = other.value;
         return binary(other, a.mul(b),
-                g -> new Tensor[] {g.mul(b).sumTo(a.shape()), g.mul(a).sumTo(b.shape())});
+                g -> new Tensor[] {g.mul(b).sumTo(a.shape()), g.mul(a).sumTo(b.shape())},
+                g -> new Var[] {g.mul(other).sumTo(a.shape()), g.mul(this).sumTo(b.shape())});
     }
 
     /**
@@ -488,7 +645,7 @@ public final class Var {
      * @return {@code this * c}
      */
     public Var mul(float c) {
-        return unary(value.mul(c), g -> new Tensor[] {g.mul(c)});
+        return unary(value.mul(c), g -> new Tensor[] {g.mul(c)}, g -> new Var[] {g.mul(c)});
     }
 
     /**
@@ -503,6 +660,9 @@ public final class Var {
         return binary(other, a.div(b), g -> new Tensor[] {
             g.div(b).sumTo(a.shape()),
             g.mul(a).div(b.square()).neg().sumTo(b.shape())
+        }, g -> new Var[] {
+            g.div(other).sumTo(a.shape()),
+            g.mul(this).div(other.square()).neg().sumTo(b.shape())
         });
     }
 
@@ -523,7 +683,7 @@ public final class Var {
      * @return {@code this / c}
      */
     public Var div(float c) {
-        return unary(value.div(c), g -> new Tensor[] {g.div(c)});
+        return unary(value.div(c), g -> new Tensor[] {g.div(c)}, g -> new Var[] {g.div(c)});
     }
 
     /**
@@ -534,12 +694,12 @@ public final class Var {
      */
     public Var pow(float p) {
         Tensor x = value;
-        return unary(x.pow(p), g -> new Tensor[] {g.mul(x.pow(p - 1)).mul(p)});
+        return unary(x.pow(p), g -> new Tensor[] {g.mul(x.pow(p - 1)).mul(p)}, g -> new Var[] {g.mul(pow(p - 1)).mul(p)});
     }
 
     /** @return {@code -this} */
     public Var neg() {
-        return unary(value.neg(), g -> new Tensor[] {g.neg()});
+        return unary(value.neg(), g -> new Tensor[] {g.neg()}, g -> new Var[] {g.neg()});
     }
 
     // ---------------------------------------------------------------- functions
@@ -547,31 +707,31 @@ public final class Var {
     /** @return each value squared */
     public Var square() {
         Tensor x = value;
-        return unary(x.square(), g -> new Tensor[] {g.mul(x).mul(2)});
+        return unary(x.square(), g -> new Tensor[] {g.mul(x).mul(2)}, g -> new Var[] {g.mul(this).mul(2)});
     }
 
     /** @return the square root of each value */
     public Var sqrt() {
         Tensor out = value.sqrt();
-        return unary(out, g -> new Tensor[] {g.div(out.mul(2))});
+        return unary(out, g -> new Tensor[] {g.div(out.mul(2))}, g -> new Var[] {g.div(sqrt().mul(2))});
     }
 
     /** @return {@code e} raised to each value */
     public Var exp() {
         Tensor out = value.exp();
-        return unary(out, g -> new Tensor[] {g.mul(out)});
+        return unary(out, g -> new Tensor[] {g.mul(out)}, g -> new Var[] {g.mul(exp())});
     }
 
     /** @return the natural logarithm of each value */
     public Var log() {
         Tensor x = value;
-        return unary(x.log(), g -> new Tensor[] {g.div(x)});
+        return unary(x.log(), g -> new Tensor[] {g.div(x)}, g -> new Var[] {g.div(this)});
     }
 
     /** @return the absolute values; the gradient at 0 is 0 */
     public Var abs() {
         Tensor x = value;
-        return unary(x.abs(), g -> new Tensor[] {g.mul(x.sign())});
+        return unary(x.abs(), g -> new Tensor[] {g.mul(x.sign())}, g -> new Var[] {g.mul(x.sign())});
     }
 
     /** @return the hyperbolic tangent of each value */
@@ -600,26 +760,29 @@ public final class Var {
      */
     public Var activation(ActivationOp op, float param) {
         Tensor x = value;
-        return unary(x.activation(op, param), g -> new Tensor[] {x.activationBackward(op, param, g)});
+        return unary(x.activation(op, param), g -> new Tensor[] {x.activationBackward(op, param, g)},
+                g -> new Var[] {g.mul(derivative(this, op, param))});
     }
 
     /** @return the Gauss error function of each value */
     public Var erf() {
         Tensor x = value;
         // d/dx erf(x) = 2 / sqrt(pi) * e^(-x^2)
-        return unary(x.erf(), g -> new Tensor[] {g.mul(x.square().neg().exp().mul((float) (2 / Math.sqrt(Math.PI))))});
+        float c = (float) (2 / Math.sqrt(Math.PI));
+        return unary(x.erf(), g -> new Tensor[] {g.mul(x.square().neg().exp().mul(c))},
+                g -> new Var[] {g.mul(square().neg().exp().mul(c))});
     }
 
     /** @return the sine of each value, in radians */
     public Var sin() {
         Tensor x = value;
-        return unary(x.sin(), g -> new Tensor[] {g.mul(x.cos())});
+        return unary(x.sin(), g -> new Tensor[] {g.mul(x.cos())}, g -> new Var[] {g.mul(cos())});
     }
 
     /** @return the cosine of each value, in radians */
     public Var cos() {
         Tensor x = value;
-        return unary(x.cos(), g -> new Tensor[] {g.mul(x.sin()).neg()});
+        return unary(x.cos(), g -> new Tensor[] {g.mul(x.sin()).neg()}, g -> new Var[] {g.mul(sin()).neg()});
     }
 
     /** @return {@code log(1 + e^x)} for each value, computed without overflow */
@@ -642,6 +805,9 @@ public final class Var {
         return binary(other, a.maximum(b), g -> {
             Tensor pick = a.greater(b);
             return new Tensor[] {g.mask(pick).sumTo(sa), g.mask(pick.neg().add(1)).sumTo(sb)};
+        }, g -> {
+            Tensor pick = a.greater(b);
+            return new Var[] {g.mask(pick).sumTo(sa), g.mask(pick.neg().add(1)).sumTo(sb)};
         });
     }
 
@@ -660,6 +826,9 @@ public final class Var {
         return binary(other, a.minimum(b), g -> {
             Tensor pick = b.greater(a);
             return new Tensor[] {g.mask(pick).sumTo(sa), g.mask(pick.neg().add(1)).sumTo(sb)};
+        }, g -> {
+            Tensor pick = b.greater(a);
+            return new Var[] {g.mask(pick).sumTo(sa), g.mask(pick.neg().add(1)).sumTo(sb)};
         });
     }
 
@@ -670,7 +839,7 @@ public final class Var {
     public Var maximum(float c) {
         Tensor x = value;
         Tensor bound = Tensor.full(Shape.of(), c, x.device());
-        return unary(x.maximum(bound), g -> new Tensor[] {g.mask(x.greater(bound))});
+        return unary(x.maximum(bound), g -> new Tensor[] {g.mask(x.greater(bound))}, g -> new Var[] {g.mask(x.greater(bound))});
     }
 
     /**
@@ -680,7 +849,7 @@ public final class Var {
     public Var minimum(float c) {
         Tensor x = value;
         Tensor bound = Tensor.full(Shape.of(), c, x.device());
-        return unary(x.minimum(bound), g -> new Tensor[] {g.mask(bound.greater(x))});
+        return unary(x.minimum(bound), g -> new Tensor[] {g.mask(bound.greater(x))}, g -> new Var[] {g.mask(bound.greater(x))});
     }
 
     /**
@@ -721,7 +890,8 @@ public final class Var {
         Shape sb = ifFalse.shape();
         Tensor otherwise = condition.equalTo(Tensor.full(Shape.of(), 0f, condition.device()));
         return op(Tensor.where(condition, ifTrue.value, ifFalse.value), new Var[] {ifTrue, ifFalse},
-                g -> new Tensor[] {g.mask(condition).sumTo(sa), g.mask(otherwise).sumTo(sb)});
+                g -> new Tensor[] {g.mask(condition).sumTo(sa), g.mask(otherwise).sumTo(sb)},
+                g -> new Var[] {g.mask(condition).sumTo(sa), g.mask(otherwise).sumTo(sb)});
     }
 
     /**
@@ -749,7 +919,8 @@ public final class Var {
         boolean db = other.requiresGrad;
         if (a.rank() == 2 && b.rank() == 2) {
             return binary(other, a.matmul(b), g -> new Tensor[] {da ? g.matmul(b.transpose()) : null,
-                db ? a.transpose().matmul(g) : null});
+                db ? a.transpose().matmul(g) : null},
+                    g -> new Var[] {da ? g.matmul(other.transpose()) : null, db ? transpose().matmul(g) : null});
         }
         return binary(other, a.matmul(b), g -> new Tensor[] {
             da ? g.matmul(b.transpose()).sumTo(a.shape()) : null,
@@ -758,6 +929,13 @@ public final class Var {
                     ? a.reshape(Math.toIntExact(a.size() / a.shape().dim(-1)), a.shape().dim(-1)).transpose()
                             .matmul(g.reshape(Math.toIntExact(g.size() / g.shape().dim(-1)), g.shape().dim(-1)))
                     : a.transpose().matmul(g).sumTo(b.shape())
+        }, g -> new Var[] {
+            da ? g.matmul(other.transpose()).sumTo(a.shape()) : null,
+            !db ? null
+                    : a.rank() > 2 && b.rank() == 2
+                    ? reshape(Math.toIntExact(a.size() / a.shape().dim(-1)), a.shape().dim(-1)).transpose()
+                            .matmul(g.reshape(Math.toIntExact(g.value.size() / g.shape().dim(-1)), g.shape().dim(-1)))
+                    : transpose().matmul(g).sumTo(b.shape())
         });
     }
 
@@ -772,7 +950,7 @@ public final class Var {
         for (int i = 0; i < axes.length; i++) {
             inverse[axes[i] < 0 ? axes[i] + axes.length : axes[i]] = i;
         }
-        return unary(value.permute(axes), g -> new Tensor[] {g.permute(inverse)});
+        return unary(value.permute(axes), g -> new Tensor[] {g.permute(inverse)}, g -> new Var[] {g.permute(inverse)});
     }
 
     /**
@@ -784,7 +962,7 @@ public final class Var {
      */
     public Var expand(Shape target) {
         Shape original = shape();
-        return unary(value.expand(target), g -> new Tensor[] {g.sumTo(original)});
+        return unary(value.expand(target), g -> new Tensor[] {g.sumTo(original)}, g -> new Var[] {g.sumTo(original)});
     }
 
     /**
@@ -798,7 +976,20 @@ public final class Var {
     public Var gather(int axis, Tensor indices) {
         int a = axis < 0 ? shape().rank() + axis : axis;
         int length = shape().dim(a);
-        return unary(value.gather(a, indices), g -> new Tensor[] {g.scatterAdd(a, indices, length)});
+        return unary(value.gather(a, indices), g -> new Tensor[] {g.scatterAdd(a, indices, length)},
+                g -> new Var[] {g.scatterAdd(a, indices, length)});
+    }
+
+    /**
+     * Picks entries of each row by its own indices; see {@link Tensor#takeAlong}. The
+     * gradient goes back to the entries picked.
+     *
+     * @param indices whole numbers, {@code [..., k]} with this value's leading dimensions
+     * @return {@code [..., k]}
+     */
+    public Var takeAlong(Tensor indices) {
+        Tensor flat = Tensor.rowIndices(shape(), indices);
+        return reshape(Math.toIntExact(value.size())).gather(0, flat).reshape(indices.shape().toArray());
     }
 
     /**
@@ -813,7 +1004,7 @@ public final class Var {
     public Var scatterAdd(int axis, Tensor indices, int length) {
         Tensor out = value.scatterAdd(axis, indices, length);
         int a = axis < 0 ? out.shape().rank() + axis : axis;
-        return unary(out, g -> new Tensor[] {g.gather(a, indices)});
+        return unary(out, g -> new Tensor[] {g.gather(a, indices)}, g -> new Var[] {g.gather(a, indices)});
     }
 
     /**
@@ -862,7 +1053,8 @@ public final class Var {
     public Var fft(boolean inverse) {
         int n = shape().dim(shape().rank() - 2);
         // forward F: the gradient is F^H g = n ifft(g); inverse F^H / n: it is F g / n
-        return unary(value.fft(inverse), g -> new Tensor[] {inverse ? g.fft(false).mul(1f / n) : g.fft(true).mul(n)});
+        return unary(value.fft(inverse), g -> new Tensor[] {inverse ? g.fft(false).mul(1f / n) : g.fft(true).mul(n)},
+                g -> new Var[] {inverse ? g.fft(false).mul(1f / n) : g.fft(true).mul(n)});
     }
 
     /**
@@ -916,7 +1108,8 @@ public final class Var {
      * @return the unrolled windows
      */
     public Var im2col(io.github.zzuegg.brainiac.tensor.ConvGeometry geometry, float padValue) {
-        return unary(value.im2col(geometry, padValue), g -> new Tensor[] {g.col2im(geometry)});
+        return unary(value.im2col(geometry, padValue), g -> new Tensor[] {g.col2im(geometry)},
+                g -> new Var[] {g.col2im(geometry)});
     }
 
     /**
@@ -926,7 +1119,8 @@ public final class Var {
      * @return the images
      */
     public Var col2im(io.github.zzuegg.brainiac.tensor.ConvGeometry geometry) {
-        return unary(value.col2im(geometry), g -> new Tensor[] {g.im2col(geometry, 0f)});
+        return unary(value.col2im(geometry), g -> new Tensor[] {g.im2col(geometry, 0f)},
+                g -> new Var[] {g.im2col(geometry, 0f)});
     }
 
     /**
@@ -941,7 +1135,7 @@ public final class Var {
 
     /** @return the value with its last two dimensions swapped */
     public Var transpose() {
-        return unary(value.transpose(), g -> new Tensor[] {g.transpose()});
+        return unary(value.transpose(), g -> new Tensor[] {g.transpose()}, g -> new Var[] {g.transpose()});
     }
 
     /**
@@ -952,7 +1146,8 @@ public final class Var {
      */
     public Var reshape(int... dims) {
         Shape original = shape();
-        return unary(value.reshape(dims), g -> new Tensor[] {g.reshape(original)});
+        return unary(value.reshape(dims), g -> new Tensor[] {g.reshape(original)},
+                g -> new Var[] {g.reshape(original.toArray())});
     }
 
     /**
@@ -962,7 +1157,7 @@ public final class Var {
      * @return the reversed value
      */
     public Var flip(int axis) {
-        return unary(value.flip(axis), g -> new Tensor[] {g.flip(axis)});
+        return unary(value.flip(axis), g -> new Tensor[] {g.flip(axis)}, g -> new Var[] {g.flip(axis)});
     }
 
     /**
@@ -992,6 +1187,20 @@ public final class Var {
                 parts.add(Tensor.zeros(Shape.of(after), g.device()));
             }
             return new Tensor[] {parts.size() == 1 ? g : Tensor.concat(a, parts.toArray(Tensor[]::new))};
+        }, g -> {
+            List<Var> parts = new ArrayList<>(3);
+            if (start > 0) {
+                int[] before = original.toArray();
+                before[a] = start;
+                parts.add(of(Tensor.zeros(Shape.of(before), g.dtype(), g.value.device())));
+            }
+            parts.add(g);
+            if (end < original.dim(a)) {
+                int[] after = original.toArray();
+                after[a] = original.dim(a) - end;
+                parts.add(of(Tensor.zeros(Shape.of(after), g.dtype(), g.value.device())));
+            }
+            return new Var[] {parts.size() == 1 ? g : concat(a, parts.toArray(Var[]::new))};
         });
     }
 
@@ -1018,6 +1227,15 @@ public final class Var {
                 start += length;
             }
             return grads;
+        }, g -> {
+            Var[] grads = new Var[parts.length];
+            int start = 0;
+            for (int i = 0; i < parts.length; i++) {
+                int length = values[i].shape().dim(a);
+                grads[i] = g.slice(a, start, start + length);
+                start += length;
+            }
+            return grads;
         });
     }
 
@@ -1026,7 +1244,7 @@ public final class Var {
     /** @return the sum of all values, as a scalar */
     public Var sum() {
         Shape s = shape();
-        return unary(value.sum(), g -> new Tensor[] {g.expand(s)});
+        return unary(value.sum(), g -> new Tensor[] {g.expand(s)}, g -> new Var[] {g.expand(s)});
     }
 
     /**
@@ -1040,14 +1258,15 @@ public final class Var {
         Shape s = shape();
         Tensor keptSum = value.sum(axis, true);
         Shape kept = keptSum.shape();
-        return unary(squeeze(keptSum, axis, keepDims), g -> new Tensor[] {g.reshape(kept).expand(s)});
+        return unary(squeeze(keptSum, axis, keepDims), g -> new Tensor[] {g.reshape(kept).expand(s)},
+                g -> new Var[] {g.reshape(kept.toArray()).expand(s)});
     }
 
     /** @return the mean of all values, as a scalar */
     public Var mean() {
         Shape s = shape();
         float n = s.size();
-        return unary(value.mean(), g -> new Tensor[] {g.div(n).expand(s)});
+        return unary(value.mean(), g -> new Tensor[] {g.div(n).expand(s)}, g -> new Var[] {g.div(n).expand(s)});
     }
 
     /**
@@ -1062,7 +1281,8 @@ public final class Var {
         Tensor keptMean = value.mean(axis, true);
         Shape kept = keptMean.shape();
         float n = s.dim(axis);
-        return unary(squeeze(keptMean, axis, keepDims), g -> new Tensor[] {g.reshape(kept).div(n).expand(s)});
+        return unary(squeeze(keptMean, axis, keepDims), g -> new Tensor[] {g.reshape(kept).div(n).expand(s)},
+                g -> new Var[] {g.reshape(kept.toArray()).div(n).expand(s)});
     }
 
     /**
@@ -1077,7 +1297,8 @@ public final class Var {
         Tensor x = value;
         Tensor keptMax = x.max(axis, true);
         Shape kept = keptMax.shape();
-        return unary(squeeze(keptMax, axis, keepDims), g -> new Tensor[] {x.equalTo(keptMax).mul(g.reshape(kept))});
+        return unary(squeeze(keptMax, axis, keepDims), g -> new Tensor[] {x.equalTo(keptMax).mul(g.reshape(kept))},
+                g -> new Var[] {of(x.equalTo(keptMax)).mul(g.reshape(kept.toArray()))});
     }
 
     /** Removes a size-1 axis that a keepDims reduction left, unless it should stay. */

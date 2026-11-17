@@ -34,14 +34,36 @@ public final class Diffusion {
 
     private final NoiseSchedule schedule;
     private final Prediction prediction;
+    /** While sampling, predicted clean data is clamped to {@code [-clip, clip]}; 0 for none. */
+    private final float clip;
 
     /**
      * @param schedule the noise levels
      * @param prediction what the denoiser predicts
      */
     public Diffusion(NoiseSchedule schedule, Prediction prediction) {
+        this(schedule, prediction, 0);
+    }
+
+    private Diffusion(NoiseSchedule schedule, Prediction prediction, float clip) {
         this.schedule = Objects.requireNonNull(schedule, "schedule");
         this.prediction = Objects.requireNonNull(prediction, "prediction");
+        this.clip = clip;
+    }
+
+    /**
+     * This diffusion with the clean data predicted at each sampling step clamped to
+     * {@code [-limit, limit]}, as DDPM does for data scaled to [-1, 1]: it keeps early,
+     * noisy predictions from overshooting.
+     *
+     * @param limit the bound, positive; 0 turns clamping off
+     * @return the diffusion
+     */
+    public Diffusion clipSample(float limit) {
+        if (!(limit >= 0)) {
+            throw new IllegalArgumentException("limit must not be negative: " + limit);
+        }
+        return new Diffusion(schedule, prediction, limit);
     }
 
     /** @return the noise levels */
@@ -171,6 +193,12 @@ public final class Diffusion {
                     x0 = x.mul(sa).sub(out.mul(sb));
                     eps = x.mul(sb).add(out.mul(sa));
                 }
+            }
+            if (clip > 0) {
+                Tensor lo = Tensor.full(Shape.of(), -clip, x0.dtype(), x0.device());
+                Tensor hi = Tensor.full(Shape.of(), clip, x0.dtype(), x0.device());
+                x0 = x0.maximum(lo).minimum(hi);
+                eps = x.sub(x0.mul(sa)).div(sb);   // the noise that goes with the clamped data
             }
             double sigma = eta * Math.sqrt((1 - as) / (1 - at)) * Math.sqrt(Math.max(0, 1 - at / as));
             Tensor next = x0.mul((float) Math.sqrt(as)).add(eps.mul((float) Math.sqrt(Math.max(0, 1 - as - sigma * sigma))));

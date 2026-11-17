@@ -204,6 +204,82 @@ public final class Model {
      * @return the output, shape {@code [batch, outputShape...]}
      */
     public Var forward(Var input, boolean training) {
+        return forward(input, training, null);
+    }
+
+    /**
+     * Sees, and may replace, the value each step of {@link #forward(Var, boolean, Hook)}
+     * produces: for reading activations, patching them from another run, or steering.
+     */
+    @FunctionalInterface
+    public interface Hook {
+
+        /**
+         * Called after each step, in order.
+         *
+         * @param step the step, an index into {@link #graph()}
+         * @param output what the step computed
+         * @return the value later steps use: {@code output} itself to only observe
+         */
+        Var after(GraphStep step, Var output);
+    }
+
+    /** What a step of the graph does. */
+    public enum StepKind {
+        /** Runs {@link GraphStep#layer()} on its one input. */
+        LAYER,
+        /** Adds its two inputs. */
+        ADD,
+        /** Joins its inputs along the features. */
+        CONCAT,
+        /** Multiplies its two inputs element-wise. */
+        MULTIPLY,
+        /** Runs a {@link MultiInputLayer} on all its inputs. */
+        MERGE
+    }
+
+    /**
+     * One computation of the model. Value 0 is the model's input; step {@code index}
+     * produces value {@code index + 1}, and the last step's value is the output.
+     *
+     * @param index the step's position
+     * @param kind what it does
+     * @param inputs the values it reads
+     * @param layer its layer; {@code null} for {@code ADD}, {@code CONCAT} and {@code MULTIPLY}
+     */
+    public record GraphStep(int index, StepKind kind, List<Integer> inputs, Layer layer) {
+    }
+
+    /**
+     * Returns the model's computation, step by step: a sequential model is one
+     * {@code LAYER} step per layer. A layer that is used twice appears at both steps.
+     *
+     * @return the steps, in the order {@link #forward} runs them
+     */
+    public List<GraphStep> graph() {
+        List<GraphStep> out = new ArrayList<>(steps.size());
+        for (int i = 0; i < steps.size(); i++) {
+            Step st = steps.get(i);
+            List<Integer> in = new ArrayList<>(st.inputs.length);
+            for (int v : st.inputs) {
+                in.add(v);
+            }
+            out.add(new GraphStep(i, StepKind.valueOf(st.kind.name()), List.copyOf(in), st.layer));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * Runs the network on a batch like {@link #forward(Var, boolean)}, calling a hook
+     * after every step.
+     *
+     * @param input a batch, as for {@link #forward(Var, boolean)}
+     * @param training {@code true} while training
+     * @param hook sees and may replace each step's value; {@code null} for none
+     * @return the output
+     */
+    public Var forward(Var input, boolean training, Hook hook) {
+        List<GraphStep> graph = hook == null ? null : graph();
         Var[] values = new Var[steps.size() + 1];
         values[0] = shaped(input).to(dtype());
         for (int i = 0; i < steps.size(); i++) {
@@ -229,6 +305,10 @@ public final class Model {
                 }
                 case INPUT -> throw new IllegalStateException("input inside the graph");
             };
+            if (hook != null) {
+                values[i + 1] = java.util.Objects.requireNonNull(hook.after(graph.get(i), values[i + 1]),
+                        "hook returned null");
+            }
         }
         return values[steps.size()];
     }
@@ -560,7 +640,7 @@ public final class Model {
         return true;
     }
 
-    /** @return the layers, in order */
+    /** @return each distinct layer once, in order of first use; {@link #graph()} lists every use */
     public List<Layer> layers() {
         return layers;
     }

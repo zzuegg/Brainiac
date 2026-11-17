@@ -457,7 +457,8 @@ public final class Trainer {
             optimizer = Optimizer.adam(0.001f);
         }
         Device device = model.device();
-        List<Var> params = model.parameters();
+        // refreshed before each step: layers may add or replace parameters while training
+        List<Var> params = new ArrayList<>(model.parameters());
         List<Quantization.Weight> quantized = quantization == null ? List.of() : Quantization.weights(model);
         List<EpochResult> history = new ArrayList<>();
         List<Batch> fixedBatches = shuffle || augmentation != null ? null : data.batches(batchSize, device);
@@ -483,6 +484,10 @@ public final class Trainer {
             List<Tensor> batchValues = new ArrayList<>();
             List<Integer> batchSizes = new ArrayList<>();
             for (Batch batch : batches) {
+                if (refreshParameters(params)) {
+                    bestWeights = null;   // no longer the same parameters
+                    bestScore = Float.POSITIVE_INFINITY;
+                }
                 List<Tensor> qatMasters = null;
                 List<Tensor> qatWork = List.of();
                 if (quantization != null) {
@@ -705,6 +710,33 @@ public final class Trainer {
     private static Tensor shaped(Tensor targets, Var out) {
         Shape s = out.shape();
         return s.equals(targets.shape()) || s.size() != targets.size() ? targets : targets.reshape(s);
+    }
+
+    /**
+     * Picks up parameters the model added or replaced since the last step; the optimizer
+     * forgets the state of those that are gone.
+     *
+     * @return whether the set changed
+     */
+    private boolean refreshParameters(List<Var> params) {
+        List<Var> current = model.parameters();
+        boolean same = current.size() == params.size();
+        for (int i = 0; same && i < current.size(); i++) {
+            same = current.get(i) == params.get(i);
+        }
+        if (same) {
+            return false;
+        }
+        java.util.Set<Var> now = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        now.addAll(current);
+        for (Var p : params) {
+            if (!now.contains(p)) {
+                optimizer.forget(p);
+            }
+        }
+        params.clear();
+        params.addAll(current);
+        return true;
     }
 
     private static Var l2Penalty(List<Var> params) {
