@@ -2160,9 +2160,10 @@ public final class Llama implements LanguageModel {
 
     /**
      * Writes the model as a quantized GGUF file, as {@code llama-quantize} would: matrices in
-     * {@code type}, norms and biases in float32, and the expert router in float32. With
-     * {@link GgufWriter.Type#Q4_K Q4_K} the output layer, the value projections and the
-     * down projections go in Q6_K, after llama.cpp's Q4_K_M mix.
+     * {@code type}, norms and biases in float32, and the expert router in float32. With a
+     * 4-bit type the output layer (the embedding, when the two are tied) goes in Q6_K, or Q8_0
+     * where its rows do not fit Q6_K's blocks; with {@link GgufWriter.Type#Q4_K Q4_K} the value
+     * and down projections do too, after llama.cpp's Q4_K_M mix.
      *
      * @param file the {@code .gguf} file to write
      * @param tokenizer the model's tokenizer, or {@code null}
@@ -2173,7 +2174,10 @@ public final class Llama implements LanguageModel {
             if (name.contains("ffn_gate_inp")) {
                 return GgufWriter.Type.F32;
             }
-            if (type == GgufWriter.Type.Q4_K && (name.equals("output.weight") || name.contains("attn_v.")
+            boolean four = type == GgufWriter.Type.Q4_0 || type == GgufWriter.Type.Q4_K;
+            // the output layer (the embedding, when tied) stays at 6 bits, as llama-quantize keeps it
+            boolean output = name.equals("output.weight") || lmHead == null && name.equals("token_embd.weight");
+            if (four && output || type == GgufWriter.Type.Q4_K && (name.contains("attn_v.")
                     || name.contains("ffn_down"))) {
                 return GgufWriter.Type.Q6_K;
             }
