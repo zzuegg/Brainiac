@@ -100,6 +100,45 @@ public final class PackedMatrix implements PackedStorage {
     }
 
     /**
+     * Joins matrices side by side: the columns of each in turn, as one product computes
+     * several projections of the same input. All must have the same rows, bits, group and
+     * level layout, and all or none offsets.
+     *
+     * @param parts the matrices, at least one
+     * @return the joined matrix
+     */
+    public static PackedMatrix concatColumns(PackedMatrix... parts) {
+        PackedMatrix f = parts[0];
+        int cols = 0;
+        for (PackedMatrix p : parts) {
+            if (p.rows != f.rows || p.bits != f.bits || p.group != f.group || p.nibbles != f.nibbles
+                    || (p.offsets == null) != (f.offsets == null)) {
+                throw new IllegalArgumentException("cannot join " + p + " with " + f);
+            }
+            cols += p.cols;
+        }
+        int dataRows = f.nibbles ? f.rows / 2 : f.rows;
+        int scaleRows = f.rows / f.group;
+        byte[] data = new byte[dataRows * cols];
+        float[] scales = new float[scaleRows * cols];
+        float[] offsets = f.offsets == null ? null : new float[scales.length];
+        int at = 0;
+        for (PackedMatrix p : parts) {
+            for (int r = 0; r < dataRows; r++) {
+                System.arraycopy(p.data, r * p.cols, data, r * cols + at, p.cols);
+            }
+            for (int r = 0; r < scaleRows; r++) {
+                System.arraycopy(p.scales, r * p.cols, scales, r * cols + at, p.cols);
+                if (offsets != null) {
+                    System.arraycopy(p.offsets, r * p.cols, offsets, r * cols + at, p.cols);
+                }
+            }
+            at += p.cols;
+        }
+        return new PackedMatrix(f.rows, cols, f.bits, f.group, f.nibbles, data, scales, offsets);
+    }
+
+    /**
      * Quantizes values: each column's scale for a group of rows is its largest magnitude
      * there over {@code 2^(bits-1) - 1}, and each level is the value over its scale,
      * rounded half to even. A group of zeros gets the smallest normal float as its scale.

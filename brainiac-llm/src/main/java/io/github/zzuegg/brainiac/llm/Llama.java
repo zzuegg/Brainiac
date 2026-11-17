@@ -1012,8 +1012,8 @@ public final class Llama implements LanguageModel {
      * same results, faster on a GPU, where small products cost more in overhead than in
      * arithmetic. The weights then go by the names {@code self_attn.qkv_proj} and
      * {@code mlp.gate_up_proj} (for {@link #addLora} targets and {@link #namedParameters()}), and
-     * the model can no longer be saved. Projections already packed (GGUF k-quants, {@link
-     * #quantizeWeights}) or with adapters stay as they are.
+     * the model can no longer be saved. Packed projections (GGUF, {@link #quantizeWeights})
+     * join when they share bits and group; projections with adapters stay as they are.
      *
      * @return this model
      */
@@ -1038,8 +1038,10 @@ public final class Llama implements LanguageModel {
     /** One projection from several with the same input, or null if they cannot be joined. */
     private Linear join(String prefix, List<String> names, String joined, List<Linear> parts) {
         boolean biased = parts.getFirst().bias != null;
+        boolean packed = parts.getFirst().weight != null && parts.getFirst().weight.value().isPacked();
         for (Linear l : parts) {
-            if (l.weight == null || l.weight.value().isPacked() || l.loraA != null || (l.bias != null) != biased) {
+            if (l.weight == null || l.weight.value().isPacked() != packed || l.loraA != null
+                    || (l.bias != null) != biased) {
                 return null;
             }
         }
@@ -1049,7 +1051,12 @@ public final class Llama implements LanguageModel {
             w[i] = parts.get(i).weight.value();
             bias[i] = biased ? parts.get(i).bias.value() : null;
         }
-        Var weight = Var.param(Tensor.concat(1, w));
+        Tensor joinedWeight = Tensor.concat(1, w);
+        if (packed && !joinedWeight.isPacked()) {
+            joinedWeight.release();   // different formats (a k-quant mix): joined only as floats
+            return null;
+        }
+        Var weight = Var.param(joinedWeight);
         Var b = biased ? Var.param(Tensor.concat(0, bias)) : null;
         Tensor.evaluate(b == null ? List.of(weight.value()) : List.of(weight.value(), b.value()));
         for (int i = 0; i < w.length; i++) {
