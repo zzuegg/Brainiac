@@ -369,6 +369,22 @@ class VulkanBackendTest {
         assertEquals(1, vk.dispatchCount() - before, vk.statistics());
     }
 
+    /** Rows of every length and count, along the last axis (32 invocations per row) and others. */
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16"})
+    void reductionsMatchTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        for (int[] dims : new int[][] {{1500, 40}, {9, 300}, {2000, 33}, {7, 31}, {1100, 700}, {3, 5000}}) {
+            Tensor x = random(dims[0] * 7L + dims[1], dims);
+            String at = dims[0] + "x" + dims[1];
+            same(type, "sum " + at, t -> t.sum(1, true), x);
+            same(type, "mean " + at, t -> t.mean(1, true), x);
+            same(type, "max " + at, t -> t.max(1, true), x);
+            same(type, "min " + at, t -> t.min(1, true), x);
+            same(type, "sum over rows " + at, t -> t.sum(0, true), x);
+        }
+    }
+
     @Test
     void manyTemporaryTensorsAreFreed() {
         Tensor t = Tensor.zeros(Shape.of(1 << 18), gpu);

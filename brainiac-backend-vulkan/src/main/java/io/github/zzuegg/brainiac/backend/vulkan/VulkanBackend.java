@@ -968,11 +968,17 @@ public final class VulkanBackend implements Backend {
         done(x, vs(in));
     }
 
+    /** Whether contiguous rows are reduced by 32 invocations each ({@code -Dbrainiac.vulkan.reduceRows=false}: one). */
+    private static final boolean REDUCE_ROWS = !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.reduceRows"));
+
     private void reduce(int op, VkStorage x, VkStorage y, long rows, long length, long inner) {
         vk.push().putLong(x.address()).putLong(y.address()).putInt((int) rows).putInt((int) length)
                 .putInt((int) inner).putInt(op);
         if (rows < 1024 && length > 256) {
             vk.dispatch(shader("reduce_group", y.dtype), rows, y.slot(), x.slot());
+        } else if (inner == 1 && length >= 32 && REDUCE_ROWS) {
+            // contiguous rows: 32 invocations per row, 8 rows per work group
+            vk.dispatch(shader("reduce_rows", y.dtype), (rows + 7) / 8, y.slot(), x.slot());
         } else {
             vk.dispatch(shader("reduce", y.dtype), groups(rows), y.slot(), x.slot());
         }
