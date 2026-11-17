@@ -738,7 +738,8 @@ public final class PretrainedTokenizer implements Tokenizer {
                 }
                 prefix = false;
             }
-            if (addSpecialTokens && spm.addBos && bos != null) {
+            // a chat template writes <s> itself; llama.cpp would add a second one and warn
+            if (addSpecialTokens && spm.addBos && bos != null && (out.isEmpty() || !out.getFirst().equals(bos))) {
                 out.addFirst(bos);
             }
         } else if (engine instanceof Spm spm) {
