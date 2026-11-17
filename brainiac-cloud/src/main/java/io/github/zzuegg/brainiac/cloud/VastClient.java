@@ -168,7 +168,9 @@ public final class VastClient {
                         + (i.statusMessage().isBlank() ? "" : " - " + i.statusMessage().strip()));
                 last = now;
             }
-            if ("exited".equals(i.status()) || i.statusMessage().toLowerCase(java.util.Locale.ROOT).contains("error")) {
+            // the status message is the image build's progress while loading (it can name packages
+            // such as liberror-perl), so only Docker's own failure text counts as an error
+            if ("exited".equals(i.status()) || i.statusMessage().strip().startsWith("Error response from daemon")) {
                 throw new IOException("instance " + id + " failed to start: " + i);
             }
             if (System.nanoTime() > end) {
