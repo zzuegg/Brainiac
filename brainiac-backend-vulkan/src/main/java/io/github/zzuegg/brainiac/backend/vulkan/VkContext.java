@@ -456,22 +456,35 @@ final class VkContext {
         }
     }
 
+    /**
+     * The names of a device's extensions. The list goes on the heap: NVIDIA's drivers report
+     * about 250 extensions of 260 bytes each, more than LWJGL's 64 KB thread stack holds.
+     */
+    private static java.util.Set<String> extensions(VkPhysicalDevice pd) {
+        try (MemoryStack st = stackPush()) {
+            IntBuffer ip = st.mallocInt(1);
+            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, null);
+            VkExtensionProperties.Buffer exts = VkExtensionProperties.calloc(ip.get(0));
+            try {
+                vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, exts);
+                java.util.Set<String> names = new java.util.HashSet<>();
+                for (int i = 0; i < ip.get(0); i++) {
+                    names.add(exts.get(i).extensionNameString());
+                }
+                return names;
+            } finally {
+                exts.free();
+            }
+        }
+    }
+
     /** Whether a device has 16 x 16 x 16 float16 cooperative matrices with float32 sums in subgroups. */
     private static boolean cooperativeMatrix(VkPhysicalDevice pd) {
         try (MemoryStack st = stackPush()) {
             IntBuffer ip = st.mallocInt(1);
-            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, null);
-            VkExtensionProperties.Buffer exts = VkExtensionProperties.calloc(ip.get(0), st);
-            vkEnumerateDeviceExtensionProperties(pd, (java.nio.ByteBuffer) null, ip, exts);
-            boolean has = false;
-            for (int i = 0; i < exts.capacity(); i++) {
-                has |= exts.get(i).extensionNameString().equals(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
-            }
-            boolean sizes = false;
-            for (int i = 0; i < exts.capacity(); i++) {
-                sizes |= exts.get(i).extensionNameString().equals(
-                        EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
-            }
+            java.util.Set<String> names = extensions(pd);
+            boolean has = names.contains(KHRCooperativeMatrix.VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+            boolean sizes = names.contains(EXTSubgroupSizeControl.VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
             if (!has || !sizes || pd.getCapabilities().vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR == 0) {
                 return false;
             }
