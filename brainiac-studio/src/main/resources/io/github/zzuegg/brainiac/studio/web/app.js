@@ -1750,6 +1750,7 @@
     try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
     finally { V.loading = false; }
     if (state.view === "train" && T.loaded) renderHosts();
+    else if (state.view === "library") render();
   }
 
   function vastCard() {
@@ -1771,6 +1772,22 @@
         ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
         <div class="host-foot"><span class="muted">${ins.length ? `${ins.length} rented machine${ins.length === 1 ? "" : "s"}` : "No machines rented."}</span><span class="grow"></span>
           <button class="btn sm" id="vast-open" aria-expanded="${V.open}">${icon("search")}${V.open ? "Hide offers" : "Find GPUs"}</button></div>
+      </div>`;
+  }
+
+  // Vast.ai on the Models screen, under Compute: the account at a glance; renting and offers are on Training.
+  function vastCompute() {
+    const s = V.status;
+    const open = `<button class="btn sm" data-vast-train>${icon("search")}${s?.key ? "Find GPUs on Training" : "Add the key on Training"}</button>`;
+    if (!s) return `<div class="prov off"><div style="display:flex;gap:10px;align-items:center"><span class="plogo">V</span><b>Vast.ai</b><span class="grow"></span>${V.error ? `<span class="chip plain">unreachable</span>` : `<span class="typing"><i></i><i></i><i></i></span>`}</div></div>`;
+    const ins = s.instances || [];
+    return `<div class="prov ${s.key && !s.error ? "on" : "off"}">
+        <div style="display:flex;gap:10px;align-items:center"><span class="plogo">V</span><b>Vast.ai</b><span class="grow"></span>
+          ${s.key ? `<span class="chip plain">${esc(s.key.hint)}</span>${s.balance != null ? `<span class="mono tnum" title="Balance on Vast.ai">${usd(s.balance)}</span>` : ""}` : `<span class="chip plain">no key</span>`}</div>
+        <div class="muted" style="font-size:12.5px">GPU machines rented by the hour. A rented machine runs the studio as a worker and shows up here as a host.</div>
+        ${s.error ? `<div class="keyerr">${esc(s.error)}</div>` : ""}
+        ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
+        <div class="provset"><span class="mono faint" style="font-size:11px">${s.key ? (ins.length ? `${ins.length} rented` : "nothing rented") : "rent GPUs by the hour"}</span><span class="grow"></span>${open}</div>
       </div>`;
   }
 
@@ -1934,7 +1951,7 @@
           <td class="mono">${m.fmt}</td><td class="mono tnum">${m.size}</td><td class="mono">${m.ctx}</td><td>${fitCell(m)}</td>
           <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "remote" ? `<span class="chip c-agent">remote · your key</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
         </tr>`).join("")}</tbody></table></div>`}
-      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>
+      ${isLive() ? "" : `<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>`}
       ${isLive() ? liveProviders() : `<div class="providers">${M.providers.map(p => `
         <div class="prov ${p.state}">
           <div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
@@ -2277,6 +2294,7 @@
   const chatModels = sel => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === sel));
   const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
   const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
+  const providerKind = id => id === "local" ? "local" : (L.info?.providers || []).find(p => p.id === id)?.kind || "api";
   const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
   const mediaName = { text: "Text", vision: "Vision", image: "Image", speech: "Speech", transcribe: "Transcribe", video: "Video" };
 
@@ -2524,7 +2542,8 @@
     const key = model === "auto" ? L.info.auto.text : model;
     const m = modelByKey(key);
     if (!key) return `${icon("wand")}<span>No chat model yet.</span>`;
-    const where = m && m.provider === "local" ? "this PC · nothing leaves it" : `${providerName(m ? m.provider : key.split("/")[0])} · uses your key`;
+    const pid = m ? m.provider : key.split("/")[0], kind = providerKind(pid);
+    const where = kind === "local" ? "this PC · nothing leaves it" : kind === "host" ? `${providerName(pid)} · your machine` : `${providerName(pid)} · uses your key`;
     return `${icon("wand")}<span>${model === "auto" ? "Auto will send this to" : "Sending to"}</span><span class="chip c-text">${esc(m ? m.name : key)}</span><span class="faint">${esc(where)}${m && m.detail ? " · " + esc(m.detail) : ""}</span>`;
   }
 
@@ -3007,7 +3026,7 @@
           <button class="gtoggle" data-fold="${esc(id)}" aria-expanded="${!folded}">${icon("chev")}<b>${esc(name)}</b>
             <span class="faint tnum">${list.length} model${list.length === 1 ? "" : "s"}${hidden ? ` · ${hidden} hidden` : ""}</span></button>
           <span class="grow"></span>
-          ${id === "local" ? `<span class="chip c-ok">free · private</span>` : `<span class="chip c-agent">your key</span>`}
+          ${id === "local" ? `<span class="chip c-ok">free · private</span>` : providerKind(id) === "host" ? `<span class="chip c-ok">your machine</span>` : `<span class="chip c-agent">your key</span>`}
           ${p && p.settings ? `<button class="btn ghost sm" data-edit-provider="${esc(id)}">${icon("edit")}Edit</button>` : ""}
         </div></td></tr>
         ${list.map(row).join("")}</tbody>`;
@@ -3097,8 +3116,11 @@
 
   function liveProviders() {
     if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
-    const ready = L.info.providers.filter(p => p.local || p.keys.length);
-    const more = L.info.providers.filter(p => !p.local && !p.keys.length);
+    const apis = L.info.providers.filter(p => p.kind === "api");
+    const ready = apis.filter(p => p.keys.length);
+    const more = apis.filter(p => !p.keys.length);
+    const local = L.info.providers.filter(p => p.local);
+    const hosts = L.info.providers.filter(p => p.kind === "host");
     const keyUse = (p, label) => usageLine(L.usage && L.usage.keys[p.id + "/" + label]);
     const form = (p, open) => `<form class="keyform" data-provider="${p.id}" ${open ? "" : "hidden"}>
           <input class="input" name="label" placeholder="Name" value="${p.keys.some(k => k.source === "saved") ? "" : "default"}" aria-label="Key name, such as work" required maxlength="40">
@@ -3107,7 +3129,14 @@
         </form>`;
     const card = p => {
       const head = `<div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
-        ${p.ready ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : "no key"}</span>`}</div>`;
+        ${p.ready && !(p.kind === "host" && p.error) ? `<button class="chip c-ok linkchip" data-show-models="${p.id}" title="Show ${esc(p.name)} models in the table">${p.models} model${p.models === 1 ? "" : "s"}</button>` : `<span class="chip plain">${p.local ? "no models" : p.kind === "host" ? "offline" : "no key"}</span>`}</div>`;
+      if (p.kind === "host") {
+        return `<div class="prov ${p.error ? "off" : "on"}">${head}
+          <div class="muted" style="font-size:12.5px">A machine of yours running <code>brainiac-studio --worker</code>. Its models answer with its own engine and hardware.</div>
+          ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
+          <div class="provset"><span class="mono faint" style="font-size:11px">free · your machine${L.usage && L.usage.providers[p.id] ? " · " + esc(usageLine(L.usage.providers[p.id])) : ""}</span><span class="grow"></span>
+            <button class="btn sm" data-go="train">${icon("train")}Hosts on Training</button></div></div>`;
+      }
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
           <div class="muted" style="font-size:12.5px">Hugging Face model folders (${esc((p.families || ["llama", "mistral", "qwen2"]).join(", "))}) and <code>.gguf</code> files in:</div>
@@ -3138,7 +3167,13 @@
         ${form(p, true)}
         <span class="mono faint" style="font-size:11px">${total && p.keys.length > 1 ? esc(usageLine(total)) + " in all · " : ""}several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
     };
-    return `<div class="providers">${ready.map(card).join("")}</div>
+    return `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
+      <div class="providers">${local.map(card).join("")}${hosts.map(card).join("")}${hosts.length ? "" : `<div class="prov off hint-card">
+          <b>Another machine of yours</b>
+          <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it on Training. Its models show up here and answer in Chat; it can also train.</div>
+          <div class="provset"><span class="grow"></span><button class="btn sm" data-go="train">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
+      <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>
+      ${ready.length ? `<div class="providers">${ready.map(card).join("")}</div>` : ""}
       ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
       <div class="more">${more.map(p => `<div class="prov-row ${L.adding === p.id ? "open" : ""}">
           <span class="plogo">${esc(p.name[0])}</span>
@@ -3149,7 +3184,7 @@
         </div>`).join("")}</div>` : ""}
       <div class="prov routing">
         <b>Routing</b>
-        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then the providers with keys, in the order shown here.</span>
+        <span class="muted" style="font-size:12.5px">Auto uses a model on this PC when there is one, then your worker hosts, then the providers with keys, in the order shown here.</span>
         <button class="btn" id="refresh-models">${icon("retry")}List models again</button>
         ${L.info.providers.some(p => p.balance && p.keys.length) ? `<button class="btn" id="refresh-balances">${icon("retry")}Check balances</button>` : ""}
         <span class="muted" style="font-size:12px">Keys stay on this PC, readable only by your user account. The page only ever sees their last four characters. Anthropic, OpenAI and Google report no balance to an API key; DeepSeek, Kimi and OpenRouter do.</span>
@@ -3517,6 +3552,12 @@
     });
     $("#new-model")?.addEventListener("click", newModel);
     bindPlace();
+    if (!V.status && !V.loading && !V.error) loadVast();
+    $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+    $("[data-vast-train]")?.addEventListener("click", () => {
+      if (V.status?.key) { V.open = true; if (!V.offers) searchVast(); }
+      go("train");
+    });
     $$("[data-place-remove]").forEach(b => b.addEventListener("click", async () => {
       const f = b.dataset.placeRemove;
       if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); } }, 4000); return; }

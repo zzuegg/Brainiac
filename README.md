@@ -856,7 +856,16 @@ their SHA-256, so a file the worker already has is not sent again), the progress
 curve come back live, and the trained model is saved to `models/` here as for a local run. A
 worker trains only on files it was sent, keeps them in `<data>/worker`, and trains one run at a
 time. The token is kept in `hosts.properties` and never sent to the page. The connection is
-plain HTTP with the token, so use workers on your own network or over a VPN.
+plain HTTP with the token, so use workers on your own network, over a VPN or through an SSH
+tunnel (`ssh -L 7870:127.0.0.1:7870 ...` with the worker on `--listen 127.0.0.1`).
+
+A worker also **serves its chat models**: the ones in its model folders (`--models`, else the
+usual ones) and in `<data>/worker/downloads` and `<data>/worker/models`. Every host added on the
+Train screen shows up on the Models screen under **Compute**, next to this PC and Vast.ai (the
+hosted APIs are under **Model APIs**), as a provider named after the host, right after this PC, and
+its models answer in Chat and for agents through the worker's own engine, streamed back as they
+are written. Setting `BRAINIAC_WORKER_TOKEN` (32 characters or more) gives the worker that token
+instead of the one it makes and keeps in `worker.token`, for machines that are set up by a script.
 
 **Agents** work towards a goal with a chat model and the studio's tools: listing and asking
 models, searching Hugging Face and downloading from it, listing data sets, checking and starting
@@ -944,6 +953,9 @@ A worker answers only requests that carry its token (`Authorization: Bearer <tok
 
 ```
 GET  /worker/info           name, devices, cores, memory, and what it is training and has queued
+GET  /worker/models         the chat models it serves
+POST /worker/chat           {"model":"...","system":"...","messages":[{"role":"user","text":"..."}],"maxTokens":1024}
+                            answers as server-sent events: text, thinking, then done (or error)
 GET  /worker/files/<sha256> whether it has a file; PUT with ?name= sends one (checked against the hash)
 POST /worker/runs           {"spec":{...},"model":"sha:<sha256>/net.brainiac"} starts a run on files it was sent
 GET  /worker/runs?id=1      the run's progress, epochs and loss curve

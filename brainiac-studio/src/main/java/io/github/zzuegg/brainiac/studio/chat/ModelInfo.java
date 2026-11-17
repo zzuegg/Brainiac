@@ -51,7 +51,12 @@ public record ModelInfo(String provider, String id, String name, List<String> me
                 : Math.round(tokens / 1000.0) + "k context";
     }
 
-    Map<String, Object> toJson() {
+    /**
+     * Describes the model for the page and for other studios.
+     *
+     * @return {@code {key, provider, id, name, media, detail}}
+     */
+    public Map<String, Object> toJson() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("key", key());
         m.put("provider", provider);
