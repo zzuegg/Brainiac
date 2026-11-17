@@ -105,6 +105,7 @@ class VulkanBackendTest {
         same(type, "compare", t -> t.maximum(t.neg()).add(t.minimum(t.square())).add(t.greater(t.square())), x);
         same(type, "unary", t -> t.exp().add(t.tanh()).add(t.sigmoid()).add(t.square().add(1).log())
                 .add(t.erf()).add(t.softplus()).add(t.abs().sqrt()).add(t.relu()).add(t.sign()).add(t.step()).add(t.mul(4).round()), x);
+        same(type, "trigonometric", t -> t.mul(3).sin().add(t.mul(2).cos()), x);
         for (ActivationOp op : ActivationOp.values()) {
             same(type, op.name(), t -> t.activation(op, 0.1f), x);
             same(type, op + " backward", t -> t.activationBackward(op, 0.1f, t.square()), x);
@@ -192,7 +193,7 @@ class VulkanBackendTest {
         // GLSL has no double exp or log; the shaders bring their own
         Tensor x = random(13, 64).mul(30).to(DType.FLOAT64);
         UnaryOperator<Tensor> f = t -> t.exp().add(t.abs().add(1e-3f).log()).add(t.tanh()).add(t.sigmoid())
-                .add(t.abs().pow(0.7f));
+                .add(t.abs().pow(0.7f)).add(t.sin()).add(t.mul(100).cos());
         double[] e = f.apply(x).toDoubleArray();
         double[] a = f.apply(x.to(gpu)).toDoubleArray();
         for (int i = 0; i < e.length; i++) {

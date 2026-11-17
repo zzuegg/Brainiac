@@ -503,6 +503,10 @@ public final class Trainer {
                 List<Tensor> forwardWork = Tensor.created(() -> {
                     forward[0] = model.forward(Var.of(batch.features()), true);
                     forward[1] = loss.compute(forward[0], shaped(batch.targets(), forward[0]));
+                    Var auxiliary = model.auxiliaryLoss();
+                    if (auxiliary != null) {
+                        forward[1] = forward[1].add(auxiliary);
+                    }
                     if (l2 > 0) {
                         Var penalty = l2Penalty(params);
                         if (penalty != null) {

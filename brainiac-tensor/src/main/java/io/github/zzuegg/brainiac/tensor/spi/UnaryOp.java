@@ -29,5 +29,9 @@ public enum UnaryOp {
     /** {@code log(1 + e^x)}, computed without overflow */
     SOFTPLUS,
     /** the nearest whole number, ties to even */
-    ROUND
+    ROUND,
+    /** sine, of radians */
+    SIN,
+    /** cosine, of radians */
+    COS
 }

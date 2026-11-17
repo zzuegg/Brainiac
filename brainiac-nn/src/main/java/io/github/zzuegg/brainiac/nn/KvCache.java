@@ -109,6 +109,32 @@ public final class KvCache {
             };
         }
 
+        /**
+         * An eviction policy of one's own, such as SnapKV or a learned one: when the cache
+         * holds more than the window, it picks the steps to keep. Each attention layer asks
+         * it separately.
+         */
+        non-sealed interface Policy extends Strategy {
+
+            /**
+             * Picks the cached steps to keep.
+             *
+             * @param total the steps held, the new ones last
+             * @param fresh how many of them are new; they must be kept
+             * @param window how many to keep
+             * @param received with {@link #tracksAttention}, the attention each held step has
+             *     received so far (summed over batch, heads and queries), else empty
+             * @param keys the held keys {@code [batch, heads, total, size]}, before rotation
+             * @return {@code window} step indices, increasing
+             */
+            int[] keep(int total, int fresh, int window, float[] received, Tensor keys);
+
+            /** @return whether {@link #keep} needs the attention received; costs a read per step */
+            default boolean tracksAttention() {
+                return false;
+            }
+        }
+
         /** Start over from the last half window. */
         record Restart() implements Strategy {
             @Override

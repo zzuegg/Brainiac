@@ -17,6 +17,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterAll;
@@ -30,7 +32,9 @@ class StudioServerTest {
 
     @BeforeAll
     static void start() throws IOException {
-        studio = Studio.start(0);
+        Path home = Files.createTempDirectory("studio-test");
+        studio = Studio.start(new Studio.Settings(0, List.of(home.resolve("models")), home.resolve("keys.properties"),
+                Map.of()));
     }
 
     @AfterAll

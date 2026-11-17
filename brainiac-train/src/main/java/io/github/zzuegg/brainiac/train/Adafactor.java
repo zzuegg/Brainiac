@@ -34,7 +34,7 @@ final class Adafactor extends StatefulOptimizer {
     }
 
     @Override
-    Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
+    protected Tensor[] update(Var p, Tensor g, Tensor[] s, int t) {
         Tensor w = p.value();
         float step = relativeStep ? (float) Math.min(1e-2, 1 / Math.sqrt(t)) : learningRate();
         Tensor lr = scaleParameter ? rms(w).maximum(Tensor.full(rms(w).shape(), EPS2, w.dtype(), w.device())).mul(step)

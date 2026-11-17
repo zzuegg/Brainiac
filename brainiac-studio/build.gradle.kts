@@ -25,6 +25,8 @@ application {
 
 tasks.named<JavaExec>("run") {
     standardInput = System.`in`
+    // ./models means the models folder at the top of the repository
+    workingDir = rootProject.projectDir
 }
 
 tasks.test {

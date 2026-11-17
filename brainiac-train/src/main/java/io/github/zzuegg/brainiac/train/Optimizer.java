@@ -28,6 +28,42 @@ public interface Optimizer {
     void step(List<Var> parameters);
 
     /**
+     * As {@link #step(List)}, for optimizers that need the loss and gradients again at other
+     * weights within one step, such as SAM or zeroth-order methods. {@link TrainingLoop} passes it when it does not
+     * accumulate micro-batches. The default ignores it.
+     *
+     * @param parameters the parameters to update
+     * @param reevaluate computes the loss and gradients again
+     */
+    default void step(List<Var> parameters, Reevaluation reevaluate) {
+        step(parameters);
+    }
+
+    /** Computes a batch's loss and gradients again, for {@link #step(List, Reevaluation)}. */
+    @FunctionalInterface
+    interface Reevaluation {
+
+        /**
+         * Clears the gradients, computes the loss at the parameters' current values and
+         * back-propagates it.
+         *
+         * @return the loss
+         */
+        float lossAndGradients();
+    }
+
+    /**
+     * Resets the optimizer's state for chosen entries of a parameter, as if they had never
+     * been updated, for example when units are re-initialized. Optimizers without state
+     * ignore it.
+     *
+     * @param parameter the parameter
+     * @param keep 1 for entries to keep and 0 for entries to reset, broadcast to the parameter
+     */
+    default void resetState(Var parameter, Tensor keep) {
+    }
+
+    /**
      * Returns the current learning rate.
      *
      * @return the learning rate
@@ -48,7 +84,7 @@ public interface Optimizer {
      * @return a new optimizer
      */
     static Optimizer sgd(float learningRate) {
-        return new Momentum(learningRate, 0f);
+        return new Momentum(learningRate, 0f, false);
     }
 
     /**
@@ -59,7 +95,19 @@ public interface Optimizer {
      * @return a new optimizer
      */
     static Optimizer momentum(float learningRate, float momentum) {
-        return new Momentum(learningRate, momentum);
+        return new Momentum(learningRate, momentum, false);
+    }
+
+    /**
+     * Gradient descent with Nesterov momentum, as PyTorch's SGD with {@code nesterov=True}:
+     * {@code v = momentum * v + grad; w -= learningRate * (grad + momentum * v)}.
+     *
+     * @param learningRate the step size
+     * @param momentum how much of the previous update is kept, usually {@code 0.9f}
+     * @return a new optimizer
+     */
+    static Optimizer nesterov(float learningRate, float momentum) {
+        return new Momentum(learningRate, momentum, true);
     }
 
     /**
