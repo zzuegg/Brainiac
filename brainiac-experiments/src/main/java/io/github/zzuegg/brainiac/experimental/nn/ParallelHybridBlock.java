@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.random.RandomGenerator;
 
 /**
- * A Hymba-style hybrid: inside every layer, attention heads and Mamba (selective state
+ * A Hymba-style hybrid: inside every layer, attention heads and Mamba-2 (selective state
  * space) heads read the same normalized input in parallel, and their normalized outputs are
  * averaged with learned per-channel scales,
  *
@@ -58,7 +58,7 @@ public final class ParallelHybridBlock implements Layer {
         this.meta = metaTokens > 0 ? TechniqueOps.normal(random, 0.5f, 1, metaTokens, features) : null;
         for (int i = 0; i < blocks; i++) {
             attention.add(new RefinedAttention(RefinedAttention.of(heads).causal(true).settings(features), random));
-            ssm.add(new MambaLayer(features, features, state, random));
+            ssm.add(new Mamba2Layer(features, 2, features / 2, state, 8, Mamba2Layer.Variant.REAL, random));
             ffns.add(new GluFeedForward(GluFeedForward.Kind.SWIGLU, features, 2 * features, random));
             scales.add(new Var[] {RefinementOps.ones(features), RefinementOps.ones(features),
                 RefinementOps.ones(features), RefinementOps.ones(features)});

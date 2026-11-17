@@ -249,23 +249,54 @@ public final class ArchitectureBench {
      */
     public static double[] retrieval(LayerSpec body, int width, MixerShootout.Task train,
             List<MixerShootout.Task> tests, int steps, float lr, long seed, boolean previousToken) {
+        TinyModel m = trainRetrieval(body, width, train, steps, lr, seed, previousToken);
+        double[] acc = new double[tests.size()];
+        for (int k = 0; k < acc.length; k++) {
+            int[][][] test = tests.get(k).batch(new SplittableRandom(seed + 1000 + k), 256);
+            acc[k] = accuracy(m, test);
+        }
+        return acc;
+    }
+
+    /**
+     * Trains a model on a {@link MixerShootout} retrieval task, the answer read at the last
+     * step.
+     *
+     * @param body the body
+     * @param width the model width
+     * @param train the task
+     * @param steps Adam steps on batches of 32
+     * @param lr the learning rate
+     * @param seed the seed
+     * @param previousToken whether to add a previous-token embedding
+     * @return the trained model
+     */
+    public static TinyModel trainRetrieval(LayerSpec body, int width, MixerShootout.Task train, int steps, float lr,
+            long seed, boolean previousToken) {
         SplittableRandom random = new SplittableRandom(seed);
-        int vocab = train.vocabulary();
-        TinyModel m = model(body, vocab, train.length(), width, previousToken, random);
+        TinyModel m = model(body, train.vocabulary(), train.length(), width, previousToken, random);
         List<Var> params = m.parameters();
         Optimizer opt = Optimizer.adam(lr);
         for (int s = 0; s < steps; s++) {
             int[][][] batch = train.batch(random, 32);
-            Functional.crossEntropy(lastLogits(m, batch[0], true), ids(batch[1][0])).backward();
+            Var loss = Functional.crossEntropy(lastLogits(m, batch[0], true), ids(batch[1][0]));
+            Var aux = m.body().auxiliaryLoss();
+            (aux == null ? loss : loss.add(aux)).backward();
             opt.step(params);
         }
-        double[] acc = new double[tests.size()];
-        for (int k = 0; k < acc.length; k++) {
-            int[][][] test = tests.get(k).batch(new SplittableRandom(seed + 1000 + k), 256);
-            Tensor pred = lastLogits(m, test[0], false).value().argmax(1);
-            acc[k] = pred.equalTo(ids(test[1][0])).mean().item();
-        }
-        return acc;
+        return m;
+    }
+
+    /**
+     * The answer accuracy of a retrieval model on a drawn batch.
+     *
+     * @param m the model
+     * @param batch a batch from {@link MixerShootout.Task#batch}
+     * @return the share of correct answers
+     */
+    public static double accuracy(TinyModel m, int[][][] batch) {
+        Tensor pred = lastLogits(m, batch[0], false).value().argmax(1);
+        return pred.equalTo(ids(batch[1][0])).mean().item();
     }
 
     /**
