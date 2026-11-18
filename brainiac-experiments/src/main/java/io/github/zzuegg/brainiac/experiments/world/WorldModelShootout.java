@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experiments.world;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.deeprl.PixelObservations;
 import io.github.zzuegg.brainiac.experimental.data.ShapeScenes;
 import io.github.zzuegg.brainiac.experimental.nn.SimpleMlp;
 import io.github.zzuegg.brainiac.experimental.rl.BehaviorCloning;
@@ -21,8 +22,13 @@ import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.rl.CartPole;
+import io.github.zzuegg.brainiac.rl.Dqn;
 import io.github.zzuegg.brainiac.rl.Environment;
+import io.github.zzuegg.brainiac.rl.Learner;
+import io.github.zzuegg.brainiac.rl.MountainCar;
+import io.github.zzuegg.brainiac.rl.Nets;
 import io.github.zzuegg.brainiac.rl.Rl;
+import io.github.zzuegg.brainiac.rl.Schedule;
 import io.github.zzuegg.brainiac.rl.Space;
 import io.github.zzuegg.brainiac.rl.Transition;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -53,6 +59,9 @@ import java.util.SplittableRandom;
  *   <li>{@link #slotVideo} (9.5.8): {@link SlotDynamics} (SlotFormer) against its per-slot MLP
  *       ablation and SimVP rolled out autoregressively, on bouncing tiles, tested with more
  *       objects than in training.
+ *   <li>{@link #pixels} (11.6.17): {@code DreamerAgent} and DQN on cart-pole from states and
+ *       from 32x32 (or smaller) renders with the previous frame as a second channel
+ *       ({@link PixelObservations#cartPole}), and on the pixel mountain car, at equal steps.
  * </ul>
  */
 public final class WorldModelShootout {
@@ -826,5 +835,68 @@ public final class WorldModelShootout {
             }
         }
         return new SlotRow(name, psnr[0], psnr[1], pos[0], pos[1], masks == null ? Double.NaN : ari);
+    }
+
+    // ---------------------------------------------------------------- 11.6.17 control from pixels
+
+    /**
+     * An 11.6.17 row.
+     *
+     * @param task the task and its input
+     * @param agent the learner
+     * @param meanReturn the mean greedy return over seeds
+     */
+    public record PixelRow(String task, String agent, double meanReturn) {
+    }
+
+    private static Environment pixelTask(String task, boolean pixels, int size) {
+        return switch (task) {
+            case "cartpole" -> pixels ? PixelObservations.cartPole(new CartPole(200), size) : new CartPole(200);
+            case "mountaincar" -> pixels ? PixelObservations.mountainCar(new MountainCar(200), size)
+                    : new MountainCar(200);
+            default -> throw new IllegalArgumentException(task);
+        };
+    }
+
+    private static int observations(Environment env) {
+        return ((Space.Box) env.observationSpace()).size();
+    }
+
+    /**
+     * 11.6.17: the cost of learning from pixels, at equal environment steps.
+     *
+     * @param tasks "cartpole" and/or "mountaincar"
+     * @param steps environment steps per learner
+     * @param seeds seeds
+     * @param size the render side in pixels (32 in the item; smaller for quick runs)
+     * @return one row per task, input and agent
+     */
+    public static List<PixelRow> pixels(String[] tasks, long steps, int seeds, int size) {
+        List<PixelRow> rows = new ArrayList<>();
+        for (String task : tasks) {
+            int actions = ((Space.Discrete) pixelTask(task, false, size).actionSpace()).n();
+            for (boolean pix : new boolean[] {false, true}) {
+                String name = task + (pix ? " (pixels 2x" + size + "x" + size + ")" : " (states)");
+                int obs = observations(pixelTask(task, pix, size));
+                double dreamer = 0;
+                double dqn = 0;
+                for (int s = 0; s < seeds; s++) {
+                    Environment env = pixelTask(task, pix, size);
+                    DreamerAgent d = DreamerAgent.of(obs, actions, 64, s).schedule(250, 80, 40).horizon(15);
+                    d.fit(env, steps, null);
+                    dreamer += Rl.evaluate(d, pixelTask(task, pix, size), 3, 100 + s);
+                    long seed = s;
+                    Learner q = Dqn.of(() -> Nets.mlp(obs, actions, Activation.RELU, seed, 64), actions)
+                            .bufferSize((int) Math.min(steps, 20_000))
+                            .learningStarts((int) Math.min(1_000, steps / 5))
+                            .epsilon(Schedule.linear(1, 0.05, Math.max(1, steps / 2))).seed(s);
+                    q.fit(pixelTask(task, pix, size), steps, null);
+                    dqn += Rl.evaluate(q, pixelTask(task, pix, size), 3, 100 + s);
+                }
+                rows.add(new PixelRow(name, "Dreamer", dreamer / seeds));
+                rows.add(new PixelRow(name, "DQN", dqn / seeds));
+            }
+        }
+        return rows;
     }
 }
