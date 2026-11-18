@@ -480,6 +480,33 @@ public final class WanTransformer implements MultiInputLayer {
         return "WanTransformer(" + settings.features() + ", " + settings.layers() + " blocks)";
     }
 
+    /**
+     * The most query-key pairs (times heads) one attention dispatch takes in inference
+     * ({@code -Dbrainiac.wan.attentionWork}); longer videos attend a slice of queries at a
+     * time, each run on its own. Windows resets a GPU whose work runs for more than about
+     * two seconds, and one fused attention over the 14,000 patches of an 832x480 clip can
+     * take that long on a consumer card.
+     */
+    static final long ATTENTION_WORK = Long.getLong("brainiac.wan.attentionWork", 1L << 28);
+
+    /** Attention of {@code [batch, heads, tokens, size]}, in slices of queries above {@code work} pairs. */
+    static Var attend(Var q, Var k, Var v, long work) {
+        int heads = q.shape().dim(1);
+        int n = q.shape().dim(2);
+        int m = k.shape().dim(2);
+        if (Var.gradEnabled() || (long) heads * n * m <= work) {
+            return FluxTransformer.attend(q, k, v);
+        }
+        int chunk = (int) Math.max(16, Math.min(n, work / ((long) heads * m)));
+        List<Var> pieces = new ArrayList<>();
+        for (int i = 0; i < n; i += chunk) {
+            Var qi = q.slice(2, i, Math.min(n, i + chunk));
+            pieces.add(Parts.step(() -> FluxTransformer.attend(qi, k, v)));
+            Parts.free(qi);
+        }
+        return pieces.size() == 1 ? pieces.get(0) : Var.concat(2, pieces.toArray(Var[]::new));
+    }
+
     /** An attention's projections and its RMS norms of queries and keys over all heads. */
     public static final class Attention {
         private final Dense q;
@@ -621,7 +648,7 @@ public final class WanTransformer implements MultiInputLayer {
             Var q = FluxTransformer.rotate(split(self.qNorm.forward(self.q.forward(n1)), heads), rope);
             Var k = FluxTransformer.rotate(split(self.kNorm.forward(self.k.forward(n1)), heads), rope);
             Var v = split(self.v.forward(n1), heads);
-            Var a = self.o.forward(FluxTransformer.join(FluxTransformer.attend(q, k, v)));
+            Var a = self.o.forward(FluxTransformer.join(attend(q, k, v, ATTENTION_WORK)));
             x = x.to(DType.FLOAT32).add(a.to(DType.FLOAT32).mul(c[2])).to(type);
             // cross-attention to text (and image) tokens, unmodulated
             Var n2 = crossNorm == null ? x : crossNorm.forward(x);

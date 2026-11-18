@@ -855,12 +855,30 @@ public final class Wan implements AutoCloseable {
             throw new IllegalArgumentException(this + " makes videos whose sides are multiples of " + side + ", not "
                     + request.width() + "x" + request.height());
         }
+        checkRoom(request);
         Shape shape = Shape.of(1, z, (request.frames() - 1) / tf + 1, request.height() / sf, request.width() / sf);
         Tensor noise = StableDiffusion.gaussian(shape, new SplittableRandom(request.seed()), device);
         try {
             return generate(request, start, noise, progress);
         } finally {
             noise.release();
+        }
+    }
+
+    /**
+     * Fails with a clear message when a transformer's device lacks the room a step at this
+     * size needs, instead of letting the driver run out (or reset the GPU) mid-step.
+     */
+    private void checkRoom(VideoRequest request) {
+        long step = stepBytes(transformers.get(0).settings(), vae.settings(), transformers.get(0).dtype(), request);
+        for (Device d : new java.util.LinkedHashSet<>(placement.transformers())) {
+            java.util.OptionalLong free = MemoryFit.free(d);
+            if (free.isPresent() && free.getAsLong() < step) {
+                throw new IllegalStateException(String.format(Locale.ROOT, "a %dx%d video of %d frames needs about"
+                        + " %s free on %s for a step, but only %s is free: close other programs that use the GPU,"
+                        + " or make it smaller or shorter", request.width(), request.height(), request.frames(),
+                        MemoryFit.gb(step), d, MemoryFit.gb(free.getAsLong())));
+            }
         }
     }
 
