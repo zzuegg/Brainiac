@@ -259,10 +259,18 @@ public final class WanTransformer implements MultiInputLayer {
         });
         int imageTokens = image == null ? 0 : image.shape().dim(1);
         Tensor[] rope = FluxTransformer.rotaryTables(positions(f, h, w), settings.axes(), settings.theta(), device);
-        for (Block b : blocks) {
+        java.util.function.ObjIntConsumer<Tensor> probe = blockProbe;
+        if (probe != null) {
+            probe.accept(x.value(), -1);
+        }
+        for (int i = 0; i < blocks.size(); i++) {
+            Block b = blocks.get(i);
             Var in = x;
             x = Parts.step(() -> b.forward(in, modulation, ctx, imageTokens, rope));
             Parts.free(in);
+            if (probe != null) {
+                probe.accept(x.value(), i);
+            }
         }
         Var hidden = x;
         Var result = Parts.step(() -> {
@@ -479,6 +487,13 @@ public final class WanTransformer implements MultiInputLayer {
     public String toString() {
         return "WanTransformer(" + settings.features() + ", " + settings.layers() + " blocks)";
     }
+
+    /**
+     * When set, hears the patch embedding (block -1) and each block's output
+     * {@code [batch, patches, features]} during a forward pass, for comparing a model against
+     * a reference implementation block by block.
+     */
+    public static volatile java.util.function.ObjIntConsumer<Tensor> blockProbe;
 
     /**
      * The most query-key pairs (times heads) one attention dispatch takes in inference

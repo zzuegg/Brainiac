@@ -36,6 +36,7 @@ public final class Examples {
             case "chat" -> ChatExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "image" -> ImageExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "video" -> VideoExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+            case "wanprobe" -> WanProbeExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
                       xor     learn XOR with a tiny network

@@ -159,7 +159,7 @@ public final class VideoExample {
         return new GeneratedImage(w, h, rgb, -1);
     }
 
-    private static Device device(String want) {
+    static Device device(String want) {
         if (want.equals("best")) {
             return Device.best();
         }
