@@ -89,7 +89,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
         if (!List.of("create", "overwrite", "append").contains(how)) {
             throw new IllegalArgumentException("the mode is create, overwrite or append, not " + how);
         }
-        Path f = Reach.file(path);
+        Path f = writable(Reach.file(path));
         if (Files.isDirectory(f)) {
             throw new IllegalArgumentException(path + " is a folder");
         }
@@ -132,7 +132,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
     public String editFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path,
             @Tools.Param("the passage as it is now, exactly") String find,
             @Tools.Param("what replaces it") String replace) {
-        Path f = Reach.file(path);
+        Path f = writable(Reach.file(path));
         if (!Files.isRegularFile(f)) {
             throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
         }
@@ -173,7 +173,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
             + "brings it back.")
     @Tier(value = Risk.WRITE, what = "deletes a file in the project's folder")
     public String deleteFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path) {
-        Path f = Reach.file(path);
+        Path f = writable(Reach.file(path));
         if (!Files.isRegularFile(f)) {
             throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
         }
@@ -262,6 +262,16 @@ public final class FileTools implements RiskRefiner, Checkpointed {
             out.put("note", "the first 200 matches; narrow the query or the files");
         }
         return out;
+    }
+
+    // git's own folder holds settings that run programs: agents change it only through the git tools
+    static Path writable(Path f) {
+        for (Path part : f) {
+            if (part.toString().equalsIgnoreCase(".git")) {
+                throw new IllegalArgumentException("files inside .git are changed only through the git tools");
+            }
+        }
+        return f;
     }
 
     private void checkpoint(Path f) throws IOException {

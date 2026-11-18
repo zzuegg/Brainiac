@@ -310,6 +310,85 @@ public final class MediaTools {
         return f;
     }
 
+    /**
+     * Joins clips into one video.
+     *
+     * @param clips the clips, in order
+     * @param audio a sound track
+     * @param subtitles an SRT file
+     * @param width the width
+     * @param height the height
+     * @param saveAs where to save it
+     * @return the video
+     */
+    @Tools.Tool(name = "assemble_media", value = "Joins video clips and pictures into one MP4, in order, at one size, "
+            + "with a sound track and burned-in subtitles if given. Pictures show for 'still' seconds. Needs FFmpeg.")
+    @Tier(value = Risk.COMPUTE, what = "puts a video together on this PC", media = true)
+    public Map<String, Object> assembleMedia(@Tools.Param("the clips and pictures, in order") List<String> clips,
+            @Tools.Param("a sound track to lay under it, such as speech or music") Optional<String> audio,
+            @Tools.Param("an SRT subtitle file to burn in") Optional<String> subtitles,
+            @Tools.Param("the width, 1280 if left out") Optional<Integer> width,
+            @Tools.Param("the height, 720 if left out") Optional<Integer> height,
+            @Tools.Param("how long each picture shows, 3 seconds if left out") Optional<Double> still,
+            @Tools.Param("where to save it in the project's folder, such as 'video/final.mp4'") String saveAs) {
+        if (clips == null || clips.isEmpty() || clips.size() > 100) {
+            throw new IllegalArgumentException("give 1 to 100 clips");
+        }
+        int w = Math.clamp(width.orElse(1280), 64, 3840) & ~1;
+        int h = Math.clamp(height.orElse(720), 64, 2160) & ~1;
+        double hold = Math.clamp(still.orElse(3.0), 0.5, 60);
+        Path out = FileTools.project().inFolder(saveAs.toLowerCase(Locale.ROOT).endsWith(".mp4") ? saveAs : saveAs + ".mp4");
+        if (Files.exists(out)) {
+            throw new IllegalArgumentException(saveAs + " exists already; pick another name");
+        }
+        List<String> args = new ArrayList<>();
+        StringBuilder filter = new StringBuilder();
+        int i = 0;
+        for (String c : clips) {
+            Path f = media(c);
+            String n = f.getFileName().toString().toLowerCase(Locale.ROOT);
+            boolean pic = n.endsWith(".png") || n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".webp");
+            if (pic) {
+                args.addAll(List.of("-loop", "1", "-t", String.valueOf(hold)));
+            }
+            args.addAll(List.of("-i", f.toAbsolutePath().toString()));
+            filter.append(String.format(Locale.ROOT, "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,"
+                    + "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v%d];", i, w, h, w, h, i));
+            i++;
+        }
+        for (int k = 0; k < i; k++) {
+            filter.append("[v").append(k).append(']');
+        }
+        filter.append("concat=n=").append(i).append(":v=1:a=0[cat]");
+        String last = "[cat]";
+        if (subtitles.isPresent() && !subtitles.get().isBlank()) {
+            Path srt = media(subtitles.get());
+            String p = srt.toAbsolutePath().toString().replace("\\", "/").replace(":", "\\:").replace("'", "\\'");
+            filter.append(";[cat]subtitles='").append(p).append("'[sub]");
+            last = "[sub]";
+        }
+        if (audio.isPresent() && !audio.get().isBlank()) {
+            args.addAll(List.of("-i", media(audio.get()).toAbsolutePath().toString()));
+        }
+        args.addAll(List.of("-filter_complex", filter.toString(), "-map", last));
+        if (audio.isPresent() && !audio.get().isBlank()) {
+            args.addAll(List.of("-map", i + ":a", "-c:a", "aac", "-b:a", "160k", "-shortest"));
+        }
+        args.addAll(List.of("-c:v", "libx264", "-preset", "medium", "-crf", "20", "-movflags", "+faststart"));
+        try {
+            Files.createDirectories(out.getParent());
+            args.add(out.toAbsolutePath().toString());
+            Ffmpeg.run(args, out.getParent());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("file", FileTools.project().folder().toAbsolutePath().normalize().relativize(out).toString().replace('\\', '/'));
+            m.put("files", List.of(out.toString()));
+            m.put("bytes", Files.size(out));
+            return m;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+    }
+
     static Media picture(Path f) {
         String name = f.getFileName().toString().toLowerCase(Locale.ROOT);
         String mime = name.endsWith(".png") ? "image/png" : name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg"

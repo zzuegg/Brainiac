@@ -13,8 +13,8 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Settings for the outside services agent tools use: web search, the code sandbox, posting and
- * mail. Plain settings are kept in {@code services.json}; passwords and tokens are kept with the
+ * Settings for the outside services agent tools use: web search, the code sandbox, GitHub,
+ * posting and mail. Plain settings are kept in {@code services.json}; passwords and tokens are kept with the
  * studio's other keys, under the service's id.
  */
 public final class Services {
@@ -28,7 +28,8 @@ public final class Services {
             "discord", List.of(),
             "webhook", List.of("url"),
             "mail", List.of("imapHost", "imapPort", "smtpHost", "smtpPort", "user", "from"),
-            "calendar", List.of("url"));
+            "calendar", List.of("url"),
+            "github", List.of("repo", "api"));
 
     /** The ids secrets are kept under, per section. */
     public static final Map<String, String> SECRETS = Map.of(
@@ -36,7 +37,8 @@ public final class Services {
             "mastodon", "mastodon",
             "bluesky", "bluesky",
             "discord", "discord",
-            "mail", "mail");
+            "mail", "mail",
+            "github", "github");
 
     private final Path file;
     private final ChatService chat;
@@ -132,7 +134,8 @@ public final class Services {
      */
     public synchronized Map<String, Object> toJson() {
         Map<String, Object> out = new LinkedHashMap<>();
-        for (String section : List.of("search", "sandbox", "mastodon", "bluesky", "discord", "webhook", "mail", "calendar")) {
+        for (String section : List.of("search", "sandbox", "github", "mastodon", "bluesky", "discord", "webhook", "mail",
+                "calendar")) {
             Map<String, Object> m = new LinkedHashMap<>(sections.getOrDefault(section, Map.of()));
             if (SECRETS.containsKey(section)) {
                 m.put("hasSecret", secret(section).isPresent());

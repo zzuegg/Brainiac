@@ -780,6 +780,40 @@ public final class DataTools implements RiskRefiner, Checkpointed {
     }
 
     /**
+     * Marks a calendar entry, as posting does.
+     *
+     * @param p the project
+     * @param id the entry
+     * @param state its new state
+     * @param url where it was posted, or null
+     */
+    static void setState(io.github.zzuegg.brainiac.studio.project.Project p, String id, String state, String url) {
+        Path f = p.inFolder(CALENDAR);
+        synchronized (DataTools.class) {
+            List<Map<String, Object>> items = calendar(f);
+            boolean hit = false;
+            for (Map<String, Object> m : items) {
+                if (id.equals(m.get("id"))) {
+                    m.put("state", state);
+                    if (url != null && !url.isBlank()) {
+                        m.put("url", url);
+                    }
+                    m.put("updated", System.currentTimeMillis());
+                    hit = true;
+                }
+            }
+            if (!hit) {
+                return;
+            }
+            try {
+                Files.writeString(f, Json.write(Map.of("entries", items)), StandardCharsets.UTF_8);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
      * Reads the calendar.
      *
      * @param f its file

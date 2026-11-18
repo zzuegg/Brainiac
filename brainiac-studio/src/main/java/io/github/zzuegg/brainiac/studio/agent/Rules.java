@@ -204,7 +204,8 @@ public final class Rules {
     /**
      * The rules a new studio starts with.
      *
-     * @return deny secrets, ask before reading or writing outside the project's folder
+     * @return deny secrets, ask before renting machines and before reading or writing outside the
+     *     project's folder
      */
     public static List<Rule> shipped() {
         return List.of(
@@ -212,6 +213,8 @@ public final class Rules {
                         "~/.aws/**", "~/.config/gcloud/**", "~/.kube/**", "~/.docker/config.json", "**/.env",
                         "**/*.pem", "**/id_rsa*", "**/id_ed25519*"), "any", "", "",
                         "keys and passwords stay out of agents' reach", true),
+                new Rule("renting-asks", Risk.Policy.ASK, List.of("rent_machine"), List.of(), List.of(), "any", "", "",
+                        "renting a machine costs money by the hour, so it always asks", true),
                 new Rule("outside-read", Risk.Policy.ASK, List.of(), List.of(), List.of(OUTSIDE), "read", "", "",
                         "reading outside the project's folder asks; one approval covers that folder for the run", true),
                 new Rule("outside-write", Risk.Policy.ASK, List.of(), List.of(), List.of(OUTSIDE), "write", "", "",

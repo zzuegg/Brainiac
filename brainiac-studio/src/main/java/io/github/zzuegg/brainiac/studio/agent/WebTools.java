@@ -335,7 +335,7 @@ public final class WebTools {
     private static final Pattern DROP = Pattern.compile(
             "(?is)<(script|style|noscript|svg|template|head)\\b.*?</\\1\\s*>|<!--.*?-->");
     private static final Pattern BREAK = Pattern.compile(
-            "(?i)<(br|/p|/div|/li|/tr|/h[1-6]|/section|/article|/header|/footer|/blockquote|/pre|/table)\\b[^>]*>");
+            "(?i)<(br|/p|/div|/tr|/h[1-6]|/section|/article|/header|/footer|/blockquote|/pre|/table)\\b[^>]*>");
     private static final Pattern ITEM = Pattern.compile("(?i)<li\\b[^>]*>");
     private static final Pattern HEAD = Pattern.compile("(?i)<h([1-6])\\b[^>]*>");
     private static final Pattern TAG = Pattern.compile("<[^>]*>");
