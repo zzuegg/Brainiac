@@ -1,11 +1,16 @@
 package io.github.zzuegg.brainiac.experimental.train;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -26,6 +31,20 @@ import java.util.function.Supplier;
  *       inner steps, {@code (I - a H_k) ... (I - a H_1) g}, with each Hessian-vector product
  *       {@code H v} exact from nested autograd ({@link Var#gradients(Var, List, boolean)}: the
  *       gradient of {@code grad . v}). The losses' operations need second derivatives.</li>
+ * </ul>
+ *
+ * <p>Two variants switch on with fluent flags, and combine:
+ *
+ * <ul>
+ *   <li><b>ANIL</b> ({@link #anil(Collection)}, "almost no inner loop"): only the chosen
+ *       parameters, usually the head, adapt in the inner loop; the body is still meta-trained
+ *       through the outer step. Raghu et al., "Rapid Learning or Feature Reuse?" (2019),
+ *       <a href="https://arxiv.org/abs/1909.09157">arXiv:1909.09157</a>.</li>
+ *   <li><b>Meta-SGD</b> ({@link #metaSgd()}): every parameter gets its own learned inner
+ *       learning rate (a tensor of the parameter's shape, starting at {@code innerRate}),
+ *       meta-trained along with the initialization: the inner step is
+ *       {@code w - alpha * grad}. Li et al., "Meta-SGD" (2017),
+ *       <a href="https://arxiv.org/abs/1707.09835">arXiv:1707.09835</a>.</li>
  * </ul>
  *
  * <p>Paper: Finn, Abbeel, Levine, "Model-Agnostic Meta-Learning for Fast Adaptation of Deep
@@ -56,6 +75,8 @@ public final class Maml {
     private final float innerRate;
     private final int innerSteps;
     private final boolean secondOrder;
+    private Set<Var> adaptable;
+    private List<Var> rates;
 
     /**
      * Creates the meta-learner.
@@ -75,6 +96,58 @@ public final class Maml {
     }
 
     /**
+     * ANIL: adapts only these parameters in the inner loop (and in {@link #adapt}); the
+     * others stay at their meta-learned values for every task.
+     *
+     * @param inner the parameters to adapt, a subset of the model's, usually the head
+     * @return this
+     */
+    public Maml anil(Collection<Var> inner) {
+        Set<Var> set = Collections.newSetFromMap(new IdentityHashMap<>());
+        set.addAll(inner);
+        for (Var v : set) {
+            if (parameters.stream().noneMatch(p -> p == v)) {
+                throw new IllegalArgumentException("an inner parameter is not one of the model's parameters");
+            }
+        }
+        this.adaptable = set;
+        return this;
+    }
+
+    /**
+     * Meta-SGD: learns one inner learning rate per weight, starting at {@code innerRate}; the
+     * outer optimizer trains them with the initialization.
+     *
+     * @return this
+     */
+    public Maml metaSgd() {
+        List<Var> r = new ArrayList<>();
+        for (Var p : parameters) {
+            r.add(Var.param(Tensor.full(p.shape(), innerRate).to(p.value().device())));
+        }
+        this.rates = List.copyOf(r);
+        return this;
+    }
+
+    /** @return the learned per-weight inner rates of {@link #metaSgd()}, or an empty list */
+    public List<Var> rates() {
+        return rates == null ? List.of() : rates;
+    }
+
+    /** @return the number of weights the inner loop adapts per task */
+    public long adaptedWeights() {
+        long n = 0;
+        for (Var p : parameters) {
+            n += adapts(p) ? p.shape().size() : 0;
+        }
+        return n;
+    }
+
+    private boolean adapts(Var p) {
+        return adaptable == null || adaptable.contains(p);
+    }
+
+    /**
      * Runs one meta step over a batch of tasks.
      *
      * @param tasks the tasks
@@ -83,23 +156,41 @@ public final class Maml {
     public float metaStep(List<? extends Task> tasks) {
         List<Tensor> start = values(parameters);
         Tensor[] meta = new Tensor[parameters.size()];
+        Tensor[] metaRates = rates == null ? null : new Tensor[parameters.size()];
         double total = 0;
         for (Task task : tasks) {
             List<List<Tensor>> path = new ArrayList<>();
+            List<Tensor[]> grads = new ArrayList<>();
             List<Tensor> w = start;
             for (int s = 0; s < innerSteps; s++) {
                 path.add(w);
-                w = sgd(w, gradient(w, task::supportLoss));
+                Tensor[] g = gradient(w, task::supportLoss);
+                grads.add(g);
+                w = sgd(w, g);
             }
             assign(w);
             Var q = task.queryLoss();
             total += q.value().item();
             Tensor[] g = backward(q);
-            if (secondOrder) {
-                for (int s = innerSteps - 1; s >= 0; s--) {
-                    Tensor[] hv = hessianVector(path.get(s), g, task::supportLoss);
+            for (int s = innerSteps - 1; s >= 0; s--) {
+                if (metaRates != null) {
+                    Tensor[] inner = grads.get(s);
                     for (int i = 0; i < g.length; i++) {
-                        g[i] = g[i].sub(hv[i].mul(innerRate));
+                        if (adapts(parameters.get(i))) {
+                            Tensor d = inner[i].mul(g[i]).neg();
+                            metaRates[i] = metaRates[i] == null ? d : metaRates[i].add(d);
+                        }
+                    }
+                }
+                if (secondOrder) {
+                    Tensor[] v = new Tensor[g.length];
+                    for (int i = 0; i < g.length; i++) {
+                        v[i] = adapts(parameters.get(i)) ? g[i].mul(rate(i))
+                                : Tensor.zeros(g[i].shape()).to(g[i].device());
+                    }
+                    Tensor[] hv = hessianVector(path.get(s), v, task::supportLoss);
+                    for (int i = 0; i < g.length; i++) {
+                        g[i] = g[i].sub(hv[i]);
                     }
                 }
             }
@@ -108,10 +199,17 @@ public final class Maml {
             }
         }
         assign(start);
+        List<Var> stepped = new ArrayList<>(parameters);
         for (int i = 0; i < parameters.size(); i++) {
             parameters.get(i).setGrad(meta[i].div(tasks.size()));
+            if (metaRates != null) {
+                Var r = rates.get(i);
+                r.setGrad(metaRates[i] == null ? Tensor.zeros(r.shape()).to(r.value().device())
+                        : metaRates[i].div(tasks.size()));
+                stepped.add(r);
+            }
         }
-        outer.step(parameters);
+        outer.step(stepped);
         return (float) (total / tasks.size());
     }
 
@@ -147,9 +245,17 @@ public final class Maml {
     private List<Tensor> sgd(List<Tensor> w, Tensor[] g) {
         List<Tensor> out = new ArrayList<>(w.size());
         for (int i = 0; i < w.size(); i++) {
-            out.add(w.get(i).sub(g[i].mul(innerRate)));
+            out.add(adapts(parameters.get(i)) ? w.get(i).sub(g[i].mul(rate(i))) : w.get(i));
         }
         return out;
+    }
+
+    private Tensor rate(int i) {
+        if (rates != null) {
+            return rates.get(i).value();
+        }
+        Var p = parameters.get(i);
+        return Tensor.full(Shape.of(1), innerRate).to(p.value().device());
     }
 
     private Tensor[] gradient(List<Tensor> at, Supplier<Var> loss) {
