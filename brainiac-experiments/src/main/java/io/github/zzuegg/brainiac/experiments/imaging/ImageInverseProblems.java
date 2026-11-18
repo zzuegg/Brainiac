@@ -11,6 +11,7 @@ import io.github.zzuegg.brainiac.experimental.imaging.LinearOperator;
 import io.github.zzuegg.brainiac.experimental.imaging.OperatorPlugAndPlay;
 import io.github.zzuegg.brainiac.experimental.imaging.ParameterChoice;
 import io.github.zzuegg.brainiac.experimental.imaging.PrimalDual;
+import io.github.zzuegg.brainiac.experimental.imaging.SinglePixelImaging;
 import io.github.zzuegg.brainiac.experimental.imaging.Wavelets;
 import io.github.zzuegg.brainiac.experimental.restore.Denoisers;
 import io.github.zzuegg.brainiac.experimental.restore.PlugAndPlay;
@@ -28,7 +29,7 @@ import java.util.function.ToDoubleFunction;
  * {@link #blind} (13.4.4), {@link #demosaicing} (13.4.5), {@link #deepImagePrior} (13.4.6),
  * {@link #variational}, {@link #impulse}, {@link #ramps} and
  * {@link #tvSpeed} (13.4.9), {@link #wavelets} and {@link #waveletSignals} (13.4.10),
- * {@link #parameterChoice} (13.4.11).
+ * {@link #parameterChoice} (13.4.11), {@link #singlePixel} (13.4.12).
  */
 public final class ImageInverseProblems {
 
@@ -334,6 +335,96 @@ public final class ImageInverseProblems {
             s += Math.abs(e);
         }
         return s;
+    }
+
+    // ---------------------------------------------------------------- 13.4.12 single-pixel imaging
+
+    /**
+     * Single-pixel imaging of shapes: low-sequency and cake-cutting Hadamard, truncated DCT, random
+     * {@code +-1} patterns with compressed sensing (FISTA on Haar, TV), Gaussian sensing with wave 12's
+     * sparse solvers, and learned binary patterns with a decoder (at the lowest ratios).
+     *
+     * @param side the image side (a power of two)
+     * @param trainImages the learned model's training images
+     * @param testImages the test images
+     * @param ratios the sampling ratios {@code m / n}
+     * @param learnedBelow train the learned patterns only at ratios up to this
+     * @param sigma the detector noise
+     * @param steps the learned model's Adam steps
+     * @param seed the seed
+     * @return method to PSNR per ratio (NaN where not run), then SSIM at the first ratio
+     */
+    public static Map<String, double[]> singlePixel(int side, int trainImages, int testImages, double[] ratios,
+            double learnedBelow, double sigma, int steps, long seed) {
+        int n = side * side;
+        List<double[]> train = new java.util.ArrayList<>();
+        for (float[] f : DegradedImages.shapes(trainImages, side, seed)) {
+            train.add(ImageMath.toDouble(f));
+        }
+        List<double[]> test = new java.util.ArrayList<>();
+        for (float[] f : DegradedImages.shapes(testImages, side, seed + 1)) {
+            test.add(ImageMath.toDouble(f));
+        }
+        String[] names = {"Hadamard, sequency order", "Hadamard, cake-cutting order", "truncated DCT",
+            "random +-1, FISTA on Haar", "random +-1, TV (PDHG)", "Gaussian, FISTA on Haar (SparseRecovery)",
+            "Gaussian, AMP on Haar (SparseRecovery)", "learned binary patterns + decoder"};
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (String name : names) {
+            double[] row = new double[ratios.length + 1];
+            java.util.Arrays.fill(row, Double.NaN);
+            out.put(name, row);
+        }
+        SplittableRandom r = new SplittableRandom(seed + 2);
+        for (int k = 0; k < ratios.length; k++) {
+            int m = Math.max(1, (int) Math.round(ratios[k] * n));
+            double[][] rademacher = SinglePixelImaging.randomPatterns(m, n, r);
+            double[][] gauss = io.github.zzuegg.brainiac.experimental.signal.SparseRecovery.gaussianMatrix(m, n, r);
+            for (double[] row : gauss) {
+                for (int j = 0; j < n; j++) {
+                    row[j] *= Math.sqrt(m / (double) n);
+                }
+            }
+            SinglePixelImaging.Learned learned = null;
+            if (ratios[k] <= learnedBelow) {
+                learned = new SinglePixelImaging.Learned(m, side, 8, 2, seed + 3 + k);
+                learned.fit(train, steps, 8, 3e-3f, sigma, seed + 4 + k);
+            }
+            double[][] acc = new double[names.length][2];
+            for (double[] x : test) {
+                double[] yr = SinglePixelImaging.measure(rademacher, x, sigma, r);
+                double[] yg = SinglePixelImaging.measure(gauss, x, sigma, r);
+                double[][] est = {
+                    SinglePixelImaging.truncated(SinglePixelImaging.Ordering.SEQUENCY, x, side, m, sigma, r),
+                    SinglePixelImaging.truncated(SinglePixelImaging.Ordering.CAKE_CUTTING, x, side, m, sigma, r),
+                    SinglePixelImaging.truncated(SinglePixelImaging.Ordering.DCT, x, side, m, sigma, r),
+                    SinglePixelImaging.compressedHaar(
+                        io.github.zzuegg.brainiac.experimental.signal.SparseRecovery.Method.FISTA, rademacher, yr,
+                        side, 0.003, 300),
+                    SinglePixelImaging.compressedTv(rademacher, yr, side, 0.01, 300),
+                    SinglePixelImaging.compressedHaar(
+                        io.github.zzuegg.brainiac.experimental.signal.SparseRecovery.Method.FISTA, gauss, yg, side,
+                        0.003, 300),
+                    SinglePixelImaging.compressedHaar(
+                        io.github.zzuegg.brainiac.experimental.signal.SparseRecovery.Method.AMP, gauss, yg, side,
+                        1.0, 30),
+                    learned == null ? null : learned.reconstruct(x, sigma, r)};
+                for (int i = 0; i < names.length; i++) {
+                    if (est[i] != null) {
+                        acc[i][0] += ImageMath.psnr(est[i], x) / test.size();
+                        acc[i][1] += ImageMath.ssim(ImageMath.clip(est[i]), x, side) / test.size();
+                    }
+                }
+            }
+            for (int i = 0; i < names.length; i++) {
+                if (i < names.length - 1 || learned != null) {
+                    out.get(names[i])[k] = acc[i][0];
+                    if (k == 0) {
+                        out.get(names[i])[ratios.length] = acc[i][1];
+                    }
+                }
+            }
+        }
+        return out;
     }
 
     // ---------------------------------------------------------------- 13.4.9 variational and filters
