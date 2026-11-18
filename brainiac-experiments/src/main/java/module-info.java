@@ -37,6 +37,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.ml;
     exports io.github.zzuegg.brainiac.experimental.multimodal;
     exports io.github.zzuegg.brainiac.experimental.multitask;
+    exports io.github.zzuegg.brainiac.experimental.music;
     exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.ood;
@@ -91,6 +92,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.multiagent;
     exports io.github.zzuegg.brainiac.experiments.multimodal;
     exports io.github.zzuegg.brainiac.experiments.multitask;
+    exports io.github.zzuegg.brainiac.experiments.music;
     exports io.github.zzuegg.brainiac.experiments.numerics;
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.parallel;
