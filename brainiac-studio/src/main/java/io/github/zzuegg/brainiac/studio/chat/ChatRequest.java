@@ -13,9 +13,25 @@ import java.util.Objects;
  * @param key the name of the API key to use, or null to try the provider's keys in order
  * @param temperature how freely the model chooses its words, from 0 (always the likeliest) to 2,
  *        or null for the model's own default; providers whose API rejects it leave it out
+ * @param sampler top-p, top-k and the repeat penalty, each left to the model when not set
  */
 public record ChatRequest(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
-        Float temperature) {
+        Float temperature, Sampler sampler) {
+
+    /**
+     * A request with a temperature and the model's own other sampling.
+     *
+     * @param model the provider's own model id
+     * @param system instructions for the whole conversation, or an empty string
+     * @param messages the conversation so far, ending with the user's turn
+     * @param maxTokens the most tokens the answer may have
+     * @param key the name of the API key to use, or null to try the provider's keys in order
+     * @param temperature from 0 to 2, or null for the model's own default
+     */
+    public ChatRequest(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
+            Float temperature) {
+        this(model, system, messages, maxTokens, key, temperature, Sampler.NONE);
+    }
 
     /**
      * A request answered at the model's own temperature.
@@ -27,13 +43,14 @@ public record ChatRequest(String model, String system, List<ChatMessage> message
      * @param key the name of the API key to use, or null to try the provider's keys in order
      */
     public ChatRequest(String model, String system, List<ChatMessage> messages, int maxTokens, String key) {
-        this(model, system, messages, maxTokens, key, null);
+        this(model, system, messages, maxTokens, key, null, Sampler.NONE);
     }
 
     /** Checks the request. */
     public ChatRequest {
         Objects.requireNonNull(model, "model");
         system = system == null ? "" : system;
+        sampler = sampler == null ? Sampler.NONE : sampler;
         messages = List.copyOf(messages);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role())) {
             throw new IllegalArgumentException("the conversation must end with a user message");
