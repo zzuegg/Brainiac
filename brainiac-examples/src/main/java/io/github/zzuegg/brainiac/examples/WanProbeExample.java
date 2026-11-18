@@ -9,7 +9,9 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -19,7 +21,8 @@ import java.util.Map;
  *
  * <p>{@code wanprobe <model folder> <inputs.safetensors> <out.safetensors> [--device name]
  * [--dtype f32|bf16]}; the inputs are {@code latents [1, c, f, h, w]}, {@code timestep [1]} and
- * {@code context [1, 512, text]}.
+ * {@code context [1, 512, text]}, or several such cases with names prefixed {@code c0.},
+ * {@code c1.}, ..., whose outputs keep the prefix.
  */
 public final class WanProbeExample {
 
@@ -60,19 +63,27 @@ public final class WanProbeExample {
                 Wan wan = Wan.load(Path.of(args[0]), device, dtype, new Wan.Options(0, 0, 512))) {
             WanTransformer t = wan.transformer();
             System.out.println("Loaded " + wan + " on " + device);
-            Tensor latents = in.tensor("latents", device, dtype);
-            Tensor timestep = in.tensor("timestep", device, DType.FLOAT32);
-            Tensor context = in.tensor("context", device, dtype);
-            WanTransformer.blockProbe = (x, i) -> {
-                Tensor f = x.to(Device.cpu()).to(DType.FLOAT32);
-                out.put(i < 0 ? "embedded" : "block." + i, f);
-                System.out.printf("%s: %s, mean |x| %.4g%n", i < 0 ? "embedded" : "block " + i, x.shape(),
-                        mean(f));
-            };
-            Tensor result = Var.noGrad(() -> t.forward(Var.of(latents), timestep, Var.of(context), null, false)
-                    .value().to(Device.cpu()).to(DType.FLOAT32));
-            WanTransformer.blockProbe = null;
-            out.put("out", result);
+            // one case, or several named c0., c1., ...
+            List<String> cases = new ArrayList<>();
+            for (String n : in.names()) {
+                if (n.endsWith("latents")) {
+                    cases.add(n.substring(0, n.length() - "latents".length()));
+                }
+            }
+            for (String c : cases) {
+                Tensor latents = in.tensor(c + "latents", device, dtype);
+                Tensor timestep = in.tensor(c + "timestep", device, DType.FLOAT32);
+                Tensor context = in.tensor(c + "context", device, dtype);
+                WanTransformer.blockProbe = (x, i) -> out.put(c + (i < 0 ? "embedded" : "block." + i),
+                        x.to(Device.cpu()).to(DType.FLOAT32));
+                Tensor result = Var.noGrad(() -> t.forward(Var.of(latents), timestep, Var.of(context), null, false)
+                        .value().to(Device.cpu()).to(DType.FLOAT32));
+                WanTransformer.blockProbe = null;
+                out.put(c + "out", result);
+                System.out.printf("%sout: %s, mean |x| %.4g%n", c, result.shape(), mean(result));
+                latents.release();
+                context.release();
+            }
         }
         SafeTensors.write(Path.of(args[2]), out);
         System.out.println("Wrote " + out.size() + " tensors to " + args[2]);
