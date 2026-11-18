@@ -30,4 +30,17 @@ class LeastSquaresTest {
         double[][] x = {{1, 2}, {2, 4}, {3, 6}, {4, 8}};
         assertThrows(IllegalArgumentException.class, () -> LeastSquares.ols(x, new double[] {1, 2, 3, 4}, true));
     }
+
+    @Test
+    void weightedAndRidgeMatchNumpy() {
+        double[] w = {1, 2, 0.5, 1, 3, 1, 2};
+        LeastSquares.Fit fit = LeastSquares.wls(X, Y, w, true);
+        assertArrayEquals(new double[] {-0.5572025052192053, 1.7321503131523974, 0.8778705636743244}, fit.coefficients(), 1e-10);
+        assertArrayEquals(new double[] {0.27046956322863136, 0.1502171100615605, 0.12018476549666553}, fit.standardErrors(), 1e-10);
+        assertEquals(0.9984071112452304, fit.rSquared(), 1e-12);
+        assertArrayEquals(new double[] {-0.1752705805182, 1.4801574286651347, 1.0331912102328642},
+                LeastSquares.ridge(X, Y, w, 2, true), 1e-10);
+        assertArrayEquals(new double[] {1.4354942233632837, 1.0406931964056507}, LeastSquares.ridge(X, Y, null, 2, false), 1e-10);
+        assertArrayEquals(LeastSquares.ols(X, Y, true).coefficients(), LeastSquares.ridge(X, Y, null, 0, true), 1e-9);
+    }
 }

@@ -56,10 +56,52 @@ public final class Lbfgs {
      * @return what happened
      */
     public Result minimize(List<Var> parameters, Supplier<Var> loss, int maxIterations) {
-        int[] evaluations = {0};
-        double[] x = gather(parameters);
+        Point p = minimize(gather(parameters), (x, g) -> evaluate(parameters, loss, x, g), maxIterations);
+        scatter(parameters, p.x());
+        for (Var v : parameters) {
+            v.zeroGrad();
+        }
+        return p.result();
+    }
+
+    /** A function of a vector with its gradient, in double precision. */
+    @FunctionalInterface
+    public interface Objective {
+
+        /**
+         * Evaluates the function.
+         *
+         * @param x the point; not to be changed
+         * @param gradient filled with the gradient at {@code x}
+         * @return the value at {@code x}
+         */
+        double value(double[] x, double[] gradient);
+    }
+
+    /**
+     * Where a minimization of an {@link Objective} ended.
+     *
+     * @param x the point reached
+     * @param result the loss, iterations, evaluations and whether it converged
+     */
+    public record Point(double[] x, Result result) {
+    }
+
+    /**
+     * Minimizes a function in double precision, such as to polish a fit that a float model
+     * brought close: losses whose differences matter below float's 7 digits.
+     *
+     * @param x0 the start; not changed
+     * @param f the function and its gradient
+     * @param maxIterations the most iterations
+     * @return the point reached
+     */
+    public Point minimize(double[] x0, Objective f, int maxIterations) {
+        int evaluations = 0;
+        double[] x = x0.clone();
         double[] g = new double[x.length];
-        double f = evaluate(parameters, loss, x, g, evaluations);
+        double fx = f.value(x, g);
+        evaluations++;
         Deque<double[][]> pairs = new ArrayDeque<>();   // {s, y, {rho}}
         int it = 0;
         boolean converged = maxAbs(g) <= tolerance;
@@ -81,8 +123,9 @@ public final class Lbfgs {
                 for (int i = 0; i < x.length; i++) {
                     xn[i] = x[i] + step * d[i];
                 }
-                fn = evaluate(parameters, loss, xn, gn, evaluations);
-                if (fn <= f + 1e-4 * step * slope || ++tries > 30) {
+                fn = f.value(xn, gn);
+                evaluations++;
+                if (fn <= fx + 1e-4 * step * slope || ++tries > 30) {
                     break;
                 }
                 step *= 0.5;
@@ -94,23 +137,19 @@ public final class Lbfgs {
                 yv[i] = gn[i] - g[i];
             }
             double sy = dot(sv, yv);
-            if (sy > 1e-10) {
+            if (sy > 1e-16 * Math.max(1e-300, Math.sqrt(dot(sv, sv) * dot(yv, yv)))) {
                 pairs.addLast(new double[][] {sv, yv, {1 / sy}});
                 if (pairs.size() > history) {
                     pairs.removeFirst();
                 }
             }
-            double change = Math.abs(f - fn);
+            double change = Math.abs(fx - fn);
             x = xn;
             g = gn;
-            f = fn;
-            converged = maxAbs(g) <= tolerance || change <= tolerance * Math.max(1, Math.abs(f));
+            fx = fn;
+            converged = maxAbs(g) <= tolerance || change <= tolerance * Math.max(1, Math.abs(fx));
         }
-        scatter(parameters, x);
-        for (Var p : parameters) {
-            p.zeroGrad();
-        }
-        return new Result(f, it, evaluations[0], converged);
+        return new Point(x, new Result(fx, it, evaluations, converged));
     }
 
     // the two-loop recursion: -H g
@@ -141,8 +180,7 @@ public final class Lbfgs {
         return negate(q);
     }
 
-    private static double evaluate(List<Var> parameters, Supplier<Var> loss, double[] x, double[] g, int[] count) {
-        count[0]++;
+    private static double evaluate(List<Var> parameters, Supplier<Var> loss, double[] x, double[] g) {
         scatter(parameters, x);
         for (Var p : parameters) {
             p.zeroGrad();
@@ -155,14 +193,11 @@ public final class Lbfgs {
             if (p.grad() == null) {
                 java.util.Arrays.fill(g, at, at + n, 0);
             } else {
-                float[] v = p.grad().toArray();
-                for (int i = 0; i < n; i++) {
-                    g[at + i] = v[i];
-                }
+                System.arraycopy(p.grad().toDoubleArray(), 0, g, at, n);
             }
             at += n;
         }
-        return l.value().item();
+        return l.value().toDoubleArray()[0];
     }
 
     private static double[] gather(List<Var> parameters) {
@@ -173,25 +208,22 @@ public final class Lbfgs {
         double[] x = new double[n];
         int at = 0;
         for (Var p : parameters) {
-            float[] v = p.value().toArray();
-            for (float f : v) {
-                x[at++] = f;
-            }
+            double[] v = p.value().toDoubleArray();
+            System.arraycopy(v, 0, x, at, v.length);
+            at += v.length;
         }
         return x;
     }
 
+    // keeps each parameter's dtype: FLOAT64 parameters are optimized in full double precision
     private static void scatter(List<Var> parameters, double[] x) {
         int at = 0;
         for (Var p : parameters) {
             Tensor old = p.value();
             int n = Math.toIntExact(old.size());
-            float[] v = new float[n];
-            for (int i = 0; i < n; i++) {
-                v[i] = (float) x[at + i];
-            }
+            double[] v = java.util.Arrays.copyOfRange(x, at, at + n);
             at += n;
-            p.assign(Tensor.of(old.shape(), v, old.device()).to(old.dtype()));
+            p.assign(Tensor.of(old.shape(), v, old.dtype(), old.device()));
         }
     }
 

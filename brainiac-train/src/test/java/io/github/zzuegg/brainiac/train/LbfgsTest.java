@@ -33,4 +33,25 @@ class LbfgsTest {
         assertEquals(3 - 0.1f * 6, w.value().item(), 1e-6f);
         assertEquals(null, w.grad());
     }
+
+    @Test
+    void doublePrecisionObjectivesAndFloat64Parameters() {
+        Lbfgs lbfgs = new Lbfgs(10, 1e-14);
+        Lbfgs.Point p = lbfgs.minimize(new double[] {-1.2, 1}, (x, g) -> {
+            double a = 1 - x[0];
+            double b = x[1] - x[0] * x[0];
+            g[0] = -2 * a - 400 * x[0] * b;
+            g[1] = 200 * b;
+            return a * a + 100 * b * b;
+        }, 500);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new double[] {1, 1}, p.x(), 1e-9);
+        // float64 parameters keep their precision: a minimum at 1 + 1e-9, below float's resolution
+        io.github.zzuegg.brainiac.tensor.Tensor start = io.github.zzuegg.brainiac.tensor.Tensor.of(
+                io.github.zzuegg.brainiac.tensor.Shape.of(1), new double[] {3},
+                io.github.zzuegg.brainiac.tensor.DType.FLOAT64, io.github.zzuegg.brainiac.tensor.Device.cpu());
+        Var w = Var.param(start);
+        lbfgs.minimize(java.util.List.of(w), () -> w.sub(1 + 1e-9f).mul(w.sub(1 + 1e-9f)).sum(), 100);
+        org.junit.jupiter.api.Assertions.assertEquals(io.github.zzuegg.brainiac.tensor.DType.FLOAT64, w.value().dtype());
+        org.junit.jupiter.api.Assertions.assertEquals(1.0, w.value().toDoubleArray()[0], 1e-6);
+    }
 }
