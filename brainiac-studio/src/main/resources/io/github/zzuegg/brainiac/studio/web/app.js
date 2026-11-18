@@ -2091,10 +2091,13 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn ${isLive() && EV.state?.running ? "serving" : ""}" id="eval-open" aria-expanded="${!!(isLive() && EV.open)}" title="Score a chat model on this PC with a file of questions, and time how fast it reads and writes">${icon("flask")}${isLive() && EV.state?.running ? "Measuring…" : "Evaluate"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() && SV.open ? servePanel() : ""}
+      ${isLive() && QZ.open ? quantPanel() : ""}
+      ${isLive() && FT.open ? tunePanel() : ""}
+      ${isLive() && EV.open ? evalPanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
@@ -4248,6 +4251,256 @@ reason ::= [a-z ]+`;
   // Serving: one of this PC's chat models answers other programs through the OpenAI API, on a port of its own.
   const SV = { open: false, state: null, model: "", port: 8080, network: false, busy: false, error: null, loaded: false };
   const serveModels = () => chatModels().filter(m => m.provider === "local");
+
+  // Fine-tuning: a chat model on this PC learns from the user's examples with LoRA adapters.
+  const FT = { open: false, state: null, model: "", name: "", data: "", file: "", lines: 0, rank: 8, epochs: 3, lr: 0.0002, length: 512, rows: 1, busy: false, error: null, loaded: false, timer: null };
+  const tuneBusy = () => ["loading", "training", "saving"].includes(FT.state?.job?.state);
+  // the loss over the steps so far, scaled to its own range
+  function lossCurve(points, w = 520, h = 64) {
+    const top = Math.max(...points.map(p => p[1])), low = Math.min(...points.map(p => p[1]), 0);
+    const first = points[0][0], span = Math.max(1, points[points.length - 1][0] - first);
+    const x = s => 2 + (s - first) / span * (w - 4), y = v => h - 3 - (v - low) / Math.max(1e-9, top - low) * (h - 6);
+    const d = points.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+    return `<svg class="tune-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Loss from ${points[0][1].toFixed(3)} to ${points[points.length - 1][1].toFixed(3)}"><path d="${d} L${(w - 2).toFixed(1)},${h} L2,${h} Z" fill="var(--accent)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+  }
+  function tuneStatus() {
+    const j = FT.state?.job;
+    if (!j) return "";
+    const pts = j.losses || [];
+    const curve = pts.length > 1 ? `<div class="tune-curve">${lossCurve(pts)}<span class="mono tnum">loss ${(+pts[0][1]).toFixed(3)} at the start, ${(+j.loss).toFixed(3)} now</span></div>` : "";
+    const where = `<span class="faint">${j.adapter ? "Adapter: " + esc(j.adapter) : ""}</span>`;
+    if (j.state === "failed") return `<div class="flag bad">${icon("alert")}<span>Teaching ${esc(j.model)} failed: ${esc(j.error || "it failed")}</span></div>`;
+    if (j.state === "done" || j.state === "stopped") {
+      return `${curve}<div class="flag ${j.adapter ? "ok-note" : ""}">${icon(j.adapter ? "check" : "stop")}<span>${j.state === "stopped" ? `Stopped after ${j.step} of ${j.steps} steps. ` : ""}${j.mergedName ? `<b>${esc(j.mergedName)}</b> is in the model list now: ${esc(j.model)} with what it learned from ${j.examples} examples. ` : j.adapter ? "" : "Nothing was learned yet, so nothing was saved. "}${esc(j.note || "")} ${where}</span></div>`;
+    }
+    const pct = j.steps ? Math.round(100 * j.step / j.steps) : 0;
+    return `<div class="tune-run"><div class="tune-bar"><i style="width:${pct}%"></i></div>
+        <span class="mono tnum">${j.state === "loading" ? "reading the model and " + (j.examples || "the") + " examples" : j.state === "saving" ? "saving" : `step ${j.step} of ${j.steps}`} · ${Math.round(j.seconds)} s</span>
+        <button type="button" class="btn sm" id="tune-stop" ${j.state === "training" ? "" : "disabled"}>${icon("stop")}Stop and keep it</button></div>${curve}`;
+  }
+  function tunePanel() {
+    const models = quantModels();
+    const sel = models.some(m => m.id === FT.model) ? FT.model : (models[0]?.id || "");
+    const num = (id, label, k, attrs, hint) => `<label class="tune-num" title="${esc(hint)}">${label}<input class="input mono" id="${id}" data-tune="${k}" type="number" ${attrs} value="${esc(FT[k])}"></label>`;
+    return `<form class="placebox servebox tunebox" id="tune-form" autocomplete="off">
+      <div class="place-head"><div><b>Teach a model from your examples</b> <span class="muted">LoRA trains small adapters on a chat model of this PC while its own weights stay as they are. You get the adapter, as Hugging Face PEFT reads it, and a copy of the model with it merged in, next to the original. Examples are JSON lines: <code>{"messages": [...]}</code> conversations, or <code>{"prompt": "...", "completion": "..."}</code>. Only the replies are learned.</span></div>
+        <button type="button" class="iconbtn sm" id="tune-close" aria-label="Close">${icon("x")}</button></div>
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="tune-model" aria-label="Model to teach">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <input class="input" id="tune-name" aria-label="Name of what it learns" placeholder="Name, such as support" maxlength="40" value="${esc(FT.name)}" style="flex:0 1 220px">
+        <label class="btn" for="tune-file">${icon("plus")}${FT.file ? esc(FT.file) + " · " + FT.lines + " examples" : "Choose examples (.jsonl)"}</label><input type="file" id="tune-file" accept=".jsonl,.json,.txt,application/json" hidden>
+      </div>
+      <div class="tune-nums">
+        ${num("tune-rank", "Rank", "rank", 'min="1" max="256" step="1"', "The adapters' size. 8 or 16 suits most tasks; more learns more and takes more memory.")}
+        ${num("tune-epochs", "Epochs", "epochs", 'min="1" max="100" step="1"', "How often every example is seen.")}
+        ${num("tune-lr", "Learning rate", "lr", 'min="0.000001" max="1" step="any"', "The step size. 0.0002 is the usual start.")}
+        ${num("tune-length", "Longest example", "length", 'min="16" max="8192" step="16"', "In tokens. Longer examples are cut; memory grows with it.")}
+        ${num("tune-rows", "Rows a step", "rows", 'min="1" max="64" step="1"', "Examples are packed into rows of the longest example; more rows a step is steadier and takes more memory.")}
+        <span class="grow"></span>
+        <button class="btn primary" type="submit" ${FT.busy || tuneBusy() ? "disabled" : ""}>${icon("train")}${tuneBusy() ? "Teaching…" : "Start teaching"}</button>
+      </div>`
+      : `<div class="muted">No chat model on this PC that can be taught yet. Download one from Hugging Face or add a folder first.</div>`}
+      <div id="tune-status">${tuneStatus()}</div>
+      ${FT.error ? `<div class="flag bad">${icon("alert")}<span>${esc(FT.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadTune() {
+    const was = tuneBusy();
+    try { FT.state = await api("/api/finetune"); } catch (e) { console.warn("cannot read the fine-tuning state", e); }
+    clearTimeout(FT.timer);
+    if (tuneBusy()) FT.timer = setTimeout(loadTune, 1200);
+    else if (was) await loadModels(true);   // the merged copy is a model now
+    if (state.view !== "library") return;
+    // while it runs, only the status is redrawn, so the form keeps its focus
+    const box = $("#tune-status");
+    if (box && tuneBusy() && was) { box.innerHTML = tuneStatus(); bindTuneStop(); } else render();
+  }
+  function bindTuneStop() {
+    $("#tune-stop")?.addEventListener("click", async () => {
+      try { FT.state = await postJson("/api/finetune", { stop: true }); } catch (err) { FT.error = err.message || String(err); }
+      if (state.view === "library") render();
+    });
+  }
+  function bindTune() {
+    $("#tune-open")?.addEventListener("click", () => { FT.open = !FT.open; FT.error = null; render(); });
+    $("#tune-close")?.addEventListener("click", () => { FT.open = false; FT.error = null; render(); });
+    $("#tune-model")?.addEventListener("change", e => { FT.model = e.target.value; });
+    $("#tune-name")?.addEventListener("input", e => { FT.name = e.target.value; });
+    $$("[data-tune]").forEach(t => t.addEventListener("input", () => { FT[t.dataset.tune] = t.value; }));
+    $("#tune-file")?.addEventListener("change", async e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      FT.error = f.size > 24e6 ? "This file is over 24 MB: teach from a smaller set of examples." : null;
+      if (!FT.error) { FT.data = await f.text(); FT.file = f.name; FT.lines = FT.data.split(/\r?\n/).filter(l => l.trim()).length; }
+      render();
+    });
+    bindTuneStop();
+    $("#tune-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const model = $("#tune-model")?.value;
+      if (!model || FT.busy || tuneBusy()) return;
+      if (!FT.data) { FT.error = "Choose a file of examples first."; render(); return; }
+      if (!/^[A-Za-z0-9._-]{1,40}$/.test(FT.name.trim())) { FT.error = "Name it with up to 40 letters, digits, dots, dashes or underscores."; render(); return; }
+      FT.busy = true; FT.error = null; render();
+      const rank = Math.round(+FT.rank) || 8;
+      try { FT.state = await postJson("/api/finetune", { model, name: FT.name.trim(), data: FT.data, rank, alpha: 2 * rank, epochs: Math.round(+FT.epochs) || 3, learningRate: +FT.lr || 0.0002, length: Math.round(+FT.length) || 512, rows: Math.round(+FT.rows) || 1 }); }
+      catch (err) { FT.error = err.message || String(err); }
+      FT.busy = false;
+      clearTimeout(FT.timer);
+      if (tuneBusy()) FT.timer = setTimeout(loadTune, 800);
+      if (state.view === "library") render();
+    });
+    if (!FT.loaded) { FT.loaded = true; loadTune(); }
+  }
+
+  // Evaluating: a chat model on this PC is scored on a file of questions, or timed.
+  const EV = { open: false, state: null, model: "", data: "", file: "", lines: 0, limit: 100, shots: 0, busy: false, error: null, loaded: false, timer: null };
+  const evalBusy = () => !!EV.state?.running;
+  function evalRuns() {
+    const runs = EV.state?.runs || [];
+    if (!runs.length) return "";
+    const live = r => r.state === "loading" || r.state === "running";
+    const score = r => {
+      if (r.state === "failed") return `<span class="bad-text">${esc(r.error || "it failed")}</span>`;
+      if (r.kind === "speed") return live(r) ? "timing…" : `reads ${fmtRate(r.readPerSecond)} · writes ${fmtRate(r.writePerSecond)} tokens a second`;
+      if (!r.done) return live(r) ? (r.state === "loading" ? "reading the model…" : `0 of ${r.total}`) : "nothing asked";
+      const pct = (100 * r.accuracy).toFixed(1), err = (100 * r.stderr).toFixed(1);
+      return `<b>${pct}%</b> ± ${err} · ${r.correct} of ${r.done} right${live(r) || r.state === "stopped" ? ` · ${r.done} of ${r.total} asked` : ""}${r.shots ? ` · ${r.shots} shown solved` : ""}`;
+    };
+    return `<div class="eval-wrap"><table class="eval-table"><thead><tr><th>Model</th><th>Questions</th><th>Result</th><th class="num">Time</th><th></th></tr></thead><tbody>${runs.map(r => `<tr class="${live(r) ? "live" : ""}">
+        <td>${esc(r.model)}</td><td>${r.kind === "speed" ? "Speed" : esc(r.task)}</td><td>${score(r)}${r.state === "stopped" ? ' <span class="faint">stopped</span>' : ""}</td>
+        <td class="num mono tnum">${fmtSeconds(r.seconds)}</td>
+        <td class="num">${live(r) ? `<button type="button" class="btn sm" id="eval-stop" ${r.kind === "speed" ? "disabled" : ""}>${icon("stop")}Stop</button>` : `<button type="button" class="iconbtn sm" data-eval-remove="${esc(r.id)}" aria-label="Forget this result of ${esc(r.model)}" title="Forget this result">${icon("trash")}</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  const fmtRate = v => v >= 100 ? Math.round(v) : (+v).toFixed(1);
+  const fmtSeconds = s => s >= 90 ? Math.floor(s / 60) + " min " + Math.round(s % 60) + " s" : (s >= 10 ? Math.round(s) : (+s).toFixed(1)) + " s";
+  function evalPanel() {
+    const models = quantModels();
+    const sel = models.some(m => m.id === EV.model) ? EV.model : (models[0]?.id || "");
+    const num = (id, label, k, attrs, hint) => `<label class="tune-num" title="${esc(hint)}">${label}<input class="input mono" id="${id}" data-eval="${k}" type="number" ${attrs} value="${esc(EV[k])}"></label>`;
+    const off = EV.busy || evalBusy() ? "disabled" : "";
+    return `<form class="placebox servebox tunebox evalbox" id="eval-form" autocomplete="off">
+      <div class="place-head"><div><b>Measure a model</b> <span class="muted">Score a chat model of this PC on a file of questions, or time how fast it reads and writes. Results are kept here, so models and their smaller copies can be compared. Questions are JSON lines as the common benchmarks have them: MMLU, ARC, HellaSwag and GSM8K files work as they are, and so does your own <code>{"question": "...", "choices": [...], "answer": 0}</code> or <code>{"question": "...", "answer": "..."}</code>. They are scored as lm-evaluation-harness scores them.</span></div>
+        <button type="button" class="iconbtn sm" id="eval-close" aria-label="Close">${icon("x")}</button></div>
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="eval-model" aria-label="Model to measure">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <label class="btn" for="eval-file">${icon("plus")}${EV.file ? esc(EV.file) + " · " + EV.lines + " questions" : "Choose questions (.jsonl)"}</label><input type="file" id="eval-file" accept=".jsonl,.json,.txt,application/json" hidden>
+      </div>
+      <div class="tune-nums">
+        ${num("eval-limit", "Ask at most", "limit", 'min="0" max="100000" step="1"', "How many of the file's questions are asked. 0 asks all of them.")}
+        ${num("eval-shots", "Shown solved", "shots", 'min="0" max="8" step="1"', "This many of the file's first questions are shown with their answers before each question, and not asked themselves.")}
+        <span class="grow"></span>
+        <button class="btn" type="button" id="eval-speed" ${off}>${icon("play")}Time its speed</button>
+        <button class="btn primary" type="submit" ${off}>${icon("flask")}${evalBusy() ? "Measuring…" : "Score it"}</button>
+      </div>`
+      : `<div class="muted">No chat model on this PC that can be measured yet. Download one from Hugging Face or add a folder first.</div>`}
+      ${EV.error ? `<div class="flag bad">${icon("alert")}<span>${esc(EV.error)}</span></div>` : ""}
+      <div id="eval-runs">${evalRuns()}</div>
+    </form>`;
+  }
+  async function loadEval() {
+    const was = evalBusy();
+    try { EV.state = await api("/api/evaluate"); } catch (e) { console.warn("cannot read the measurements", e); }
+    clearTimeout(EV.timer);
+    if (evalBusy()) EV.timer = setTimeout(loadEval, 1200);
+    if (state.view !== "library") return;
+    // while it runs, only the results are redrawn, so the form keeps its focus
+    const box = $("#eval-runs");
+    if (box && evalBusy() && was) { box.innerHTML = evalRuns(); bindEvalRuns(); } else render();
+  }
+  async function evalPost(body) {
+    EV.error = null;
+    try { EV.state = await postJson("/api/evaluate", body); } catch (err) { EV.error = err.message || String(err); }
+    clearTimeout(EV.timer);
+    if (evalBusy()) EV.timer = setTimeout(loadEval, 800);
+    if (state.view === "library") render();
+  }
+  function bindEvalRuns() {
+    $("#eval-stop")?.addEventListener("click", () => evalPost({ stop: true }));
+    $$("[data-eval-remove]").forEach(b => b.addEventListener("click", () => evalPost({ remove: b.dataset.evalRemove })));
+  }
+  function bindEval() {
+    $("#eval-open")?.addEventListener("click", () => { EV.open = !EV.open; EV.error = null; render(); });
+    $("#eval-close")?.addEventListener("click", () => { EV.open = false; EV.error = null; render(); });
+    $("#eval-model")?.addEventListener("change", e => { EV.model = e.target.value; });
+    $$("[data-eval]").forEach(t => t.addEventListener("input", () => { EV[t.dataset.eval] = t.value; }));
+    $("#eval-file")?.addEventListener("change", async e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      EV.error = f.size > 24e6 ? "This file is over 24 MB: measure with a smaller set of questions." : null;
+      if (!EV.error) { EV.data = await f.text(); EV.file = f.name; EV.lines = EV.data.split(/\r?\n/).filter(l => l.trim()).length; }
+      render();
+    });
+    bindEvalRuns();
+    const run = async body => {
+      if (EV.busy || evalBusy()) return;
+      EV.busy = true; render();
+      await evalPost(body);
+      EV.busy = false;
+      if (state.view === "library") render();
+    };
+    $("#eval-speed")?.addEventListener("click", () => { const model = $("#eval-model")?.value; if (model) run({ model, speed: true }); });
+    $("#eval-form")?.addEventListener("submit", e => {
+      e.preventDefault();
+      const model = $("#eval-model")?.value;
+      if (!model) return;
+      if (!EV.data) { EV.error = "Choose a file of questions first."; render(); return; }
+      run({ model, task: EV.file.replace(/\.(jsonl?|txt)$/i, ""), data: EV.data, limit: Math.max(0, Math.round(+EV.limit) || 0), shots: Math.max(0, Math.round(+EV.shots) || 0) });
+    });
+    if (!EV.loaded) { EV.loaded = true; loadEval(); }
+  }
+
+  // Quantizing: a smaller copy of one of this PC's chat models, written next to it as a GGUF file.
+  const QZ = { open: false, state: null, model: "", size: "Q4_K_M", busy: false, error: null, loaded: false, timer: null };
+  const quantBusy = () => ["loading", "writing"].includes(QZ.state?.job?.state);
+  const quantModels = () => serveModels().filter(m => !/looks at pictures/.test(m.detail || ""));
+  function quantPanel() {
+    const s = QZ.state, j = s?.job, models = quantModels(), sizes = s?.sizes || [];
+    const sel = models.some(m => m.id === QZ.model) ? QZ.model : (models[0]?.id || "");
+    const size = sizes.find(x => x.id === QZ.size) || sizes[0];
+    const head = `<div class="place-head"><div><b>Make a smaller copy of a model</b> <span class="muted">Quantizing stores each weight in fewer bits, so the model takes less disk and memory and often runs faster, at a small cost in quality. The copy is a GGUF file next to the original, which stays as it is. llama.cpp, Ollama and LM Studio can run it too.</span></div>
+        <button type="button" class="iconbtn sm" id="quant-close" aria-label="Close">${icon("x")}</button></div>`;
+    const status = !j ? "" : j.state === "done" ? `<div class="flag ok-note">${icon("check")}<span><b>${esc(j.name)}</b> is ready${j.bytes ? ", " + fmtBytes(j.bytes) : ""}. It is in the model list now. <span class="faint">${esc(j.file)}</span></span></div>`
+      : j.state === "failed" ? `<div class="flag bad">${icon("alert")}<span>The ${esc(j.size)} copy of ${esc(j.model)} was not made: ${esc(j.error || "it failed")}</span></div>`
+      : `<div class="flag">${icon("flask")}<span><b>${j.state === "loading" ? "Reading" : "Writing the " + esc(j.size) + " copy of"} ${esc(j.model)}</b> for ${Math.round(j.seconds)} s. This runs on the CPU and can take minutes for a large model. You can leave this screen.</span></div>`;
+    return `<form class="placebox servebox" id="quant-form" autocomplete="off">${head}
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="quant-model" aria-label="Model to copy">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <select class="input" id="quant-size" aria-label="Size of the copy" style="flex:0 0 280px">${sizes.map(x => `<option value="${esc(x.id)}" ${x.id === size?.id ? "selected" : ""}>${esc(x.id)} · about ${x.bits} bits a weight</option>`).join("")}</select>
+        <button class="btn primary" type="submit" ${QZ.busy || quantBusy() ? "disabled" : ""}>${icon("copy")}${quantBusy() ? "Working…" : "Make the copy"}</button></div>
+      <div class="muted" style="font-size:12.5px">${size ? esc(size.id + ": " + size.note + ".") : ""} While it works, the whole model is held in memory at full size.</div>`
+      : `<div class="muted">No chat model on this PC that can be copied yet. Download one from Hugging Face or add a folder first. Models that look at pictures are left out.</div>`}
+      ${status}
+      ${QZ.error ? `<div class="flag bad">${icon("alert")}<span>${esc(QZ.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadQuant() {
+    const was = quantBusy();
+    try { QZ.state = await api("/api/quantize"); } catch (e) { console.warn("cannot read the quantizing state", e); }
+    clearTimeout(QZ.timer);
+    if (quantBusy()) QZ.timer = setTimeout(loadQuant, 1500);
+    else if (was) await loadModels(true);   // the copy is a model now
+    if (state.view === "library") render();
+  }
+  function bindQuant() {
+    $("#quant-open")?.addEventListener("click", () => { QZ.open = !QZ.open; QZ.error = null; render(); });
+    $("#quant-close")?.addEventListener("click", () => { QZ.open = false; QZ.error = null; render(); });
+    $("#quant-model")?.addEventListener("change", e => { QZ.model = e.target.value; });
+    $("#quant-size")?.addEventListener("change", e => { QZ.size = e.target.value; render(); });
+    $("#quant-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const model = $("#quant-model")?.value;
+      if (!model || QZ.busy || quantBusy()) return;
+      QZ.busy = true; QZ.error = null; render();
+      try { QZ.state = await postJson("/api/quantize", { model, size: $("#quant-size")?.value || QZ.size }); }
+      catch (err) { QZ.error = err.message || String(err); }
+      QZ.busy = false;
+      clearTimeout(QZ.timer);
+      if (quantBusy()) QZ.timer = setTimeout(loadQuant, 1000);
+      if (state.view === "library") render();
+    });
+    if (!QZ.loaded) { QZ.loaded = true; loadQuant(); }
+  }
   function servePanel() {
     const s = SV.state, models = serveModels();
     const head = `<div class="place-head"><div><b>Serve a model to other programs</b> <span class="muted">Editors, scripts and tools that speak the OpenAI API can use a chat model on this PC. It is loaded for the server alone, so serving the model you also chat with here holds it in memory twice.</span></div>
@@ -4612,6 +4865,9 @@ reason ::= [a-z ]+`;
     $("#new-model")?.addEventListener("click", newModel);
     bindPlace();
     bindServe();
+    bindQuant();
+    bindTune();
+    bindEval();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {
