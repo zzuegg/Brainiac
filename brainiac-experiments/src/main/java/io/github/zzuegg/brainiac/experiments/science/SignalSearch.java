@@ -2,11 +2,14 @@ package io.github.zzuegg.brainiac.experiments.science;
 
 import io.github.zzuegg.brainiac.experimental.anomaly.Pelt;
 import io.github.zzuegg.brainiac.experimental.data.ScienceSims;
+import io.github.zzuegg.brainiac.experimental.science.MatchedFilter;
 import io.github.zzuegg.brainiac.experimental.science.PhasePicking;
 import io.github.zzuegg.brainiac.experimental.timeseries.RandomConvolutionFeatures;
 import io.github.zzuegg.brainiac.experimental.timeseries.RidgeClassifier;
+import io.github.zzuegg.brainiac.experimental.train.RidgeRegression;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -100,6 +103,246 @@ public final class SignalSearch {
         out.put("trace detection accuracy {STA/LTA, U-Net, ROCKET + ridge}",
                 new double[] {RidgeClassifier.accuracy(staDet, teLabel), RidgeClassifier.accuracy(netDet, teLabel),
                     RidgeClassifier.accuracy(pr, teLabel)});
+        return out;
+    }
+
+    // ================================================================== 13.3.14 chirps
+
+    private static final double CHIRP_RATE = 256;
+    private static final int CHIRP_N = 256;
+    private static final double F0 = 30;
+    private static final double FMAX = 120;
+    private static final double PHI = 0.9;
+
+    private static double[] segment(double snr, double tauLo, double tauHi, double glitchSnr, MatchedFilter truth,
+            double[] tauOut, SplittableRandom r) {
+        double[] x = ScienceSims.colouredNoise(CHIRP_N, PHI, r);
+        if (snr > 0) {
+            double tau = tauLo + (tauHi - tauLo) * r.nextDouble();
+            int start = r.nextInt(Math.max(1, CHIRP_N - (int) (tau * CHIRP_RATE) - 8));
+            double[] h = ScienceSims.chirp(CHIRP_N, CHIRP_RATE, tau, F0, FMAX, start, 2 * Math.PI * r.nextDouble());
+            double a = snr / truth.optimalSnr(h);
+            for (int i = 0; i < CHIRP_N; i++) {
+                x[i] += a * h[i];
+            }
+            if (tauOut != null) {
+                tauOut[0] = tau;
+            }
+        }
+        if (glitchSnr > 0) {
+            double[] g = ScienceSims.glitch(CHIRP_N, CHIRP_RATE, 32 + r.nextInt(CHIRP_N - 64),
+                    40 + 60 * r.nextDouble(), 0.01 + 0.02 * r.nextDouble());
+            double a = glitchSnr / truth.optimalSnr(g);
+            for (int i = 0; i < CHIRP_N; i++) {
+                x[i] += a * g[i];
+            }
+        }
+        return x;
+    }
+
+    /**
+     * Chirp detection in coloured noise: the matched filter over a minimal-match bank (with and
+     * without the chi-squared veto), a 1-D CNN on whitened data, an excess-power detector and
+     * ROCKET with ridge regression. Thresholds come from Gaussian noise-only segments.
+     *
+     * @param noiseSegments noise-only segments for the thresholds
+     * @param perSnr signal segments per SNR in {4, 6, 8, 10, 12}
+     * @param trainSegments CNN and ROCKET training segments (half with chirps at SNR 5-12)
+     * @param cnnSteps CNN Adam steps
+     * @param seed the seed
+     * @return detector to {Pd at FAR 1e-2 for SNR 4, 6, 8, 10, 12; Pd at the loudest-noise
+     *     threshold for SNR 8; Pd at FAR 1e-2 for out-of-range chirps at SNR 8; false-alarm rate
+     *     on glitches at the FAR 1e-2 threshold; microseconds per second of data}, plus the bank
+     *     size and the chirp-duration error
+     */
+    public static Map<String, double[]> chirps(int noiseSegments, int perSnr, int trainSegments, int cnnSteps,
+            long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        MatchedFilter truth = new MatchedFilter(MatchedFilter.ar1Psd(CHIRP_N, PHI), CHIRP_RATE, F0, FMAX);
+        double[] psd = MatchedFilter.welch(ScienceSims.colouredNoise(CHIRP_N * 16, PHI, r), CHIRP_N);
+        double tauLo = 0.25;
+        double tauHi = 0.7;
+        MatchedFilter mf = new MatchedFilter(psd, CHIRP_RATE, F0, FMAX).placeBank(tauLo, tauHi, 0.9);
+        double[] snrs = {4, 6, 8, 10, 12};
+        List<double[]> eval = new ArrayList<>();
+        List<String> kind = new ArrayList<>();
+        List<Double> tauTrue = new ArrayList<>();
+        List<Double> snrOf = new ArrayList<>();
+        for (int i = 0; i < noiseSegments; i++) {
+            eval.add(segment(0, 0, 0, 0, truth, null, r));
+            kind.add("noise");
+            tauTrue.add(Double.NaN);
+            snrOf.add(0.0);
+        }
+        for (double snr : snrs) {
+            for (int i = 0; i < perSnr; i++) {
+                double[] t = new double[1];
+                eval.add(segment(snr, tauLo, tauHi, 0, truth, t, r));
+                kind.add("in");
+                tauTrue.add(t[0]);
+                snrOf.add(snr);
+            }
+        }
+        for (int i = 0; i < perSnr; i++) {
+            eval.add(segment(8, 0.7, 0.95, 0, truth, null, r));
+            kind.add("out");
+            tauTrue.add(Double.NaN);
+            snrOf.add(8.0);
+        }
+        for (int i = 0; i < perSnr * 2; i++) {
+            eval.add(segment(0, 0, 0, 10 + 10 * r.nextDouble(), truth, null, r));
+            kind.add("glitch");
+            tauTrue.add(Double.NaN);
+            snrOf.add(0.0);
+        }
+        int m = eval.size();
+        double[][] whitened = new double[m][];
+        for (int i = 0; i < m; i++) {
+            whitened[i] = mf.whiten(eval.get(i));
+        }
+        // training set for the CNN and ROCKET: Gaussian noise and in-range chirps, no glitches
+        double[][] trW = new double[trainSegments][];
+        int[] trY = new int[trainSegments];
+        for (int i = 0; i < trainSegments; i++) {
+            trY[i] = i % 2;
+            trW[i] = mf.whiten(segment(trY[i] == 1 ? 5 + 7 * r.nextDouble() : 0, tauLo, tauHi, 0, truth, null, r));
+        }
+        Map<String, double[]> out = new LinkedHashMap<>();
+        double seconds = CHIRP_N / CHIRP_RATE;
+        long t0 = System.nanoTime();
+        double[] mfSnr = new double[m];
+        double[] mfRw = new double[m];
+        double tauErr = 0;
+        int tauCount = 0;
+        for (int i = 0; i < m; i++) {
+            MatchedFilter.Detection d = mf.search(eval.get(i));
+            mfSnr[i] = d.snr();
+            mfRw[i] = d.reweighted();
+            if ("in".equals(kind.get(i)) && snrOf.get(i) >= 8) {
+                tauErr += Math.abs(d.tau() - tauTrue.get(i)) / tauTrue.get(i);
+                tauCount++;
+            }
+        }
+        double mfMicros = (System.nanoTime() - t0) / 1e3 / m / seconds;
+        out.put("matched filter", roc(mfSnr, kind, snrOf, snrs, mfMicros));
+        out.put("matched filter + chi2 veto", roc(mfRw, kind, snrOf, snrs, mfMicros));
+        long t1 = System.nanoTime();
+        MatchedFilter.CnnDetector cnn = new MatchedFilter.CnnDetector(seed).train(trW, trY, cnnSteps, 16, 3e-3, seed);
+        long t2 = System.nanoTime();
+        double[] cnnScore = cnn.scores(whitened);
+        double cnnMicros = (System.nanoTime() - t2) / 1e3 / m / seconds;
+        out.put("1-D CNN", roc(cnnScore, kind, snrOf, snrs, cnnMicros));
+        t0 = System.nanoTime();
+        double[] ep = new double[m];
+        for (int i = 0; i < m; i++) {
+            ep[i] = mf.excessPower(eval.get(i), (int) (0.25 * CHIRP_RATE));
+        }
+        out.put("excess power", roc(ep, kind, snrOf, snrs, (System.nanoTime() - t0) / 1e3 / m / seconds));
+        RandomConvolutionFeatures rocket = RandomConvolutionFeatures.rocket(100, CHIRP_N, 1, seed);
+        double[][] fTr = rocket.transform(univariate(trW));
+        t0 = System.nanoTime();
+        double[][] fTe = rocket.transform(univariate(whitened));
+        double[] rs = ridgeScores(fTr, trY, fTe, 1.0);
+        out.put("ROCKET + ridge", roc(rs, kind, snrOf, snrs, (System.nanoTime() - t0) / 1e3 / m / seconds));
+        out.put("bank {templates, mean |tau error| / tau at SNR >= 8, CNN training s}",
+                new double[] {mf.bank().length, tauErr / Math.max(1, tauCount), (t2 - t1) / 1e9});
+        return out;
+    }
+
+    private static float[][][] univariate(double[][] x) {
+        float[][][] f = new float[x.length][1][];
+        for (int i = 0; i < x.length; i++) {
+            f[i][0] = new float[x[i].length];
+            for (int j = 0; j < x[i].length; j++) {
+                f[i][0][j] = (float) x[i][j];
+            }
+        }
+        return f;
+    }
+
+    static double[] ridgeScores(double[][] train, int[] labels, double[][] test, double lambda) {
+        int d = train[0].length;
+        double[] mean = new double[d];
+        double[] sd = new double[d];
+        for (double[] row : train) {
+            for (int j = 0; j < d; j++) {
+                mean[j] += row[j] / train.length;
+            }
+        }
+        for (double[] row : train) {
+            for (int j = 0; j < d; j++) {
+                sd[j] += (row[j] - mean[j]) * (row[j] - mean[j]) / train.length;
+            }
+        }
+        for (int j = 0; j < d; j++) {
+            sd[j] = Math.sqrt(sd[j]) + 1e-9;
+        }
+        RidgeRegression rr = RidgeRegression.of(d + 1, 1);
+        for (int i = 0; i < train.length; i++) {
+            rr.add(standardise(train[i], mean, sd), new double[] {2 * labels[i] - 1});
+        }
+        double[][] w = rr.solve(lambda);
+        double[] out = new double[test.length];
+        for (int i = 0; i < test.length; i++) {
+            out[i] = RidgeRegression.predict(w, standardise(test[i], mean, sd))[0];
+        }
+        return out;
+    }
+
+    private static double[] standardise(double[] x, double[] mean, double[] sd) {
+        double[] z = new double[x.length + 1];
+        for (int j = 0; j < x.length; j++) {
+            z[j] = (x[j] - mean[j]) / sd[j];
+        }
+        z[x.length] = 1;
+        return z;
+    }
+
+    private static double[] roc(double[] score, List<String> kind, List<Double> snr, double[] snrs, double micros) {
+        List<Double> noise = new ArrayList<>();
+        for (int i = 0; i < score.length; i++) {
+            if ("noise".equals(kind.get(i))) {
+                noise.add(score[i]);
+            }
+        }
+        double[] ns = noise.stream().mapToDouble(Double::doubleValue).toArray();
+        Arrays.sort(ns);
+        double thr = ns[(int) Math.floor(0.99 * (ns.length - 1))];
+        double loudest = ns[ns.length - 1];
+        double[] out = new double[snrs.length + 4];
+        for (int k = 0; k < snrs.length; k++) {
+            int hit = 0;
+            int all = 0;
+            for (int i = 0; i < score.length; i++) {
+                if ("in".equals(kind.get(i)) && snr.get(i) == snrs[k]) {
+                    all++;
+                    hit += score[i] > thr ? 1 : 0;
+                }
+            }
+            out[k] = hit / (double) all;
+        }
+        int hit = 0;
+        int all = 0;
+        int outHit = 0;
+        int outAll = 0;
+        int gl = 0;
+        int glAll = 0;
+        for (int i = 0; i < score.length; i++) {
+            if ("in".equals(kind.get(i)) && snr.get(i) == 8) {
+                all++;
+                hit += score[i] > loudest ? 1 : 0;
+            } else if ("out".equals(kind.get(i))) {
+                outAll++;
+                outHit += score[i] > thr ? 1 : 0;
+            } else if ("glitch".equals(kind.get(i))) {
+                glAll++;
+                gl += score[i] > thr ? 1 : 0;
+            }
+        }
+        out[snrs.length] = hit / (double) Math.max(1, all);
+        out[snrs.length + 1] = outHit / (double) Math.max(1, outAll);
+        out[snrs.length + 2] = gl / (double) Math.max(1, glAll);
+        out[snrs.length + 3] = micros;
         return out;
     }
 
