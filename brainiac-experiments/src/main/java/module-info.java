@@ -40,6 +40,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.document;
     exports io.github.zzuegg.brainiac.experimental.dpmech;
     exports io.github.zzuegg.brainiac.experimental.evolve;
+    exports io.github.zzuegg.brainiac.experimental.explain;
     exports io.github.zzuegg.brainiac.experimental.explore;
     exports io.github.zzuegg.brainiac.experimental.geometry;
     exports io.github.zzuegg.brainiac.experimental.games;
@@ -117,6 +118,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.document;
     exports io.github.zzuegg.brainiac.experiments.evolution;
     exports io.github.zzuegg.brainiac.experiments.exotic;
+    exports io.github.zzuegg.brainiac.experiments.explainability;
     exports io.github.zzuegg.brainiac.experiments.generative;
     exports io.github.zzuegg.brainiac.experiments.graphs;
     exports io.github.zzuegg.brainiac.experiments.interp;

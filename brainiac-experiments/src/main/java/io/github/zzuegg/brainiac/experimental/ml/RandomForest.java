@@ -639,4 +639,36 @@ public final class RandomForest {
     public int size() {
         return trees.length;
     }
+
+    /**
+     * A read-only copy of one tree's flat arrays, for tree explainers such as TreeSHAP: node
+     * {@code k} is a leaf when {@code feature[k] < 0}, else rows with
+     * {@code x[feature[k]] <= threshold[k]} go to {@code left[k]} and the others to
+     * {@code right[k]}; {@code value[k]} holds a leaf's class frequencies (classification) or its
+     * {@code {mean, variance}} (regression).
+     *
+     * @param feature the split feature per node, negative at leaves
+     * @param threshold the split threshold per node
+     * @param left the left child per node
+     * @param right the right child per node
+     * @param value the leaf values per node (null at internal nodes)
+     */
+    public record TreeArrays(int[] feature, double[] threshold, int[] left, int[] right, double[][] value) {
+    }
+
+    /**
+     * Copies one tree's arrays; the forest is unchanged.
+     *
+     * @param index the tree, {@code 0 <= index < size()}
+     * @return its arrays
+     */
+    public TreeArrays tree(int index) {
+        Tree t = trees[index];
+        double[][] value = new double[t.distribution().length][];
+        for (int k = 0; k < value.length; k++) {
+            value[k] = t.distribution()[k] == null ? null : t.distribution()[k].clone();
+        }
+        return new TreeArrays(t.feature().clone(), t.threshold().clone(), t.left().clone(), t.right().clone(),
+                value);
+    }
 }
