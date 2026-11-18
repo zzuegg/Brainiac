@@ -29,11 +29,13 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.eval;
     exports io.github.zzuegg.brainiac.experimental.document;
     exports io.github.zzuegg.brainiac.experimental.evolve;
+    exports io.github.zzuegg.brainiac.experimental.explore;
     exports io.github.zzuegg.brainiac.experimental.graph;
     exports io.github.zzuegg.brainiac.experimental.interp;
     exports io.github.zzuegg.brainiac.experimental.kernels;
     exports io.github.zzuegg.brainiac.experimental.labels;
     exports io.github.zzuegg.brainiac.experimental.llm;
+    exports io.github.zzuegg.brainiac.experimental.marl;
     exports io.github.zzuegg.brainiac.experimental.metric;
     exports io.github.zzuegg.brainiac.experimental.ml;
     exports io.github.zzuegg.brainiac.experimental.multimodal;
