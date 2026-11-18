@@ -37,6 +37,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.language;
     exports io.github.zzuegg.brainiac.experiments.learning;
     exports io.github.zzuegg.brainiac.experiments.memory;
+    exports io.github.zzuegg.brainiac.experiments.multiagent;
     exports io.github.zzuegg.brainiac.experiments.multimodal;
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.reasoning;
