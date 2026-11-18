@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.control;
 
+import io.github.zzuegg.brainiac.experimental.rl.AdversarialImitation;
 import io.github.zzuegg.brainiac.experimental.rl.BehaviorCloning;
 import io.github.zzuegg.brainiac.experimental.rl.BitFlip;
 import io.github.zzuegg.brainiac.experimental.rl.CommunicatingAgents;
@@ -19,6 +20,7 @@ import io.github.zzuegg.brainiac.experimental.rl.TwoStepGame;
 import io.github.zzuegg.brainiac.experimental.rl.ValueDecomposition;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.rl.Agent;
+import io.github.zzuegg.brainiac.rl.CartPole;
 import io.github.zzuegg.brainiac.rl.Environment;
 import io.github.zzuegg.brainiac.rl.Nets;
 import io.github.zzuegg.brainiac.rl.Rl;
@@ -225,5 +227,204 @@ public final class GoalsImitationAndTeams {
         out.put("full-observation oracle", CommunicatingAgents.of(CommunicatingAgents.Channel.NONE, full, 32, 2, seed)
                 .fit(() -> new HiddenGoalGame(agents, goals, true), iterations, 64).evaluate(full, 500, seed + 1));
         return out;
+    }
+
+    /**
+     * A cart-pole expert: push towards the side the pole leans to, with a little position and
+     * velocity feedback.
+     *
+     * @return the controller
+     */
+    public static Agent cartPoleExpert() {
+        return (o, explore) -> new float[] {o[2] + 0.5f * o[3] + 0.01f * o[0] + 0.1f * o[1] > 0 ? 1 : 0};
+    }
+
+    private static Map<String, Double> imitationRow(Environment env, Agent expert, int obs, int actions,
+            OfflineDataset demos, int steps, long seed, TabularMdp mdp) {
+        Map<String, Double> out = new LinkedHashMap<>();
+        int eval = 20;
+        out.put("random", Rl.evaluate(Agent.random(env.actionSpace(), seed), env, eval, seed));
+        out.put("BC", Rl.evaluate(BehaviorCloning.discrete(Nets.mlp(obs, actions, Activation.RELU, seed, 32), actions)
+                .seed(seed).train(demos, 300), env, eval, seed));
+        Gail gail = Gail.of(demos, obs, actions, RlNetworkFactory.mlp(Activation.TANH, 32)).seed(seed);
+        gail.fit(env, steps);
+        out.put("GAIL (wave 1)", Rl.evaluate(gail, env, eval, seed));
+        for (AdversarialImitation.Method m : AdversarialImitation.Method.values()) {
+            AdversarialImitation a = AdversarialImitation.of(m, demos, obs, actions,
+                    RlNetworkFactory.mlp(Activation.TANH, 32)).seed(seed);
+            a.fit(env, steps);
+            out.put(a.toString(), Rl.evaluate(a, env, eval, seed));
+        }
+        AdversarialImitation gp = AdversarialImitation.of(AdversarialImitation.Method.GAIL, demos, obs, actions,
+                RlNetworkFactory.mlp(Activation.TANH, 32)).absorbingStates(false).seed(seed);
+        gp.fit(env, steps);
+        out.put(gp.toString(), Rl.evaluate(gp, env, eval, seed));
+        if (mdp != null) {
+            MaxEntIrl irl = MaxEntIrl.of(mdp).learningRate(0.2);
+            irl.fit(demos, 150);
+            out.put("MaxEnt IRL", Rl.evaluate(TabularMdp.greedy(mdp.withReward(irl.reward()).optimalQ(0.95, 60)), mdp,
+                    eval, seed));
+        }
+        return out;
+    }
+
+    /**
+     * W10 4.13: regularised GAIL (gradient penalty, absorbing states), AIRL and IQ-Learn against
+     * wave 1's GAIL, behaviour cloning, maximum-entropy IRL and random on wave 1's slippery
+     * grid, with growing numbers of demonstrations. Wave 1's {@link #imitation} rows are
+     * unchanged.
+     *
+     * @param demonstrations demonstration counts to try
+     * @param steps environment steps of each online learner
+     * @param seed the seed
+     * @return "n demos: method" to mean return; "expert" for reference
+     */
+    public static Map<String, Double> imitationFollowUp(int[] demonstrations, int steps, long seed) {
+        TabularMdp mdp = TabularMdp.grid(5, 5, 4, 4, 0.2, 20);
+        Agent expert = TabularMdp.greedy(mdp.optimalQ(0.95, 60));
+        Map<String, Double> out = new LinkedHashMap<>();
+        out.put("expert", Rl.evaluate(expert, mdp, 20, seed));
+        for (int n : demonstrations) {
+            OfflineDataset demos = OfflineDataset.collect(mdp, expert, n, seed);
+            imitationRow(mdp, expert, 25, 4, demos, steps, seed, mdp).forEach((k, v) -> out.put(n + " demos: " + k, v));
+        }
+        return out;
+    }
+
+    /**
+     * W10 4.13 on cart-pole (200 steps; the expert is {@link #cartPoleExpert}). Maximum-entropy
+     * IRL is tabular and is left out.
+     *
+     * @param demonstrations demonstration counts to try
+     * @param steps environment steps of each online learner
+     * @param seed the seed
+     * @return "n demos: method" to mean return; "expert" for reference
+     */
+    public static Map<String, Double> imitationFollowUpCartPole(int[] demonstrations, int steps, long seed) {
+        CartPole env = new CartPole(200);
+        Agent expert = cartPoleExpert();
+        Map<String, Double> out = new LinkedHashMap<>();
+        out.put("expert", Rl.evaluate(expert, env, 20, seed));
+        for (int n : demonstrations) {
+            OfflineDataset demos = OfflineDataset.collect(env, expert, n, seed);
+            imitationRow(env, expert, 4, 2, demos, steps, seed, null).forEach((k, v) -> out.put(n + " demos: " + k, v));
+        }
+        return out;
+    }
+
+    /** The grid with every move rotated one step clockwise: the same states and goal, other dynamics. */
+    static TabularMdp rotated(TabularMdp mdp) {
+        int n = mdp.states();
+        int a = mdp.actions();
+        double[][][] p = new double[n][a][];
+        boolean[] terminal = new boolean[n];
+        for (int s = 0; s < n; s++) {
+            terminal[s] = mdp.terminal(s);
+            for (int k = 0; k < a; k++) {
+                p[s][k] = mdp.transition(s, (k + 1) % a);
+            }
+        }
+        return TabularMdp.of(p, mdp.reward(), mdp.start(), terminal, mdp.maxSteps());
+    }
+
+    /** Value iteration on a state-action reward; after a termination the absorbing reward repeats. */
+    static Agent solve(TabularMdp mdp, double[][] reward, double absorbingReward, double gamma) {
+        int n = mdp.states();
+        int a = mdp.actions();
+        double after = absorbingReward / (1 - gamma);
+        double[][] qv = new double[n][a];
+        for (int it = 0; it < 100; it++) {
+            double[] v = new double[n];
+            for (int s = 0; s < n; s++) {
+                v[s] = mdp.terminal(s) ? after : java.util.Arrays.stream(qv[s]).max().orElse(0);
+            }
+            for (int s = 0; s < n; s++) {
+                for (int k = 0; k < a; k++) {
+                    double[] p = mdp.transition(s, k);
+                    double next = 0;
+                    for (int t = 0; t < n; t++) {
+                        next += p[t] * v[t];
+                    }
+                    qv[s][k] = reward[s][k] + gamma * next;
+                }
+            }
+        }
+        return TabularMdp.greedy(qv);
+    }
+
+    private static float[] cell(int s, int n) {
+        float[] x = new float[n];
+        x[s] = 1;
+        return x;
+    }
+
+    /** The expected recovered reward of each state and action under the training dynamics. */
+    static double[][] recovered(AdversarialImitation learner, TabularMdp mdp) {
+        int n = mdp.states();
+        double[][] r = new double[n][mdp.actions()];
+        for (int s = 0; s < n; s++) {
+            for (int k = 0; k < mdp.actions(); k++) {
+                double[] p = mdp.transition(s, k);
+                for (int t = 0; t < n; t++) {
+                    if (p[t] > 0) {
+                        r[s][k] += p[t] * learner.reward(cell(s, n), k, cell(t, n), mdp.terminal(t));
+                    }
+                }
+            }
+        }
+        return r;
+    }
+
+    /**
+     * W10 4.13 transfer: each method's recovered reward from the slippery grid, re-optimised by
+     * value iteration on the grid with rotated moves and scored with the true reward there.
+     * Copying the expert's actions (the expert itself, or BC) fails under the new dynamics; a
+     * reward that describes the goal and not the actions should transfer.
+     *
+     * @param demonstrations expert episodes
+     * @param steps environment steps of each online learner
+     * @param seed the seed
+     * @return method to mean return on the rotated grid
+     */
+    public static Map<String, Double> imitationTransfer(int demonstrations, int steps, long seed) {
+        TabularMdp mdp = TabularMdp.grid(5, 5, 4, 4, 0.2, 20);
+        TabularMdp moved = rotated(mdp);
+        Agent expert = TabularMdp.greedy(mdp.optimalQ(0.95, 60));
+        OfflineDataset demos = OfflineDataset.collect(mdp, expert, demonstrations, seed);
+        Map<String, Double> out = new LinkedHashMap<>();
+        int eval = 20;
+        out.put("oracle (true reward re-solved)", Rl.evaluate(TabularMdp.greedy(moved.optimalQ(0.95, 60)), moved, eval,
+                seed));
+        out.put("expert policy copied", Rl.evaluate(expert, moved, eval, seed));
+        out.put("random", Rl.evaluate(Agent.random(moved.actionSpace(), seed), moved, eval, seed));
+        MaxEntIrl irl = MaxEntIrl.of(mdp).learningRate(0.2);
+        irl.fit(demos, 150);
+        out.put("MaxEnt IRL reward", Rl.evaluate(TabularMdp.greedy(moved.withReward(irl.reward()).optimalQ(0.95, 60)),
+                moved, eval, seed));
+        for (boolean absorbing : new boolean[] {true, false}) {
+            for (AdversarialImitation.Method m : AdversarialImitation.Method.values()) {
+                AdversarialImitation a = AdversarialImitation.of(m, demos, 25, 4,
+                        RlNetworkFactory.mlp(Activation.TANH, 32)).absorbingStates(absorbing).seed(seed);
+                a.fit(mdp, steps);
+                String name = m + (absorbing ? " (absorbing)" : " (no absorbing)");
+                double[][] r = recovered(a, mdp);
+                out.put(name + " policy itself", Rl.evaluate(a, moved, eval, seed));
+                out.put(name + " reward re-solved on the training grid", Rl.evaluate(solve(mdp, r,
+                        a.absorbingReward(), 0.95), mdp, eval, seed));
+                out.put(name + " reward", Rl.evaluate(solve(moved, r, a.absorbingReward(), 0.95), moved, eval, seed));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Runs the W10 4.13 tables.
+     *
+     * @param args unused
+     */
+    public static void main(String[] args) {
+        System.out.println("grid: " + imitationFollowUp(new int[] {1, 5, 20}, 20_000, 1));
+        System.out.println("cart-pole: " + imitationFollowUpCartPole(new int[] {1, 5, 20}, 50_000, 1));
+        System.out.println("transfer: " + imitationTransfer(5, 20_000, 1));
     }
 }

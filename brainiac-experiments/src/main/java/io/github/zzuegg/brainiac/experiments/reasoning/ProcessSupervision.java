@@ -181,13 +181,27 @@ public final class ProcessSupervision {
      * @return trainer name to its row; {@code "start"} first
      */
     public static Map<String, VineRow> vine(Setup setup, int updates, long seed, ValueError[] errors) {
+        return vine(setup, updates, 4, seed, errors);
+    }
+
+    /**
+     * Runs 9.2.8 with another number of Monte Carlo rollouts per step boundary (W10 4.16).
+     *
+     * @param setup the start
+     * @param updates policy updates per trainer
+     * @param rollouts VinePPO's rollouts per step boundary (and the cheap Monte Carlo estimate's)
+     * @param seed the seed
+     * @param errors receives the value errors (element 0)
+     * @return trainer name to its row; {@code "start"} first
+     */
+    public static Map<String, VineRow> vine(Setup setup, int updates, int rollouts, long seed, ValueError[] errors) {
         StepChainTask task = setup.task();
         int max = task.maxSolutionTokens();
         Map<String, VineRow> out = new LinkedHashMap<>();
         out.put("start", new VineRow(accuracy(setup.base(), task, setup.test()), 0));
         // VinePPO: 16 solutions x 4 rollouts per step boundary
         WindowLm vineLm = setup.base().copy();
-        MonteCarloValuePpo vine = MonteCarloValuePpo.of(vineLm).optimizer(Optimizer.adam(RL_RATE)).sampling(16, 4)
+        MonteCarloValuePpo vine = MonteCarloValuePpo.of(vineLm).optimizer(Optimizer.adam(RL_RATE)).sampling(16, rollouts)
                 .completions(max, task.eos(), task.stepEnd());
         SplittableRandom r = new SplittableRandom(seed);
         for (int s = 0; s < updates; s++) {
@@ -236,7 +250,7 @@ public final class ProcessSupervision {
                 int[] prefix = Arrays.copyOf(c, s == 0 ? 0 : ends[s - 1]);
                 t[s] = MonteCarloValuePpo.rolloutValue(ppoLm, p, prefix, outcome(task), 64, max, task.eos(), vr,
                         tokens);
-                m[s] = MonteCarloValuePpo.rolloutValue(ppoLm, p, prefix, outcome(task), 4, max, task.eos(), vr,
+                m[s] = MonteCarloValuePpo.rolloutValue(ppoLm, p, prefix, outcome(task), rollouts, max, task.eos(), vr,
                         tokens);
                 int[] full = Arrays.copyOf(p, p.length + prefix.length);
                 System.arraycopy(prefix, 0, full, p.length, prefix.length);
@@ -559,6 +573,20 @@ public final class ProcessSupervision {
      * @return method name to its curve
      */
     public static Map<String, PrimeRow> prime(Setup setup, int steps, int checkpoints, long seed) {
+        return prime(setup, steps, checkpoints, 1, seed);
+    }
+
+    /**
+     * Runs 9.2.11 with more implicit-PRM steps per batch (W10 4.16).
+     *
+     * @param setup the start
+     * @param steps RL steps per method
+     * @param checkpoints evaluations
+     * @param prmEpochs the implicit PRM's cross-entropy steps per batch
+     * @param seed the seed
+     * @return method name to its curve
+     */
+    public static Map<String, PrimeRow> prime(Setup setup, int steps, int checkpoints, int prmEpochs, long seed) {
         StepChainTask task = setup.task();
         int max = task.maxSolutionTokens();
         int[] stops = {task.stepEnd(), task.eos()};
@@ -582,7 +610,7 @@ public final class ProcessSupervision {
             WindowLm lm = setup.base().copy();
             TokenPolicyGradient pg = TokenPolicyGradient.of(lm).optimizer(Optimizer.adam(RL_RATE)).klCoefficient(0.02f);
             ImplicitProcessReward implicit = ImplicitProcessReward.of(setup.base().copy(), setup.base(), 0.05f)
-                    .optimizer(Optimizer.adam(1e-3f));
+                    .optimizer(Optimizer.adam(1e-3f)).epochs(prmEpochs);
             double[] acc = new double[checkpoints];
             double[] prmScore = new double[checkpoints];
             int next = 0;
@@ -686,13 +714,27 @@ public final class ProcessSupervision {
      * @return method name to its row; {@code "start"} first
      */
     public static Map<String, StepDpoRow> stepDpo(Setup setup, int pairs, int steps, long seed) {
+        return stepDpo(setup, pairs, steps, 8, seed);
+    }
+
+    /**
+     * Runs 9.2.12 with another number of candidate next steps per Step-DPO pair (W10 4.16).
+     *
+     * @param setup the start
+     * @param pairs preference pairs per DPO method
+     * @param steps DPO / fine-tuning steps
+     * @param candidates candidate correct steps sampled per pair
+     * @param seed the seed
+     * @return method name to its row; {@code "start"} first
+     */
+    public static Map<String, StepDpoRow> stepDpo(Setup setup, int pairs, int steps, int candidates, long seed) {
         StepChainTask task = setup.task();
         int max = task.maxSolutionTokens();
         Map<String, StepDpoRow> out = new LinkedHashMap<>();
         out.put("start", sliced(setup.base(), setup, 0, 0));
         SplittableRandom r = new SplittableRandom(seed);
         StepPreferenceBuilder builder = StepPreferenceBuilder.of(setup.base(), 2, task.stepEnd(), task.eos())
-                .samples(8);
+                .samples(candidates);
         List<DpoTrainer.Preference> stepPairs = new ArrayList<>();
         List<DpoTrainer.Preference> solutionPairs = new ArrayList<>();
         long stepTokens = 0;
@@ -764,5 +806,115 @@ public final class ProcessSupervision {
         out.put("STaR", sliced(starLm, setup, round == null ? 0 : round.kept(),
                 2L * Math.min(150, setup.train().size()) * 4 * max));
         return out;
+    }
+
+    // ------------------------------------------------------------------------- W10 4.16
+
+    /**
+     * A start that generalises (W10 4.16): {@code problems} training prompts and a disjoint
+     * held-out set of {@code heldOut} prompts, which becomes {@link Setup#test}, so every method's
+     * accuracy is held-out accuracy. Supervised training on 25%-noisy solutions runs in chunks of
+     * 50 steps until the held-out sampled accuracy reaches {@code target} or {@code maxSftSteps}
+     * have run.
+     *
+     * @param task the chains
+     * @param problems training prompts
+     * @param heldOut held-out prompts
+     * @param maxSftSteps the most supervised steps
+     * @param target the held-out accuracy that ends supervised training
+     * @param seed the seed
+     * @return the setup
+     */
+    public static Setup heldOutSetup(StepChainTask task, int problems, int heldOut, int maxSftSteps, double target,
+            long seed) {
+        return heldOutSetup(task, problems, heldOut, maxSftSteps, target, seed, new int[1]);
+    }
+
+    private static Setup heldOutSetup(StepChainTask task, int problems, int heldOut, int maxSftSteps, double target,
+            long seed, int[] sftSteps) {
+        List<int[]> prompts = task.prompts(problems + heldOut, seed);
+        List<int[]> train = new ArrayList<>(prompts.subList(0, Math.min(problems, prompts.size() - heldOut)));
+        List<int[]> test = new ArrayList<>(prompts.subList(prompts.size() - heldOut, prompts.size()));
+        int window = task.maxPromptTokens() + task.maxSolutionTokens();
+        WindowLm lm = WindowLm.of(task.vocabSize(), window, 64, seed);
+        SplittableRandom r = new SplittableRandom(seed + 1);
+        Optimizer opt = Optimizer.adam(3e-3f);
+        int s = 0;
+        while (s < maxSftSteps) {
+            for (int k = 0; k < 50 && s < maxSftSteps; k++, s++) {
+                List<int[]> ps = new ArrayList<>();
+                List<int[]> cs = new ArrayList<>();
+                for (int i = 0; i < 64; i++) {
+                    int[] p = train.get(r.nextInt(train.size()));
+                    ps.add(p);
+                    cs.add(task.noisySolution(p, 0.25, r));
+                }
+                lm.supervisedStep(ps, cs, opt);
+            }
+            if (accuracy(lm, task, test) >= target) {
+                break;
+            }
+        }
+        sftSteps[0] = s;
+        return new Setup(task, train, test, lm);
+    }
+
+    /**
+     * W10 4.16's measurements, all on held-out prompts.
+     *
+     * @param sftSteps supervised steps of the start
+     * @param startTrain the start's sampled accuracy on its training prompts
+     * @param startHeldOut the start's held-out sampled accuracy
+     * @param vine 9.2.8's rows (VinePPO, PPO with a critic, GRPO, RLOO)
+     * @param valueError 9.2.8's step-value errors
+     * @param prime 9.2.11's curves (PRIME, RLOO, RLOO plus a frozen PRM)
+     * @param stepDpo 9.2.12's rows (Step-DPO, solution DPO, rejection sampling, STaR)
+     */
+    public record LargerBudget(int sftSteps, double startTrain, double startHeldOut, Map<String, VineRow> vine,
+            ValueError valueError, Map<String, PrimeRow> prime, Map<String, StepDpoRow> stepDpo) {
+    }
+
+    /**
+     * W10 4.16: wave 9's VinePPO, PRIME and Step-DPO comparisons from a start that generalises
+     * (more problems, held-out evaluation) and at a larger budget. Wave 9's rows are unchanged.
+     *
+     * @param task the chains (3 to 4 operands of 0 to 9 in the Run)
+     * @param problems training prompts (wave 9 used 400)
+     * @param maxSftSteps the most supervised steps of the start
+     * @param updates RL updates per method (VinePPO and its baselines; PRIME and RLOO)
+     * @param rollouts VinePPO's Monte Carlo rollouts per step boundary
+     * @param pairs Step-DPO and solution-DPO pairs
+     * @param seed the seed
+     * @return the measurements
+     */
+    public static LargerBudget largerBudget(StepChainTask task, int problems, int maxSftSteps, int updates,
+            int rollouts, int pairs, long seed) {
+        int[] sft = new int[1];
+        Setup setup = heldOutSetup(task, problems, 200, maxSftSteps, 0.5, seed, sft);
+        double train = accuracy(setup.base(), task, setup.train().subList(0, Math.min(200, setup.train().size())));
+        double held = accuracy(setup.base(), task, setup.test());
+        ValueError[] errors = new ValueError[1];
+        Map<String, VineRow> vine = vine(setup, updates, rollouts, seed, errors);
+        Map<String, PrimeRow> prime = prime(setup, updates, Math.min(4, updates), 2, seed);
+        Map<String, StepDpoRow> dpo = stepDpo(setup, pairs, Math.max(1, updates), 16, seed);
+        return new LargerBudget(sft[0], train, held, vine, errors[0], prime, dpo);
+    }
+
+    /**
+     * Runs W10 4.16 at 4x wave 9's budgets: 1600 problems, up to 1200 supervised steps, 120
+     * RL updates and 480 preference pairs.
+     *
+     * @param args unused
+     */
+    public static void main(String[] args) {
+        LargerBudget r = largerBudget(new StepChainTask(3, 4, 9), 1600, 1200, 120, 8, 480, 1);
+        System.out.printf("start after %d SFT steps: train %.3f held-out %.3f%n", r.sftSteps(), r.startTrain(),
+                r.startHeldOut());
+        r.vine().forEach((k, v) -> System.out.printf("vine %s: %.3f (%d tokens)%n", k, v.accuracy(), v.tokens()));
+        System.out.printf("value MSE critic %s MC %s constant %s%n", Arrays.toString(r.valueError().criticByStep()),
+                Arrays.toString(r.valueError().monteCarloByStep()), Arrays.toString(r.valueError().constantByStep()));
+        r.prime().forEach((k, v) -> System.out.printf("prime %s: %s frozen PRM %s%n", k, Arrays.toString(v.accuracy()),
+                Arrays.toString(v.frozenPrmScore())));
+        r.stepDpo().forEach((k, v) -> System.out.printf("step-dpo %s: %s%n", k, v));
     }
 }

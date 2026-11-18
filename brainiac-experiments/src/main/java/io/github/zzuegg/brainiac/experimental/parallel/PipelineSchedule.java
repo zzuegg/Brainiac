@@ -74,6 +74,7 @@ public final class PipelineSchedule {
     private final int microBatches;
     private final boolean bidirectional;
     private final boolean split;
+    private final boolean vShape;
     private final List<List<Op>> order;
 
     /**
@@ -93,8 +94,34 @@ public final class PipelineSchedule {
                 order.stream().flatMap(List::stream).anyMatch(o -> o.kind() == Kind.W), order);
     }
 
+    /**
+     * Creates a schedule whose chunks are placed in a V shape (Qi et al., NeurIPS 2024): chunk
+     * {@code c} of device {@code d} holds stage {@code c p + d} for even {@code c} and
+     * {@code c p + p - 1 - d} for odd {@code c}, so with two chunks every device holds one early
+     * and one late stage and the first and last stages share device 0.
+     *
+     * @param name a label
+     * @param devices the number of devices
+     * @param stages the number of model stages; a multiple of {@code devices}
+     * @param microBatches the number of micro-batches
+     * @param vShape whether to use the V-shape placement (false: the loop placement of
+     *     {@link #interleaved})
+     * @param order the operations of each device, in execution order
+     * @return the schedule
+     */
+    public static PipelineSchedule placed(String name, int devices, int stages, int microBatches, boolean vShape,
+            List<List<Op>> order) {
+        return new PipelineSchedule(name, devices, stages, microBatches, false,
+                order.stream().flatMap(List::stream).anyMatch(o -> o.kind() == Kind.W), vShape, order);
+    }
+
     private PipelineSchedule(String name, int devices, int stages, int microBatches, boolean bidirectional,
             boolean split, List<List<Op>> order) {
+        this(name, devices, stages, microBatches, bidirectional, split, false, order);
+    }
+
+    private PipelineSchedule(String name, int devices, int stages, int microBatches, boolean bidirectional,
+            boolean split, boolean vShape, List<List<Op>> order) {
         if (stages % devices != 0) {
             throw new IllegalArgumentException("stages " + stages + " must be a multiple of devices " + devices);
         }
@@ -107,6 +134,7 @@ public final class PipelineSchedule {
         this.microBatches = microBatches;
         this.bidirectional = bidirectional;
         this.split = split;
+        this.vShape = vShape;
         List<List<Op>> copy = new ArrayList<>();
         for (List<Op> l : order) {
             copy.add(List.copyOf(l));
@@ -169,7 +197,15 @@ public final class PipelineSchedule {
      */
     public int device(int stage, int direction) {
         int d = stage % devices;
+        if (vShape && (stage / devices) % 2 == 1) {
+            d = devices - 1 - d;
+        }
         return direction == 1 ? devices - 1 - d : d;
+    }
+
+    /** @return whether chunks are placed in a V shape */
+    public boolean vShape() {
+        return vShape;
     }
 
     /** @return whether the backward pass is split into B and W */

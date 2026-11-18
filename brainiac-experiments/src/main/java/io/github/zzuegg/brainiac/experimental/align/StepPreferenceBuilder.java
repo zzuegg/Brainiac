@@ -25,6 +25,7 @@ public final class StepPreferenceBuilder {
     private final int maxStepTokens;
     private final int[] stops;
     private int samples = 8;
+    private double temperature = 1.0;
     private long tokens;
 
     private StepPreferenceBuilder(WindowLm policy, int maxStepTokens, int[] stops) {
@@ -49,6 +50,15 @@ public final class StepPreferenceBuilder {
      */
     public StepPreferenceBuilder samples(int n) {
         this.samples = n;
+        return this;
+    }
+
+    /**
+     * @param t the sampling temperature of candidate steps (1 by default)
+     * @return this builder
+     */
+    public StepPreferenceBuilder temperature(double t) {
+        this.temperature = t;
         return this;
     }
 
@@ -89,7 +99,7 @@ public final class StepPreferenceBuilder {
         System.arraycopy(prefix, 0, context, prompt.length, prefix.length);
         int[][] rep = new int[samples][];
         Arrays.fill(rep, context);
-        int[][] next = policy.sampleUntil(rep, maxStepTokens, stops, 1.0, random);
+        int[][] next = policy.sampleUntil(rep, maxStepTokens, stops, temperature, random);
         for (int[] step : next) {
             tokens += step.length;
             if (step.length == 0 || Arrays.equals(step, rejected)) {

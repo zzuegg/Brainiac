@@ -40,6 +40,9 @@ import java.util.function.Function;
  *   <li>8.1.4 instance segmentation by a U-Net trained with the
  *       {@link DiscriminativeEmbeddingLoss} and read out by {@link EmbeddingClustering},
  *       on touching same-class pairs.</li>
+ *   <li>10.6.10 ({@link #detrFollowUp}): two-stage query selection for DETR-lite against
+ *       DETR, DN-DETR, H-DETR and the dense detectors, as learning curves on scenes and
+ *       layouts.</li>
  * </ul>
  *
  * <p>Baselines: the {@code VisionShootout} CNN (two valid 3x3 convolutions, global average
@@ -726,5 +729,109 @@ public final class DetectionShootout {
             inst[i] = EmbeddingClustering.seeds(emb, dims, fg, disc.deltaVar(), disc.deltaDist(), 2);
         }
         return scoreInstances("discriminative embedding", test, inst, conf);
+    }
+
+    // ------------------------------------------------------------------ 10.6.10 query selection
+
+    /**
+     * A learning curve.
+     *
+     * @param method the detector
+     * @param dataset "scenes" or "layouts"
+     * @param steps the checkpoints
+     * @param map50 mAP@0.5 at each checkpoint
+     */
+    public record DetrCurve(String method, String dataset, int[] steps, double[] map50) {
+
+        /**
+         * Copies the arrays.
+         *
+         * @param method the detector
+         * @param dataset the dataset
+         * @param steps the checkpoints
+         * @param map50 the scores
+         */
+        public DetrCurve {
+            steps = steps.clone();
+            map50 = map50.clone();
+        }
+
+        @Override
+        public int[] steps() {
+            return steps.clone();
+        }
+
+        @Override
+        public double[] map50() {
+            return map50.clone();
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder b = new StringBuilder(method + " on " + dataset + ":");
+            for (int i = 0; i < steps.length; i++) {
+                b.append(String.format(" %d:%.3f", steps[i], map50[i]));
+            }
+            return b.toString();
+        }
+    }
+
+    /**
+     * Wave 10 item 10.6.10: DETR-lite with two-stage query selection
+     * ({@link SetPredictionDetector.Options#querySelection()}) against DETR, DN-DETR (scenes
+     * only, as in wave 8) and H-DETR with anchors and auxiliary losses, on {@link ShapeScenes}
+     * and {@link GlyphDocuments} layouts; with {@code baselines} also CenterNet and
+     * RetinaNet-lite on scenes, retrained to each checkpoint. Wave 8 and 9 rows are unchanged.
+     *
+     * @param checkpoints the step counts at which to score, increasing
+     * @param scenes whether to run the scene curves
+     * @param layouts whether to run the layout curves
+     * @param baselines whether to add the CenterNet and RetinaNet-lite scene curves
+     * @param seed the seed
+     * @return the curves
+     */
+    public static List<DetrCurve> detrFollowUp(int[] checkpoints, boolean scenes, boolean layouts,
+            boolean baselines, long seed) {
+        SetPredictionDetector.Options hybrid = new SetPredictionDetector.Options(16, 3, true, true);
+        List<DetrCurve> out = new ArrayList<>();
+        for (boolean lay : new boolean[] {false, true}) {
+            if (lay ? !layouts : !scenes) {
+                continue;
+            }
+            String data = lay ? "layouts" : "scenes";
+            out.add(new DetrCurve("DETR", data, checkpoints,
+                    detrCurve(SetPredictionDetector.Options.none(), lay, checkpoints, seed)));
+            if (!lay) {
+                out.add(new DetrCurve("DN-DETR", data, checkpoints, detr(true, checkpoints, seed)));
+            }
+            out.add(new DetrCurve("H-DETR + anchors + aux", data, checkpoints,
+                    detrCurve(hybrid, lay, checkpoints, seed)));
+            out.add(new DetrCurve("DETR + query selection", data, checkpoints,
+                    detrCurve(SetPredictionDetector.Options.none().withQuerySelection(true), lay, checkpoints, seed)));
+            out.add(new DetrCurve("H-DETR + query selection + aux", data, checkpoints,
+                    detrCurve(hybrid.withQuerySelection(true), lay, checkpoints, seed)));
+        }
+        if (baselines && scenes) {
+            double[] cn = new double[checkpoints.length];
+            double[] rn = new double[checkpoints.length];
+            for (int c = 0; c < checkpoints.length; c++) {
+                cn[c] = centerNet(checkpoints[c], seed)[0].map50();
+                rn[c] = anchor(AnchorDetector.Config.retinaNet(CLASSES), checkpoints[c], seed).map50();
+            }
+            out.add(new DetrCurve("CenterNet", "scenes", checkpoints, cn));
+            out.add(new DetrCurve("RetinaNet-lite", "scenes", checkpoints, rn));
+        }
+        return out;
+    }
+
+    /**
+     * The long 10.6.10 Run: curves to 5,000 steps on both datasets with the dense baselines.
+     *
+     * @param args ignored
+     */
+    public static void main(String[] args) {
+        for (DetrCurve c : detrFollowUp(new int[] {250, 500, 1000, 2000, 5000}, true, true, true, 1)) {
+            System.out.println(c);
+        }
     }
 }
