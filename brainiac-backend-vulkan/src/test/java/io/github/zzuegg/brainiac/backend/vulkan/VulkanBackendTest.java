@@ -132,6 +132,55 @@ class VulkanBackendTest {
 
     @ParameterizedTest
     @EnumSource(DType.class)
+    void customKernelsMatchTheirJavaVersion(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        io.github.zzuegg.brainiac.tensor.Kernel k = io.github.zzuegg.brainiac.tensor.Kernel.of("mix", 2, """
+                ACC twice(ACC v) { return v + v; }
+                void main() {
+                    uint i = gid();
+                    if (i >= p.n) return;
+                    ACC a = LOAD(p.x0, i);
+                    ACC b = LOAD(p.x1, (i + uint(p.ints[0])) % p.n);
+                    STORE(p.y, i, twice(a) * ACC(p.floats[0]) - b + ACC(p.floats[1]));
+                }""", (in, out, ints, floats) -> {
+                    for (int i = 0; i < out.length; i++) {
+                        out[i] = 2 * in[0][i] * floats[0] - in[1][(i + ints[0]) % out.length] + floats[1];
+                    }
+                });
+        Tensor x = random(3, 7, 61).to(type);
+        Tensor y = random(4, 7, 61).to(type);
+        int[] ints = {5};
+        float[] floats = {1.5f, -0.25f};
+        Tensor cpu = Tensor.custom(k, x.shape(), type, ints, floats, x, y);
+        Tensor vk = Tensor.custom(k, x.shape(), type, ints, floats, x.to(gpu), y.to(gpu));
+        assertArrayEquals(cpu.toDoubleArray(), vk.to(CPU).toDoubleArray(), tolerance(type) * 8);
+        // the inputs may be of another type: converted to the output's
+        Tensor mixed = Tensor.custom(k, x.shape(), type, ints, floats, x.to(DType.FLOAT32).to(gpu), y.to(gpu));
+        assertArrayEquals(cpu.toDoubleArray(), mixed.to(CPU).toDoubleArray(), tolerance(type) * 8);
+    }
+
+    @ParameterizedTest
+    @EnumSource(DType.class)
+    void sortsLikeTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        // short rows, a non-power-of-two width, a vocabulary-sized row; ties from rounding
+        for (int[] dims : new int[][] {{3, 1}, {4, 7}, {2, 33}, {1, 50_000}}) {
+            Tensor x = random(dims[1], dims).mul(8).round().div(8).to(type);
+            for (boolean desc : new boolean[] {false, true}) {
+                Tensor[] cpu = x.sort(-1, desc);
+                Tensor[] vk = x.to(gpu).sort(-1, desc);
+                assertArrayEquals(cpu[0].toDoubleArray(), vk[0].to(CPU).toDoubleArray(), type + " " + desc);
+                assertArrayEquals(cpu[1].toArray(), vk[1].to(CPU).toArray(), type + " " + desc);
+            }
+        }
+        Tensor nan = Tensor.of(1f, Float.NaN, -3f, 1f).to(type);
+        assertArrayEquals(nan.sort(0, true)[1].toArray(), nan.to(gpu).sort(0, true)[1].to(CPU).toArray());
+        Tensor m = random(5, 6, 4).to(type);
+        assertArrayEquals(m.argsort(0, false).toArray(), m.to(gpu).argsort(0, false).to(CPU).toArray());
+    }
+
+    @ParameterizedTest
+    @EnumSource(DType.class)
     void uploadsRawValuesFromNativeMemory(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // small (inline update), mid-size (staging ring) and large (own staging block)

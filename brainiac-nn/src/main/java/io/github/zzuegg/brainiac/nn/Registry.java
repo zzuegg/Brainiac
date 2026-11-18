@@ -125,9 +125,10 @@ final class Registry {
         simple("style_norm", StyleNorm.class, StyleNorm::write, StyleNorm::read);
         simple("adain_res_block", AdainResBlock.class, AdainResBlock::write, AdainResBlock::read);
         simple("adain_snake_block", AdainSnakeBlock.class, AdainSnakeBlock::write, AdainSnakeBlock::read);
+        DiffusionCodecs.register();
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
-                Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
-                Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
+                Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.QUICK_GELU,
+                Activation.SOFTPLUS, Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
                 Activation.HARD_SWISH, Activation.SOFTSIGN}) {
             activation(a.name(), c -> a);
         }

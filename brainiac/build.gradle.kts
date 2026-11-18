@@ -11,6 +11,7 @@ dependencies {
     api(project(":brainiac-io"))
     api(project(":brainiac-llm"))
     api(project(":brainiac-audio"))
+    api(project(":brainiac-diffusion"))
     api(project(":brainiac-rl"))
     api(project(":brainiac-evolve"))
 }

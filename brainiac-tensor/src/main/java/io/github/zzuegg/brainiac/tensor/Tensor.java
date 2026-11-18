@@ -43,10 +43,18 @@ public final class Tensor {
     /** The tensors created on this thread while {@link #created} runs, innermost call last. */
     private static final ThreadLocal<java.util.ArrayList<Tensor>> CREATED = new ThreadLocal<>();
 
+    /** For a view such as a reshape, the tensor that owns the memory; {@code null} if this one does. */
+    private final Tensor base;
+
     private Tensor(Shape shape, Device device, Storage storage) {
+        this(shape, device, storage, null);
+    }
+
+    private Tensor(Shape shape, Device device, Storage storage, Tensor base) {
         this.shape = shape;
         this.device = device;
         this.storage = storage;
+        this.base = base;
         java.util.ArrayList<Tensor> created = CREATED.get();
         if (created != null) {
             created.add(this);
@@ -216,6 +224,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor zeros(Shape shape, DType dtype, Device device) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, dtype, device);
+        }
         return new Tensor(shape, device, device.backend().allocate(shape.size(), dtype));
     }
 
@@ -273,6 +284,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor full(Shape shape, float value, DType dtype, Device device) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, dtype, device);
+        }
         if (shape.rank() == 0) {
             // Tensors are immutable, so single values are shared; on a GPU each new one
             // would otherwise cost a device command.
@@ -299,6 +313,42 @@ public final class Tensor {
             return size() > 1_024;
         }
     };
+
+    /** How many {@link #withoutValues} calls are running on this thread. */
+    private static final ThreadLocal<int[]> WITHOUT_VALUES = ThreadLocal.withInitial(() -> new int[1]);
+
+    /** One value per device and type that stands in for every tensor made by {@link #withoutValues}. */
+    private static final Map<ScalarKey, Storage> PLACEHOLDERS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Runs {@code body} with tensor creation ({@code zeros}, {@code full}, {@code ones},
+     * {@code normal}, {@code uniform}) giving tensors that have a shape but no values: they
+     * cost no memory and no random numbers. It is meant for building a model whose
+     * parameters are all replaced right after, such as by pretrained weights; the values of
+     * such a tensor must never be read.
+     *
+     * @param body the code to run
+     * @param <T> what it returns
+     * @return what {@code body} returned
+     */
+    public static <T> T withoutValues(java.util.function.Supplier<T> body) {
+        int[] depth = WITHOUT_VALUES.get();
+        depth[0]++;
+        try {
+            return body.get();
+        } finally {
+            depth[0]--;
+        }
+    }
+
+    private static Tensor placeholder(Shape shape, DType dtype, Device device) {
+        Storage s = PLACEHOLDERS.computeIfAbsent(new ScalarKey(device, dtype, 0), k -> {
+            Storage made = device.backend().allocate(1, dtype);
+            SHARED.put(made, Boolean.TRUE);
+            return made;
+        });
+        return new Tensor(shape, device, s);
+    }
 
     /** Storages handed out to many callers (the shared scalars): never released early. */
     private static final Map<Storage, Boolean> SHARED =
@@ -343,6 +393,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor uniform(Shape shape, float low, float high, RandomGenerator random) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, DType.FLOAT32, Device.getDefault());
+        }
         float[] v = new float[checkedSize(shape)];
         for (int i = 0; i < v.length; i++) {
             v[i] = low + (high - low) * random.nextFloat();
@@ -361,6 +414,9 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor normal(Shape shape, float mean, float std, RandomGenerator random) {
+        if (WITHOUT_VALUES.get()[0] > 0) {
+            return placeholder(shape, DType.FLOAT32, Device.getDefault());
+        }
         float[] v = new float[checkedSize(shape)];
         for (int i = 0; i < v.length; i++) {
             v[i] = (float) random.nextGaussian(mean, std);
@@ -685,6 +741,29 @@ public final class Tensor {
     }
 
     /**
+     * Releases what a computation made (from {@link #created}) except {@code keep}: like
+     * {@link #release(java.util.Collection, java.util.Collection)}, but a view made in the
+     * computation of a tensor made before it, such as a reshape of a weight, is left alone,
+     * as its memory is not the computation's.
+     *
+     * @param made the tensors {@link #created} returned
+     * @param keep tensors that stay in use, such as the result
+     */
+    public static void releaseCreated(java.util.List<Tensor> made, java.util.Collection<Tensor> keep) {
+        Map<Tensor, Boolean> mine = new java.util.IdentityHashMap<>();
+        for (Tensor t : made) {
+            mine.put(t, Boolean.TRUE);
+        }
+        java.util.List<Tensor> dead = new java.util.ArrayList<>(made.size());
+        for (Tensor t : made) {
+            if (t.base == null || mine.containsKey(t.base)) {
+                dead.add(t);
+            }
+        }
+        release(dead, keep);
+    }
+
+    /**
      * Copies all values to a new Java array in row-major order.
      *
      * @return the values
@@ -728,10 +807,10 @@ public final class Tensor {
         if (newShape.size() != shape.size()) {
             throw new IllegalArgumentException("cannot reshape " + shape + " to " + newShape);
         }
-        if (storage instanceof PackedStorage && newShape.equals(shape)) {
-            return this;
+        if (storage instanceof PackedStorage) {
+            return newShape.equals(shape) ? this : new Tensor(newShape, device, storage());
         }
-        return new Tensor(newShape, device, storage());
+        return new Tensor(newShape, device, storage, base != null ? base : this);
     }
 
     /**
@@ -2043,6 +2122,88 @@ public final class Tensor {
             work = work.mul(picked.neg().add(1)).add(picked.mul(-Float.MAX_VALUE));
         }
         return new Tensor[] {concat(last, values), concat(last, indices)};
+    }
+
+    /**
+     * Runs a user {@link Kernel}: its shader on Vulkan, its Java version elsewhere.
+     *
+     * @param kernel the kernel
+     * @param shape the output's shape
+     * @param dtype the output's type, which the inputs are converted to
+     * @param ints up to {@link Kernel#MAX_INTS} integer parameters
+     * @param floats up to {@link Kernel#MAX_FLOATS} float parameters
+     * @param inputs the inputs, as many as the kernel reads, on one device
+     * @return the output, on the inputs' device (the default device when there are none)
+     */
+    public static Tensor custom(Kernel kernel, Shape shape, DType dtype, int[] ints, float[] floats,
+            Tensor... inputs) {
+        if (inputs.length != kernel.inputs()) {
+            throw new IllegalArgumentException(kernel + " takes " + kernel.inputs() + " inputs, got " + inputs.length);
+        }
+        if (ints.length > Kernel.MAX_INTS || floats.length > Kernel.MAX_FLOATS) {
+            throw new IllegalArgumentException("at most " + Kernel.MAX_INTS + " ints and " + Kernel.MAX_FLOATS
+                    + " floats, got " + ints.length + " and " + floats.length);
+        }
+        Device device = inputs.length > 0 ? inputs[0].device : Device.getDefault();
+        Storage[] in = new Storage[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            inputs[0].sameDevice(inputs[i]);
+            in[i] = inputs[i].storage();
+        }
+        Backend backend = device.backend();
+        Storage out = backend.allocateUninitialized(shape.size(), dtype);
+        if (shape.size() > 0) {
+            backend.custom(kernel, in, out, ints, floats);
+        }
+        return new Tensor(shape, device, out);
+    }
+
+    /**
+     * Sorts along one axis, stably: equal values keep their order, and NaN counts as larger
+     * than every number (last ascending, first descending).
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the sorted values and where each was along the axis (as floats), both of this
+     *     shape
+     */
+    public Tensor[] sort(int axis, boolean descending) {
+        if (rank() == 0) {
+            Tensor[] one = reshape(1).sort(0, descending);
+            return new Tensor[] {one[0].reshape(shape), one[1].reshape(shape)};
+        }
+        int a = axis(axis);
+        int last = rank() - 1;
+        int[] swap = new int[rank()];
+        for (int i = 0; i < swap.length; i++) {
+            swap[i] = i;
+        }
+        swap[a] = last;
+        swap[last] = a;
+        Tensor x = a == last ? this : permute(swap);
+        int n = x.shape.dim(last);
+        if (n > 1 << 24) {
+            throw new IllegalArgumentException("sort supports axes of up to 2^24 values, got " + n);
+        }
+        Storage values = backend().allocateUninitialized(x.size(), dtype());
+        Storage indices = backend().allocateUninitialized(x.size(), DType.FLOAT32);
+        if (n > 0 && x.size() > 0) {
+            backend().sort(x.storage(), x.size() / n, n, descending, values, indices);
+        }
+        Tensor v = new Tensor(x.shape, device, values);
+        Tensor i = new Tensor(x.shape, device, indices);
+        return a == last ? new Tensor[] {v, i} : new Tensor[] {v.permute(swap), i.permute(swap)};
+    }
+
+    /**
+     * Where each entry of the {@linkplain #sort sorted} axis comes from.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the indices along the axis, as floats, of this shape
+     */
+    public Tensor argsort(int axis, boolean descending) {
+        return sort(axis, descending)[1];
     }
 
     /**

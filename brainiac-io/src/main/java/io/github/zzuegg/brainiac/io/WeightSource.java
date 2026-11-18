@@ -132,10 +132,11 @@ public interface WeightSource extends AutoCloseable {
     /**
      * Opens weights at a path: a {@code .safetensors} file, a sharded model's {@code
      * *.safetensors.index.json}, or a directory holding either (a Hugging Face model
-     * download, or one with {@code pytorch_model.bin}), a {@code .gguf} file, or a PyTorch
-     * checkpoint ({@code .pt}, {@code .pth}, {@code .bin}, read by {@link TorchCheckpoint}). A
-     * folder whose {@code config.json} says it was quantized with GPTQ or AWQ reads its layers
-     * as float weights, dequantized.
+     * download, with safetensors or a sharded or single {@code pytorch_model.bin}), a {@code
+     * .gguf} file, or a PyTorch checkpoint ({@code .bin} read by {@link PyTorchCheckpoint};
+     * {@code .pt}, {@code .pth} and {@code .ckpt}, which may nest dictionaries or hold a bare
+     * tensor, by {@link TorchCheckpoint}). A folder whose {@code config.json} says it was
+     * quantized with GPTQ or AWQ reads its layers as float weights, dequantized.
      *
      * @param path the file or directory
      * @return the weights
@@ -175,11 +176,15 @@ public interface WeightSource extends AutoCloseable {
                     files = list.filter(p -> p.getFileName().toString().endsWith(".safetensors")).sorted().toList();
                 }
                 if (files.isEmpty()) {
+                    Path binIndex = path.resolve("pytorch_model.bin.index.json");
+                    if (Files.isRegularFile(binIndex)) {
+                        return open(binIndex);
+                    }
                     Path bin = path.resolve("pytorch_model.bin");
                     if (Files.isRegularFile(bin)) {
-                        return TorchCheckpoint.open(bin);
+                        return PyTorchCheckpoint.open(bin);
                     }
-                    throw new IllegalArgumentException("no .safetensors files in " + path);
+                    throw new IllegalArgumentException("no .safetensors or pytorch_model.bin files in " + path);
                 }
                 return of(files.stream().map(SafeTensors::open).map(WeightSource.class::cast).toList());
             }
@@ -196,14 +201,17 @@ public interface WeightSource extends AutoCloseable {
                 Path dir = path.toAbsolutePath().getParent();
                 List<WeightSource> opened = new ArrayList<>();
                 for (String s : shards) {
-                    opened.add(SafeTensors.open(dir.resolve(s)));
+                    opened.add(s.endsWith(".bin") ? PyTorchCheckpoint.open(dir.resolve(s)) : SafeTensors.open(dir.resolve(s)));
                 }
                 return of(opened);
             }
             if (file.endsWith(".gguf")) {
                 return Gguf.open(path);
             }
-            if (file.endsWith(".pt") || file.endsWith(".pth") || file.endsWith(".bin") || file.endsWith(".ckpt")) {
+            if (file.endsWith(".bin")) {
+                return PyTorchCheckpoint.open(path);
+            }
+            if (file.endsWith(".pt") || file.endsWith(".pth") || file.endsWith(".ckpt")) {
                 return TorchCheckpoint.open(path);
             }
             return SafeTensors.open(path);

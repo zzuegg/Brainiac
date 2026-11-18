@@ -23,6 +23,7 @@ include(
     "brainiac-io",
     "brainiac-llm",
     "brainiac-audio",
+    "brainiac-diffusion",
     "brainiac-rl",
     "brainiac-evolve",
     "brainiac",
@@ -30,4 +31,5 @@ include(
     "brainiac-benchmarks",
     "brainiac-experiments",
     "brainiac-studio",
+    "brainiac-cloud",
 )

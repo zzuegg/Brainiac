@@ -74,6 +74,12 @@ public interface Activation extends Layer {
     /** GELU, {@code x * Phi(x)} with the exact normal CDF {@code Phi}; common in transformers. */
     Activation GELU = named("gelu", Init.HE, x -> x.activation(ActivationOp.GELU, 0));
 
+    /**
+     * The sigmoid approximation of GELU, {@code x * sigmoid(1.702 x)}, as OpenAI's CLIP
+     * uses it ("quick GELU").
+     */
+    Activation QUICK_GELU = named("quick_gelu", Init.HE, x -> x.mul(x.mul(1.702f).sigmoid()));
+
     /** GELU with the faster tanh approximation of the normal CDF. */
     Activation GELU_TANH = named("gelu_tanh", Init.HE, x -> x.activation(ActivationOp.GELU_TANH, 0));
 
