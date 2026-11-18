@@ -478,13 +478,13 @@ public final class Wan implements AutoCloseable {
                 // a device no other expert uses yet, the roomiest
                 Device d = roomiest(pool, free, need, placed);
                 placed.add(d);
-                need.merge(d, e.bytes(dtype, c[0]), Long::sum);
+                need.merge(d, pooled(e.bytes(dtype, c[0])), Long::sum);
                 work.merge(d, stepWork, Math::max);
             }
             Device textDevice = roomiest(pool, free, sum(need, work), List.of());
-            need.merge(textDevice, text.bytes(dtype, c[1]) + clipBytes, Long::sum);
+            need.merge(textDevice, pooled(text.bytes(dtype, c[1]) + clipBytes), Long::sum);
             Device vaeDevice = roomiest(pool, free, sum(need, work), List.of());
-            need.merge(vaeDevice, vaeBytes, Long::sum);
+            need.merge(vaeDevice, pooled(vaeBytes), Long::sum);
             work.merge(vaeDevice, decodeWork, Math::max);
             Map<Device, Long> total = sum(need, work);
             boolean fits = total.entrySet().stream().allMatch(en -> en.getValue() <= free.get(en.getKey()));
@@ -496,6 +496,11 @@ public final class Wan implements AutoCloseable {
             best = plan;
         }
         return best;
+    }
+
+    /** Weights as a GPU pool holds them: rounded up to its block sizes, about a tenth more (measured on CUDA). */
+    private static long pooled(long bytes) {
+        return bytes + bytes / 10;
     }
 
     private static Map<Device, Long> sum(Map<Device, Long> a, Map<Device, Long> b) {
@@ -524,31 +529,37 @@ public final class Wan implements AutoCloseable {
     }
 
     /**
-     * A transformer step's activations: per video patch the feed-forward's hidden values,
-     * the attention's queries, keys, values and output, and float32 residuals and
-     * modulations, and a quarter more for a block part's temporaries (measured: 1.1 times at
-     * 416x240), plus the sampler's latents, with 1 GB to spare.
+     * A transformer step's working memory, from runs of Wan 2.1 1.3B (832x480, 33 frames) and
+     * 14B (832x480, 9 frames) on CUDA: per video patch the residual stream and a block part's
+     * temporaries, about 64 floats per feature; a slice of self-attention's scores in
+     * float32 and their softmax; the sampler's latents; and half the transformer's weights
+     * again, for memory the CUDA backend held over the 14B's steps that is not yet
+     * explained. With 1 GB to spare.
      */
     static long stepBytes(WanTransformer.Settings t, WanVae.Settings vae, DType dtype, VideoRequest request) {
         int sf = vae.spatialFactor();
         int[] p = t.patch();
         long frames = (request.frames() - 1) / vae.temporalFactor() + 1;
         long patches = frames / p[0] * (request.height() / sf / p[1]) * (request.width() / sf / p[2]);
-        long perPatch = (long) t.ffnSize() * dtype.bytes() + (long) t.features() * (6L * dtype.bytes() + 16);
+        long stream = patches * t.features() * 64L * 4;
+        long scores = Math.min((long) t.heads() * patches * patches, WanTransformer.attentionWork()) * 20;
         long latents = frames * (request.height() / sf) * (request.width() / sf) * vae.latentChannels() * 4L * 8;
-        return patches * perPatch * 5 / 4 + latents + (1L << 30);
+        long d = t.features();
+        long weights = t.layers() * (8 * d * d + 2 * d * t.ffnSize()) * dtype.bytes();
+        return stream + scores + latents + weights / 2 + (1L << 30);
     }
 
     /**
      * Decoding one latent frame: the widest full-resolution level over the frames of a chunk
-     * and the causal caches, twelve times over for the convolutions' temporaries (measured:
-     * 2.7 GB for 416x240 with Wan 2.1's decoder), with 1 GB to spare.
+     * and the causal caches, twenty times over for the convolutions' temporaries (measured:
+     * 17 GB at 832x480 on CUDA and 2.7 GB at 416x240 on Vulkan with Wan 2.1's decoder), with
+     * 1 GB to spare.
      */
     static long decodeBytes(WanVae.Settings vae, DType dtype, VideoRequest request) {
         // Wan 2.2's decoder ends at half resolution and unfolds 2x2 patches
         long pixels = (long) request.width() * request.height() / ((long) vae.patch() * vae.patch());
         long width = vae.decoderBase() * (long) vae.multipliers()[0];
-        return pixels * width * (vae.temporalFactor() + 2) * Math.max(4, dtype.bytes()) * 12 + (1L << 30);
+        return pixels * width * (vae.temporalFactor() + 2) * Math.max(4, dtype.bytes()) * 20 + (1L << 30);
     }
 
     private final Placement placement;
