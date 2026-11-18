@@ -20,13 +20,15 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.causal;
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
+    exports io.github.zzuegg.brainiac.experimental.edge;
     exports io.github.zzuegg.brainiac.experimental.evolve;
     exports io.github.zzuegg.brainiac.experimental.graph;
     exports io.github.zzuegg.brainiac.experimental.kernels;
     exports io.github.zzuegg.brainiac.experimental.llm;
     exports io.github.zzuegg.brainiac.experimental.ml;
-    exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
+    exports io.github.zzuegg.brainiac.experimental.nn;
+    exports io.github.zzuegg.brainiac.experimental.parallel;
     exports io.github.zzuegg.brainiac.experimental.privacy;
     exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.rl;
@@ -34,6 +36,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.serving;
     exports io.github.zzuegg.brainiac.experimental.survival;
+    exports io.github.zzuegg.brainiac.experimental.stream;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
@@ -50,6 +53,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.context;
     exports io.github.zzuegg.brainiac.experiments.control;
     exports io.github.zzuegg.brainiac.experiments.data;
+    exports io.github.zzuegg.brainiac.experiments.edge;
     exports io.github.zzuegg.brainiac.experiments.evolution;
     exports io.github.zzuegg.brainiac.experiments.exotic;
     exports io.github.zzuegg.brainiac.experiments.generative;
@@ -63,6 +67,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.multimodal;
     exports io.github.zzuegg.brainiac.experiments.numerics;
     exports io.github.zzuegg.brainiac.experiments.optim;
+    exports io.github.zzuegg.brainiac.experiments.parallel;
     exports io.github.zzuegg.brainiac.experiments.privacy;
     exports io.github.zzuegg.brainiac.experiments.probabilistic;
     exports io.github.zzuegg.brainiac.experiments.reasoning;
@@ -74,6 +79,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.sequence;
     exports io.github.zzuegg.brainiac.experiments.serving;
     exports io.github.zzuegg.brainiac.experiments.survival;
+    exports io.github.zzuegg.brainiac.experiments.streaming;
     exports io.github.zzuegg.brainiac.experiments.synthesis;
     exports io.github.zzuegg.brainiac.experiments.techniques;
     exports io.github.zzuegg.brainiac.experiments.timeseries;
