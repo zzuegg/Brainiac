@@ -213,8 +213,14 @@ class OpenAiServerTest {
                 java.util.concurrent.Future<String> emb = pool.submit(() -> call("POST", "/v1/embeddings",
                         "{\"input\":\"hello\"}"));
                 assertTrue(emb.get().startsWith("200 "), emb.get());
+                // every answer is awaited before the generator is asked itself: a row can end early, and the
+                // server would still be decoding the others with the same generator
+                java.util.List<String> got = new java.util.ArrayList<>();
+                for (java.util.concurrent.Future<String> answer : answers) {
+                    got.add(answer.get());
+                }
                 for (int i = 0; i < prompts.length; i++) {
-                    String r = answers.get(i).get();
+                    String r = got.get(i);
                     assertTrue(r.startsWith("200 "), r);
                     Map<String, Object> choice = Json.object(Json.array(Json.object(Json.parse(r.substring(4)))
                             .get("choices")).getFirst());
