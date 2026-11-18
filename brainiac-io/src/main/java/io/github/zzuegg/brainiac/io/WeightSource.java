@@ -136,7 +136,7 @@ public interface WeightSource extends AutoCloseable {
      * .gguf} file, or a PyTorch checkpoint ({@code .bin} read by {@link PyTorchCheckpoint};
      * {@code .pt}, {@code .pth} and {@code .ckpt}, which may nest dictionaries or hold a bare
      * tensor, by {@link TorchCheckpoint}). A folder whose {@code config.json} says it was
-     * quantized with GPTQ or AWQ reads its layers as float weights, dequantized.
+     * quantized with GPTQ, AWQ or FP8 reads its layers as float weights, dequantized.
      *
      * @param path the file or directory
      * @return the weights
@@ -151,6 +151,10 @@ public interface WeightSource extends AutoCloseable {
                 if (Json.object(Json.read(config)).get("quantization_config") instanceof Map<?, ?> q
                         && ("gptq".equals(q.get("quant_method")) || "awq".equals(q.get("quant_method")))) {
                     return new QuantizedCheckpoint(plain, Json.object(q));
+                }
+                if (Json.object(Json.read(config)).get("quantization_config") instanceof Map<?, ?> q
+                        && "fp8".equals(q.get("quant_method"))) {
+                    return new Fp8Checkpoint(plain, Json.object(q));
                 }
             } catch (IOException | RuntimeException e) {
                 plain.close();
