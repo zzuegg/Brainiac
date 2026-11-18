@@ -2420,46 +2420,21 @@ public final class Llama implements LanguageModel {
         int k = moe.perToken();
         Device dev = h.value().device();
         Var flat = h.reshape(n, hidden);
-        Var logits = m.router().apply(flat).to(DType.FLOAT32);
-        Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
         // experts kept elsewhere (on the CPU, see loadExpertsOnCpu) run there, in float32, on
         // a copy of the tokens; the shared expert stays here and is queued first
         Device home = m.gate()[0].weight().value().device();
         boolean split = !home.equals(dev);
+        if (split && (!Var.gradEnabled() || !flat.requiresGrad())) {
+            return expertsAtHome(m, flat, home).reshape(s[0], s[1], hidden);
+        }
+        Var logits = m.router().apply(flat).to(DType.FLOAT32);
+        Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
         Var shared = null;
         if (split && m.sharedGate() != null) {
             shared = sharedExpert(m, flat);
         }
-        float[] p = probs.value().toArray();
-        int[] chosen = Functional.chooseExperts(p, m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n,
-                count, k, groups(routing));
-        if (split && (!Var.gradEnabled() || !flat.requiresGrad())) {
-            // inference: the chosen experts at once on their device, weighed on the host from
-            // the scores already read back
-            float[] w = new float[n * k];
-            for (int t = 0; t < n; t++) {
-                double total = 0;
-                for (int j = 0; j < k; j++) {
-                    w[t * k + j] = p[t * count + chosen[t * k + j]];
-                    total += w[t * k + j];
-                }
-                for (int j = 0; j < k; j++) {
-                    if (moe.normalize()) {
-                        w[t * k + j] = (float) (w[t * k + j] / (routing.sigmoid() ? total + 1e-20 : total));
-                    }
-                    w[t * k + j] *= routing.scale();
-                }
-            }
-            prefetch(m, chosen);
-            Tensor x = flat.value().to(home).to(DType.FLOAT32);
-            Tensor y = Functional.routedExpertsAtOnce(x, chosen, w, k, e -> xe -> apply(m.down()[e],
-                    gated(apply(m.gate()[e], xe), apply(m.up()[e], xe))));
-            Var out = Var.of(y.to(dev).to(h.dtype()));
-            if (m.sharedGate() != null) {
-                out = out.add(shared);
-            }
-            return out.reshape(s[0], s[1], hidden);
-        }
+        int[] chosen = Functional.chooseExperts(probs.value().toArray(),
+                m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n, count, k, groups(routing));
         int[] picked = new int[n * k];
         for (int i = 0; i < picked.length; i++) {
             picked[i] = i / k * count + chosen[i];
@@ -2506,6 +2481,84 @@ public final class Llama implements LanguageModel {
         }
         return gate.activation(config.extras().activation(), 0).mul(up);
     }
+
+    /**
+     * The experts of a block kept on another device ({@code home}, the CPU), for inference:
+     * the tokens cross once, the router runs there too on a copy of its weights, the chosen
+     * experts run at once ({@link Functional#routedExpertsAtOnce}) and their sum crosses
+     * back. One wait for the GPU per block, where routing there and copying the tokens took
+     * two. The shared expert stays on the model's device, queued first.
+     */
+    private Var expertsAtHome(Experts m, Var flat, Device home) {
+        LlamaConfig.Moe moe = config.extras().moe();
+        LlamaConfig.Routing routing = moe.routing();
+        int n = flat.shape().dim(0);
+        int count = moe.experts();
+        int k = moe.perToken();
+        Device dev = flat.value().device();
+        Var shared = m.sharedGate() == null ? null : sharedExpert(m, flat);
+        Tensor x = flat.value().to(home).to(DType.FLOAT32);
+        Router r = routers.computeIfAbsent(m, e -> new Router(e.router(), home, e.choiceBias()));
+        float[] p = apply(r.linear, x).to(DType.FLOAT32).toArray();   // [n, experts] logits, then scores
+        for (int t = 0; t < n; t++) {
+            if (routing.sigmoid()) {
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) (1 / (1 + Math.exp(-p[t * count + e])));
+                }
+            } else {
+                float max = Float.NEGATIVE_INFINITY;
+                for (int e = 0; e < count; e++) {
+                    max = Math.max(max, p[t * count + e]);
+                }
+                double total = 0;
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) Math.exp(p[t * count + e] - max);
+                    total += p[t * count + e];
+                }
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) (p[t * count + e] / total);
+                }
+            }
+        }
+        int[] chosen = Functional.chooseExperts(p, r.choiceBias, n, count, k, groups(routing));
+        float[] w = new float[n * k];
+        for (int t = 0; t < n; t++) {
+            double total = 0;
+            for (int j = 0; j < k; j++) {
+                w[t * k + j] = p[t * count + chosen[t * k + j]];
+                total += w[t * k + j];
+            }
+            for (int j = 0; j < k; j++) {
+                if (moe.normalize()) {
+                    // DeepSeek adds 1e-20 against a zero sum of sigmoids; a softmax's never is
+                    w[t * k + j] = (float) (w[t * k + j] / (routing.sigmoid() ? total + 1e-20 : total));
+                }
+                w[t * k + j] *= routing.scale();
+            }
+        }
+        prefetch(m, chosen);
+        Tensor y = Functional.routedExpertsAtOnce(x, chosen, w, k, e -> xe -> apply(m.down()[e],
+                gated(apply(m.gate()[e], xe), apply(m.up()[e], xe))));
+        Var out = Var.of(y.to(dev).to(flat.value().dtype()));
+        return shared == null ? out : out.add(shared);
+    }
+
+    /** A block's router as {@link #expertsAtHome} uses it: a copy on the experts' device, and the choice bias read once. */
+    private record Router(Linear linear, float[] choiceBias) {
+        Router(Linear router, Device home, Var choiceBias) {
+            this(new Linear(Var.of(onHome(router.weight.value(), home)),
+                    router.bias == null ? null : Var.of(router.bias.value().to(home).to(DType.FLOAT32))),
+                    choiceBias == null ? null : choiceBias.value().toArray());
+        }
+    }
+
+    /** A weight copied to {@code home}: packed weights stay packed, others become float32. */
+    private static Tensor onHome(Tensor w, Device home) {
+        return w.isPacked() ? w.to(home) : w.to(home).to(DType.FLOAT32);
+    }
+
+    /** Copies of the routers of blocks whose experts are elsewhere, made on first use. */
+    private final Map<Experts, Router> routers = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** As {@link #gated(Var, Var)}, on plain tensors. */
     private Tensor gated(Tensor gate, Tensor up) {

@@ -144,7 +144,7 @@ class LlamaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"qwen3moe", "qwen2moe"})
+    @ValueSource(strings = {"qwen3moe", "qwen2moe", "deepseek-v2", "deepseek-v3"})
     void runsExpertsOnTheCpuFromTheFile(String name) throws IOException {
         Map<String, Object> e = expected(name + ".gguf.expected.json");
         int[][] ids = {ints(e.get("ids"))};
