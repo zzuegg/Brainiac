@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experiments.interp;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.data.DataPruner;
+import io.github.zzuegg.brainiac.experimental.interp.AttentionRollout;
 import io.github.zzuegg.brainiac.experimental.nn.Attribution;
 import io.github.zzuegg.brainiac.experimental.nn.ConceptActivationVectors;
 import io.github.zzuegg.brainiac.experimental.nn.GradCam;
@@ -537,5 +538,337 @@ public final class ExplainabilityBenchmark {
         double pWith = spurious.forward(Var.of(DataPruner.select(marked, ones))).value().slice(1, 1, 2).mean().item();
         double pWithout = spurious.forward(Var.of(inputs)).value().slice(1, 1, 2).mean().item();
         return new TcavScores(s[0], c[0], s[2], s[3], s[1], c[1], pWith - pWithout);
+    }
+
+    // ------------------------------------------------------------------ attention (wave 9 item 9.4.6)
+
+    /** Token-attribution methods for the attention copy task. */
+    public enum AttentionMethod {
+        /** The head-averaged attention of the last layer. */
+        RAW_ATTENTION,
+        /** Attention rollout ({@link AttentionRollout#rollout}). */
+        ROLLOUT,
+        /** Attention flow ({@link AttentionRollout#flow}). */
+        FLOW,
+        /** Gradient-weighted rollout ({@link AttentionRollout#gradientRollout}). */
+        GRADIENT_ROLLOUT,
+        /** The norm of the logit's gradient with respect to each input embedding. */
+        SALIENCY,
+        /** Integrated gradients on the input embeddings (zero baseline, 16 steps). */
+        INTEGRATED_GRADIENTS
+    }
+
+    /**
+     * Scores of a token-attribution method.
+     *
+     * @param agreement the share of sequences whose top-attributed position is the copied source
+     * @param deletionAuc the mean predicted-class probability while positions are replaced by
+     *     padding in attribution order (lower is more faithful)
+     * @param millis time per sequence
+     */
+    public record AttentionScores(double agreement, double deletionAuc, double millis) {
+    }
+
+    private static final int SEQ = 8;
+    private static final int VALUES = 5;
+    private static final int MARKER = 5;
+    private static final int QUERY = 6;
+    private static final int PAD = 7;
+
+    /** A two-layer, two-head attention model whose attention maps and their gradients are recorded. */
+    private static final class CopyAttention {
+        final int dim = 16;
+        final int heads = 2;
+        final Var embed;
+        final Var pos;
+        final Var[][] w = new Var[2][];
+        final Var out;
+        final List<Tensor> maps = new java.util.ArrayList<>();
+        final List<Tensor> grads = new java.util.ArrayList<>();
+
+        CopyAttention(long seed) {
+            SplittableRandom r = new SplittableRandom(seed);
+            embed = Var.param(Tensor.normal(Shape.of(8, dim), 0, 1f, r));
+            pos = Var.param(Tensor.normal(Shape.of(SEQ, dim), 0, 1f, r));
+            float s = (float) Math.sqrt(1.0 / dim);
+            for (int l = 0; l < 2; l++) {
+                w[l] = new Var[] {Var.param(Tensor.normal(Shape.of(dim, dim), 0, s, r)),
+                    Var.param(Tensor.normal(Shape.of(dim, dim), 0, s, r)),
+                    Var.param(Tensor.normal(Shape.of(dim, dim), 0, s, r)),
+                    Var.param(Tensor.normal(Shape.of(dim, dim), 0, s, r)),
+                    Var.param(Tensor.normal(Shape.of(dim, 2 * dim), 0, s, r)),
+                    Var.param(Tensor.normal(Shape.of(2 * dim, dim), 0, (float) Math.sqrt(1.0 / (2 * dim)), r))};
+            }
+            out = Var.param(Tensor.normal(Shape.of(dim, VALUES), 0, s, r));
+        }
+
+        List<Var> parameters() {
+            List<Var> p = new java.util.ArrayList<>(List.of(embed, pos, out));
+            for (Var[] l : w) {
+                p.addAll(List.of(l));
+            }
+            return p;
+        }
+
+        Var embeddings(int[][] tokens) {
+            int b = tokens.length;
+            float[] f = new float[b * SEQ];
+            for (int i = 0; i < b; i++) {
+                for (int t = 0; t < SEQ; t++) {
+                    f[i * SEQ + t] = tokens[i][t];
+                }
+            }
+            return embed.gather(0, Tensor.of(Shape.of(b * SEQ), f)).reshape(b, SEQ, dim).add(pos);
+        }
+
+        /** Logits at the last position; records maps (and their gradients) when {@code record}. */
+        Var logits(Var x, boolean record) {
+            int b = x.shape().dim(0);
+            int dh = dim / heads;
+            if (record) {
+                maps.clear();
+                grads.clear();
+            }
+            for (int l = 0; l < 2; l++) {
+                Var q = x.matmul(w[l][0]).reshape(b, SEQ, heads, dh).permute(0, 2, 1, 3);
+                Var k = x.matmul(w[l][1]).reshape(b, SEQ, heads, dh).permute(0, 2, 1, 3);
+                Var v = x.matmul(w[l][2]).reshape(b, SEQ, heads, dh).permute(0, 2, 1, 3);
+                Var a = Activation.SOFTMAX.forward(q.matmul(k.permute(0, 1, 3, 2)).mul((float) (1 / Math.sqrt(dh))));
+                if (record) {
+                    maps.add(a.value());
+                    grads.add(null);
+                    int slot = l;
+                    if (a.requiresGrad()) {
+                        a.onGradient(g -> {
+                            grads.set(slot, g);
+                            return null;
+                        });
+                    }
+                }
+                Var att = a.matmul(v).permute(0, 2, 1, 3).reshape(b, SEQ, dim).matmul(w[l][3]);
+                x = x.add(att);
+                x = x.add(x.matmul(w[l][4]).relu().matmul(w[l][5]));
+            }
+            return x.slice(1, SEQ - 1, SEQ).reshape(b, dim).matmul(out);
+        }
+    }
+
+    private static int[][] copySequences(int n, int[] sources, int[] targets, SplittableRandom r) {
+        int[][] s = new int[n][SEQ];
+        for (int i = 0; i < n; i++) {
+            for (int t = 0; t < SEQ - 1; t++) {
+                s[i][t] = r.nextInt(VALUES);
+            }
+            int m = r.nextInt(SEQ - 2);
+            s[i][m] = MARKER;
+            s[i][SEQ - 1] = QUERY;
+            sources[i] = m + 1;
+            targets[i] = s[i][m + 1];
+        }
+        return s;
+    }
+
+    private static Tensor floats(int[] v) {
+        float[] f = new float[v.length];
+        for (int i = 0; i < v.length; i++) {
+            f[i] = v[i];
+        }
+        return Tensor.of(Shape.of(v.length), f);
+    }
+
+    private static double[][][][] example(List<Tensor> layers, int i, int heads) {
+        double[][][][] a = new double[layers.size()][heads][SEQ][SEQ];
+        for (int l = 0; l < layers.size(); l++) {
+            float[] f = layers.get(l).toArray();
+            for (int h = 0; h < heads; h++) {
+                for (int q = 0; q < SEQ; q++) {
+                    for (int k = 0; k < SEQ; k++) {
+                        a[l][h][q][k] = f[((i * heads + h) * SEQ + q) * SEQ + k];
+                    }
+                }
+            }
+        }
+        return a;
+    }
+
+    /**
+     * Attention rollout and flow against raw attention and gradient attributions on a copy
+     * task with known source positions: eight tokens, a marker at a random place, and the
+     * model (two attention layers, two heads) must output the value right after the marker
+     * at the last position, so the true source of the answer is the position after the
+     * marker. Attributions explain the predicted logit of the last position.
+     *
+     * @param trainSteps Adam steps of 64 sequences
+     * @param seed the seed
+     * @return the copy model's accuracy and per method its scores
+     */
+    public static AttentionStudy attention(int trainSteps, long seed) {
+        CopyAttention m = trainCopy(trainSteps, seed);
+        double copyAccuracy = copyAccuracyOf(m, seed + 7);
+        int n = 200;
+        int[] sources = new int[n];
+        int[] targets = new int[n];
+        int[][] seqs = copySequences(n, sources, targets, new SplittableRandom(seed + 3));
+        // predicted classes and recorded maps with gradients of the predicted logit
+        Var x = Var.param(m.embeddings(seqs).value());
+        Var logits = m.logits(x, true);
+        int[] pred = new int[n];
+        float[] lv = logits.value().toArray();
+        float[] onehot = new float[n * VALUES];
+        for (int i = 0; i < n; i++) {
+            for (int c = 1; c < VALUES; c++) {
+                pred[i] = lv[i * VALUES + c] > lv[i * VALUES + pred[i]] ? c : pred[i];
+            }
+            onehot[i * VALUES + pred[i]] = 1;
+        }
+        logits.mul(Tensor.of(Shape.of(n, VALUES), onehot)).sum().backward();
+        float[] embGrad = x.grad().toArray();
+        List<Tensor> maps = List.copyOf(m.maps);
+        List<Tensor> grads = List.copyOf(m.grads);
+        for (Var p : m.parameters()) {
+            p.zeroGrad();
+        }
+        Map<AttentionMethod, AttentionScores> out = new EnumMap<>(AttentionMethod.class);
+        for (AttentionMethod method : AttentionMethod.values()) {
+            long t0 = System.nanoTime();
+            double[][] attr = new double[n][];
+            if (method == AttentionMethod.INTEGRATED_GRADIENTS) {
+                attr = integratedGradients(m, seqs, onehot, 16);
+            } else {
+                for (int i = 0; i < n; i++) {
+                    attr[i] = switch (method) {
+                        case RAW_ATTENTION -> AttentionRollout.rawLast(example(maps, i, m.heads), SEQ - 1);
+                        case ROLLOUT -> AttentionRollout.rollout(example(maps, i, m.heads), SEQ - 1);
+                        case FLOW -> AttentionRollout.flow(example(maps, i, m.heads), SEQ - 1);
+                        case GRADIENT_ROLLOUT -> AttentionRollout.gradientRollout(example(maps, i, m.heads),
+                                example(grads, i, m.heads), SEQ - 1);
+                        default -> saliency(embGrad, i, m.dim);
+                    };
+                }
+            }
+            double ms = (System.nanoTime() - t0) / 1e6 / n;
+            int hit = 0;
+            for (int i = 0; i < n; i++) {
+                int best = 0;
+                for (int t = 1; t < SEQ - 1; t++) {
+                    best = attr[i][t] > attr[i][best] ? t : best;
+                }
+                hit += best == sources[i] ? 1 : 0;
+            }
+            out.put(method, new AttentionScores((double) hit / n, deletion(m, seqs, attr, pred), ms));
+        }
+        return new AttentionStudy(copyAccuracy, out);
+    }
+
+    /**
+     * The attention study.
+     *
+     * @param copyAccuracy the copy model's held-out accuracy
+     * @param scores per method its scores
+     */
+    public record AttentionStudy(double copyAccuracy, Map<AttentionMethod, AttentionScores> scores) {
+    }
+
+
+    private static CopyAttention trainCopy(int steps, long seed) {
+        CopyAttention m = new CopyAttention(seed);
+        Optimizer opt = Optimizer.adam(1e-2f);
+        SplittableRandom r = new SplittableRandom(seed + 1);
+        for (int s = 0; s < steps; s++) {
+            int[] src = new int[64];
+            int[] tgt = new int[64];
+            int[][] seqs = copySequences(64, src, tgt, r);
+            Functional.crossEntropy(m.logits(m.embeddings(seqs), false), floats(tgt)).backward();
+            opt.step(m.parameters());
+        }
+        return m;
+    }
+
+    private static double copyAccuracyOf(CopyAttention m, long seed) {
+        int[] src = new int[500];
+        int[] tgt = new int[500];
+        int[][] seqs = copySequences(500, src, tgt, new SplittableRandom(seed));
+        float[] p = Var.noGrad(() -> m.logits(m.embeddings(seqs), false)).value().argmax(1).toArray();
+        int hit = 0;
+        for (int i = 0; i < tgt.length; i++) {
+            hit += p[i] == tgt[i] ? 1 : 0;
+        }
+        return (double) hit / tgt.length;
+    }
+
+    private static double[] saliency(float[] grad, int i, int dim) {
+        double[] a = new double[SEQ];
+        for (int t = 0; t < SEQ; t++) {
+            double s = 0;
+            for (int d = 0; d < dim; d++) {
+                double g = grad[(i * SEQ + t) * dim + d];
+                s += g * g;
+            }
+            a[t] = Math.sqrt(s);
+        }
+        return a;
+    }
+
+    private static double[][] integratedGradients(CopyAttention m, int[][] seqs, float[] onehot, int steps) {
+        int n = seqs.length;
+        Tensor e = Var.noGrad(() -> m.embeddings(seqs)).value();
+        float[] ev = e.toArray();
+        double[][] attr = new double[n][SEQ];
+        for (int k = 0; k < steps; k++) {
+            float alpha = (k + 0.5f) / steps;
+            Var x = Var.param(e.mul(alpha));
+            m.logits(x, false).mul(Tensor.of(Shape.of(n, VALUES), onehot)).sum().backward();
+            float[] g = x.grad().toArray();
+            for (int i = 0; i < n; i++) {
+                for (int t = 0; t < SEQ; t++) {
+                    for (int d = 0; d < m.dim; d++) {
+                        int idx = (i * SEQ + t) * m.dim + d;
+                        attr[i][t] += g[idx] * ev[idx] / steps;
+                    }
+                }
+            }
+        }
+        for (Var p : m.parameters()) {
+            p.zeroGrad();
+        }
+        for (double[] row : attr) {
+            for (int t = 0; t < SEQ; t++) {
+                row[t] = Math.abs(row[t]);
+            }
+        }
+        return attr;
+    }
+
+    private static double deletion(CopyAttention m, int[][] seqs, double[][] attr, int[] pred) {
+        int n = seqs.length;
+        int[][] order = new int[n][];
+        for (int i = 0; i < n; i++) {
+            double[] a = attr[i];
+            order[i] = IntStream.range(0, SEQ - 1).boxed().sorted((x, y) -> Double.compare(a[y], a[x]))
+                    .mapToInt(Integer::intValue).toArray();
+        }
+        double total = 0;
+        for (int k = 0; k < SEQ; k++) {
+            int[][] cur = new int[n][];
+            for (int i = 0; i < n; i++) {
+                cur[i] = seqs[i].clone();
+                for (int j = 0; j < Math.min(k, SEQ - 1); j++) {
+                    cur[i][order[i][j]] = PAD;
+                }
+            }
+            float[] l = Var.noGrad(() -> m.logits(m.embeddings(cur), false)).value().toArray();
+            for (int i = 0; i < n; i++) {
+                double max = Double.NEGATIVE_INFINITY;
+                for (int c = 0; c < VALUES; c++) {
+                    max = Math.max(max, l[i * VALUES + c]);
+                }
+                double sum = 0;
+                for (int c = 0; c < VALUES; c++) {
+                    sum += Math.exp(l[i * VALUES + c] - max);
+                }
+                total += Math.exp(l[i * VALUES + pred[i]] - max) / sum / n / SEQ;
+            }
+        }
+        return total;
     }
 }

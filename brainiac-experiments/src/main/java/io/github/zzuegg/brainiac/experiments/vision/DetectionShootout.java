@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experiments.vision;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.data.GlyphDocuments;
 import io.github.zzuegg.brainiac.experimental.data.ShapeScenes;
 import io.github.zzuegg.brainiac.experimental.nn.UNet2d;
 import io.github.zzuegg.brainiac.experimental.vision.AnchorDetector;
@@ -253,6 +254,67 @@ public final class DetectionShootout {
             curve[c] = evaluate("DETR", x -> det.detect(x, 0), test, det.macs()).map50();
         }
         return curve;
+    }
+
+    // ------------------------------------------------------------------ 9.4.14 DETR follow-up
+
+    /**
+     * Wave 9 item 9.4.14: DETR-lite learning curves with the convergence options of
+     * {@link SetPredictionDetector.Options} (one-to-many hybrid matching, anchor-box queries,
+     * per-layer auxiliary losses), on {@link ShapeScenes} or on {@link GlyphDocuments} layout
+     * pages (text-block, table and figure regions, few large boxes). The wave 8 rows
+     * ({@link #detr}) and the baselines ({@link #centerNet}, {@link #anchor}) are unchanged.
+     *
+     * @param options the detector options ({@link SetPredictionDetector.Options#none()} is plain DETR)
+     * @param layouts whether to train and test on layout pages instead of scenes
+     * @param checkpoints the step counts at which to score, increasing
+     * @param seed the seed
+     * @return the mAP@0.5 on 48 test images at each checkpoint
+     */
+    public static double[] detrCurve(SetPredictionDetector.Options options, boolean layouts, int[] checkpoints,
+            long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        int classes = layouts ? GlyphDocuments.REGION_KINDS : CLASSES;
+        SetPredictionDetector det = new SetPredictionDetector(SIDE, classes, 8, 32, 2, false, 5, options, r);
+        Optimizer opt = Optimizer.adamW(3e-3f, 1e-4f);
+        Object[] test = layouts ? layoutBatch(48, new SplittableRandom(seed + 99))
+                : sceneBatch(testScenes(48, ShapeScenes.Layout.SPARSE, seed + 99));
+        double[] curve = new double[checkpoints.length];
+        int step = 0;
+        for (int c = 0; c < checkpoints.length; c++) {
+            for (; step < checkpoints[c]; step++) {
+                Object[] batch = layouts ? layoutBatch(BATCH, r)
+                        : sceneBatch(SCENES.scenes(BATCH, 1, 5, ShapeScenes.Layout.SPARSE, r.nextLong()));
+                det.loss((Tensor) batch[0], (float[][]) batch[1], (int[][]) batch[2]).backward();
+                opt.step(det.parameters());
+            }
+            List<Detection> dets = det.detect((Tensor) test[0], 0);
+            curve[c] = DetectionMetrics.meanAp(dets, (float[][]) test[1], (int[][]) test[2], classes, 0.5);
+        }
+        return curve;
+    }
+
+    /** Images, boxes and classes of scenes. */
+    private static Object[] sceneBatch(ShapeScenes.Scene[] s) {
+        return new Object[] {ShapeScenes.images(s), boxes(s), classes(s)};
+    }
+
+    /** Images, boxes and classes of layout pages with 1 to 3 regions. */
+    private static Object[] layoutBatch(int n, SplittableRandom r) {
+        List<GlyphDocuments.Page> pages = new ArrayList<>();
+        float[][] b = new float[n][];
+        int[][] c = new int[n][];
+        for (int i = 0; i < n; i++) {
+            GlyphDocuments.Page p = GlyphDocuments.layout(SIDE, 3, 0.02, r);
+            pages.add(p);
+            b[i] = new float[4 * p.regions().size()];
+            c[i] = new int[p.regions().size()];
+            for (int k = 0; k < c[i].length; k++) {
+                System.arraycopy(p.regions().get(k).box(), 0, b[i], 4 * k, 4);
+                c[i][k] = p.regions().get(k).kind();
+            }
+        }
+        return new Object[] {GlyphDocuments.images(pages, SIDE, SIDE), b, c};
     }
 
     // ------------------------------------------------------------------ sliding-window CNN
