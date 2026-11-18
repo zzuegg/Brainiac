@@ -11,6 +11,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -24,7 +26,8 @@ import java.util.Locale;
  *
  * Options: {@code --negative text}, {@code --size WxH}, {@code --frames N} ({@code 1 + 4k}),
  * {@code --steps N}, {@code --guidance G}, {@code --shift S}, {@code --seed S},
- * {@code --device cpu|vulkan|<part of a name>}, {@code --dtype f32|f16|bf16},
+ * {@code --device cpu|vulkan|<part of a name>} (several, comma-separated, spread the parts:
+ * Wan 2.2's experts on different GPUs, umT5 where there is room), {@code --dtype f32|f16|bf16},
  * {@code --bits T,E} (transformer and text encoder bits, 0 for full), {@code --out folder},
  * {@code --avi} (also write an uncompressed AVI), {@code --image file} (the first frame, PNG or
  * JPEG, for image-to-video models and Wan 2.2 TI2V-5B), {@code --low-guidance G} (Wan 2.2's
@@ -85,19 +88,28 @@ public final class VideoExample {
                     default -> throw new IllegalArgumentException("unknown option " + args[i]);
                 }
             }
-            Device device = device(deviceName);
+            List<Device> devices = new ArrayList<>();
+            for (String name : deviceName.split(",")) {
+                devices.add(device(name.strip()));
+            }
+            Device device = devices.get(0);
             if (dtype == null) {
                 dtype = device.kind() != Device.Kind.GPU ? DType.FLOAT32
                         : device.supports(DType.BFLOAT16) ? DType.BFLOAT16
                         : device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
             }
             Wan.Files files = Wan.Files.find(path);
+            Wan.Placement placement = Wan.Placement.single(device);
             if (options == null) {
-                options = Wan.Options.fitting(files, device, dtype);
+                // the most precise weights that leave room for this video's size
+                Wan.Plan plan = Wan.plan(files, devices, dtype, request);
+                System.out.print(plan.describe());
+                placement = plan.placement();
+                options = plan.options();
             }
-            System.out.println("Device " + device + ", " + dtype + ", " + options);
+            System.out.println(placement + ", " + dtype + ", " + options);
             long start = System.nanoTime();
-            try (Wan wan = Wan.load(files, device, dtype, options)) {
+            try (Wan wan = Wan.load(files, placement, dtype, options)) {
                 System.out.printf("Loaded %s in %.1f s%n", wan, (System.nanoTime() - start) / 1e9);
                 long t0 = System.nanoTime();
                 GeneratedVideo video = wan.generate(request, image, (step, total, preview) -> {

@@ -670,6 +670,25 @@ GeneratedVideo video = wan.generate(VideoRequest.of("the waves roll in").withSiz
 ./gradlew :brainiac-examples:run --args="video models/wan2.2-ti2v-5b 'the waves roll in' --image beach.jpg --size 1280x704 --frames 121"
 ```
 
+On a rented machine with several GPUs, `Wan.plan` reads the files' headers and the devices'
+free memory and places the parts for a video size: Wan 2.2's two experts on different GPUs,
+umT5 and the CLIP encoder where there is room, each transformer's GPU keeping room for a
+step's activations (about 14 GB for a 14B model at 1280x720 and 81 frames in bfloat16). It
+falls back to 8- then 4-bit weights when nothing else fits. The example's `--device` takes a
+comma-separated list.
+
+```java
+Wan.Plan plan = Wan.plan(files, Device.available(), DType.BFLOAT16, request);
+System.out.print(plan.describe());
+try (Wan wan = Wan.load(files, plan.placement(), DType.BFLOAT16, plan.options())) { ... }
+```
+
+| Model (bfloat16) | Weights | One GPU |
+| --- | --- | --- |
+| Wan 2.1 / 2.2 T2V and I2V 14B | 28.6 GB + umT5 11.4 GB (+ CLIP 1.3 GB) | 80 GB at 720p |
+| Wan 2.2 A14B (two experts) | 2 x 28.6 GB + umT5 11.4 GB | 141 GB, or two 48-80 GB GPUs |
+| Wan 2.2 TI2V-5B | 10 GB + umT5 | 24 GB at 720p (16 GB with 8-bit weights) |
+
 - Frames are `1 + 4k` (81 is five seconds at 16 fps); width and height multiples of 16.
 - The VAE decodes one latent frame at a time, so memory does not grow with the length.
 - umT5, the transformer (with per-patch timesteps and image tokens for image-to-video), both

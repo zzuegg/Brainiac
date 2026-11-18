@@ -7,9 +7,12 @@ import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import io.github.zzuegg.brainiac.nn.diffusion.WanTransformer;
+import io.github.zzuegg.brainiac.nn.diffusion.WanVae;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import static io.github.zzuegg.brainiac.diffusion.ReferenceTest.assertClose;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -150,5 +153,46 @@ class WanImageToVideoTest {
             GeneratedImage picture = new GeneratedImage(32, 32, new byte[32 * 32 * 3], 0);
             assertThrows(IllegalArgumentException.class, () -> wan.generate(r, picture, Progress.NONE));
         }
+    }
+
+    @Test
+    void partsOnDifferentDevicesGiveTheSameVideo() throws Exception {
+        // on a GPU test run this moves states and latents between the GPU and the CPU
+        Wan.Files files = Wan.Files.find(dir.resolve("wan_i2v22"));
+        Wan.Placement spread = new Wan.Placement(Device.cpu(), List.of(DEVICE, Device.cpu()), DEVICE);
+        try (Wan wan = Wan.load(files, spread, DType.FLOAT32, TINY)) {
+            assertEquals(spread, wan.placement());
+            VideoRequest r = new VideoRequest("a lighthouse in a storm", "blurry", 48, 32, 9, 4, 4f, 0f, 0, 3f);
+            GeneratedVideo video = wan.generate(r, image("i2v22.image"), ref("i2v22.noise"), Progress.NONE);
+            double worst = worst(video, "i2v22.video");
+            assertTrue(worst <= 1.0, "largest difference " + worst + " of 255");
+        }
+        Wan.Files clip = Wan.Files.find(dir.resolve("wan_i2v21"));
+        try (Wan wan = Wan.load(clip, new Wan.Placement(Device.cpu(), List.of(DEVICE), Device.cpu()), DType.FLOAT32,
+                new Wan.Options(0, 0, 512))) {
+            VideoRequest r = new VideoRequest("a lighthouse in a storm", "blurry", 48, 32, 9, 3, 5f, 0f, 0);
+            GeneratedVideo video = wan.generate(r, image("i2v21.image"), ref("i2v21.noise"), Progress.NONE);
+            double worst = worst(video, "i2v21.video");
+            assertTrue(worst <= 1.0, "largest difference " + worst + " of 255");
+        }
+    }
+
+    @Test
+    void plansWhereThePartsGo() throws Exception {
+        Wan.Files files = Wan.Files.find(dir.resolve("wan_i2v22"));
+        VideoRequest r = new VideoRequest("a fox", null, 48, 32, 9, 4, 4f, 0f, 0);
+        Wan.Plan plan = Wan.plan(files, List.of(Device.cpu()), DType.FLOAT32, r);
+        assertTrue(plan.fits(), plan.describe());
+        assertEquals(Wan.Placement.single(Device.cpu()).devices(), plan.placement().devices());
+        assertEquals(2, plan.placement().transformers().size());
+        assertEquals(0, plan.options().transformerBits());
+
+        // Wan 2.1 14B at 720p, five seconds: about 10 GB of activations per step in bfloat16
+        WanTransformer.Settings big = WanTransformer.Settings.of(16, 40, 128, 40, 13824, 4096);
+        VideoRequest hd = new VideoRequest("a fox", null, 1280, 720, 81, 40, 5f, 0f, 0);
+        long step = Wan.stepBytes(big, WanVae.Settings.wan21(), DType.BFLOAT16, hd);
+        assertTrue(step > 8e9 && step < 16e9, "step " + step);
+        long decode = Wan.decodeBytes(WanVae.Settings.wan21(), DType.BFLOAT16, hd);
+        assertTrue(decode > 2e9 && decode < 8e9, "decode " + decode);
     }
 }

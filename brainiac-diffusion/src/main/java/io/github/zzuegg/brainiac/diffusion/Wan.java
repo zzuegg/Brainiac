@@ -343,6 +343,215 @@ public final class Wan implements AutoCloseable {
         }
     }
 
+    /**
+     * Which device holds which part. Experts on different GPUs let Wan 2.2's two 14B experts
+     * run on two smaller cards, and umT5 (11 GB in 16 bits) can sit on another GPU or the
+     * CPU, since it runs once per video. Latents and text states move between devices
+     * through the host, which costs little next to a step.
+     *
+     * @param text umT5 and the CLIP image encoder
+     * @param transformers the transformer, or one device per expert (high noise first); the
+     *     first one also holds the sampler's latents
+     * @param vae the autoencoder
+     */
+    public record Placement(Device text, List<Device> transformers, Device vae) {
+
+        /** Checks the parts. */
+        public Placement {
+            java.util.Objects.requireNonNull(text, "text");
+            java.util.Objects.requireNonNull(vae, "vae");
+            transformers = List.copyOf(transformers);
+            if (transformers.isEmpty()) {
+                throw new IllegalArgumentException("a placement needs a device for the transformer");
+            }
+        }
+
+        /**
+         * @param device the device
+         * @return everything on one device
+         */
+        public static Placement single(Device device) {
+            return new Placement(device, List.of(device), device);
+        }
+
+        /**
+         * @param i the expert, 0 for the transformer or the high-noise expert
+         * @return its device; experts beyond the list share the last one
+         */
+        public Device transformer(int i) {
+            return transformers.get(Math.min(i, transformers.size() - 1));
+        }
+
+        /** @return the distinct devices, in the order text, transformers, autoencoder */
+        public List<Device> devices() {
+            java.util.LinkedHashSet<Device> all = new java.util.LinkedHashSet<>();
+            all.add(text);
+            all.addAll(transformers);
+            all.add(vae);
+            return List.copyOf(all);
+        }
+
+        @Override
+        public String toString() {
+            return "text on " + text + ", transformer" + (transformers.size() > 1 ? "s" : "") + " on "
+                    + transformers.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(" + "))
+                    + ", autoencoder on " + vae;
+        }
+    }
+
+    /**
+     * Where a model's parts can go and in what precision, for one video size, estimated from
+     * the weight files' headers and the devices' free memory before anything loads.
+     *
+     * @param placement which device holds which part
+     * @param options the precision
+     * @param need what each device would hold at its peak, in bytes
+     * @param free what each device has free, in bytes ({@link Long#MAX_VALUE} for a device that
+     *     does not count its memory)
+     * @param fits whether every device has room; when not, the plan is the smallest found
+     */
+    public record Plan(Placement placement, Options options, Map<Device, Long> need, Map<Device, Long> free,
+            boolean fits) {
+
+        /** @return one line per device: what it holds and how much room it has */
+        public String describe() {
+            StringBuilder b = new StringBuilder(fits ? "fits: " : "does not fit: ")
+                    .append(placement).append(", ").append(options).append('\n');
+            for (Map.Entry<Device, Long> e : need.entrySet()) {
+                long f = free.get(e.getKey());
+                b.append("  ").append(e.getKey()).append(": needs ").append(MemoryFit.gb(e.getValue()))
+                        .append(f == Long.MAX_VALUE ? "" : " of " + MemoryFit.gb(f) + " free").append('\n');
+            }
+            return b.toString();
+        }
+    }
+
+    /**
+     * Plans where a model's parts go for videos of a size: the most precise options (as
+     * {@link Options#fitting}) for which the transformers, then umT5 and the CLIP encoder,
+     * then the autoencoder each fit on the device with the most room left, spreading Wan
+     * 2.2's experts over different devices when there are several. Each transformer's device
+     * keeps room for a step's activations at that size and the autoencoder's for decoding;
+     * both are estimates, on the safe side.
+     *
+     * @param files the model's parts
+     * @param devices the devices to use, at least one
+     * @param dtype the load type
+     * @param request the largest video it will make
+     * @return the plan
+     * @throws IOException if a header cannot be read
+     */
+    public static Plan plan(Files files, List<Device> devices, DType dtype, VideoRequest request) throws IOException {
+        if (devices.isEmpty()) {
+            throw new IllegalArgumentException("no devices");
+        }
+        List<Device> pool = List.copyOf(new java.util.LinkedHashSet<>(devices));
+        List<MemoryFit.Params> experts = new ArrayList<>();
+        WanTransformer.Settings shape;
+        try (WeightSource s = WeightSource.open(files.transformers().get(0))) {
+            shape = WanPretrained.transformerSettings(s, WanPretrained.transformerNames(s), files.transformerConfig());
+        }
+        for (Path p : files.transformers()) {
+            experts.add(MemoryFit.params(p));
+        }
+        WanVae.Settings vaeShape;
+        try (WeightSource s = WeightSource.open(files.vae())) {
+            String prefix = WanPretrained.diffusersVae(s) ? "" : WanPretrained.vaePrefix(s);
+            vaeShape = WanPretrained.vaeSettings(s, prefix, files.vaeConfig());
+        }
+        MemoryFit.Params text = MemoryFit.params(files.textEncoder());
+        long clipBytes = files.imageEncoder() == null ? 0 : MemoryFit.params(files.imageEncoder()).bytes(dtype, 0);
+        long vaeBytes = MemoryFit.params(files.vae()).bytes(dtype, 0);
+        long stepWork = stepBytes(shape, vaeShape, dtype, request);
+        long decodeWork = decodeBytes(vaeShape, dtype, request);
+        Map<Device, Long> free = new java.util.LinkedHashMap<>();
+        for (Device d : pool) {
+            free.put(d, MemoryFit.free(d).orElse(Long.MAX_VALUE));
+        }
+        int[][] choices = {{0, 0}, {0, 8}, {8, 8}, {8, 4}, {4, 4}};
+        Plan best = null;
+        for (int[] c : choices) {
+            Map<Device, Long> need = new java.util.LinkedHashMap<>();
+            Map<Device, Long> work = new java.util.HashMap<>();
+            List<Device> placed = new ArrayList<>();
+            for (MemoryFit.Params e : experts) {
+                // a device no other expert uses yet, the roomiest
+                Device d = roomiest(pool, free, need, placed);
+                placed.add(d);
+                need.merge(d, e.bytes(dtype, c[0]), Long::sum);
+                work.merge(d, stepWork, Math::max);
+            }
+            Device textDevice = roomiest(pool, free, sum(need, work), List.of());
+            need.merge(textDevice, text.bytes(dtype, c[1]) + clipBytes, Long::sum);
+            Device vaeDevice = roomiest(pool, free, sum(need, work), List.of());
+            need.merge(vaeDevice, vaeBytes, Long::sum);
+            work.merge(vaeDevice, decodeWork, Math::max);
+            Map<Device, Long> total = sum(need, work);
+            boolean fits = total.entrySet().stream().allMatch(en -> en.getValue() <= free.get(en.getKey()));
+            Plan plan = new Plan(new Placement(textDevice, placed, vaeDevice), new Options(c[0], c[1], 512), total,
+                    free, fits);
+            if (fits) {
+                return plan;
+            }
+            best = plan;
+        }
+        return best;
+    }
+
+    private static Map<Device, Long> sum(Map<Device, Long> a, Map<Device, Long> b) {
+        Map<Device, Long> s = new java.util.LinkedHashMap<>(a);
+        b.forEach((k, v) -> s.merge(k, v, Long::sum));
+        return s;
+    }
+
+    /** The device with the most room left, preferring ones not in {@code avoid}. */
+    private static Device roomiest(List<Device> pool, Map<Device, Long> free, Map<Device, Long> used,
+            List<Device> avoid) {
+        Device best = null;
+        long room = Long.MIN_VALUE;
+        boolean bestAvoided = true;
+        for (Device d : pool) {
+            long f = free.get(d);
+            long r = f == Long.MAX_VALUE ? Long.MAX_VALUE : f - used.getOrDefault(d, 0L);
+            boolean avoided = avoid.contains(d);
+            if (best == null || (bestAvoided && !avoided) || (bestAvoided == avoided && r > room)) {
+                best = d;
+                room = r;
+                bestAvoided = avoided;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * A transformer step's activations: per video patch the feed-forward's hidden values,
+     * the attention's queries, keys, values and output, and float32 residuals and
+     * modulations, plus the sampler's latents, with 1 GB to spare.
+     */
+    static long stepBytes(WanTransformer.Settings t, WanVae.Settings vae, DType dtype, VideoRequest request) {
+        int sf = vae.spatialFactor();
+        int[] p = t.patch();
+        long frames = (request.frames() - 1) / vae.temporalFactor() + 1;
+        long patches = frames / p[0] * (request.height() / sf / p[1]) * (request.width() / sf / p[2]);
+        long perPatch = (long) t.ffnSize() * dtype.bytes() + (long) t.features() * (6L * dtype.bytes() + 16);
+        long latents = frames * (request.height() / sf) * (request.width() / sf) * vae.latentChannels() * 4L * 8;
+        return patches * perPatch + latents + (1L << 30);
+    }
+
+    /**
+     * Decoding one latent frame: the widest full-resolution level over the frames of a chunk
+     * and the causal caches, a few times over for the convolutions' temporaries, with 1 GB
+     * to spare.
+     */
+    static long decodeBytes(WanVae.Settings vae, DType dtype, VideoRequest request) {
+        // Wan 2.2's decoder ends at half resolution and unfolds 2x2 patches
+        long pixels = (long) request.width() * request.height() / ((long) vae.patch() * vae.patch());
+        long width = vae.decoderBase() * (long) vae.multipliers()[0];
+        return pixels * width * (vae.temporalFactor() + 2) * Math.max(4, dtype.bytes()) * 3 + (1L << 30);
+    }
+
+    private final Placement placement;
+    /** Where sampling happens: the (first) transformer's device. */
     private final Device device;
     private final List<WeightSource> sources;
     private final List<Tensor> weights;
@@ -365,10 +574,11 @@ public final class Wan implements AutoCloseable {
         IMAGE
     }
 
-    private Wan(Device device, List<WeightSource> sources, List<Tensor> weights, PretrainedTokenizer tokenizer,
+    private Wan(Placement placement, List<WeightSource> sources, List<Tensor> weights, PretrainedTokenizer tokenizer,
             T5Encoder t5, List<WanTransformer> transformers, WanVae vae, Files files, Options options,
             ClipVisionEncoder clip, Input input) {
-        this.device = device;
+        this.placement = placement;
+        this.device = placement.transformer(0);
         this.sources = sources;
         this.weights = weights;
         this.tokenizer = tokenizer;
@@ -437,9 +647,27 @@ public final class Wan implements AutoCloseable {
      * @throws IOException if the files cannot be read
      */
     public static Wan load(Files files, Device device, DType dtype, Options options) throws IOException {
-        if (!device.supports(dtype)) {
-            throw new IllegalArgumentException(device + " cannot hold " + dtype + " values");
+        return load(files, Placement.single(device), dtype, options);
+    }
+
+    /**
+     * Loads a model with its parts on given devices, such as Wan 2.2's two experts on two
+     * GPUs; {@link #plan} picks a placement that fits.
+     *
+     * @param files where the parts are
+     * @param placement which device holds which part
+     * @param dtype the type of the networks
+     * @param options how to store the weights
+     * @return the model
+     * @throws IOException if the files cannot be read
+     */
+    public static Wan load(Files files, Placement placement, DType dtype, Options options) throws IOException {
+        for (Device d : placement.devices()) {
+            if (!d.supports(dtype)) {
+                throw new IllegalArgumentException(d + " cannot hold " + dtype + " values");
+            }
         }
+        Device device = placement.text();
         List<WeightSource> sources = new ArrayList<>();
         List<Tensor> all = new ArrayList<>();
         try {
@@ -468,10 +696,11 @@ public final class Wan implements AutoCloseable {
             Input input = input(shapes.get(0), vaeSettings, files);
             List<WanTransformer> transformers = new ArrayList<>();
             for (int i = 0; i < shapes.size(); i++) {
-                transformers.add(WanPretrained.transformer(new Weights(transformerSources.get(i), "", device, dtype, all)
+                transformers.add(WanPretrained.transformer(new Weights(transformerSources.get(i), "",
+                        placement.transformer(i), dtype, all)
                         .renamed(transformerNames.get(i)).quantized(options.transformerBits()), shapes.get(i)));
             }
-            WanVae vae = WanPretrained.vae(new Weights(vs, prefix, device, dtype, all), vaeSettings, diffusersVae,
+            WanVae vae = WanPretrained.vae(new Weights(vs, prefix, placement.vae(), dtype, all), vaeSettings, diffusersVae,
                     input != Input.TEXT);
             ClipVisionEncoder clip = null;
             if (shapes.get(0).imageFeatures() > 0) {
@@ -481,7 +710,7 @@ public final class Wan implements AutoCloseable {
                 // Wan conditions on the penultimate layer's states
                 clip = WanPretrained.clipVision(new Weights(cs, cp, device, dtype, all), c.withLayers(c.layers() - 1));
             }
-            return new Wan(device, sources, all, tokenizer, t5, transformers, vae, files, options, clip, input);
+            return new Wan(placement, sources, all, tokenizer, t5, transformers, vae, files, options, clip, input);
         } catch (IOException | RuntimeException e) {
             release(all, sources);
             throw e;
@@ -546,9 +775,14 @@ public final class Wan implements AutoCloseable {
 
     // ------------------------------------------------------------------------------- accessors
 
-    /** @return the device it runs on */
+    /** @return the device it samples on: the (first) transformer's */
     public Device device() {
         return device;
+    }
+
+    /** @return which device holds which part */
+    public Placement placement() {
+        return placement;
     }
 
     /** @return the transformer, or Wan 2.2's high-noise expert */
@@ -706,20 +940,26 @@ public final class Wan implements AutoCloseable {
             Tensor picture = picture(frame);
             try {
                 if (input == Input.TEXT_OR_IMAGE) {
-                    return new Conditioning(vae.encode(picture), null, null);
+                    Tensor latents = vae.encode(picture);
+                    Tensor here = latents.to(device);
+                    if (here != latents) {
+                        latents.release();
+                    }
+                    return new Conditioning(here, null, null);
                 }
                 int tf = vae.settings().temporalFactor();
                 Tensor video = request.frames() == 1 ? picture : Tensor.concat(2, picture, Tensor.zeros(
-                        Shape.of(1, 3, request.frames() - 1, request.height(), request.width()), picture.dtype(), device));
+                        Shape.of(1, 3, request.frames() - 1, request.height(), request.width()), picture.dtype(),
+                        placement.vae()));
                 Tensor latents = vae.encode(video);
                 if (video != picture) {
                     video.release();
                 }
                 Shape s = latents.shape();
                 // the mask: tf channels per latent frame, ones for the given first frame only
-                Tensor ones = Tensor.full(Shape.of(1, tf, 1, s.dim(3), s.dim(4)), 1f, DType.FLOAT32, device);
+                Tensor ones = Tensor.full(Shape.of(1, tf, 1, s.dim(3), s.dim(4)), 1f, DType.FLOAT32, placement.vae());
                 Tensor mask = s.dim(2) == 1 ? ones : Tensor.concat(2, ones,
-                        Tensor.zeros(Shape.of(1, tf, s.dim(2) - 1, s.dim(3), s.dim(4)), DType.FLOAT32, device));
+                        Tensor.zeros(Shape.of(1, tf, s.dim(2) - 1, s.dim(3), s.dim(4)), DType.FLOAT32, placement.vae()));
                 Tensor channels = Tensor.concat(1, mask, latents).to(transformers.get(0).dtype());
                 Tensor.evaluate(List.of(channels));
                 for (Tensor t : new Tensor[] {ones, mask, latents}) {
@@ -746,7 +986,7 @@ public final class Wan implements AutoCloseable {
                 v[c * plane + p] = (rgb[p * 3 + c] & 0xff) / 255f * 2 - 1;
             }
         }
-        Tensor f = Tensor.of(Shape.of(1, 3, 1, h, w), v, device);
+        Tensor f = Tensor.of(Shape.of(1, 3, 1, h, w), v, placement.vae());
         Tensor t = f.to(vae.dtype());
         if (t != f) {
             f.release();
@@ -779,7 +1019,7 @@ public final class Wan implements AutoCloseable {
             }
         }
         return Var.noGrad(() -> {
-            Tensor f = Tensor.of(Shape.of(1, 3, size, size), v, device);
+            Tensor f = Tensor.of(Shape.of(1, 3, size, size), v, placement.text());
             Tensor in = f.to(clip.dtype());
             Var out = clip.forward(Var.of(in), false);
             Tensor t = out.value().to(transformers.get(0).dtype());
@@ -828,14 +1068,28 @@ public final class Wan implements AutoCloseable {
             float lowNoiseGuidance, float shift, SigmaSampler.Listener listener) {
         double[] sigmas = FlowSampler.uniPcSigmas(steps, shift);
         double boundary = files.boundary() * 1000;
-        Var features = image.features() == null ? null : Var.of(image.features());
-        FlowSampler.Model model = (x, sigma, step) -> Var.noGrad(() -> {
+        // each expert's copy of what conditions it, on its device
+        int experts = transformers.size();
+        Tensor[][] copies = new Tensor[experts][];
+        Tensor[] given = {cond, uncond, image.channels(), image.features()};
+        for (int i = 0; i < experts; i++) {
+            copies[i] = new Tensor[given.length];
+            for (int j = 0; j < given.length; j++) {
+                copies[i][j] = given[j] == null ? null : given[j].to(placement.transformer(i));
+            }
+        }
+        FlowSampler.Model model = (sample, sigma, step) -> Var.noGrad(() -> {
             // diffusers hands the model whole timesteps
             float t = (float) Math.floor(sigma * 1000);
-            boolean low = transformers.size() == 2 && t < boundary;
-            WanTransformer dit = low ? transformers.get(1) : transformers.get(0);
+            boolean low = experts == 2 && t < boundary;
+            int e = low ? 1 : 0;
+            WanTransformer dit = transformers.get(e);
+            Device here = placement.transformer(e);
+            Tensor[] mine = copies[e];
+            Var features = mine[3] == null ? null : Var.of(mine[3]);
             float scale = low && lowNoiseGuidance > 0 ? lowNoiseGuidance : guidance;
             DType type = dit.dtype();
+            Tensor x = sample.to(here);
             Tensor time;
             Tensor in;
             if (image.firstFrame() != null) {
@@ -845,21 +1099,22 @@ public final class Wan implements AutoCloseable {
                 if (in != mixed) {
                     mixed.release();
                 }
-                time = firstFrameTimesteps(x.shape(), dit.settings().patch(), t);
+                time = firstFrameTimesteps(x.shape(), dit.settings().patch(), t, here);
             } else {
                 Tensor typed = x.to(type);
-                in = image.channels() == null ? typed : Tensor.concat(1, typed, image.channels());
+                in = mine[2] == null ? typed : Tensor.concat(1, typed, mine[2]);
                 if (in != typed && typed != x) {
                     typed.release();
                 }
-                time = Tensor.of(Shape.of(1), new float[] {t}, device);
+                time = Tensor.of(Shape.of(1), new float[] {t}, here);
             }
-            Tensor c = dit.forward(Var.of(in), time, Var.of(cond), features, false).value().to(DType.FLOAT32);
-            if (uncond == null || scale <= 1) {
-                return c;
+            Tensor c = dit.forward(Var.of(in), time, Var.of(mine[0]), features, false).value().to(DType.FLOAT32);
+            Tensor v = c;
+            if (mine[1] != null && scale > 1) {
+                Tensor u = dit.forward(Var.of(in), time, Var.of(mine[1]), features, false).value().to(DType.FLOAT32);
+                v = u.add(c.sub(u).mul(scale));
             }
-            Tensor u = dit.forward(Var.of(in), time, Var.of(uncond), features, false).value().to(DType.FLOAT32);
-            return u.add(c.sub(u).mul(scale));
+            return v.to(device);
         });
         Tensor start = noise.to(DType.FLOAT32);
         try {
@@ -868,21 +1123,30 @@ public final class Wan implements AutoCloseable {
             if (start != noise) {
                 start.release();
             }
+            for (Tensor[] c : copies) {
+                for (int j = 0; j < given.length; j++) {
+                    if (c[j] != null && c[j] != given[j]) {
+                        c[j].release();
+                    }
+                }
+            }
         }
     }
 
     /** Per-patch timesteps {@code [1, patches]}: 0 for the first latent frame's patches, {@code t} for the rest. */
-    private Tensor firstFrameTimesteps(Shape latents, int[] patch, float t) {
+    private static Tensor firstFrameTimesteps(Shape latents, int[] patch, float t, Device device) {
         int perFrame = (latents.dim(3) / patch[1]) * (latents.dim(4) / patch[2]);
         int n = latents.dim(2) / patch[0] * perFrame;
         float[] v = new float[n];
         java.util.Arrays.fill(v, perFrame, n, t);
         return Tensor.of(Shape.of(1, n), v, device);
     }
+
     /** Decodes latents into frames, one latent frame at a time. */
     List<GeneratedImage> decode(Tensor latents) {
         List<GeneratedImage> frames = new ArrayList<>();
-        vae.decode(latents, chunk -> {
+        Tensor there = latents.to(placement.vae());
+        vae.decode(there, chunk -> {
             Tensor unit = chunk.add(1f).mul(0.5f);   // the decoder clamps to [-1, 1]
             int n = unit.shape().dim(0);
             for (int i = 0; i < n; i++) {
@@ -893,6 +1157,9 @@ public final class Wan implements AutoCloseable {
             unit.release();
             chunk.release();
         });
+        if (there != latents) {
+            there.release();
+        }
         return frames;
     }
 
@@ -906,7 +1173,7 @@ public final class Wan implements AutoCloseable {
     Tensor encode(String prompt) {
         int[] ids = ids(prompt);
         return Var.noGrad(() -> {
-            Tensor idTensor = StableDiffusion.idTensor(new int[][] {ids}, device);
+            Tensor idTensor = StableDiffusion.idTensor(new int[][] {ids}, placement.text());
             Var states = t5.encode(Var.of(idTensor), false);
             idTensor.release();
             int n = ids.length;
@@ -915,7 +1182,7 @@ public final class Wan implements AutoCloseable {
             DType type = transformers.get(0).dtype();
             Tensor s = states.value().to(type);
             Tensor out = n == total ? s
-                    : Tensor.concat(1, s, Tensor.zeros(Shape.of(1, total - n, d), type, device));
+                    : Tensor.concat(1, s, Tensor.zeros(Shape.of(1, total - n, d), type, placement.text()));
             Tensor.evaluate(List.of(out));
             if (s != out) {
                 s.release();
