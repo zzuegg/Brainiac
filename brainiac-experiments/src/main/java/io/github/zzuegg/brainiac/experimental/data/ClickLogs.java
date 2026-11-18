@@ -126,10 +126,11 @@ public final class ClickLogs {
     }
 
     /**
-     * Clicks follow {@code logit = 2 A[c0][c1] - 1}. Conversions follow
+     * Clicks are rare, {@code logit = 2 A[c0][c1] - 3} (about 7% CTR, the sparse regime ESMM
+     * targets). Conversions follow
      * {@code logit = 2 C[c0][c2] + D[c1] - 1.2 A[c0][c1] - 1}: impressions that are very
-     * clickable convert worse (curiosity clicks), so the clicked sub-population is a biased
-     * sample of the conversion function and a click-space CVR model learns the wrong ranking.
+     * clickable convert worse (curiosity clicks). Selection into the click space depends only on the
+     * features, so click-space CVR training is consistent but sees only the clicked 7% of rows.
      *
      * @param rows impressions
      * @param fields categorical fields, at least 3
@@ -154,7 +155,7 @@ public final class ClickLogs {
                 cat[f] = r.nextInt(categories);
                 x[i * width + f * categories + cat[f]] = 1;
             }
-            ctr[i] = sigmoid(2 * a[cat[0]][cat[1]] - 1);
+            ctr[i] = sigmoid(2 * a[cat[0]][cat[1]] - 3);
             cvr[i] = sigmoid(2 * c[cat[0]][cat[2]] + d[cat[1]] - 1.2 * a[cat[0]][cat[1]] - 1);
             click[i] = r.nextDouble() < ctr[i] ? 1 : 0;
             convert[i] = r.nextDouble() < cvr[i] ? 1 : 0;
@@ -194,8 +195,10 @@ public final class ClickLogs {
     /**
      * Queries whose documents have relevance from a hidden function
      * {@code s = w . x + 0.5 x0 x1}, cut into grades 0..4 by quantiles; a logging ranker sorts by
-     * {@code s + noise}; sessions show the top {@code k} and record clicks with attractiveness
-     * {@code 0.05 + 0.95 (2^g - 1) / 15}.
+     * {@code s + 1.5 sd(s) x_last + noise}, where the last feature is <em>irrelevant</em> (its
+     * weight in {@code s} is 0) but promoted by the logger, so under position bias naive click
+     * models learn to reward it and debiased ones should not; sessions show the top {@code k} and
+     * record clicks with attractiveness {@code 0.05 + 0.95 (2^g - 1) / 15}.
      *
      * @param queries queries
      * @param docs documents per query
@@ -215,6 +218,12 @@ public final class ClickLogs {
         for (int j = 0; j < d; j++) {
             w[j] = r.nextGaussian();
         }
+        w[d - 1] = 0;
+        double spread = 0;
+        for (double v : w) {
+            spread += v * v;
+        }
+        double promote = 1.5 * Math.sqrt(spread + 0.25);
         double[][][] x = new double[queries][docs][d];
         int[][] grade = new int[queries][docs];
         double[] exam = new double[k];
@@ -256,7 +265,7 @@ public final class ClickLogs {
         for (int q = 0; q < queries; q++) {
             double[] logged = new double[docs];
             for (int i = 0; i < docs; i++) {
-                logged[i] = score[q][i] + loggingNoise * r.nextGaussian();
+                logged[i] = score[q][i] + promote * x[q][i][d - 1] + loggingNoise * r.nextGaussian();
             }
             final double[] lg = logged;
             int[] top = java.util.stream.IntStream.range(0, docs).boxed()

@@ -91,6 +91,31 @@ public final class ClickModels {
         return s;
     }
 
+    /**
+     * An FT-Transformer with one categorical token per field plus [CLS], one block, two heads (the
+     * tokenizer needs a numeric column, so a constant zero column adds one uninformative token).
+     */
+    private static FtTransformer categoricalFt(int fields, int cats, int dim, SplittableRandom r) {
+        int[] cards = new int[fields];
+        java.util.Arrays.fill(cards, cats);
+        return new FtTransformer(new FeatureTokenizer(1, cards, dim, FeatureTokenizer.Numeric.LINEAR, 0, 0, true, r),
+                1, 2, 1, r);
+    }
+
+    /** Feeds one-hot rows to a categorical FT-Transformer as {@code [batch, fields]} category ids. */
+    private static BiFunction<Var, Boolean, Var> fieldIds(FtTransformer ft, int fields, int cats) {
+        float[] idx = new float[cats];
+        for (int c = 0; c < cats; c++) {
+            idx[c] = c;
+        }
+        Tensor index = Tensor.of(Shape.of(cats, 1), idx);
+        return (x, t) -> {
+            int b = x.shape().dim(0);
+            Tensor ids = x.value().reshape(b, fields, cats).matmul(index).reshape(b, fields);
+            return ft.forward(Var.of(Tensor.concat(1, Tensor.zeros(Shape.of(b, 1)), ids)), t);
+        };
+    }
+
     private static void put(Map<String, double[]> out, String name, BiFunction<Var, Boolean, Var> model,
             List<Var> params, SyntheticRecsys.Table train, SyntheticRecsys.Table test, int steps, float lr,
             long seed) {
@@ -130,8 +155,8 @@ public final class ClickModels {
         dcn.addAll(head.parameters());
         put(out, "DCN-V2", (x, t) -> head.forward(cross.forward(x, t), t), dcn, train, test, steps, 0.01f, seed);
         SplittableRandom r = new SplittableRandom(seed);
-        FtTransformer ft = new FtTransformer(FeatureTokenizer.linear(cols, 8, r), 2, 2, 1, r);
-        put(out, "FT-Transformer", ft::forward, ft.parameters(), train, test, steps, 0.005f, seed);
+        FtTransformer ft = categoricalFt(fields, cats, 8, r);
+        put(out, "FT-Transformer", fieldIds(ft, fields, cats), ft.parameters(), train, test, steps, 0.005f, seed);
         FieldAttention autoInt = new FieldAttention(fields, cats, 8, 2, 8, 2, new SplittableRandom(seed));
         put(out, "AutoInt", autoInt::forward, autoInt.parameters(), train, test, steps, 0.01f, seed);
         CompressedInteraction xdfm = new CompressedInteraction(fields, cats, 8, new int[] {16, 16, 16}, 64,
@@ -177,8 +202,8 @@ public final class ClickModels {
     }
 
     /**
-     * RankMixer scaling (9.1.6): dense and sparse-MoE rankers (four feature tokens, two blocks)
-     * and an FT-Transformer (two blocks, two heads) at each token width, on a planted third-order
+     * RankMixer scaling (9.1.6): dense and sparse-MoE rankers (four feature tokens, one block)
+     * and an FT-Transformer (one block, two heads) at each token width, on a planted third-order
      * interaction over eight fields. The HSTU baseline of the item is not included.
      *
      * @param widths token widths, each divisible by 4
@@ -196,12 +221,12 @@ public final class ClickModels {
         SyntheticRecsys.Table test = all.rows(6000, 8000);
         Map<String, double[]> out = new LinkedHashMap<>();
         for (int d : widths) {
-            RankMixerBlock.Ranker dense = new RankMixerBlock.Ranker(fields, cats, 8, 4, d, 2, 2, 0,
+            RankMixerBlock.Ranker dense = new RankMixerBlock.Ranker(fields, cats, 8, 4, d, 1, 2, 0,
                     new SplittableRandom(seed));
             BinaryBench.Result rd = trainLayer(dense, train, test, steps, 0.005f, seed);
             out.put("RankMixer d=" + d, new double[] {count(dense.parameters()), rd.auc(),
                 rd.millis() / (double) steps, Double.NaN});
-            RankMixerBlock.Ranker sparse = new RankMixerBlock.Ranker(fields, cats, 8, 4, d, 2, 2, 4,
+            RankMixerBlock.Ranker sparse = new RankMixerBlock.Ranker(fields, cats, 8, 4, d, 1, 2, 4,
                     new SplittableRandom(seed));
             BinaryBench.Result rs = trainLayer(sparse, train, test, steps, 0.005f, seed);
             double active = 0;
@@ -211,8 +236,9 @@ public final class ClickModels {
             out.put("RankMixer-MoE d=" + d, new double[] {count(sparse.parameters()), rs.auc(),
                 rs.millis() / (double) steps, active});
             SplittableRandom r = new SplittableRandom(seed);
-            FtTransformer ft = new FtTransformer(FeatureTokenizer.linear(cols, d, r), 2, 2, 1, r);
-            BinaryBench.Result rf = BinaryBench.train(ft::forward, ft.parameters(), train, test, steps, 0.005f, seed);
+            FtTransformer ft = categoricalFt(fields, cats, d, r);
+            BinaryBench.Result rf = BinaryBench.train(fieldIds(ft, fields, cats), ft.parameters(), train, test, steps,
+                    0.005f, seed);
             out.put("FT-Transformer d=" + d, new double[] {count(ft.parameters()), rf.auc(),
                 rf.millis() / (double) steps, Double.NaN});
         }

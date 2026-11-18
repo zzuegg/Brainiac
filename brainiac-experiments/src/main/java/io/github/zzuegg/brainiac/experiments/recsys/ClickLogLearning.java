@@ -89,6 +89,13 @@ public final class ClickLogLearning {
         Model ipw = ranker(d, seed);
         ClickDebiasing.trainIpw(ipw, imp, log.examination(), steps, 32, 3e-3f, seed);
         out.put("IPW (true propensities)", new double[] {ndcg(ipw, log, trainQueries), 0});
+        double[] clipped = log.examination().clone();
+        for (int p = 0; p < clipped.length; p++) {
+            clipped[p] = Math.max(0.1, clipped[p]);
+        }
+        Model ipwClipped = ranker(d, seed);
+        ClickDebiasing.trainIpw(ipwClipped, imp, clipped, steps, 32, 3e-3f, seed);
+        out.put("IPW (true propensities, clipped at 0.1)", new double[] {ndcg(ipwClipped, log, trainQueries), 0});
         Model em = ranker(d, seed);
         double[] emTheta = ClickDebiasing.regressionEm(em, imp, 10, Math.max(1, steps / 10), 32, 3e-3f, seed);
         out.put("regression EM", new double[] {ndcg(em, log, trainQueries), curveError(emTheta, log.examination())});
