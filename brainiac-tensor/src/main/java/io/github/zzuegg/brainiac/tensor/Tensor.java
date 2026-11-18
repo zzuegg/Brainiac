@@ -886,11 +886,12 @@ public final class Tensor {
     /**
      * Returns a tensor with the same values in a new shape. No values are copied.
      *
-     * @param dims the new dimensions; their product must equal {@link #size()}
+     * @param dims the new dimensions; their product must equal {@link #size()}, and one
+     *     may be {@code -1} to have it inferred
      * @return the reshaped tensor
      */
     public Tensor reshape(int... dims) {
-        return reshape(Shape.of(dims));
+        return reshape(Shape.inferred(shape.size(), dims));
     }
 
     /**

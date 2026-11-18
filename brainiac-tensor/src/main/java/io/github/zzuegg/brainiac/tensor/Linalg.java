@@ -414,6 +414,157 @@ public final class Linalg {
     }
 
     /**
+     * The sign and the natural log of the absolute determinant of square matrices, from an
+     * LU factorization in double precision; it stays finite where the determinant itself
+     * would overflow, as for the covariance matrices of Gaussian log densities.
+     *
+     * @param a matrices {@code [..., n, n]}
+     * @return {@code {sign, logAbsDet}}, each shaped like the batch {@code [...]}: sign is
+     *     -1, 0 or 1, and logAbsDet is negative infinity for a singular matrix
+     */
+    public static Tensor[] slogdet(Tensor a) {
+        int n = square(a);
+        int batch = batch(a);
+        double[] m = a.toDoubleArray();
+        double[] sign = new double[batch];
+        double[] log = new double[batch];
+        for (int t = 0; t < batch; t++) {
+            int o = t * n * n;
+            double sg = 1;
+            double lg = 0;
+            for (int col = 0; col < n; col++) {
+                int pivot = col;
+                for (int r = col + 1; r < n; r++) {
+                    if (Math.abs(m[o + r * n + col]) > Math.abs(m[o + pivot * n + col])) {
+                        pivot = r;
+                    }
+                }
+                double d = m[o + pivot * n + col];
+                if (d == 0) {
+                    sg = 0;
+                    lg = Double.NEGATIVE_INFINITY;
+                    break;
+                }
+                if (pivot != col) {
+                    swapRows(m, o, n, pivot, col);
+                    sg = -sg;
+                }
+                sg *= Math.signum(d);
+                lg += Math.log(Math.abs(d));
+                for (int r = col + 1; r < n; r++) {
+                    double f = m[o + r * n + col] / d;
+                    for (int c = col; c < n; c++) {
+                        m[o + r * n + c] -= f * m[o + col * n + c];
+                    }
+                }
+            }
+            sign[t] = sg;
+            log[t] = lg;
+        }
+        int[] dims = java.util.Arrays.copyOf(a.shape().toArray(), a.shape().rank() - 2);
+        Shape out = Shape.of(dims);
+        return new Tensor[] {Tensor.of(out, sign, a.dtype(), a.device()), Tensor.of(out, log, a.dtype(), a.device())};
+    }
+
+    /**
+     * The natural log of the determinant of symmetric positive definite matrices, as twice
+     * the sum of the logs of the Cholesky factor's diagonal.
+     *
+     * @param a matrices {@code [..., n, n]}
+     * @return the log determinants, shaped like the batch {@code [...]}
+     * @throws IllegalArgumentException if a matrix is not positive definite
+     */
+    public static Tensor logdetPositiveDefinite(Tensor a) {
+        int n = square(a);
+        int batch = batch(a);
+        double[] x = a.toDoubleArray();
+        double[] l = new double[x.length];
+        double[] out = new double[batch];
+        for (int b = 0; b < batch; b++) {
+            int o = b * n * n;
+            choleskyInto(x, l, o, n);
+            double s = 0;
+            for (int i = 0; i < n; i++) {
+                s += Math.log(l[o + i * n + i]);
+            }
+            out[b] = 2 * s;
+        }
+        int[] dims = java.util.Arrays.copyOf(a.shape().toArray(), a.shape().rank() - 2);
+        return Tensor.of(Shape.of(dims), out, a.dtype(), a.device());
+    }
+
+    /**
+     * The assignment problem (Hungarian algorithm, O(n^2 m)): one column per row such that
+     * the summed cost is smallest. Used for matching predictions to targets (DETR), tracking
+     * and optimal transport between equal-size sets.
+     *
+     * @param cost a matrix {@code [rows, columns]} with {@code rows <= columns}
+     * @return for each row the column assigned to it, all different
+     * @throws IllegalArgumentException if there are more rows than columns
+     */
+    public static int[] linearAssignment(Tensor cost) {
+        Shape s = cost.shape();
+        if (s.rank() != 2 || s.dim(0) > s.dim(1)) {
+            throw new IllegalArgumentException("needs a cost matrix [rows, columns] with rows <= columns, got " + s);
+        }
+        int n = s.dim(0);
+        int m = s.dim(1);
+        double[] c = cost.toDoubleArray();
+        // potentials u (rows) and v (columns), 1-based with a virtual column 0
+        double[] u = new double[n + 1];
+        double[] v = new double[m + 1];
+        int[] p = new int[m + 1];
+        int[] way = new int[m + 1];
+        for (int i = 1; i <= n; i++) {
+            p[0] = i;
+            int j0 = 0;
+            double[] minv = new double[m + 1];
+            java.util.Arrays.fill(minv, Double.POSITIVE_INFINITY);
+            boolean[] used = new boolean[m + 1];
+            do {
+                used[j0] = true;
+                int i0 = p[j0];
+                double delta = Double.POSITIVE_INFINITY;
+                int j1 = 0;
+                for (int j = 1; j <= m; j++) {
+                    if (!used[j]) {
+                        double cur = c[(i0 - 1) * m + j - 1] - u[i0] - v[j];
+                        if (cur < minv[j]) {
+                            minv[j] = cur;
+                            way[j] = j0;
+                        }
+                        if (minv[j] < delta) {
+                            delta = minv[j];
+                            j1 = j;
+                        }
+                    }
+                }
+                for (int j = 0; j <= m; j++) {
+                    if (used[j]) {
+                        u[p[j]] += delta;
+                        v[j] -= delta;
+                    } else {
+                        minv[j] -= delta;
+                    }
+                }
+                j0 = j1;
+            } while (p[j0] != 0);
+            do {
+                int j1 = way[j0];
+                p[j0] = p[j1];
+                j0 = j1;
+            } while (j0 != 0);
+        }
+        int[] assignment = new int[n];
+        for (int j = 1; j <= m; j++) {
+            if (p[j] != 0) {
+                assignment[p[j] - 1] = j - 1;
+            }
+        }
+        return assignment;
+    }
+
+    /**
      * The inverses of square matrices.
      *
      * @param a matrices {@code [..., n, n]}

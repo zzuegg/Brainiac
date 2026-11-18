@@ -70,6 +70,10 @@ public final class Hub {
     private static final Pattern QUANT = Pattern.compile(
             "(?i)(?<![a-z0-9])(I?Q\\d+_[0-9A-Z]+(?:_[A-Z0-9]+)*|TQ\\d_\\d|MXFP4|BF16|F16|F32)(?![a-z0-9])");
     private static final Pattern SPLIT = Pattern.compile("(?i)-(\\d{5})-of-(\\d{5})\\.gguf$");
+    /** The model families that look at pictures, which a folder of theirs needs a preprocessor for. */
+    static final Set<String> VISION_FAMILIES = LocalProvider.SEEING;
+    // the projectors the core reads from an mmproj file: LLaVA's and Gemma 3's
+    private static final Set<String> PROJECTORS = Set.of("mlp", "llava", "gemma3");
     private static final Set<String> FOLDER_FILES = Set.of("config.json", "generation_config.json",
             "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.model",
             "model.safetensors.index.json");
@@ -143,7 +147,9 @@ public final class Hub {
     public Map<String, Object> search(String query, String kind) throws IOException {
         boolean speech = "speech".equals(kind);
         List<Object> found = new ArrayList<>();
-        for (String tag : speech ? List.of("automatic-speech-recognition", "text-to-speech") : List.of("text-generation")) {
+        // models that look at pictures are filed under their own task
+        for (String tag : speech ? List.of("automatic-speech-recognition", "text-to-speech")
+                : List.of("text-generation", "image-text-to-text")) {
             StringBuilder q = new StringBuilder("api/models?limit=100&sort=downloads&direction=-1&pipeline_tag=" + tag);
             if (!query.isBlank()) {
                 q.append("&search=").append(URLEncoder.encode(query.strip(), StandardCharsets.UTF_8));
@@ -153,13 +159,15 @@ public final class Hub {
             }
             found.addAll(Json.array(Json.parse(text(base.resolve(q.toString())))));
         }
-        if (speech) {
-            found.sort((a, b) -> Long.compare(downloads(b), downloads(a)));
-        }
+        found.sort((a, b) -> Long.compare(downloads(b), downloads(a)));
         List<Map<String, Object>> out = new ArrayList<>();
+        Set<String> ids = new java.util.HashSet<>();
         int hidden = 0;
         for (Object o : found) {
             Map<String, Object> m = Json.object(o);
+            if (!ids.add(Json.string(m, "id", Json.string(m, "modelId", "")))) {
+                continue;   // listed under both tasks
+            }
             List<String> tags = Json.array(m.getOrDefault("tags", List.of())).stream().map(String::valueOf).toList();
             Map<String, Object> gguf = m.get("gguf") instanceof Map<?, ?> g ? Json.object(g) : Map.of();
             Map<String, Object> config = m.get("config") instanceof Map<?, ?> c ? Json.object(c) : Map.of();
@@ -168,7 +176,8 @@ public final class Hub {
             boolean hasGguf = !gguf.isEmpty() || tags.contains("gguf");
             boolean runs = speech ? SPEECH_FAMILIES.contains(type) && tags.contains("safetensors")
                     : (!arch.isEmpty() && GGUF_ARCHITECTURES.contains(arch))
-                    || (!type.isEmpty() && FAMILIES.contains(type) && tags.contains("safetensors"));
+                    || (!type.isEmpty() && (FAMILIES.contains(type) || VISION_FAMILIES.contains(type))
+                            && tags.contains("safetensors"));
             if (!runs) {
                 hidden++;
                 continue;
@@ -181,7 +190,9 @@ public final class Hub {
             r.put("downloads", m.getOrDefault("downloads", 0));
             r.put("likes", m.getOrDefault("likes", 0));
             r.put("gguf", !arch.isEmpty() && GGUF_ARCHITECTURES.contains(arch));
-            r.put("safetensors", (FAMILIES.contains(type) || SPEECH_FAMILIES.contains(type)) && tags.contains("safetensors"));
+            r.put("safetensors", (FAMILIES.contains(type) || VISION_FAMILIES.contains(type)
+                    || SPEECH_FAMILIES.contains(type)) && tags.contains("safetensors"));
+            r.put("sees", VISION_FAMILIES.contains(type) || tags.contains("image-text-to-text"));
             r.put("family", arch.isEmpty() ? type : arch);
             Object gated = m.get("gated");
             r.put("gated", gated != null && !Boolean.FALSE.equals(gated));
@@ -246,6 +257,10 @@ public final class Hub {
             if (!weights.isEmpty()) {
                 List<String> files = new ArrayList<>(weights);
                 boolean speaks = SPEECH_FAMILIES.contains(family);
+                boolean sees = VISION_FAMILIES.contains(family);
+                if (sees && byPath.containsKey("preprocessor_config.json")) {
+                    files.add("preprocessor_config.json");
+                }
                 byPath.keySet().stream().filter(speaks ? SPEECH_FILES::contains : FOLDER_FILES::contains).forEach(files::add);
                 long size = files.stream().mapToLong(p -> size(byPath.get(p))).sum();
                 Map<String, Object> o = option("folder", "folder", repoName(repo), size);
@@ -257,12 +272,17 @@ public final class Hub {
                     unsupported(o, "it has no vocab.json");
                 } else if (speaks) {
                     o.put("speech", true);
-                } else if (!FAMILIES.contains(family)) {
+                } else if (sees && !byPath.containsKey("preprocessor_config.json")) {
+                    unsupported(o, "it has no preprocessor_config.json");
+                } else if (!FAMILIES.contains(family) && !sees) {
                     unsupported(o, configError != null ? configError : family.isEmpty() ? "no model_type in config.json"
                             : "the " + family + " family does not run in the studio yet; "
                                     + String.join(", ", new java.util.TreeSet<>(FAMILIES)) + " do");
                 } else if (!byPath.containsKey("tokenizer.json")) {
                     unsupported(o, "it has no tokenizer.json");
+                }
+                if (sees && Boolean.TRUE.equals(o.get("supported"))) {
+                    o.put("sees", true);
                 }
                 o.put("have", Files.isRegularFile(folder.resolve(repoName(repo)).resolve("config.json")));
                 options.add(o);
@@ -280,6 +300,19 @@ public final class Hub {
                 archError = e.getMessage();
             }
         }
+        // a vision model's projector comes with each of its files, when it is one the core reads
+        String projector = projector(ggufs);
+        if (projector != null) {
+            try {
+                String type = ggufString(head(fileUri(repo, projector), 1 << 20), "the projector's type",
+                        "clip.vision.projector_type", "clip.projector_type");
+                if (!PROJECTORS.contains(type)) {
+                    projector = null;
+                }
+            } catch (IOException e) {
+                // an old LLaVA projector does not say its type: it is tried, and the model runs without it if it fails
+            }
+        }
         for (String p : ggufs) {
             String name = p.substring(p.lastIndexOf('/') + 1);
             Map<String, Object> o = option(p, "gguf", name, size(byPath.get(p)));
@@ -288,7 +321,8 @@ public final class Hub {
             o.put("architecture", arch == null ? "" : arch);
             Matcher split = SPLIT.matcher(name);
             if (name.toLowerCase(Locale.ROOT).contains("mmproj")) {
-                unsupported(o, "an image projector for a vision model, not a language model");
+                unsupported(o, p.equals(projector) ? "the image projector; it is downloaded with each model here"
+                        : "an image projector for a vision model, not a language model");
             } else if (split.find()) {
                 unsupported(o, "split into " + Integer.parseInt(split.group(2)) + " parts; the studio reads one-file GGUFs");
             } else if (!quant.isEmpty() && !QUANTS.contains(quantFamily(quant))) {
@@ -301,7 +335,14 @@ public final class Hub {
             } else if (arch == null && archError != null) {
                 o.put("reason", "could not read its architecture (" + archError + "); it may not run");
             }
-            o.put("have", Files.isRegularFile(folder.resolve(name)));
+            boolean have = Files.isRegularFile(folder.resolve(name));
+            if (projector != null && Boolean.TRUE.equals(o.get("supported"))) {
+                o.put("projector", projector);
+                o.put("projectorSize", size(byPath.get(projector)));
+                o.put("sees", true);
+                have &= Files.isRegularFile(folder.resolve("mmproj-" + name));
+            }
+            o.put("have", have);
             options.add(o);
         }
         Map<String, Object> out = new LinkedHashMap<>();
@@ -309,6 +350,21 @@ public final class Hub {
         out.put("family", family.isEmpty() ? arch == null ? "" : arch : family);
         out.put("options", options);
         return out;
+    }
+
+    // the projector to take from a repository: full precision first, as llama.cpp's own tools write it
+    static String projector(List<String> ggufs) {
+        List<String> found = ggufs.stream().filter(p -> p.toLowerCase(Locale.ROOT).contains("mmproj")
+                && !SPLIT.matcher(p).find()).toList();
+        for (String want : List.of("F16", "F32", "BF16", "Q8_0", "")) {
+            for (String p : found) {
+                String quant = quant(p.substring(p.lastIndexOf('/') + 1));
+                if (want.isEmpty() ? quant.isEmpty() || QUANTS.contains(quantFamily(quant)) : quant.equals(want)) {
+                    return p;
+                }
+            }
+        }
+        return null;
     }
 
     private static Map<String, Object> option(String id, String kind, String name, long size) {
@@ -356,6 +412,11 @@ public final class Hub {
      * @throws IOException if it is not a GGUF file or the key is not in those bytes
      */
     static String ggufArchitecture(byte[] head) throws IOException {
+        return ggufString(head, "its architecture", "general.architecture");
+    }
+
+    // reads the first of some text keys from the start of a GGUF file
+    private static String ggufString(byte[] head, String what, String... keys) throws IOException {
         ByteBuffer b = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
         try {
             if (b.getInt() != 0x46554747) {
@@ -370,15 +431,15 @@ public final class Hub {
             for (long i = 0; i < kv; i++) {
                 String key = string(b);
                 int type = b.getInt();
-                if (key.equals("general.architecture") && type == 8) {
+                if (List.of(keys).contains(key) && type == 8) {
                     return string(b);
                 }
                 skip(b, type);
             }
         } catch (java.nio.BufferUnderflowException e) {
-            throw new IOException("its architecture is not near the start of the file");
+            throw new IOException(what + " is not near the start of the file");
         }
-        throw new IOException("it does not say its architecture");
+        throw new IOException("it does not say " + what);
     }
 
     private static String string(ByteBuffer b) {
@@ -503,7 +564,9 @@ public final class Hub {
         if (!Boolean.TRUE.equals(o.get("supported"))) {
             throw new IOException("the studio cannot run " + o.get("name") + ": " + o.get("reason"));
         }
-        long size = ((Number) o.get("size")).longValue();
+        String projector = Json.string(o, "projector", "");
+        long size = ((Number) o.get("size")).longValue()
+                + (projector.isEmpty() ? 0 : ((Number) o.get("projectorSize")).longValue());
         Files.createDirectories(folder);
         long free = Files.getFileStore(folder).getUsableSpace();
         if (size > free) {
@@ -516,7 +579,7 @@ public final class Hub {
                 Json.string(o, "family", ""), size);
         downloads.put(d.id, d);
         List<String> files = o.get("files") instanceof List<?> l ? l.stream().map(String::valueOf).toList()
-                : List.of(option);
+                : projector.isEmpty() ? List.of(option) : List.of(option, projector);
         d.thread = Thread.ofVirtual().name("hub-" + d.id).start(() -> run(d, files, tree));
         return d.toJson();
     }
@@ -563,6 +626,8 @@ public final class Hub {
             }
         } else {
             Files.delete(p);
+            // the projector downloaded with a vision model goes with it
+            Files.deleteIfExists(folder.resolve("mmproj-" + name));
         }
         return true;
     }
@@ -579,7 +644,9 @@ public final class Hub {
             long before = 0;
             for (String file : files) {
                 Map<String, Object> info = byPath.getOrDefault(file, Map.of());
-                Path out = folderKind ? work.resolve(file) : work.resolve(d.name);
+                // a GGUF's second file is its projector, kept under the model's name so the two are found together
+                Path out = folderKind ? work.resolve(file)
+                        : work.resolve(file.equals(d.option) ? d.name : "mmproj-" + d.name);
                 if (Files.isRegularFile(out) && Files.size(out) == size(info)) {
                     before += size(info);
                     d.done = before;

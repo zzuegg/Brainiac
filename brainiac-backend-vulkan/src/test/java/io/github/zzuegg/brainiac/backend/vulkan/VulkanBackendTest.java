@@ -836,10 +836,18 @@ class VulkanBackendTest {
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"4, 32, 1, true", "5, 32, 3, true", "6, 16, 8, false",
             "2, 16, 2, true", "3, 16, 4, false", "8, 32, 12, false", "4, 32, 2, false", "5, 32, 1, false",
-            "4, 32, 70, true", "6, 16, 33, false"})
+            "4, 32, 70, true", "6, 16, 33, false", "6, 16, 1, false", "5, 32, 1, true"})
     void packedMatricesWithFactoredScalesMatchTheCpu(int bits, int group, int m, boolean withOffsets) {
         packedMatches(bits, group, m, 192, 77, withOffsets, true);
         packedMatches(bits, group, m, 768, 256, withOffsets, true);
+    }
+
+    /** 6-bit levels whose runs of rows start two rows into a word of high bits (208 rows: runs of 26). */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2, 8})
+    void sixBitLevelsFromAnyRowMatchTheCpu(int m) {
+        packedMatches(6, 16, m, 208, 256, false, false);
+        packedMatches(6, 16, m, 208, 77, true, false);
     }
 
     /** 8-bit levels of at most 16 values (IQ4_NL's table), kept as 4-bit indices on the device. */

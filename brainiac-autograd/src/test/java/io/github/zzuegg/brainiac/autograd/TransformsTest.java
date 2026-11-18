@@ -107,4 +107,18 @@ class TransformsTest {
         Tensor noisy = Transforms.privateGradients(loss, List.of(w), data, 0.25f, 1f, new SplittableRandom(3)).get(0);
         assertEquals(W.shape(), noisy.shape());
     }
+
+    @Test
+    void lgammaGradientsAreDigammaAndTrigamma() {
+        Tensor x = Tensor.of(Shape.of(3), 0.7f, 2.5f, 6f);
+        Tensor v = Tensor.of(Shape.of(3), 1f, 1f, 1f);
+        // d/dx lgamma = digamma; d2/dx2 = trigamma
+        close(io.github.zzuegg.brainiac.tensor.Special.digamma(x).toArray(),
+                Transforms.vjp(xs -> xs.get(0).lgamma(), List.of(x), v).gradients().get(0).toArray(), 1e-5f);
+        close(io.github.zzuegg.brainiac.tensor.Special.trigamma(x).toArray(),
+                Transforms.hvp(t -> t.lgamma().sum(), x, v).toArray(), 1e-4f);
+        Var p = Var.param(Tensor.zeros(Shape.of(2, 6)));
+        assertEquals(Shape.of(3, 4), p.reshape(-1, 4).shape());
+        assertEquals(p.value().device(), p.device());
+    }
 }

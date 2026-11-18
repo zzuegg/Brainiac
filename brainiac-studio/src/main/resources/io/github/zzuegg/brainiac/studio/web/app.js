@@ -4082,7 +4082,7 @@
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
           <span class="meta">${r.family ? `<span class="chip c-ok">${esc(r.family)}</span>` : ""}${r.gguf ? `<span class="chip c-text">GGUF</span>` : ""}${r.safetensors ? `<span class="chip c-text">safetensors</span>` : ""}
-            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add your token above">gated</span>` : ""}
+            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.sees ? `<span class="chip plain">looks at pictures</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add your token above">gated</span>` : ""}
             <span class="faint tnum" title="downloads">${icon("download")}${fmtCount(r.downloads)}</span></span></button>`).join("")
         + (H.hidden ? `<div class="faint pad">${H.hidden} more found that the studio cannot run yet.</div>` : "");
     return `<section class="placebox hubbox" id="hub-box" aria-label="Download from Hugging Face">
@@ -4119,8 +4119,8 @@
     const busy = o => list.find(d => same(d, o) && hubActive(d));
     const have = o => to ? list.some(d => same(d, o) && d.state === "done") : o.have;
     return head + target + `<div class="hub-opts">${opts.map(o => `<div class="hub-opt ${o.supported ? "" : "off"}">
-        <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}</div>
-        <span class="mono faint tnum">${o.size ? fmtBytes(o.size) : ""}</span>
+        <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}${o.sees ? ` <span class="chip plain" title="${o.projector ? "Its image projector (" + esc(o.projector.split("/").pop()) + ", " + fmtBytes(o.projectorSize) + ") is downloaded with it" : "Attach pictures to a message in chat"}">looks at pictures</span>` : ""}</div>
+        <span class="mono faint tnum">${o.size ? fmtBytes(o.size + (o.projectorSize || 0)) : ""}</span>
         ${have(o) ? `<span class="chip c-ok">on ${to ? esc(to.name) : "this PC"}</span>` : busy(o) ? `<span class="chip c-text">downloading</span>`
           : o.supported ? `<button class="btn sm" data-download="${esc(o.id)}">${icon("download")}${to ? "Download to " + esc(to.name) : "Download"}</button>` : `<span class="chip c-warn">won’t run</span>`}
         ${o.reason ? `<div class="why">${esc(o.reason)}</div>` : ""}</div>`).join("")}</div>`;
@@ -4676,7 +4676,8 @@
         : `${what}. Click to run this PC's chat, image and voice models here instead.`;
       return `<button type="button" class="dev ${on ? "on" : ""} ${on && pinned ? "pinned" : ""}" data-local-device="${esc(d.name)}" aria-pressed="${on}" title="${esc(tip)}">
       <span class="dot" style="--c:${d.kind === "gpu" ? "var(--ok)" : "var(--muted)"}"></span>${esc(d.name)}${on && pinned ? `<span class="faint">chosen</span>` : ""}</button>`;
-    }).join("");
+    }).join("") + gpuLimitHtml();
+    wireGpuLimit(box);
     $$("[data-local-device]", box).forEach(b => b.addEventListener("click", async () => {
       if (!M.localDevice) return;
       const name = b.dataset.localDevice;
@@ -4685,6 +4686,44 @@
       catch (e) { console.warn("cannot choose the device", e); }
       renderDevices();
     }));
+  }
+
+  // The GPU memory limit: the studio takes no more than this from the card and puts the rest in system memory.
+  // The core reads it once, so a change applies when the studio next starts.
+  let gpuLimitEditing = false;
+  const fmtGb = mb => (mb / 1024).toFixed(mb % 1024 ? 1 : 0) + " GB";
+  function gpuLimitHtml() {
+    const ld = M.localDevice;
+    if (!ld || ld.memory === undefined || !M.system.devices.some(d => d.kind === "gpu")) return "";
+    if (gpuLimitEditing) {
+      return `<span class="dev gpu-limit"><label for="gpu-limit">GPU limit</label><input id="gpu-limit" data-gpu-limit-input type="number" min="0" step="0.5" inputmode="decimal" placeholder="none" value="${ld.memory ? ld.memory / 1024 : ""}" aria-label="GPU memory limit in GB, empty for none"><span class="faint">GB</span></span>`;
+    }
+    const waits = ld.memory !== ld.memoryInEffect;
+    const tip = "The most GPU memory the studio takes; what does not fit goes to system memory, which is slower. "
+      + "Set it below what other programs leave free if models fail to load."
+      + (waits ? ` Now in effect: ${ld.memoryInEffect ? fmtGb(ld.memoryInEffect) : "no limit"}. The change applies when the studio is started again.` : "");
+    return `<button type="button" class="dev ${waits ? "pinned" : ""}" data-gpu-limit title="${esc(tip)}">GPU limit <span class="mono tnum">${ld.memory ? fmtGb(ld.memory) : "none"}</span>${waits ? `<span class="faint">after restart</span>` : ""}</button>`;
+  }
+  function wireGpuLimit(box) {
+    const open = $("[data-gpu-limit]", box);
+    if (open) open.addEventListener("click", () => { gpuLimitEditing = true; renderDevices(); const i = $("[data-gpu-limit-input]"); if (i) { i.focus(); i.select(); } });
+    const input = $("[data-gpu-limit-input]", box);
+    if (!input) return;
+    let done = false;
+    const close = async save => {
+      if (done) return;
+      done = true;
+      gpuLimitEditing = false;
+      const gb = parseFloat(input.value);
+      const mb = isFinite(gb) && gb > 0 ? Math.round(gb * 1024) : 0;
+      if (save && mb !== M.localDevice.memory) {
+        try { M.localDevice = await postJson("/api/local/device", { memory: mb }); }
+        catch (e) { console.warn("cannot set the GPU memory limit", e); }
+      }
+      renderDevices();
+    };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") close(true); else if (e.key === "Escape") close(false); });
+    input.addEventListener("blur", () => close(true));
   }
 
   function renderDataNote() {

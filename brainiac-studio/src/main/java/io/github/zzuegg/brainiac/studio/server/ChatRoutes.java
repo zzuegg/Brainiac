@@ -107,7 +107,13 @@ final class ChatRoutes {
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
         server.get("/api/local/device", ex -> Exchanges.json(ex, 200, localDevice()));
         server.post("/api/local/device", ex -> {
-            chat.localDevice().choose(Json.string(Exchanges.body(ex, 4096), "device", ""));
+            Map<String, Object> body = Exchanges.body(ex, 4096);
+            if (body.get("memory") instanceof Number mb) {
+                chat.localDevice().limitMemory(mb.intValue());
+            }
+            if (body.containsKey("device") || !body.containsKey("memory")) {
+                chat.localDevice().choose(Json.string(body, "device", ""));
+            }
             Exchanges.json(ex, 200, localDevice());
         });
         server.post("/api/keys", this::keys);
@@ -508,6 +514,9 @@ final class ChatRoutes {
         Map<String, Object> out = new java.util.LinkedHashMap<>();
         out.put("choice", d.choice());
         out.put("device", d.device().name());
+        // the GPU memory limit in MB: the one set here, and the one this run started with
+        out.put("memory", d.memory());
+        out.put("memoryInEffect", io.github.zzuegg.brainiac.studio.chat.LocalDevice.memoryInEffect());
         return out;
     }
 

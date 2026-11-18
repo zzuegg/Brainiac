@@ -90,6 +90,14 @@ vec4 offsets4(uint g, uint c, vec4 s, bool words) {
     return v;
 }
 
+// the four columns' levels of one row: nibbles at ls of each byte of lw, pb high bits at hs of each byte of hw
+ivec4 planeLevels(uint lw, int ls, uint hw, int hs, int pb) {
+    return ivec4(bitfieldExtract(lw, ls, 4) | (bitfieldExtract(hw, hs, pb) << 4),
+                 bitfieldExtract(lw, 8 + ls, 4) | (bitfieldExtract(hw, 8 + hs, pb) << 4),
+                 bitfieldExtract(lw, 16 + ls, 4) | (bitfieldExtract(hw, 16 + hs, pb) << 4),
+                 bitfieldExtract(lw, 24 + ls, 4) | (bitfieldExtract(hw, 24 + hs, pb) << 4));
+}
+
 void main() {
     uint quad = gl_LocalInvocationID.x;
     uint slice = gl_LocalInvocationID.y;
@@ -156,21 +164,32 @@ void main() {
             } else if (words && mode == 2u) {
                 uint perByte = 8u / planeBits;
                 int pb = int(planeBits);
+                if (planeBits == 2u) {
+                    // 6-bit levels: one word of high bits holds four rows; to a multiple of four
+                    // rows, then four at a time from two words of nibbles and one of high bits
+                    for (; r < stop && (r & 3u) != 0u; r += 2) {
+                        uint lw = p.q.v[((r >> 1) * p.n + c) >> 2];
+                        uint hw = p.hi.v[((r >> 2) * p.n + c) >> 2];
+                        ACCUMULATE(r, ACC4(planeLevels(lw, 0, hw, 4, 2) - bias));
+                        ACCUMULATE(r + 1, ACC4(planeLevels(lw, 4, hw, 6, 2) - bias));
+                    }
+                    for (; r + 4 <= stop; r += 4) {
+                        uint at = ((r >> 1) * p.n + c) >> 2;
+                        uint lw = p.q.v[at];
+                        uint lv = p.q.v[at + stride];
+                        uint hw = p.hi.v[((r >> 2) * p.n + c) >> 2];
+                        ACCUMULATE(r, ACC4(planeLevels(lw, 0, hw, 0, 2) - bias));
+                        ACCUMULATE(r + 1, ACC4(planeLevels(lw, 4, hw, 2, 2) - bias));
+                        ACCUMULATE(r + 2, ACC4(planeLevels(lv, 0, hw, 4, 2) - bias));
+                        ACCUMULATE(r + 3, ACC4(planeLevels(lv, 4, hw, 6, 2) - bias));
+                    }
+                }
                 for (; r < stop; r += 2) {
                     uint lw = p.q.v[((r >> 1) * p.n + c) >> 2];
                     uint hw = p.hi.v[((r / perByte) * p.n + c) >> 2];
                     int hs = int((r % perByte) * planeBits);
-                    ivec4 u0 = ivec4(bitfieldExtract(lw, 0, 4) | (bitfieldExtract(hw, hs, pb) << 4),
-                                     bitfieldExtract(lw, 8, 4) | (bitfieldExtract(hw, 8 + hs, pb) << 4),
-                                     bitfieldExtract(lw, 16, 4) | (bitfieldExtract(hw, 16 + hs, pb) << 4),
-                                     bitfieldExtract(lw, 24, 4) | (bitfieldExtract(hw, 24 + hs, pb) << 4));
-                    hs += pb;
-                    ivec4 u1 = ivec4(bitfieldExtract(lw, 4, 4) | (bitfieldExtract(hw, hs, pb) << 4),
-                                     bitfieldExtract(lw, 12, 4) | (bitfieldExtract(hw, 8 + hs, pb) << 4),
-                                     bitfieldExtract(lw, 20, 4) | (bitfieldExtract(hw, 16 + hs, pb) << 4),
-                                     bitfieldExtract(lw, 28, 4) | (bitfieldExtract(hw, 24 + hs, pb) << 4));
-                    ACCUMULATE(r, ACC4(u0 - bias));
-                    ACCUMULATE(r + 1, ACC4(u1 - bias));
+                    ACCUMULATE(r, ACC4(planeLevels(lw, 0, hw, hs, pb) - bias));
+                    ACCUMULATE(r + 1, ACC4(planeLevels(lw, 4, hw, hs + pb, pb) - bias));
                 }
             } else if (words && mode == 3u) {
                 for (; r < stop; r += 2) {

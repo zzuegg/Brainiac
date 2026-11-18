@@ -1218,6 +1218,7 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 button.dev { cursor: pointer; font-family: inherit; }
 button.dev:hover { border-color: var(--line); color: var(--fg); }
 .dev.on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft)); color: var(--fg); }
+.dev.gpu-limit input { width: 58px; padding: 1px 4px; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; }
 .dev.pinned { background: color-mix(in srgb, var(--accent) 9%, var(--panel)); }
 .dev .faint { font-size: 11px; }
 
