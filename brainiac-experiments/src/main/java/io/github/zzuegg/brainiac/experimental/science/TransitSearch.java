@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * Periodic transit search in light curves: detrending by a moving median or by a Gaussian
  * process ({@link GaussianProcess} with a Matérn-5/2 kernel on binned flux), box least squares
- * (Kovács, Zucker and Mazeh, A&A 2002) over a period–duration grid with the binned fold, the
+ * (Kovács, Zucker and Mazeh, A&amp;A 2002) over a period–duration grid with the binned fold, the
  * signal detection efficiency (SDE) of the peak, folding to AstroNet's global and local views
  * (Shallue and Vanderburg, AJ 2018), and, as the baseline, the peak of the FFT power spectrum of
  * the detrended flux (core {@link Fft#transform}).

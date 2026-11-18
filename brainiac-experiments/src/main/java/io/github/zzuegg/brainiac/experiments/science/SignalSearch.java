@@ -40,7 +40,7 @@ public final class SignalSearch {
      * @param steps U-Net Adam steps
      * @param seed the seed
      * @return method to {P recall, P precision, P residual sd (s), S recall, S precision, S
-     *     residual sd (s), false picks on noise, S recall at SNR <= 0 dB}
+     *     residual sd (s), false picks on noise, S recall at SNR {@code <= 0} dB}
      */
     public static Map<String, double[]> picking(double rate, int train, int test, int steps, long seed) {
         int n = (int) (30 * rate);
