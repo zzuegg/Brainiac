@@ -70,15 +70,15 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.parse;
     exports io.github.zzuegg.brainiac.experimental.planning;
     exports io.github.zzuegg.brainiac.experimental.privacy;
-    exports io.github.zzuegg.brainiac.experimental.quantum;
     exports io.github.zzuegg.brainiac.experimental.quadrature;
+    exports io.github.zzuegg.brainiac.experimental.quantum;
     exports io.github.zzuegg.brainiac.experimental.randla;
     exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.restore;
     exports io.github.zzuegg.brainiac.experimental.rl;
     exports io.github.zzuegg.brainiac.experimental.robust;
-    exports io.github.zzuegg.brainiac.experimental.science;
     exports io.github.zzuegg.brainiac.experimental.sbi;
+    exports io.github.zzuegg.brainiac.experimental.science;
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.security;
     exports io.github.zzuegg.brainiac.experimental.semisup;
