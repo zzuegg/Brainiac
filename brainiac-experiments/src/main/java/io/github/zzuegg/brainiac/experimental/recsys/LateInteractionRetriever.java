@@ -132,7 +132,6 @@ public final class LateInteractionRetriever {
         int len = documents[0].length;
         store = new float[documents.length][][];
         List<float[]> vectors = new ArrayList<>();
-        List<Integer> owner = new ArrayList<>();
         for (int i = 0; i < documents.length; i++) {
             List<float[]> doc = new ArrayList<>();
             for (int j = 0; j < len; j++) {
@@ -140,7 +139,6 @@ public final class LateInteractionRetriever {
                     float[] v = Arrays.copyOfRange(all, (i * len + j) * dim, (i * len + j + 1) * dim);
                     doc.add(v);
                     vectors.add(v);
-                    owner.add(i);
                 }
             }
             store[i] = doc.toArray(float[][]::new);

@@ -10,6 +10,7 @@ import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.List;
 import java.util.SplittableRandom;
 import java.util.function.BiFunction;
+import java.util.function.IntToDoubleFunction;
 import java.util.function.UnaryOperator;
 
 /**
@@ -68,8 +69,26 @@ public final class BinaryBench {
      */
     public static Result train(UnaryOperator<Var> trainLogits, List<Var> params, SyntheticRecsys.Table train,
             SyntheticRecsys.Table test, int steps, float lr, long seed, UnaryOperator<Var> predict) {
+        return train(trainLogits, params, train, test, steps, s -> lr, seed, predict);
+    }
+
+    /**
+     * Trains with a learning-rate schedule.
+     *
+     * @param trainLogits features to training logits {@code [batch, members]}
+     * @param params its parameters
+     * @param train training rows
+     * @param test test rows
+     * @param steps gradient steps of batch 64
+     * @param lr the Adam learning rate of each step
+     * @param seed the batch seed
+     * @param predict features to one test logit per row
+     * @return the test metrics
+     */
+    public static Result train(UnaryOperator<Var> trainLogits, List<Var> params, SyntheticRecsys.Table train,
+            SyntheticRecsys.Table test, int steps, IntToDoubleFunction lr, long seed, UnaryOperator<Var> predict) {
         long start = System.currentTimeMillis();
-        Optimizer opt = Optimizer.adam(lr);
+        Optimizer opt = Optimizer.adam((float) lr.applyAsDouble(0));
         SplittableRandom r = new SplittableRandom(seed);
         int cols = train.features().shape().dim(1);
         float[] x = train.features().toArray();
@@ -83,6 +102,7 @@ public final class BinaryBench {
                 System.arraycopy(x, j * cols, bx, i * cols, cols);
                 by[i] = y[j];
             }
+            opt.learningRate((float) lr.applyAsDouble(s));
             Var logit = trainLogits.apply(Var.of(Tensor.of(Shape.of(batch, cols), bx)));
             logit.softplus().sub(logit.mul(Tensor.of(Shape.of(batch, 1), by))).mean().backward();
             opt.step(params);

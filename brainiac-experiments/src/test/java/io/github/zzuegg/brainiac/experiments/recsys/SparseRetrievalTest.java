@@ -13,7 +13,7 @@ class SparseRetrievalTest {
     @Test
     void spladeLearnsExpansionTermsForParaphrases() {
         Map<String, Double> nnz = new LinkedHashMap<>();
-        Map<String, Map<Kind, RetrievalShootout.Metrics>> r = new RetrievalShootout(1).sparse(250,
+        Map<String, Map<Kind, RetrievalShootout.Metrics>> r = new RetrievalShootout(1).sparse(200,
                 new float[] {0.01f, 0.1f}, nnz);
         System.out.println(RetrievalShootoutTest.table("SPLADE", r));
         System.out.println("non-zero terms per document: " + nnz);
