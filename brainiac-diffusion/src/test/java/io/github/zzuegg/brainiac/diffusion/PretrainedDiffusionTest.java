@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
- * Generates an image with every Stable Diffusion model in the folder {@code -PtestModels=...}
+ * Generates an image with every Stable Diffusion and Flux model in the folder {@code -PtestModels=...}
  * names, and writes it to {@code build/pretrained-images}. Skipped without models.
  */
 class PretrainedDiffusionTest {
@@ -34,18 +34,29 @@ class PretrainedDiffusionTest {
         }
         int ran = 0;
         for (Path p : candidates) {
-            Optional<StableDiffusion.Kind> kind = StableDiffusion.detect(p);
-            if (kind.isEmpty()) {
+            Optional<String> family = ImageGenerator.detect(p);
+            if (family.isEmpty()) {
                 continue;
             }
+            boolean flux = family.get().startsWith("FLUX");
             long t0 = System.nanoTime();
-            try (StableDiffusion sd = StableDiffusion.load(p, device, dtype)) {
+            // Flux overflows in float16; -PtestFluxBits=8,4 stores the transformer and T5 in fewer
+            // bits, by default as few as the device's memory needs
+            String bits = System.getProperty("brainiac.test.fluxBits", "auto");
+            DType fluxType = dtype == DType.FLOAT32 ? dtype : DType.BFLOAT16;
+            device.resetPeakMemory();
+            try (ImageGenerator model = !flux ? StableDiffusion.load(p, device, dtype)
+                    : bits.equals("auto") ? ImageGenerator.load(p, device, fluxType)
+                    : Flux.load(p, device, fluxType, Flux.Options.bits(Integer.parseInt(bits.split(",")[0].trim()),
+                            Integer.parseInt(bits.split(",")[1].trim())))) {
                 long t1 = System.nanoTime();
+                ImageGenerator.Defaults d = model.defaults();
                 ImageRequest r = ImageRequest.of("a photo of a red fox sitting in fresh snow, golden hour, detailed fur")
-                        .negativePrompt("blurry, low quality").steps(25).seed(42).build();
-                GeneratedImage img = sd.generate(r, Progress.NONE).get(0);
+                        .negativePrompt("blurry, low quality").steps(d.steps()).guidance(d.guidance()).seed(42)
+                        .build();
+                GeneratedImage img = model.generate(r, Progress.NONE).get(0);
                 long t2 = System.nanoTime();
-                assertEquals(sd.nativeSize(), img.width());
+                assertEquals(model.nativeSize(), img.width());
                 double mean = 0;
                 double sq = 0;
                 for (byte b : img.rgb()) {
@@ -57,11 +68,13 @@ class PretrainedDiffusionTest {
                 assertTrue(std > 10, "the image is almost flat (std " + std + ")");
                 Path file = out.resolve(p.getFileName().toString().replace(".safetensors", "") + ".png");
                 Files.write(file, img.png());
-                System.out.printf("%s: %s, loaded in %.1f s, 25 steps + decode in %.1f s -> %s%n", p.getFileName(),
-                        sd, (t1 - t0) / 1e9, (t2 - t1) / 1e9, file.toAbsolutePath());
+                System.out.printf("%s: %s%s, loaded in %.1f s, %d steps + decode in %.1f s, peak %s -> %s%n",
+                        p.getFileName(), model, model instanceof Flux f ? " " + f.options() : "", (t1 - t0) / 1e9,
+                        d.steps(), (t2 - t1) / 1e9, device.memory().map(m -> MemoryFit.gb(m.peak())).orElse("n/a"),
+                        file.toAbsolutePath());
                 ran++;
             }
         }
-        assertTrue(ran > 0, "no Stable Diffusion model in " + folder);
+        assertTrue(ran > 0, "no image model in " + folder);
     }
 }

@@ -2,9 +2,11 @@ package io.github.zzuegg.brainiac.nn;
 
 import io.github.zzuegg.brainiac.nn.diffusion.AutoencoderKL;
 import io.github.zzuegg.brainiac.nn.diffusion.ClipTextEncoder;
+import io.github.zzuegg.brainiac.nn.diffusion.FluxTransformer;
 import io.github.zzuegg.brainiac.nn.diffusion.ImageAttention;
 import io.github.zzuegg.brainiac.nn.diffusion.ResnetBlock;
 import io.github.zzuegg.brainiac.nn.diffusion.SpatialTransformer;
+import io.github.zzuegg.brainiac.nn.diffusion.T5Encoder;
 import io.github.zzuegg.brainiac.nn.diffusion.TimestepEmbedding;
 import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 
@@ -80,6 +82,26 @@ final class DiffusionCodecs {
                 c.getInt("layers"), c.getInt("heads"), c.getInt("ffnSize"), c.getInt("positions"),
                 c.getActivation("activation"), c.getFloat("epsilon"), c.getInt("endToken"), c.getInt("projection")),
                 new SplittableRandom()));
+        Registry.simple("flux_transformer", FluxTransformer.class, l -> {
+            FluxTransformer.Settings s = l.settings();
+            return Config.builder().put("latentChannels", s.latentChannels()).put("patch", s.patch())
+                    .put("heads", s.heads()).put("headSize", s.headSize()).put("jointLayers", s.jointLayers())
+                    .put("singleLayers", s.singleLayers()).put("contextFeatures", s.contextFeatures())
+                    .put("pooledFeatures", s.pooledFeatures()).put("guidance", s.guidance()).put("axes", s.axes())
+                    .put("theta", s.theta()).put("mlpRatio", s.mlpRatio()).build();
+        }, c -> new FluxTransformer(new FluxTransformer.Settings(c.getInt("latentChannels"), c.getInt("patch"),
+                c.getInt("heads"), c.getInt("headSize"), c.getInt("jointLayers"), c.getInt("singleLayers"),
+                c.getInt("contextFeatures"), c.getInt("pooledFeatures"), c.getBoolean("guidance"), c.getInts("axes"),
+                c.getFloat("theta"), c.getFloat("mlpRatio")), new SplittableRandom()));
+        Registry.simple("t5_encoder", T5Encoder.class, l -> {
+            T5Encoder.Settings s = l.settings();
+            return Config.builder().put("vocabulary", s.vocabulary()).put("features", s.features())
+                    .put("layers", s.layers()).put("heads", s.heads()).put("headSize", s.headSize())
+                    .put("ffnSize", s.ffnSize()).put("buckets", s.buckets()).put("maxDistance", s.maxDistance())
+                    .put("epsilon", s.epsilon()).put("gated", s.gated()).build();
+        }, c -> new T5Encoder(new T5Encoder.Settings(c.getInt("vocabulary"), c.getInt("features"), c.getInt("layers"),
+                c.getInt("heads"), c.getInt("headSize"), c.getInt("ffnSize"), c.getInt("buckets"),
+                c.getInt("maxDistance"), c.getFloat("epsilon"), c.getBoolean("gated")), new SplittableRandom()));
     }
 
     private static int[] ints(boolean[] b) {

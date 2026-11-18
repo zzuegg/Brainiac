@@ -1,0 +1,15 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// Copies each row into a power-of-two wide work row for sort_step, with its indices;
+// the padding is marked by an index of at least len.
+layout(push_constant) uniform P { In x; Buf key; Floats idx; uint total; uint len; uint width; } p;
+void main() {
+    uint t = gid();
+    if (t >= p.total) return;
+    uint r = t / p.width;
+    uint i = t % p.width;
+    p.key.v[t] = i < p.len ? p.x.v[r * p.len + i] : p.x.v[r * p.len];
+    p.idx.v[t] = float(i);
+}

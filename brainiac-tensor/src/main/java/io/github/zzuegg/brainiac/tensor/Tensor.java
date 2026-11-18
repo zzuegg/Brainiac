@@ -2125,6 +2125,88 @@ public final class Tensor {
     }
 
     /**
+     * Runs a user {@link Kernel}: its shader on Vulkan, its Java version elsewhere.
+     *
+     * @param kernel the kernel
+     * @param shape the output's shape
+     * @param dtype the output's type, which the inputs are converted to
+     * @param ints up to {@link Kernel#MAX_INTS} integer parameters
+     * @param floats up to {@link Kernel#MAX_FLOATS} float parameters
+     * @param inputs the inputs, as many as the kernel reads, on one device
+     * @return the output, on the inputs' device (the default device when there are none)
+     */
+    public static Tensor custom(Kernel kernel, Shape shape, DType dtype, int[] ints, float[] floats,
+            Tensor... inputs) {
+        if (inputs.length != kernel.inputs()) {
+            throw new IllegalArgumentException(kernel + " takes " + kernel.inputs() + " inputs, got " + inputs.length);
+        }
+        if (ints.length > Kernel.MAX_INTS || floats.length > Kernel.MAX_FLOATS) {
+            throw new IllegalArgumentException("at most " + Kernel.MAX_INTS + " ints and " + Kernel.MAX_FLOATS
+                    + " floats, got " + ints.length + " and " + floats.length);
+        }
+        Device device = inputs.length > 0 ? inputs[0].device : Device.getDefault();
+        Storage[] in = new Storage[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            inputs[0].sameDevice(inputs[i]);
+            in[i] = inputs[i].storage();
+        }
+        Backend backend = device.backend();
+        Storage out = backend.allocateUninitialized(shape.size(), dtype);
+        if (shape.size() > 0) {
+            backend.custom(kernel, in, out, ints, floats);
+        }
+        return new Tensor(shape, device, out);
+    }
+
+    /**
+     * Sorts along one axis, stably: equal values keep their order, and NaN counts as larger
+     * than every number (last ascending, first descending).
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the sorted values and where each was along the axis (as floats), both of this
+     *     shape
+     */
+    public Tensor[] sort(int axis, boolean descending) {
+        if (rank() == 0) {
+            Tensor[] one = reshape(1).sort(0, descending);
+            return new Tensor[] {one[0].reshape(shape), one[1].reshape(shape)};
+        }
+        int a = axis(axis);
+        int last = rank() - 1;
+        int[] swap = new int[rank()];
+        for (int i = 0; i < swap.length; i++) {
+            swap[i] = i;
+        }
+        swap[a] = last;
+        swap[last] = a;
+        Tensor x = a == last ? this : permute(swap);
+        int n = x.shape.dim(last);
+        if (n > 1 << 24) {
+            throw new IllegalArgumentException("sort supports axes of up to 2^24 values, got " + n);
+        }
+        Storage values = backend().allocateUninitialized(x.size(), dtype());
+        Storage indices = backend().allocateUninitialized(x.size(), DType.FLOAT32);
+        if (n > 0 && x.size() > 0) {
+            backend().sort(x.storage(), x.size() / n, n, descending, values, indices);
+        }
+        Tensor v = new Tensor(x.shape, device, values);
+        Tensor i = new Tensor(x.shape, device, indices);
+        return a == last ? new Tensor[] {v, i} : new Tensor[] {v.permute(swap), i.permute(swap)};
+    }
+
+    /**
+     * Where each entry of the {@linkplain #sort sorted} axis comes from.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the indices along the axis, as floats, of this shape
+     */
+    public Tensor argsort(int axis, boolean descending) {
+        return sort(axis, descending)[1];
+    }
+
+    /**
      * Running sums along one axis: entry {@code i} is the sum of entries {@code 0 .. i}.
      * Computed as a product with a triangle of ones, so the work grows with the square of
      * the axis' length.

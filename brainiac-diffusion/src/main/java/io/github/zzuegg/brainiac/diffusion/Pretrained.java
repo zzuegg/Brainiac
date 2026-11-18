@@ -6,12 +6,15 @@ import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Conv;
 import io.github.zzuegg.brainiac.nn.Dense;
 import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.nn.LayerNorm;
 import io.github.zzuegg.brainiac.nn.TransformerBlock;
 import io.github.zzuegg.brainiac.nn.diffusion.AutoencoderKL;
 import io.github.zzuegg.brainiac.nn.diffusion.ClipTextEncoder;
+import io.github.zzuegg.brainiac.nn.diffusion.FluxTransformer;
 import io.github.zzuegg.brainiac.nn.diffusion.ImageAttention;
 import io.github.zzuegg.brainiac.nn.diffusion.ResnetBlock;
 import io.github.zzuegg.brainiac.nn.diffusion.SpatialTransformer;
+import io.github.zzuegg.brainiac.nn.diffusion.T5Encoder;
 import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -24,7 +27,7 @@ import java.util.function.Supplier;
 
 /**
  * Builds brainiac's diffusion layers ({@link UNet}, {@link AutoencoderKL},
- * {@link ClipTextEncoder}) from Hugging Face configs and fills them with checkpoint weights in
+ * {@link ClipTextEncoder}, {@link FluxTransformer}, {@link T5Encoder}) from Hugging Face configs and fills them with checkpoint weights in
  * diffusers' and transformers' naming.
  */
 final class Pretrained {
@@ -331,6 +334,131 @@ final class Pretrained {
             w.zero(e.projection().bias());
         }
         w.checkFilled(e, "text encoder");
+        return e;
+    }
+
+    // ---------------------------------------------------------------------------------- Flux
+
+    /** Reads diffusers' {@code transformer/config.json} of a {@code FluxTransformer2DModel}. */
+    static FluxTransformer.Settings fluxSettings(Map<String, Object> c) {
+        int packedPatch = (int) Json.integer(c, "patch_size", 1);
+        if (packedPatch != 1) {
+            throw new IllegalArgumentException("Flux transformers with patch_size " + packedPatch + " are not supported");
+        }
+        int in = (int) Json.integer(c, "in_channels", 64);
+        int heads = (int) Json.integer(c, "num_attention_heads", 24);
+        int headSize = (int) Json.integer(c, "attention_head_dim", 128);
+        int[] axes = ints(c.get("axes_dims_rope"), 3, 0);
+        if (axes[0] == 0) {
+            axes = new int[] {16, 56, 56};
+        }
+        return new FluxTransformer.Settings(in / 4, 2, heads, headSize, (int) Json.integer(c, "num_layers", 19),
+                (int) Json.integer(c, "num_single_layers", 38), (int) Json.integer(c, "joint_attention_dim", 4096),
+                (int) Json.integer(c, "pooled_projection_dim", 768),
+                Boolean.TRUE.equals(c.get("guidance_embeds")), axes, 10000, 4);
+    }
+
+    /** Builds a Flux transformer and fills it from diffusers' names. */
+    static FluxTransformer flux(Weights w, FluxTransformer.Settings settings) {
+        FluxTransformer f = shell(() -> new FluxTransformer(settings, new SplittableRandom(0)));
+        w.dense(f.imageIn(), "x_embedder");
+        w.dense(f.contextIn(), "context_embedder");
+        w.dense(f.timeEmbedding().linear1(), "time_text_embed.timestep_embedder.linear_1");
+        w.dense(f.timeEmbedding().linear2(), "time_text_embed.timestep_embedder.linear_2");
+        if (f.guidanceEmbedding() != null) {
+            w.dense(f.guidanceEmbedding().linear1(), "time_text_embed.guidance_embedder.linear_1");
+            w.dense(f.guidanceEmbedding().linear2(), "time_text_embed.guidance_embedder.linear_2");
+        }
+        w.dense(f.pooled1(), "time_text_embed.text_embedder.linear_1");
+        w.dense(f.pooled2(), "time_text_embed.text_embedder.linear_2");
+        List<FluxTransformer.JointBlock> joint = f.jointBlocks();
+        for (int i = 0; i < joint.size(); i++) {
+            Weights b = w.at("transformer_blocks." + i + ".");
+            stream(b, joint.get(i).image(), "norm1", "attn.to_q", "attn.to_k", "attn.to_v", "attn.norm_q",
+                    "attn.norm_k", "attn.to_out.0", "ff");
+            stream(b, joint.get(i).text(), "norm1_context", "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj",
+                    "attn.norm_added_q", "attn.norm_added_k", "attn.to_add_out", "ff_context");
+        }
+        List<FluxTransformer.SingleBlock> single = f.singleBlocks();
+        for (int i = 0; i < single.size(); i++) {
+            Weights b = w.at("single_transformer_blocks." + i + ".");
+            FluxTransformer.SingleBlock s = single.get(i);
+            b.dense(s.modulation(), "norm.linear");
+            b.dense(s.q(), "attn.to_q");
+            b.dense(s.k(), "attn.to_k");
+            b.dense(s.v(), "attn.to_v");
+            rms(b, s.qNorm(), "attn.norm_q");
+            rms(b, s.kNorm(), "attn.norm_k");
+            b.dense(s.mlp(), "proj_mlp");
+            b.dense(s.out(), "proj_out");
+        }
+        w.dense(f.outModulation(), "norm_out.linear");
+        w.dense(f.out(), "proj_out");
+        w.checkFilled(f, "Flux transformer");
+        return f;
+    }
+
+    private static void stream(Weights b, FluxTransformer.JointBlock.Stream s, String modulation, String q, String k,
+            String v, String qNorm, String kNorm, String out, String ff) {
+        b.dense(s.modulation(), modulation + ".linear");
+        b.dense(s.q(), q);
+        b.dense(s.k(), k);
+        b.dense(s.v(), v);
+        rms(b, s.qNorm(), qNorm);
+        rms(b, s.kNorm(), kNorm);
+        b.dense(s.attentionOut(), out);
+        b.dense(s.up(), ff + ".net.0.proj");
+        b.dense(s.down(), ff + ".net.2");
+    }
+
+    private static void rms(Weights w, LayerNorm norm, String name) {
+        w.set(norm.parameters().get(0), w.get(name + ".weight"));
+    }
+
+    // ------------------------------------------------------------------------------------ T5
+
+    /** Reads transformers' {@code config.json} of a T5 encoder. */
+    static T5Encoder.Settings t5Settings(Map<String, Object> c) {
+        String ffn = Json.string(c, "feed_forward_proj", "relu");
+        boolean gated = ffn.startsWith("gated-");
+        if (!ffn.equals("relu") && !ffn.equals("gated-gelu")) {
+            throw new IllegalArgumentException("T5 feed-forward " + ffn + " is not supported");
+        }
+        int d = (int) Json.integer(c, "d_model", 512);
+        return new T5Encoder.Settings((int) Json.integer(c, "vocab_size", 32128), d,
+                (int) Json.integer(c, "num_layers", 6), (int) Json.integer(c, "num_heads", 8),
+                (int) Json.integer(c, "d_kv", 64), (int) Json.integer(c, "d_ff", 2048),
+                (int) Json.integer(c, "relative_attention_num_buckets", 32),
+                (int) Json.integer(c, "relative_attention_max_distance", 128),
+                (float) Json.number(c, "layer_norm_epsilon", 1e-6), gated);
+    }
+
+    /** Builds a T5 encoder and fills it from transformers' names. */
+    static T5Encoder t5(Weights w, T5Encoder.Settings settings) {
+        T5Encoder e = shell(() -> new T5Encoder(settings, new SplittableRandom(0)));
+        w.set(e.embedding(), w.get(w.has("shared.weight") ? "shared.weight" : "encoder.embed_tokens.weight"));
+        Weights enc = w.at("encoder.");
+        enc.set(e.relativeBias(), enc.get("block.0.layer.0.SelfAttention.relative_attention_bias.weight"));
+        List<T5Encoder.Block> blocks = e.blocks();
+        for (int i = 0; i < blocks.size(); i++) {
+            Weights b = enc.at("block." + i + ".layer.");
+            T5Encoder.Block k = blocks.get(i);
+            rms(b, k.attentionNorm(), "0.layer_norm");
+            b.matrix(k.q(), "0.SelfAttention.q.weight");
+            b.matrix(k.k(), "0.SelfAttention.k.weight");
+            b.matrix(k.v(), "0.SelfAttention.v.weight");
+            b.matrix(k.o(), "0.SelfAttention.o.weight");
+            rms(b, k.ffnNorm(), "1.layer_norm");
+            if (k.gate() != null) {
+                b.matrix(k.up(), "1.DenseReluDense.wi_0.weight");
+                b.matrix(k.gate(), "1.DenseReluDense.wi_1.weight");
+            } else {
+                b.matrix(k.up(), "1.DenseReluDense.wi.weight");
+            }
+            b.matrix(k.down(), "1.DenseReluDense.wo.weight");
+        }
+        rms(enc, e.finalNorm(), "final_layer_norm");
+        w.checkFilled(e, "T5 encoder");
         return e;
     }
 }

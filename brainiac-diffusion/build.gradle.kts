@@ -16,12 +16,15 @@ tasks.test {
     // -PtestModels=<folder of Stable Diffusion models> runs PretrainedDiffusionTest
     systemProperty("brainiac.test.models", providers.gradleProperty("testModels").getOrElse(""))
     systemProperty("brainiac.test.dtype", providers.gradleProperty("testDtype").getOrElse("f16"))
+    // -PtestFluxBits=8,4: bits per weight of the Flux transformer and T5 (0 keeps bfloat16);
+    // by default as few as the device's memory needs
+    systemProperty("brainiac.test.fluxBits", providers.gradleProperty("testFluxBits").getOrElse("auto"))
     if (!providers.gradleProperty("testModels").isPresent) {
         // the tiny reference models then run their convolutions in bands, as 1024px images do
         systemProperty("brainiac.conv.maxColumns", "4096")
     }
     providers.gradleProperty("testModels").orNull?.let {
-        maxHeapSize = "8g"
+        maxHeapSize = "12g"
         testLogging.showStandardStreams = true
     }
     jvmArgs("--enable-native-access=ALL-UNNAMED")
