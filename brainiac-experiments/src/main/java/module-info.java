@@ -14,6 +14,7 @@ module io.github.zzuegg.brainiac.experiments {
     // reusable building blocks, mirroring the core packages they would move to
     exports io.github.zzuegg.brainiac.experimental.agent;
     exports io.github.zzuegg.brainiac.experimental.anomaly;
+    exports io.github.zzuegg.brainiac.experimental.audio;
     exports io.github.zzuegg.brainiac.experimental.autograd;
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
@@ -34,6 +35,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
     exports io.github.zzuegg.brainiac.experimental.vision;
+    exports io.github.zzuegg.brainiac.experimental.world;
     // the experiments: toy tasks, comparisons and demos built from those blocks
     exports io.github.zzuegg.brainiac.experiments.agents;
     exports io.github.zzuegg.brainiac.experiments.attention;
@@ -70,4 +72,5 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.techniques;
     exports io.github.zzuegg.brainiac.experiments.timeseries;
     exports io.github.zzuegg.brainiac.experiments.vision;
+    exports io.github.zzuegg.brainiac.experiments.world;
 }

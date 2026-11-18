@@ -1020,4 +1020,132 @@ public final class OperatorLearning {
         }
         return pred;
     }
+
+    // ---------------------------------------------------------------- 9.5.16 size, data and grid sweep
+
+    /**
+     * Sample positions for the 9.5.16 sweep: the uniform grid of {@code m} points with a share
+     * of them dropped at random, an irregular point cloud on which FNO needs interpolation.
+     *
+     * @param m the uniform grid size
+     * @param drop the share of points dropped, 0 for the uniform grid
+     * @param seed the seed
+     * @return the sorted kept positions in {@code [0, 1)}
+     */
+    public static double[] subsampledPositions(int m, double drop, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        int keep = (int) Math.round(m * (1 - drop));
+        int[] idx = new int[m];
+        for (int j = 0; j < m; j++) {
+            idx[j] = j;
+        }
+        for (int j = m - 1; j > 0; j--) {
+            int k = r.nextInt(j + 1);
+            int t = idx[j];
+            idx[j] = idx[k];
+            idx[k] = t;
+        }
+        double[] p = new double[keep];
+        for (int j = 0; j < keep; j++) {
+            p[j] = idx[j] / (double) m;
+        }
+        java.util.Arrays.sort(p);
+        return p;
+    }
+
+    /**
+     * One cell of the 9.5.16 sweep.
+     *
+     * @param model the model
+     * @param width the channel width
+     * @param train training pairs
+     * @param drop the share of grid points dropped
+     * @param error relative L2 test error at the kept points
+     * @param millis training time
+     */
+    public record SweepRow(String model, int width, int train, double drop, double error, double millis) {
+    }
+
+    /**
+     * 9.5.16: Transolver and LANO against FNO (interpolated onto the uniform grid when points
+     * are dropped) and DeepONet, across channel width, training-set size and grid regularity.
+     * Every model sees the same kept points; FNO's width is the same {@code width} and it keeps
+     * a quarter of the grid's modes. Each model gets the same number of Adam steps (batches of
+     * 20), so a larger training set is seen fewer times rather than buying more compute.
+     *
+     * @param data pairs on a fine grid; the last {@code test} are held out
+     * @param test held-out pairs
+     * @param points the uniform grid the points are drawn from
+     * @param widths channel widths
+     * @param trains training-set sizes
+     * @param drops shares of points dropped
+     * @param steps Adam steps per model
+     * @param seed the seed
+     * @return one row per model and cell
+     */
+    public static List<SweepRow> sweep(Data data, int test, int points, int[] widths, int[] trains, double[] drops,
+            int steps, long seed) {
+        Data te = data.range(data.size() - test, data.size());
+        List<SweepRow> rows = new ArrayList<>();
+        for (double drop : drops) {
+            double[] pos = drop == 0 ? positions(points, false, seed) : subsampledPositions(points, drop, seed + 7);
+            Tensor xTe = sampleAt(te.inputs(), pos);
+            Tensor yTe = sampleAt(te.outputs(), pos);
+            for (int n : trains) {
+                Data tr = data.range(0, Math.min(n, data.size() - test));
+                Tensor xTr = sampleAt(tr.inputs(), pos);
+                Tensor yTr = sampleAt(tr.outputs(), pos);
+                int epochs = Math.max(1, steps * 20 / tr.size());
+                for (int c : widths) {
+                    for (Map.Entry<String, GridModel> e : sweepModels(c, points, pos, drop, seed).entrySet()) {
+                        double ms = train(e.getValue(), xTr, yTr, epochs, 20, 2e-3f, seed);
+                        float[] pred = Var.noGrad(() -> e.getValue().apply(Var.of(xTe))).value().toArray();
+                        rows.add(new SweepRow(e.getKey(), c, tr.size(), drop, relative(pred, yTe), ms));
+                    }
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static Map<String, GridModel> sweepModels(int c, int points, double[] pos, double drop, long seed) {
+        Map<String, GridModel> models = new LinkedHashMap<>();
+        models.put("Transolver", new PointTransformer(i -> PhysicsAttention.of(PhysicsAttention.Mode.TRANSOLVER, c,
+                8, seed + i), c, 1, pos, seed));
+        models.put("LANO", new PointTransformer(i -> PhysicsAttention.of(PhysicsAttention.Mode.LANO, c, 8, seed + i),
+                c, 1, pos, seed));
+        FourierNeuralOperator1d f = new FourierNeuralOperator1d(1, 1, c, Math.max(4, points / 4), 2,
+                new SplittableRandom(seed));
+        GridModel grid = new GridModel() {
+            @Override
+            public Var apply(Var u) {
+                int b = u.shape().dim(0);
+                return f.forward(u.reshape(b, points, 1)).reshape(b, points);
+            }
+
+            @Override
+            public List<Var> parameters() {
+                return f.parameters();
+            }
+        };
+        models.put("FNO", drop == 0 ? grid : onGridViaInterpolation(grid, pos, points));
+        DeepOnet onet = DeepOnet.of(pos.length, 1, 2 * c, 2, c, seed);
+        float[] q = new float[pos.length];
+        for (int j = 0; j < pos.length; j++) {
+            q[j] = (float) pos[j];
+        }
+        Tensor yq = Tensor.of(Shape.of(pos.length, 1), q);
+        models.put("DeepONet", new GridModel() {
+            @Override
+            public Var apply(Var u) {
+                return onet.forward(u, Var.of(yq));
+            }
+
+            @Override
+            public List<Var> parameters() {
+                return onet.parameters();
+            }
+        });
+        return models;
+    }
 }

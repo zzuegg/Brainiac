@@ -23,6 +23,7 @@ public final class MlpWorldModel implements DiscreteWorldModel {
     private final int actions;
     private final Model net;
     private Optimizer optimizer = Optimizer.adam(3e-3f);
+    private boolean symlog;
 
     private MlpWorldModel(int observations, int actions, int hidden, long seed) {
         this.observations = observations;
@@ -48,6 +49,44 @@ public final class MlpWorldModel implements DiscreteWorldModel {
     public MlpWorldModel optimizer(Optimizer o) {
         this.optimizer = Objects.requireNonNull(o);
         return this;
+    }
+
+    /**
+     * DreamerV3's symlog targets (Hafner et al., <a href="https://arxiv.org/abs/2301.04104">2301.04104</a>):
+     * the observation change and the reward are regressed as {@code symlog(x) = sign(x) log(1 + |x|)}
+     * and predicted back through {@code symexp}, so targets of any scale give gradients of similar
+     * size. Off by default.
+     *
+     * @param on whether to use symlog targets
+     * @return this model
+     */
+    public MlpWorldModel symlog(boolean on) {
+        this.symlog = on;
+        return this;
+    }
+
+    /**
+     * @param x a value
+     * @return {@code sign(x) log(1 + |x|)}
+     */
+    public static float symlog(float x) {
+        return (float) (Math.signum(x) * Math.log1p(Math.abs(x)));
+    }
+
+    /**
+     * @param y a symlog value
+     * @return {@code sign(y) (exp(|y|) - 1)}, the inverse of {@link #symlog(float)}
+     */
+    public static float symexp(float y) {
+        return (float) (Math.signum(y) * Math.expm1(Math.abs(y)));
+    }
+
+    private static Tensor symexp(Tensor t) {
+        float[] v = t.toArray();
+        for (int i = 0; i < v.length; i++) {
+            v[i] = symexp(v[i]);
+        }
+        return Tensor.of(t.shape(), v);
     }
 
     private Var input(Tensor obs, int[] acts) {
@@ -77,9 +116,10 @@ public final class MlpWorldModel implements DiscreteWorldModel {
             obs.add(t.observation());
             acts[i] = Math.round(t.action()[0]);
             for (int k = 0; k < observations; k++) {
-                targets[i * observations + k] = t.nextObservation()[k] - t.observation()[k];
+                float d = t.nextObservation()[k] - t.observation()[k];
+                targets[i * observations + k] = symlog ? symlog(d) : d;
             }
-            rewards[i] = t.reward();
+            rewards[i] = symlog ? symlog(t.reward()) : t.reward();
             done[i] = t.terminated() ? 1 : 0;
         }
         Var out = net.forward(input(AgentKit.rows(obs), acts), true);
@@ -106,8 +146,12 @@ public final class MlpWorldModel implements DiscreteWorldModel {
     @Override
     public Prediction predict(Tensor obs, int[] acts) {
         Tensor out = net.forward(input(obs, acts), false).value();
-        Tensor next = obs.add(out.slice(1, 0, observations));
+        Tensor delta = out.slice(1, 0, observations);
+        Tensor next = obs.add(symlog ? symexp(delta) : delta);
         Tensor reward = out.slice(1, observations, observations + 1);
+        if (symlog) {
+            reward = symexp(reward);
+        }
         Tensor cont = out.slice(1, observations + 1, observations + 2).neg().sigmoid();
         return new Prediction(next, reward, cont);
     }
