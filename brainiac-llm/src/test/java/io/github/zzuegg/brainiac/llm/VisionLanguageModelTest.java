@@ -99,6 +99,32 @@ class VisionLanguageModelTest {
         }
     }
 
+    /**
+     * The same models as a GGUF decoder with llama.cpp projector files (make_mmproj.py):
+     * LLaVA in the older layout (last layer cut, feed-forward names swapped), Gemma 3 in
+     * the current one (norm with its 1 added, projection transposed).
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"vlm-llava", "vlm-gemma3"})
+    void ggufWithAProjectorFileMatchesTransformers(String name, @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        VisionLanguageModel hf = VisionLanguageModel.load(LlamaTest.resource(name), LlamaTest.DEVICE, DType.FLOAT32);
+        java.nio.file.Path decoder = dir.resolve("decoder.gguf");
+        hf.language().saveGguf(decoder, null, false);
+        VisionLanguageModel vlm = VisionLanguageModel.load(decoder, LlamaTest.resource(name).resolve("mmproj.gguf"),
+                LlamaTest.DEVICE, DType.FLOAT32);
+        assertEquals(hf.kind(), vlm.kind());
+        Tensor pixels = Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(1, 3, 32, 32),
+                expected(name, "pixel_values"), LlamaTest.DEVICE);
+        close(expected(name, "features"), vlm.imageFeatures(pixels), 1e-4f, "features");
+        float[] ids = expected(name, "ids");
+        int[] prompt = new int[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            // a vocabulary without an image token: the model names its own placeholder
+            prompt[i] = (int) ids[i] == hf.imageToken() ? vlm.imageToken() : (int) ids[i];
+        }
+        close(expected(name, "logits"), vlm.logits(new int[][] {prompt}, pixels), 1e-4f, "logits");
+    }
+
     /** The server reads OpenAI image parts (data: URLs) and answers as the generator does. */
     @Test
     void serverAnswersAboutImages() throws Exception {

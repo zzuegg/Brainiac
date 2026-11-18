@@ -140,8 +140,9 @@ public final class VisionEncoder {
             preNorm = preNormBias = null;
         }
         String fin = towers ? vp + "post_layernorm." : vp + "layernorm.";
-        finalNorm = t.apply(fin + "weight");
-        finalNormBias = t.apply(fin + "bias");
+        // llama.cpp's LLaVA projector files leave out the final norm, which the features skip anyway
+        finalNorm = w.contains(fin + "weight") ? t.apply(fin + "weight") : null;
+        finalNormBias = w.contains(fin + "bias") ? t.apply(fin + "bias") : null;
         projection = kind == Kind.CLIP && w.contains("visual_projection.weight")
                 ? t.apply("visual_projection.weight").transpose() : null;
         if (kind == Kind.SIGLIP && w.contains(vp + "head.probe")) {
@@ -446,7 +447,7 @@ public final class VisionEncoder {
 
     private Var visionStates(Tensor pixels) {
         Var s = run(vision, embeddings(pixels), false);
-        if (kind == Kind.CLIP) {
+        if (kind == Kind.CLIP || finalNorm == null) {
             return s;
         }
         return norm(s, finalNorm, finalNormBias, vision.eps);

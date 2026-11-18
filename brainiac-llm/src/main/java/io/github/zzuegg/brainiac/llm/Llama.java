@@ -1758,7 +1758,17 @@ public final class Llama implements LanguageModel {
             System.arraycopy(tokens[b], 0, flat, b * steps, steps);
         }
         LlamaConfig.Extras e = config.extras();
-        Var x = base(embed).gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
+        int[] lookup = flat;
+        if (insert != null) {
+            // the placeholder need not be in the vocabulary: it reads row 0, then is replaced
+            lookup = flat.clone();
+            for (int i = 0; i < lookup.length; i++) {
+                if (lookup[i] == insert.token) {
+                    lookup[i] = 0;
+                }
+            }
+        }
+        Var x = base(embed).gather(0, indices(lookup, device)).reshape(batch, steps, config.hidden());
         if (e.scaleEmbeddings()) {
             // as Gemma: the factor rounded to the model's type first
             x = x.mul(Tensor.full(Shape.of(), (float) Math.sqrt(config.hidden()), Device.cpu()).to(dtype).item());

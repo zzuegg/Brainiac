@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.llm;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.io.Gguf;
 import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.WeightSource;
 import io.github.zzuegg.brainiac.tensor.DType;
@@ -79,6 +80,12 @@ public final class VisionLanguageModel implements LanguageModel {
 
     private VisionLanguageModel(Map<String, Object> c, Map<String, Object> processor, WeightSource raw, Device device,
             DType dtype) {
+        this(c, processor, raw, device, dtype, null);
+    }
+
+    /** @param decoder a decoder loaded already (from GGUF, with a projector file), or null to load it from the weights */
+    private VisionLanguageModel(Map<String, Object> c, Map<String, Object> processor, WeightSource raw, Device device,
+            DType dtype, Llama decoder) {
         String type = Json.string(c, "model_type", "");
         kind = switch (type) {
             case "llava" -> Kind.LLAVA;
@@ -117,21 +124,26 @@ public final class VisionLanguageModel implements LanguageModel {
             return;
         }
         qwen = null;
-        Map<String, Object> textConfig = new java.util.LinkedHashMap<>(Json.object(c.get("text_config")));
+        Map<String, Object> textConfig = new java.util.LinkedHashMap<>(c.get("text_config") instanceof Map<?, ?> tm
+                ? Json.object(tm) : Map.of());
         if (kind == Kind.GEMMA3) {
             textConfig.putIfAbsent("model_type", "gemma3_text");
         }
-        language = Llama.load(w.renamed(n -> n.startsWith("model.") || n.startsWith("lm_head.") ? n : null),
-                LlamaConfig.fromHuggingFace(textConfig), device, dtype);
+        language = decoder != null ? decoder
+                : Llama.load(w.renamed(n -> n.startsWith("model.") || n.startsWith("lm_head.") ? n : null),
+                        LlamaConfig.fromHuggingFace(textConfig), device, dtype);
         Map<String, Object> visionConfig = new java.util.LinkedHashMap<>(Json.object(c.get("vision_config")));
         visionConfig.putIfAbsent("model_type", kind == Kind.GEMMA3 ? "siglip_vision_model" : "clip_vision_model");
         vision = VisionEncoder.tower(visionConfig, processor,
                 w.renamed(n -> n.startsWith("vision_model.") ? n : null), device, dtype);
         if (kind == Kind.GEMMA3) {
             // x / rms(x) * (1 + w), then one matrix stored [vision, text]
-            softNorm = w.tensor("projector.mm_soft_emb_norm.weight", Device.cpu(), DType.FLOAT32).add(1f).to(device);
+            // llama.cpp stores the norm with its 1 added already, and the projection as [text, vision]
+            Tensor norm = w.tensor("projector.mm_soft_emb_norm.weight", Device.cpu(), DType.FLOAT32);
+            softNorm = (decoder != null ? norm : norm.add(1f)).to(device);
             softEps = (float) Json.number(visionConfig, "layer_norm_eps", 1e-6);
-            proj1 = w.tensor("projector.mm_input_projection_weight", device, dtype);
+            Tensor projection = w.tensor("projector.mm_input_projection_weight", device, dtype);
+            proj1 = projection.shape().dim(0) == vision.width() ? projection : projection.transpose();
             proj1Bias = proj2 = proj2Bias = null;
             act = null;
             tokensPerImage = (int) Json.integer(c, "mm_tokens_per_image", 256);
@@ -209,6 +221,42 @@ public final class VisionLanguageModel implements LanguageModel {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /**
+     * Loads a GGUF decoder with llama.cpp's multimodal projector file, as published next to
+     * GGUF vision models ({@code mmproj-*.gguf}): LLaVA and Gemma 3.
+     *
+     * @param model the decoder's {@code .gguf}
+     * @param mmproj the projector's {@code .gguf}, holding the image tower
+     * @param device where the weights go
+     * @param dtype the type of the image tower's weights
+     * @return the model
+     */
+    public static VisionLanguageModel load(Path model, Path mmproj, Device device, DType dtype) {
+        Llama decoder = Llama.load(model, device, dtype);
+        int imageToken;
+        try (Gguf g = Gguf.open(model)) {
+            imageToken = imageToken(g);
+        }
+        try (Gguf g = Gguf.open(mmproj)) {
+            Mmproj.Parts p = Mmproj.read(g, imageToken);
+            return new VisionLanguageModel(p.config(), p.processor(), p.weights(), device, dtype, decoder);
+        }
+    }
+
+    /** The vocabulary's image token, or an id past it when it has none (prompts then pass ids). */
+    private static int imageToken(Gguf g) {
+        if (g.metadata().get("tokenizer.ggml.tokens") instanceof List<?> tokens) {
+            for (String t : new String[] {"<image_soft_token>", "<image>"}) {
+                int i = tokens.indexOf(t);
+                if (i >= 0) {
+                    return i;
+                }
+            }
+            return tokens.size();
+        }
+        return Integer.MAX_VALUE / 2;
     }
 
     /** @return the model family */
