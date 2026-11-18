@@ -74,6 +74,25 @@ public final class Signal {
      * @return {@code [..., samples]}
      */
     public static Var istft(Var spec, int nFft, int hop, int samples) {
+        return overlapAdd(spec, nFft, hop, nFft / 2, samples);
+    }
+
+    /**
+     * The inverse STFT with "same" padding, as Vocos decodes: frames overlap-added without
+     * centring, then {@code (nFft - hop) / 2} samples trimmed from both ends, so {@code frames}
+     * frames give exactly {@code frames * hop} samples.
+     *
+     * @param spec complex values {@code [..., frames, nFft / 2 + 1, 2]}
+     * @param nFft the frame length
+     * @param hop the step between frames
+     * @return {@code [..., frames * hop]}
+     */
+    public static Var istftSame(Var spec, int nFft, int hop) {
+        int frames = spec.shape().dim(-3);
+        return overlapAdd(spec, nFft, hop, (nFft - hop) / 2, frames * hop);
+    }
+
+    private static Var overlapAdd(Var spec, int nFft, int hop, int start, int samples) {
         Shape s = spec.shape();
         int rank = s.rank();
         int frames = s.dim(rank - 3);
@@ -99,7 +118,6 @@ public final class Signal {
             inv[i] = norm[i] > 1e-10 ? (float) (1 / norm[i]) : 0;
         }
         Var signal = summed.mul(Var.of(Tensor.of(Shape.of(full), inv, device).to(spec.dtype())));
-        int start = nFft / 2;
         return signal.slice(rank - 3, start, Math.min(full, start + samples));
     }
 

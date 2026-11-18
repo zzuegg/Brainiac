@@ -1628,6 +1628,47 @@ public final class Functional {
     }
 
     /**
+     * Rotary position embedding with the rotated pairs interleaved, {@code (x0, x1)},
+     * {@code (x2, x3)} and so on, as GPT-J, x-transformers and F5-TTS lay them out; {@link #rotary}
+     * pairs feature {@code i} with feature {@code i + d / 2} instead. Pair {@code i} at step
+     * {@code t} turns by {@code (t + offset) * base^(-2i / d)}.
+     *
+     * @param x {@code [..., steps, d]} with even {@code d}
+     * @param base the frequency base, usually 10000
+     * @param offset the position of the first step
+     * @return the rotated values
+     */
+    public static Var rotaryInterleaved(Var x, float base, int offset) {
+        Shape s = x.shape();
+        int rank = s.rank();
+        int steps = s.dim(-2);
+        int d = s.dim(-1);
+        if (d % 2 != 0) {
+            throw new IllegalArgumentException("rotary embedding needs an even feature size, got " + d);
+        }
+        int half = d / 2;
+        float[] cos = new float[steps * half];
+        float[] sin = new float[steps * half];
+        for (int t = 0; t < steps; t++) {
+            for (int i = 0; i < half; i++) {
+                double angle = (t + offset) * Math.pow(base, -2.0 * i / d);
+                cos[t * half + i] = (float) Math.cos(angle);
+                sin[t * half + i] = (float) Math.sin(angle);
+            }
+        }
+        Device device = x.value().device();
+        Tensor c = Tensor.of(Shape.of(steps, half, 1), cos, device).to(x.value().dtype());
+        Tensor sn = Tensor.of(Shape.of(steps, half, 1), sin, device).to(x.value().dtype());
+        int[] pairs = java.util.Arrays.copyOf(s.toArray(), rank + 1);
+        pairs[rank - 1] = half;
+        pairs[rank] = 2;
+        Var p = x.reshape(pairs);
+        Var x1 = p.slice(-1, 0, 1);
+        Var x2 = p.slice(-1, 1, 2);
+        return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn))).reshape(s.toArray());
+    }
+
+    /**
      * Two-dimensional rotary embedding for image tokens, as vision transformers and DiT
      * variants use: the first half of the features rotates with the token's row, the second
      * half with its column, each as {@link #rotary} does.
