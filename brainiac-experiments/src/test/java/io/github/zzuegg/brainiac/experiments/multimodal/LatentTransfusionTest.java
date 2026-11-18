@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Transfusion on a VAE latent with U-Net patch layers, at the multiply-adds of the wave 9
- * pixel model's 200 steps (wave 9: caption 0.133, generation 0.067 for the pixel model).
+ * pixel model's 200 steps (wave 9 at 300 steps: caption 0.133, generation 0.067 for the pixel model).
  */
 class LatentTransfusionTest {
 
