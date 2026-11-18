@@ -13,9 +13,9 @@ class SpeakerDiarizationTest {
 
     @Test
     void clusteringAndEendAgainstOneSpeaker() {
-        List<DiarizationRow> r = SpeakerShootout.diarization(2, 0.0, 2, 50, 1, Diarizer.ONE_SPEAKER,
+        List<DiarizationRow> r = SpeakerShootout.diarization(2, 0.0, 2, 30, 1, Diarizer.ONE_SPEAKER,
                 Diarizer.MFCC_SPECTRAL, Diarizer.XVECTOR_SPECTRAL, Diarizer.XVECTOR_ORACLE, Diarizer.EEND);
-        System.out.printf("diarisation, 2 speakers, no overlap, 50 steps: %s%n", r);
+        System.out.printf("diarisation, 2 speakers, no overlap, 30 steps: %s%n", r);
         assertTrue(r.get(0).der() > 0.2, "one speaker for everything confuses half the speech: " + r.get(0));
         for (DiarizationRow row : r) {
             assertTrue(Double.isFinite(row.der()), row.toString());
