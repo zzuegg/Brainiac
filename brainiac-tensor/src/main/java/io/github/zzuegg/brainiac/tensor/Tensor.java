@@ -1318,6 +1318,18 @@ public final class Tensor {
     }
 
     /**
+     * @param low the lower bound
+     * @param high the upper bound, at least {@code low}
+     * @return each value limited to {@code [low, high]}
+     */
+    public Tensor clamp(float low, float high) {
+        if (!(low <= high)) {
+            throw new IllegalArgumentException("clamp needs low <= high, got " + low + " and " + high);
+        }
+        return maximum(low).minimum(high);
+    }
+
+    /**
      * Compares element-wise with broadcasting.
      *
      * @param other the other tensor
