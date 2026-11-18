@@ -2,13 +2,16 @@ package io.github.zzuegg.brainiac.experiments.compression;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.compress.DecoupledKdLoss;
+import io.github.zzuegg.brainiac.experimental.compress.DoReFaQuantizer;
 import io.github.zzuegg.brainiac.experimental.compress.FixedSparsityOptimizer;
 import io.github.zzuegg.brainiac.experimental.compress.HessianAwareBitAllocation;
+import io.github.zzuegg.brainiac.experimental.compress.PactActivation;
 import io.github.zzuegg.brainiac.experimental.compress.WeightSharingQuantizer;
 import io.github.zzuegg.brainiac.experimental.compress.RelationalKdLoss;
 import io.github.zzuegg.brainiac.experimental.nn.DistillationLoss;
 import io.github.zzuegg.brainiac.experimental.nn.FeatureDistillationLoss;
 import io.github.zzuegg.brainiac.experimental.nn.Gptq;
+import io.github.zzuegg.brainiac.experimental.nn.LsqDense;
 import io.github.zzuegg.brainiac.experimental.nn.SimpleMlp;
 import io.github.zzuegg.brainiac.experimental.nn.WeightPruning;
 import io.github.zzuegg.brainiac.experiments.learning.ToyTasks;
@@ -33,7 +36,9 @@ import java.util.function.UnaryOperator;
  *     centroid fine-tuning, Huffman coding) against round-to-nearest and GPTQ at the same bits,
  *     and pruning alone, by accuracy against total stored bits;</li>
  * <li>{@link #mixedPrecision} (8.5.10): HAWQ-V2 bit allocation against uniform, random and
- *     weight-variance allocation at the same average bits.</li>
+ *     weight-variance allocation at the same average bits;</li>
+ * <li>{@link #quantizationAware} (8.5.11): PACT and DoReFa against LSQ and fixed-range clipping
+ *     for 2 to 4-bit weights and activations.</li>
  * </ul>
  */
 public final class CompactModels {
@@ -257,6 +262,91 @@ public final class CompactModels {
             w.get(l).assign(saved.get(l));
         }
         return new CompactRow(name, acc, HessianAwareBitAllocation.averageBits(bits, sizes), bits[0], -1);
+    }
+
+    // ------------------------------------------------------------------ 8.5.11
+
+    /**
+     * Quantisation-aware fine-tuning of the reference digits MLP with {@code k}-bit weights (all
+     * layers) and {@code k}-bit hidden activations. DoReFa weights are rescaled to each layer's
+     * initial range, since the network has no batch norm to absorb the change of scale.
+     *
+     * @param bitsList the bit widths
+     * @param steps fine-tuning steps
+     * @param seed the seed
+     * @return fp32, then per bit width: PACT (DoReFa weights, PACT activations), DoReFa (weights
+     *     and activations clipped to {@code [0, 1]}), LSQ (learned steps for both), fixed range (round-to-nearest weights
+     *     at their maximum, activations clipped at their initial maximum); {@code metric} is test
+     *     accuracy, {@code cost} the bits
+     */
+    public static List<CompactRow> quantizationAware(int[] bitsList, int steps, long seed) {
+        CompressionBench.Split data = CompressionBench.digits(seed);
+        List<CompactRow> rows = new ArrayList<>();
+        SimpleMlp ref = CompressionBench.trained(seed);
+        rows.add(new CompactRow("fp32", CompressionBench.accuracy(ref::forward, data.test()), 32, 0, -1));
+        Tensor[] acts = ref.activations(data.train().inputs());
+        for (int bits : bitsList) {
+            for (String method : List.of("pact", "dorefa", "lsq", "fixed range")) {
+                SimpleMlp net = CompressionBench.trained(seed);
+                int depth = net.depth();
+                float[] range = new float[depth];
+                float[] actMax = new float[depth];
+                float[] actMean = new float[depth];
+                for (int l = 0; l < depth; l++) {
+                    range[l] = net.weight(l).value().abs().max().item();
+                    actMax[l] = acts[l + 1].max().item();
+                    actMean[l] = acts[l + 1].mean().item();
+                }
+                List<Var> trainable = new ArrayList<>(net.parameters());
+                List<PactActivation> pact = new ArrayList<>();
+                List<Var> wStep = new ArrayList<>();
+                List<Var> aStep = new ArrayList<>();
+                int qp = (1 << (bits - 1)) - 1;
+                for (int l = 0; l < depth; l++) {
+                    PactActivation a = new PactActivation(bits, actMax[l]);
+                    pact.add(a);
+                    float meanAbs = net.weight(l).value().abs().mean().item();
+                    wStep.add(Var.param(Tensor.full(io.github.zzuegg.brainiac.tensor.Shape.of(1),
+                            Math.max(1e-4f, 2 * meanAbs / (float) Math.sqrt(qp)))));
+                    aStep.add(Var.param(Tensor.full(io.github.zzuegg.brainiac.tensor.Shape.of(1),
+                            Math.max(1e-4f, 2 * actMean[l] / (float) Math.sqrt((1 << bits) - 1)))));
+                }
+                switch (method) {
+                    case "pact" -> pact.forEach(a -> trainable.addAll(a.parameters()));
+                    case "lsq" -> {
+                        trainable.addAll(wStep);
+                        trainable.addAll(aStep);
+                    }
+                    default -> {
+                    }
+                }
+                java.util.function.BiFunction<Integer, Var, Var> weight = switch (method) {
+                    case "pact", "dorefa" -> (l, w) -> DoReFaQuantizer.weight(w, bits).mul(range[l]);
+                    case "lsq" -> (l, w) -> LsqDense.quantize(w, wStep.get(l), bits);
+                    default -> (l, w) -> symmetric(w, bits);
+                };
+                java.util.function.BiFunction<Integer, Var, Var> act = switch (method) {
+                    case "pact" -> (l, z) -> pact.get(l).forward(z);
+                    case "dorefa" -> (l, z) -> DoReFaQuantizer.activation(z, bits);
+                    // unsigned b bits = the positive half of a symmetric (b + 1)-bit grid
+                    case "lsq" -> (l, z) -> LsqDense.quantize(z.relu(), aStep.get(l), bits + 1);
+                    default -> (l, z) -> DoReFaQuantizer.activation(z.relu().div(actMax[l]), bits).mul(actMax[l]);
+                };
+                UnaryOperator<Var> fwd = CompressionBench.forward(net, weight, act);
+                CompressionBench.train(fwd, trainable, Optimizer.adam(0.002f), data.train(), steps);
+                rows.add(new CompactRow(method + " " + bits + "b", CompressionBench.accuracy(fwd, data.test()), bits, 0,
+                        -1));
+            }
+        }
+        return rows;
+    }
+
+    /** Symmetric per-tensor round-to-nearest at the weight's maximum, straight through. */
+    private static Var symmetric(Var w, int bits) {
+        int qp = Math.max(1, (1 << (bits - 1)) - 1);
+        float max = Math.max(1e-8f, w.value().abs().max().item());
+        Tensor q = w.value().mul(qp / max).round().mul(max / qp);
+        return Functional.straightThrough(Var.of(q), w);
     }
 
     private static SimpleMlp prunedReference(long seed, double sparsity, int fineTune, CompressionBench.Split data) {
