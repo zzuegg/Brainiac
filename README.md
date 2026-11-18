@@ -436,6 +436,15 @@ repetition penalty, stop tokens and stop strings, streaming that never splits a 
 batches of prompts (padded on the left) and beam search. Each new token costs one step,
 because the model keeps a key/value cache.
 
+DeepSeek-V2 (and V2-Lite), DeepSeek-V3 and Kimi K2 load the same way, from Hugging Face
+folders (V3's 8-bit float weights with their block scales included) or GGUF files.
+Multi-head latent attention caches one compressed latent and one rotary key per token
+instead of keys and values per head, and decoding attends over that latent directly, with
+fused kernels on the CPU, Vulkan and CUDA. Their experts follow DeepSeek's routing: shared
+experts, group-limited choice, softmax (V2) or sigmoid with a selection bias (V3), and
+YaRN for long context. Tiny random models check the logits against transformers and the
+GGUF reading against llama.cpp.
+
 ```java
 Path dir = Path.of("Qwen2.5-0.5B-Instruct");
 Llama model = Llama.load(dir, Device.best(), DType.FLOAT16);   // or Llama.load(Path.of("model.Q8_0.gguf"), ...)
