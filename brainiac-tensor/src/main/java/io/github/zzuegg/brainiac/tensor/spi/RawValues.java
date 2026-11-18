@@ -21,6 +21,12 @@ public final class RawValues {
     /** Little-endian 16-bit values, unaligned. */
     public static final ValueLayout.OfShort SHORT =
             ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
+    /** Little-endian 32-bit integers, unaligned. */
+    public static final ValueLayout.OfInt INT =
+            ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
+    /** Little-endian 64-bit integers, unaligned. */
+    public static final ValueLayout.OfLong LONG =
+            ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     private RawValues() {
     }
@@ -60,6 +66,22 @@ public final class RawValues {
             case BFLOAT16 -> {
                 for (int i = 0; i < out.length; i++) {
                     out[i] = DType.bfloat16ToFloat(data.getAtIndex(SHORT, i));
+                }
+            }
+            case INT64 -> {
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = data.getAtIndex(LONG, i);
+                }
+            }
+            case INT32 -> {
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = data.getAtIndex(INT, i);
+                }
+            }
+            case UINT8, BOOL -> {
+                for (int i = 0; i < out.length; i++) {
+                    int v = Byte.toUnsignedInt(data.get(java.lang.foreign.ValueLayout.JAVA_BYTE, i));
+                    out[i] = dtype == DType.BOOL && v != 0 ? 1 : v;
                 }
             }
         }

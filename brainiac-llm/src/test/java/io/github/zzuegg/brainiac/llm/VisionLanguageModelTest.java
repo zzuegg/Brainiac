@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.llm;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.WeightSource;
@@ -215,8 +216,28 @@ class VisionLanguageModelTest {
 
     @Test
     void qwen2VlMatchesTransformers() {
-        VisionLanguageModel qwen = VisionLanguageModel.load(LlamaTest.resource("vlm-qwen2"), LlamaTest.DEVICE,
-                DType.FLOAT32);
+        qwen2Vl(LlamaTest.resource("vlm-qwen2"));
+    }
+
+    @Test
+    void qwen2VlReadsTheLegacyMropeSpelling(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+            throws java.io.IOException {
+        // released Qwen2-VL checkpoints write rope_scaling {"type": "mrope", "mrope_section": [...]}
+        java.nio.file.Path from = LlamaTest.resource("vlm-qwen2");
+        for (String f : new String[] {"model.safetensors", "generation_config.json", "preprocessor_config.json"}) {
+            java.nio.file.Files.copy(from.resolve(f), dir.resolve(f));
+        }
+        String config = java.nio.file.Files.readString(from.resolve("config.json"));
+        String legacy = config.replaceFirst("\"rope_parameters\": \\{\\s*\"mrope_section\"",
+                "\"rope_theta\": 10000.0, \"rope_scaling\": {\"type\": \"mrope\", \"mrope_section\"")
+                .replaceFirst(",\\s*\"rope_theta\": 10000.0,\\s*\"rope_type\": \"default\"\\s*}", "}");
+        assertTrue(legacy.contains("\"type\": \"mrope\""), legacy);
+        java.nio.file.Files.writeString(dir.resolve("config.json"), legacy);
+        qwen2Vl(dir);
+    }
+
+    private static void qwen2Vl(java.nio.file.Path folder) {
+        VisionLanguageModel qwen = VisionLanguageModel.load(folder, LlamaTest.DEVICE, DType.FLOAT32);
         QwenVision.Patches theirs = new QwenVision.Patches(Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(48, 96),
                 expected("vlm-qwen2", "pixel_values"), LlamaTest.DEVICE), 6, 8);
         Tensor features = qwen.qwen().features(theirs);

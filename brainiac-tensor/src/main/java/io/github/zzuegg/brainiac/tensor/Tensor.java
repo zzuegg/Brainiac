@@ -132,6 +132,55 @@ public final class Tensor {
     }
 
     /**
+     * Creates a tensor of whole numbers, such as token ids or indices, exactly.
+     *
+     * @param shape the shape
+     * @param values the values; their count must equal {@code shape.size()}
+     * @param dtype an integer or boolean type, such as {@link DType#INT64}
+     * @param device where the tensor lives; a device without integer types (a GPU) takes
+     *     {@code to(DType.FLOAT32)} first
+     * @return the tensor
+     */
+    public static Tensor of(Shape shape, long[] values, DType dtype, Device device) {
+        Objects.requireNonNull(shape, "shape");
+        if (values.length != shape.size()) {
+            throw new IllegalArgumentException(
+                    "shape " + shape + " needs " + shape.size() + " values, got " + values.length);
+        }
+        requireSupported(dtype, device);
+        java.lang.foreign.MemorySegment raw = java.lang.foreign.MemorySegment.ofArray(new byte[values.length * 8]);
+        for (int i = 0; i < values.length; i++) {
+            raw.setAtIndex(io.github.zzuegg.brainiac.tensor.spi.RawValues.LONG, i, values[i]);
+        }
+        Storage s = device.backend().upload(raw, DType.INT64);
+        Tensor t = new Tensor(shape, device, s);
+        return dtype == DType.INT64 ? t : t.to(dtype);
+    }
+
+    /**
+     * Creates a tensor of 32-bit integers.
+     *
+     * @param shape the shape
+     * @param values the values; their count must equal {@code shape.size()}
+     * @param device where the tensor lives
+     * @return an {@link DType#INT32} tensor
+     */
+    public static Tensor ofInts(Shape shape, int[] values, Device device) {
+        long[] l = new long[values.length];
+        for (int i = 0; i < l.length; i++) {
+            l[i] = values[i];
+        }
+        return of(shape, l, DType.INT32, device);
+    }
+
+    private static void requireSupported(DType dtype, Device device) {
+        if (!device.backend().supports(dtype)) {
+            throw new UnsupportedOperationException(device + " holds no " + dtype + " tensors; create them on the CPU"
+                    + " and convert with to(DType.FLOAT32) to move them");
+        }
+    }
+
+    /**
      * Creates a tensor from raw values laid out as {@code dtype} stores them, little-endian
      * (see {@link Backend#upload(java.lang.foreign.MemorySegment, DType)}). The values go
      * straight from {@code data} to the device, so a tensor read from a memory-mapped file
@@ -602,6 +651,7 @@ public final class Tensor {
         if (dtype() == DType.FLOAT32) {
             return new Tensor(shape, target, target.backend().upload(toArray()));
         }
+        requireSupported(dtype(), target);
         return new Tensor(shape, target, target.backend().upload(toDoubleArray(), dtype()));
     }
 
@@ -636,6 +686,35 @@ public final class Tensor {
      */
     public double[] toDoubleArray() {
         return backend().downloadDouble(storage());
+    }
+
+    /**
+     * Copies all values to a new Java array of whole numbers: exact for integer tensors up
+     * to 2^53, and truncated toward zero for floating point ones.
+     *
+     * @return the values
+     */
+    public long[] toLongArray() {
+        double[] d = toDoubleArray();
+        long[] l = new long[d.length];
+        for (int i = 0; i < l.length; i++) {
+            l[i] = (long) d[i];
+        }
+        return l;
+    }
+
+    /**
+     * {@link #toLongArray()} as ints.
+     *
+     * @return the values
+     */
+    public int[] toIntArray() {
+        double[] d = toDoubleArray();
+        int[] r = new int[d.length];
+        for (int i = 0; i < r.length; i++) {
+            r[i] = (int) d[i];
+        }
+        return r;
     }
 
     /**

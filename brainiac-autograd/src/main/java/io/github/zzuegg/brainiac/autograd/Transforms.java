@@ -216,4 +216,54 @@ public final class Transforms {
         }
         return out;
     }
+
+    /**
+     * A differentially private gradient (DP-SGD, Abadi et al. 2016): each example's
+     * gradient is scaled down to an L2 norm of at most {@code clipNorm} over all parameters
+     * together, the clipped gradients are summed, Gaussian noise with standard deviation
+     * {@code noiseMultiplier * clipNorm} is added, and the result is divided by the batch size.
+     *
+     * @param loss the loss of one example (a batch of one, leading axis kept), with one element
+     * @param parameters the values to differentiate with respect to
+     * @param batch the examples along axis 0
+     * @param clipNorm the largest norm one example may contribute
+     * @param noiseMultiplier the noise relative to {@code clipNorm}; 0 only clips
+     * @param random the source of the noise
+     * @return one averaged, noised gradient per parameter
+     */
+    public static List<Tensor> privateGradients(Function<Var, Var> loss, List<Var> parameters, Tensor batch,
+            float clipNorm, float noiseMultiplier, java.util.random.RandomGenerator random) {
+        if (!(clipNorm > 0) || noiseMultiplier < 0) {
+            throw new IllegalArgumentException("clipNorm must be positive and noiseMultiplier non-negative, got "
+                    + clipNorm + " and " + noiseMultiplier);
+        }
+        int n = batch.shape().dim(0);
+        List<Tensor> per = perExampleGradients(loss, parameters, batch);
+        // squared norm of each example's gradient over all parameters: [n]
+        Tensor squares = null;
+        for (Tensor g : per) {
+            Tensor s = g.reshape(n, Math.toIntExact(g.shape().size() / Math.max(1, n))).square().sum(1, false);
+            squares = squares == null ? s : squares.add(s);
+        }
+        float[] norms = squares.toArray();
+        float[] scale = new float[n];
+        for (int i = 0; i < n; i++) {
+            float norm = (float) Math.sqrt(norms[i]);
+            scale[i] = norm > clipNorm ? clipNorm / norm : 1f;
+        }
+        List<Tensor> out = new ArrayList<>(per.size());
+        for (Tensor g : per) {
+            int[] dims = new int[g.shape().rank()];
+            java.util.Arrays.fill(dims, 1);
+            dims[0] = n;
+            Tensor factors = Tensor.of(Shape.of(dims), scale, g.device()).to(g.dtype());
+            Tensor sum = g.mul(factors).sum(0, false);
+            if (noiseMultiplier > 0) {
+                sum = sum.add(Tensor.normal(sum.shape(), 0f, noiseMultiplier * clipNorm, random)
+                        .to(sum.device()).to(sum.dtype()));
+            }
+            out.add(sum.div(n));
+        }
+        return out;
+    }
 }

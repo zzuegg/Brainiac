@@ -60,6 +60,7 @@ class VulkanBackendTest {
             case FLOAT32 -> 2e-5;
             case FLOAT16 -> 2e-2;
             case BFLOAT16 -> 8e-2;
+            default -> 0;
         };
     }
 
@@ -91,7 +92,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void everyOperationMatchesTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         Tensor x = random(1, 5, 7);
@@ -131,7 +132,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void customKernelsMatchTheirJavaVersion(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         io.github.zzuegg.brainiac.tensor.Kernel k = io.github.zzuegg.brainiac.tensor.Kernel.of("mix", 2, """
@@ -160,7 +161,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void sortsLikeTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // short rows, a non-power-of-two width, a vocabulary-sized row; ties from rounding
@@ -180,7 +181,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void uploadsRawValuesFromNativeMemory(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // small (inline update), mid-size (staging ring) and large (own staging block)
@@ -547,7 +548,7 @@ class VulkanBackendTest {
         String status = Device.available().stream().map(Device::name).filter(n -> n.startsWith("vulkan"))
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "vulkan".length(), status);
-        assertTrue(List.of(DType.values()).size() == 4);
+        assertTrue(List.of(DType.values()).stream().filter(DType::floating).count() == 4);
     }
 
     @ParameterizedTest

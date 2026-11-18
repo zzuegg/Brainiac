@@ -16,12 +16,15 @@ final class CpuStorage implements Storage {
     final double[] wide;
     /** the bits of a float16 or bfloat16 storage, otherwise {@code null} */
     final short[] half;
+    /** Integer and boolean values: kept as longs, read through doubles (exact up to 2^53). */
+    final long[] ints;
 
     CpuStorage(float[] data) {
         this.dtype = DType.FLOAT32;
         this.data = data;
         this.wide = null;
         this.half = null;
+        this.ints = null;
     }
 
     private CpuStorage(DType dtype, int size) {
@@ -29,6 +32,7 @@ final class CpuStorage implements Storage {
         this.data = dtype == DType.FLOAT32 ? new float[size] : null;
         this.wide = dtype == DType.FLOAT64 ? new double[size] : null;
         this.half = dtype == DType.FLOAT16 || dtype == DType.BFLOAT16 ? new short[size] : null;
+        this.ints = dtype.floating() ? null : new long[size];
     }
 
     static CpuStorage allocate(int size, DType dtype) {
@@ -41,6 +45,7 @@ final class CpuStorage implements Storage {
             case FLOAT32 -> data.length;
             case FLOAT64 -> wide.length;
             case FLOAT16, BFLOAT16 -> half.length;
+            case INT32, INT64, UINT8, BOOL -> ints.length;
         };
     }
 
@@ -58,6 +63,10 @@ final class CpuStorage implements Storage {
         if (data != null) {
             for (int i = 0; i < d.length; i++) {
                 d[i] = data[i];
+            }
+        } else if (ints != null) {
+            for (int i = 0; i < d.length; i++) {
+                d[i] = ints[i];
             }
         } else if (dtype == DType.FLOAT16) {
             for (int i = 0; i < d.length; i++) {
@@ -101,6 +110,11 @@ final class CpuStorage implements Storage {
             case BFLOAT16 -> {
                 for (int i = 0; i < half.length; i++) {
                     half[i] = DType.floatToBfloat16((float) values[i]);
+                }
+            }
+            case INT32, INT64, UINT8, BOOL -> {
+                for (int i = 0; i < ints.length; i++) {
+                    ints[i] = (long) dtype.round(values[i]);
                 }
             }
         }
