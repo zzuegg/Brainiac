@@ -8,6 +8,7 @@
  */
 module io.github.zzuegg.brainiac.studio {
     requires io.github.zzuegg.brainiac;
+    requires io.github.zzuegg.brainiac.cloud;
     requires java.net.http;
     requires jdk.httpserver;
 

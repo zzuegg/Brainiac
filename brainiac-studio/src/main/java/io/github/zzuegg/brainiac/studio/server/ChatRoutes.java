@@ -58,7 +58,7 @@ import java.util.Map;
  *       and the machines rented; {@code POST /api/vast/key} with {@code {"key": "..."}} saves the
  *       key ({@code {"remove": true}} removes it); {@code POST /api/vast/offers} with {@code {"gpu":
  *       "4090", "minGpuRam": 24, "gpus": 1, "maxPrice": 0.5}} lists machines to rent, cheapest first.
- *       Nothing is rented from here.
+ *       Renting is in {@link VastRoutes}.
  *   <li>{@code POST /api/hub/token} with {@code {"token": "hf_..."}} saves the Hugging Face token to
  *       {@code ~/.brainiac/hf_token}, readable only by this account, where the core's downloader
  *       finds it too; {@code {"remove": true}} deletes that file. Only its last four characters come back.

@@ -999,8 +999,16 @@ call the same tools over `/api/tools` with the studio's token.
 **Vast.ai** rents GPU machines by the hour. Paste an API key on the Training screen (it is kept in
 `keys.properties`, or comes from `VAST_API_KEY`, and is sent only to Vast.ai) to see your balance,
 the machines you rent, and verified offers to rent, cheapest first, filtered by GPU, memory, count
-and price. The studio only reads there for now; renting will ask you each time before anything is
-billed.
+and price. **Rent…** on an offer shows its price and asks you each time, with the hours after
+which the studio destroys the machine (2 by default, at most 48). The price is looked up again
+before renting, and the studio refuses if it went up. A rented machine gets this checkout (its
+`HEAD` commit), builds it with `cloud/vast/setup.sh` and runs a worker there, reached through an
+SSH tunnel and added as a host, which takes 10 to 20 minutes and is billed too. Renting needs the
+`ssh` command and your SSH key added at cloud.vast.ai, and the studio to run from a Brainiac
+checkout (or `BRAINIAC_REPO` naming one). The Vast.ai card shows each machine's stage and cost so
+far; **Destroy** ends it (and any other instance of your account). Machines are also destroyed when
+setting them up fails and when the studio closes, and the setup's output is kept in `vast/` in the
+data folder. The studio rents at most 3 machines at once.
 
 **Ctrl K** finds anything: a screen, a conversation, a chat model, a saved model in the
 builder, a training run, or a command such as a new conversation, a new model or another layout.
@@ -1031,6 +1039,9 @@ GET  /api/hub/downloads     every download with its progress; POST /api/hub/canc
 GET  /api/vast              the Vast.ai key (last 4 characters), balance and rented machines
 POST /api/vast/key          {"key":"..."} saves the Vast.ai key in keys.properties ("remove": true removes it)
 POST /api/vast/offers       {"gpu":"4090","minGpuRam":24,"gpus":1,"maxPrice":0.5} -> machines to rent, cheapest first
+GET  /api/vast/rentals      the machines rented from the studio: stage, cost so far, host, error
+POST /api/vast/rent         {"offer":123,"pricePerHour":0.36,"hours":2} rents it, unless it now costs more
+POST /api/vast/destroy      {"id":456} destroys an instance; POST /api/vast/cancel {"key":"r1"} stops a setup
 POST /api/hub/token         {"token":"hf_..."} saves the Hugging Face token to ~/.brainiac/hf_token ("remove": true
                             deletes it); GET /api/hub/downloads says which token is used, by its last 4 characters
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
