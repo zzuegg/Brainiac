@@ -31,6 +31,14 @@ import java.util.function.UnaryOperator;
  * Transformer on 2x2 patches: MAE reconstructs the pixels of 75% hidden patches from the
  * rest; I-JEPA-lite predicts, from the visible patches, the <em>representations</em> that a
  * momentum target encoder gives the hidden ones (no pixels, no augmentations).
+ *
+ * <p>The I-JEPA follow-up (wave 7, item 7.6.18) adds {@link Method#IJEPA_FULL} with the
+ * paper's recipe pieces that the lite version skips: multi-block target masks with a large
+ * context block ({@link SelfSupervisedLosses#multiBlockMask}), a cosine EMA momentum
+ * schedule from 0.996 to 1 ({@link SelfSupervisedLosses#cosineMomentum}) and a predictor
+ * narrower than the encoder (width 16 against 32). {@link #learningCurve} probes a run at
+ * several step counts and reports the representation's effective rank, so methods are
+ * compared at matched budgets rather than at one point.
  */
 public final class SelfSupervisedBenchmark {
 
@@ -49,7 +57,19 @@ public final class SelfSupervisedBenchmark {
         /** Masked autoencoder on patches. */
         MAE,
         /** Joint-embedding predictive architecture on patches. */
-        IJEPA
+        IJEPA,
+        /** I-JEPA with multi-block masks, a cosine EMA schedule and a narrow predictor. */
+        IJEPA_FULL
+    }
+
+    /**
+     * One point of a learning curve.
+     *
+     * @param steps training steps so far
+     * @param probeAccuracy the linear-probe accuracy at that point
+     * @param effectiveRank the RankMe effective rank of the probed features
+     */
+    public record CurvePoint(int steps, float probeAccuracy, double effectiveRank) {
     }
 
     /**
@@ -82,9 +102,44 @@ public final class SelfSupervisedBenchmark {
      */
     public static Result run(Method method, int steps, long seed) {
         return switch (method) {
-            case MAE, IJEPA -> runPatches(method, steps, seed);
+            case MAE, IJEPA -> runPatches(method, steps, seed, null, null);
+            case IJEPA_FULL -> runJepaFull(steps, seed, null, null);
             default -> runJoint(method, steps, seed);
         };
+    }
+
+    /**
+     * Trains a masked-modelling method once and probes it at several step counts.
+     *
+     * @param method {@link Method#MAE}, {@link Method#IJEPA} or {@link Method#IJEPA_FULL}
+     * @param checkpoints ascending step counts; the run lasts until the last
+     * @param seed the seed of weights and data
+     * @return one point per checkpoint
+     */
+    public static List<CurvePoint> learningCurve(Method method, int[] checkpoints, long seed) {
+        List<CurvePoint> curve = new ArrayList<>();
+        int steps = checkpoints[checkpoints.length - 1];
+        switch (method) {
+            case MAE, IJEPA -> runPatches(method, steps, seed, checkpoints, curve);
+            case IJEPA_FULL -> runJepaFull(steps, seed, checkpoints, curve);
+            default -> throw new IllegalArgumentException("curves are for the masked-modelling methods");
+        }
+        return curve;
+    }
+
+    private static void checkpoint(int done, int[] checkpoints, List<CurvePoint> curve, UnaryOperator<Tensor> f,
+            long seed) {
+        if (checkpoints == null) {
+            return;
+        }
+        boolean hit = false;
+        for (int c : checkpoints) {
+            hit |= c == done;
+        }
+        if (hit) {
+            curve.add(new CurvePoint(done, probe(f, seed),
+                    SelfSupervisedLosses.effectiveRank(f.apply(IMAGES.generate(256, seed + 3000)[0]))));
+        }
     }
 
     private static Model mlp(int in, int hidden, int out, boolean reluOut, long seed) {
@@ -205,7 +260,8 @@ public final class SelfSupervisedBenchmark {
         }
     }
 
-    private static Result runPatches(Method method, int steps, long seed) {
+    private static Result runPatches(Method method, int steps, long seed, int[] checkpoints,
+            List<CurvePoint> curve) {
         SplittableRandom rnd = new SplittableRandom(seed);
         PatchEncoder encoder = new PatchEncoder(seed);
         float random = probe(encoder::features, seed);
@@ -246,9 +302,55 @@ public final class SelfSupervisedBenchmark {
             if (method == Method.IJEPA) {
                 teacher.update();
             }
+            checkpoint(s + 1, checkpoints, curve, method == Method.IJEPA ? target::features : encoder::features, seed);
         }
         float acc = probe(method == Method.IJEPA ? target::features : encoder::features, seed);
         return new Result(method, first, (float) tail, acc, random);
+    }
+
+    /** I-JEPA with the paper's multi-block masking, cosine EMA schedule and narrow predictor. */
+    private static Result runJepaFull(int steps, long seed, int[] checkpoints, List<CurvePoint> curve) {
+        SplittableRandom rnd = new SplittableRandom(seed);
+        PatchEncoder encoder = new PatchEncoder(seed);
+        float random = probe(encoder::features, seed);
+        PatchEncoder target = new PatchEncoder(seed);
+        MomentumTeacher teacher = new MomentumTeacher(target.parameters(), encoder.parameters(), 0.996f);
+        SplittableRandom dr = new SplittableRandom(seed + 7);
+        int width = REP / 2;
+        Var maskToken = Var.param(Tensor.zeros(Shape.of(1, 1, width)));
+        Var positions = Var.param(Tensor.normal(Shape.of(16, width), 0, 0.02f, dr));
+        Var in = Var.param(Tensor.normal(Shape.of(REP, width), 0, (float) Math.sqrt(1.0 / REP), dr));
+        TunableTransformerBlock predictor = TunableTransformerBlock.of(4).ffnFactor(2).build(width, dr);
+        Var out = Var.param(Tensor.normal(Shape.of(width, REP), 0, 0.1f, dr));
+        List<Var> trained = new ArrayList<>(encoder.parameters());
+        trained.addAll(List.of(maskToken, positions, in, out));
+        trained.addAll(predictor.parameters());
+        Optimizer opt = Optimizer.adam(3e-3f);
+        float first = 0;
+        double tail = 0;
+        for (int s = 0; s < steps; s++) {
+            Tensor batch = IMAGES.generate(64, rnd.nextLong())[0];
+            PatchMasking.Mask mask = SelfSupervisedLosses.multiBlockMask(64, 4, 4, 4, 0.15, 0.2,
+                    0.85 + 0.15 * rnd.nextDouble(), rnd);
+            int nt = mask.masked()[0].length;
+            Var context = encoder.tokens(batch, mask.keep()).matmul(in)
+                    .add(PatchMasking.gatherRows(positions, mask.keep()));
+            Var queries = maskToken.expand(Shape.of(64, nt, width)).add(PatchMasking.gatherRows(positions, mask.masked()));
+            Var joint = predictor.forward(Var.concat(1, context, queries));
+            int nc = mask.keep()[0].length;
+            Var predicted = joint.slice(1, nc, nc + nt).matmul(out);
+            Tensor targets = PatchMasking.gather(Var.of(target.tokens(batch, null).value()), mask.masked()).value();
+            Var loss = predicted.sub(targets).square().mean();
+            float v = loss.value().item();
+            first = s == 0 ? v : first;
+            tail += s >= steps - 10 ? v / 10 : 0;
+            loss.backward();
+            opt.step(trained);
+            teacher.momentum(SelfSupervisedLosses.cosineMomentum(s, steps, 0.996f, 1f));
+            teacher.update();
+            checkpoint(s + 1, checkpoints, curve, target::features, seed);
+        }
+        return new Result(Method.IJEPA_FULL, first, (float) tail, probe(target::features, seed), random);
     }
 
     /**

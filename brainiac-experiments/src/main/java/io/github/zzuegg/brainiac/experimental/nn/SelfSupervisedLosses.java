@@ -27,6 +27,13 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
  *   <li>{@link #vicreg}: variance-invariance-covariance regularization, three explicit
  *       terms against collapse. Bardes et al., <a href="https://arxiv.org/abs/2105.04906">arXiv:2105.04906</a>.</li>
  * </ul>
+ *
+ * <p>For masked joint-embedding prediction (I-JEPA; Assran et al. 2023,
+ * <a href="https://arxiv.org/abs/2301.08243">arXiv:2301.08243</a>) it also gives the
+ * paper's recipe pieces: {@link #multiBlockMask} (several rectangular target blocks and a
+ * large context block with the targets removed), {@link #cosineMomentum} (the target
+ * encoder's EMA momentum rising from 0.996 to 1 on a cosine), and {@link #effectiveRank}
+ * (RankMe, a collapse check on the learned features).
  */
 public final class SelfSupervisedLosses {
 
@@ -175,6 +182,134 @@ public final class SelfSupervisedLosses {
         Var c = z.sub(z.mean(0, true));
         Var std = c.square().mean(0, false).add(1e-4f).sqrt();
         return std.neg().add(1f).relu().mean();
+    }
+
+    /**
+     * I-JEPA's multi-block mask on a {@code rows x cols} patch grid. Each sample gets
+     * {@code targets} rectangular target blocks, each covering a random share in
+     * {@code [targetMin, targetMax]} of the grid with an aspect ratio in {@code [0.75, 1.5]},
+     * and one context block covering {@code contextScale} of the grid, from which every
+     * target patch is removed. Counts are cut to the smallest in the batch (random patches
+     * dropped), as the reference implementation does, so the batch stays rectangular.
+     *
+     * @param batch the samples
+     * @param rows grid rows
+     * @param cols grid columns
+     * @param targets target blocks per sample, such as 4
+     * @param targetMin the smallest target block share, such as 0.15
+     * @param targetMax the largest target block share, such as 0.2
+     * @param contextScale the context block's share before removing targets, such as 0.85-1
+     * @param random the random source
+     * @return {@code keep} the context patches, {@code masked} the union of the target patches
+     */
+    public static PatchMasking.Mask multiBlockMask(int batch, int rows, int cols, int targets, double targetMin,
+            double targetMax, double contextScale, java.util.random.RandomGenerator random) {
+        int tokens = rows * cols;
+        java.util.List<int[]> ctx = new java.util.ArrayList<>();
+        java.util.List<int[]> tgt = new java.util.ArrayList<>();
+        int minCtx = Integer.MAX_VALUE;
+        int minTgt = Integer.MAX_VALUE;
+        for (int b = 0; b < batch; b++) {
+            boolean[] isTarget = new boolean[tokens];
+            for (int k = 0; k < targets; k++) {
+                block(rows, cols, targetMin + (targetMax - targetMin) * random.nextDouble(), random, isTarget);
+            }
+            boolean[] inContext = new boolean[tokens];
+            block(rows, cols, contextScale, random, inContext);
+            java.util.List<Integer> c = new java.util.ArrayList<>();
+            java.util.List<Integer> t = new java.util.ArrayList<>();
+            for (int i = 0; i < tokens; i++) {
+                if (isTarget[i]) {
+                    t.add(i);
+                } else if (inContext[i]) {
+                    c.add(i);
+                }
+            }
+            if (c.isEmpty()) {   // keep at least one context patch
+                for (int i = 0; i < tokens && c.isEmpty(); i++) {
+                    if (!isTarget[i]) {
+                        c.add(i);
+                    }
+                }
+            }
+            ctx.add(c.stream().mapToInt(Integer::intValue).toArray());
+            tgt.add(t.stream().mapToInt(Integer::intValue).toArray());
+            minCtx = Math.min(minCtx, c.size());
+            minTgt = Math.min(minTgt, t.size());
+        }
+        int[][] keep = new int[batch][];
+        int[][] masked = new int[batch][];
+        for (int b = 0; b < batch; b++) {
+            keep[b] = subsample(ctx.get(b), minCtx, random);
+            masked[b] = subsample(tgt.get(b), minTgt, random);
+        }
+        return new PatchMasking.Mask(keep, masked);
+    }
+
+    private static void block(int rows, int cols, double scale, java.util.random.RandomGenerator random,
+            boolean[] into) {
+        double area = scale * rows * cols;
+        double aspect = 0.75 + 0.75 * random.nextDouble();
+        int h = (int) Math.max(1, Math.min(rows, Math.round(Math.sqrt(area * aspect))));
+        int w = (int) Math.max(1, Math.min(cols, Math.round(area / h)));
+        int r0 = random.nextInt(rows - h + 1);
+        int c0 = random.nextInt(cols - w + 1);
+        for (int r = r0; r < r0 + h; r++) {
+            for (int c = c0; c < c0 + w; c++) {
+                into[r * cols + c] = true;
+            }
+        }
+    }
+
+    private static int[] subsample(int[] idx, int n, java.util.random.RandomGenerator random) {
+        int[] a = idx.clone();
+        for (int i = a.length - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            int t = a[i];
+            a[i] = a[j];
+            a[j] = t;
+        }
+        int[] out = java.util.Arrays.copyOf(a, n);
+        java.util.Arrays.sort(out);
+        return out;
+    }
+
+    /**
+     * The target encoder's momentum on a cosine schedule, as I-JEPA, BYOL and DINO use:
+     * {@code end - (end - start) (cos(pi step / total) + 1) / 2}.
+     *
+     * @param step the current step
+     * @param total the total steps
+     * @param start the momentum at step 0, such as 0.996
+     * @param end the momentum at the last step, such as 1
+     * @return the momentum
+     */
+    public static float cosineMomentum(int step, int total, float start, float end) {
+        double t = Math.min(1, step / (double) Math.max(1, total));
+        return (float) (end - (end - start) * (Math.cos(Math.PI * t) + 1) / 2);
+    }
+
+    /**
+     * RankMe's effective rank (Garrido et al. 2023, <a href="https://arxiv.org/abs/2210.02885">arXiv:2210.02885</a>):
+     * {@code exp} of the entropy of the normalized singular values of a feature matrix. A
+     * collapsed representation has an effective rank near 1.
+     *
+     * @param features {@code [n, d]}
+     * @return a value in {@code [1, min(n, d)]}
+     */
+    public static double effectiveRank(Tensor features) {
+        Tensor[] usv = io.github.zzuegg.brainiac.tensor.Linalg.svd(features.to(io.github.zzuegg.brainiac.tensor.DType.FLOAT64));
+        double[] sv = usv[1].toDoubleArray();
+        double sum = 0;
+        for (double v : sv) {
+            sum += Math.abs(v);
+        }
+        double h = 0;
+        for (double v : sv) {
+            double p = Math.abs(v) / sum + 1e-12;
+            h -= p * Math.log(p);
+        }
+        return Math.exp(h);
     }
 
     private static Var covariancePenalty(Var z) {

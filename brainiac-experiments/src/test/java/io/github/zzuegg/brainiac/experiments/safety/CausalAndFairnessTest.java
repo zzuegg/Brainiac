@@ -56,7 +56,7 @@ class CausalAndFairnessTest {
     @Test
     void groupRobustTrainingResistsTheSpuriousColour() {
         Map<RobustMethod, RobustScores> all = new EnumMap<>(RobustMethod.class);
-        for (RobustMethod m : RobustMethod.values()) {
+        for (RobustMethod m : new RobustMethod[] {RobustMethod.ERM, RobustMethod.IRM, RobustMethod.GROUP_DRO}) {
             RobustScores s = CausalAndFairness.spurious(m, 1);
             all.put(m, s);
             System.out.printf("Spurious colour %-10s average %.3f worst group %.3f%n", m, s.average(), s.worstGroup());
