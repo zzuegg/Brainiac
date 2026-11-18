@@ -134,10 +134,10 @@ public final class Flux implements ImageGenerator {
                     MemoryFit.params(path.resolve("vae"), "diffusion_pytorch_model", false));
         }
 
-        /** @return the device bytes of all the weights, the decoder in float32 */
+        /** @return the device bytes of all the weights */
         long bytes(DType dtype, int transformerBits, int t5Bits) {
             return transformer.bytes(dtype, transformerBits) + t5.bytes(dtype, t5Bits) + clip.bytes(dtype, 0)
-                    + vae.bytes(DType.FLOAT32, 0);
+                    + vae.bytes(dtype, 0);
         }
     }
 
@@ -249,7 +249,7 @@ public final class Flux implements ImageGenerator {
                     "diffusion_pytorch_model", sources, device, dtype, all).quantized(options.transformerBits()),
                     Pretrained.fluxSettings(config(path.resolve("transformer"))));
             AutoencoderKL vae = Pretrained.vae(weights(path.resolve("vae"), "diffusion_pytorch_model", sources, device,
-                    DType.FLOAT32, all), Pretrained.vaeSettings(config(path.resolve("vae")), false));
+                    dtype, all), Pretrained.vaeSettings(config(path.resolve("vae")), false));
             Path sc = path.resolve("scheduler/scheduler_config.json");
             Map<String, Object> scheduler = Files.isRegularFile(sc) ? Json.object(Json.read(sc)) : Map.of();
             return new Flux(kind, device, sources, all, clipTokenizer, clip, t5Tokenizer, t5, transformer, vae,

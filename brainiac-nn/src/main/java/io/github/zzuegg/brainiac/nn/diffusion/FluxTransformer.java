@@ -215,7 +215,7 @@ public final class FluxTransformer implements MultiInputLayer {
         int rows = s.dim(2) / p;
         int cols = s.dim(3) / p;
         int textTokens = context.shape().dim(1);
-        DType type = imageIn.weight().value().dtype();
+        DType type = dtype();
         Device device = latents.value().device();
         Var image = Parts.step(() -> imageIn.forward(Functional.patchify(latents, p).to(type)));
         Var text = Parts.step(() -> contextIn.forward(context.to(type)));
@@ -431,9 +431,51 @@ public final class FluxTransformer implements MultiInputLayer {
         return settings;
     }
 
-    /** @return the type the weights are held in */
+    /**
+     * Queries per piece when attention runs as matrix products instead of the fused kernel
+     * ({@code -Dbrainiac.flux.attentionChunk}, 0 for fused): at Flux's 4000-odd tokens the
+     * fused kernel's dispatches run long enough on some drivers to be timed out.
+     */
+    private static final int ATTENTION_CHUNK = Integer.getInteger("brainiac.flux.attentionChunk", 0);
+
+    /** Scaled dot-product attention of {@code [batch, heads, tokens, size]} queries, keys and values. */
+    static Var attend(Var q, Var k, Var v) {
+        return attend(q, k, v, ATTENTION_CHUNK);
+    }
+
+    /** The same, {@code chunk} queries at a time as matrix products (0: the fused kernel). */
+    static Var attend(Var q, Var k, Var v, int chunk) {
+        float scale = (float) (1 / Math.sqrt(q.shape().dim(3)));
+        int n = q.shape().dim(2);
+        if (chunk <= 0 || Var.gradEnabled() || n <= chunk) {
+            return Functional.attention(q, k, v, false, scale);
+        }
+        Var kt = k.transpose();
+        List<Var> pieces = new ArrayList<>();
+        for (int i = 0; i < n; i += chunk) {
+            int e = Math.min(n, i + chunk);
+            Var qi = q.slice(2, i, e);
+            pieces.add(Parts.step(() -> {
+                Var scores = qi.matmul(kt).to(DType.FLOAT32).mul(scale);
+                return Activation.SOFTMAX.forward(scores).to(v.value().dtype()).matmul(v);
+            }));
+        }
+        return Var.concat(2, pieces.toArray(Var[]::new));
+    }
+
+    /**
+     * The type the model computes in: that of its unquantized weights (biases, norms), since
+     * quantized projections report the float32 they were packed from.
+     *
+     * @return the type
+     */
     public DType dtype() {
-        return imageIn.weight().value().dtype();
+        for (Var p : parameters()) {
+            if (!p.value().isPacked()) {
+                return p.value().dtype();
+            }
+        }
+        return DType.FLOAT32;
     }
 
     /** @return the projection of the patches into the model width */
@@ -610,7 +652,7 @@ public final class FluxTransformer implements MultiInputLayer {
             Var k = rotate(Var.concat(2, heads(text.k, text.kNorm, nt, heads), heads(image.k, image.kNorm, ni, heads)),
                     rope);
             Var v = Var.concat(2, heads(text.v, null, nt, heads), heads(image.v, null, ni, heads));
-            Var a = join(Functional.attention(q, k, v, false, (float) (1 / Math.sqrt(q.shape().dim(3)))));
+            Var a = join(attend(q, k, v));
             img = Functional.gate(img, image.attentionOut.forward(a.slice(1, textTokens, n)), mi[2]);
             txt = Functional.gate(txt, text.attentionOut.forward(a.slice(1, 0, textTokens)), mt[2]);
             img = Functional.gate(img, image.down.forward(image.up.forward(
@@ -694,7 +736,7 @@ public final class FluxTransformer implements MultiInputLayer {
             Var qh = rotate(heads(q, qNorm, n, heads), rope);
             Var kh = rotate(heads(k, kNorm, n, heads), rope);
             Var vh = heads(v, null, n, heads);
-            Var a = join(Functional.attention(qh, kh, vh, false, (float) (1 / Math.sqrt(qh.shape().dim(3)))));
+            Var a = join(attend(qh, kh, vh));
             return Functional.gate(x, out.forward(Var.concat(2, a, mlp.forward(n))), m[2]);
         }
 

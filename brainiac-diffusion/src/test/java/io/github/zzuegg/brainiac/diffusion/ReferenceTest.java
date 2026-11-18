@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 import io.github.zzuegg.brainiac.io.SafeTensors;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -17,6 +18,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -135,5 +137,27 @@ class ReferenceTest {
         Var out = unet.forward(Var.of(ref("unet.x")), Var.of(steps("unet.t")), Var.of(ref("unet.ctx")), null, false);
         assertTrue(out.requiresGrad());
         assertClose(ref("unet.out"), out.value(), 1e-4);
+    }
+
+    @Test
+    void tiledDecodeBlendsCloseToTheWholeImage() throws Exception {
+        AutoencoderKL.Settings c = Pretrained.vaeSettings(config("sd/vae"), true);
+        AutoencoderKL vae = Pretrained.vae(weights("sd/vae", "diffusion_pytorch_model.safetensors"), c);
+        assertArrayEquals(new int[] {0, 6, 12, 18, 20}, StableDiffusion.starts(28, 8, 2));
+        assertArrayEquals(new int[] {0}, StableDiffusion.starts(8, 8, 2));
+        Tensor z = Tensor.normal(Shape.of(1, c.latentChannels(), 20, 24), 0, 1, new java.util.SplittableRandom(3)).to(DEVICE);
+        Tensor whole = StableDiffusion.decodeWhole(vae, z);
+        // one tile covering everything is the whole decode
+        assertClose(whole, StableDiffusion.decodeTiled(vae, z, 32, 4), 1e-6);
+        Tensor tiled = StableDiffusion.decodeTiled(vae, z, 12, 6);
+        assertArrayEquals(whole.shape().toArray(), tiled.shape().toArray());
+        float[] a = whole.toArray();
+        float[] b = tiled.toArray();
+        double diff = 0;
+        for (int i = 0; i < a.length; i++) {
+            diff += Math.abs(a[i] - b[i]);
+        }
+        // the pieces see less context (norm statistics, mid-block attention), so close, not equal
+        assertTrue(diff / a.length < 0.05, "mean difference " + diff / a.length);
     }
 }

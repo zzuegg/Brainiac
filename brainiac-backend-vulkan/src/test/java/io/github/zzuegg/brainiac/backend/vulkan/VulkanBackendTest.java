@@ -797,6 +797,26 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4, 32, 64, 96, 5", "4, 32, 64, 96, 70", "3, 16, 48, 40, 3",
+        "2, 8, 16, 24, 130"})
+    void quantizesFewBitsWithoutAHostCopy(int bits, int group, int rows, int cols, int m) {
+        Tensor x = random(13, rows, cols).mul(2);
+        PackedMatrix expected = PackedMatrix.quantize(x.toArray(), rows, cols, bits, group);
+        Tensor q = x.to(gpu).quantized(bits, group);
+        assertTrue(q.isPacked());
+        float[] values = new float[rows * cols];
+        expected.dequantize(values);
+        assertArrayEquals(values, q.toArray(), 0f);
+        assertArrayEquals(values, q.to(CPU).toArray(), 0f);   // nibbles read back from the device
+        Tensor a = random(14, m, rows);
+        float[] want = a.matmul(Tensor.of(Shape.of(rows, cols), values, CPU)).toArray();
+        float[] got = a.to(gpu).matmul(q).toArray();
+        for (int i = 0; i < want.length; i++) {
+            assertEquals(want[i], got[i], 1e-3 * Math.sqrt(rows) + Math.abs(want[i]) * 1e-3, bits + " bits at " + i);
+        }
+    }
+
+    @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
         "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4", "4, 32, 70", "8, 1536, 40", "4, 3, 130", "3, 48, 70", "4, 16, 140"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
