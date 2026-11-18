@@ -28,6 +28,11 @@ final class VkStorage implements Storage {
     int pendingNodes;
     /** The backend's fusion generation when {@link #pending} was recorded. */
     long pendingGeneration;
+    /**
+     * Above every value when they are indices made on the device, such as an argmax over rows of
+     * this length, or 0: a gather over at least this many entries need not download them to check.
+     */
+    long indexBound;
     private final VkContext context;
     private final Holder holder = new Holder();
     private final Cleaner.Cleanable cleanable;
