@@ -454,4 +454,215 @@ public final class ConstraintInstances {
         }
         return g;
     }
+
+    // ---- structured constraints for knowledge compilation ------------------------------------
+
+    /**
+     * "Exactly {@code k} of {@code n}" as CNF over variables {@code 1..n}, by a sequential counter
+     * with auxiliary variables {@code s(i, j)} defined as "at least {@code j} of the first
+     * {@code i} are true" (full equivalences, so the auxiliaries are functionally determined and
+     * the formula has exactly {@code C(n, k)} models).
+     *
+     * @param n the variables
+     * @param k the count
+     * @return the CNF (its first {@code n} variables are the constrained ones)
+     */
+    public static Cnf exactlyK(int n, int k) {
+        int[][] s = new int[n + 1][k + 2];
+        int next = n + 1;
+        for (int i = 0; i <= n; i++) {
+            for (int j = 0; j <= k + 1; j++) {
+                s[i][j] = next++;
+            }
+        }
+        List<int[]> cs = new ArrayList<>();
+        for (int i = 0; i <= n; i++) {
+            cs.add(new int[] {s[i][0]});
+        }
+        for (int j = 1; j <= k + 1; j++) {
+            cs.add(new int[] {-s[0][j]});
+        }
+        for (int i = 1; i <= n; i++) {
+            for (int j = 1; j <= k + 1; j++) {
+                int a = s[i][j];
+                int b = s[i - 1][j];
+                int c = s[i - 1][j - 1];
+                cs.add(new int[] {-b, a});
+                cs.add(new int[] {-i, -c, a});
+                cs.add(new int[] {-a, b, i});
+                cs.add(new int[] {-a, b, c});
+            }
+        }
+        cs.add(new int[] {s[n][k]});
+        cs.add(new int[] {-s[n][k + 1]});
+        return new Cnf(next - 1, cs, "exactly-" + k + "-of-" + n);
+    }
+
+    /**
+     * The order-{@code n} Latin square as CNF: variable {@code (r * n + c) * n + v + 1} means cell
+     * {@code (r, c)} holds {@code v} (the layout of {@code SemanticLoss.latinSquare}); every
+     * (row, value) and every (column, value), and optionally every cell, has exactly one true
+     * variable, pairwise.
+     *
+     * @param n the order
+     * @param includeCells whether to add the per-cell constraints
+     * @return the CNF
+     */
+    public static Cnf latinSquare(int n, boolean includeCells) {
+        List<int[]> cs = new ArrayList<>();
+        for (int a = 0; a < n; a++) {
+            for (int b = 0; b < n; b++) {
+                int[] cell = new int[n];
+                int[] row = new int[n];
+                int[] col = new int[n];
+                for (int k = 0; k < n; k++) {
+                    cell[k] = (a * n + b) * n + k + 1;
+                    row[k] = (a * n + k) * n + b + 1;
+                    col[k] = (k * n + a) * n + b + 1;
+                }
+                if (includeCells) {
+                    exactlyOnePairwise(cell, cs);
+                }
+                exactlyOnePairwise(row, cs);
+                exactlyOnePairwise(col, cs);
+            }
+        }
+        return new Cnf(n * n * n, cs, "latin-" + n);
+    }
+
+    private static void exactlyOnePairwise(int[] xs, List<int[]> cs) {
+        cs.add(xs.clone());
+        for (int i = 0; i < xs.length; i++) {
+            for (int j = i + 1; j < xs.length; j++) {
+                cs.add(new int[] {-xs[i], -xs[j]});
+            }
+        }
+    }
+
+    /**
+     * Monotone paths on a {@code side x side} grid graph from the top-left to the bottom-right
+     * corner (moves right or down), the structured-output task of Xu et al.'s semantic-loss paper.
+     * One variable per edge; the CNF says the source has an outgoing edge, the sink an incoming
+     * edge, every node at most one incoming and one outgoing edge, and inner nodes continue every
+     * path through them. Its models are exactly the {@code C(2(side-1), side-1)} monotone paths.
+     *
+     * @param side nodes per side
+     * @param edges per variable {@code v-1} the edge {@code {from, to}} (node {@code r * side + c})
+     * @param cnf the constraint
+     */
+    public record GridPath(int side, int[][] edges, Cnf cnf) {
+
+        /**
+         * Whether an edge set is a valid path.
+         *
+         * @param on per edge whether it is chosen
+         * @return true for a monotone source-to-sink path
+         */
+        public boolean valid(boolean[] on) {
+            for (int[] cl : cnf.clauses()) {
+                boolean sat = false;
+                for (int l : cl) {
+                    if (on[Math.abs(l) - 1] == l > 0) {
+                        sat = true;
+                        break;
+                    }
+                }
+                if (!sat) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * The cheapest monotone path under edge costs, by dynamic programming.
+         *
+         * @param cost per edge its cost
+         * @return per edge whether it is on the path
+         */
+        public boolean[] cheapest(double[] cost) {
+            int n = side * side;
+            double[] best = new double[n];
+            int[] via = new int[n];
+            java.util.Arrays.fill(best, Double.POSITIVE_INFINITY);
+            best[0] = 0;
+            via[0] = -1;
+            for (int node = 1; node < n; node++) {
+                for (int e = 0; e < edges.length; e++) {
+                    if (edges[e][1] == node && best[edges[e][0]] + cost[e] < best[node]) {
+                        best[node] = best[edges[e][0]] + cost[e];
+                        via[node] = e;
+                    }
+                }
+            }
+            boolean[] on = new boolean[edges.length];
+            for (int node = n - 1; via[node] >= 0; node = edges[via[node]][0]) {
+                on[via[node]] = true;
+            }
+            return on;
+        }
+    }
+
+    /**
+     * The monotone grid-path constraint.
+     *
+     * @param side nodes per side, at least 2
+     * @return the constraint
+     */
+    public static GridPath gridPath(int side) {
+        List<int[]> edges = new ArrayList<>();
+        for (int r = 0; r < side; r++) {
+            for (int c = 0; c < side; c++) {
+                int u = r * side + c;
+                if (c + 1 < side) {
+                    edges.add(new int[] {u, u + 1});
+                }
+                if (r + 1 < side) {
+                    edges.add(new int[] {u, u + side});
+                }
+            }
+        }
+        int n = side * side;
+        List<List<Integer>> in = new ArrayList<>();
+        List<List<Integer>> out = new ArrayList<>();
+        for (int u = 0; u < n; u++) {
+            in.add(new ArrayList<>());
+            out.add(new ArrayList<>());
+        }
+        for (int e = 0; e < edges.size(); e++) {
+            out.get(edges.get(e)[0]).add(e + 1);
+            in.get(edges.get(e)[1]).add(e + 1);
+        }
+        List<int[]> cs = new ArrayList<>();
+        for (int u = 0; u < n; u++) {
+            for (List<Integer> group : List.of(in.get(u), out.get(u))) {
+                for (int i = 0; i < group.size(); i++) {
+                    for (int j = i + 1; j < group.size(); j++) {
+                        cs.add(new int[] {-group.get(i), -group.get(j)});
+                    }
+                }
+            }
+            int[] outs = out.get(u).stream().mapToInt(Integer::intValue).toArray();
+            int[] ins = in.get(u).stream().mapToInt(Integer::intValue).toArray();
+            if (u == 0) {
+                cs.add(outs);
+            } else if (u == n - 1) {
+                cs.add(ins);
+            } else {
+                for (int e : ins) {
+                    int[] cl = new int[outs.length + 1];
+                    cl[0] = -e;
+                    System.arraycopy(outs, 0, cl, 1, outs.length);
+                    cs.add(cl);
+                }
+                for (int e : outs) {
+                    int[] cl = new int[ins.length + 1];
+                    cl[0] = -e;
+                    System.arraycopy(ins, 0, cl, 1, ins.length);
+                    cs.add(cl);
+                }
+            }
+        }
+        return new GridPath(side, edges.toArray(int[][]::new), new Cnf(edges.size(), cs, "grid-path-" + side));
+    }
 }
