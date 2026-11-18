@@ -72,6 +72,19 @@ class LocalServingTest {
             assertEquals(200, send(local, key, null).statusCode());
             assertThrows(IOException.class, () -> send(url + "/models", null, null), "the first server is gone");
 
+            // a model on this PC can only choose words that keep its answer in the format
+            LocalProvider held = (LocalProvider) ChatService.localModels(List.of(models));
+            for (String word : List.of("box.", "that?")) {
+                StringBuilder said = new StringBuilder();
+                held.chat(new ChatRequest("tiny", "", List.of(new ChatMessage("user", "What is this?")), 8, null, null,
+                        Sampler.NONE, new Format("grammar", null, "root ::= \"" + word + "\"")), said::append);
+                assertEquals(word, said.toString().strip());
+            }
+            IOException bad = assertThrows(IOException.class, () -> held.chat(new ChatRequest("tiny", "",
+                    List.of(new ChatMessage("user", "What is this?")), 8, null, null, Sampler.NONE,
+                    new Format("grammar", null, "root ::= (")), text -> { }));
+            assertTrue(bad.getMessage().startsWith("the grammar cannot be used"), bad.getMessage());
+
             assertTrue(serving.stop());
             assertFalse(serving.stop());
             assertEquals(Map.of("running", false), serving.state());

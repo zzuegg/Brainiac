@@ -169,6 +169,18 @@ class CompatibleProvider extends RemoteProvider {
         if (request.sampler().topP() != null && takesTemperature(request.model())) {
             body.put("top_p", request.sampler().topP());
         }
+        if (request.format().kind().equals("json")) {
+            body.put("response_format", Map.of("type", "json_object"));
+        } else if (request.format().kind().equals("schema")) {
+            // strict when the schema is closed already, as strict mode demands; else the schema guides the answer
+            Map<String, Object> schema = new LinkedHashMap<>();
+            schema.put("name", "answer");
+            schema.put("schema", request.format().schema());
+            if (Boolean.FALSE.equals(request.format().schema().get("additionalProperties"))) {
+                schema.put("strict", true);
+            }
+            body.put("response_format", Map.of("type", "json_schema", "json_schema", schema));
+        }
         if (preset.usageOption()) {
             body.put("stream_options", Map.of("include_usage", true));
         }

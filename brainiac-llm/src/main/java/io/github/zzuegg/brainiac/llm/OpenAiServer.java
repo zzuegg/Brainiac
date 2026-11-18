@@ -1018,7 +1018,7 @@ public final class OpenAiServer implements AutoCloseable {
                 }
                 options = options.withConstraint(Constraint.jsonSchema(Json.object(schema)));
             } else if ("json_object".equals(type)) {
-                options = options.withConstraint(Constraint.jsonSchema(Map.of("type", "object")));
+                options = options.withConstraint(Constraint.jsonObject());
             } else if (type != null && !"text".equals(type)) {
                 throw new BadRequest("unsupported response_format " + type);
             }

@@ -340,7 +340,7 @@ public final class WorkerServer implements AutoCloseable {
         }
         ChatRequest request = new ChatRequest(model, Json.string(body, "system", ""), messages,
                 (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null,
-                ChatRoutes.temperature(body), ChatRoutes.sampler(body));
+                ChatRoutes.temperature(body), ChatRoutes.sampler(body), ChatRoutes.format(body));
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");
         ex.sendResponseHeaders(200, 0);

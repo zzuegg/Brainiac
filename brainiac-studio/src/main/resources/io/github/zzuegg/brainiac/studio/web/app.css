@@ -1195,6 +1195,13 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 /* ---------- chat: instructions and answer length, editing a sent message, links and tables ---------- */
 .chat-settings { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 12px; align-items: start; padding: 10px 14px 12px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2); }
 .chat-settings textarea { resize: vertical; min-height: 60px; }
+.chat-settings .cs-format { grid-column: 1 / -1; display: flex; flex-flow: row wrap; gap: 6px 12px; align-items: center; }
+.chat-settings .cs-format label { flex: none; width: auto; }
+.chat-settings .cs-format select { flex: 0 1 240px; width: auto; }
+.chat-settings .cs-format textarea { flex: 1 1 100%; font-size: 12.5px; }
+.chat-settings .cs-format-note { font-size: 12px; flex: 1 1 100%; }
+.chat-settings .cs-format-note:empty { display: none; }
+.chat-settings .cs-format-note.bad { color: var(--bad); }
 .chat-settings .field label { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
 .chat-settings .cs-sampling { grid-column: 1 / -1; display: grid; grid-template-rows: auto auto; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px 12px; }
 .iconbtn.has-set { color: var(--accent); }

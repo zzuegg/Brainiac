@@ -81,6 +81,16 @@ public interface ChatProvider {
     ChatResult chat(ChatRequest request, ChatListener listener) throws IOException, InterruptedException;
 
     /**
+     * Returns whether this provider's models can be held to a grammar: those run on a machine of
+     * the user's can, a provider's own API cannot.
+     *
+     * @return whether they can
+     */
+    default boolean takesGrammar() {
+        return false;
+    }
+
+    /**
      * Returns whether this provider runs image and speech models on a machine of the user's:
      * this PC or a worker host. Such models are drawn with step by step, speak and write down
      * recordings through {@link #draw}, {@link #speak} and {@link #transcribe}.

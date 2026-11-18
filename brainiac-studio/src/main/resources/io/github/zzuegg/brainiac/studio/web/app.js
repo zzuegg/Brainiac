@@ -2531,9 +2531,63 @@
   // What a conversation is told before it starts and how long an answer may get. A new
   // conversation keeps them on its pane until the first message makes it a conversation.
   const paneSettings = i => paneConvo(i) || L.panes[i] || {};
-  const hasSettings = o => !!((o.system || "").trim() || +o.maxTokens > 0 || o.temperature != null || o.topP != null || o.topK != null || o.repeatPenalty != null);
+  const hasSettings = o => !!((o.system || "").trim() || +o.maxTokens > 0 || o.temperature != null || o.topP != null || o.topK != null || o.repeatPenalty != null || o.format);
+  // the form a conversation's answers must have, as the server reads it; free text sends nothing
+  const formatOf = o => o.format === "json" ? { type: "json" }
+    : o.format === "schema" ? { type: "schema", schema: (o.schema || "").trim() || "{}" }
+    : o.format === "grammar" ? { type: "grammar", grammar: o.grammar || "" } : undefined;
+  // what is wrong with a schema or grammar as typed, as far as the page can tell
+  function formatError(o) {
+    if (o.format === "schema") {
+      if (!(o.schema || "").trim()) return "Write the JSON schema the answer must fit.";
+      try { const j = JSON.parse(o.schema); if (!j || typeof j !== "object" || Array.isArray(j)) return "A schema is a JSON object, such as {\"type\": \"object\"}."; }
+      catch (e) { return "This is not JSON yet: " + e.message; }
+    }
+    if (o.format === "grammar" && !(o.grammar || "").trim()) return "Write the grammar the answer must fit. It starts at the rule named root.";
+    return "";
+  }
+  const SCHEMA_EXAMPLE = `{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["title", "tags"],
+  "additionalProperties": false
+}`;
+  const GRAMMAR_EXAMPLE = `root ::= answer " because " reason
+answer ::= "yes" | "no"
+reason ::= [a-z ]+`;
+  function formatHint(i) {
+    const o = paneSettings(i), f = o.format || "", m = modelByKey(paneModel(i));
+    const host = m => !!m && (m.provider === "local" || providerKind(m.provider) === "host");
+    return f === "grammar" ? (m && !host(m) ? "Only models on this PC and on worker hosts take a grammar (llama.cpp's GBNF). " + m.name + " does not." : "llama.cpp's GBNF notation. For models on this PC and on worker hosts.")
+          : f === "schema" ? "Each answer is shown as formatted JSON. GPT models keep to the schema strictly when it sets additionalProperties to false."
+          : f === "json" ? "Each answer is one JSON object, shown formatted." : "";
+  }
+  function formatFields(i) {
+    const o = paneSettings(i), f = o.format || "", err = formatError(o);
+    return `<div class="field cs-format">
+        <label for="cs-format-${i}" title="A model on this PC or a worker host can only choose words that keep the answer in this form. Providers are asked for it through their own structured output setting.">Answer as</label>
+        <select class="input" id="cs-format-${i}" data-cs-format="${i}">
+          <option value="" ${f === "" ? "selected" : ""}>Free text</option>
+          <option value="json" ${f === "json" ? "selected" : ""}>A JSON object</option>
+          <option value="schema" ${f === "schema" ? "selected" : ""}>JSON that fits a schema</option>
+          <option value="grammar" ${f === "grammar" ? "selected" : ""}>Text that fits a grammar</option>
+        </select>
+        ${f === "schema" ? `<textarea class="input mono" data-cs-form="${i}" data-k="schema" rows="5" spellcheck="false" aria-label="JSON schema" placeholder="${esc(SCHEMA_EXAMPLE)}">${esc(o.schema || "")}</textarea>` : ""}
+        ${f === "grammar" ? `<textarea class="input mono" data-cs-form="${i}" data-k="grammar" rows="5" spellcheck="false" aria-label="Grammar" placeholder="${esc(GRAMMAR_EXAMPLE)}">${esc(o.grammar || "")}</textarea>` : ""}
+        <span class="cs-format-note ${err ? "bad" : "faint"}" data-cs-format-note="${i}">${esc(err || formatHint(i))}</span>
+      </div>`;
+  }
+  // an answer in JSON, shown formatted once it is whole
+  function jsonAnswer(text) {
+    let shown = text;
+    try { shown = JSON.stringify(JSON.parse(text), null, 2); } catch (e) { /* still being written, or cut off */ }
+    return md("```json\n" + shown + "\n```");
+  }
   function savePanes() {
-    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null, system: p.id ? undefined : p.system || undefined, maxTokens: p.id ? undefined : p.maxTokens || undefined, temperature: p.id ? undefined : p.temperature ?? undefined, topP: p.id ? undefined : p.topP ?? undefined, topK: p.id ? undefined : p.topK ?? undefined, repeatPenalty: p.id ? undefined : p.repeatPenalty ?? undefined })));
+    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null, system: p.id ? undefined : p.system || undefined, maxTokens: p.id ? undefined : p.maxTokens || undefined, temperature: p.id ? undefined : p.temperature ?? undefined, topP: p.id ? undefined : p.topP ?? undefined, topK: p.id ? undefined : p.topK ?? undefined, repeatPenalty: p.id ? undefined : p.repeatPenalty ?? undefined, format: p.id ? undefined : p.format || undefined, schema: p.id ? undefined : p.schema || undefined, grammar: p.id ? undefined : p.grammar || undefined })));
     store.set("chatTabs", L.tabs);
     store.set("chatActive", L.active);
   }
@@ -2748,7 +2802,7 @@
           ${notes.join("")}</div>
         <div class="body">
           ${m.thinking ? thinkHtml(m.thinking, { open: m.streaming && !m.text, live: m.streaming && !m.text }) : ""}
-          ${md(m.text)}
+          ${m.format === "json" && m.text ? jsonAnswer(m.text) : md(m.text)}
           ${m.streaming && !m.text && !m.thinking ? `<span class="typing" aria-label="Writing"><i></i><i></i><i></i></span>` : ""}
           ${m.error ? `<div class="flag bad">${icon("flask")}<div><b>No answer.</b> ${esc(m.error)}</div></div>` : ""}
         </div>
@@ -2801,7 +2855,7 @@
         ${fin ? `<span class="chip c-ok">finished</span>` : ""}
         <span class="grow"></span>
         ${fin ? "" : modelPicker(i)}
-        ${fin ? "" : `<button class="iconbtn ${hasSettings(paneSettings(i)) ? "has-set" : ""}" data-chat-settings="${i}" aria-label="Instructions, answer length and sampling" title="Instructions, answer length and sampling${hasSettings(paneSettings(i)) ? " (set)" : ""}" aria-expanded="${L.settingsOpen === (key || "#" + i)}">${icon("gear")}</button>`}
+        ${fin ? "" : `<button class="iconbtn ${hasSettings(paneSettings(i)) ? "has-set" : ""}" data-chat-settings="${i}" aria-label="Instructions, answer length, sampling and format" title="Instructions, answer length, sampling and format${hasSettings(paneSettings(i)) ? " (set)" : ""}" aria-expanded="${L.settingsOpen === (key || "#" + i)}">${icon("gear")}</button>`}
         ${c ? (fin ? `<button class="btn sm" data-reopen="${c.id}">${icon("retry")}Reopen</button>`
           : `<button class="btn ghost sm" data-finish="${c.id}" title="Mark finished: it leaves the tabs and waits under Finished">${icon("check")}Finish</button>`) : ""}
         ${L.panes.length > 1 ? `<button class="iconbtn" data-close-pane="${i}" aria-label="Close this pane" title="Close this pane"><span aria-hidden="true" style="font-size:17px;line-height:1">×</span></button>` : ""}
@@ -2820,6 +2874,7 @@
           <input class="input mono" id="cs-topk-${i}" data-cs-num="${i}" data-k="topK" data-min="1" data-max="1000" data-int="1" type="number" min="1" max="1000" step="1" placeholder="model's own" value="${esc(paneSettings(i).topK ?? "")}">
           <label for="cs-rep-${i}" title="How strongly words already written are held back: 1 is not at all. For models on this PC and on worker hosts.">Repeat penalty <span class="faint">1 to 2</span></label>
           <input class="input mono" id="cs-rep-${i}" data-cs-num="${i}" data-k="repeatPenalty" data-min="1" data-max="2" type="number" min="1" max="2" step="0.05" placeholder="model's own" value="${esc(paneSettings(i).repeatPenalty ?? "")}"></div>
+        ${formatFields(i)}
       </div>` : ""}
       <div class="transcript" data-transcript="${i}"><div class="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
       <div class="composer-wrap">
@@ -2896,6 +2951,7 @@
 
   async function answer(c) {
     const a = { role: "assistant", text: "", thinking: "", model: null, streaming: true, at: Date.now() };
+    if (c.format === "json" || c.format === "schema") a.format = "json";
     const history = turns(c.messages);
     c.messages.push(a);
     const i = c.messages.length - 1;
@@ -2914,7 +2970,7 @@
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal,
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: usable(c.model || L.model), messages: history, system: (c.system || "").trim() || undefined, maxTokens: +c.maxTokens > 0 ? Math.floor(+c.maxTokens) : undefined, temperature: c.temperature ?? undefined, topP: c.topP ?? undefined, topK: c.topK ?? undefined, repeatPenalty: c.repeatPenalty ?? undefined }),
+        body: JSON.stringify({ model: usable(c.model || L.model), messages: history, system: (c.system || "").trim() || undefined, maxTokens: +c.maxTokens > 0 ? Math.floor(+c.maxTokens) : undefined, temperature: c.temperature ?? undefined, topP: c.topP ?? undefined, topK: c.topK ?? undefined, repeatPenalty: c.repeatPenalty ?? undefined, format: formatOf(c) }),
       });
       await readEvents(r, onEvent);
     } catch (e) {
@@ -2962,6 +3018,7 @@
       if (+L.panes[i].maxTokens > 0) c.maxTokens = +L.panes[i].maxTokens;
       if (L.panes[i].temperature != null) c.temperature = L.panes[i].temperature;
       for (const k of ["topP", "topK", "repeatPenalty"]) if (L.panes[i][k] != null) c[k] = L.panes[i][k];
+      for (const k of ["format", "schema", "grammar"]) if (L.panes[i][k]) c[k] = L.panes[i][k];
       if (L.settingsOpen === "#" + i) L.settingsOpen = c.id;
       L.convos.unshift(c);
       L.panes[i] = { id: c.id };
@@ -3041,6 +3098,13 @@
     $$("[data-cs-num]").forEach(t => t.addEventListener("input", () => {
       const raw = t.value.trim(), n = t.dataset.int ? Math.round(+raw) : +raw;
       setSetting(+t.dataset.csNum, t.dataset.k, raw === "" || !isFinite(n) ? null : Math.max(+t.dataset.min, Math.min(+t.dataset.max, n)));
+    }));
+    $$("[data-cs-format]").forEach(t => t.addEventListener("change", () => { setSetting(+t.dataset.csFormat, "format", t.value); render(); }));
+    $$("[data-cs-form]").forEach(t => t.addEventListener("input", () => {
+      const i = +t.dataset.csForm;
+      setSetting(i, t.dataset.k, t.value);
+      const note = $(`[data-cs-format-note="${i}"]`), err = formatError(paneSettings(i));
+      if (note) { note.textContent = err || formatHint(i); note.classList.toggle("bad", !!err); note.classList.toggle("faint", !err); }
     }));
     $$("[data-edit-msg]").forEach(b => b.addEventListener("click", () => {
       const pane = b.closest(".pane"), c = convoById(pane?.dataset.convo);
