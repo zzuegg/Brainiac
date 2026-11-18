@@ -587,6 +587,9 @@ public final class VulkanBackend implements Backend {
         if (storage instanceof QuantizedRows) {
             return;
         }
+        if (storage instanceof Deferred) {
+            return;   // uploaded weights: freed with the tensor that holds them
+        }
         if (storage instanceof Packed p) {
             if (p.host() == null) {   // quantized here, such as optimizer state: freed now
                 p.levels().release();
@@ -1741,8 +1744,94 @@ public final class VulkanBackend implements Backend {
     /** Whether factored scales stay factored on the device ({@code -Dbrainiac.vulkan.packedFactors=false}: float32 per group). */
     private static final boolean PACKED_FACTORS = !"false".equals(System.getProperty("brainiac.vulkan.packedFactors"));
 
+    /**
+     * Packs a matrix for this backend. It uploads in the background, while the caller goes on
+     * (decoding a model's next weights), or on its first use if that comes first. A matrix
+     * unpacked to the host before it uploaded, as {@code Llama.fuseProjections} joins q, k
+     * and v and gate and up, waits for its first use instead: joined parts then never upload.
+     */
     @Override
-    public synchronized PackedStorage pack(PackedMatrix matrix) {
+    public PackedStorage pack(PackedMatrix matrix) {
+        Deferred d = new Deferred(this, matrix);
+        if (PREFETCH) {
+            fetch(d, false);
+        }
+        return d;
+    }
+
+    /** Packs a matrix that uploads on its first use or {@link #prefetch}, not in the background at once. */
+    @Override
+    public PackedStorage packLater(PackedMatrix matrix) {
+        return new Deferred(this, matrix);
+    }
+
+    @Override
+    public void prefetch(PackedStorage packed) {
+        if (packed instanceof Deferred d && d.owner == this) {
+            fetch(d, true);
+        }
+    }
+
+    /** Uploads in the background, unless it was unpacked to the host first and {@code always} is false. */
+    private void fetch(Deferred d, boolean always) {
+        prefetcher.execute(() -> {
+            if (always || !d.skip) {
+                try {
+                    packed(d);
+                } catch (RuntimeException e) {
+                    // out of memory or such: the first use tries again, and fails there
+                }
+            }
+        });
+    }
+
+    /** Whether packed matrices upload in the background ({@code -Dbrainiac.vulkan.prefetch=false}: on first use). */
+    private static final boolean PREFETCH = !"false".equals(System.getProperty("brainiac.vulkan.prefetch"));
+    /** Uploads packed matrices in the background, one at a time; its thread starts with the first. */
+    private final java.util.concurrent.ExecutorService prefetcher = java.util.concurrent.Executors
+            .newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "brainiac-vulkan-upload");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** A matrix packed for a backend, uploaded in the background or on its first use. */
+    private static final class Deferred implements PackedStorage {
+        final VulkanBackend owner;
+        final PackedMatrix host;
+        /** The uploaded matrix, once uploaded. */
+        Packed done;
+        /** Whether the background upload should leave it (it was unpacked to the host first). */
+        volatile boolean skip;
+
+        Deferred(VulkanBackend owner, PackedMatrix host) {
+            this.owner = owner;
+            this.host = host;
+        }
+
+        @Override
+        public int rows() {
+            return host.rows();
+        }
+
+        @Override
+        public int cols() {
+            return host.cols();
+        }
+
+        @Override
+        public long size() {
+            return (long) host.rows() * host.cols();
+        }
+
+        @Override
+        public long bytes() {
+            return done != null ? done.bytes() : host.data().length;
+        }
+    }
+
+    /** Uploads a packed matrix. */
+    private synchronized Packed uploadPacked(PackedMatrix matrix) {
         int rows = matrix.rows();
         int cols = matrix.cols();
         int bits = matrix.bits();
@@ -1913,6 +2002,10 @@ public final class VulkanBackend implements Backend {
 
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
+        if (packed instanceof Deferred d) {
+            d.skip = true;
+            return d.host;
+        }
         if (packed instanceof Packed p) {
             if (p.host() != null) {
                 return p.host();
@@ -1943,11 +2036,17 @@ public final class VulkanBackend implements Backend {
         return Backend.super.unpackToHost(packed);
     }
 
-    private Packed packed(PackedStorage s) {
+    private synchronized Packed packed(PackedStorage s) {
+        if (s instanceof Deferred d && d.owner == this) {
+            if (d.done == null) {
+                d.done = uploadPacked(d.host);
+            }
+            return d.done;
+        }
         if (s instanceof Packed p && p.levels().owner == this) {
             return p;
         }
-        return (Packed) pack(unpackToHost(s));   // packed for another backend: bring it here
+        return uploadPacked(unpackToHost(s));   // packed for another backend: bring it here
     }
 
     @Override

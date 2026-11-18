@@ -385,6 +385,28 @@ public interface Backend {
     }
 
     /**
+     * As {@link #pack}, for a matrix that may be joined with others ({@link #unpackToHost})
+     * before it is used, such as a projection {@code Llama.fuseProjections} joins: a backend
+     * that moves matrices to its device in the background can leave this one until its first
+     * use, or until {@link #prefetch}.
+     *
+     * @param matrix the levels and scales
+     * @return storage for it
+     */
+    default PackedStorage packLater(PackedMatrix matrix) {
+        return pack(matrix);
+    }
+
+    /**
+     * Starts moving a matrix from {@link #packLater} to the device, if it is not there yet.
+     * The default does nothing.
+     *
+     * @param packed the matrix
+     */
+    default void prefetch(PackedStorage packed) {
+    }
+
+    /**
      * Quantizes a {@code [rows, cols]} float32 matrix on this backend, as
      * {@link PackedMatrix#quantize} does. The default downloads the values and quantizes them
      * in Java; backends override it to keep the values on the device.
