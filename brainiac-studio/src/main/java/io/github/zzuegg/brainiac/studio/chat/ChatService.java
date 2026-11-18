@@ -309,6 +309,7 @@ public final class ChatService {
     private LocalServing serving;
     private LocalQuantizer quantizer;
     private LocalFineTune fineTune;
+    private LocalEvaluation evaluation;
 
     /**
      * Returns what serves one of this PC's chat models to other programs with the OpenAI API.
@@ -344,6 +345,19 @@ public final class ChatService {
             fineTune = new LocalFineTune(local());
         }
         return fineTune;
+    }
+
+    /**
+     * Returns what measures this PC's chat models, its results kept next to the outputs folder
+     * in {@code evaluations.json}.
+     *
+     * @return it
+     */
+    public synchronized LocalEvaluation evaluation() {
+        if (evaluation == null) {
+            evaluation = new LocalEvaluation(local(), outputs.resolveSibling("evaluations.json"));
+        }
+        return evaluation;
     }
 
     private LocalProvider local() {

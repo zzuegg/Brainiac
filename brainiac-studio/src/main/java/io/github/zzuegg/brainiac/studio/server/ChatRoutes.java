@@ -42,6 +42,11 @@ import java.util.Map;
  *       /api/finetune} with {@code {"model": "local/qwen", "name": "support", "data": "<JSON
  *       lines>", "rank": 8, "alpha": 16, "epochs": 3, "learningRate": 0.0002, "length": 512,
  *       "rows": 1}} starts it, and with {@code {"stop": true}} stops it after the current step.
+ *   <li>{@code GET /api/evaluate} lists the measurements of this PC's chat models, newest first;
+ *       {@code POST /api/evaluate} with {@code {"model": "local/qwen", "task": "arc.jsonl", "data":
+ *       "<JSON lines>", "limit": 100, "shots": 0}} scores a model on a benchmark file, with {@code
+ *       {"model": "local/qwen", "speed": true}} times its reading and writing, with {@code {"stop":
+ *       true}} stops the one under way and with {@code {"remove": "<id>"}} forgets one.
  *   <li>{@code POST /api/images} with {@code {"model": "auto", "prompt": "...", "aspect": "16:9",
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
@@ -182,6 +187,32 @@ final class ChatRoutes {
                                 (int) Json.integer(body, "rows", 1))));
             } catch (IOException | IllegalArgumentException e) {
                 // no such model, a bad setting or name, or another run: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
+        server.get("/api/evaluate", ex -> Exchanges.json(ex, 200, chat.evaluation().state()));
+        server.post("/api/evaluate", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            if (Boolean.TRUE.equals(body.get("stop"))) {
+                chat.evaluation().stop();
+                Exchanges.json(ex, 200, chat.evaluation().state());
+                return;
+            }
+            if (body.get("remove") instanceof String id) {
+                chat.evaluation().remove(id);
+                Exchanges.json(ex, 200, chat.evaluation().state());
+                return;
+            }
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                Exchanges.json(ex, 200, Boolean.TRUE.equals(body.get("speed")) ? chat.evaluation().startSpeed(model)
+                        : chat.evaluation().start(model, Json.string(body, "task", ""), Json.string(body, "data", ""),
+                                (int) Json.integer(body, "limit", 100), (int) Json.integer(body, "shots", 0)));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model, a file the studio cannot read, or another measurement: the caller's to fix
                 throw new Exchanges.BadRequest(e.getMessage());
             }
         });

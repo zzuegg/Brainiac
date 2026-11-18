@@ -2091,12 +2091,13 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn ${isLive() && EV.state?.running ? "serving" : ""}" id="eval-open" aria-expanded="${!!(isLive() && EV.open)}" title="Score a chat model on this PC with a file of questions, and time how fast it reads and writes">${icon("flask")}${isLive() && EV.state?.running ? "Measuring…" : "Evaluate"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() && SV.open ? servePanel() : ""}
       ${isLive() && QZ.open ? quantPanel() : ""}
       ${isLive() && FT.open ? tunePanel() : ""}
+      ${isLive() && EV.open ? evalPanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
@@ -4181,6 +4182,103 @@ reason ::= [a-z ]+`;
     if (!FT.loaded) { FT.loaded = true; loadTune(); }
   }
 
+  // Evaluating: a chat model on this PC is scored on a file of questions, or timed.
+  const EV = { open: false, state: null, model: "", data: "", file: "", lines: 0, limit: 100, shots: 0, busy: false, error: null, loaded: false, timer: null };
+  const evalBusy = () => !!EV.state?.running;
+  function evalRuns() {
+    const runs = EV.state?.runs || [];
+    if (!runs.length) return "";
+    const live = r => r.state === "loading" || r.state === "running";
+    const score = r => {
+      if (r.state === "failed") return `<span class="bad-text">${esc(r.error || "it failed")}</span>`;
+      if (r.kind === "speed") return live(r) ? "timing…" : `reads ${fmtRate(r.readPerSecond)} · writes ${fmtRate(r.writePerSecond)} tokens a second`;
+      if (!r.done) return live(r) ? (r.state === "loading" ? "reading the model…" : `0 of ${r.total}`) : "nothing asked";
+      const pct = (100 * r.accuracy).toFixed(1), err = (100 * r.stderr).toFixed(1);
+      return `<b>${pct}%</b> ± ${err} · ${r.correct} of ${r.done} right${live(r) || r.state === "stopped" ? ` · ${r.done} of ${r.total} asked` : ""}${r.shots ? ` · ${r.shots} shown solved` : ""}`;
+    };
+    return `<div class="eval-wrap"><table class="eval-table"><thead><tr><th>Model</th><th>Questions</th><th>Result</th><th class="num">Time</th><th></th></tr></thead><tbody>${runs.map(r => `<tr class="${live(r) ? "live" : ""}">
+        <td>${esc(r.model)}</td><td>${r.kind === "speed" ? "Speed" : esc(r.task)}</td><td>${score(r)}${r.state === "stopped" ? ' <span class="faint">stopped</span>' : ""}</td>
+        <td class="num mono tnum">${fmtSeconds(r.seconds)}</td>
+        <td class="num">${live(r) ? `<button type="button" class="btn sm" id="eval-stop" ${r.kind === "speed" ? "disabled" : ""}>${icon("stop")}Stop</button>` : `<button type="button" class="iconbtn sm" data-eval-remove="${esc(r.id)}" aria-label="Forget this result of ${esc(r.model)}" title="Forget this result">${icon("trash")}</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  const fmtRate = v => v >= 100 ? Math.round(v) : (+v).toFixed(1);
+  const fmtSeconds = s => s >= 90 ? Math.floor(s / 60) + " min " + Math.round(s % 60) + " s" : (s >= 10 ? Math.round(s) : (+s).toFixed(1)) + " s";
+  function evalPanel() {
+    const models = quantModels();
+    const sel = models.some(m => m.id === EV.model) ? EV.model : (models[0]?.id || "");
+    const num = (id, label, k, attrs, hint) => `<label class="tune-num" title="${esc(hint)}">${label}<input class="input mono" id="${id}" data-eval="${k}" type="number" ${attrs} value="${esc(EV[k])}"></label>`;
+    const off = EV.busy || evalBusy() ? "disabled" : "";
+    return `<form class="placebox servebox tunebox evalbox" id="eval-form" autocomplete="off">
+      <div class="place-head"><div><b>Measure a model</b> <span class="muted">Score a chat model of this PC on a file of questions, or time how fast it reads and writes. Results are kept here, so models and their smaller copies can be compared. Questions are JSON lines as the common benchmarks have them: MMLU, ARC, HellaSwag and GSM8K files work as they are, and so does your own <code>{"question": "...", "choices": [...], "answer": 0}</code> or <code>{"question": "...", "answer": "..."}</code>. They are scored as lm-evaluation-harness scores them.</span></div>
+        <button type="button" class="iconbtn sm" id="eval-close" aria-label="Close">${icon("x")}</button></div>
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="eval-model" aria-label="Model to measure">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <label class="btn" for="eval-file">${icon("plus")}${EV.file ? esc(EV.file) + " · " + EV.lines + " questions" : "Choose questions (.jsonl)"}</label><input type="file" id="eval-file" accept=".jsonl,.json,.txt,application/json" hidden>
+      </div>
+      <div class="tune-nums">
+        ${num("eval-limit", "Ask at most", "limit", 'min="0" max="100000" step="1"', "How many of the file's questions are asked. 0 asks all of them.")}
+        ${num("eval-shots", "Shown solved", "shots", 'min="0" max="8" step="1"', "This many of the file's first questions are shown with their answers before each question, and not asked themselves.")}
+        <span class="grow"></span>
+        <button class="btn" type="button" id="eval-speed" ${off}>${icon("play")}Time its speed</button>
+        <button class="btn primary" type="submit" ${off}>${icon("flask")}${evalBusy() ? "Measuring…" : "Score it"}</button>
+      </div>`
+      : `<div class="muted">No chat model on this PC that can be measured yet. Download one from Hugging Face or add a folder first.</div>`}
+      ${EV.error ? `<div class="flag bad">${icon("alert")}<span>${esc(EV.error)}</span></div>` : ""}
+      <div id="eval-runs">${evalRuns()}</div>
+    </form>`;
+  }
+  async function loadEval() {
+    const was = evalBusy();
+    try { EV.state = await api("/api/evaluate"); } catch (e) { console.warn("cannot read the measurements", e); }
+    clearTimeout(EV.timer);
+    if (evalBusy()) EV.timer = setTimeout(loadEval, 1200);
+    if (state.view !== "library") return;
+    // while it runs, only the results are redrawn, so the form keeps its focus
+    const box = $("#eval-runs");
+    if (box && evalBusy() && was) { box.innerHTML = evalRuns(); bindEvalRuns(); } else render();
+  }
+  async function evalPost(body) {
+    EV.error = null;
+    try { EV.state = await postJson("/api/evaluate", body); } catch (err) { EV.error = err.message || String(err); }
+    clearTimeout(EV.timer);
+    if (evalBusy()) EV.timer = setTimeout(loadEval, 800);
+    if (state.view === "library") render();
+  }
+  function bindEvalRuns() {
+    $("#eval-stop")?.addEventListener("click", () => evalPost({ stop: true }));
+    $$("[data-eval-remove]").forEach(b => b.addEventListener("click", () => evalPost({ remove: b.dataset.evalRemove })));
+  }
+  function bindEval() {
+    $("#eval-open")?.addEventListener("click", () => { EV.open = !EV.open; EV.error = null; render(); });
+    $("#eval-close")?.addEventListener("click", () => { EV.open = false; EV.error = null; render(); });
+    $("#eval-model")?.addEventListener("change", e => { EV.model = e.target.value; });
+    $$("[data-eval]").forEach(t => t.addEventListener("input", () => { EV[t.dataset.eval] = t.value; }));
+    $("#eval-file")?.addEventListener("change", async e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      EV.error = f.size > 24e6 ? "This file is over 24 MB: measure with a smaller set of questions." : null;
+      if (!EV.error) { EV.data = await f.text(); EV.file = f.name; EV.lines = EV.data.split(/\r?\n/).filter(l => l.trim()).length; }
+      render();
+    });
+    bindEvalRuns();
+    const run = async body => {
+      if (EV.busy || evalBusy()) return;
+      EV.busy = true; render();
+      await evalPost(body);
+      EV.busy = false;
+      if (state.view === "library") render();
+    };
+    $("#eval-speed")?.addEventListener("click", () => { const model = $("#eval-model")?.value; if (model) run({ model, speed: true }); });
+    $("#eval-form")?.addEventListener("submit", e => {
+      e.preventDefault();
+      const model = $("#eval-model")?.value;
+      if (!model) return;
+      if (!EV.data) { EV.error = "Choose a file of questions first."; render(); return; }
+      run({ model, task: EV.file.replace(/\.(jsonl?|txt)$/i, ""), data: EV.data, limit: Math.max(0, Math.round(+EV.limit) || 0), shots: Math.max(0, Math.round(+EV.shots) || 0) });
+    });
+    if (!EV.loaded) { EV.loaded = true; loadEval(); }
+  }
+
   // Quantizing: a smaller copy of one of this PC's chat models, written next to it as a GGUF file.
   const QZ = { open: false, state: null, model: "", size: "Q4_K_M", busy: false, error: null, loaded: false, timer: null };
   const quantBusy = () => ["loading", "writing"].includes(QZ.state?.job?.state);
@@ -4598,6 +4696,7 @@ reason ::= [a-z ]+`;
     bindServe();
     bindQuant();
     bindTune();
+    bindEval();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {
