@@ -1072,6 +1072,18 @@ picture keeps its seed, so **Reuse seed** draws it again. A single checkpoint ne
 vocabulary, which is fetched once from Hugging Face (about 1.6 MB) into
 `~/.cache/brainiac/clip-tokenizer`.
 
+**Voice on this PC**: a Kokoro folder (`hexgrad/Kokoro-82M`, with its `.pth` checkpoint and `voices`
+folder) or a VITS model (such as `facebook/mms-tts-eng`) in a model folder speaks on the Voice screen
+as a model of This PC, saving WAV files, and Auto picks it. Kokoro lists its 28 English voices by
+name, and **Blend with** mixes a second voice in at the share you pick (sent as
+`"voice": "af_heart*0.70+bm_george*0.30"`). A Whisper model (such as
+`openai/whisper-base`, with its `tokenizer.json`) writes down what is said: switch the Voice screen
+to **Transcribe**, then drop a recording (any audio or video the browser plays; it is turned into
+16 kHz mono in the browser) or **Record** one with the microphone. The text appears piece by piece,
+with times, in the spoken language or in English, and **To chat** puts it in the chat box.
+**Hugging Face → Speech** on the Models screen finds and downloads Whisper and VITS models with
+the files they need (Kokoro is not offered there yet: copy its folder in).
+
 ```
 GET  /api/models            providers, their keys (names only) and models, and what Auto picks
 POST /api/keys              {"provider":"anthropic","label":"work","key":"..."} ("remove" or "first": true)
@@ -1083,6 +1095,9 @@ POST /api/images/draw       {"model":"local/sdxl","prompt":"...","negativePrompt
                             route, step and preview ..., image per picture, done or error
 POST /api/images/options    {"model":"local/sdxl"} -> the samplers and the model's usual steps and guidance
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
+POST /api/transcribe        {"model":"auto","audio":"<base64 WAV>","language":"de","translate":false} -> event
+                            stream: route, segment ..., done (text, language) or error
+POST /api/transcribe/options {"model":"local/whisper-base"} -> its languages and whether it translates
 POST /api/providers         {"provider":"huggingface","auto":true,"models":["openai/gpt-oss-120b"],
                             "url":"","options":{"billTo":"my-org"}} (models null shows all)
 POST /api/local             {"path":"D:/Models/qwen2.5-7b.gguf"} adds a model file or folder ("remove": true forgets it)

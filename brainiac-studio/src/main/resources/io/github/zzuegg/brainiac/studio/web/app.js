@@ -2978,7 +2978,12 @@
     // drawing on this PC: what is not sent anywhere else, and kept per model where it differs
     neg: "", steps: {}, guidance: {}, seed: "", sampler: store.get("sampler", "DPM_PP_2M_KARRAS"), opts: {}, stop: null,
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
+    // a second voice mixed in, for models whose voices blend, and how much of the first to keep
+    blend: "", blendW: 0.7,
     text: "", takes: [], speaking: false, video: null,
+    // writing down what is said, on this PC
+    mode: store.get("voMode", "speak"), trModel: store.get("trModel", "auto"), trLang: store.get("trLang", "auto"),
+    trTranslate: false, trTimes: true, trOpts: {}, transcripts: [], listening: null, recorder: null,
   };
   const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium) && m.shown !== false);
   const pickedModel = (sel, medium) => modelByKey(sel === "auto" ? L.info?.auto?.[medium] : sel);
@@ -3196,27 +3201,187 @@
 
   function hue(name) { let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360; return `oklch(0.78 0.11 ${h})`; }
 
+  const trModels = () => mediaModels("transcribe").filter(m => m.provider === "local");
+  const trPicked = () => G.trModel === "auto" ? trModels()[0] : trModels().find(m => m.key === G.trModel);
+  const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+  const modeSwitch = () => `<div class="seg vo-mode" role="group" aria-label="What to do"><button data-vomode="speak" aria-pressed="${G.mode === "speak"}">Speak</button><button data-vomode="listen" aria-pressed="${G.mode === "listen"}">Transcribe</button></div>`;
+
+  // what a transcribing model knows, asked for once (this loads it)
+  function trOptions(m) {
+    if (!m) return null;
+    const o = G.trOpts[m.key];
+    if (!o) {
+      G.trOpts[m.key] = { loading: true };
+      postJson("/api/transcribe/options", { model: m.key }).then(j => { G.trOpts[m.key] = j; if (state.view === "voice" && G.mode === "listen") render(); })
+        .catch(() => { G.trOpts[m.key] = { languages: [], translate: false }; });
+      return null;
+    }
+    return o.loading ? null : o;
+  }
+
+  function transcriptHtml(t, i) {
+    const segs = t.segments || [];
+    return `<div class="take transcript">
+      <div class="who"><span class="chip c-speech">${esc(t.name)}</span><span class="mono muted">${esc(t.model || "")}${t.audioSeconds ? ` · ${t.audioSeconds < 60 ? t.audioSeconds.toFixed(1) + " s" : clock(t.audioSeconds)} of audio` : ""}${t.language ? ` · ${esc(t.language)}` : ""}${t.seconds ? ` · ${t.seconds.toFixed(1)} s` : ""}</span><span class="grow"></span>
+        ${t.running ? `<button class="btn ghost sm" id="tr-stop">${icon("stop")}Stop</button>` : t.text ? `<button class="btn ghost sm" data-tr-copy="${i}">${icon("copy")}Copy</button><button class="btn ghost sm" data-tr-chat="${i}">${icon("chat")}To chat</button>` : ""}</div>
+      ${t.error ? `<div class="flag bad">${icon("flask")}<div><b>${t.error === "stopped" ? "Stopped." : "Nothing written down."}</b> ${t.error === "stopped" ? "" : esc(t.error)}</div></div>` : ""}
+      ${segs.length ? `<div class="segs">${segs.map(g => `<div class="seg-line">${G.trTimes || t.times ? `<span class="mono faint">${clock(g.start)}</span>` : ""}<span>${esc(g.text.trim())}</span></div>`).join("")}</div>`
+        : t.running ? `<div class="muted" style="font-size:13px"><span class="typing"><i></i><i></i><i></i></span> ${t.stage || "listening…"}</div>` : ""}
+    </div>`;
+  }
+
+  function listenView() {
+    const m = trPicked(), o = trOptions(m) || {};
+    const rec = G.recorder;
+    return `
+    <div class="voice listen">
+      <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
+        <div class="stage-head"><span class="title">Voice</span>${modeSwitch()}${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
+          ${rec ? `<button class="btn primary" id="tr-rec-stop">${icon("stop")}Stop · <span class="mono" id="tr-rec-time">${clock((Date.now() - rec.at) / 1000)}</span></button>`
+            : `<button class="btn" id="tr-rec" ${!m || G.listening ? "disabled" : ""}>${icon("speech")}Record</button>`}
+          <label class="btn primary ${!m || G.listening ? "disabled" : ""}" for="tr-file">${icon("plus")}Choose a recording</label><input type="file" id="tr-file" accept="audio/*,video/*" hidden ${!m || G.listening ? "disabled" : ""}></div>
+        ${!m ? `<div class="empty"><div class="flag">${icon("flask")}<div><b>No transcribing model yet.</b> Put a Whisper model (such as openai/whisper-base, a Hugging Face folder) in a model folder to write down what is said, on this PC.
+          <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>` : `
+        <div class="script tr-list" id="tr-drop">
+          ${!G.transcripts.length ? `<label class="video-drop" for="tr-file">${icon("speech")}<b>Drop a recording here, or record one</b><span class="muted">Any audio or video the browser plays. It is written down on this PC and never uploaded anywhere.</span></label>` : ""}
+          ${G.transcripts.map(transcriptHtml).join("")}
+        </div>`}
+      </section>
+      <aside class="voice-settings" aria-label="Transcription settings">
+        <div class="field"><label for="tr-model">Model</label><select class="input" id="tr-model" aria-label="Model">
+          <option value="auto" ${G.trModel === "auto" ? "selected" : ""}>Auto${trModels()[0] ? " · " + esc(trModels()[0].name) : ""}</option>
+          ${trModels().map(x => `<option value="${esc(x.key)}" ${x.key === G.trModel ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="tr-lang">Spoken language</label><select class="input" id="tr-lang">
+          <option value="auto">Detect it</option>${(o.languages || []).map(l => `<option value="${esc(l)}" ${l === G.trLang ? "selected" : ""}>${esc(langName(l))}</option>`).join("")}</select></div>
+        <label class="check"><input type="checkbox" id="tr-translate" ${G.trTranslate ? "checked" : ""} ${o.translate ? "" : "disabled"}> Write it in English${o.translate ? "" : ` <output>not offered</output>`}</label>
+        <label class="check"><input type="checkbox" id="tr-times" ${G.trTimes ? "checked" : ""}> Show times</label>
+        <p class="muted" style="font-size:12px;margin:0">The recording is turned into 16 kHz mono in this browser, then written down by ${m ? esc(m.name) : "the model"} on this PC.</p>
+      </aside>
+    </div>`;
+  }
+  const langName = code => { try { return new Intl.DisplayNames([navigator.language || "en"], { type: "language" }).of(code) || code; } catch (_) { return code; } };
+
+  // any audio the browser can play, as 16 kHz mono 16-bit WAV, base64
+  async function toWav16k(blob) {
+    const buf = await blob.arrayBuffer();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(buf); } finally { ctx.close?.(); }
+    const rate = 16000, n = Math.max(1, Math.ceil(decoded.duration * rate));
+    const off = new OfflineAudioContext(1, n, rate);
+    const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+    const pcm = (await off.startRendering()).getChannelData(0);
+    const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) out.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, "RIFF"); out.setUint32(4, 36 + pcm.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+    out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); str(36, "data"); out.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+    const bytes = new Uint8Array(out.buffer);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return { data: btoa(bin), seconds: decoded.duration };
+  }
+
+  async function transcribe(blob, name) {
+    const m = trPicked();
+    if (!m || G.listening) return;
+    const t = { name, model: m.name, segments: [], running: true, stage: "reading the recording…", times: G.trTimes };
+    G.transcripts.unshift(t);
+    const ctrl = new AbortController();
+    G.listening = ctrl;
+    render();
+    const paint = () => { const box = $(".tr-list"); if (box && state.view === "voice" && G.mode === "listen") { box.innerHTML = G.transcripts.map(transcriptHtml).join(""); bindTranscripts(); } };
+    try {
+      const wav = await toWav16k(blob);
+      t.audioSeconds = wav.seconds; t.stage = "writing it down…"; paint();
+      const body = { model: m.key, audio: wav.data, language: G.trLang, translate: G.trTranslate, timestamps: true };
+      const r = await fetch("/api/transcribe", { method: "POST", signal: ctrl.signal,
+        headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await readEvents(r, (event, d) => {
+        if (event === "route") t.model = d.name;
+        else if (event === "segment") t.segments.push(d);
+        else if (event === "done") Object.assign(t, { text: d.text, language: d.language, seconds: d.seconds });
+        else if (event === "error") t.error = d.message;
+        paint();
+      });
+      if (!t.text && t.segments.length) t.text = t.segments.map(g => g.text.trim()).join(" ");
+    } catch (e) {
+      t.error = e.name === "AbortError" ? "stopped" : e.name === "EncodingError" ? "the browser cannot read that recording" : e.message;
+    }
+    t.running = false; G.listening = null;
+    if (state.view === "voice") render();
+  }
+
+  async function record() {
+    if (G.recorder || G.listening) return;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { G.transcripts.unshift({ name: "Recording", error: "the microphone is not available: " + e.message }); render(); return; }
+    const chunks = [], rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach(tr => tr.stop());
+      clearInterval(G.recorder?.tick); G.recorder = null;
+      transcribe(new Blob(chunks, { type: rec.mimeType || "audio/webm" }), "Recording " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    };
+    G.recorder = { rec, at: Date.now(), tick: setInterval(() => { const el = $("#tr-rec-time"); if (el && G.recorder) el.textContent = clock((Date.now() - G.recorder.at) / 1000); }, 500) };
+    rec.start(1000);
+    render();
+  }
+
+  function bindTranscripts() {
+    $("#tr-stop")?.addEventListener("click", () => G.listening?.abort());
+    $$("[data-tr-copy]").forEach(b => b.addEventListener("click", () => navigator.clipboard?.writeText(G.transcripts[+b.dataset.trCopy].text || "")));
+    $$("[data-tr-chat]").forEach(b => b.addEventListener("click", () => {
+      const text = G.transcripts[+b.dataset.trChat].text || "";
+      go("chat");
+      setTimeout(() => { const p = $('[data-prompt="0"]'); if (p) { p.value = (p.value ? p.value + "\n" : "") + text; p.focus(); p.dispatchEvent(new Event("input")); } }, 50);
+    }));
+  }
+
+  function bindListen() {
+    $$("[data-vomode]").forEach(b => b.addEventListener("click", () => { G.mode = b.dataset.vomode; store.set("voMode", G.mode); render(); }));
+    $("#tr-model")?.addEventListener("change", e => { G.trModel = e.target.value; store.set("trModel", G.trModel); render(); });
+    $("#tr-lang")?.addEventListener("change", e => { G.trLang = e.target.value; store.set("trLang", G.trLang); });
+    $("#tr-translate")?.addEventListener("change", e => { G.trTranslate = e.target.checked; });
+    $("#tr-times")?.addEventListener("change", e => { G.trTimes = e.target.checked; G.transcripts.forEach(t => { t.times = G.trTimes; }); render(); });
+    $("#tr-file")?.addEventListener("change", e => { const f = e.target.files[0]; if (f) transcribe(f, f.name); e.target.value = ""; });
+    $("#tr-rec")?.addEventListener("click", record);
+    $("#tr-rec-stop")?.addEventListener("click", () => G.recorder?.rec.stop());
+    const drop = $("#tr-drop");
+    drop?.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+    drop?.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop?.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) transcribe(f, f.name); });
+    bindTranscripts();
+    $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
   function liveVoiceView() {
+    if (G.mode === "listen") return listenView();
     const m = pickedModel(G.voModel, "speech");
+    const local = m?.provider === "local";
     const opt = m?.speech || { voices: [], speed: false, instructions: false, formats: [] };
     if (!opt.voices.includes(G.voice)) G.voice = opt.voices[0] || null;
+    if (!opt.mix || !opt.voices.includes(G.blend) || G.blend === G.voice) G.blend = "";
     if (opt.formats.length && !opt.formats.includes(G.format)) G.format = opt.formats[0];
+    const names = opt.names || {};
     return `
     <div class="voice">
       <aside class="voices" aria-label="Voices">
         <div class="col-head"><span class="h3">Voices</span><span class="grow"></span><span class="mono faint">${opt.voices.length || ""}</span></div>
-        ${opt.voices.map(v => `
+        ${opt.voices.map(v => { const [n, d] = voiceName(v, names); return `
           <div class="vcard ${v === G.voice ? "active" : ""}" data-voice="${esc(v)}" tabindex="0" role="button" aria-pressed="${v === G.voice}">
-            <div class="vface" style="background:${hue(v)}">${esc(v[0].toUpperCase())}</div>
-            <div style="min-width:0"><div class="n">${esc(v[0].toUpperCase() + v.slice(1))}</div><div class="d">${esc(providerName(m.provider))}</div></div>
-            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(v)}" title="Speaks one short sentence, billed to your key">${icon("play")}</button>
-          </div>`).join("")}
+            <div class="vface" style="background:${hue(v)}">${esc(n[0].toUpperCase())}</div>
+            <div style="min-width:0"><div class="n">${esc(n)}${v === G.blend ? ` <span class="mono faint">blended in</span>` : ""}</div><div class="d">${esc(d ? d + " · " + providerName(m.provider) : providerName(m.provider))}</div></div>
+            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(n)}" title="${local ? "Speaks one short sentence" : "Speaks one short sentence, billed to your key"}">${icon("play")}</button>
+          </div>`; }).join("")}
       </aside>
       <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
-        <div class="stage-head"><span class="title">Voice</span>${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
+        <div class="stage-head"><span class="title">Voice</span>${modeSwitch()}${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
           <label class="btn" for="vo-video-file">${icon("video")}${G.video ? "Change video" : "Add a video"}</label><input type="file" id="vo-video-file" accept="video/*" hidden>
           <button class="btn primary" id="vo-go" ${!m || G.speaking ? "disabled" : ""}>${icon("speech")}${G.speaking ? "Speaking…" : "Speak"}</button></div>
-        ${m ? `<div style="padding:14px 24px 0">${remoteNote(m, "The text")}</div>` : ""}
+        ${m ? `<div style="padding:14px 24px 0">${local ? `<div class="flag ok-note">${icon("lock")}<div><b>Speaks on this PC.</b> The text is not sent anywhere.</div></div>` : remoteNote(m, "The text")}</div>` : ""}
         ${!mediaModels("speech").length ? noModel("speech") : `
         <div class="vo-split">
           <div class="script">
@@ -3238,6 +3403,11 @@
         <div class="field"><label for="vo-model">Model</label>${mediaPicker("vo-model", "speech", G.voModel)}</div>
         <div class="field" ${opt.speed ? "" : `title="${m ? esc(m.name) + " has no pace setting" : ""}"`}><label for="vo-speed">Pace <output>${opt.speed ? G.speed.toFixed(2) + "×" : "not offered"}</output></label>
           <input type="range" id="vo-speed" min="0.5" max="2" step="0.05" value="${G.speed}" ${opt.speed ? "" : "disabled"}></div>
+        ${opt.mix && opt.voices.length > 1 ? `<div class="field"><label for="vo-blend">Blend with</label>
+          <select class="input" id="vo-blend"><option value="">Nothing, just ${esc(voiceName(G.voice, names)[0])}</option>${opt.voices.filter(v => v !== G.voice).map(v => `<option value="${esc(v)}" ${v === G.blend ? "selected" : ""}>${esc(voiceName(v, names)[0])}${voiceName(v, names)[1] ? " · " + esc(voiceName(v, names)[1]) : ""}</option>`).join("")}</select></div>
+        ${G.blend ? `<div class="field"><label for="vo-mix">Mix <output>${mixLabel(names)}</output></label>
+          <input type="range" id="vo-mix" min="0.1" max="0.9" step="0.05" value="${G.blendW}" aria-label="How much of ${esc(voiceName(G.voice, names)[0])}"></div>` : ""}` : ""}
+        ${opt.tags?.length ? `<div class="field"><label>Expressions <output>put in the text</output></label><div class="tag-row">${opt.tags.map(t => `<button class="btn ghost sm" data-vo-tag="${esc(t)}">&lt;${esc(t)}&gt;</button>`).join("")}</div></div>` : ""}
         <div class="field"><label for="vo-instr">How to say it ${opt.instructions ? "" : "<output>not offered</output>"}</label>
           <textarea class="input" id="vo-instr" rows="3" placeholder="Calm narrator, a little slower, warm" ${opt.instructions ? "" : "disabled"}>${esc(G.instructions)}</textarea></div>
         ${opt.formats.length > 1 ? `<div class="field"><label>File</label><div class="seg">${opt.formats.map(f => `<button data-format="${f}" aria-pressed="${G.format === f}">${f.toUpperCase()}</button>`).join("")}</div></div>`
@@ -3246,10 +3416,35 @@
     </div>`;
   }
 
-  async function speak(text, voice, preview) {
+  // a voice's readable name and description, from "Heart (American female)" or the bare id
+  function voiceName(v, names) {
+    if (!v) return [""];
+    const full = names?.[v];
+    const hit = full && /^(.*?)\s*\((.*)\)$/.exec(full);
+    if (hit) return [hit[1], hit[2]];
+    if (full) return [full, ""];
+    return [v[0].toUpperCase() + v.slice(1), ""];
+  }
+
+  function mixLabel(names) {
+    const a = Math.round(G.blendW * 100);
+    return `${a}% ${voiceName(G.voice, names)[0]} · ${100 - a}% ${voiceName(G.blend, names)[0]}`;
+  }
+
+  // what is sent: the voice, or a blend such as af_heart*0.70+am_adam*0.30
+  function spokenVoice() {
+    return G.blend ? `${G.voice}*${G.blendW.toFixed(2)}+${G.blend}*${(1 - G.blendW).toFixed(2)}` : G.voice;
+  }
+
+  function spokenLabel() {
+    const names = pickedModel(G.voModel, "speech")?.speech?.names || {};
+    return G.blend ? mixLabel(names) : voiceName(G.voice, names)[0];
+  }
+
+  async function speak(text, voice, preview, label) {
     const m = pickedModel(G.voModel, "speech");
     if (!m || !text || !voice) return;
-    const take = { text, voice, model: m.name };
+    const take = { text, voice: label || voice, model: m.name };
     if (!preview) { G.speaking = true; render(); }
     try {
       const j = await postJson("/api/speech", { model: G.voModel, text, voice, speed: G.speed, instructions: G.instructions, format: G.format });
@@ -3266,19 +3461,35 @@
   }
 
   function bindLiveVoice() {
+    if (G.mode === "listen") return bindListen();
+    $$("[data-vomode]").forEach(b => b.addEventListener("click", () => { G.text = $("#vo-text")?.value ?? G.text; G.mode = b.dataset.vomode; store.set("voMode", G.mode); render(); }));
     const keep = () => { G.text = $("#vo-text")?.value ?? G.text; G.instructions = $("#vo-instr")?.value ?? G.instructions; };
     $("#vo-model")?.addEventListener("change", e => { keep(); G.voModel = e.target.value; store.set("voModel", G.voModel); render(); });
     $$("[data-voice]").forEach(el => el.addEventListener("click", e => {
       if (e.target.closest("[data-preview]")) return;
       keep(); G.voice = el.dataset.voice; store.set("voice", G.voice); render();
     }));
-    $$("[data-preview]").forEach(b => b.addEventListener("click", () => speak(`Hello, I'm ${b.dataset.preview}. This is how I sound.`, b.dataset.preview, true)));
+    $$("[data-preview]").forEach(b => b.addEventListener("click", () => {
+      const n = voiceName(b.dataset.preview, pickedModel(G.voModel, "speech")?.speech?.names)[0];
+      speak(`Hello, I'm ${n}. This is how I sound.`, b.dataset.preview, true, n);
+    }));
+    $("#vo-blend")?.addEventListener("change", e => { keep(); G.blend = e.target.value; render(); });
+    $("#vo-mix")?.addEventListener("input", e => {
+      G.blendW = +e.target.value;
+      e.target.previousElementSibling.querySelector("output").textContent = mixLabel(pickedModel(G.voModel, "speech")?.speech?.names);
+    });
+    $$("[data-vo-tag]").forEach(b => b.addEventListener("click", () => {
+      const t = $("#vo-text"); if (!t) return;
+      const at = t.selectionStart ?? t.value.length, tag = `<${b.dataset.voTag}>`;
+      t.value = t.value.slice(0, at) + tag + t.value.slice(t.selectionEnd ?? at);
+      G.text = t.value; t.focus(); t.selectionStart = t.selectionEnd = at + tag.length;
+    }));
     $("#vo-speed")?.addEventListener("input", e => { G.speed = +e.target.value; e.target.previousElementSibling.querySelector("output").textContent = G.speed.toFixed(2) + "×"; });
     $("#vo-instr")?.addEventListener("input", e => { G.instructions = e.target.value; });
     $("#vo-text")?.addEventListener("input", e => { G.text = e.target.value; });
-    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), G.voice); } });
+    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), spokenVoice(), false, spokenLabel()); } });
     $$("[data-format]").forEach(b => b.addEventListener("click", () => { keep(); G.format = b.dataset.format; render(); }));
-    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), G.voice); });
+    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), spokenVoice(), false, spokenLabel()); });
     $("#vo-video-file")?.addEventListener("change", e => {
       const f = e.target.files[0]; if (!f) return;
       keep();
@@ -3650,7 +3861,7 @@
   }
 
   // ---------- downloading models from Hugging Face ----------
-  const H = { open: false, query: "", results: null, hidden: 0, runs: null, searching: false, error: null,
+  const H = { open: false, query: "", kind: "text", results: null, hidden: 0, runs: null, searching: false, error: null,
     repo: null, listing: null, loadingRepo: false, repoError: null, downloads: [], folder: "", timer: 0, deleting: null };
   const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
   const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
@@ -3673,7 +3884,8 @@
   function hubPanel() {
     const res = H.results;
     const list = H.searching ? `<div class="faint pad">Searching…</div>`
-      : !res ? `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`
+      : !res ? (H.kind === "speech" ? `<div class="faint pad">Whisper models write down what is said (<code>openai/whisper-base</code>), VITS models speak (<code>facebook/mms-tts-eng</code>, one per language). Both work on the Voice screen.</div>`
+        : `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`)
       : !res.length ? `<div class="faint pad">Nothing found that the studio runs${H.hidden ? ` (${H.hidden} other model${H.hidden === 1 ? "" : "s"} found)` : ""}.</div>`
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
@@ -3686,7 +3898,8 @@
         <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
       <div id="hub-token-box">${hubToken()}</div>
       <form class="place-path" id="hub-search" autocomplete="off">
-        <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
+        <div class="seg" role="group" aria-label="What kind of model"><button type="button" data-hub-kind="text" aria-pressed="${H.kind === "text"}">Chat</button><button type="button" data-hub-kind="speech" aria-pressed="${H.kind === "speech"}">Speech</button></div>
+        <input class="input" id="hub-q" type="search" placeholder="${H.kind === "speech" ? "Such as whisper base or mms-tts-deu" : "Find a model on Hugging Face"}" value="${esc(H.query)}" aria-label="Model name">
         <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
       ${H.error ? `<div class="flag bad">${icon("alert")}<span>${esc(H.error)}</span></div>` : ""}
       <div class="hub-cols">
@@ -3723,7 +3936,7 @@
         <div class="meter wide"><i style="width:${pct.toFixed(1)}%;${d.state === "failed" ? "background:var(--bad)" : d.state === "done" ? "background:var(--ok)" : ""}"></i></div>
         <span class="mono faint tnum st">${esc(status)}</span>
         <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}">${icon("stop")}Stop</button>`
-          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button><button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
+          : d.state === "done" ? `${d.family === "whisper" || d.family === "vits" ? `<button class="btn sm" data-voice-with="${esc(d.model)}" data-voice-mode="${d.family === "whisper" ? "listen" : "speak"}">${icon("speech")}${d.family === "whisper" ? "Transcribe with it" : "Speak with it"}</button>` : `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button>`}<button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
           : `<button class="btn sm" data-hub-retry="${esc(d.id)}">${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
         ${d.error ? `<div class="why bad">${esc(d.error)}</div>` : ""}
       </div>`;
@@ -3742,7 +3955,7 @@
   }
   async function hubSearch() {
     H.searching = true; H.error = null; renderHub();
-    try { const r = await postJson("/api/hub/search", { query: H.query }); H.results = r.models || []; H.hidden = r.hidden || 0; }
+    try { const r = await postJson("/api/hub/search", { query: H.query, kind: H.kind }); H.results = r.models || []; H.hidden = r.hidden || 0; }
     catch (e) { H.error = e.message; H.results = null; }
     H.searching = false; renderHub();
   }
@@ -3802,6 +4015,16 @@
     bindHubToken();
     $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
     $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
+    $$("[data-hub-kind]").forEach(b => b.addEventListener("click", () => {
+      if (H.kind === b.dataset.hubKind) return;
+      H.kind = b.dataset.hubKind; H.results = null; H.repo = null; H.listing = null; renderHub(); $("#hub-q")?.focus();
+    }));
+    $$("[data-voice-with]").forEach(b => b.addEventListener("click", () => {
+      G.mode = b.dataset.voiceMode; store.set("voMode", G.mode);
+      if (G.mode === "listen") { G.trModel = b.dataset.voiceWith; store.set("trModel", G.trModel); }
+      else { G.voModel = b.dataset.voiceWith; store.set("voModel", G.voModel); }
+      go("voice");
+    }));
     $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });
     $$("[data-repo]").forEach(b => b.addEventListener("click", () => hubRepo(b.dataset.repo)));
     $$("[data-download]").forEach(b => b.addEventListener("click", async () => {
