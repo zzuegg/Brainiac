@@ -75,6 +75,24 @@ class LocalSpeechTest {
     }
 
     @Test
+    void aKokoroFolderListsItsEnglishVoicesWithoutLoading() throws Exception {
+        Path k = data.resolve("models/kokoro-82m");
+        Files.createDirectories(k.resolve("voices"));
+        Files.writeString(k.resolve("config.json"), "{\"istftnet\": {}, \"plbert\": {}, \"vocab\": {}}");
+        for (String v : List.of("am_adam", "af_heart", "bm_george", "jf_alpha", "readme")) {
+            Files.writeString(k.resolve("voices/" + v + ".pt"), "not loaded");
+        }
+        ChatService chat = ChatService.at(new Keys(data.resolve("keys.properties"), Map.of()), List.of(data.resolve("models")),
+                Map.of(), data.resolve("outputs"));
+        Map<String, Object> m = model(chat.describe(true), "local/kokoro-82m");
+        assertEquals(List.of("speech"), m.get("media"));
+        Map<String, Object> speech = Json.object(m.get("speech"));
+        assertEquals(List.of("af_heart", "am_adam", "bm_george"), speech.get("voices"), "English only, the default first");
+        assertEquals("George (British male)", Json.object(speech.get("names")).get("bm_george"));
+        assertEquals(true, speech.get("mix"));
+    }
+
+    @Test
     void aWorkersLocalModelsOnlyChat() throws Exception {
         assertTrue(ChatService.localModels(List.of(models())).models().isEmpty());
     }

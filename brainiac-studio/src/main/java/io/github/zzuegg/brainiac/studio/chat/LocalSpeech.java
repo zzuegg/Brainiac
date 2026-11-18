@@ -1,12 +1,12 @@
 package io.github.zzuegg.brainiac.studio.chat;
 
 import io.github.zzuegg.brainiac.audio.Audio;
+import io.github.zzuegg.brainiac.audio.Kokoro;
 import io.github.zzuegg.brainiac.audio.SpeechModels;
 import io.github.zzuegg.brainiac.audio.SpeechToText;
 import io.github.zzuegg.brainiac.audio.TextToSpeech;
 import io.github.zzuegg.brainiac.audio.Transcription;
 import io.github.zzuegg.brainiac.audio.TranscriptionOptions;
-import io.github.zzuegg.brainiac.audio.Voice;
 import io.github.zzuegg.brainiac.audio.Wav;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -28,7 +28,7 @@ import java.util.stream.Stream;
 
 /**
  * The speech models on this PC, found in the same places as the language models: Whisper, which
- * writes down what is said, and VITS (MMS-TTS), which speaks. One of each is kept loaded, on the best device, with 32-bit weights.
+ * writes down what is said, and Kokoro or VITS (MMS-TTS), which speak. One of each is kept loaded, on the best device, with 32-bit weights.
  */
 public final class LocalSpeech {
 
@@ -45,8 +45,10 @@ public final class LocalSpeech {
     public record Listening(String language, boolean translate, boolean timestamps, String prompt) {
     }
 
-    private record Found(FileTime modified, Optional<SpeechModels.Kind> kind) {
+    private record Found(FileTime modified, Optional<SpeechModels.Kind> kind, boolean kokoro) {
     }
+
+    private static final Map<Character, String> ACCENTS = Map.of('a', "American", 'b', "British");
 
     private final Supplier<List<Path>> places;
     private final Map<Path, Found> seen = new ConcurrentHashMap<>();
@@ -71,7 +73,7 @@ public final class LocalSpeech {
         for (Map.Entry<String, Path> e : find().entrySet()) {
             boolean tts = kind(e.getValue()).orElseThrow() == SpeechModels.Kind.TEXT_TO_SPEECH;
             out.add(new ModelInfo("local", e.getKey(), e.getKey(), List.of(tts ? "speech" : "transcribe"), 0,
-                    tts ? "VITS text to speech" : "Whisper speech to text"));
+                    !tts ? "Whisper speech to text" : kokoro(e.getValue()) ? "Kokoro text to speech" : "VITS text to speech"));
         }
         return out;
     }
@@ -121,15 +123,49 @@ public final class LocalSpeech {
         Found f = seen.get(p);
         if (f == null || !f.modified().equals(t)) {
             Optional<SpeechModels.Kind> k;
+            boolean kokoro;
             try {
                 k = SpeechModels.kind(p);
+                kokoro = k.isPresent() && Kokoro.isKokoro(p);
             } catch (RuntimeException e) {
                 k = Optional.empty();
+                kokoro = false;
             }
-            f = new Found(t, k);
+            f = new Found(t, k, kokoro);
             seen.put(p, f);
         }
         return f.kind();
+    }
+
+    private boolean kokoro(Path p) {
+        kind(p);
+        Found f = seen.get(p);
+        return f != null && f.kokoro();
+    }
+
+    // Kokoro's English voices, as KokoroSpeech names them, read from the voices folder without loading the model
+    static Map<String, String> kokoroVoices(Path dir) {
+        List<String> ids = new ArrayList<>();
+        try (Stream<Path> s = Files.list(dir.resolve("voices"))) {
+            s.map(f -> f.getFileName().toString()).filter(n -> n.endsWith(".pt"))
+                    .map(n -> n.substring(0, n.length() - 3))
+                    .filter(id -> id.length() > 3 && id.charAt(2) == '_' && ACCENTS.containsKey(id.charAt(0)))
+                    .sorted().forEach(ids::add);
+        } catch (IOException e) {
+            return Map.of();
+        }
+        ids.sort((x, y) -> Boolean.compare(!x.equals("af_heart"), !y.equals("af_heart")));
+        Map<String, String> out = new LinkedHashMap<>();
+        for (String id : ids) {
+            String given = id.substring(3, 4).toUpperCase(Locale.ROOT) + id.substring(4);
+            String sex = switch (id.charAt(1)) {
+                case 'f' -> "female";
+                case 'm' -> "male";
+                default -> "voice";
+            };
+            out.put(id, given + " (" + ACCENTS.get(id.charAt(0)) + " " + sex + ")");
+        }
+        return out;
     }
 
     private Path path(String id, SpeechModels.Kind want) throws IOException {
@@ -157,12 +193,23 @@ public final class LocalSpeech {
      * @return its options
      */
     SpeechOptions options(String id) {
-        // listing the models must not load one: a model's own voices show once it has spoken
+        // listing the models must not load one: a VITS model's own voices show once it has spoken
         TextToSpeech v = voice;
         Path p = find().get(id);
-        List<String> voices = v != null && p != null && p.equals(voicePath)
-                ? v.voices().stream().map(Voice::id).toList() : List.of();
-        return new SpeechOptions(voices.isEmpty() ? List.of("default") : voices, true, false, List.of("wav"));
+        if (v != null && p != null && p.equals(voicePath)) {
+            Map<String, String> names = new LinkedHashMap<>();
+            v.voices().forEach(x -> names.put(x.id(), x.name()));
+            return options(names, v.canMixVoices(), v.tags());
+        }
+        if (p != null && kokoro(p)) {
+            return options(kokoroVoices(p), true, List.of());
+        }
+        return options(Map.of(), false, List.of());
+    }
+
+    private static SpeechOptions options(Map<String, String> names, boolean mix, List<String> tags) {
+        List<String> voices = names.isEmpty() ? List.of("default") : List.copyOf(names.keySet());
+        return new SpeechOptions(voices, true, false, List.of("wav"), names, mix, tags);
     }
 
     /**
@@ -181,7 +228,8 @@ public final class LocalSpeech {
             TextToSpeech tts = loadVoice(id);
             io.github.zzuegg.brainiac.audio.SpeechOptions o = io.github.zzuegg.brainiac.audio.SpeechOptions.defaults()
                     .speed((float) speed).cancelled(stop);
-            if (voiceId != null && !voiceId.isBlank() && tts.voices().stream().anyMatch(v -> v.id().equals(voiceId))) {
+            if (voiceId != null && !voiceId.isBlank() && (tts.voices().stream().anyMatch(v -> v.id().equals(voiceId))
+                    || (tts.canMixVoices() && voiceId.matches("[A-Za-z0-9_]+(\\*[0-9.]+)?([+,][A-Za-z0-9_]+(\\*[0-9.]+)?)+")))) {
                 o = o.voice(voiceId);
             }
             Audio a = tts.synthesize(text, o, null);

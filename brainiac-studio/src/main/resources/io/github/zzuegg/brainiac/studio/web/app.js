@@ -2919,6 +2919,8 @@
     // drawing on this PC: what is not sent anywhere else, and kept per model where it differs
     neg: "", steps: {}, guidance: {}, seed: "", sampler: store.get("sampler", "DPM_PP_2M_KARRAS"), opts: {}, stop: null,
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
+    // a second voice mixed in, for models whose voices blend, and how much of the first to keep
+    blend: "", blendW: 0.7,
     text: "", takes: [], speaking: false, video: null,
     // writing down what is said, on this PC
     mode: store.get("voMode", "speak"), trModel: store.get("trModel", "auto"), trLang: store.get("trLang", "auto"),
@@ -3302,17 +3304,19 @@
     const local = m?.provider === "local";
     const opt = m?.speech || { voices: [], speed: false, instructions: false, formats: [] };
     if (!opt.voices.includes(G.voice)) G.voice = opt.voices[0] || null;
+    if (!opt.mix || !opt.voices.includes(G.blend) || G.blend === G.voice) G.blend = "";
     if (opt.formats.length && !opt.formats.includes(G.format)) G.format = opt.formats[0];
+    const names = opt.names || {};
     return `
     <div class="voice">
       <aside class="voices" aria-label="Voices">
         <div class="col-head"><span class="h3">Voices</span><span class="grow"></span><span class="mono faint">${opt.voices.length || ""}</span></div>
-        ${opt.voices.map(v => `
+        ${opt.voices.map(v => { const [n, d] = voiceName(v, names); return `
           <div class="vcard ${v === G.voice ? "active" : ""}" data-voice="${esc(v)}" tabindex="0" role="button" aria-pressed="${v === G.voice}">
-            <div class="vface" style="background:${hue(v)}">${esc(v[0].toUpperCase())}</div>
-            <div style="min-width:0"><div class="n">${esc(v[0].toUpperCase() + v.slice(1))}</div><div class="d">${esc(providerName(m.provider))}</div></div>
-            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(v)}" title="${local ? "Speaks one short sentence" : "Speaks one short sentence, billed to your key"}">${icon("play")}</button>
-          </div>`).join("")}
+            <div class="vface" style="background:${hue(v)}">${esc(n[0].toUpperCase())}</div>
+            <div style="min-width:0"><div class="n">${esc(n)}${v === G.blend ? ` <span class="mono faint">blended in</span>` : ""}</div><div class="d">${esc(d ? d + " · " + providerName(m.provider) : providerName(m.provider))}</div></div>
+            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(n)}" title="${local ? "Speaks one short sentence" : "Speaks one short sentence, billed to your key"}">${icon("play")}</button>
+          </div>`; }).join("")}
       </aside>
       <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
         <div class="stage-head"><span class="title">Voice</span>${modeSwitch()}${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
@@ -3340,6 +3344,11 @@
         <div class="field"><label for="vo-model">Model</label>${mediaPicker("vo-model", "speech", G.voModel)}</div>
         <div class="field" ${opt.speed ? "" : `title="${m ? esc(m.name) + " has no pace setting" : ""}"`}><label for="vo-speed">Pace <output>${opt.speed ? G.speed.toFixed(2) + "×" : "not offered"}</output></label>
           <input type="range" id="vo-speed" min="0.5" max="2" step="0.05" value="${G.speed}" ${opt.speed ? "" : "disabled"}></div>
+        ${opt.mix && opt.voices.length > 1 ? `<div class="field"><label for="vo-blend">Blend with</label>
+          <select class="input" id="vo-blend"><option value="">Nothing, just ${esc(voiceName(G.voice, names)[0])}</option>${opt.voices.filter(v => v !== G.voice).map(v => `<option value="${esc(v)}" ${v === G.blend ? "selected" : ""}>${esc(voiceName(v, names)[0])}${voiceName(v, names)[1] ? " · " + esc(voiceName(v, names)[1]) : ""}</option>`).join("")}</select></div>
+        ${G.blend ? `<div class="field"><label for="vo-mix">Mix <output>${mixLabel(names)}</output></label>
+          <input type="range" id="vo-mix" min="0.1" max="0.9" step="0.05" value="${G.blendW}" aria-label="How much of ${esc(voiceName(G.voice, names)[0])}"></div>` : ""}` : ""}
+        ${opt.tags?.length ? `<div class="field"><label>Expressions <output>put in the text</output></label><div class="tag-row">${opt.tags.map(t => `<button class="btn ghost sm" data-vo-tag="${esc(t)}">&lt;${esc(t)}&gt;</button>`).join("")}</div></div>` : ""}
         <div class="field"><label for="vo-instr">How to say it ${opt.instructions ? "" : "<output>not offered</output>"}</label>
           <textarea class="input" id="vo-instr" rows="3" placeholder="Calm narrator, a little slower, warm" ${opt.instructions ? "" : "disabled"}>${esc(G.instructions)}</textarea></div>
         ${opt.formats.length > 1 ? `<div class="field"><label>File</label><div class="seg">${opt.formats.map(f => `<button data-format="${f}" aria-pressed="${G.format === f}">${f.toUpperCase()}</button>`).join("")}</div></div>`
@@ -3348,10 +3357,35 @@
     </div>`;
   }
 
-  async function speak(text, voice, preview) {
+  // a voice's readable name and description, from "Heart (American female)" or the bare id
+  function voiceName(v, names) {
+    if (!v) return [""];
+    const full = names?.[v];
+    const hit = full && /^(.*?)\s*\((.*)\)$/.exec(full);
+    if (hit) return [hit[1], hit[2]];
+    if (full) return [full, ""];
+    return [v[0].toUpperCase() + v.slice(1), ""];
+  }
+
+  function mixLabel(names) {
+    const a = Math.round(G.blendW * 100);
+    return `${a}% ${voiceName(G.voice, names)[0]} · ${100 - a}% ${voiceName(G.blend, names)[0]}`;
+  }
+
+  // what is sent: the voice, or a blend such as af_heart*0.70+am_adam*0.30
+  function spokenVoice() {
+    return G.blend ? `${G.voice}*${G.blendW.toFixed(2)}+${G.blend}*${(1 - G.blendW).toFixed(2)}` : G.voice;
+  }
+
+  function spokenLabel() {
+    const names = pickedModel(G.voModel, "speech")?.speech?.names || {};
+    return G.blend ? mixLabel(names) : voiceName(G.voice, names)[0];
+  }
+
+  async function speak(text, voice, preview, label) {
     const m = pickedModel(G.voModel, "speech");
     if (!m || !text || !voice) return;
-    const take = { text, voice, model: m.name };
+    const take = { text, voice: label || voice, model: m.name };
     if (!preview) { G.speaking = true; render(); }
     try {
       const j = await postJson("/api/speech", { model: G.voModel, text, voice, speed: G.speed, instructions: G.instructions, format: G.format });
@@ -3376,13 +3410,27 @@
       if (e.target.closest("[data-preview]")) return;
       keep(); G.voice = el.dataset.voice; store.set("voice", G.voice); render();
     }));
-    $$("[data-preview]").forEach(b => b.addEventListener("click", () => speak(`Hello, I'm ${b.dataset.preview}. This is how I sound.`, b.dataset.preview, true)));
+    $$("[data-preview]").forEach(b => b.addEventListener("click", () => {
+      const n = voiceName(b.dataset.preview, pickedModel(G.voModel, "speech")?.speech?.names)[0];
+      speak(`Hello, I'm ${n}. This is how I sound.`, b.dataset.preview, true, n);
+    }));
+    $("#vo-blend")?.addEventListener("change", e => { keep(); G.blend = e.target.value; render(); });
+    $("#vo-mix")?.addEventListener("input", e => {
+      G.blendW = +e.target.value;
+      e.target.previousElementSibling.querySelector("output").textContent = mixLabel(pickedModel(G.voModel, "speech")?.speech?.names);
+    });
+    $$("[data-vo-tag]").forEach(b => b.addEventListener("click", () => {
+      const t = $("#vo-text"); if (!t) return;
+      const at = t.selectionStart ?? t.value.length, tag = `<${b.dataset.voTag}>`;
+      t.value = t.value.slice(0, at) + tag + t.value.slice(t.selectionEnd ?? at);
+      G.text = t.value; t.focus(); t.selectionStart = t.selectionEnd = at + tag.length;
+    }));
     $("#vo-speed")?.addEventListener("input", e => { G.speed = +e.target.value; e.target.previousElementSibling.querySelector("output").textContent = G.speed.toFixed(2) + "×"; });
     $("#vo-instr")?.addEventListener("input", e => { G.instructions = e.target.value; });
     $("#vo-text")?.addEventListener("input", e => { G.text = e.target.value; });
-    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), G.voice); } });
+    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), spokenVoice(), false, spokenLabel()); } });
     $$("[data-format]").forEach(b => b.addEventListener("click", () => { keep(); G.format = b.dataset.format; render(); }));
-    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), G.voice); });
+    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), spokenVoice(), false, spokenLabel()); });
     $("#vo-video-file")?.addEventListener("change", e => {
       const f = e.target.files[0]; if (!f) return;
       keep();

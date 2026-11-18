@@ -386,6 +386,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .vcard { display: grid; grid-template-columns: 40px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
 .vcard:hover { background: var(--panel-2); }
 .vcard.active { background: var(--panel); box-shadow: inset 3px 0 0 var(--cap-speech); }
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .vface { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font: 600 15px var(--font-display); color: var(--bg); }
 .vcard .n { font-weight: 600; font-size: 13.5px; }
 .vcard .d { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
