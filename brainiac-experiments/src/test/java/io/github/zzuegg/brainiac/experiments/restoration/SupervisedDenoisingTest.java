@@ -2,13 +2,8 @@ package io.github.zzuegg.brainiac.experiments.restoration;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.DeblurMethod;
 import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.DenoiseMethod;
-import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.NoiseKind;
 import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.Row;
-import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.SelfMethod;
-import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.Source;
-import io.github.zzuegg.brainiac.experiments.restoration.RestorationShootout.SrMethod;
 
 import java.util.List;
 import java.util.Map;
