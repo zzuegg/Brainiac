@@ -6,20 +6,20 @@ import io.github.zzuegg.brainiac.experimental.vision.SetPredictionDetector.Optio
 
 import org.junit.jupiter.api.Test;
 
+/**
+ * DETR versus H-DETR with anchor queries and auxiliary losses on document layouts. On the
+ * shape scenes both stay at mAP 0 for 700 steps at this size, so only layouts are compared.
+ */
 class DetrHybridCurveTest {
 
     @Test
-    void hybridMatchingAndAnchorsOnScenesAndLayouts() {
-        int[] steps = {150, 300};
-        Options[] options = {Options.none(), new Options(16, 3, true, true)};
-        String[] names = {"DETR", "H-DETR + anchors + aux"};
-        for (boolean layouts : new boolean[] {false, true}) {
-            for (int i = 0; i < options.length; i++) {
-                double[] c = DetectionShootout.detrCurve(options[i], layouts, steps, 1);
-                System.out.printf("%s on %s mAP@0.5 at 150/300 steps: %.3f/%.3f%n", names[i],
-                        layouts ? "layouts" : "scenes", c[0], c[1]);
-                assertTrue(c[1] >= 0 && c[1] <= 1, "mAP is a share");
-            }
-        }
+    void hybridMatchingAndAnchorsOnLayouts() {
+        int[] steps = {250, 500};
+        double[] detr = DetectionShootout.detrCurve(Options.none(), true, steps, 1);
+        double[] hybrid = DetectionShootout.detrCurve(new Options(16, 3, true, true), true, steps, 1);
+        System.out.printf("Layouts mAP@0.5 at 250/500 steps: DETR %.3f/%.3f, H-DETR + anchors + aux %.3f/%.3f%n",
+                detr[0], detr[1], hybrid[0], hybrid[1]);
+        assertTrue(detr[1] > 0 && hybrid[1] > 0, "both detectors find layout regions");
+        assertTrue(hybrid[1] >= 0 && hybrid[1] <= 1, "mAP is a share");
     }
 }

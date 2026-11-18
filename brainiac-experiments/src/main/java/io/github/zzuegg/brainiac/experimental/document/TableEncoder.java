@@ -18,7 +18,10 @@ import java.util.SplittableRandom;
  * et al., ACL 2020): no logical form is generated. The question and the flattened table
  * (one token per cell, headers included) form one sequence, and each token's embedding adds
  * learned embeddings of its segment (question or table), column index, row index and the
- * numeric rank of its value within its column. A bidirectional core {@link TransformerBlock}
+ * numeric rank of its value within its column. Each body cell also adds the word embeddings
+ * of its column header and of its row's name cell (a table-aware cell embedding: without it
+ * the encoder must learn two attention hops, header to column and name to row, which it did
+ * not within the toy budget). A bidirectional core {@link TransformerBlock}
  * stack encodes it; a cell-selection head scores every body cell and an aggregation head on
  * the first token picks an operator ({@code NONE}, {@code COUNT}, {@code SUM},
  * {@code AVERAGE}).
@@ -29,16 +32,31 @@ import java.util.SplittableRandom;
  * <em>expected</em> result under the soft selection, {@code sum_op p(op) result_op(p_select)}
  * over the non-{@code NONE} operators ({@code COUNT = sum p_c}, {@code SUM = sum p_c v_c},
  * {@code AVERAGE = SUM / COUNT}), which is differentiable, plus {@code -log(1 - p(NONE))}.
- * At inference the most likely operator is applied to the cells with selection probability
- * above one half.
+ * At inference the most likely operator is applied: {@code NONE} returns the most likely
+ * cell, and the scalar operators return the same soft expectation the loss fits, rounded
+ * (thresholding the selection at one half, as the paper does, answered every count with 0
+ * here: the soft count is met by many cells of small probability).
  *
  * <p>Paper: <a href="https://arxiv.org/abs/2004.02349">arXiv:2004.02349</a>.
  */
 public final class TableEncoder {
 
-    /** Tokens of one question over one table, ready for the encoder. */
+    /**
+     * Tokens of one question over one table, ready for the encoder.
+     *
+     * @param tokens word ids
+     * @param segments 0 for the question, 1 for the table
+     * @param rows row index plus one (0 outside the body)
+     * @param columns column index plus one (0 in the question)
+     * @param ranks numeric rank plus one (0 for names and outside the body)
+     * @param values cell values (0 for names and outside the body)
+     * @param cells whether each token is a body cell
+     * @param texts the token texts
+     * @param headers per body cell its column header's word id, -1 elsewhere
+     * @param names per body cell its row name's word id, -1 elsewhere
+     */
     public record Example(int[] tokens, int[] segments, int[] rows, int[] columns, int[] ranks, float[] values,
-            boolean[] cells, String[] texts) {
+            boolean[] cells, String[] texts, int[] headers, int[] names) {
     }
 
     private final Map<String, Integer> vocabulary = new HashMap<>();
@@ -131,13 +149,14 @@ public final class TableEncoder {
         for (int row = 0; row < table.rows(); row++) {
             for (int c = 0; c < table.columns(); c++) {
                 int rank = c == 0 ? 0 : table.rank(row, c) + 1;
-                meta.add(new int[] {id(table.cells()[row][c]), 1, row + 1, c + 1, rank, 1});
+                meta.add(new int[] {id(table.cells()[row][c]), 1, row + 1, c + 1, rank, 1, id(table.header()[c]),
+                    id(table.cells()[row][0])});
                 texts.add(table.cells()[row][c]);
                 values.add(c == 0 ? 0f : (float) table.value(row, c));
             }
         }
         int n = meta.size();
-        int[][] cols = new int[6][n];
+        int[][] cols = new int[7][n];
         float[] v = new float[n];
         boolean[] cell = new boolean[n];
         for (int i = 0; i < n; i++) {
@@ -145,9 +164,12 @@ public final class TableEncoder {
                 cols[k][i] = meta.get(i)[k];
             }
             cell[i] = meta.get(i)[5] == 1;
+            cols[5][i] = cell[i] ? meta.get(i)[6] : -1;
+            cols[6][i] = cell[i] ? meta.get(i)[7] : -1;
             v[i] = values.get(i);
         }
-        return new Example(cols[0], cols[1], cols[2], cols[3], cols[4], v, cell, texts.toArray(new String[0]));
+        return new Example(cols[0], cols[1], cols[2], cols[3], cols[4], v, cell, texts.toArray(new String[0]),
+                cols[5], cols[6]);
     }
 
     private Var lookup(Var t, List<Example> batch, int which, int len, int max) {
@@ -169,6 +191,22 @@ public final class TableEncoder {
         return t.gather(0, Tensor.of(Shape.of(b * len), f)).reshape(b, len, dim);
     }
 
+    /** Word embeddings of the body cells' headers ({@code names == false}) or row names, zero elsewhere. */
+    private Var context(List<Example> batch, int len, boolean names) {
+        int b = batch.size();
+        float[] f = new float[b * len];
+        float[] m = new float[b * len];
+        for (int i = 0; i < b; i++) {
+            int[] src = names ? batch.get(i).names() : batch.get(i).headers();
+            for (int k = 0; k < src.length; k++) {
+                f[i * len + k] = Math.max(0, src[k]);
+                m[i * len + k] = src[k] >= 0 ? 1 : 0;
+            }
+        }
+        return words.gather(0, Tensor.of(Shape.of(b * len), f)).reshape(b, len, dim)
+                .mul(Tensor.of(Shape.of(b, len, 1), m));
+    }
+
     /** The encoder outputs, the cell-selection logits {@code [b, len]} and the aggregation logits {@code [b, 4]}. */
     private Var[] run(List<Example> batch, boolean training) {
         int b = batch.size();
@@ -178,7 +216,8 @@ public final class TableEncoder {
         }
         Var x = lookup(words, batch, 0, len, vocab - 1).add(lookup(segments, batch, 1, len, 1))
                 .add(lookup(rowTable, batch, 2, len, maxRows)).add(lookup(columnTable, batch, 3, len, maxColumns))
-                .add(lookup(rankTable, batch, 4, len, ToyTables.MAX_VALUE + 1));
+                .add(lookup(rankTable, batch, 4, len, ToyTables.MAX_VALUE + 1))
+                .add(context(batch, len, false)).add(context(batch, len, true));
         float[] bias = new float[b * len];
         for (int i = 0; i < b; i++) {
             for (int k = batch.get(i).tokens().length; k < len; k++) {
@@ -323,7 +362,7 @@ public final class TableEncoder {
                 op = agg[i * 4 + k] > agg[i * 4 + op] ? k : op;
             }
             int best = -1;
-            int count = 0;
+            double count = 0;
             double sum = 0;
             for (int k = 0; k < e.tokens().length; k++) {
                 if (!e.cells()[k]) {
@@ -333,14 +372,13 @@ public final class TableEncoder {
                 if (best < 0 || z > sel[i * len + best]) {
                     best = k;
                 }
-                if (z > 0) {
-                    count++;
-                    sum += e.values()[k];
-                }
+                double p = 1 / (1 + Math.exp(-z));
+                count += p;
+                sum += p * e.values()[k];
             }
             answers[i] = switch (op) {
                 case 0 -> best < 0 ? "" : e.texts()[best];
-                case 1 -> Integer.toString(count);
+                case 1 -> Long.toString(Math.round(count));
                 case 2 -> Long.toString(Math.round(sum));
                 default -> Long.toString(Math.round(count == 0 ? 0 : sum / count));
             };

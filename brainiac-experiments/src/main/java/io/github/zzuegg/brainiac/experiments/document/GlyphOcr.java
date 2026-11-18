@@ -15,6 +15,7 @@ import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.SplittableRandom;
+import java.util.function.Function;
 
 /**
  * Wave 9 item 9.4.10: line OCR on {@link GlyphDocuments} lines (lexicon words and numbers in
@@ -82,7 +83,7 @@ public final class GlyphOcr {
     }
 
     /**
-     * Trains a CTC line recogniser.
+     * Trains a CTC line recogniser (Adam at 1e-2 for the GRU, 3e-3 for the transformer).
      *
      * @param encoder the sequence model
      * @param steps Adam steps of 16 lines
@@ -93,11 +94,32 @@ public final class GlyphOcr {
      */
     public static LineRecognizer trainRecognizer(LineRecognizer.Encoder encoder, int steps, int minGlyphs,
             int maxGlyphs, long seed) {
+        return trainRecognizer(encoder, steps, r -> GlyphDocuments.randomText(minGlyphs, maxGlyphs, r), Style.hard(),
+                seed);
+    }
+
+    /**
+     * Trains a CTC line recogniser on lines from any text source (Adam at 1e-2 for the GRU,
+     * 3e-3 for the transformer).
+     *
+     * @param encoder the sequence model
+     * @param steps Adam steps of 16 lines
+     * @param text draws one line's text
+     * @param style how lines are drawn
+     * @param seed the seed
+     * @return the trained recogniser
+     */
+    public static LineRecognizer trainRecognizer(LineRecognizer.Encoder encoder, int steps,
+            Function<SplittableRandom, String> text, Style style, long seed) {
         LineRecognizer rec = new LineRecognizer(GlyphDocuments.LINE_HEIGHT, CLASSES, 32, encoder, seed);
-        Optimizer opt = Optimizer.adam(3e-3f);
+        // the learning rate that worked best for each encoder (the GRU tolerates a larger one)
+        Optimizer opt = Optimizer.adam(encoder == LineRecognizer.Encoder.BIGRU ? 1e-2f : 3e-3f);
         SplittableRandom r = new SplittableRandom(seed + 1);
         for (int s = 0; s < steps; s++) {
-            List<Line> batch = lines(16, minGlyphs, maxGlyphs, Style.hard(), r);
+            List<Line> batch = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                batch.add(GlyphDocuments.line(text.apply(r), style, r));
+            }
             int[][] labels = new int[batch.size()][];
             for (int i = 0; i < labels.length; i++) {
                 labels[i] = batch.get(i).labels();

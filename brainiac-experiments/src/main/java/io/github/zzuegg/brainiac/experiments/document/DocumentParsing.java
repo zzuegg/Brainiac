@@ -139,20 +139,93 @@ public final class DocumentParsing {
                 }
             }
             default -> {
-                LineRecognizer ocr = GlyphOcr.trainRecognizer(LineRecognizer.Encoder.BIGRU, steps, 3, 12, seed);
-                TokenTagger tagger = null;
-                if (parser == Parser.OCR_LAYOUT) {
-                    tagger = layout(true, seed + 2);
-                    train(tagger, forms(200, noise, new SplittableRandom(seed + 3)), steps, false,
-                            new SplittableRandom(seed + 4));
-                }
-                for (Page p : test) {
-                    String[] texts = ocr(ocr, p);
-                    predicted.add(tagger == null ? rules(p.words(), texts)
-                            : fields(tagger, p, texts, false, new SplittableRandom(seed)));
-                }
+                List<ParseScores> rows = pipelines(steps, steps, testPages, noise, seed);
+                return rows.get(parser == Parser.OCR_RULES ? 0 : 1);
             }
         }
+        return score(parser, test, predicted, start);
+    }
+
+    /**
+     * A CTC recogniser for form words: trained on single words drawn from random forms (keys
+     * with their colons, titles, and values, the latter oversampled) in the page font with page noise.
+     *
+     * @param steps Adam steps of 16 words
+     * @param noise pixel flip probability
+     * @param seed the seed
+     * @return the recogniser
+     */
+    public static LineRecognizer formOcr(int steps, double noise, long seed) {
+        return GlyphOcr.trainRecognizer(LineRecognizer.Encoder.BIGRU, steps, r -> {
+            List<Word> w = GlyphDocuments.form(FIELDS, 0.3, true, 0, r).words();
+            // values (names, cities, dates) carry the fields and the digits: draw them more often
+            if (r.nextDouble() < 0.6) {
+                w = w.stream().filter(x -> x.role() == GlyphDocuments.Role.VALUE).toList();
+            }
+            return w.get(r.nextInt(w.size())).text();
+        }, new GlyphDocuments.Style(1, 1, 0, 3, noise, 0), seed);
+    }
+
+    /**
+     * Both OCR pipelines on one shared recogniser ({@link #formOcr}) applied to every word box:
+     * nearest-key rules, and the 2-D layout tagger trained on ground-truth tokens of 200 forms.
+     *
+     * @param ocrSteps recogniser steps
+     * @param taggerSteps tagger steps of 16 forms
+     * @param testPages held-out forms
+     * @param noise pixel flip probability
+     * @param seed the seed
+     * @return the OCR_RULES and OCR_LAYOUT rows (each timing includes the shared OCR training)
+     */
+    public static List<ParseScores> pipelines(int ocrSteps, int taggerSteps, int testPages, double noise,
+            long seed) {
+        long start = System.currentTimeMillis();
+        List<Page> test = forms(testPages, noise, new SplittableRandom(seed + 99));
+        LineRecognizer ocr = formOcr(ocrSteps, noise, seed);
+        List<String[]> texts = new ArrayList<>();
+        for (Page p : test) {
+            texts.add(ocr(ocr, p));
+        }
+        long ocrMillis = System.currentTimeMillis() - start;
+        List<String[]> byRules = new ArrayList<>();
+        for (int i = 0; i < test.size(); i++) {
+            byRules.add(rules(test.get(i).words(), texts.get(i)));
+        }
+        List<ParseScores> out = new ArrayList<>();
+        out.add(score(Parser.OCR_RULES, test, byRules, start));
+        long t = System.currentTimeMillis();
+        TokenTagger tagger = layout(true, seed + 2);
+        train(tagger, forms(200, noise, new SplittableRandom(seed + 3)), taggerSteps, false,
+                new SplittableRandom(seed + 4));
+        List<String[]> byTagger = new ArrayList<>();
+        for (int i = 0; i < test.size(); i++) {
+            byTagger.add(fields(tagger, test.get(i), texts.get(i), false, new SplittableRandom(seed)));
+        }
+        out.add(score(Parser.OCR_LAYOUT, test, byTagger, t - ocrMillis));
+        return out;
+    }
+
+    /**
+     * The character error rate of {@link #formOcr} on the words of held-out forms.
+     *
+     * @param ocr the recogniser
+     * @param pages the forms
+     * @return edit distance over reference characters
+     */
+    public static double wordCer(LineRecognizer ocr, List<Page> pages) {
+        double err = 0;
+        double len = 0;
+        for (Page p : pages) {
+            String[] t = ocr(ocr, p);
+            for (int i = 0; i < t.length; i++) {
+                err += LineRecognizer.editDistance(t[i], p.words().get(i).text());
+                len += p.words().get(i).text().length();
+            }
+        }
+        return err / len;
+    }
+
+    private static ParseScores score(Parser parser, List<Page> test, List<String[]> predicted, long start) {
         double tp = 0;
         double np = 0;
         double ng = 0;

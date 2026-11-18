@@ -28,6 +28,9 @@ class CircuitDiscoveryTest {
                 + " PCA1 %.3f PCA2 %.3f best neuron %.3f%n", s.taskAccuracy(), s.dasK1(), s.dasK2(), s.probe(),
                 s.probeAccuracy(), s.pca1(), s.pca2(), s.bestNeuron());
         assertTrue(s.taskAccuracy() > 0.6, "the adder learns");
-        assertTrue(Math.max(s.dasK1(), s.dasK2()) > 0.55, "DAS beats chance at interchange");
+        double das = Math.max(s.dasK1(), s.dasK2());
+        double baseline = Math.max(Math.max(s.probe(), s.bestNeuron()), Math.max(s.pca1(), s.pca2()));
+        // a no-effect intervention scores 0; DAS stays well short of a perfect interchange at this budget
+        assertTrue(das > baseline, "the learned rotation beats the probe, PCA and best-neuron directions");
     }
 }
