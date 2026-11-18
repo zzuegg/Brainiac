@@ -63,7 +63,10 @@ public record Project(String id, String name, String description, Path folder, L
                     throw new IllegalArgumentException("a runner's name is up to 40 letters, digits, _ and -");
                 }
                 if (e.getValue() != null) {
-                    rn.put(e.getKey(), Map.copyOf(new LinkedHashMap<>(e.getValue())));
+                    // a field left empty on the page is just not set
+                    Map<String, Object> r = new LinkedHashMap<>(e.getValue());
+                    r.values().removeIf(v -> v == null || "".equals(v));
+                    rn.put(e.getKey(), java.util.Collections.unmodifiableMap(r));
                 }
             }
         }
