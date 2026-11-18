@@ -5,7 +5,9 @@ import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.llm.Generator;
 import io.github.zzuegg.brainiac.llm.Llama;
+import io.github.zzuegg.brainiac.llm.LanguageModel;
 import io.github.zzuegg.brainiac.llm.Sampling;
+import io.github.zzuegg.brainiac.llm.VisionLanguageModel;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import java.io.IOException;
@@ -30,6 +32,8 @@ final class LocalProvider implements ChatProvider {
 
     private static final System.Logger LOG = System.getLogger(LocalProvider.class.getName());
     private static final Set<String> TYPES = io.github.zzuegg.brainiac.llm.LlamaConfig.MODEL_TYPES;
+    /** The model types that look at pictures: LLaVA 1.5, Gemma 3 and Qwen2-VL / Qwen2.5-VL. */
+    private static final Set<String> SEEING = Set.of("llava", "gemma3", "qwen2_vl", "qwen2_5_vl");
 
     private final List<Path> folders;
     private final Path placesFile;
@@ -40,7 +44,7 @@ final class LocalProvider implements ChatProvider {
     private volatile LocalSpeech speech;
 
     private record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
-            Set<Integer> stops) {
+            Set<Integer> stops, VisionLanguageModel vision) {
     }
 
     LocalProvider(List<Path> folders) {
@@ -215,7 +219,7 @@ final class LocalProvider implements ChatProvider {
             Path p = e.getValue();
             boolean gguf = Files.isRegularFile(p);
             out.add(new ModelInfo(id(), e.getKey(), e.getKey(), List.of("text"), 0,
-                    (gguf ? "GGUF" : "safetensors") + " · " + size(p)));
+                    (gguf ? "GGUF" : "safetensors") + " · " + size(p) + (sees(p) ? " · looks at pictures" : "")));
         }
         if (images != null) {
             out.addAll(images.models());
@@ -256,7 +260,66 @@ final class LocalProvider implements ChatProvider {
     }
 
     private static boolean isGguf(Path p) {
-        return Files.isRegularFile(p) && p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".gguf");
+        if (p.getFileName() == null) {
+            return false;   // a drive's root
+        }
+        String name = p.getFileName().toString().toLowerCase(Locale.ROOT);
+        // a projector file belongs to the model next to it and is not one to chat with
+        return Files.isRegularFile(p) && name.endsWith(".gguf") && !name.startsWith("mmproj");
+    }
+
+    /**
+     * Finds llama.cpp's projector file for a GGUF model: an {@code mmproj*.gguf} in the same
+     * folder. With several there, the one that carries the model's name is taken, and none if
+     * that does not settle it.
+     */
+    static Path mmproj(Path model) {
+        if (!isGguf(model) || model.getParent() == null) {
+            return null;
+        }
+        List<Path> found;
+        try (Stream<Path> s = Files.list(model.getParent())) {
+            found = s.filter(p -> {
+                String n = p.getFileName().toString().toLowerCase(Locale.ROOT);
+                return Files.isRegularFile(p) && n.startsWith("mmproj") && n.endsWith(".gguf");
+            }).sorted().toList();
+        } catch (IOException e) {
+            return null;
+        }
+        if (found.size() <= 1) {
+            return found.isEmpty() ? null : found.getFirst();
+        }
+        // "gemma-3-4b-it-Q4_K_M.gguf" goes with "mmproj-gemma-3-4b-it-f16.gguf": the longest shared start wins
+        String name = model.getFileName().toString().toLowerCase(Locale.ROOT);
+        Path best = null;
+        int bestLength = 3, ties = 0;
+        for (Path p : found) {
+            String n = p.getFileName().toString().toLowerCase(Locale.ROOT).replaceFirst("^mmproj[-_.]?", "");
+            int k = 0;
+            while (k < n.length() && k < name.length() && n.charAt(k) == name.charAt(k)) {
+                k++;
+            }
+            if (k > bestLength) {
+                best = p;
+                bestLength = k;
+                ties = 0;
+            } else if (k == bestLength && best != null) {
+                ties++;
+            }
+        }
+        return ties == 0 ? best : null;
+    }
+
+    // whether a model looks at pictures: a vision model's folder, or a GGUF with its projector
+    private static boolean sees(Path p) {
+        if (Files.isRegularFile(p)) {
+            return mmproj(p) != null;
+        }
+        try {
+            return SEEING.contains(Json.string(Json.object(Json.read(p.resolve("config.json"))), "model_type", ""));
+        } catch (IOException | IllegalArgumentException e) {
+            return false;
+        }
     }
 
     private static boolean isModelFolder(Path p) {
@@ -266,6 +329,9 @@ final class LocalProvider implements ChatProvider {
         }
         try {
             String type = Json.string(Json.object(Json.read(config)), "model_type", "");
+            if (SEEING.contains(type)) {
+                return Files.isRegularFile(p.resolve("preprocessor_config.json"));
+            }
             // Orpheus is a Llama that speaks: it is a speech model, not one to chat with
             return TYPES.contains(type) && !("llama".equals(type)
                     && io.github.zzuegg.brainiac.audio.OrpheusSpeech.isOrpheus(p));
@@ -302,49 +368,115 @@ final class LocalProvider implements ChatProvider {
             loaded = null;   // let the old weights go before loading new ones
             DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
                     : DType.FLOAT32;
-            Llama model = Llama.load(path, device, dtype);
-            if (device.kind() == Device.Kind.GPU) {
-                // two products per block instead of five: the same answers, much less GPU overhead
-                try {
-                    model.fuseProjections();
-                } catch (RuntimeException e) {
-                    LOG.log(System.Logger.Level.INFO, "running " + path.getFileName() + " unfused: " + e.getMessage());
+            LanguageModel model;
+            VisionLanguageModel vision = null;
+            if (sees(path)) {
+                Path projector = mmproj(path);
+                vision = projector != null ? VisionLanguageModel.load(path, projector, device, dtype)
+                        : VisionLanguageModel.load(path, device, dtype);
+                model = vision;
+            } else {
+                Llama llama = Llama.load(path, device, dtype);
+                if (device.kind() == Device.Kind.GPU) {
+                    // two products per block instead of five: the same answers, much less GPU overhead
+                    try {
+                        llama.fuseProjections();
+                    } catch (RuntimeException e) {
+                        LOG.log(System.Logger.Level.INFO, "running " + path.getFileName() + " unfused: " + e.getMessage());
+                    }
                 }
+                model = llama;
             }
             PretrainedTokenizer tok = PretrainedTokenizer.load(path);
-            // a chat sends its whole history each turn; only the new part is read again
-            Generator generator = new Generator(model, tok).cachePrefixes(4);
-            loaded = new Loaded(path, device, generator, tok, Generator.stopTokens(path, tok));
+            Generator generator = new Generator(model, tok);
+            if (vision == null) {
+                // a chat sends its whole history each turn; only the new part is read again. Not for
+                // a model that sees: two pictures make the same tokens, so a kept start could be another picture's
+                generator.cachePrefixes(4);
+            }
+            loaded = new Loaded(path, device, generator, tok, Generator.stopTokens(path, tok), vision);
+        }
+        List<java.awt.image.BufferedImage> pictures = new ArrayList<>();
+        for (ChatMessage m : request.messages()) {
+            for (Media image : m.images()) {
+                java.awt.image.BufferedImage read = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(image.data()));
+                if (read == null) {
+                    throw new IOException("a picture cannot be read here (" + image.mime() + "): send it as PNG or JPEG");
+                }
+                pictures.add(read);
+            }
+        }
+        VisionLanguageModel vision = loaded.vision();
+        if (!pictures.isEmpty() && vision == null) {
+            throw new IOException(request.model() + " cannot look at pictures. Pick a model that can: LLaVA 1.5, Gemma 3 or "
+                    + "Qwen-VL on this PC (a folder, or a GGUF with its mmproj file beside it), or Claude, GPT or Gemini.");
         }
         List<Map<String, Object>> history = new ArrayList<>();
         if (!request.system().isBlank()) {
             history.add(ChatTemplate.message("system", request.system()));
         }
         for (ChatMessage m : request.messages()) {
-            history.add(ChatTemplate.message(m.role(), m.text()));
+            if (m.images().isEmpty()) {
+                history.add(ChatTemplate.message(m.role(), m.text()));
+                continue;
+            }
+            // the template marks each picture where the model's processor expects it
+            List<Object> parts = new ArrayList<>();
+            for (int k = 0; k < m.images().size(); k++) {
+                parts.add(Map.of("type", "image"));
+            }
+            parts.add(Map.of("type", "text", "text", m.text()));
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("role", m.role());
+            message.put("content", parts);
+            history.add(message);
         }
         PretrainedTokenizer tok = loaded.tokenizer();
-        String prompt = tok.chatTemplate() != null ? tok.applyChatTemplate(history, true)
-                : request.messages().getLast().text();
+        String prompt;
+        if (tok.chatTemplate() != null) {
+            prompt = tok.applyChatTemplate(history, true);
+        } else if (pictures.isEmpty()) {
+            prompt = request.messages().getLast().text();
+        } else if (vision.kind() == VisionLanguageModel.Kind.LLAVA) {
+            // LLaVA 1.5 without a template: its own prompt form, for the pictures and the last message
+            prompt = "USER: " + "<image>\n".repeat(pictures.size()) + request.messages().getLast().text() + " ASSISTANT:";
+        } else {
+            throw new IOException(request.model() + " has no chat template, so the studio cannot place the pictures in its prompt");
+        }
         Generator.Options options = new Generator.Options(request.maxTokens(),
                 sampling(request.temperature()), System.nanoTime(), loaded.stops(), List.of());
         // a template that opens the think block itself (DeepSeek-R1, Qwen3 with thinking on) starts the answer inside it
         ThinkSplitter split = new ThinkSplitter(listener, prompt.stripTrailing().endsWith("<think>"));
         Generator.Output out;
+        Generator.Listener pieces = (row, piece) -> {
+            try {
+                split.text(piece);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        };
+        int promptTokens;
         try {
-            out = loaded.generator().generate(List.of(prompt), options, (row, piece) -> {
+            if (pictures.isEmpty()) {
+                out = loaded.generator().generate(List.of(prompt), options, pieces).getFirst();
+                promptTokens = loaded.generator().encode(prompt).length;
+            } else {
+                // each picture's marker becomes its tokens, and its features wait for the pass that reads them
+                int[] ids;
                 try {
-                    split.text(piece);
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
+                    ids = vision.prompt(loaded.generator().encode(vision.markImages(prompt)), pictures);
+                } catch (IllegalArgumentException e) {
+                    throw new IOException("the pictures do not fit this model's prompt: " + e.getMessage(), e);
                 }
-            }).getFirst();
+                out = loaded.generator().generate(new int[][] {ids}, options, pieces).getFirst();
+                promptTokens = ids.length;
+            }
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }
         split.finish();
         return new ChatResult(out.finish() == Generator.Finish.LENGTH ? "length" : "end",
-                loaded.generator().encode(prompt).length, out.tokens().length);
+                promptTokens, out.tokens().length);
     }
 
     /** The usual sampling, or the temperature asked for; 0 always takes the likeliest token. */
