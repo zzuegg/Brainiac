@@ -6,6 +6,7 @@ import io.github.zzuegg.brainiac.studio.chat.ChatListener;
 import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
 import io.github.zzuegg.brainiac.studio.chat.ChatResult;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.chat.LocalImages;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -34,6 +35,15 @@ import java.util.Map;
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
  *       Both answer with the model used and each file, base64 encoded, and where it was saved.
+ *   <li>{@code POST /api/images/draw} with {@code {"model": "local/sdxl", "prompt": "...",
+ *       "negativePrompt": "", "aspect": "1:1", "count": 2, "steps": 30, "guidance": 6, "seed": 42,
+ *       "sampler": "DPM_PP_2M_KARRAS"}} draws on this PC with a Stable Diffusion model, as a
+ *       server-sent event stream: {@code route}, {@code step} ({@code {step, total}}) with a rough
+ *       {@code preview} (a small PNG) every other step, one {@code image} per picture
+ *       ({@code {mime, data, file, seed}}), then {@code done} or {@code error}. Closing the stream
+ *       stops the drawing. Leave {@code seed} out for a random one. {@code POST
+ *       /api/images/options} with {@code {"model": "local/sdxl"}} gives the samplers and the
+ *       model's usual steps and guidance.
  *   <li>{@code POST /api/providers} with {@code {"provider": "huggingface", "auto": true, "models":
  *       ["openai/gpt-oss-120b"], "url": "", "options": {"billTo": "my-org"}}} changes how a provider is
  *       used: whether Auto may pick it, which models to show ({@code null} for all), its address
@@ -100,6 +110,9 @@ final class ChatRoutes {
         });
         server.post("/api/chat", this::chat);
         server.post("/api/images", this::images);
+        server.post("/api/images/draw", this::draw);
+        server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
+                chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.get("/api/usage", ex -> Exchanges.json(ex, 200, chat.usage().summary(java.time.ZoneId.systemDefault())));
         server.get("/api/balances", ex -> {
             try {
@@ -250,6 +263,72 @@ final class ChatRoutes {
         generated(ex, start, () -> chat.images(Json.string(body, "model", ChatService.AUTO),
                 Json.string(body, "prompt", ""), Json.string(body, "aspect", "1:1"),
                 (int) Json.integer(body, "count", 1), Json.string(body, "key", null)));
+    }
+
+    private void draw(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 256 * 1024);
+        String model = Json.string(body, "model", ChatService.AUTO);
+        String prompt = Json.string(body, "prompt", "");
+        if (prompt.isBlank()) {
+            throw new Exchanges.BadRequest("describe the picture first");
+        }
+        long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
+        LocalImages.Settings settings = new LocalImages.Settings(Json.string(body, "negativePrompt", ""),
+                Json.string(body, "aspect", "1:1"), (int) Json.integer(body, "count", 1), (int) Json.integer(body, "steps", 25),
+                Json.number(body, "guidance", 7), seed, Json.string(body, "sampler", "DPM_PP_2M_KARRAS"));
+
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, 0);
+        try (OutputStream out = ex.getResponseBody()) {
+            Events events = new Events(out);
+            long start = System.nanoTime();
+            try {
+                ChatService.Drawn d = chat.draw(model, prompt, settings, (step, total, preview) -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("step", step);
+                    m.put("total", total);
+                    events.sendQuietly("step", m);
+                    if (preview != null) {
+                        Map<String, Object> pv = new LinkedHashMap<>();
+                        pv.put("width", preview.width());
+                        pv.put("height", preview.height());
+                        pv.put("data", java.util.Base64.getEncoder().encodeToString(preview.png()));
+                        events.sendQuietly("preview", pv);
+                    }
+                    return !events.broken;   // the page went away: stop drawing
+                }, m -> {
+                    Map<String, Object> route = new LinkedHashMap<>();
+                    route.put("key", m.key());
+                    route.put("name", m.name());
+                    route.put("seed", seed);
+                    events.sendQuietly("route", route);
+                });
+                for (int i = 0; i < d.generated().media().size(); i++) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("mime", d.generated().media().get(i).mime());
+                    m.put("data", java.util.Base64.getEncoder().encodeToString(d.generated().media().get(i).data()));
+                    m.put("file", d.generated().files().get(i).toString());
+                    m.put("seed", d.seeds().get(i));
+                    events.send("image", m);
+                }
+                events.send("done", Map.of("seconds", (System.nanoTime() - start) / 1e9));
+            } catch (java.util.concurrent.CancellationException e) {
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (IOException | RuntimeException e) {
+                if (events.broken) {
+                    return;
+                }
+                LOG.log(System.Logger.Level.INFO, "drawing failed: " + e.getMessage());
+                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+            }
+        } catch (IOException closed) {
+            // the page stopped reading
+        }
     }
 
     private void speech(HttpExchange ex) throws IOException {

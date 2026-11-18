@@ -1019,12 +1019,27 @@ with its 30 voices), with the same keys. The screens only show settings the chos
 Every picture and take is also saved to `outputs` in the data folder. A video added to the
 Voice screen plays in the browser under each take and is never uploaded.
 
+**Images on this PC**: a Stable Diffusion model (1.x, 2.x or XL, as a diffusers folder or a single
+`.safetensors` checkpoint) or a FLUX.1 dev or schnell diffusers folder in a model folder shows up as
+an image model of This PC, and Auto picks it before any provider. Stable Diffusion also takes what
+to leave out, the steps, the guidance, the seed and the sampler; FLUX.1 takes the steps and the seed
+(and dev the guidance), and the settings it ignores are not shown. FLUX.1 runs in bfloat16 on a GPU
+with its weights quantized as far as the GPU's memory needs; a model that cannot fit is refused,
+saying how much memory it needs. The picture shows a rough preview as it is drawn, **Stop** ends it, and each
+picture keeps its seed, so **Reuse seed** draws it again. A single checkpoint needs the CLIP
+vocabulary, which is fetched once from Hugging Face (about 1.6 MB) into
+`~/.cache/brainiac/clip-tokenizer`.
+
 ```
 GET  /api/models            providers, their keys (names only) and models, and what Auto picks
 POST /api/keys              {"provider":"anthropic","label":"work","key":"..."} ("remove" or "first": true)
 POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"Hi"}]} -> event stream:
                             route, thinking, text ..., done or error
 POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","count":2}
+POST /api/images/draw       {"model":"local/sdxl","prompt":"...","negativePrompt":"","aspect":"1:1","count":2,
+                            "steps":30,"guidance":6,"seed":42,"sampler":"DPM_PP_2M_KARRAS"} -> event stream:
+                            route, step and preview ..., image per picture, done or error
+POST /api/images/options    {"model":"local/sdxl"} -> the samplers and the model's usual steps and guidance
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
 POST /api/providers         {"provider":"huggingface","auto":true,"models":["openai/gpt-oss-120b"],
                             "url":"","options":{"billTo":"my-org"}} (models null shows all)
