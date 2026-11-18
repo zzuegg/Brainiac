@@ -342,6 +342,22 @@ public final class PruningShootout {
         return LmStructuredPruning.run(shares, steps, recovery, seed);
     }
 
+    // ------------------------------------------------------------------ 8.5.18 (end to end)
+
+    /**
+     * The toy language model of {@link #languageModel} pruned to 50% unstructured, 2:4, and in
+     * 4x4 and 8x8 blocks (the formats of {@code experiments.kernels.KernelTuning#sparse}).
+     *
+     * @param steps training steps of the language model
+     * @param recovery masked recovery steps
+     * @param seed the seed
+     * @return dense first; {@code accuracy} is the validation loss after recovery, {@code extra}
+     *     straight after pruning
+     */
+    public static List<Row> sparseFormats(int steps, int recovery, long seed) {
+        return LmStructuredPruning.sparseFormats(steps, recovery, seed);
+    }
+
     // ------------------------------------------------------------------ 8.5.6
 
     /**

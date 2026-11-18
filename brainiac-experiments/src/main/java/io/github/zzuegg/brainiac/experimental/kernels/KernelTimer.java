@@ -29,6 +29,14 @@ public final class KernelTimer {
         public double gflops(double flops) {
             return flops / (medianMillis * 1e6);
         }
+
+        /**
+         * @param flops the floating-point operations of one run
+         * @return the throughput of the fastest run, in GFLOP/s (robust to interference)
+         */
+        public double peakGflops(double flops) {
+            return flops / (minMillis * 1e6);
+        }
     }
 
     /**

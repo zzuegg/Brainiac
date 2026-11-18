@@ -3,6 +3,8 @@ package io.github.zzuegg.brainiac.experiments.compression;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.compress.FixedSparsityOptimizer;
 import io.github.zzuegg.brainiac.experimental.compress.StructuredLmPruner;
+import io.github.zzuegg.brainiac.experimental.kernels.BlockSparseMatmul;
+import io.github.zzuegg.brainiac.experimental.kernels.NmSparseMatmul;
 import io.github.zzuegg.brainiac.experimental.nn.GluFeedForward;
 import io.github.zzuegg.brainiac.experimental.nn.LayerChain;
 import io.github.zzuegg.brainiac.experimental.nn.ResidualMixerBlock;
@@ -100,6 +102,52 @@ final class LmStructuredPruning {
                 rows.add(new PruningShootout.Row("drop " + drop + " block", drop / (double) DEPTH, loss(dropped, val),
                         b));
             }
+        }
+        restore(params, saved);
+        return rows;
+    }
+
+    /**
+     * The same language model pruned to 50% in the kernel-friendly formats of item 8.5.18:
+     * unstructured magnitude, 2:4 along the input dimension, and 8x8 and 4x4 blocks by block
+     * norm, each followed by a masked recovery fine-tune.
+     */
+    static List<PruningShootout.Row> sparseFormats(int steps, int recovery, long seed) {
+        MultiHeadAttention.Spec mha = MultiHeadAttention.of(4).causal(true).rotary(10000f).bias(false);
+        ArchitectureBench.LmResult base = ArchitectureBench.languageModel("MHA", ArchitectureBench.stack(mha, DEPTH),
+                WIDTH, steps, seed);
+        ArchitectureBench.TinyModel m = base.model();
+        int[][] val = base.validation();
+        List<Var> params = m.parameters();
+        List<Tensor> saved = values(params);
+        List<Var> matrices = new ArrayList<>();
+        for (Var p : m.body().parameters()) {
+            if (p.shape().rank() == 2) {
+                matrices.add(p);
+            }
+        }
+        List<PruningShootout.Row> rows = new ArrayList<>();
+        rows.add(new PruningShootout.Row("dense", 0, loss(m, val), loss(m, val)));
+        for (String method : List.of("unstructured", "2:4", "block 4x4", "block 8x8")) {
+            restore(params, saved);
+            long zeros = 0;
+            long total = 0;
+            for (Var w : matrices) {
+                Tensor pruned = switch (method) {
+                    case "unstructured" -> WeightPruning.magnitude(w.value(), 0.5);
+                    case "2:4" -> NmSparseMatmul.prune(w.value(), 2, 4);
+                    case "block 4x4" -> BlockSparseMatmul.prune(w.value(), 4, 0.5);
+                    default -> BlockSparseMatmul.prune(w.value(), 8, 0.5);
+                };
+                w.assign(pruned);
+                for (float v : pruned.toArray()) {
+                    zeros += v == 0 ? 1 : 0;
+                }
+                total += pruned.shape().size();
+            }
+            double before = loss(m, val);
+            fineTune(m, FixedSparsityOptimizer.ofZeros(Optimizer.adam(3e-3f), matrices), recovery, seed);
+            rows.add(new PruningShootout.Row(method, zeros / (double) total, loss(m, val), before));
         }
         restore(params, saved);
         return rows;
