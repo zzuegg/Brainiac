@@ -1748,6 +1748,7 @@ public final class VulkanBackend implements Backend {
         int flags = matrix.nibbles() ? Packed.NIBBLES : 0;
         VkStorage levels;
         VkStorage hi = null;
+        byte[] table;
         if (PACKED_PLANES && !matrix.nibbles() && (bits == 5 || bits == 6) && rows % 8 == 0) {
             int planeBits = bits - 4;
             int perByte = 8 / planeBits;
@@ -1755,29 +1756,40 @@ public final class VulkanBackend implements Backend {
             byte[] low = new byte[rows / 2 * cols];
             byte[] high = new byte[rows / perByte * cols];
             int half = 1 << (bits - 1);
-            for (int r = 0; r < rows; r++) {
-                for (int c = 0; c < cols; c++) {
-                    int u = data[r * cols + c] + half;
-                    low[r / 2 * cols + c] |= (byte) ((u & 15) << ((r & 1) * 4));
-                    high[r / perByte * cols + c] |= (byte) ((u >> 4) << ((r % perByte) * planeBits));
+            // in parallel over runs of 8 rows, which write their own bytes of both planes
+            java.util.stream.IntStream.range(0, rows / 8).parallel().forEach(run -> {
+                for (int r = run * 8; r < run * 8 + 8; r++) {
+                    int lowAt = r / 2 * cols;
+                    int highAt = r / perByte * cols;
+                    int lowShift = (r & 1) * 4;
+                    int highShift = (r % perByte) * planeBits;
+                    for (int c = 0, at = r * cols; c < cols; c++, at++) {
+                        int u = data[at] + half;
+                        low[lowAt + c] |= (byte) ((u & 15) << lowShift);
+                        high[highAt + c] |= (byte) ((u >> 4) << highShift);
+                    }
                 }
-            }
+            });
             levels = uploadBytes(low);
             hi = uploadBytes(high);
-        } else if (PACKED_CODEBOOK && !matrix.nibbles() && rows % 2 == 0 && codebook(matrix.data()) != null) {
+        } else if (PACKED_CODEBOOK && !matrix.nibbles() && rows % 2 == 0
+                && (table = codebook(matrix.data())) != null) {
             // at most 16 distinct levels (IQ4_NL, IQ4_XS, MXFP4): a 4-bit index each into a table
-            byte[] table = codebook(matrix.data());
             int[] index = new int[256];
             for (int i = 0; i < table.length; i++) {
                 index[table[i] & 0xFF] = i;
             }
             byte[] data = matrix.data();
             byte[] packed = new byte[rows / 2 * cols];
-            for (int r = 0; r < rows; r++) {
+            // in parallel over row pairs, each filling its own bytes
+            java.util.stream.IntStream.range(0, rows / 2).parallel().forEach(pair -> {
+                int even = 2 * pair * cols;
+                int odd = even + cols;
+                int at = pair * cols;
                 for (int c = 0; c < cols; c++) {
-                    packed[r / 2 * cols + c] |= (byte) (index[data[r * cols + c] & 0xFF] << ((r & 1) * 4));
+                    packed[at + c] = (byte) (index[data[even + c] & 0xFF] | index[data[odd + c] & 0xFF] << 4);
                 }
-            }
+            });
             levels = uploadBytes(packed);
             hi = uploadBytes(java.util.Arrays.copyOf(table, 16));
             flags |= Packed.CODEBOOK;
@@ -1805,20 +1817,36 @@ public final class VulkanBackend implements Backend {
 
     /** @return the distinct levels in increasing order if there are at most 16, else null */
     private static byte[] codebook(byte[] levels) {
-        boolean[] seen = new boolean[256];
-        int count = 0;
-        for (byte b : levels) {
-            if (!seen[b & 0xFF]) {
-                seen[b & 0xFF] = true;
-                if (++count > 16) {
-                    return null;
-                }
-            }
+        // the levels seen, as a 256-bit set, gathered in parallel over chunks; a chunk with more
+        // than 16 on its own (an 8-bit format) stops the others early
+        int chunk = 1 << 20;
+        java.util.concurrent.atomic.AtomicBoolean tooMany = new java.util.concurrent.atomic.AtomicBoolean();
+        long[] seen = java.util.stream.IntStream.range(0, (int) Math.ceilDiv((long) levels.length, chunk)).parallel()
+                .mapToObj(part -> {
+                    long[] bits = new long[4];
+                    int count = 0;
+                    for (int i = part * chunk, end = Math.min(levels.length, i + chunk); i < end; i++) {
+                        int v = levels[i] & 0xFF;
+                        long bit = 1L << v;
+                        if ((bits[v >> 6] & bit) == 0) {
+                            bits[v >> 6] |= bit;
+                            if (++count > 16 || tooMany.get()) {
+                                tooMany.set(true);
+                                break;
+                            }
+                        }
+                    }
+                    return bits;
+                })
+                .reduce(new long[4], (a, b) -> new long[] {a[0] | b[0], a[1] | b[1], a[2] | b[2], a[3] | b[3]});
+        int count = Long.bitCount(seen[0]) + Long.bitCount(seen[1]) + Long.bitCount(seen[2]) + Long.bitCount(seen[3]);
+        if (tooMany.get() || count > 16) {
+            return null;
         }
         byte[] table = new byte[count];
         int at = 0;
         for (int v = -128; v < 128; v++) {
-            if (seen[v & 0xFF]) {
+            if ((seen[(v & 0xFF) >> 6] & 1L << v) != 0) {
                 table[at++] = (byte) v;
             }
         }

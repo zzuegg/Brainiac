@@ -526,7 +526,8 @@ public final class Var {
 
     private static Var op(Tensor out, Var[] inputs, Backward backward, Higher higher) {
         if (NO_GRAD.get()) {
-            return checked(new Var(out, false, NO_INPUTS, null, null));
+            // no graph: anomaly detection still needs the inputs to tell where NaN came from
+            return checked(new Var(out, false, ANOMALIES.get() ? inputs : NO_INPUTS, null, null));
         }
         for (Var in : inputs) {
             if (in.requiresGrad) {

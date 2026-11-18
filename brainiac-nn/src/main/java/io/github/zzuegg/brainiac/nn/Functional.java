@@ -135,6 +135,15 @@ public final class Functional {
         int k = g.kernelSize();
         int cg = c / groups;
         int fg = f / groups;
+        if (r == 2 && groups == 1 && (long) p * n * c * k > MAX_COLUMNS
+                && (!Var.gradEnabled()
+                        || !(x.requiresGrad() || weight.requiresGrad() || (bias != null && bias.requiresGrad())))) {
+            // inference on a large image (constants, or parameters inside Var.noGrad): unroll a band
+            // of output rows at a time
+            Tensor w = weight.value().reshape(f, c * k).transpose();
+            Tensor y = bandedConv2d(x.value(), w, g);
+            return Var.of(bias == null ? y : y.add(bias.value().reshape(f, 1, 1)));
+        }
         Var cols = x.im2col(g, 0f);
         Var y;
         if (groups == 1) {
@@ -147,6 +156,44 @@ public final class Functional {
         int[] outDims = imageDims(n, f, g.positions());
         y = y.reshape(n, p, f).permute(0, 2, 1).reshape(outDims);
         return bias == null ? y : y.add(bias.reshape(channelShape(f, r)));
+    }
+
+    /**
+     * The most values a convolution without gradients unrolls at once; larger images are
+     * convolved in bands of output rows, so that large images fit in device memory.
+     */
+    private static final long MAX_COLUMNS = Long.getLong("brainiac.conv.maxColumns", 1L << 27);
+
+    /** A 2-d convolution as bands of output rows, each unrolled and multiplied by {@code w [c * k, f]}. */
+    private static Tensor bandedConv2d(Tensor x, Tensor w, ConvGeometry g) {
+        int n = g.batch();
+        int c = g.channels();
+        int f = w.shape().dim(1);
+        int h = g.image()[0];
+        int[] kernel = g.kernel();
+        int[] stride = g.stride();
+        int[] dilation = g.dilation();
+        int pad = g.padBefore()[0];
+        int ho = g.positions()[0];
+        int wo = g.positions()[1];
+        long perRow = (long) n * wo * c * g.kernelSize();
+        int band = (int) Math.max(1, Math.min(ho, MAX_COLUMNS / perRow));
+        List<Tensor> parts = new ArrayList<>();
+        for (int y0 = 0; y0 < ho; y0 += band) {
+            int y1 = Math.min(ho, y0 + band);
+            int first = y0 * stride[0] - pad;
+            int last = (y1 - 1) * stride[0] - pad + dilation[0] * (kernel[0] - 1) + 1;
+            int a = Math.max(0, first);
+            int e = Math.min(h, last);
+            Tensor part = a == 0 && e == h ? x : x.slice(2, a, e);
+            ConvGeometry rows = new ConvGeometry(n, c, new int[] {e - a, g.image()[1]}, kernel, stride,
+                    new int[] {a - first, g.padBefore()[1]}, dilation, new int[] {y1 - y0, wo});
+            Tensor y = part.im2col(rows, 0f).matmul(w).reshape(n, (y1 - y0) * wo, f).transpose()
+                    .reshape(n, f, y1 - y0, wo);
+            Tensor.evaluate(List.of(y));
+            parts.add(y);
+        }
+        return parts.size() == 1 ? parts.get(0) : Tensor.concat(2, parts.toArray(Tensor[]::new));
     }
 
     /**

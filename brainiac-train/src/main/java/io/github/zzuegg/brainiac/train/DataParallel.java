@@ -18,7 +18,9 @@ import java.util.concurrent.Future;
  * among the devices, each computes the loss and gradients of its share on its own copy of
  * the parameters, the gradients are averaged on the host (weighted by share) and one
  * optimizer step updates the parameters, which every copy then takes again. The result
- * equals a step on the whole batch, for a loss that is a mean over rows.
+ * equals a step on the whole batch, for a loss that is a mean over rows. Between different
+ * devices the gradients are summed with {@link Tensor#sumAcross}, which CUDA GPUs do directly
+ * with NCCL; when a device repeats they are averaged on the host.
  */
 public final class DataParallel implements AutoCloseable {
 
@@ -83,6 +85,9 @@ public final class DataParallel implements AutoCloseable {
         List<Future<float[]>> work = new ArrayList<>();
         List<List<Tensor>> grads = new ArrayList<>();
         int[] counts = new int[n];
+        // different devices sum the gradients among themselves (NCCL between CUDA GPUs) with
+        // Tensor.sumAcross; a device that repeats sends them to the host
+        boolean across = n > 1 && new java.util.HashSet<>(devices.subList(0, n)).size() == n;
         for (int i = 0; i < n; i++) {
             int from = (int) ((long) rows * i / n);
             int to = (int) ((long) rows * (i + 1) / n);
@@ -93,6 +98,7 @@ public final class DataParallel implements AutoCloseable {
             grads.add(mine);
             Tensor x = inputs.slice(0, from, to);
             Tensor y = targets.slice(0, from, to);
+            float weight = (float) counts[i] / rows;
             work.add(pool.submit(() -> {
                 for (int k = 0; k < replica.size(); k++) {
                     replica.get(k).assign(parameters.get(k).value().to(d));
@@ -101,7 +107,13 @@ public final class DataParallel implements AutoCloseable {
                 Var l = loss.loss(replica, x.to(d), y.to(d));
                 l.backward();
                 for (Var p : replica) {
-                    mine.add(p.grad() == null ? null : p.grad().to(DType.FLOAT32).to(Device.cpu()));
+                    if (p.grad() == null) {
+                        mine.add(null);
+                    } else if (across) {
+                        mine.add(p.grad().mul(weight));   // stays on the device
+                    } else {
+                        mine.add(p.grad().to(DType.FLOAT32).to(Device.cpu()));
+                    }
                 }
                 float value = l.value().item();
                 l.release();
@@ -118,6 +130,34 @@ public final class DataParallel implements AutoCloseable {
             throw new IllegalStateException("interrupted", e);
         } catch (ExecutionException e) {
             throw e.getCause() instanceof RuntimeException r ? r : new IllegalStateException(e.getCause());
+        }
+        if (across) {
+            for (int k = 0; k < parameters.size(); k++) {
+                Var p = parameters.get(k);
+                p.zeroGrad();
+                List<Tensor> parts = new ArrayList<>();
+                Tensor any = null;
+                for (int i = 0; i < n; i++) {
+                    any = any != null ? any : grads.get(i).get(k);
+                }
+                if (any == null) {
+                    continue;
+                }
+                for (int i = 0; i < n; i++) {
+                    Tensor g = grads.get(i).get(k);
+                    parts.add(g != null ? g : Tensor.zeros(any.shape(), any.dtype(), devices.get(i)));
+                }
+                List<Tensor> sums = Tensor.sumAcross(parts);
+                Tensor sum = sums.get(0);
+                for (int i = 0; i < n; i++) {
+                    if (devices.get(i).equals(p.value().device())) {
+                        sum = sums.get(i);
+                    }
+                }
+                p.setGrad(sum.to(p.value().device()).to(p.value().dtype()));
+            }
+            optimizer.step(parameters);
+            return (float) (total / rows);
         }
         for (int k = 0; k < parameters.size(); k++) {
             Tensor sum = null;

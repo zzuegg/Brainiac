@@ -30,12 +30,14 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-tensor` | Shapes, tensors (float32, float64, float16, bfloat16), tensor math, and the `Backend` SPI |
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
 | `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
+| `brainiac-backend-cuda` | Optional NVIDIA GPU backend: the CUDA driver, NVRTC and cuBLAS called through the Foreign Function and Memory API (no dependencies) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers (Adam/AdamW, Lion, Adafactor, Muon, parameter groups), training loops, checkpoints, EMA, metrics, listeners, `Plasticity` |
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
+| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -43,6 +45,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-benchmarks` | Benchmark harness for kernels and training speed |
 | `brainiac-experiments` | Experimental research ideas (memory, context, new architectures, learning rules, evolution, generative toys, reasoning, agents, unconventional computing, interpretability). Untested; its API may change at any time |
 | `brainiac-studio` | Local web app: chat, generation, a shape-checked model builder, training, and agents that use the studio's tools. JDK HTTP server, no dependencies |
+| `brainiac-cloud` | Renting GPUs on Vast.ai: an API client and a launcher that runs jobs or a studio worker there (see `cloud/vast/README.md`) |
 
 Shared build configuration lives in `build-logic/` as Gradle convention plugins
 (`brainiac.java-library`, `brainiac.java-application`). Each module has a
@@ -491,6 +494,81 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `model.saveGguf(file, tok, true)` writes a GGUF file (float16 matrices) that llama.cpp and
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
+
+## Image generation: Stable Diffusion
+
+`brainiac-diffusion` runs pretrained Stable Diffusion 1.x, 2.x and XL models. It loads a
+Hugging Face diffusers folder (`model_index.json` with `unet`, `vae`, `text_encoder` and
+`tokenizer` folders) or a single `.safetensors` checkpoint as image tools share them:
+
+```java
+try (StableDiffusion sd = StableDiffusion.load(Path.of("models/stable-diffusion-xl-base-1.0"),
+        Device.best(), DType.FLOAT16)) {
+    ImageRequest request = ImageRequest.of("a red fox in snow, golden hour")
+            .negativePrompt("blurry")
+            .size(1152, 896)           // or sd.size(AspectRatio.LANDSCAPE_4_3)
+            .steps(30)
+            .seed(7)
+            .build();
+    List<GeneratedImage> images = sd.generate(request, Progress.withPreviews(5, (step, total, preview) -> {
+        System.out.println(step + " / " + total);
+        return true;                   // false stops the run (CancellationException)
+    }));
+    Files.write(Path.of("fox.png"), images.get(0).png());
+}
+```
+
+- `StableDiffusion.detect(path)` says whether a folder or file is SD1, SD2 or SDXL without loading it.
+- Samplers: Euler, Euler ancestral, DPM++ 2M, and the Karras-spaced variants (DPM++ 2M Karras is the default).
+- Classifier-free guidance batches the prompt and negative prompt together; guidance 1 or less skips it.
+- The UNet and text encoders run in the type you load them in (float16 on a GPU); the VAE runs
+  in float32. Large convolutions are unrolled in bands of rows so a 1024 x 1024 decode stays
+  within GPU memory.
+- Previews are a cheap linear map of the latents, not a VAE decode.
+- Single-file checkpoints carry no tokenizer: put `vocab.json` and `merges.txt` of
+  `openai/clip-vit-large-patch14` in a `tokenizer` folder next to the file or in
+  `~/.cache/brainiac/clip-tokenizer` (`StableDiffusion.downloadTokenizer` fetches them).
+
+Each part was checked against diffusers and transformers on small random models: the CLIP
+encoders, both UNet layouts, the VAE, the tokenizer, the noise schedules and whole runs of
+the SD 1.x and SDXL pipelines (`brainiac-diffusion/src/test/python` makes the fixtures).
+
+```sh
+./gradlew :brainiac-examples:run --args="image models/stable-diffusion-v1-5 'a lighthouse at dusk' --steps 25"
+```
+
+### The same layers in your own networks
+
+Stable Diffusion runs on ordinary brainiac-nn layers in `io.github.zzuegg.brainiac.nn.diffusion`.
+They train, save and load like every other layer, so you can build your own latent diffusion
+model from them, or fine-tune a pretrained one:
+
+| Layer | What |
+| --- | --- |
+| `TimestepEmbedding` | sinusoids of a step (or any number) through two dense layers |
+| `ResnetBlock` | group norm, SiLU, 3x3 convolutions, plus an optional time embedding |
+| `SpatialTransformer` | transformer blocks over an image's pixels, cross-attending to a context (GEGLU feed-forward) |
+| `ImageAttention` | single- or multi-head self-attention over pixels |
+| `UNet` | the full denoising UNet; also a `Denoiser` for `Diffusion.loss` |
+| `AutoencoderKL` | the VAE: `encode`, `decode`, `toLatents`, `loss` (reconstruction + KL) |
+| `ClipTextEncoder` | CLIP's causal text transformer: last and penultimate layers, pooled embedding |
+
+```java
+UNet unet = new UNet(UNet.Settings.of(4, 4, new int[] {64, 128, 256}, 512), new SplittableRandom(1));
+Diffusion diffusion = new Diffusion(NoiseSchedule.scaledLinear(1000, 0.00085, 0.012), Diffusion.Prediction.NOISE);
+Denoiser model = unet.conditional().given(textEmbeddings);   // [batch, tokens, 512]
+Var loss = diffusion.loss(model, latents, random);
+
+// sample in 25 steps with DPM-Solver++ instead of 1000 DDPM steps
+double[] sigmas = SigmaSampler.karras(diffusion.schedule(), 25);
+Tensor start = Tensor.normal(shape, 0, 1, random).mul((float) sigmas[0]);
+Tensor images = SigmaSampler.sample(SigmaSampler.model(model, diffusion.schedule(), Diffusion.Prediction.NOISE),
+        start, sigmas, SigmaSampler.Method.DPM_PP_2M, random, SigmaSampler.Listener.NONE);
+```
+
+Inference runs inside `Var.noGrad(...)`, which records no graph: intermediate values are freed
+right away, and attention uses the fused kernel. `Tensor.withoutValues(...)` builds a model
+without allocating initial weights, for loading pretrained ones into it.
 
 ## Reinforcement learning
 
@@ -1066,6 +1144,37 @@ On an RX 9070 XT: the MLP trains 2 epochs of MNIST in 1.7 s; a 4096 x 4096 matmu
 transformer on Shakespeare trains 3 epochs in 10.7 s; Qwen2.5-0.5B loads in 0.7 s and generates about 165 tokens/s
 in float16. (An OpenCL backend existed until it was retired in favour of this one, which
 was faster on every measure.)
+
+`brainiac-backend-cuda` is a second GPU backend, for NVIDIA cards only. It calls NVIDIA's
+libraries directly through Java's Foreign Function and Memory API, with no JNI and no
+bindings library: the CUDA driver API (`nvcuda.dll`, `libcuda.so.1`, part of the display
+driver), NVRTC to compile its kernels (`kernels.cu`) for the card at first use (cached in
+`~/.cache/brainiac/cuda`), and cuBLAS for matrix products when it is installed (otherwise a
+kernel of its own). NVRTC and cuBLAS come with the CUDA toolkit 11.2 or later, or NVIDIA's
+`cuda` runtime container images; they are looked for on the `PATH`/`LD_LIBRARY_PATH`, in
+`CUDA_PATH`/`CUDA_HOME` and in the usual install folders. Run with
+`--enable-native-access=io.github.zzuegg.brainiac.backend.cuda` (or `ALL-UNNAMED`). With both
+backends on an NVIDIA card, `Device.gpu()` and `Device.best()` take Vulkan unless
+`-Dbrainiac.gpu=cuda`; `-PtestDevice=cuda` runs the model tests there. It covers every required
+operation plus batched products, convolution windows, gather and scatter, RMSNorm, fused
+attention (forward, backward and with a bias, heads up to 256, long key ranges split across
+the device and combined), packed weights kept packed on the card (products of up to 16 rows read
+the levels directly), float16/bfloat16 products of a few rows in a kernel of its own, and
+Fourier transforms of power-of-two lengths up to 2048. Each GPU of the machine is a device
+(`cuda`, `cuda:1`, ...); `DataParallel` over several of them sums the gradients with
+`Tensor.sumAcross`, which uses NCCL's all-reduce (`libnccl.so.2`, Linux) between CUDA GPUs and
+the host otherwise. System properties:
+`brainiac.cuda.device` (index), `brainiac.cuda.memory` (MB budget), `brainiac.cuda.debug`
+(`true` waits after every kernel, copy and product so an error names the operation that
+caused it, and compiles with line information for `compute-sanitizer`), `brainiac.cuda.critical`
+(`true` links the per-operation driver and cuBLAS calls as critical downcalls, which cost
+less per call), `brainiac.cuda.tf32` (`true` lets float32 products use TensorFloat-32),
+`brainiac.cuda.driver`/`nvrtc`/`cublas` (library files; `cublas=none` turns cuBLAS off),
+`brainiac.cuda.cache`, `brainiac.cuda.statistics`, `brainiac.cuda.devices` (`one`: only the first
+GPU), `brainiac.cuda.nccl` (library file, `none` to sum on the host), `brainiac.cuda.fusedAttention`
+and `brainiac.cuda.fewRows` (`false` turns those kernels off). `CudaBackend.status()` names the
+device and the libraries found, or why there is none; without an NVIDIA driver the backend
+reports itself unavailable and its device tests are skipped (`-Pbench` prints product speeds).
 
 Tensors and models come in four number formats:
 

@@ -122,13 +122,17 @@ public final class PackedMatrix implements PackedStorage {
         boolean nibbles = bits <= 4 && group % 2 == 0;
         byte[] data;
         if (nibbles) {
-            data = new byte[rows / 2 * cols];
-            for (int r = 0; r < rows; r += 2) {
-                int base = r / 2 * cols;
+            byte[] packed = new byte[rows / 2 * cols];
+            // in parallel over row pairs: a model's matrices hold billions of levels
+            java.util.stream.IntStream.range(0, rows / 2).parallel().forEach(pair -> {
+                int even = 2 * pair * cols;
+                int odd = even + cols;
+                int base = pair * cols;
                 for (int c = 0; c < cols; c++) {
-                    data[base + c] = (byte) ((levels[r * cols + c] & 0xF) | (levels[(r + 1) * cols + c] << 4));
+                    packed[base + c] = (byte) ((levels[even + c] & 0xF) | (levels[odd + c] << 4));
                 }
-            }
+            });
+            data = packed;
         } else {
             data = levels.clone();
         }

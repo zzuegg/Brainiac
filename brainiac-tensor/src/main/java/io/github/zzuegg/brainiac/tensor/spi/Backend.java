@@ -46,6 +46,32 @@ public interface Backend {
     }
 
     /**
+     * Further devices this backend found, each with a backend of its own, such as the other
+     * GPUs of a machine with several. Called once, after {@link #isAvailable()} returned
+     * {@code true}; each becomes a {@link Device} after this one. The default has none.
+     *
+     * @return the other devices' backends
+     */
+    default java.util.List<Backend> siblings() {
+        return java.util.List.of();
+    }
+
+    /**
+     * Sums storages of one size and type that live on different devices, giving each device
+     * the sum, for data-parallel training (an all-reduce, such as NCCL's). Called on the first
+     * backend of {@code group}; the default returns {@code null}, and the caller then sums on
+     * the host.
+     *
+     * @param group the backends, all different devices, this one first
+     * @param storages one storage per backend, in the same order; not changed
+     * @return a new storage per backend, in the same order, holding the sum; or {@code null}
+     *         if this backend cannot sum across these devices
+     */
+    default java.util.List<Storage> allReduceSum(java.util.List<Backend> group, java.util.List<Storage> storages) {
+        return null;
+    }
+
+    /**
      * Allocates zero-filled storage.
      *
      * @param size the number of floats
