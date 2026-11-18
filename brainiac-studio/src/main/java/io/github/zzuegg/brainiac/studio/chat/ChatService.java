@@ -428,6 +428,19 @@ public final class ChatService {
 
     private LocalServing serving;
     private LocalQuantizer quantizer;
+    private LocalMerger merger;
+
+    /**
+     * Returns what merges this PC's chat models into new ones.
+     *
+     * @return the merger
+     */
+    public synchronized LocalMerger merger() {
+        if (merger == null) {
+            merger = new LocalMerger(local());
+        }
+        return merger;
+    }
     private LocalFineTune fineTune;
     private LocalEvaluation evaluation;
 
