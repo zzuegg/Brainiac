@@ -276,7 +276,8 @@ public final class SeriesClassifiers {
         double[][] qTrain = Quant.features(tr.series(), quantSettings(seed).maxDepth());
         double[][] qTest = Quant.features(te, quantSettings(seed).maxDepth());
         strat.put("asymmetric stack", SeriesEnsembles.accuracy(SeriesEnsembles.asymmetricStack(qTrain, qTest,
-                List.<double[][]>of(oof.get(0)), List.<double[][]>of(test.get(0)), tr.labels(), k, SeriesEnsembles.Meta.EXTRA_TREES, seed),
+                List.<double[][]>of(oof.get(0)), List.<double[][]>of(test.get(0)), tr.labels(), k,
+                SeriesEnsembles.Meta.EXTRA_TREES, seed),
                 truth));
         Hydra h = new Hydra(tr.length(), 1, 16, 8, Hydra.Counting.SOFT_MAX_HARD_MIN, true, seed);
         double[][] hTrain = h.fitTransform(RandomConvolutionFeatures.univariate(tr.series()));

@@ -15,7 +15,8 @@ import java.util.List;
  *   <li>f-divergence balls around the empirical distribution, as minibatch reweightings with
  *       closed-form (or one-dimensional) duals, following the large-scale estimators of Levy,
  *       Carmon, Duchi and Sidford (NeurIPS 2020, <a href="https://arxiv.org/abs/2010.05893">arXiv:2010.05893</a>)
- *       and Duchi and Namkoong (Annals of Statistics 2021, <a href="https://arxiv.org/abs/1810.08750">arXiv:1810.08750</a>):
+ *       and Duchi and Namkoong (Annals of Statistics 2021,
+ *       <a href="https://arxiv.org/abs/1810.08750">arXiv:1810.08750</a>):
  *       <ul>
  *         <li>{@link Kind#CVAR}: the average of the worst {@code alpha} share of losses (the
  *             conditional value at risk; weight {@code 1 / (alpha n)} on the top losses);</li>

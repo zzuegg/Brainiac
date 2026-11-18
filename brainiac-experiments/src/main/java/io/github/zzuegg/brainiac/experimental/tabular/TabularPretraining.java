@@ -21,7 +21,8 @@ import java.util.SplittableRandom;
  *       random share of its features with values drawn from their marginals (another row's
  *       value); the encoder feeds a mask head (which features were replaced, binary
  *       cross-entropy) and a value head (the original row, squared error);</li>
- *   <li>{@link Objective#SCARF} (Bahri et al., ICLR 2022, <a href="https://arxiv.org/abs/2106.15147">arXiv:2106.15147</a>):
+ *   <li>{@link Objective#SCARF} (Bahri et al., ICLR 2022,
+ *       <a href="https://arxiv.org/abs/2106.15147">arXiv:2106.15147</a>):
  *       InfoNCE ({@link SelfSupervisedLosses#ntXent}) between the projections of a row and its
  *       corrupted view;</li>
  *   <li>{@link Objective#SUBTAB} (Ucar, Hajiramezanali and Edwards, NeurIPS 2021): the features

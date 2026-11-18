@@ -112,7 +112,8 @@ public final class StructuredCorruption implements TabularPretraining.Corruptor 
                 profile[a][b] = a == b ? maxRow(mi[a]) : mi[a][b];
             }
         }
-        int[] g = AgglomerativeClustering.cluster(profile, Math.min(groups, d), AgglomerativeClustering.Linkage.AVERAGE);
+        int[] g = AgglomerativeClustering.cluster(profile, Math.min(groups, d),
+                AgglomerativeClustering.Linkage.AVERAGE);
         StructuredCorruption c = new StructuredCorruption(rows, g, Math.min(groups, d), rate, replacement, mi);
         if (replacement == Replacement.GROUP_CVAE) {
             c.trainCvae(rows, 200, seed + 1);
