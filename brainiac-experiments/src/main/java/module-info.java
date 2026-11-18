@@ -30,6 +30,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
     exports io.github.zzuegg.brainiac.experimental.deeprl;
+    exports io.github.zzuegg.brainiac.experimental.design;
     exports io.github.zzuegg.brainiac.experimental.diffopt;
     exports io.github.zzuegg.brainiac.experimental.discovery;
     exports io.github.zzuegg.brainiac.experimental.edge;
@@ -70,12 +71,14 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.planning;
     exports io.github.zzuegg.brainiac.experimental.privacy;
     exports io.github.zzuegg.brainiac.experimental.quantum;
+    exports io.github.zzuegg.brainiac.experimental.quadrature;
     exports io.github.zzuegg.brainiac.experimental.randla;
     exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.restore;
     exports io.github.zzuegg.brainiac.experimental.rl;
     exports io.github.zzuegg.brainiac.experimental.robust;
     exports io.github.zzuegg.brainiac.experimental.science;
+    exports io.github.zzuegg.brainiac.experimental.sbi;
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.security;
     exports io.github.zzuegg.brainiac.experimental.semisup;
@@ -128,6 +131,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.generative;
     exports io.github.zzuegg.brainiac.experiments.graphs;
     exports io.github.zzuegg.brainiac.experiments.imaging;
+    exports io.github.zzuegg.brainiac.experiments.inference;
     exports io.github.zzuegg.brainiac.experiments.interp;
     exports io.github.zzuegg.brainiac.experiments.kernels;
     exports io.github.zzuegg.brainiac.experiments.labels;
