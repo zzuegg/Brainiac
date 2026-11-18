@@ -357,7 +357,9 @@ public final class CpuBackend implements Backend {
             float[] x = data(a);
             float[] z = data(out);
             int chunks = Math.ceilDiv(n, BlockKernels.CHUNK);
-            Parallel.forRange(chunks, 2L * (m + 4) * k * BlockKernels.CHUNK, (from, to) -> {
+            // decoding a weight costs about as much as 16 multiply-adds: a single row's product
+            // (decoding) is worth splitting over every core
+            Parallel.forRange(chunks, 2L * (m + 16) * k * BlockKernels.CHUNK, (from, to) -> {
                 for (int c = from; c < to; c++) {
                     int j0 = c * BlockKernels.CHUNK;
                     BlockKernels.matmul(x, blocks, z, m, j0, Math.min(n, j0 + BlockKernels.CHUNK), SIMD);

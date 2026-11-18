@@ -6,6 +6,7 @@ import java.nio.ByteOrder;
 
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
+import jdk.incubator.vector.IntVector;
 import jdk.incubator.vector.VectorOperators;
 import jdk.incubator.vector.VectorSpecies;
 
@@ -14,17 +15,18 @@ import jdk.incubator.vector.VectorSpecies;
  * module is present.
  *
  * <p>The formats of most large models (MXFP4, Q8_0, Q4_K, Q6_K, IQ4_XS) are multiplied straight
- * from their blocks, without decoding a row into floats first: levels are loaded 16 bytes
- * at a time, 4-bit codes split into their two halves and, for the non-linear formats,
- * looked up in a 16-entry table with one byte shuffle, widened to floats and multiplied
- * by the inputs; each block's (or sub-block's) sum is scaled once. Q4_K's minimums are folded in
- * through each sub-block's sum of inputs. Needs 8 float lanes (256-bit vectors).
+ * from their blocks, without decoding a row into floats first: codes are loaded 8 bytes at
+ * a time and widened to 8 floats (the non-linear formats: 16 bytes, looked up in a
+ * 16-entry table with one byte shuffle), multiplied by the inputs, and each block's (or
+ * sub-block's) sum is scaled once. Q4_K's minimums are folded in through each sub-block's
+ * sum of inputs. Needs 8 float lanes (256-bit vectors).
  */
 final class VectorBlockKernels {
 
     private static final VectorSpecies<Float> FLOATS = FloatVector.SPECIES_PREFERRED;
     private static final int LANES = FLOATS.length();
     private static final VectorSpecies<Float> F8 = FloatVector.SPECIES_256;
+    private static final VectorSpecies<Byte> B8 = ByteVector.SPECIES_64;
     private static final VectorSpecies<Byte> B16 = ByteVector.SPECIES_128;
     private static final ValueLayout.OfShort SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
@@ -35,9 +37,6 @@ final class VectorBlockKernels {
     private static final byte[] MXFP4 = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
     /** IQ4_NL's and IQ4_XS's levels (llama.cpp's kvalues_iq4nl). */
     private static final byte[] IQ4 = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
-
-    /** Q6_K's high two bits {@code i} as {@code 16 i - 32}, repeated to fill 16 lanes. */
-    private static final byte[] Q6_HIGH = {-32, -16, 0, 16, -32, -16, 0, 16, -32, -16, 0, 16, -32, -16, 0, 16};
 
     private VectorBlockKernels() {
     }
@@ -81,6 +80,15 @@ final class VectorBlockKernels {
 
     private static FloatVector lane(ByteVector v, int part) {
         return (FloatVector) v.convertShape(VectorOperators.B2F, F8, part);
+    }
+
+    /**
+     * Eight bytes as eight floats. Converted between shapes of the same lane count: measured,
+     * taking a part of a wider vector ({@link #lane}) compiled to slow fallback code wherever
+     * the method around it grew large, and a whole kernel ran 4 to 5 times slower.
+     */
+    private static FloatVector f8(ByteVector v) {
+        return (FloatVector) v.convertShape(VectorOperators.B2F, F8, 0);
     }
 
     private static FloatVector xs(float[] x, int at) {
@@ -127,13 +135,11 @@ final class VectorBlockKernels {
         for (int b = 0; b < k / 32; b++) {
             long o = row + 34L * b;
             float d = f16(m, o);
-            ByteVector q0 = ByteVector.fromMemorySegment(B16, m, o + 2, LE);
-            ByteVector q1 = ByteVector.fromMemorySegment(B16, m, o + 18, LE);
             int xo = at + 32 * b;
-            FloatVector s = lane(q0, 0).mul(xs(x, xo));
-            s = lane(q0, 1).fma(xs(x, xo + 8), s);
-            s = lane(q1, 0).fma(xs(x, xo + 16), s);
-            s = lane(q1, 1).fma(xs(x, xo + 24), s);
+            FloatVector s = f8(ByteVector.fromMemorySegment(B8, m, o + 2, LE)).mul(xs(x, xo));
+            s = f8(ByteVector.fromMemorySegment(B8, m, o + 10, LE)).fma(xs(x, xo + 8), s);
+            s = f8(ByteVector.fromMemorySegment(B8, m, o + 18, LE)).fma(xs(x, xo + 16), s);
+            s = f8(ByteVector.fromMemorySegment(B8, m, o + 26, LE)).fma(xs(x, xo + 24), s);
             acc = s.fma(FloatVector.broadcast(F8, d), acc);
         }
         return acc.reduceLanes(VectorOperators.ADD);
@@ -157,110 +163,78 @@ final class VectorBlockKernels {
     }
 
     private static float q4k(MemorySegment m, long row, float[] x, int at, int k) {
-        float sum = 0;
+        FloatVector acc = FloatVector.zero(F8);
+        FloatVector macc = FloatVector.zero(F8);
         for (int b = 0; b < k / 256; b++) {
             long o = row + 144L * b;
             float d = f16(m, o);
             float min = f16(m, o + 2);
-            // the 12 bytes of 6-bit scales and minimums, read at once
             long lo = m.get(LONG, o + 4);
             int hi = m.get(INT, o + 12);
-            for (int j = 0; j < 4; j++) {
-                int is = 2 * j;
-                int s0;
-                int m0;
-                int s1;
-                int m1;
-                if (is < 4) {
-                    s0 = sb(lo, hi, is) & 63;
-                    m0 = sb(lo, hi, is + 4) & 63;
-                    s1 = sb(lo, hi, is + 1) & 63;
-                    m1 = sb(lo, hi, is + 5) & 63;
-                } else {
-                    s0 = (sb(lo, hi, is + 4) & 0xF) | ((sb(lo, hi, is - 4) >>> 6) << 4);
-                    m0 = (sb(lo, hi, is + 4) >>> 4) | ((sb(lo, hi, is) >>> 6) << 4);
-                    s1 = (sb(lo, hi, is + 5) & 0xF) | ((sb(lo, hi, is - 3) >>> 6) << 4);
-                    m1 = (sb(lo, hi, is + 5) >>> 4) | ((sb(lo, hi, is + 1) >>> 6) << 4);
-                }
-                sum += q4kChunk(m, o + 16 + 32L * j, x, at + 256 * b + 64 * j, d * s0, -(min * m0), d * s1,
-                        -(min * m1));
+            for (int ib = 0; ib < 8; ib++) {
+                int sm = q4kScale(lo, hi, ib);
+                long qo = o + 16 + 32L * (ib >>> 1);
+                int shift = 4 * (ib & 1);
+                int xo = at + 256 * b + 32 * ib;
+                FloatVector x0 = xs(x, xo);
+                FloatVector x1 = xs(x, xo + 8);
+                FloatVector x2 = xs(x, xo + 16);
+                FloatVector x3 = xs(x, xo + 24);
+                FloatVector v = f8(nib8(m, qo, shift)).mul(x0);
+                v = f8(nib8(m, qo + 8, shift)).fma(x1, v);
+                v = f8(nib8(m, qo + 16, shift)).fma(x2, v);
+                v = f8(nib8(m, qo + 24, shift)).fma(x3, v);
+                acc = v.fma(FloatVector.broadcast(F8, d * (sm & 63)), acc);
+                macc = x0.add(x1).add(x2.add(x3)).fma(FloatVector.broadcast(F8, min * (sm >>> 8)), macc);
             }
         }
-        return sum;
+        return acc.sub(macc).reduceLanes(VectorOperators.ADD);
     }
 
-    /**
-     * One 64-input piece of a Q4_K block: 32 bytes whose low codes weigh the first 32 inputs
-     * (scale {@code d0}, offset {@code o0}) and high codes the next 32. Kept apart and
-     * returning a float: measured, a whole block in one method with a vector running sum
-     * compiled to code several times slower.
-     */
-    private static float q4kChunk(MemorySegment m, long qo, float[] x, int xo, float d0, float o0, float d1,
-            float o1) {
-        ByteVector q0 = ByteVector.fromMemorySegment(B16, m, qo, LE);
-        ByteVector q1 = ByteVector.fromMemorySegment(B16, m, qo + 16, LE);
-        ByteVector a = q0.and((byte) 0xF);
-        ByteVector b = q1.and((byte) 0xF);
-        FloatVector x0 = xs(x, xo);
-        FloatVector x1 = xs(x, xo + 8);
-        FloatVector x2 = xs(x, xo + 16);
-        FloatVector x3 = xs(x, xo + 24);
-        FloatVector lo = lane(a, 0).mul(x0);
-        lo = lane(a, 1).fma(x1, lo);
-        lo = lane(b, 0).fma(x2, lo);
-        lo = lane(b, 1).fma(x3, lo);
-        FloatVector loInputs = x0.add(x1).add(x2.add(x3));
-        a = shr(q0, 4).and((byte) 0xF);
-        b = shr(q1, 4).and((byte) 0xF);
-        x0 = xs(x, xo + 32);
-        x1 = xs(x, xo + 40);
-        x2 = xs(x, xo + 48);
-        x3 = xs(x, xo + 56);
-        FloatVector hi = lane(a, 0).mul(x0);
-        hi = lane(a, 1).fma(x1, hi);
-        hi = lane(b, 0).fma(x2, hi);
-        hi = lane(b, 1).fma(x3, hi);
-        FloatVector hiInputs = x0.add(x1).add(x2.add(x3));
-        FloatVector sum = lo.mul(d0).add(hi.mul(d1)).add(loInputs.mul(o0)).add(hiInputs.mul(o1));
-        return sum.reduceLanes(VectorOperators.ADD);
+    /** The 4-bit codes at bit {@code shift} of 8 bytes. */
+    private static ByteVector nib8(MemorySegment m, long at, int shift) {
+        return ByteVector.fromMemorySegment(B8, m, at, LE).reinterpretAsInts().lanewise(VectorOperators.LSHR, shift)
+                .reinterpretAsBytes().and((byte) 0xF);
+    }
+
+    /** Q4_K sub-block {@code ib}'s 6-bit scale and minimum, from the block's 12 bytes of them: {@code s | m << 8}. */
+    private static int q4kScale(long lo, int hi, int ib) {
+        if (ib < 4) {
+            return (sb(lo, hi, ib) & 63) | (sb(lo, hi, ib + 4) & 63) << 8;
+        }
+        return ((sb(lo, hi, ib + 4) & 0xF) | ((sb(lo, hi, ib - 4) >>> 6) << 4))
+                | ((sb(lo, hi, ib + 4) >>> 4) | ((sb(lo, hi, ib) >>> 6) << 4)) << 8;
     }
 
     private static float q6k(MemorySegment m, long row, float[] x, int at, int k) {
-        float sum = 0;
+        FloatVector acc = FloatVector.zero(F8);
         for (int b = 0; b < k / 256; b++) {
             long o = row + 210L * b;
             float d = f16(m, o + 208);
-            for (int half = 0; half < 2; half++) {
-                long sc = o + 192 + 8L * half;
-                for (int c = 0; c < 2; c++) {
-                    // 16 positions l, each giving the values at l, l + 32, l + 64 and l + 96
-                    long ql = o + 64L * half + 16 * c;
-                    long qh = o + 128 + 32L * half + 16 * c;
-                    int xo = at + 256 * b + 128 * half + 16 * c;
-                    for (int g = 0; g < 4; g++) {
-                        sum += q6kGroup(m, ql + 32 * (g & 1), 4 * (g >> 1), qh, 2 * g, x, xo + 32 * g,
-                                d * m.get(ValueLayout.JAVA_BYTE, sc + 2 * g + c));
-                    }
-                }
+            for (int i = 0; i < 16; i++) {
+                // half (128 values), c (16 positions l), g: the values at l + 32 g
+                int half = i >>> 3;
+                int c = (i >>> 2) & 1;
+                int g = i & 3;
+                long ql = o + 64L * half + 16 * c + 32 * (g & 1);
+                long qh = o + 128 + 32L * half + 16 * c;
+                int xo = at + 256 * b + 128 * half + 16 * c + 32 * g;
+                float scale = d * m.get(ValueLayout.JAVA_BYTE, o + 192 + 8L * half + 2 * g + c);
+                FloatVector v = f8(q6k8(m, ql, 4 * (g >> 1), qh, 2 * g)).mul(xs(x, xo));
+                v = f8(q6k8(m, ql + 8, 4 * (g >> 1), qh + 8, 2 * g)).fma(xs(x, xo + 8), v);
+                acc = v.fma(FloatVector.broadcast(F8, scale), acc);
             }
         }
-        return sum;
+        return acc.reduceLanes(VectorOperators.ADD);
     }
 
-    /**
-     * 16 values of a Q6_K block: low four bits from {@code ql} shifted by {@code lowShift},
-     * high two from {@code qh} shifted by {@code highShift}, less 32, times {@code scale},
-     * times {@code x[xo, xo + 16)}. Small and returning a float, which compiled to the
-     * fastest code.
-     */
-    private static float q6kGroup(MemorySegment m, long ql, int lowShift, long qh, int highShift, float[] x, int xo,
-            float scale) {
-        ByteVector low = shr(ByteVector.fromMemorySegment(B16, m, ql, LE), lowShift).and((byte) 0xF);
-        ByteVector high = shr(ByteVector.fromMemorySegment(B16, m, qh, LE), highShift).and((byte) 3)
-                .selectFrom(ByteVector.fromArray(B16, Q6_HIGH, 0));
-        ByteVector v = low.add(high);
-        return lane(v, 0).mul(xs(x, xo)).add(lane(v, 1).mul(xs(x, xo + 8))).mul(scale)
-                .reduceLanes(VectorOperators.ADD);
+    /** 8 of Q6_K's values, {@code -32} to {@code 31}: 4 low bits at {@code lowShift}, 2 high at {@code highShift}. */
+    private static ByteVector q6k8(MemorySegment m, long ql, int lowShift, long qh, int highShift) {
+        IntVector low = ByteVector.fromMemorySegment(B8, m, ql, LE).reinterpretAsInts()
+                .lanewise(VectorOperators.LSHR, lowShift).and(0x0F0F0F0F);
+        IntVector high = ByteVector.fromMemorySegment(B8, m, qh, LE).reinterpretAsInts()
+                .lanewise(VectorOperators.LSHR, highShift).and(0x03030303).lanewise(VectorOperators.LSHL, 4);
+        return low.or(high).reinterpretAsBytes().sub((byte) 32);
     }
 
     /** As {@link BlockKernels#dot}, two vectors of running sums at a time. */
