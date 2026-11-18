@@ -330,7 +330,7 @@ public final class ChatService {
             folders.add(downloads);
         }
         LocalProvider local = new LocalProvider(folders, outputs.resolveSibling("local-models.txt"));
-        local.speakToo();
+        local.speakToo(outputs.resolveSibling("voices"));
         ps.add(local);
         ps.add(new AnthropicProvider(keys, bases.getOrDefault("anthropic", AnthropicProvider.BASE)));
         ps.add(new OpenAiProvider(keys, bases.getOrDefault("openai", Preset.OPENAI.base())));
@@ -764,6 +764,52 @@ public final class ChatService {
     }
 
     /**
+     * Keeps a voice made from a recording, for a local model that clones voices (F5-TTS). Without a
+     * transcript, the first transcribing model on this PC writes it down.
+     *
+     * @param model the model's key ({@code local/f5-tts})
+     * @param name the voice's name
+     * @param wav the recording, as WAV
+     * @param transcript what it says, or blank to have it written down
+     * @return the transcript used
+     * @throws IOException if it cannot be saved or written down
+     * @throws InterruptedException if interrupted
+     */
+    public String saveVoice(String model, String name, byte[] wav, String transcript) throws IOException, InterruptedException {
+        LocalSpeech speech = local().speech();
+        if (speech == null || model == null || !model.startsWith("local/")) {
+            throw new IllegalArgumentException("only a speech model on this PC takes a voice from a recording");
+        }
+        String text = transcript == null ? "" : transcript.strip();
+        if (text.isEmpty()) {
+            String ears = speech.firstTranscriber().orElseThrow(() -> new IllegalArgumentException(
+                    "say what is spoken in the recording, or put a Whisper model in a model folder to write it down"));
+            text = speech.transcribe(ears, wav, new LocalSpeech.Listening(null, false, false, ""), s -> { }, () -> false)
+                    .text().strip();
+            if (text.isEmpty()) {
+                throw new IllegalArgumentException("no speech was heard in the recording");
+            }
+        }
+        speech.saveVoice(model.substring("local/".length()), name, wav, text);
+        return text;
+    }
+
+    /**
+     * Forgets a voice made from a recording.
+     *
+     * @param model the model's key
+     * @param name the voice's name
+     * @throws IOException if it cannot be deleted
+     */
+    public void removeVoice(String model, String name) throws IOException {
+        LocalSpeech speech = local().speech();
+        if (speech == null || model == null || !model.startsWith("local/")) {
+            throw new IllegalArgumentException("no saved voice named " + name);
+        }
+        speech.removeVoice(model.substring("local/".length()), name);
+    }
+
+    /**
      * Describes a local transcribing model for the page: the languages it knows and whether it
      * translates. This loads the model.
      *
@@ -811,7 +857,8 @@ public final class ChatService {
                     case "image" -> "no image model is available: put a Stable Diffusion or FLUX.1 model in a model folder"
                             + " or add an OpenAI or Google API key";
                     case "transcribe" -> "no transcribing model is available: put a Whisper model in a model folder";
-                    default -> "no speech model is available: put a Kokoro or VITS (MMS-TTS) model in a model folder"
+                    default -> "no speech model is available: put a Kokoro, F5-TTS, Orpheus or VITS (MMS-TTS) model"
+                            + " in a model folder"
                             + " or add an OpenAI or Google API key";
                 });
             }

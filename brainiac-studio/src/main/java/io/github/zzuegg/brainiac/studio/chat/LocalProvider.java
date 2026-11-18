@@ -186,13 +186,17 @@ final class LocalProvider implements ChatProvider {
         return images;
     }
 
-    /** Also lists, and speaks and transcribes with, the speech models in the same places. */
-    void speakToo() {
+    /**
+     * Also lists, and speaks and transcribes with, the speech models in the same places.
+     *
+     * @param voices where voices made from recordings are kept
+     */
+    void speakToo(Path voices) {
         speech = new LocalSpeech(() -> {
             List<Path> places = new ArrayList<>(folders);
             places.addAll(added());
             return places;
-        }, device);
+        }, voices, device);
     }
 
     /**
@@ -261,7 +265,10 @@ final class LocalProvider implements ChatProvider {
             return false;
         }
         try {
-            return TYPES.contains(Json.string(Json.object(Json.read(config)), "model_type", ""));
+            String type = Json.string(Json.object(Json.read(config)), "model_type", "");
+            // Orpheus is a Llama that speaks: it is a speech model, not one to chat with
+            return TYPES.contains(type) && !("llama".equals(type)
+                    && io.github.zzuegg.brainiac.audio.OrpheusSpeech.isOrpheus(p));
         } catch (IOException | IllegalArgumentException e) {
             return false;
         }

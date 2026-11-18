@@ -93,6 +93,58 @@ class LocalSpeechTest {
     }
 
     @Test
+    void anF5FolderSpeaksInAVoiceMadeFromARecording() throws Exception {
+        copy(FIXTURES.resolve("f5"), data.resolve("models/tiny-f5"));
+        copy(FIXTURES.resolve("vocos"), data.resolve("models/vocos"));
+        ChatService chat = ChatService.at(new Keys(data.resolve("keys.properties"), Map.of()), List.of(data.resolve("models")),
+                Map.of(), data.resolve("outputs"));
+        Map<String, Object> m = model(chat.describe(true), "local/tiny-f5");
+        assertEquals("F5-TTS voice cloning", m.get("detail"));
+        Map<String, Object> speech = Json.object(m.get("speech"));
+        assertEquals(true, speech.get("clone"));
+        assertEquals(List.of(), speech.get("voices"), "no voices until one is made from a recording");
+        assertTrue(Json.array(chat.describe(true).get("models")).stream().map(Json::object)
+                .noneMatch(x -> "local/vocos".equals(x.get("key"))), "the vocoder is not a model of its own");
+
+        float[] tone = new float[24_000 * 2];
+        for (int i = 0; i < tone.length; i++) {
+            tone[i] = (float) (0.2 * Math.sin(i * 2 * Math.PI * 220 / 24_000));
+        }
+        byte[] wav = Wav.encode(new Audio(tone, 24_000));
+        assertThrows(IllegalArgumentException.class, () -> chat.saveVoice("local/tiny-f5", "Me", wav, ""),
+                "without a transcript or a Whisper model to write it down");
+        assertThrows(IllegalArgumentException.class, () -> chat.saveVoice("local/tiny-f5", "../up", wav, "hello"));
+        assertEquals("hello there", chat.saveVoice("local/tiny-f5", "Me", wav, " hello there "));
+        assertTrue(Files.isRegularFile(data.resolve("voices/tiny-f5/Me.wav")), "kept in the data folder");
+        assertEquals(List.of("Me"), Json.object(model(chat.describe(true), "local/tiny-f5").get("speech")).get("voices"));
+
+        ChatService.Generated g = chat.speech("local/tiny-f5", "Hi.", "Me", 1, "", "wav", null);
+        assertTrue(Wav.decode(Files.readAllBytes(g.files().getFirst())).seconds() > 0, "it speaks in the new voice");
+
+        chat.removeVoice("local/tiny-f5", "Me");
+        assertEquals(List.of(), Json.object(model(chat.describe(true), "local/tiny-f5").get("speech")).get("voices"));
+    }
+
+    @Test
+    void anOrpheusFolderSpeaksWithItsVoicesAndTagsAndIsNotAChatModel() throws Exception {
+        Path o = Files.createDirectories(data.resolve("models/orpheus-3b"));
+        Files.writeString(o.resolve("config.json"), "{\"model_type\": \"llama\", \"vocab_size\": 156940}");
+        Files.writeString(o.resolve("tokenizer.json"), "{}");
+        copy(FIXTURES.resolve("snac"), data.resolve("models/snac"));
+        ChatService chat = ChatService.at(new Keys(data.resolve("keys.properties"), Map.of()), List.of(data.resolve("models")),
+                Map.of(), data.resolve("outputs"));
+        List<Map<String, Object>> all = Json.array(chat.describe(true).get("models")).stream().map(Json::object).toList();
+        assertEquals(1, all.stream().filter(x -> "local/orpheus-3b".equals(x.get("key"))).count(), "listed once: " + all);
+        Map<String, Object> m = model(chat.describe(true), "local/orpheus-3b");
+        assertEquals(List.of("speech"), m.get("media"));
+        assertEquals("Orpheus text to speech", m.get("detail"));
+        Map<String, Object> speech = Json.object(m.get("speech"));
+        assertEquals("tara", Json.array(speech.get("voices")).getFirst());
+        assertEquals("Tara", Json.object(speech.get("names")).get("tara"));
+        assertTrue(Json.array(speech.get("tags")).contains("laugh"), "tags without brackets: " + speech.get("tags"));
+    }
+
+    @Test
     void aWorkersLocalModelsOnlyChat() throws Exception {
         assertTrue(ChatService.localModels(List.of(models())).models().isEmpty());
     }
