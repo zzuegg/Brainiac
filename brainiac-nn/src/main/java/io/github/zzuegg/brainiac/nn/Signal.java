@@ -144,6 +144,99 @@ public final class Signal {
         return 700 * (Math.pow(10, mel / 2595) - 1);
     }
 
+    /** How hertz map to mels. */
+    public enum MelScale {
+        /** {@code 2595 log10(1 + hz / 700)}, as HTK and torchaudio's default. */
+        HTK,
+        /** Slaney's: linear below 1 kHz, logarithmic above; librosa's default, and Whisper's. */
+        SLANEY
+    }
+
+    /**
+     * A mel filterbank of either mel scale, optionally with Slaney's area normalization
+     * (each filter divided by its width in hertz, so filters carry equal energy), as
+     * librosa's {@code filters.mel}.
+     *
+     * @param sampleRate the sample rate
+     * @param nFft the frame length of the STFT
+     * @param mels the number of filters
+     * @param minHz the lowest frequency
+     * @param maxHz the highest frequency, at most half the sample rate
+     * @param scale the mel scale
+     * @param slaneyNorm whether to normalize each filter's area
+     * @return {@code [nFft / 2 + 1, mels]}: power spectra times this give mel energies
+     */
+    public static Tensor melFilterbank(int sampleRate, int nFft, int mels, double minHz, double maxHz,
+            MelScale scale, boolean slaneyNorm) {
+        int bins = nFft / 2 + 1;
+        java.util.function.DoubleUnaryOperator toMel = scale == MelScale.HTK ? Signal::hzToMel : Signal::slaneyMel;
+        java.util.function.DoubleUnaryOperator toHz = scale == MelScale.HTK ? Signal::melToHz : Signal::slaneyHz;
+        double lo = toMel.applyAsDouble(minHz);
+        double hi = toMel.applyAsDouble(maxHz);
+        double[] hz = new double[mels + 2];
+        for (int i = 0; i < hz.length; i++) {
+            hz[i] = toHz.applyAsDouble(lo + (hi - lo) * i / (mels + 1));
+        }
+        float[] fb = new float[bins * mels];
+        for (int m = 0; m < mels; m++) {
+            double norm = slaneyNorm ? 2 / (hz[m + 2] - hz[m]) : 1;
+            for (int b = 0; b < bins; b++) {
+                double f = (double) b * sampleRate / nFft;
+                double rise = (f - hz[m]) / (hz[m + 1] - hz[m]);
+                double fall = (hz[m + 2] - f) / (hz[m + 2] - hz[m + 1]);
+                fb[b * mels + m] = (float) (Math.max(0, Math.min(rise, fall)) * norm);
+            }
+        }
+        return Tensor.of(Shape.of(bins, mels), fb);
+    }
+
+    private static final double SLANEY_F_SP = 200.0 / 3;
+    private static final double SLANEY_MIN_LOG_HZ = 1000;
+    private static final double SLANEY_MIN_LOG_MEL = SLANEY_MIN_LOG_HZ / SLANEY_F_SP;
+    private static final double SLANEY_LOG_STEP = Math.log(6.4) / 27;
+
+    private static double slaneyMel(double hz) {
+        return hz >= SLANEY_MIN_LOG_HZ ? SLANEY_MIN_LOG_MEL + Math.log(hz / SLANEY_MIN_LOG_HZ) / SLANEY_LOG_STEP
+                : hz / SLANEY_F_SP;
+    }
+
+    private static double slaneyHz(double mel) {
+        return mel >= SLANEY_MIN_LOG_MEL ? SLANEY_MIN_LOG_HZ * Math.exp(SLANEY_LOG_STEP * (mel - SLANEY_MIN_LOG_MEL))
+                : SLANEY_F_SP * mel;
+    }
+
+    /**
+     * Whisper's log-mel spectrogram, as OpenAI's {@code log_mel_spectrogram}: a 400-sample
+     * Hann STFT every 160 samples of 16 kHz audio (the last frame dropped), the power
+     * through Slaney mel filters, {@code log10} clamped at {@code 1e-10}, floored at 8
+     * below each signal's maximum, then {@code (x + 4) / 4}.
+     *
+     * @param x 16 kHz signals {@code [..., samples]}
+     * @param mels the number of mel bands (80, or 128 for large-v3)
+     * @return {@code [..., mels, samples / 160]}, channels first as convolutions take them
+     */
+    public static Var whisperLogMel(Var x, int mels) {
+        int frames = x.shape().dim(-1) / 160;
+        Tensor fb = melFilterbank(16_000, 400, mels, 0, 8_000, MelScale.SLANEY, true)
+                .to(x.value().device()).to(x.dtype());
+        Var p = power(stft(x, 400, 160));   // [..., frames + 1, 201]
+        int rank = p.shape().rank();
+        Var mel = p.slice(rank - 2, 0, frames).matmul(Var.of(fb));   // [..., frames, mels]
+        Var log = mel.maximum(1e-10f).log().mul((float) (1 / Math.log(10)));
+        Var max = log.max(rank - 1, true).max(rank - 2, true);
+        return log.maximum(max.sub(8f)).add(4f).mul(0.25f).permute(swapLast(rank));
+    }
+
+    private static int[] swapLast(int rank) {
+        int[] axes = new int[rank];
+        for (int i = 0; i < rank; i++) {
+            axes[i] = i;
+        }
+        axes[rank - 2] = rank - 1;
+        axes[rank - 1] = rank - 2;
+        return axes;
+    }
+
     /**
      * The power of complex values: {@code re^2 + im^2}.
      *
