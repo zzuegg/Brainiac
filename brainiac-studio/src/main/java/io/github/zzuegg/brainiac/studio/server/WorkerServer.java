@@ -51,7 +51,8 @@ import java.util.zip.ZipInputStream;
  *   <li>{@code GET /worker/runs?id=<id>}, {@code POST /worker/stop {id}} and
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
  *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
- *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
+ *       {@code downloads} folder; {@code POST /worker/draw}, {@code /worker/speak} and {@code /worker/transcribe} use its
+ *       image and speech models, answering as event streams; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
  *       (a message may carry {@code images: [{type, data}]} for a model that looks at pictures)
  *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
  *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
@@ -118,7 +119,7 @@ public final class WorkerServer implements AutoCloseable {
         List<Path> where = new ArrayList<>(modelFolders);
         where.add(folder.resolve("downloads"));
         where.add(folder.resolve("models"));
-        return start(address, folder, ChatService.localModels(where), givenToken);
+        return start(address, folder, ChatService.localMedia(where, folder.resolve("voices")), givenToken);
     }
 
     /**
@@ -248,11 +249,21 @@ public final class WorkerServer implements AutoCloseable {
             } else if (path.equals("/worker/models") && method.equals("GET")) {
                 List<Object> list = new ArrayList<>();
                 for (ModelInfo m : models.models()) {
-                    list.add(m.toJson());
+                    Map<String, Object> j = m.toJson();
+                    if (m.media().contains("speech") && models.voiceOptions(m.id()) != null) {
+                        j.put("speech", models.voiceOptions(m.id()));
+                    }
+                    list.add(j);
                 }
                 Exchanges.json(ex, 200, Map.of("models", list));
             } else if (path.equals("/worker/chat") && method.equals("POST")) {
                 chat(ex, Exchanges.body(ex, 32 << 20));
+            } else if (path.equals("/worker/draw") && method.equals("POST")) {
+                draw(ex, Exchanges.body(ex, MAX_BODY));
+            } else if (path.equals("/worker/speak") && method.equals("POST")) {
+                speak(ex, Exchanges.body(ex, MAX_BODY));
+            } else if (path.equals("/worker/transcribe") && method.equals("POST")) {
+                transcribe(ex, Exchanges.body(ex, 96 << 20));
             } else if (path.equals("/worker/hub/download") && method.equals("POST")) {
                 Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
                 try {
@@ -363,6 +374,132 @@ public final class WorkerServer implements AutoCloseable {
             }
         }
         out.close();
+    }
+
+    // the model's id, or its key from /worker/models ("local/<id>")
+    private String modelId(Map<String, Object> body) {
+        String model = Json.string(body, "model", "");
+        String prefix = models.id() + "/";
+        return model.startsWith(prefix) ? model.substring(prefix.length()) : model;
+    }
+
+    /** One of the three things a worker makes with an image or speech model. */
+    @FunctionalInterface
+    private interface Making {
+        Map<String, Object> run(OutputStream out, boolean[] gone) throws IOException, InterruptedException;
+    }
+
+    // answers as an event stream: what the making sends, then "done" with what it returns, or "error"
+    private static void stream(HttpExchange ex, Making making) throws IOException {
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(200, 0);
+        OutputStream out = ex.getResponseBody();
+        boolean[] gone = {false};
+        try {
+            event(out, "done", making.run(out, gone));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            quietly(out, "stopped");
+        } catch (IOException | RuntimeException e) {
+            quietly(out, String.valueOf(e.getMessage()));
+        }
+        out.close();
+    }
+
+    private static void quietly(OutputStream out, String message) {
+        try {
+            event(out, "error", Map.of("message", message));
+        } catch (IOException gone) {
+            // the studio stopped reading
+        }
+    }
+
+    private void draw(HttpExchange ex, Map<String, Object> body) throws IOException {
+        String prompt = Json.string(body, "prompt", "");
+        if (prompt.isBlank()) {
+            throw new IllegalArgumentException("describe the picture first");
+        }
+        long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
+        io.github.zzuegg.brainiac.studio.chat.LocalImages.Settings settings =
+                new io.github.zzuegg.brainiac.studio.chat.LocalImages.Settings(Json.string(body, "negativePrompt", ""),
+                        Json.string(body, "aspect", "1:1"), (int) Json.integer(body, "count", 1),
+                        (int) Json.integer(body, "steps", 25), Json.number(body, "guidance", 7), seed,
+                        Json.string(body, "sampler", "DPM_PP_2M_KARRAS"));
+        String model = modelId(body);
+        stream(ex, (out, gone) -> {
+            List<io.github.zzuegg.brainiac.studio.chat.LocalImages.Picture> pictures = models.draw(model, prompt, settings,
+                    (step, total, preview) -> {
+                        try {
+                            event(out, "step", Map.of("step", step, "total", total));
+                        } catch (IOException e) {
+                            gone[0] = true;   // the studio went away: stop drawing
+                        }
+                        return !gone[0];
+                    });
+            for (io.github.zzuegg.brainiac.studio.chat.LocalImages.Picture p : pictures) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("mime", p.media().mime());
+                m.put("data", java.util.Base64.getEncoder().encodeToString(p.media().data()));
+                m.put("seed", p.seed());
+                event(out, "image", m);
+            }
+            return Map.of("pictures", pictures.size());
+        });
+    }
+
+    private void speak(HttpExchange ex, Map<String, Object> body) throws IOException {
+        String text = Json.string(body, "text", "");
+        if (text.isBlank()) {
+            throw new IllegalArgumentException("there is nothing to say");
+        }
+        String model = modelId(body);
+        stream(ex, (out, gone) -> {
+            io.github.zzuegg.brainiac.studio.chat.Media audio = models.speak(model, text, Json.string(body, "voice", ""),
+                    Json.number(body, "speed", 1), () -> gone[0]);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("mime", audio.mime());
+            m.put("data", java.util.Base64.getEncoder().encodeToString(audio.data()));
+            return m;
+        });
+    }
+
+    private void transcribe(HttpExchange ex, Map<String, Object> body) throws IOException {
+        byte[] wav;
+        try {
+            wav = java.util.Base64.getDecoder().decode(Json.string(body, "audio", ""));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("send the recording as base64 WAV in \"audio\"");
+        }
+        if (wav.length < 44) {
+            throw new IllegalArgumentException("send the recording as base64 WAV in \"audio\"");
+        }
+        String language = Json.string(body, "language", "");
+        io.github.zzuegg.brainiac.studio.chat.LocalSpeech.Listening listening =
+                new io.github.zzuegg.brainiac.studio.chat.LocalSpeech.Listening(language.isBlank() ? null : language,
+                        Boolean.TRUE.equals(body.get("translate")), !Boolean.FALSE.equals(body.get("timestamps")),
+                        Json.string(body, "prompt", ""));
+        String model = modelId(body);
+        stream(ex, (out, gone) -> {
+            io.github.zzuegg.brainiac.audio.Transcription t = models.transcribe(model, wav, listening, seg -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("start", seg.start());
+                m.put("end", seg.end());
+                m.put("text", seg.text());
+                m.put("avgLogProb", seg.avgLogProb());
+                m.put("noSpeechProb", seg.noSpeechProb());
+                try {
+                    event(out, "segment", m);
+                } catch (IOException e) {
+                    gone[0] = true;
+                }
+            }, () -> gone[0]);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("text", t.text());
+            m.put("language", t.language() == null ? "" : t.language());
+            m.put("seconds", t.seconds());
+            return m;
+        });
     }
 
     private static void event(OutputStream out, String name, Map<String, Object> data) throws IOException {

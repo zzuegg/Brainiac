@@ -176,14 +176,198 @@ public final class WorkerClient {
     public List<io.github.zzuegg.brainiac.studio.chat.ModelInfo> models() throws IOException {
         Map<String, Object> m = json(request("worker/models").timeout(Duration.ofSeconds(5)).GET().build());
         List<io.github.zzuegg.brainiac.studio.chat.ModelInfo> out = new ArrayList<>();
+        Map<String, Map<String, Object>> heard = new LinkedHashMap<>();
         for (Object o : Json.array(m.getOrDefault("models", List.of()))) {
             Map<String, Object> x = Json.object(o);
             List<String> media = Json.array(x.getOrDefault("media", List.of("text"))).stream().map(String::valueOf).toList();
             out.add(new io.github.zzuegg.brainiac.studio.chat.ModelInfo(Json.string(x, "provider", "local"),
                     Json.string(x, "id", ""), Json.string(x, "name", Json.string(x, "id", "")), media, 0,
                     Json.string(x, "detail", "")));
+            if (x.get("speech") instanceof Map<?, ?> speech) {
+                heard.put(Json.string(x, "id", ""), Json.object(speech));
+            }
         }
+        voices = heard;
         return out;
+    }
+
+    // the voices of the worker's speech models, as its last model list told them
+    private volatile Map<String, Map<String, Object>> voices;
+
+    /**
+     * Returns the voices and other choices of one of the worker's speech models, as its last
+     * model list told them.
+     *
+     * @param model the worker's model id
+     * @return them, or null if it told none
+     */
+    public Map<String, Object> voiceOptions(String model) {
+        if (voices == null) {
+            try {
+                models();   // a client that never listed asks once
+            } catch (IOException e) {
+                return null;
+            }
+        }
+        return voices.get(model);
+    }
+
+    // reads a worker's event stream to its end; "done" and "error" end it, the rest go to the handler
+    private Map<String, Object> stream(String path, Map<String, Object> body, String what,
+            java.util.function.BiPredicate<String, Map<String, Object>> onEvent) throws IOException {
+        HttpResponse<InputStream> r = send(request(path).timeout(Duration.ofMinutes(30))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body))).build(), HttpResponse.BodyHandlers.ofInputStream());
+        if (r.statusCode() >= 400) {
+            String text;
+            try (InputStream in = r.body()) {
+                text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            String msg;
+            try {
+                msg = Json.string(Json.object(Json.parse(text)), "error", "");
+            } catch (RuntimeException e) {
+                msg = "";
+            }
+            throw new IOException(r.statusCode() == 401 ? "the worker did not accept the token"
+                    : r.statusCode() == 404 ? "the worker is an older build that cannot " + what + ": update it"
+                    : msg.isEmpty() ? "the worker answered " + r.statusCode() : msg);
+        }
+        Object[] end = {null, null};
+        boolean[] stopped = {false};
+        try (InputStream in = r.body()) {
+            io.github.zzuegg.brainiac.studio.chat.Sse.read(in, (event, data) -> {
+                Map<String, Object> d = Json.object(Json.parse(data));
+                switch (event) {
+                    case "done" -> {
+                        end[0] = d;
+                        return false;
+                    }
+                    case "error" -> {
+                        end[1] = Json.string(d, "message", "the worker failed");
+                        return false;
+                    }
+                    default -> {
+                        if (!onEvent.test(event, d)) {
+                            stopped[0] = true;   // closing the stream tells the worker to stop
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            });
+        }
+        if (stopped[0]) {
+            throw new java.util.concurrent.CancellationException("stopped");
+        }
+        if (end[1] != null) {
+            throw new IOException((String) end[1]);
+        }
+        if (end[0] == null) {
+            throw new IOException("the worker stopped before it was done");
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> d = (Map<String, Object>) end[0];
+        return d;
+    }
+
+    /**
+     * Has the worker draw pictures with one of its image models.
+     *
+     * @param model the worker's model id
+     * @param prompt what to draw
+     * @param s size, steps, guidance, seed and sampler
+     * @param listener hears each step (without previews) and can stop the drawing
+     * @return the pictures with their seeds
+     * @throws IOException if the worker fails
+     */
+    public List<io.github.zzuegg.brainiac.studio.chat.LocalImages.Picture> draw(String model, String prompt,
+            io.github.zzuegg.brainiac.studio.chat.LocalImages.Settings s,
+            io.github.zzuegg.brainiac.studio.chat.LocalImages.Listener listener) throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", model);
+        body.put("prompt", prompt);
+        body.put("negativePrompt", s.negativePrompt());
+        body.put("aspect", s.aspect());
+        body.put("count", s.count());
+        body.put("steps", s.steps());
+        body.put("guidance", s.guidance());
+        body.put("seed", s.seed());
+        body.put("sampler", s.sampler());
+        List<io.github.zzuegg.brainiac.studio.chat.LocalImages.Picture> out = new ArrayList<>();
+        stream("worker/draw", body, "draw", (event, d) -> {
+            if (event.equals("step")) {
+                return listener.step((int) Json.integer(d, "step", 0), (int) Json.integer(d, "total", 0), null);
+            }
+            if (event.equals("image")) {
+                out.add(new io.github.zzuegg.brainiac.studio.chat.LocalImages.Picture(
+                        new io.github.zzuegg.brainiac.studio.chat.Media(
+                                java.util.Base64.getDecoder().decode(Json.string(d, "data", "")),
+                                Json.string(d, "mime", "image/png")), Json.integer(d, "seed", 0)));
+            }
+            return true;
+        });
+        return out;
+    }
+
+    /**
+     * Has the worker speak a text with one of its speech models.
+     *
+     * @param model the worker's model id
+     * @param text what to say
+     * @param voice the voice, or an empty string for the model's own
+     * @param speed 1 for the usual speed
+     * @return the audio
+     * @throws IOException if the worker fails
+     */
+    public io.github.zzuegg.brainiac.studio.chat.Media speak(String model, String text, String voice, double speed)
+            throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", model);
+        body.put("text", text);
+        body.put("voice", voice == null ? "" : voice);
+        body.put("speed", speed);
+        Map<String, Object> d = stream("worker/speak", body, "speak", (event, x) -> true);
+        return new io.github.zzuegg.brainiac.studio.chat.Media(
+                java.util.Base64.getDecoder().decode(Json.string(d, "data", "")), Json.string(d, "mime", "audio/wav"));
+    }
+
+    /**
+     * Has the worker write down a recording with one of its transcribing models.
+     *
+     * @param model the worker's model id
+     * @param wav the recording, a WAV file
+     * @param l the language and what else to do
+     * @param onSegment hears each part as it is written down
+     * @param stop asked after each part whether to give up
+     * @return what was said
+     * @throws IOException if the worker fails
+     */
+    public io.github.zzuegg.brainiac.audio.Transcription transcribe(String model, byte[] wav,
+            io.github.zzuegg.brainiac.studio.chat.LocalSpeech.Listening l,
+            java.util.function.Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment,
+            java.util.function.BooleanSupplier stop) throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", model);
+        body.put("audio", java.util.Base64.getEncoder().encodeToString(wav));
+        body.put("language", l.language() == null ? "" : l.language());
+        body.put("translate", l.translate());
+        body.put("timestamps", l.timestamps());
+        body.put("prompt", l.prompt() == null ? "" : l.prompt());
+        List<io.github.zzuegg.brainiac.audio.Transcription.Segment> segments = new ArrayList<>();
+        Map<String, Object> d = stream("worker/transcribe", body, "transcribe", (event, x) -> {
+            if (event.equals("segment")) {
+                io.github.zzuegg.brainiac.audio.Transcription.Segment seg =
+                        new io.github.zzuegg.brainiac.audio.Transcription.Segment(Json.number(x, "start", 0),
+                                Json.number(x, "end", 0), Json.string(x, "text", ""), Json.number(x, "avgLogProb", 0),
+                                Json.number(x, "noSpeechProb", 0));
+                segments.add(seg);
+                onSegment.accept(seg);
+            }
+            return !stop.getAsBoolean();
+        });
+        return new io.github.zzuegg.brainiac.audio.Transcription(Json.string(d, "text", ""),
+                Json.string(d, "language", ""), segments, Json.number(d, "seconds", 0));
     }
 
     /**
