@@ -8,6 +8,11 @@ import io.github.zzuegg.brainiac.experimental.nn.MambaLayer;
 import io.github.zzuegg.brainiac.experimental.nn.MaskedSpeechPretraining;
 import io.github.zzuegg.brainiac.experimental.nn.Mfcc;
 import io.github.zzuegg.brainiac.experimental.nn.TransducerLoss;
+import io.github.zzuegg.brainiac.experimental.timeseries.LearnableFrontEnd;
+import io.github.zzuegg.brainiac.experimental.timeseries.Pcen;
+import io.github.zzuegg.brainiac.experimental.timeseries.RidgeClassifier;
+import io.github.zzuegg.brainiac.experimental.timeseries.ScatteringTransform;
+import io.github.zzuegg.brainiac.experimental.timeseries.SincFilterbank;
 import io.github.zzuegg.brainiac.experiments.generative.TalkingDigits;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Dense;
@@ -811,5 +816,253 @@ public final class SpokenDigitRecognition {
             der[pre] = digitErrorRate(rec.recognize(testFeats), test.digits());
         }
         return new PretrainScore(labelled, der[0], der[1]);
+    }
+
+    // ------------------------------------------------------------------ wave 8: 8.2.16 front ends
+
+    /** Front ends for the noise sweep (8.2.16). */
+    public enum FrontEnd {
+        /** Log-mel energies (core {@link Signal#logMel}). */
+        LOG_MEL,
+        /** MFCCs with deltas. */
+        MFCC,
+        /** Core {@code Signal} mel energies through fixed, untrained {@link Pcen} instead of a log. */
+        MEL_PCEN,
+        /** Mel energies through {@link Pcen} trained with the recogniser. */
+        MEL_PCEN_LEARNED,
+        /** A {@link SincFilterbank} on the waveform, log-compressed, trained with the recogniser. */
+        SINCNET,
+        /** {@link LearnableFrontEnd} (Gabor filters, Gaussian pooling, PCEN), trained with the recogniser. */
+        LEAF
+    }
+
+    /** {mean, standard deviation} of values. */
+    private static double[] moments(float[] v) {
+        double m = 0;
+        for (float x : v) {
+            m += x / (double) v.length;
+        }
+        double s = 0;
+        for (float x : v) {
+            s += (x - m) * (x - m) / v.length;
+        }
+        return new double[] {m, Math.sqrt(s) + 1e-6};
+    }
+
+    /** Stacks each frame with two neighbours either side, as the MLP encoder's {@code input} does. */
+    private static Var stackFrames(Var x) {
+        int t = x.shape().dim(1);
+        Var[] parts = new Var[5];
+        for (int c = -2; c <= 2; c++) {
+            if (c == 0) {
+                parts[c + 2] = x;
+            } else if (c < 0) {
+                Var[] cat = new Var[-c + 1];
+                for (int k = 0; k < -c; k++) {
+                    cat[k] = x.slice(1, 0, 1);
+                }
+                cat[-c] = x.slice(1, 0, t + c);
+                parts[c + 2] = Var.concat(1, cat);
+            } else {
+                Var[] cat = new Var[c + 1];
+                cat[0] = x.slice(1, c, t);
+                for (int k = 1; k <= c; k++) {
+                    cat[k] = x.slice(1, t - 1, t);
+                }
+                parts[c + 2] = Var.concat(1, cat);
+            }
+        }
+        return Var.concat(2, parts);
+    }
+
+    private static Var melEnergies(Var waves, int frames) {
+        Tensor fb = Signal.melFilterbank(RATE, HOP, MELS, 0, RATE / 2.0);
+        return Signal.power(Signal.stft(waves, HOP, HOP)).matmul(Var.of(fb)).slice(1, 0, frames);
+    }
+
+    private static Tensor waves(List<float[]> list, int samples) {
+        float[] x = new float[list.size() * samples];
+        for (int i = 0; i < list.size(); i++) {
+            float[] w = list.get(i);
+            System.arraycopy(w, 0, x, i * samples, Math.min(samples, w.length));
+        }
+        return Tensor.of(Shape.of(list.size(), samples), x);
+    }
+
+    /**
+     * The digit error rate of the frame-wise MLP + CTC recogniser on 1-3 digit strings (the
+     * {@link #strings} task: 480 training utterances, 60 test strings, training and test at the
+     * same SNR) with a given front end; the learned front ends train jointly with the recogniser.
+     *
+     * @param front the front end
+     * @param snrDb the noise level
+     * @param steps training steps of 16 utterances
+     * @param seed the seed
+     * @return the test digit error rate
+     */
+    public static double frontEndDer(FrontEnd front, double snrDb, int steps, long seed) {
+        if (front == FrontEnd.LOG_MEL || front == FrontEnd.MFCC) {
+            return strings(Encoder.MLP, front == FrontEnd.LOG_MEL ? Features.LOG_MEL : Features.MFCC, false, snrDb,
+                    steps, seed).digitErrorRate();
+        }
+        int frames = 32;
+        int samples = frames * HOP;
+        Recognizer rec = new Recognizer(Encoder.MLP, MELS, frames, seed);
+        Layer fe = switch (front) {
+            case MEL_PCEN, MEL_PCEN_LEARNED -> new Pcen(MELS, frames, 0.15);
+            case SINCNET -> new SincFilterbank(MELS, 65, 2, HOP, RATE);
+            default -> new LearnableFrontEnd(MELS, 65, 2, HOP, frames, RATE);
+        };
+        java.util.function.UnaryOperator<Var> raw = switch (front) {
+            case MEL_PCEN, MEL_PCEN_LEARNED -> w -> fe.forward(melEnergies(w, frames).mul(1e-2f), true);
+            default -> w -> fe.forward(w, true);
+        };
+
+        List<Var> params = new ArrayList<>(rec.parameters());
+        if (front != FrontEnd.MEL_PCEN) {
+            params.addAll(fe.parameters());
+        }
+        Optimizer opt = Optimizer.adam(3e-3f);
+        SplittableRandom r = new SplittableRandom(seed);
+        Corpus pool = corpus(480, 1, 3, snrDb, false, r);
+        // a frozen affine map onto the scaled log-mel features' global mean and spread, measured on
+        // 64 training utterances at initialisation: without it the CTC recogniser can collapse to
+        // blanks at this budget for inputs on another scale (PCEN is about 0-1.5)
+        List<float[]> probe = pool.waves().subList(0, 64);
+        double[] own = moments(Var.noGrad(() -> raw.apply(Var.of(waves(probe, samples)))).value().toArray());
+        List<float[][]> ref = featuresOf(Features.LOG_MEL, probe, frames);
+        float[] flat = new float[64 * frames * MELS];
+        for (int i = 0; i < 64; i++) {
+            for (int t = 0; t < frames; t++) {
+                System.arraycopy(ref.get(i)[t], 0, flat, (i * frames + t) * MELS, MELS);
+            }
+        }
+        double[] target = moments(flat);
+        float gain = (float) (target[1] / own[1]);
+        float shift = (float) (target[0] - own[0] * gain);
+        java.util.function.UnaryOperator<Var> features = w -> raw.apply(w).mul(gain).add(shift);
+        for (int s = 0; s < steps; s++) {
+            List<float[]> bw = new ArrayList<>();
+            List<int[]> bd = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                int j = r.nextInt(pool.waves().size());
+                bw.add(pool.waves().get(j));
+                bd.add(pool.digits().get(j));
+            }
+            Var x = stackFrames(features.apply(Var.of(waves(bw, samples))));
+            CtcLoss.loss(rec.logits(rec.encode(x, true)), shift(bd)).backward();
+            opt.step(params);
+        }
+        Corpus test = corpus(60, 1, 3, snrDb, false, new SplittableRandom(seed + 99));
+        int[][] heard = Var.noGrad(() -> CtcLoss.greedyDecode(rec.logits(rec.encode(stackFrames(features.apply(
+                Var.of(waves(test.waves(), samples)))), false)).value()));
+        for (int[] h : heard) {
+            for (int j = 0; j < h.length; j++) {
+                h[j] -= 1;
+            }
+        }
+        return digitErrorRate(heard, test.digits());
+    }
+
+    /**
+     * The noise sweep of 8.2.16: digit error rate per front end and SNR.
+     *
+     * @param fronts the front ends
+     * @param snrs the noise levels in dB
+     * @param steps training steps per run
+     * @param seed the seed
+     * @return front end to DER per SNR
+     */
+    public static java.util.Map<FrontEnd, double[]> noiseSweep(FrontEnd[] fronts, double[] snrs, int steps,
+            long seed) {
+        java.util.Map<FrontEnd, double[]> out = new java.util.LinkedHashMap<>();
+        for (FrontEnd f : fronts) {
+            double[] der = new double[snrs.length];
+            for (int i = 0; i < snrs.length; i++) {
+                der[i] = frontEndDer(f, snrs[i], steps, seed);
+            }
+            out.put(f, der);
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ wave 8: 8.2.17 scattering
+
+    /**
+     * Isolated words from few examples per class (8.2.17): a second-order wavelet scattering
+     * transform of the waveform (Morlet, {@code J = 8}, four wavelets per octave, low-pass
+     * subsampled to 8 positions, log-compressed) with a ridge classifier, against MFCCs and
+     * log-mel frames with the same ridge classifier and wave 7's DTW template matcher on MFCCs.
+     *
+     * @param shots training examples per digit
+     * @param snrDb the noise level of training and test utterances
+     * @param seed the seed
+     * @return method to word accuracy on 100 test words
+     */
+    public static java.util.Map<String, Double> scatteringWords(int shots, double snrDb, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        List<float[]> train = new ArrayList<>();
+        int[] labels = new int[10 * shots];
+        for (int d = 0; d < 10; d++) {
+            for (int s = 0; s < shots; s++) {
+                labels[train.size()] = d;
+                train.add(speak(new int[] {d}, speaker(r), snrDb, r));
+            }
+        }
+        Corpus test = corpus(100, 1, 1, snrDb, false, new SplittableRandom(seed + 50));
+        int[] truth = new int[100];
+        for (int i = 0; i < 100; i++) {
+            truth[i] = test.digits().get(i)[0];
+        }
+        java.util.Map<String, Double> out = new java.util.LinkedHashMap<>();
+        int size = 2048;
+        ScatteringTransform st = ScatteringTransform.oneDimensional(size, 8, 4);
+        float[][] trainW = padded(train, size);
+        float[][] testW = padded(test.waves(), size);
+        double[][] a = ScatteringTransform.logCompress(st.transform(trainW, 0, false), 1e3);
+        double[][] b = ScatteringTransform.logCompress(st.transform(testW, 0, false), 1e3);
+        out.put("scattering + ridge", ridgeAccuracy(a, labels, b, truth));
+        int frames = size / HOP;
+        out.put("MFCC + ridge", ridgeAccuracy(flat(train, Features.MFCC, frames), labels,
+                flat(test.waves(), Features.MFCC, frames), truth));
+        out.put("log-mel + ridge", ridgeAccuracy(flat(train, Features.LOG_MEL, frames), labels,
+                flat(test.waves(), Features.LOG_MEL, frames), truth));
+        DynamicTimeWarping.TemplateClassifier dtw = new DynamicTimeWarping.TemplateClassifier(4);
+        for (int i = 0; i < train.size(); i++) {
+            dtw.add(labels[i], trimmed(mfcc(train.get(i), -1)));
+        }
+        int right = 0;
+        for (int i = 0; i < 100; i++) {
+            right += dtw.classify(trimmed(mfcc(test.waves().get(i), -1))) == truth[i] ? 1 : 0;
+        }
+        out.put("DTW on MFCC", right / 100.0);
+        return out;
+    }
+
+    private static float[][] padded(List<float[]> waves, int size) {
+        float[][] out = new float[waves.size()][];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = Arrays.copyOf(waves.get(i), size);
+        }
+        return out;
+    }
+
+    private static double[][] flat(List<float[]> waves, Features f, int frames) {
+        double[][] out = new double[waves.size()][];
+        for (int i = 0; i < out.length; i++) {
+            float[][] m = features(f, waves.get(i), frames);
+            out[i] = new double[frames * m[0].length];
+            for (int t = 0; t < frames; t++) {
+                for (int k = 0; k < m[t].length; k++) {
+                    out[i][t * m[0].length + k] = m[t][k];
+                }
+            }
+        }
+        return out;
+    }
+
+    private static double ridgeAccuracy(double[][] train, int[] labels, double[][] test, int[] truth) {
+        RidgeClassifier c = RidgeClassifier.fit(train, labels, 10, 10.0);
+        return RidgeClassifier.accuracy(c.predict(test), truth);
     }
 }

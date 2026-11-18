@@ -68,9 +68,15 @@ public final class ConvTasNet implements Layer {
      * {@code relu(x Q) - relu(-x Q) = x Q}, and the decoder holds {@code Q^T} and {@code -Q^T}
      * halved for the two-fold overlap-add; further filters start small and random. With
      * masks of one the network then begins at the identity, not at a random filter (which
-     * starts training around -20 dB SI-SNR).
+     * starts training around -20 dB SI-SNR). Public so that other time-domain separators
+     * (such as {@code DualPathRnn}) share the same encoder and decoder.
+     *
+     * @param window the encoder window in samples
+     * @param filters the encoder filters
+     * @param random the random source
+     * @return {@code {encoder [window * filters], decoder [filters * window]}}, row-major
      */
-    private static float[][] analysisSynthesisPair(int window, int filters, SplittableRandom random) {
+    public static float[][] analysisSynthesisPair(int window, int filters, SplittableRandom random) {
         double[][] q = new double[window][window];
         for (int i = 0; i < window; i++) {
             for (int j = 0; j < window; j++) {
@@ -126,8 +132,19 @@ public final class ConvTasNet implements Layer {
         return frames.matmul(encoder).relu();
     }
 
-    /** Overlap-adds windows {@code [b, k, L]} at stride {@code L/2} to {@code [b, (k + 1) L/2]}. */
     private Var overlapAdd(Var d) {
+        return overlapAdd(d, window);
+    }
+
+    /**
+     * Overlap-adds windows {@code [b, k, L]} at stride {@code L/2} to {@code [b, (k + 1) L/2]},
+     * the inverse framing of {@link #encode}.
+     *
+     * @param d decoded windows {@code [b, k, window]}
+     * @param window the window length
+     * @return {@code [b, (k + 1) window / 2]}
+     */
+    public static Var overlapAdd(Var d, int window) {
         int b = d.shape().dim(0);
         int k = d.shape().dim(1);
         int stride = window / 2;
