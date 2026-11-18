@@ -2296,6 +2296,27 @@
     { id: "look", title: "Appearance", icon: "sun", keywords: "theme light dark system layout density compact comfortable size scale zoom ultrawide keyboard shortcuts data folder",
       status: () => `${themeName()} · ${state.layout === "auto" ? "auto layout" : state.layout + " layout"}`, render: lookSection, bind: bindLook },
   ];
+  // agent roles, rules and services: the same panels as on the Agents page
+  function agentSection(t) {
+    if (asMissing(t) && !AS.error) setTimeout(loadAgentSettings);
+    return `<div class="ag-settings set-agents" id="ag-settings">${agentSettingsPanel()}</div>`;
+  }
+  function bindAgentSection() { if (!asMissing(asTab())) bindAgentSettings(); }
+  function addAgentSections() {
+    addSettingsSection({ id: "agent-services", title: "Agent services", icon: "plug",
+      keywords: "agent services web search brave searxng embeddings meaning sandbox docker podman github token mastodon bluesky discord webhook mail imap smtp calendar ffmpeg key",
+      status: () => AS.services ? `${SERVICES.filter(([id]) => AS.services[id]?.hasSecret || Object.keys(AS.services[id] || {}).some(k => k !== "hasSecret" && AS.services[id][k])).length} set up` : "Search, mail, GitHub, posting",
+      render: () => agentSection("services"), bind: bindAgentSection }, "project");
+    addSettingsSection({ id: "agent-rules", title: "Agent rules", icon: "lock",
+      keywords: "agent rules allow ask deny approval outside folder secrets path permission security",
+      status: () => AS.rules ? `${AS.rules.filter(r => r.enabled !== false).length} rules` : "What agents may do without asking",
+      render: () => agentSection("rules"), bind: bindAgentSection }, "project");
+    addSettingsSection({ id: "agent-roles", title: "Agent roles", icon: "agent",
+      keywords: "agent role roles tier budget mode tools sub-agents instructions coder writer researcher",
+      status: () => AS.roles ? `${AS.roles.length} roles${AS.roles.some(r => !r.builtin) ? `, ${AS.roles.filter(r => !r.builtin).length} yours` : ""}` : "Who agents are, and what they may use",
+      render: () => agentSection("roles"), bind: bindAgentSection }, "project");
+  }
+
   function addSettingsSection(sec, after) {
     const i = SETTINGS_SECTIONS.findIndex(s => s.id === sec.id);
     if (i >= 0) SETTINGS_SECTIONS.splice(i, 1);
@@ -6013,8 +6034,8 @@ reason ::= [a-z ]+`;
 
   function agentSettingsPanel() {
     const note = AS.error ? `<div class="flag bad">${icon("alert")}<span>${esc(AS.error)}</span></div>` : AS.msg ? `<div class="flag ok">${icon("check")}<span>${esc(AS.msg)}</span></div>` : "";
-    if (A.tab === "roles") return note + (AS.roles ? (AS.edit ? roleEditor() : rolesList()) : loadingPanel());
-    if (A.tab === "rules") return note + (AS.rules ? rulesPanel() : loadingPanel());
+    if (asTab() === "roles") return note + (AS.roles ? (AS.edit ? roleEditor() : rolesList()) : loadingPanel());
+    if (asTab() === "rules") return note + (AS.rules ? rulesPanel() : loadingPanel());
     return note + (AS.services ? servicesPanel() : loadingPanel());
   }
   const loadingPanel = () => `<div class="empty" style="padding:40px"><span class="typing"><i></i><i></i><i></i></span></div>`;
@@ -6141,6 +6162,8 @@ reason ::= [a-z ]+`;
     ["calendar", "Calendar", "calendar_events reads this iCalendar address, along with the project's calendar.ics.", [["url", "Calendar address", "https://…/basic.ics"]], null],
   ];
 
+  addAgentSections();
+
   function servicesPanel() {
     const S = AS.services;
     const card = ([id, title, blurb, fields, secret]) => {
@@ -6158,17 +6181,29 @@ reason ::= [a-z ]+`;
       <div class="ag-svc-grid">${SERVICES.map(card).join("")}</div>`;
   }
 
+  // the panel shown: the Agents page's tab, or the settings section open
+  const AS_SECTIONS = { "agent-roles": "roles", "agent-rules": "rules", "agent-services": "services" };
+  const asTab = () => state.view === "settings" ? AS_SECTIONS[S.tab] || "roles" : A.tab;
+  const asMissing = t => t === "roles" ? !AS.roles : t === "rules" ? !AS.rules : !AS.services;
+
   async function loadAgentSettings() {
+    if (AS.loading) return;
+    AS.loading = true;
     try {
-      if (A.tab === "roles") { const j = await api("/api/roles"); AS.roles = j.roles; AS.tiers = j.tiers; AS.tools = j.tools; A.roles = j.roles; }
-      if (A.tab === "rules") { const j = await api("/api/rules"); AS.rules = j.rules; AS.shipped = j.shipped; AS.ruleTools = j.tools; AS.dirty = false; }
-      if (A.tab === "services") AS.services = await api("/api/services");
+      if (asTab() === "roles") { const j = await api("/api/roles"); AS.roles = j.roles; AS.tiers = j.tiers; AS.tools = j.tools; A.roles = j.roles; }
+      if (asTab() === "rules") { const j = await api("/api/rules"); AS.rules = j.rules; AS.shipped = j.shipped; AS.ruleTools = j.tools; AS.dirty = false; }
+      if (asTab() === "services") AS.services = await api("/api/services");
       AS.error = null;
     } catch (e) { AS.error = String(e.message || e); }
+    AS.loading = false;
     drawAgentSettings();
   }
 
   function drawAgentSettings() {
+    if (state.view === "settings") {
+      if (AS_SECTIONS[S.tab]) { renderSection(); if (AS.top) { AS.top = false; $(".set-inner")?.scrollTo({ top: 0, behavior: "smooth" }); } }
+      return;
+    }
     const el = $("#ag-settings");
     if (!el) return;
     el.innerHTML = agentSettingsPanel();
@@ -6193,7 +6228,7 @@ reason ::= [a-z ]+`;
   }
 
   function bindAgentSettings() {
-    if (A.tab === "roles" && AS.roles) {
+    if (asTab() === "roles" && AS.roles) {
       $("#as-role-new")?.addEventListener("click", () => { AS.edit = { isNew: true, id: "", name: "", family: "general", extends: "assistant", tools: null, canSpawn: [] }; AS.msg = null; drawAgentSettings(); });
       $$("[data-as-copy]").forEach(b => b.onclick = () => {
         const r = AS.roles.find(x => x.id === b.dataset.asCopy);
@@ -6226,7 +6261,7 @@ reason ::= [a-z ]+`;
         };
       }
     }
-    if (A.tab === "rules" && AS.rules) {
+    if (asTab() === "rules" && AS.rules) {
       const changed = () => { AS.dirty = true; const s = $("#as-rule-save"); if (s) s.disabled = false; };
       $$("[data-rf]").forEach(el => { el.oninput = changed; el.onchange = changed; });
       const move = (i, j) => { readRules(); const r = AS.rules.splice(i, 1)[0]; AS.rules.splice(j, 0, r); AS.dirty = true; drawAgentSettings(); };
@@ -6248,7 +6283,7 @@ reason ::= [a-z ]+`;
         drawAgentSettings();
       };
     }
-    if (A.tab === "services" && AS.services) {
+    if (asTab() === "services" && AS.services) {
       $$("[data-svc]").forEach(form => form.onsubmit = async e => {
         e.preventDefault();
         const section = form.dataset.svc, values = {};
