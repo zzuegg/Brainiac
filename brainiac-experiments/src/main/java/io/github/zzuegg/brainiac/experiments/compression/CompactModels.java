@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experiments.compression;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.compress.DecoupledKdLoss;
 import io.github.zzuegg.brainiac.experimental.compress.FixedSparsityOptimizer;
+import io.github.zzuegg.brainiac.experimental.compress.HessianAwareBitAllocation;
 import io.github.zzuegg.brainiac.experimental.compress.WeightSharingQuantizer;
 import io.github.zzuegg.brainiac.experimental.compress.RelationalKdLoss;
 import io.github.zzuegg.brainiac.experimental.nn.DistillationLoss;
@@ -30,7 +31,9 @@ import java.util.function.UnaryOperator;
  *     embedding-retrieval task;</li>
  * <li>{@link #weightSharing} (8.5.9): Deep Compression (pruning, k-means weight sharing with
  *     centroid fine-tuning, Huffman coding) against round-to-nearest and GPTQ at the same bits,
- *     and pruning alone, by accuracy against total stored bits.</li>
+ *     and pruning alone, by accuracy against total stored bits;</li>
+ * <li>{@link #mixedPrecision} (8.5.10): HAWQ-V2 bit allocation against uniform, random and
+ *     weight-variance allocation at the same average bits.</li>
  * </ul>
  */
 public final class CompactModels {
@@ -189,6 +192,71 @@ public final class CompactModels {
             }
         }
         return rows;
+    }
+
+    // ------------------------------------------------------------------ 8.5.10
+
+    /**
+     * Mixed-precision post-training quantisation (round-to-nearest per column) of a four-layer
+     * {@code 64-96-96-96-10} digits MLP.
+     *
+     * @param averageBits the budget in average bits per weight
+     * @param steps training steps of the network
+     * @param seed the seed
+     * @return fp32; uniform floor(budget) and floor(budget)+1 bits; then at the budget: HAWQ, three
+     *     random allocations and variance allocation; {@code metric} is test accuracy,
+     *     {@code cost} the average bits, {@code size} the bits of the first layer (as a hint of
+     *     the allocation)
+     */
+    public static List<CompactRow> mixedPrecision(double averageBits, int steps, long seed) {
+        CompressionBench.Split data = CompressionBench.digits(seed);
+        SimpleMlp net = SimpleMlp.relu(seed, 64, 96, 96, 96, 10);
+        CompressionBench.train(net::forward, net.parameters(), Optimizer.adam(0.01f), data.train(), steps);
+        List<Var> w = CompressionBench.weights(net);
+        List<Tensor> saved = new ArrayList<>();
+        long[] sizes = new long[w.size()];
+        for (int l = 0; l < w.size(); l++) {
+            saved.add(w.get(l).value());
+            sizes[l] = w.get(l).shape().size();
+        }
+        int[] candidates = {2, 3, 4, 6, 8};
+        java.util.function.BiFunction<Tensor, Integer, Tensor> rtn = Gptq::roundToNearest;
+        Tensor x = data.train().inputs();
+        Tensor ids = data.train().ids();
+        double[] traces = HessianAwareBitAllocation.traces(
+                () -> Functional.crossEntropy(net.forward(Var.of(x)), ids), w, 16, seed);
+        List<CompactRow> rows = new ArrayList<>();
+        rows.add(new CompactRow("fp32", CompressionBench.accuracy(net::forward, data.test()), 32, 32, -1));
+        int lo = (int) Math.floor(averageBits);
+        for (int b : new int[] {lo, lo + 1}) {
+            int[] uniform = new int[w.size()];
+            java.util.Arrays.fill(uniform, b);
+            rows.add(quantized("uniform " + b + "b", net, w, saved, uniform, sizes, rtn, data));
+        }
+        int[] hawq = HessianAwareBitAllocation.allocate(
+                HessianAwareBitAllocation.sensitivities(traces, w, candidates, rtn), candidates, sizes, averageBits);
+        rows.add(quantized("hawq " + java.util.Arrays.toString(hawq), net, w, saved, hawq, sizes, rtn, data));
+        for (int k = 0; k < 3; k++) {
+            int[] rnd = HessianAwareBitAllocation.random(candidates, sizes, averageBits, seed + 101L * k);
+            rows.add(quantized("random " + java.util.Arrays.toString(rnd), net, w, saved, rnd, sizes, rtn, data));
+        }
+        int[] var = HessianAwareBitAllocation.allocate(HessianAwareBitAllocation.sensitivities(
+                HessianAwareBitAllocation.weightVariances(w), w, candidates, rtn), candidates, sizes, averageBits);
+        rows.add(quantized("variance " + java.util.Arrays.toString(var), net, w, saved, var, sizes, rtn, data));
+        return rows;
+    }
+
+    private static CompactRow quantized(String name, SimpleMlp net, List<Var> w, List<Tensor> saved, int[] bits,
+            long[] sizes, java.util.function.BiFunction<Tensor, Integer, Tensor> quantizer,
+            CompressionBench.Split data) {
+        for (int l = 0; l < w.size(); l++) {
+            w.get(l).assign(quantizer.apply(saved.get(l), bits[l]));
+        }
+        double acc = CompressionBench.accuracy(net::forward, data.test());
+        for (int l = 0; l < w.size(); l++) {
+            w.get(l).assign(saved.get(l));
+        }
+        return new CompactRow(name, acc, HessianAwareBitAllocation.averageBits(bits, sizes), bits[0], -1);
     }
 
     private static SimpleMlp prunedReference(long seed, double sparsity, int fineTune, CompressionBench.Split data) {
