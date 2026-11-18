@@ -7,9 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.nn.diffusion.AutoencoderKL;
 import io.github.zzuegg.brainiac.nn.diffusion.ClipTextEncoder;
+import io.github.zzuegg.brainiac.nn.diffusion.FluxTransformer;
 import io.github.zzuegg.brainiac.nn.diffusion.ImageAttention;
 import io.github.zzuegg.brainiac.nn.diffusion.ResnetBlock;
 import io.github.zzuegg.brainiac.nn.diffusion.SpatialTransformer;
+import io.github.zzuegg.brainiac.nn.diffusion.T5Encoder;
 import io.github.zzuegg.brainiac.nn.diffusion.TimestepEmbedding;
 import io.github.zzuegg.brainiac.nn.diffusion.UNet;
 import io.github.zzuegg.brainiac.tensor.Device;
@@ -61,7 +63,15 @@ class DiffusionCodecsTest {
         roundTrip(new UNet(UNet.Settings.of(8, 4, new int[] {8, 16}, 6), r),
                 l -> ((UNet) l).forward(List.of(Var.of(image), Var.of(time), Var.of(ctx)), false));
         roundTrip(new AutoencoderKL(AutoencoderKL.Settings.of(8, 4, 8, 16), r), l -> l.forward(Var.of(image)));
+        Tensor sigmas = Tensor.of(Shape.of(2), new float[] {0.9f, 0.2f}, Device.cpu());
+        Tensor pooled = Tensor.uniform(Shape.of(2, 5), -1, 1, r);
+        Tensor latents = Tensor.uniform(Shape.of(2, 4, 4, 6), -1, 1, r);
+        Tensor guidance = Tensor.of(Shape.of(2), new float[] {3.5f, 1}, Device.cpu());
+        roundTrip(new FluxTransformer(FluxTransformer.Settings.of(4, 2, 16, 1, 1, 6, 5, true), r),
+                l -> ((FluxTransformer) l).forward(List.of(Var.of(latents), Var.of(sigmas), Var.of(ctx), Var.of(pooled),
+                        Var.of(guidance)), false));
         Tensor ids = Tensor.of(Shape.of(1, 4), new float[] {2, 9, 4, 0}, Device.cpu());
+        roundTrip(new T5Encoder(T5Encoder.Settings.of(10, 8, 2, 2, 4, 12), r), l -> l.forward(Var.of(ids)));
         roundTrip(new ClipTextEncoder(new ClipTextEncoder.Settings(10, 8, 2, 2, 16, 6, Activation.QUICK_GELU, 1e-5f,
                 -1, 0), r), l -> l.forward(Var.of(ids)));
     }
