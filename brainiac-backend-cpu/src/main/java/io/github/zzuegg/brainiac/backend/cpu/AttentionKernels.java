@@ -56,6 +56,57 @@ final class AttentionKernels {
         });
     }
 
+    /**
+     * Latent attention (DeepSeek): every query head reads the one head of latents {@code c},
+     * which are both keys (with the rotary keys {@code r}) and values; see
+     * {@code Backend#latentAttention}. {@code shape}: batch, heads, tq, tk, latent, rope.
+     */
+    static void latent(double[] qc, double[] qr, double[] c, double[] r, int[] shape, double scale, double[] bias,
+                       long[] strides, double[] out) {
+        int heads = shape[1];
+        int tq = shape[2];
+        int tk = shape[3];
+        int dc = shape[4];
+        int dr = shape[5];
+        int rows = shape[0] * heads * tq;
+        Parallel.forRange(rows, (long) tk * (2 * dc + dr) * 4, (from, to) -> {
+            double[] acc = new double[dc];
+            for (int g = from; g < to; g++) {
+                int i = g % tq;
+                int bh = g / tq;
+                int h = bh % heads;
+                int b = bh / heads;
+                int cOff = b * tk * dc;
+                int rOff = b * tk * dr;
+                long bOff = b * strides[0] + h * strides[1] + i * strides[2];
+                java.util.Arrays.fill(acc, 0);
+                double m = Double.NEGATIVE_INFINITY;
+                double l = 0;
+                for (int j = 0; j < tk; j++) {
+                    double s = 0;
+                    for (int d = 0; d < dc; d++) {
+                        s += qc[g * dc + d] * c[cOff + j * dc + d];
+                    }
+                    for (int d = 0; d < dr; d++) {
+                        s += qr[g * dr + d] * r[rOff + j * dr + d];
+                    }
+                    s = s * scale + bias[(int) (bOff + j * strides[3])];
+                    double mn = Math.max(m, s);
+                    double corr = Math.exp(m - mn);
+                    double p = Math.exp(s - mn);
+                    l = l * corr + p;
+                    for (int d = 0; d < dc; d++) {
+                        acc[d] = acc[d] * corr + p * c[cOff + j * dc + d];
+                    }
+                    m = mn;
+                }
+                for (int d = 0; d < dc; d++) {
+                    out[g * dc + d] = acc[d] / l;
+                }
+            }
+        });
+    }
+
     static void backward(double[] q, double[] k, double[] v, double[] out, double[] lse, double[] grad, int[] shape,
                          double scale, boolean causal, double[] dq, double[] dk, double[] dv) {
         int heads = shape[1];

@@ -511,11 +511,14 @@ public final class PretrainedTokenizer implements Tokenizer {
                     }
                 }
                 String pre = String.valueOf(meta.get("tokenizer.ggml.pre"));
-                String regex = switch (pre) {
-                    case "qwen2", "deepseek-r1-qwen", "qwen35" -> TokenizerParts.QWEN2_PATTERN;
+                List<String> regexes = switch (pre) {
+                    case "qwen2", "deepseek-r1-qwen", "qwen35" -> List.of(TokenizerParts.QWEN2_PATTERN);
                     case "gpt-2", "gpt2", "starcoder", "refact", "olmo", "phi-2", "stablelm2" ->
-                            TokenizerParts.GPT2_PATTERN;
-                    default -> TokenizerParts.LLAMA3_PATTERN;
+                            List.of(TokenizerParts.GPT2_PATTERN);
+                    case "deepseek-llm" -> TokenizerParts.DEEPSEEK_LLM_PATTERNS;
+                    case "deepseek-v3" -> TokenizerParts.DEEPSEEK_V3_PATTERNS;
+                    case "kimi-k2" -> List.of(TokenizerParts.KIMI_K2_PATTERN);
+                    default -> List.of(TokenizerParts.LLAMA3_PATTERN);
                 };
                 Map<String, Object> model = new LinkedHashMap<>();
                 model.put("type", "BPE");
@@ -523,9 +526,13 @@ public final class PretrainedTokenizer implements Tokenizer {
                 model.put("merges", meta.getOrDefault("tokenizer.ggml.merges", List.of()));
                 model.put("ignore_merges", pre.equals("llama-bpe") || pre.equals("llama3"));
                 root.put("added_tokens", addedTokens);
-                root.put("pre_tokenizer", Map.of("type", "Sequence", "pretokenizers", List.of(
-                        Map.of("type", "Split", "pattern", Map.of("Regex", regex), "behavior", "Isolated"),
-                        Map.of("type", "ByteLevel", "add_prefix_space", false, "use_regex", false))));
+                List<Object> pretokenizers = new ArrayList<>();
+                for (String regex : regexes) {
+                    pretokenizers.add(Map.of("type", "Split", "pattern", Map.of("Regex", regex), "behavior",
+                            "Isolated"));
+                }
+                pretokenizers.add(Map.of("type", "ByteLevel", "add_prefix_space", false, "use_regex", false));
+                root.put("pre_tokenizer", Map.of("type", "Sequence", "pretokenizers", pretokenizers));
                 root.put("decoder", Map.of("type", "ByteLevel"));
                 if (bos >= 0 && Boolean.TRUE.equals(meta.get("tokenizer.ggml.add_bos_token"))) {
                     String name = (String) tokenList.get((int) bos);
@@ -616,9 +623,14 @@ public final class PretrainedTokenizer implements Tokenizer {
     private void byteLevelBpe(Map<String, Object> m, Map<String, Object> cfg, Map<String, Object> model) {
         List<Integer> types = new ArrayList<>();
         m.put("tokenizer.ggml.model", "gpt2");
-        String regex = findRegex(cfg.get("pre_tokenizer"));
+        List<String> regexes = new ArrayList<>();
+        findRegexes(cfg.get("pre_tokenizer"), regexes);
+        String regex = regexes.isEmpty() ? null : regexes.getFirst();
         String pre = TokenizerParts.QWEN2_PATTERN.equals(regex) ? "qwen2"
-                : TokenizerParts.LLAMA3_PATTERN.equals(regex) ? "llama-bpe" : "gpt2";
+                : TokenizerParts.LLAMA3_PATTERN.equals(regex) ? "llama-bpe"
+                : TokenizerParts.KIMI_K2_PATTERN.equals(regex) ? "kimi-k2"
+                : TokenizerParts.DEEPSEEK_V3_PATTERNS.equals(regexes) ? "deepseek-v3"
+                : TokenizerParts.DEEPSEEK_LLM_PATTERNS.equals(regexes) ? "deepseek-llm" : "gpt2";
         m.put("tokenizer.ggml.pre", pre);
         Set<Integer> control = new HashSet<>();
         Set<Integer> user = new HashSet<>();
@@ -698,27 +710,20 @@ public final class PretrainedTokenizer implements Tokenizer {
                 || Json.write(cfg.get("pre_tokenizer")).contains("\"add_prefix_space\":true"));
     }
 
-    /** The first split pattern in a pre-tokenizer description, or null. */
-    private static String findRegex(Object node) {
+    /** Every {@code Regex} under a pre-tokenizer, in order. */
+    private static void findRegexes(Object node, List<String> out) {
         if (node instanceof Map<?, ?> map) {
             if (map.get("Regex") instanceof String r) {
-                return r;
+                out.add(r);
             }
             for (Object v : map.values()) {
-                String r = findRegex(v);
-                if (r != null) {
-                    return r;
-                }
+                findRegexes(v, out);
             }
         } else if (node instanceof List<?> list) {
             for (Object v : list) {
-                String r = findRegex(v);
-                if (r != null) {
-                    return r;
-                }
+                findRegexes(v, out);
             }
         }
-        return null;
     }
 
     // ---------------------------------------------------------------- encoding

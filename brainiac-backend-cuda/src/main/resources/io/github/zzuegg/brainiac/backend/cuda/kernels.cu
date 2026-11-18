@@ -1133,6 +1133,85 @@ FEW_KERNELS(f16, F16)
 FEW_KERNELS(bf16, BF16)
 #endif
 
+// Multi-head latent attention over cached latents (Backend.latentAttention, DeepSeek): every
+// query head reads the batch's one head of latents c [batch, tk, dc], which are the keys (with
+// the rotary keys r [batch, tk, dr] adding to the scores) and also the values, so the output
+// stays in latent space: softmax(scale (qc c^T + qr r^T) + bias) c. A warp per query row, lane l
+// holding latent components l, l + 32, ... (up to 32 * LAT_LANES) and rotary ones up to
+// 32 * ATT_LANES.
+#define LAT_LANES 16
+
+template <class D> __device__ void attention_latent_k(const typename D::T* qc, const typename D::T* qr,
+        const typename D::T* c, const typename D::T* r, const typename D::T* bias, typename D::T* out, int heads,
+        int tq, int tk, int dc, int dr, float scale, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3) {
+    int lane = threadIdx.x & 31;
+    i64 row = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    if (row >= rows) {
+        return;
+    }
+    int i = (int) (row % tq);
+    int h = (int) ((row / tq) % heads);
+    i64 b = row / ((i64) tq * heads);
+    float qv[LAT_LANES];
+    float acc[LAT_LANES];
+    float rv[ATT_LANES];
+#pragma unroll
+    for (int t = 0; t < LAT_LANES; t++) {
+        int d = lane + 32 * t;
+        qv[t] = d < dc ? (float) D::ld(qc, row * dc + d) : 0.0f;
+        acc[t] = 0.0f;
+    }
+#pragma unroll
+    for (int t = 0; t < ATT_LANES; t++) {
+        int d = lane + 32 * t;
+        rv[t] = d < dr ? (float) D::ld(qr, row * dr + d) : 0.0f;
+    }
+    float m = neg_inf();
+    float l = 0.0f;
+    for (int j = 0; j < tk; j++) {
+        const typename D::T* cr = c + (b * tk + j) * dc;
+        const typename D::T* rr = r + (b * tk + j) * dr;
+        float cv[LAT_LANES];
+        float dot = 0.0f;
+#pragma unroll
+        for (int t = 0; t < LAT_LANES; t++) {
+            int d = lane + 32 * t;
+            cv[t] = d < dc ? (float) D::ld(cr, d) : 0.0f;
+            dot += qv[t] * cv[t];
+        }
+#pragma unroll
+        for (int t = 0; t < ATT_LANES; t++) {
+            int d = lane + 32 * t;
+            if (d < dr) {
+                dot += rv[t] * (float) D::ld(rr, d);
+            }
+        }
+        float score = warp_sum(dot) * scale;
+        if (hasBias) {
+            score += (float) D::ld(bias, b * b0 + h * b1 + i * b2 + j * b3);
+        }
+        if (score == neg_inf()) {
+            continue;
+        }
+        float mNew = fmaxf(m, score);
+        float correction = expf(m - mNew);
+        float weight = expf(score - mNew);
+        l = l * correction + weight;
+#pragma unroll
+        for (int t = 0; t < LAT_LANES; t++) {
+            acc[t] = acc[t] * correction + weight * cv[t];
+        }
+        m = mNew;
+    }
+#pragma unroll
+    for (int t = 0; t < LAT_LANES; t++) {
+        int d = lane + 32 * t;
+        if (d < dc) {
+            D::st(out, row * dc + d, l > 0 ? acc[t] / l : 0.0f);
+        }
+    }
+}
+
 #define ATTENTION_KERNELS(S, D)                                                                                   \
 extern "C" __global__ void attention_##S(const D::T* q, const D::T* k, const D::T* v, D::T* out, D::T* lse,       \
         const D::T* bias, float* part, AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3,         \
@@ -1154,6 +1233,11 @@ extern "C" __global__ void attention_dq_##S(const D::T* q, const D::T* k, const 
 extern "C" __global__ void attention_dkv_##S(const D::T* q, const D::T* k, const D::T* v, const D::T* lse,        \
         const D::T* grad, const float* delta, D::T* dk, D::T* dv, AttShape s, i64 keyRows) {                      \
     attention_dkv_k<D>(q, k, v, lse, grad, delta, dk, dv, s, keyRows);                                            \
+}                                                                                                                 \
+extern "C" __global__ void attention_latent_##S(const D::T* qc, const D::T* qr, const D::T* c, const D::T* r,     \
+        const D::T* bias, D::T* out, int heads, int tq, int tk, int dc, int dr, float scale, i64 rows, int hasBias,\
+        i64 b0, i64 b1, i64 b2, i64 b3) {                                                                         \
+    attention_latent_k<D>(qc, qr, c, r, bias, out, heads, tq, tk, dc, dr, scale, rows, hasBias, b0, b1, b2, b3);  \
 }
 
 #ifdef BRAINIAC_ATTENTION_F32

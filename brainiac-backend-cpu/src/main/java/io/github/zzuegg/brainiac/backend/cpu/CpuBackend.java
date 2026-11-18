@@ -461,6 +461,21 @@ public final class CpuBackend implements Backend {
     }
 
     @Override
+    public boolean hasLatentAttention(int[] shape, DType type) {
+        return true;
+    }
+
+    @Override
+    public void latentAttention(Storage qc, Storage qr, Storage c, Storage r, int[] shape, float scale, Storage bias,
+            long[] strides, Storage out) {
+        CpuStorage o = cpu(out);
+        double[] z = o.target();
+        AttentionKernels.latent(cpu(qc).read(), cpu(qr).read(), cpu(c).read(), cpu(r).read(), shape, scale,
+                cpu(bias).read(), strides, z);
+        o.write(z);
+    }
+
+    @Override
     public void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal, Storage out,
             Storage lse) {
         CpuStorage o = cpu(out);

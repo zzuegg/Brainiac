@@ -35,6 +35,29 @@ final class TokenizerParts {
     static final String QWEN2_PATTERN = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}"
             + "| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
 
+    /**
+     * DeepSeek LLM's (and DeepSeek-V2's) pre-tokenizer: splits applied one after another, as
+     * llama.cpp's {@code deepseek-llm} (the letter class is the tokenizer's own list).
+     */
+    static final List<String> DEEPSEEK_LLM_PATTERNS = List.of(
+            "[\r\n]",
+            "\\s?[A-Za-zµÀ-ÖØ-öø-ƺƼ-ƿǄ-ʓʕ-ʯͰ-ͳͶͷͻ-ͽͿΆΈ-ΊΌΎ-ΡΣ-ϵϷ-ҁҊ-ԯԱ-ՖႠ-ჅᎠ-Ᏽᏸ-ᏽᲐ-ᲺᲽ-Ჿᴀ-ᴫᵫ-ᵷᵹ-ᶚḀ-ἕἘ-Ἕἠ-ὅὈ-Ὅὐ-ὗὙὛὝὟ-ώᾀ-ᾴᾶ-ᾼιῂ-ῄῆ-ῌῐ-ΐῖ-Ίῠ-Ῥῲ-ῴῶ-ῼℂℇℊ-ℓℕℙ-ℝℤΩℨK-ℭℯ-ℴℹℼ-ℿⅅ-ⅉⅎↃↄⰀ-ⱻⱾ-ⳤⳫ-ⳮⳲⳳꙀ-ꙭꚀ-ꚛꜢ-ꝯꝱ-ꞇꞋ-ꞎꭰ-ꮿﬀ-ﬆﬓ-ﬗＡ-Ｚａ-ｚ𐐀-𐑏𐒰-𐓓𐓘-𐓻𐲀-𐲲𐳀-𐳲𑢠-𑣟𞤀-𞥃]+",
+            "\\s?[!-/:-~！-／：-～‘-‟　-。]+",
+            "\\s+$",
+            "[一-龥ࠀ-一가-퟿]+",
+            "\\p{N}+");
+    /** DeepSeek-V3's pre-tokenizer, as llama.cpp's {@code deepseek-v3}. */
+    static final List<String> DEEPSEEK_V3_PATTERNS = List.of(
+            "\\p{N}{1,3}",
+            "[一-龥぀-ゟ゠-ヿ]+",
+            "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+");
+    /** Kimi K2's pre-tokenizer (its tiktoken pattern; {@code \p{Han}} runs split off first). */
+    static final String KIMI_K2_PATTERN = "[\\p{IsHan}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{IsHan}]]*"
+            + "[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{IsHan}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+            + "|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{IsHan}]]+"
+            + "[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{IsHan}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+            + "|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
     static Pattern compile(String regex) {
         return Pattern.compile(regex, Pattern.UNICODE_CHARACTER_CLASS);
     }

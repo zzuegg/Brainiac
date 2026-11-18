@@ -142,4 +142,27 @@ class PretrainedTokenizerTest {
         assertEquals(id, ids[1]);
         assertEquals(plain.encode("a", false)[0], ids[0]);
     }
+
+    /**
+     * DeepSeek's and Kimi K2's pre-tokenizers, as GGUF names them: pieces as Hugging Face's
+     * tokenizers library splits them (DeepSeek) and as Kimi's tiktoken pattern does.
+     */
+    @Test
+    void deepSeekAndKimiPreTokenizersSplitAsTheirReferences() {
+        String text = "Hello world  12345 你好ab!?\nÀlpha's ΩMEGA 東京タワー x";
+        assertEquals(List.of("Hello", " world", "  ", "12345", " ", "你好", "ab", "!?", "\n", "À", "lpha", "'", "s",
+                " Ω", "MEGA", " ", "東京タワー", " x"), preSplit(TokenizerParts.DEEPSEEK_LLM_PATTERNS, text));
+        assertEquals(List.of("Hello", " world", "  ", "123", "45", " ", "你好", "ab", "!?\n", "Àlpha", "'s", " ΩMEGA",
+                " ", "東京タワー", " x"), preSplit(TokenizerParts.DEEPSEEK_V3_PATTERNS, text));
+        assertEquals(List.of("Hello", " world", " ", " ", "123", "45", " ", "你好", "ab", "!?\n", "Àlpha's", " ΩMEGA",
+                " ", "東京", "タワー", " x"), preSplit(List.of(TokenizerParts.KIMI_K2_PATTERN), text));
+    }
+
+    private static List<String> preSplit(List<String> patterns, String text) {
+        List<Object> splits = new java.util.ArrayList<>();
+        for (String p : patterns) {
+            splits.add(Map.of("type", "Split", "pattern", Map.of("Regex", p), "behavior", "Isolated"));
+        }
+        return TokenizerParts.preTokenizer(Map.of("type", "Sequence", "pretokenizers", splits)).split(text, true);
+    }
 }

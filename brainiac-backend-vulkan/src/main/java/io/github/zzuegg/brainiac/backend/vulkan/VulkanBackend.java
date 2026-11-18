@@ -1662,6 +1662,42 @@ public final class VulkanBackend implements Backend {
         done(xv, vs(v));
     }
 
+    @Override
+    public boolean hasLatentAttention(int[] shape, DType type) {
+        // latent_attention.comp keeps two output components per invocation, the rotary query in one block
+        return FUSED_ATTENTION && type != DType.FLOAT64 && shape[4] <= 2 * GROUP_SIZE && shape[5] <= GROUP_SIZE
+                && supports(type);
+    }
+
+    @Override
+    public synchronized void latentAttention(Storage qc, Storage qr, Storage c, Storage r, int[] shape, float scale,
+            Storage bias, long[] strides, Storage out) {
+        VkStorage z = vs(out);
+        if (z.dtype == DType.FLOAT64 || shape[4] > 2 * GROUP_SIZE || shape[5] > GROUP_SIZE) {
+            throw new UnsupportedOperationException("fused latent attention: " + z.dtype + ", latents of " + shape[4]
+                    + " and rotary keys of " + shape[5]);
+        }
+        eager(vs(qc), vs(qr), vs(c), vs(r), vs(bias), z);
+        VkStorage xqc = as(vs(qc), z.dtype);
+        VkStorage xqr = as(vs(qr), z.dtype);
+        VkStorage xc = as(vs(c), z.dtype);
+        VkStorage xr = as(vs(r), z.dtype);
+        VkStorage xb = as(vs(bias), z.dtype);
+        long rows = (long) shape[0] * shape[1] * shape[2];
+        vk.push().putLong(xqc.address()).putLong(xqr.address()).putLong(xc.address()).putLong(xr.address())
+                .putLong(z.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+                .putInt(shape[4]).putInt(shape[5]).putFloat(scale).putInt(Math.toIntExact(rows))
+                .putInt(Math.toIntExact(strides[0])).putInt(Math.toIntExact(strides[1]))
+                .putInt(Math.toIntExact(strides[2])).putInt(Math.toIntExact(strides[3]));
+        vk.dispatch(shader("latent_attention", z.dtype), rows, new VkContext.Slot[] {z.slot()}, xqc.slot(),
+                xqr.slot(), xc.slot(), xr.slot(), xb.slot());
+        done(xb, vs(bias));
+        done(xqc, vs(qc));
+        done(xqr, vs(qr));
+        done(xc, vs(c));
+        done(xr, vs(r));
+    }
+
     // ------------------------------------------------------------------ 8-bit rows
 
     /** Rows of 8-bit levels on the device (raw bytes read as words) with a float scale per row. */
