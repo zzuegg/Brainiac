@@ -1745,21 +1745,46 @@ public final class VulkanBackend implements Backend {
     private static final boolean PACKED_FACTORS = !"false".equals(System.getProperty("brainiac.vulkan.packedFactors"));
 
     /**
-     * Packs a matrix for this backend; it uploads on its first use. Weights joined before they
-     * are used, as {@code Llama.fuseProjections} joins q, k and v and gate and up, then never
-     * upload their parts: a 7B model's load uploaded 7.5 GB for 4.5 GB of weights.
+     * Packs a matrix for this backend. It uploads in the background, while the caller goes on
+     * (decoding a model's next weights), or on its first use if that comes first. A matrix
+     * unpacked to the host before it uploaded, as {@code Llama.fuseProjections} joins q, k
+     * and v and gate and up, waits for its first use instead: joined parts then never upload.
      */
     @Override
     public PackedStorage pack(PackedMatrix matrix) {
-        return new Deferred(this, matrix);
+        Deferred d = new Deferred(this, matrix);
+        if (PREFETCH) {
+            prefetcher.execute(() -> {
+                if (!d.skip) {
+                    try {
+                        packed(d);
+                    } catch (RuntimeException e) {
+                        // out of memory or such: the first use tries again, and fails there
+                    }
+                }
+            });
+        }
+        return d;
     }
 
-    /** A matrix packed for a backend, uploaded on its first use. */
+    /** Whether packed matrices upload in the background ({@code -Dbrainiac.vulkan.prefetch=false}: on first use). */
+    private static final boolean PREFETCH = !"false".equals(System.getProperty("brainiac.vulkan.prefetch"));
+    /** Uploads packed matrices in the background, one at a time; its thread starts with the first. */
+    private final java.util.concurrent.ExecutorService prefetcher = java.util.concurrent.Executors
+            .newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "brainiac-vulkan-upload");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** A matrix packed for a backend, uploaded in the background or on its first use. */
     private static final class Deferred implements PackedStorage {
         final VulkanBackend owner;
         final PackedMatrix host;
-        /** The uploaded matrix, once used. */
+        /** The uploaded matrix, once uploaded. */
         Packed done;
+        /** Whether the background upload should leave it (it was unpacked to the host first). */
+        volatile boolean skip;
 
         Deferred(VulkanBackend owner, PackedMatrix host) {
             this.owner = owner;
@@ -1960,6 +1985,7 @@ public final class VulkanBackend implements Backend {
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
         if (packed instanceof Deferred d) {
+            d.skip = true;
             return d.host;
         }
         if (packed instanceof Packed p) {
