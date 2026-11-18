@@ -127,4 +127,19 @@ class PretrainedTokenizerTest {
         }
         assertEquals(tok.bos().orElseThrow(), tok.encode("Hi", true)[0]);
     }
+
+    @Test
+    void addsTokensDeclaredOnlyInTheTokenizerConfig() throws IOException {
+        // Qwen2-VL-2B: <|image_pad|> is in tokenizer_config.json's added_tokens_decoder only
+        String json = Files.readString(fixture("bytelevel-bpe.json"));
+        int id = PretrainedTokenizer.fromJson(json, Map.of()).size();
+        PretrainedTokenizer plain = PretrainedTokenizer.fromJson(json, Map.of());
+        assertTrue(plain.encode("a<|image_pad|>b", false).length > 3);
+        PretrainedTokenizer tok = PretrainedTokenizer.fromJson(json, Map.of("added_tokens_decoder",
+                Map.of(String.valueOf(id), Map.of("content", "<|image_pad|>", "special", true))));
+        int[] ids = tok.encode("a<|image_pad|>b", false);
+        assertEquals(3, ids.length);
+        assertEquals(id, ids[1]);
+        assertEquals(plain.encode("a", false)[0], ids[0]);
+    }
 }
