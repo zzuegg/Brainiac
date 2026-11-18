@@ -134,6 +134,9 @@ jdks() {
     # more room on LWJGL's thread stack (64 KB by default) for drivers that report a lot,
     # passed on to every JVM Gradle starts (tests, run tasks)
     export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dorg.lwjgl.system.stackSize=512"
+    # NVIDIA's threaded-optimization worker crashed every JVM that had loaded Vulkan at exit
+    # (SIGSEGV in libEGL_nvidia); the driver reads this when it loads, so it is set up front
+    export __GL_THREADED_OPTIMIZATIONS="${__GL_THREADED_OPTIMIZATIONS:-0}"
     export PATH="$JAVA_HOME/bin:$PATH"
     # so that any ./gradlew (for example in "run CMD") finds JDK 27 without extra flags
     mkdir -p ~/.gradle

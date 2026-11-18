@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes. It also covers wave 10: 101 more techniques in six work packages (WP1–WP6, listed in `wave10-ideas.md`), tagged **W10** in the same way and measured in 39 new experiment entries (106 new test classes), with eight new themes: events, labels, metric, multitask, parsing, restoration, shift and speech. Wave 10 is gathered in its own section after wave 9, one part per work package; all its numbers are single-seed and at test budgets, because its long-budget Runs were not executed.
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes. It also covers wave 10: 101 more techniques in six work packages (WP1–WP6, listed in `wave10-ideas.md`), tagged **W10** in the same way and measured in 39 new experiment entries (106 new test classes), with eight new themes: events, labels, metric, multitask, parsing, restoration, shift and speech. Wave 10 is gathered in its own section after wave 9, one part per work package; all its numbers are single-seed and at test budgets, because its long-budget Runs were not executed. It also covers wave 11: 102 more techniques in six work packages (WP1–WP6, listed in `wave11-ideas.md`), tagged **W11** in the same way and measured in 53 new experiment entries (78 new test classes), with eight new themes: algorithms, bandits, combinatorial, discovery, econometrics, music, security and uncertainty. Wave 11 is gathered in its own section after wave 10, one part per work package; all its numbers are at test budgets and mostly single-seed, and no long runs were made, because the user asked for no extensive test runs.
 
 ## How the module is laid out
 
@@ -22,6 +22,7 @@ Rules this page follows:
 - Wave 8 numbers are keyed **Run-w8**: they were printed by the tests in one full suite run of the merged wave 8 work on 2026-11-18 (667 test classes, 1,328 tests, all passing). Where a wave 8 test printed nothing on a point, or the number comes from a larger run than the test budget allows, it is taken from the implementing agent's final report and marked **(R-wave8)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - Wave 9 numbers are keyed **R-wave9**: they come from the final reports of the six wave 9 work-package agents, who ran their own test classes one at a time with `--tests` filters on 2026-11-18 (all passing). No full suite run of the merged wave 9 work has been made, so there is no Run-w9 key. Where an agent's first report and its follow-up after fixes disagree, the follow-up is used. Most wave 9 rows are one seed, and small gaps are within noise.
 - Wave 10 numbers are keyed **R-wave10**: they come from the final reports of the six wave 10 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 10 branch or of the merged branch has been made, so there is no Run-w10 key. Every wave 10 number is single-seed and at the test budget. The long-budget `main()` Runs, including most of the wave 9 follow-ups, were written but not executed, so a hypothesis that needs them is marked **Inconclusive (long run pending)** unless the test-budget numbers already settle it.
+- Wave 11 numbers are keyed **R-wave11**: they come from the final reports of the six wave 11 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 11 branch or of the merged branch has been made, so there is no Run-w11 key. Every wave 11 number is at the test budget and most are single-seed, and no long runs were made. Where a number comes from a probe run larger than the test's, the row says so, and a hypothesis that the test-budget numbers cannot decide is marked **Inconclusive**.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -52,6 +53,7 @@ Source keys (given under each experiment):
 | R-wave8 | Session transcript: final reports of the six wave 8 work-package agents (WP1–WP6) |
 | R-wave9 | Session transcript: final reports of the six wave 9 work-package agents (WP1–WP6), including their follow-ups after fixes; per-class test runs, 2026-11-18 |
 | R-wave10 | Session transcript: final reports of the six wave 10 work-package agents (WP1–WP6); per-class test runs only, single seed at test budgets, 2026-11-18; long-budget `main()` Runs not executed |
+| R-wave11 | Session transcript: final reports of the six wave 11 work-package agents (WP1–WP6); per-class test runs only, at test budgets and mostly single seed, 2026-11-18; no long runs |
 
 ---
 
@@ -4957,6 +4959,834 @@ Sources: R-wave10. Theme: audio. Test: VocoderWarmupTest. Blocks: `GanVocoder.me
 
 ---
 
+## Wave 11
+
+Wave 11 adds 102 techniques in six work packages (WP1–WP6, items 11.1.1 to 11.6.17 in `wave11-ideas.md`). An item is tagged **W11** in the same way as earlier waves, so "W11 1.3" is item 11.1.3. The six work-package branches were built on wave 10's `wave10-int` (7b71850) and are merged into the local branch `claude/project-thread-8zvcl0`, which has not been pushed. Wave 11 adds 78 test classes, 53 experiment entries below and eight new themes (algorithms, bandits, combinatorial, discovery, econometrics, music, security and uncertainty), and extends eighteen existing ones (classic, compression, control, events, graphs, interp, language, multiagent, parsing, privacy, probabilistic, robustness, safety, survival, synthesis, timeseries, vision and world). As in waves 9 and 10, the section has one part per work package, and the theme of each experiment is given on its Sources line. Four items are fair-test follow-ups or lift earlier cuts (11.1.10, 11.3.14, 11.4.4 and 11.6.17).
+
+Every wave 11 number is keyed **R-wave11**. It comes from the final report of the work-package agent that built the item. The user asked for no extensive test runs, so each agent ran only its own test classes, one or two at a time with `--tests` filters, in the cloud container on 2026-11-18, and all of them passed when last run. No full suite run has been made, neither of a single branch nor of the merged branch, so there is no Run-w11 key. Two caveats apply to every row:
+
+- **All numbers are test-budget and mostly single-seed** (seed 1 unless a row says otherwise; the 11.6.1 bandit row averages 40 seeds, and several WP6 RL rows use 2–4 seeds). Gaps of a few points are within noise.
+- **No long runs were made**, because the user asked for no extensive test runs. The tasks are cut to toy sizes (TSP-10 and TSP-20 instead of TSP-50, MLPs on 8×8 digits instead of ShapeImages CNNs, 100 agents instead of 400), so a hypothesis stated at paper scale is judged at the scale that ran. A few rows come from a probe run larger than the test's; those rows say so.
+
+Some test classes take longer than the ~10 s target, and some budgets were cut after the timed run; each WP part says which.
+
+The **Verdict** column reads as follows:
+- **Win:** the technique beats its baseline clearly.
+- **Mixed:** it wins on some measures or settings and loses on others.
+- **Negative:** it does not beat its baseline, or the hypothesis in `wave11-ideas.md` did not hold. These rows are kept and labelled.
+- **Inconclusive:** the numbers at the test budget cannot decide (no method reached the reward, or a single noisy seed contradicts itself).
+
+### Wave 11 verdicts by item
+
+| WP | Win | Mixed | Negative | Inconclusive | Items |
+|---|---|---|---|---|---|
+| WP1 security and privacy | 8 | 7 | 2 | 0 | 17 |
+| WP2 combinatorial optimisation and algorithms | 7 | 4 | 6 | 0 | 17 |
+| WP3 causal discovery, econometrics, statistical models | 12 | 5 | 0 | 0 | 17 |
+| WP4 uncertainty, ensembles, classic models | 6 | 7 | 4 | 0 | 17 |
+| WP5 perception and language | 6 | 8 | 3 | 0 | 17 |
+| WP6 bandits, exploration, multi-agent RL | 6 | 4 | 5 | 2 | 17 |
+| **Total** | **45** | **35** | **20** | **2** | **102** |
+
+The 2 Inconclusive items are 11.6.7 (no exploration bonus found the reward at the test budget) and 11.6.11 (one seed, in which preference learning beats the true reward). WP3 has no Negative item, but three of its Mixed items contain a negative row: SCORE in 11.3.3, TROP in 11.3.6 and squared circuits on digits in 11.3.12.
+
+| Item | Technique | Experiment | Verdict |
+|---|---|---|---|
+| W11 1.1 | Krum, median, trimmed mean, geometric median | RobustAggregation | Win |
+| W11 1.2 | Bucketing, centred clipping, NNM, learned aggregation weights | RobustAggregation | Mixed |
+| W11 1.3 | Sign flip, ALIE, IPM, model replacement | RobustAggregation | Mixed |
+| W11 1.4 | BadNets, blended and clean-label backdoors | BackdoorShootout | Mixed |
+| W11 1.5 | Spectral signatures, activation clustering, AGPD | BackdoorShootout | Mixed |
+| W11 1.6 | Neural Cleanse, fine-pruning, ANP | BackdoorShootout | Negative |
+| W11 1.7 | NES, SimBA, Square | AttackShootout | Win |
+| W11 1.8 | Boundary attack and HopSkipJump | AttackShootout | Mixed |
+| W11 1.9 | MI-FGSM, ensemble transfer, universal perturbations | AttackShootout | Mixed |
+| W11 1.10 | AutoAttack re-evaluation (follow-up) | AdversarialRobustness | Win |
+| W11 1.11 | Equation solving, Jacobian augmentation, Knockoff, prediction poisoning | ModelExtraction | Win |
+| W11 1.12 | GRR, RAPPOR, OUE, OLH | MechanismShootout | Win |
+| W11 1.13 | Exponential mechanism, noisy max, permute-and-flip, sparse vector | MechanismShootout | Win |
+| W11 1.14 | MWEM and PrivBayes | MechanismShootout | Win |
+| W11 1.15 | Tree DP-FTRL, banded factorisation, BLT | MechanismShootout, PrivateTraining | Win |
+| W11 1.16 | SISA, S3T, SCRUB | UnlearningComparison | Mixed |
+| W11 1.17 | AugMix with JSD, TrivialAugment | AdversarialRobustness | Negative |
+| W11 2.1 | Pointer networks, supervised and actor-critic | RoutingShootout | Negative |
+| W11 2.2 | Attention model with rollout baseline | RoutingShootout | Mixed |
+| W11 2.3 | POMO and Sym-NCO | RoutingShootout | Mixed |
+| W11 2.4 | Preference optimisation for NCO | RoutingShootout | Win |
+| W11 2.5 | Active search and EAS | RoutingShootout | Negative |
+| W11 2.6 | Learned 2-opt | RoutingShootout | Win |
+| W11 2.7 | Edge-heatmap GCN and soft-permutation GNN | RoutingShootout | Mixed |
+| W11 2.8 | Erdős goes neural and PI-GNN | GraphCoShootout | Negative |
+| W11 2.9 | GFlowNets with forward-looking detailed balance | GraphCoShootout | Win |
+| W11 2.10 | GNN imitation of strong branching | SolverLearning | Negative |
+| W11 2.11 | Learned WalkSAT | SolverLearning | Negative |
+| W11 2.12 | BUSTLE and CrossBeam | ProgramSynthesisShootout | Win |
+| W11 2.13 | Probe | ProgramSynthesisShootout | Negative |
+| W11 2.14 | Count-Min (conservative update), Count-Sketch, Space-Saving, HyperLogLog | SketchShootout | Win |
+| W11 2.15 | Learned Count-Min, Misra–Gries and Frequent Directions | SketchShootout | Mixed |
+| W11 2.16 | RMI, PLA index, learned and sandwiched Bloom filters | LearnedStructures | Win |
+| W11 2.17 | Predictive marking, learned eviction, ski rental | CachingWithPredictions | Win |
+| W11 3.1 | PC with Meek rules, kernel CI, FCI | DiscoveryShootout | Win |
+| W11 3.2 | ICA-LiNGAM and DirectLiNGAM | DiscoveryShootout | Win |
+| W11 3.3 | SCORE and TriOpt | DiscoveryShootout | Mixed |
+| W11 3.4 | ANM, IGCI, RECI | DiscoveryShootout | Win |
+| W11 3.5 | Granger, neural Granger, PCMCI | TimeSeriesDiscovery | Win |
+| W11 3.6 | Synthetic control, SDID, TROP | PanelShootout | Mixed |
+| W11 3.7 | Callaway–Sant'Anna and Sun–Abraham | PanelShootout | Win |
+| W11 3.8 | Local-linear RDD, IK and CCT, McCrary test | DiscontinuityDesigns | Win |
+| W11 3.9 | Entropy balancing, CBPS, stable weights | ObservationalAdjustment | Win |
+| W11 3.10 | E-values, robustness values, Rosenbaum bounds | ObservationalAdjustment | Win |
+| W11 3.11 | LearnSPN and tensorised circuits with EM | CircuitShootout | Win |
+| W11 3.12 | Squared and Inception circuits | CircuitShootout | Mixed |
+| W11 3.13 | Variational Bayesian GMM | CircuitShootout | Win |
+| W11 3.14 | LDS EM with a missing-aware Kalman smoother (follow-up) | StateSpaceEm | Win |
+| W11 3.15 | Hierarchical reconciliation (MinT-shrink, robust) | HierarchicalForecasting | Mixed |
+| W11 3.16 | Croston, SBA, TSB | IntermittentDemand | Mixed |
+| W11 3.17 | Weibull AFT and Deep Survival Machines | SurvivalShootout | Win |
+| W11 4.1 | Recalibration maps (temperature, vector, matrix, Dirichlet) | RecalibrationShootout | Win |
+| W11 4.2 | Structured matrix scaling, ensemble temperature, splines | RecalibrationShootout | Mixed |
+| W11 4.3 | Venn–Abers predictors | RecalibrationShootout | Win |
+| W11 4.4 | RAPS, Mondrian conformal, risk control (follow-up) | ConformalSets | Mixed |
+| W11 4.5 | Conformal training | ConformalSets | Negative |
+| W11 4.6 | Snapshot ensembles and FGE | EnsembleShootout | Win |
+| W11 4.7 | MIMO and packed ensembles | EnsembleShootout | Mixed |
+| W11 4.8 | Super learner | EnsembleShootout | Win |
+| W11 4.9 | Test-time augmentation, learned aggregation | EnsembleShootout | Win |
+| W11 4.10 | NCL, DivDis, D-BAT | EnsembleShootout | Negative |
+| W11 4.11 | BinaryConnect, BNN, XNOR-Net, Bi-Real | CompactModels | Mixed |
+| W11 4.12 | RBMs with CD, PCD, parallel tempering, AIS | ClassicLearners | Mixed |
+| W11 4.13 | Tsetlin and fuzzy-pattern Tsetlin machines | ClassicLearners | Mixed |
+| W11 4.14 | EnD² and Hydra distillation | EnsembleShootout | Negative |
+| W11 4.15 | Multiple-choice learning (WTA) | MultipleHypotheses | Win |
+| W11 4.16 | Ensemble audit under noise and imbalance | EnsembleShootout | Negative |
+| W11 4.17 | Min–max, lattice and constrained monotonic networks | ClassicMlShootout | Mixed |
+| W11 5.1 | Autocorrelation, YIN, pYIN | PitchShootout | Win |
+| W11 5.2 | CREPE, PESTO, self-supervised voicing | PitchShootout | Mixed |
+| W11 5.3 | Spectral flux, DP and neural beat tracking | RhythmAndHarmony | Win |
+| W11 5.4 | Chroma and HMM chord recognition | RhythmAndHarmony | Win |
+| W11 5.5 | Landmark and neural audio fingerprints | AudioRetrieval | Win |
+| W11 5.6 | CRNN sound event detection | AudioRetrieval | Win |
+| W11 5.7 | IBM Models 1 and 2, HMM alignment | ClassicNlp | Mixed |
+| W11 5.8 | Noisy-channel spelling correction | ClassicNlp | Mixed |
+| W11 5.9 | SimCSE | ClassicNlp | Mixed |
+| W11 5.10 | Neural and compound PCFGs | GrammarInduction | Negative |
+| W11 5.11 | PaDiM and PatchCore | ImageAnomalyShootout | Mixed |
+| W11 5.12 | Dinomaly | ImageAnomalyShootout | Negative |
+| W11 5.13 | TSM, (2+1)-D, late fusion | ActionRecognition | Mixed |
+| W11 5.14 | Harris, learned keypoints, RANSAC | FeatureMatching | Mixed |
+| W11 5.15 | Sobel, Canny, HED | EdgeDetection | Mixed |
+| W11 5.16 | DSH and HashNet | HashingRetrieval | Win |
+| W11 5.17 | FFT convolution and spectral pooling | SpectralConvolution | Negative |
+| W11 6.1 | KL-UCB, Bernoulli TS, MOSS, IMED | StochasticBandits | Win |
+| W11 6.2 | EXP3, EXP3-IX, Tsallis-INF | StochasticBandits | Win |
+| W11 6.3 | Best-arm identification, including Almost Tracking | PureExploration | Win |
+| W11 6.4 | RUCB and double Thompson sampling | PureExploration | Negative |
+| W11 6.5 | Combinatorial and cascading bandits | RankingBandits | Negative |
+| W11 6.6 | Bootstrapped DQN with priors, RLSVI | DeepExploration | Mixed |
+| W11 6.7 | SimHash counts and pseudo-counts | DeepExploration | Inconclusive |
+| W11 6.8 | DIAYN, METRA, CSF | DeepExploration | Negative |
+| W11 6.9 | MBPO | ModelBasedAndHierarchical | Negative |
+| W11 6.10 | HIRO and HAC | ModelBasedAndHierarchical | Win |
+| W11 6.11 | Christiano, PEBBLE, SURF | RewardFormulations | Inconclusive |
+| W11 6.12 | R-learning and differential Q-learning | RewardFormulations | Win |
+| W11 6.13 | QTRAN, QPLEX, QFIX | CooperativeMarl | Mixed |
+| W11 6.14 | Mean-field Q and actor-critic | CooperativeMarl | Negative |
+| W11 6.15 | Other-play | CooperativeMarl | Mixed |
+| W11 6.16 | HAPPO and HATRPO | CooperativeMarl | Win |
+| W11 6.17 | Pixel CartPole and continuous MountainCar (follow-up) | WorldModelShootout, ModernOffPolicy | Mixed |
+
+---
+
+## Wave 11 WP1: security and privacy of learning
+
+New packages: `experimental.security`, `experimental.dpmech` and `experiments.security`. Also new: the generator `experimental.data.PoisonedSets`, `experimental.train.ShardedUnlearning` (SISA and S3T) and `Scrub`, and `experimental.robust.AugMix` and `TrivialAugment`. New methods in existing experiments leave earlier rows unchanged: `PrivateTraining.dpFtrl`, `UnlearningComparison.exact` and `deletionStream`, and `AdversarialRobustness.autoAttack` and `corruptions`. To stay within the time budget every task uses the digits MLP rather than the VisionShootout CNN and ShapeImages. All 13 test classes passed, each in about 10 s or less. All numbers are seed 1, and ASR is attack success rate (R-wave11).
+
+### RobustAggregation (W11 1.1: Krum, median, trimmed mean and geometric median, 1.2: bucketing, centred clipping, NNM and learned weights, 1.3: model-poisoning attacks)
+Sources: R-wave11. Theme: security. Tests: RobustAggregationTest, PreAggregationTest, ModelPoisoningTest. Blocks: `security.Aggregator`, `RobustAggregators`, `PreAggregation`, `LearnedAggregationWeights` (arXiv 2511.03529), `ModelPoisoning`, `ByzantineFederation`. Task: `PoisonedSets` federated digits, 20 clients, 20% attackers unless a row says otherwise.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Multi-Krum; median; trimmed mean; geometric median; Krum, IID, sign flip | Accuracy | 0.720; 0.620; 0.603; 0.623; 0.297 | FedAvg: 0.157. Honest-only oracle: 0.720. No attack: FedAvg, FedProx and FedNova 0.757 | Win | Every rule but Krum alone rescues FedAvg. Only Multi-Krum is within a few points of the oracle; the others are about 10 points below. |
+| Multi-Krum; trimmed mean; median; Krum, Dirichlet α = 0.1, no attack | Accuracy | 0.653; 0.643; 0.553; 0.190 | FedAvg: 0.690 | Mixed | The price of robustness under label skew is 4–14 points (50 for Krum), as predicted. |
+| NNM + median; centred clipping (adaptive τ, 1 iteration); bucketing + median, α = 0.1 | Worst-case accuracy over no attack, sign flip and ALIE | 0.507; 0.490; 0.410 | Median: 0.300. FedAvg: 0.127. FedAvgM: 0.093 | Win | NNM and centred clipping recover a large part of the heterogeneity loss, as predicted. |
+| Learned aggregation weights, α = 0.1 | Worst-case accuracy | 0.100 | NNM + median: 0.507. FedAvg: 0.127 | Negative | Negative: attackers that lie about their losses collapse the learned weights already at 20%, where they were expected to match NNM. |
+| Sign flip; same-norm noise; ALIE; non-omniscient ALIE; IPM, IID | Accuracy under median / Multi-Krum | 0.620 / 0.720; 0.690 / 0.720; 0.590 / 0.703; 0.710 / 0.730; 0.587 / 0.697 | No attack: 0.750 / 0.767 | Mixed | ALIE and IPM cut the median by 16 points, inside the predicted 10–30, but Multi-Krum loses only 6–7, and sign flips cost the median 13 points instead of almost nothing. |
+| Model replacement, 10% attackers | Backdoor success (FedAvg clean accuracy) | FedAvg 0.956 (0.740). Centred clipping 0.719. Median 0.352 | FedAvg clean accuracy without the attack: 0.757 | Mixed | The trigger is implanted above 90% under FedAvg, as predicted, but centred clipping does not stop it; the median does better. |
+
+Item verdicts: 1.1 Win, 1.2 Mixed, 1.3 Mixed.
+
+Not done: no 40% attacker or α = 1 rows were reported; `FederatedAlgorithms` has no pluggable aggregator hook, so `ByzantineFederation` re-implements the round on top of `FederatedClient`.
+
+### BackdoorShootout (W11 1.4: BadNets, blended and clean-label backdoors, 1.5: poisoned-sample detection, 1.6: backdoor repair)
+Sources: R-wave11. Theme: security. Tests: BackdoorShootoutTest, PoisonDetectionTest, BackdoorRepairTest. Blocks: `security.Backdoors`, `PoisonDetectors` (spectral signatures, activation clustering, AGPD), `BackdoorRepair` (fine-tuning, Neural Cleanse, fine-pruning, ANP, LAT); generator `PoisonedSets`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Patch (BadNets); blended; clean-label | ASR at 1% / 5% poison | 0.574 / 0.930; 0.022 / 0.452; 0.322 / 0.763 | Random-label control: 0.015. Clean model: 0.000. Clean accuracy stays at 0.94–0.98 | Mixed | BadNets needs 5% poison, not 1%, to pass 90%. Clean-label is stronger than predicted, not 5–10x weaker. |
+| Activation clustering; spectral signatures; AGPD, patch at 5% | Detection AUROC, all samples / within the target class | 0.947 / 0.998; 0.669 / 0.803; 0.5 / 0.5 | Loss: 0.274. EL2N: 0.186. Random: 0.432 | Mixed | Clustering detects the patch poison; spectral signatures stay below the predicted 0.95. AGPD is a negative result: the target-class z-score is −1.41 and nothing is flagged. On blended triggers, loss (0.933) and EL2N (0.843) detect best. |
+| Filter and retrain: spectral; clustering | ASR after retraining, patch / blended | 0.841 / 0.400; 0.911 / 0.456 | Random filtering: 0.904 / 0.693 | Negative | Negative: ranking alone does not remove the patch backdoor, far from the predicted ASR below 10%; it helps somewhat on blended triggers. The test was relaxed to what was measured (clustering above 0.9, spectral above random, filtering no worse than random). |
+| Fine-tuning; Neural Cleanse; fine-pruning; ANP (4 of 64 neurons pruned), patch at 5% | Clean accuracy / ASR | 0.947 / 0.870; 0.940 / 0.870; 0.813 / 0.826; 0.947 / 0.922 | Backdoored model: 0.970 / 0.930. LAT: 0.907 / 0.644 | Negative | Negative: no repair removes the backdoor, and ANP is the weakest, not the best. Neural Cleanse flags nothing (class 0 mask norm 7.5 against a median of 8.4). Only the LAT baseline lowers ASR. |
+
+Item verdicts: 1.4 Mixed, 1.5 Mixed, 1.6 Negative.
+
+### AttackShootout (W11 1.7: NES, SimBA and the Square Attack, 1.8: boundary attack and HopSkipJump, 1.9: MI-FGSM, ensemble transfer and universal perturbations)
+Sources: R-wave11. Theme: security. Test: AttackShootoutTest. Blocks: `security.QueryOracle`, `BlackBoxAttacks`, `DecisionAttacks`, `TransferAttacks`, `AutoAttack`. Task: the digits MLP, standard and PGD-trained.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Square; SimBA pixel; SimBA DCT; NES, ε = 0.2, 500 queries | Success rate (median queries), standard / PGD-trained model | 1.00 (19) / 0.98 (74); 1.00 (44) / 0.98 (56); 0.96 (12) / 0.64 (22); 0.98 (106) / 0.60 (127) | White-box PGD: 1.00 / 0.90. Random noise: 0.04 / 0.00 | Win | Square matches white-box PGD on the standard model at a median of 19 queries. On the PGD-trained model Square and SimBA pixel beat white-box PGD rather than falling behind; NES and SimBA DCT fall behind, as predicted. |
+| HopSkipJump; boundary attack, untargeted ℓ2 | Median ℓ2 at 100 / 500 / 2,000 queries | 1.40 / 0.78 / 0.71; 2.05 / 1.12 / 0.67 | White-box minimal PGD: 0.69 | Mixed | HopSkipJump is within 2x of white-box from 500 queries and leads at small budgets, but the boundary attack catches up by 2,000 queries instead of needing 10x more. A bug in the boundary attack (both step sizes adapted at a fixed ratio) was fixed while testing. |
+| PGD; MI-FGSM, one surrogate / 3-model ensemble, ε = 0.2 | Transfer success | 0.815 / 0.945; 0.805 / 0.940 | Random: 0.06. White-box: 0.995 | Mixed | The ensemble is what raises transfer; momentum adds nothing. From 0.815 a doubling is not possible. |
+| Universal perturbation, ε = 0.3 | Share of held-out digits fooled | 0.507 | | Mixed | Passes 50%, but at ε = 0.3, not the hypothesised 0.2. |
+
+Item verdicts: 1.7 Win, 1.8 Mixed, 1.9 Mixed.
+
+### AdversarialRobustness autoAttack (W11 1.10: AutoAttack re-evaluation, follow-up)
+Sources: R-wave11. Theme: robustness. Tests: AutoAttackReevaluationTest, AttackShootoutTest. Blocks: `security.AutoAttack` (APGD-CE, APGD-DLR, targeted DLR and Square); `AdversarialRobustness.autoAttack`. It re-evaluates wave 8's defences, which were reported against fixed-step PGD only.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| AutoAttack against standard; noise; fast FGSM; PGD-AT; TRADES training, ε = 0.1 | Clean / PGD-10 / PGD-50×3 / AutoAttack accuracy | 0.947 / 0.267 / 0.240 / 0.167; 0.967 / 0.280 / 0.233 / 0.180; 0.967 / 0.587 / 0.587 / 0.500; 0.980 / 0.593 / 0.587 / 0.487; 0.973 / 0.640 / 0.627 / 0.520 | PGD-10, wave 8's evaluation | Win | AutoAttack takes 9–12 points off PGD-10 for every defence, more than the predicted 1–5, and 6–10 points off PGD-50 with 3 restarts. TRADES stays on top; fast FGSM and PGD-AT nearly swap. |
+| APGD-CE; + targeted DLR, PGD-AT model in AttackShootout | Robust accuracy | 0.687; 0.647 | PGD-10: 0.713 | Win | Each stage of the ensemble lowers the estimate further. |
+
+Item verdict: 1.10 Win.
+
+Not done: FAB is not in the ensemble; the randomized-smoothing lower bound was not added; no 1-Lipschitz row was reported.
+
+### ModelExtraction (W11 1.11: equation solving, Jacobian augmentation, Knockoff Nets and prediction poisoning)
+Sources: R-wave11. Theme: security. Test: ModelExtractionTest. Blocks: `security.ModelExtraction`, `PredictionPoisoning`. ShapeImages supply part of the query pool.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Equation solving, 65 queries | Agreement with the victim on digits / noise inputs | 1.000 / 1.000 | | Win | Recovers the logistic model exactly, as predicted. |
+| Knockoff with probabilities, random / adaptive queries; labels only; Jacobian augmentation, 1,500 queries | Agreement with the victim | 0.773 / 0.780; 0.537; 0.627 | Data owner trained on 1,500 true labels: 0.977 | Mixed | Below the hypothesised 90%, and much lower with labels only, as predicted. |
+| Top-1-preserving prediction poisoning (λ = 0.9); rounding to 1 decimal | Knockoff agreement (honest top-1 accuracy) | 0.297 (0.997 both ways); 0.727 | No defence: 0.773 | Win | Poisoning more than halves the attacker's agreement at zero top-1 cost to honest users, as predicted. |
+
+Item verdict: 1.11 Win.
+
+### MechanismShootout (W11 1.12: local DP frequency oracles, 1.13: private selection and sparse vector, 1.14: MWEM and PrivBayes, 1.15: correlated-noise prefix sums)
+Sources: R-wave11. Theme: privacy. Test: MechanismShootoutTest. Blocks: `dpmech.LocalDp`, `PrivateSelection`, `SparseVector`, `Mwem`, `PrivBayes`, `CorrelatedNoise`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GRR; OUE; RAPPOR, Zipf streams, 20k users | Frequency MSE | k = 16, ε = 4: GRR 2.1e-6, OUE 5.2e-6. k = 256, ε = 1: OUE 1.7e-4, GRR 3.8e-3. k = 16, ε = 1: RAPPOR 1.1e-4, OUE 1.3e-4, GRR 2.4e-4 | Central Laplace: about 10⁴ times smaller | Win | The GRR vs OUE/OLH crossover matches theory. Local DP costs about 10⁴ times the central error, beyond the hypothesised 10–100x. Projecting onto the simplex cuts GRR's error at k = 256 by 12x. |
+| Permute-and-flip; Laplace noisy-max; exponential; Gumbel noisy-max, mode of 32 items, ε = 0.1 | Expected utility gap | 30.8; 32.3; 35.1; 35.1 | Uniform: 51.75 | Win | Permute-and-flip is best, but by 12% over the exponential mechanism, not up to 2x. Gumbel equals exponential, as theory says. Choosing among 16 hyperparameter configurations at ε = 1 costs 0.003–0.005 test accuracy against 0.348 for a uniform choice. |
+| Sparse vector, correct; no query noise; unbounded | Measured ε (1 claimed) | 0.90; 8.98; 3.85 | | Win | The broken variants leak far more than they claim, as predicted. |
+| MWEM; PrivBayes, 2-way marginals | Workload error at ε = 0.1 / 1 / 10 | 0.725 / 0.109 / 0.069; 0.590 / 0.219 / 0.078 | Independent Laplace marginals: 1.382 / 0.138 / 0.014 | Win | MWEM beats independent noise at ε ≤ 1, as predicted, and loses at ε = 10. The 3-way PrivBayes claim was not tested. |
+| MWEM; PrivBayes | Train-on-synthetic, test-on-real accuracy at ε = 0.1 / 1 / 10 | 0.388 / 0.706 / 0.721; 0.515 / 0.674 / 0.684 | Real data: 0.720 | Win | MWEM's synthetic table reaches real-data accuracy from ε = 1; PrivBayes is better at ε = 0.1. |
+| Tree; banded factorisation (at most 16 bands); BLT, prefix sums with n = 512, k = 4, separation 128 | RMSE (state per coordinate) | 15.9 (10); 9.5 (15); 6.2 (3) | Independent noise: 32.0 (0) | Win | BLT beats banded factorisation rather than just matching it, with 5x less state, and both beat the tree. |
+
+Item verdicts: 1.12 Win, 1.13 Win, 1.14 Win. For 1.15 see the DP-FTRL entry below.
+
+Not done: the 11.1.13 baseline of DP-SGD with one fixed configuration; the 11.1.14 table is built locally from TabularStressSuite (6 columns in 4 bins plus a binary label), and the real table replaces TabDDPM and CTGAN as the upper bound.
+
+### PrivateTraining dpFtrl (W11 1.15: tree-aggregation DP-FTRL, banded matrix factorisation and BLT)
+Sources: R-wave11. Theme: safety. Test: DpFtrlTrainingTest (about 10 s). Blocks: `dpmech.DpFtrl`, `CorrelatedNoise`; `PrivateTraining.dpFtrl`. 50 steps of batch 200, k = 10.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Banded; BLT; tree DP-FTRL | Test accuracy at ε = 2 / 8 | 0.486 / 0.656; 0.490 / 0.660; 0.146 / 0.536 | DP-SGD amplified: 0.496 / 0.614. Unamplified: 0.384 / 0.658 | Win | Banded and BLT beat unamplified DP-SGD at ε = 2 and tie it at ε = 8; they tie amplified DP-SGD at ε = 2 and beat it at ε = 8. The tree mechanism is worst. |
+
+Item verdict: 1.15 Win (together with the prefix-sum row above).
+
+Not done: `DpSgd`'s per-example clipping cannot be reused, so `DpFtrl` has its own copy.
+
+### UnlearningComparison exact (W11 1.16: SISA, S3T and SCRUB)
+Sources: R-wave11. Theme: interp. Test: ExactUnlearningTest. Blocks: `experimental.train.ShardedUnlearning` (SISA and S3T), `Scrub`; `UnlearningComparison.exact` and `deletionStream`. Task: memorised exceptions, 40 of them to forget.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SISA (4 shards × 4 slices); S3T; SCRUB | Forget accuracy / test accuracy / membership AUC | 0.00 / 0.85 / 0.52; 0.03 / 0.91 / 0.52; 0.55 / 0.81 / 0.95 | Retrain: 0.03 / 0.92 / 0.53. Original: 1.00 / 0.76 / 1.00 | Mixed | SISA deletes exactly at 3,024 example-epochs against 24,000 for a full retrain, but costs 7 points of accuracy, a little over the predicted 2–6. S3T ends at depth 0 (the exceptions sit in every slice, so all adapters are switched off), so it says nothing about slicing. SCRUB misses retraining's forget accuracy and leaves membership AUC at 0.95. |
+| SISA; S3T, deletion stream of 1 / 5 / 10% | Test accuracy | 0.883 / 0.873 / 0.873; falls to 0.728 at depth 0 | Retraining after every deletion: 0.93 | Mixed | SISA costs 12–14% of retraining after every deletion; S3T collapses. |
+
+Item verdict: 1.16 Mixed.
+
+Not done: membership AUC uses a loss threshold, not LiRA.
+
+### AdversarialRobustness corruptions (W11 1.17: AugMix with Jensen–Shannon consistency, and TrivialAugment)
+Sources: R-wave11. Theme: robustness. Test: CorruptionRobustnessTest. Blocks: `experimental.robust.AugMix`, `TrivialAugment`; `AdversarialRobustness.corruptions`. 5 corruptions (noise, blur, contrast, elastic, quantise) × 5 severities; mCE is relative to standard augmentation.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| TrivialAugment; RandAugment; AugMix + JSD; mixup; PGD-AT | Clean accuracy / mCE | 0.970 / 0.732; 0.930 / 0.805; 0.913 / 0.814; 0.887 / 0.915; 0.993 / 0.605 | Standard augmentation: 0.913 / 1.000 | Negative | Negative: PGD-AT has the lowest mCE and AugMix is not best; TrivialAugment beats RandAugment rather than tying it. Severity-5 contrast defeats every scheme (error 0.90). |
+
+Item verdict: 1.17 Negative.
+
+Not done: the corruptions are written locally in AdversarialRobustness rather than taken from ShiftSuites or DegradedImages; augmentation uses digit-safe operations (translation, resized crop, erasing), while the core RandAugment includes flips and contrast that cannot be switched off. WP1 reports seed 1 only, not three seeds.
+
+---
+
+## Wave 11 WP2: combinatorial optimisation, program synthesis, sketches and learned data structures
+
+New packages: `experimental.combopt`, `experimental.sketch`, `experiments.combinatorial` and `experiments.algorithms`, with the generators `experimental.data.CombinatorialInstances` (TSP, CVRP, Erdős–Rényi and regular graphs with MaxCut and MIS references, knapsack, set cover, multi-dimensional knapsack, random 3-SAT) and `KeyStreams`. `BottomUpSynthesis`, `Bustle`, `CrossBeam` and `Probe` go into `experimental.evolve`, and `ProgramSynthesisShootout` gains new `Method` rows and `bottomUp()` with its existing rows unchanged. `GraphReasoning.walkSat` is now public, with a new `walkSatFlips`. All 16 test classes passed, in about 7–11 s each; PomoRoutingTest was the slowest at its last timed run (10.6–11.1 s), and ActiveSearchRoutingTest fell from 11.2 s to 7.9 s after its cut to 5 instances and 120 rollouts. Gaps are optimality gaps; ratios are to the exact or best-known optimum. Training uses 10–20 nodes, and TSP-50 was not run (R-wave11).
+
+### RoutingShootout (W11 2.1: pointer networks, 2.2: attention model, 2.3: POMO and Sym-NCO, 2.4: preference optimisation, 2.5: active search, 2.6: learned 2-opt, 2.7: non-autoregressive heatmaps)
+Sources: R-wave11. Theme: combinatorial. Tests: RoutingShootoutTest, AttentionModelRoutingTest, PomoRoutingTest, PreferenceRoutingTest, ActiveSearchRoutingTest, LearnedTwoOptRoutingTest, HeatmapRoutingTest. Blocks: `combopt.RoutingEnv`, `PointerRouting`, `ClassicHeuristics`, `AttentionModel` (rollout baseline with a t-test), `Pomo` (multi-start, ×8 augmentation, Sym-NCO loss), `PreferenceOptimization`, `ActiveSearch` (FULL, EAS_EMB, EAS_LAY, EAS_TAB), `LearnedTwoOpt`, `EdgeHeatmapGcn`, `SoftPermutationTsp`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Pointer network, supervised; actor-critic, 100 steps | Gap, TSP-10 / TSP-20 | 46.8% / 123%; 48.8% / 96% | TSP-10: nearest neighbour 8.2%, 2-opt 0.4%, random 87.3% | Negative | Negative: both are undertrained at 100 steps and far behind nearest neighbour. Actor-critic is better at TSP-20, as predicted. |
+| Attention model, greedy; best of 32 samples | Gap, TSP-10 / TSP-20 | 17.6% / 23.4%; 3.5% / 24.7% | Pointer networks: 46.8–48.8% / 96–123%. 2-opt: 0.4% at TSP-10 | Mixed | Far ahead of the pointer networks, as predicted, but sampling does not reach 2-opt, and greedy decoding loses to nearest neighbour. |
+| POMO; with ×8 augmentation, 3,200 rollouts | Gap | 3.5%; 0.8% | Attention model with rollout baseline at equal rollouts: 15.8%. 2-opt: 0.2% | Win | POMO beats the attention model by 12 points at equal rollouts, but even with ×8 augmentation it stays behind 2-opt. |
+| Sym-NCO, rotated / unrotated test set | Gap | 2.2% / 6.9% | Rotated set: POMO ×8 0.4%, problem symmetry 1.0% | Negative | Negative: the invariance loss helps on neither set. |
+| Preference optimisation, Bradley–Terry; Thurstone; BT with 2-opt pairs, 3,200 rollouts | Final gap (gap curve) | 3.6% (11.5, 7.1, 3.9, 3.6); 9.2%; 9.0% | POMO with REINFORCE: 6.4% (14.3, 6.9, 7.3, 6.4) | Win | The BT loss ends lower and gets there sooner. Thurstone and 2-opt pairs hurt on TSP (the CVRP claim was not tested), and the loss needed α = 0.1; α = 1 collapsed. |
+| Active search FULL; EAS-Emb; EAS-Lay; EAS-Tab, trained on TSP-10, tested on TSP-20, 120 rollouts per instance | Gap | 11.7%; 12.9%; 12.8%; 12.9% | Sampling: 12.9%. POMO ×8: 6.2%. 2-opt: 1.4%. Or-opt: 0.8% | Negative | Negative: EAS does not beat pure sampling, full active search gains 1.2 points, and all are far behind POMO ×8 and 2-opt. |
+| Learned 2-opt selector, TSP-20 | Gap at 100 / 200 moves | 0.6% / 0.0% | Best-improvement 2-opt: 2.8%. Simulated annealing at 200 moves: 32.8% | Win | Beats best-improvement 2-opt and leaves annealing far behind. |
+| Edge GCN heatmap, greedy; beam; soft-permutation GNN, single; best of 16; best of 16 + 2-opt | Gap, TSP-10 (TSP-20) | 6.0%; 2.5% (19.2%); 8.2%; 1.6%; 0.0% (soft permutation 6.4%, 1.0% with 2-opt) | Nearest neighbour: 8.2% at TSP-10 | Mixed | The unsupervised soft-permutation model beats nearest neighbour without labels (at best of 16), as predicted. The supervised heatmap with beam search degrades sharply already at TSP-20. |
+
+Item verdicts: 2.1 Negative, 2.2 Mixed, 2.3 Mixed, 2.4 Win, 2.5 Negative, 2.6 Win, 2.7 Mixed.
+
+Not done: TSP-50 and CVRP rows; core has no global-norm gradient clipping, so `AttentionModel.step` has a local helper.
+
+### GraphCoShootout (W11 2.8: Erdős goes neural and PI-GNN, 2.9: GFlowNets for combinatorial optimisation)
+Sources: R-wave11. Theme: combinatorial. Tests: GraphCoShootoutTest, GFlowNetCoTest. Blocks: `combopt.QuboGnn`, `GFlowNetCo` (forward-looking detailed balance).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PI-GNN; Erdős with conditional-expectation decoding, MaxCut | Ratio to optimum, ER-60 / 3-regular | 0.784 / 0.750; 0.912 / 0.844 | ER-60: bSB 0.995. SA, dSB, p-bit 1.0. Greedy + local search 0.956. Spectral 0.341 | Negative | Negative: neither GNN reaches bSB or even greedy search, as the recent critiques found. |
+| PI-GNN, thresholded / conditional expectation; Erdős, MIS ER-50 | Ratio to optimum | 0.095 / 0.908; 0.877 | Greedy: 0.970. SA: 1.0 | Negative | Negative: Erdős loses to greedy instead of beating it by a few percent, and thresholded PI-GNN collapses. |
+| GFlowNet with FL-DB, best of 32 | Ratio, MIS ER-50 / MaxCut ER-16 (distinct near-optimal solutions) | 1.000 / 0.967 (10 / 3) | Trajectory balance: 0.955 / 0.833 (1 / 0). SA on MIS: 1.0 | Win | The forward-looking loss beats plain trajectory balance and matches SA on MIS, with far more diverse solutions. |
+
+Item verdicts: 2.8 Negative, 2.9 Win.
+
+Not done: the core GCN layers have no skip connection, so `QuboGnn` adds a linear input-to-output skip.
+
+### SolverLearning (W11 2.10: learning to branch, 2.11: learned local search for SAT)
+Sources: R-wave11. Theme: combinatorial. Tests: LearnedBranchingTest, LearnedWalkSatTest. Blocks: `combopt.BranchAndBound`, `BipartiteBranchingGnn`, `LearnedWalkSat`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GNN imitating strong branching (626 samples, 0.69 agreement), multi-dimensional knapsack trained on 15×3, tested on 25×4 | Nodes (time) | 569 (40 ms) | Strong branching: 423 (52 ms). Pseudocost: 543 (15 ms). Most-fractional: 595 | Negative | Negative: 35% more nodes than strong branching (predicted within 20%), slower than pseudocost, and nowhere near 2x fewer nodes than most-fractional. Set cover at this size needs only 2–3 nodes for every rule. |
+| Learned WalkSAT flip policy, random 3-SAT at ratio 4.26 | Median flips (share solved within budget), n = 20 / 40 | 130 (0.75) / 500, the budget (0.15) | WalkSAT: 32 (0.90) / 291 (0.60). Random walk: 219 at n = 20. DPLL solves all in under 0.5 ms | Negative | Negative: beats the random walk but needs 4x WalkSAT's flips, not half. |
+
+Item verdicts: 2.10 Negative, 2.11 Negative.
+
+Not done: NeuroSAT is not run inside SolverLearning because of the 10 s limit (the existing NeuroSatTest covers that baseline).
+
+### ProgramSynthesisShootout bottomUp (W11 2.12: BUSTLE and CrossBeam, 2.13: Probe)
+Sources: R-wave11. Theme: synthesis. Test: BottomUpSynthesisTest. Blocks: `experimental.evolve.BottomUpSynthesis`, `Bustle`, `CrossBeam`, `Probe`. 30 tasks of 2–5 primitives.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| BUSTLE; CrossBeam | Share solved at 10³ / 10⁴ / 10⁵ candidates (length 4–5) | 0.83 / 0.90 / 1.00 (1.00); 0.87 / 0.97 / 0.97 (0.94) | Plain bottom-up: 0.50 / 0.83 / 0.93 (0.88). DeepCoder ordered: 0.70 / 0.83 / 1.00 (1.00) | Win | Both beat plain bottom-up and DeepCoder at small budgets, as predicted; CrossBeam does not solve the most long tasks. |
+| Probe | Same | 0.57 / 0.87 / 0.93 (0.88) | Plain bottom-up: 0.50 / 0.83 / 0.93 (0.88). DeepCoder: 0.70 / 0.83 / 1.00 (1.00) | Negative | Negative: no gain on length 4–5 tasks, a small one at small budgets, and well behind DeepCoder at 10³. |
+
+Item verdicts: 2.12 Win, 2.13 Negative.
+
+### SketchShootout (W11 2.14: streaming sketches, 2.15: learning-augmented sketches)
+Sources: R-wave11. Theme: algorithms. Tests: SketchShootoutTest, LearnedSketchesTest. Blocks: `sketch.FrequencySketches`, `HyperLogLog`, `LearnedSketches`, `FrequentDirections`; generator `KeyStreams`. Frequency task: Zipf 1.2 over 1,024 words.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Count-Min with conservative update; Count-Sketch; FeatureHasher, unsigned (signed) | Weighted frequency error | 8.8e-5; 4.4e-4; 5.1e-4 (2.6e-4) | Count-Min: 7.2e-4. Reservoir sample: 2.2e-3 | Win | Conservative update cuts Count-Min's error 8x, more than the predicted 2–5x. |
+| Space-Saving; Misra–Gries | Heavy-hitter recall (precision) | 1.00 (1.00); 0.82 | Count-Min: 1.00 (0.14) | Win | Space-Saving finds every heavy hitter with no false ones. |
+| HyperLogLog, p = 6 / 10 / 14 | Relative error | 0.126 / 0.026 / 0.0068 | 1.04/√m bound: 0.130 / 0.033 / 0.008 | Win | Within the bound at every size. |
+| Learned Count-Min, trained oracle; learned Misra–Gries, exact / trained / half-flipped oracle | Weighted error | 4.2e-4; 7.3e-5 / 7.0e-4 / 8.2e-4 | Count-Min: 1.0e-3. Misra–Gries: 6.2e-4 | Mixed | Learned Count-Min more than halves the error. Learned Misra–Gries does so only with an exact oracle; with the trained classifier it is slightly worse than the classical sketch, and with a bad oracle it falls below the classical level, against the hypothesis. The trained classifier is the weak point. |
+| Learned Frequent Directions; with random directions | Covariance error, stable / drifting stream | 0.0035 / 0.067; 0.125 (stable) | FD: 0.0107 / 0.047. Rank-8 SVD oracle: 0.0032. Row sampling: 0.365. Oja (rank 1): 0.254 | Mixed | Near the SVD oracle when the top directions are stable, as predicted; worse than plain FD under drift and with random directions. |
+
+Item verdicts: 2.14 Win, 2.15 Mixed.
+
+Not done: core `Linalg` has no SVD (FD uses the experimental `ThinSvd`), and `FrequentDirections.oja` is local because `HebbianRule` has no exact Oja term.
+
+### LearnedStructures (W11 2.16: learned indexes and learned Bloom filters)
+Sources: R-wave11. Theme: algorithms. Test: LearnedStructuresTest. Blocks: `sketch.LearnedIndex` (RMI and PLA), `LearnedBloomFilter` (learned and sandwiched). 200k keys.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| RMI (linear); PLA index (ε = 64) | Comparisons per lookup (index size), uniform / lognormal / piecewise keys | 3.4 (37 KB) / 4.3 / 4.1; 10.6 (456 B) / 11.8 (1.2 KB) / 11.1 (744 B) | Binary search: 16.7. B-tree: 16.9 (25 KB) | Win | Both learned indexes are exact and need fewer comparisons on every distribution, and PLA is 50x smaller than the B-tree. PLA keeps its edge on the piecewise keys, against the hypothesis. Uniform lookup time: RMI 84 ns, PLA 94 ns, binary search 142 ns. |
+| Learned; sandwiched Bloom filter, 2,400 corpus URL keys | False-positive rate at 6 / 10 bits per key | 0.035 / 0.0083; 0.028 / 0.0067 | Plain Bloom filter: 0.048 / 0.010 | Mixed | Sandwiching cuts false positives 1.5–1.7x, below the predicted 2–5x. |
+
+Item verdict: 2.16 Win.
+
+### CachingWithPredictions (W11 2.17: predictive marking, learned eviction and ski rental)
+Sources: R-wave11. Theme: algorithms. Test: CachingWithPredictionsTest. Blocks: `sketch.CachingWithPredictions`, `SkiRental`, `ClassicCaches`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Predictive marking, noise 0 / 3; Parrot (learned eviction) | Hit rate as a share of Belady's, ZIPF / LOOP / SCAN / PHASES | Marking: 0.80 / 0.76 on ZIPF, 0.24 on LOOP. Parrot: 0.87 / 0.94 / 0.84 / 0.73 | LRU: 0.73 / 0.01 / 0.49 / 0.74. Follow-predictions at noise 3: 0.61 (ZIPF), 0.76 (LOOP). H2O-style heavy hitters: 0.89 (ZIPF), 0.73 (LOOP) | Win | Predictive marking never falls below LRU, even with noisy predictions, where following them blindly does. Parrot fixes the looping trace where LRU fails, as predicted, and ties LRU on phases. |
+| Deterministic ski rental with predictions, λ = 0.5, exact / noise 2 | Mean (max) competitive ratio | 1.25; 1.46 (2.99, within the 1 + 1/λ bound) | Break-even: 1.505 (1.99). Karlin randomised: 1.577. Trusting the prediction at noise 2: max 20 | Win | Better than both classical rules on average and robust to bad predictions, as the theory says. |
+
+Item verdict: 2.17 Win.
+
+---
+
+## Wave 11 WP3: causal discovery, quasi-experiments and statistical modelling
+
+New packages: `experimental.discovery`, `experimental.panel`, `experimental.circuits`, `experiments.discovery` and `experiments.econometrics`. Also new: `LinearDynamicalSystemEm` and `VariationalGaussianMixture` in `experimental.ml`, `Reconciliation` and `IntermittentDemand` in `experimental.timeseries`, `Weibull` and `AftModels` in `experimental.survival`, and the generators `DiscoveryBenchmarks` and `PanelStudies`. Existing classes gain features without changing their behaviour: `StateSpaceFilter.kalman` accepts `NaN` as a missing observation, `GaussianMixture` gains `posterior` and `logLikelihood`, `SeasonalSeries` gains `intermittent(...)`, and new rows go into `NonparametricClustering.unknownK`, `IrregularSeriesShootout.imputation` and `SurvivalShootout.aft`. All 8 test classes passed, and IrregularSeriesImputationTest and StateSpaceForecastingTest, which use touched classes, were re-run and pass. In a parallel run two classes are over the 10 s target: CircuitShootoutTest (about 16 s) and EconometricsTest (about 14 s). SHD is structural Hamming distance (lower is better) (R-wave11).
+
+### DiscoveryShootout (W11 3.1: PC, Meek rules and FCI, 3.2: LiNGAM, 3.3: SCORE and TriOpt, 3.4: bivariate cause–effect)
+Sources: R-wave11. Theme: discovery. Test: DiscoveryShootoutTest. Blocks: `discovery.PcAlgorithm`, `Fci`, `CiTest`, `CausalGraphs`, `Lingam`, `TriOpt`, `ScoreOrdering`, `CauseEffect`; generator `DiscoveryBenchmarks`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PC + Meek rules, linear-Gaussian, standardised, d = 10 | SHD to the true CPDAG (orientation precision / recall) | 1.5 (1.0 / 0.79) | GES: 10.5. NOTEARS: 10.5. DAGMA: 11. Empty graph: 10 | Win | Far ahead of NOTEARS on standardised data, as predicted. |
+| PC with kernel CI, nonlinear, d = 6 | SHD | 8 | NOTEARS, DAGMA: 8. Empty graph: 9 | Mixed | Weak: no better than NOTEARS. |
+| FCI, hidden confounders | Arrowhead precision; distance to the oracle PAG | 0.83; 5.3 | PC: 0.79; 7.3 | Win | FCI keeps orientation precision higher, by a small margin, and is closer to the oracle PAG. |
+| DirectLiNGAM; ICA-LiNGAM, uniform noise, standardised | SHD | 0; 0 | NOTEARS: 4. DAGMA: 4. PC: 1.5. TriOpt: 6 | Win | Both recover the full DAG. On Gaussian data DirectLiNGAM falls to SHD 5.5, as theory predicts. |
+| TriOpt, Gaussian noise with equal variances, raw data | SHD | 0 | NOTEARS, DAGMA: 0. DirectLiNGAM: 5.5 | Win | Matches DAGMA. Runtime at d = 30 was not reported. |
+| SCORE, d = 6 | Order divergence | 3 | Random order: 3.5. NOTEARS: 2. DAGMA: 1.5 | Negative | Negative: barely better than a random order, and behind NOTEARS and DAGMA on the nonlinear data where it was expected to win. |
+| ANM; RECI; IGCI; IGCI-entropy | Direction accuracy | Additive noise: ANM 1.0, RECI 1.0. Multiplicative noise: IGCI 1.0. Deterministic: IGCI-entropy 1.0 | Additive pairs: naive HSIC 0.0, LiNGAM 0.0. Multiplicative: ANM 0.2 | Win | Each method wins where predicted, and all are near chance on the linear-Gaussian controls. |
+
+Item verdicts: 3.1 Win, 3.2 Win, 3.3 Mixed, 3.4 Win.
+
+Not done: FCI rules R4–R10 are left out; TriOpt uses a documented precision-diagonal leaf criterion as a stand-in, because the abstract does not give the exact one. Core has no t, F or χ² distributions and no OLS helper; they are local in `discovery.Distributions` and `LeastSquares`.
+
+### TimeSeriesDiscovery (W11 3.5: Granger tests, neural Granger causality and PCMCI)
+Sources: R-wave11. Theme: discovery. Test: TimeSeriesDiscoveryTest. Blocks: `discovery.GrangerCausality`, `NeuralGranger`, `Pcmci`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Conditional Granger; PCMCI, VAR | AUROC (false-positive rate) | 1.0 (0.02); 1.0 (0.06) | Lagged correlation: FPR 0.18 | Win | Both recover the graph. |
+| PCMCI, autocorrelated series | False-positive rate | 0.10 | Pairwise Granger: 0.33. Lagged correlation: 0.80 | Win | PCMCI keeps false positives low where pairwise Granger tests inflate them, as predicted. |
+| Neural Granger, Lorenz-96 | AUROC | 0.92 | SINDy: 0.85. Granger: 0.78. PCMCI: 0.76 | Win | Neural Granger wins on the nonlinear system, as predicted. |
+
+Item verdict: 3.5 Win.
+
+Not done: no contemporaneous links; `ChaoticSeries` has no Lorenz-96 generator.
+
+### PanelShootout (W11 3.6: synthetic control, SDID and TROP, 3.7: staggered adoption)
+Sources: R-wave11. Theme: econometrics. Test: EconometricsTest (about 14 s). Blocks: `panel.SyntheticControl`, `SyntheticDid`, `TriplyRobustPanel`, `StaggeredDid`; generator `PanelStudies`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SDID; TROP; matrix completion; synthetic control, single treated unit with shifted loadings | ATT RMSE | 0.91; 1.09; 1.09; 1.26 | TWFE DiD: 1.57. CUPED: 1.46 | Mixed | DiD is worst and SDID best, but TROP does not have the lowest RMSE, against its paper. |
+| SDID, no convex pre-period fit | ATT RMSE | 0.95 | Synthetic control: 2.20. TWFE: 1.84 | Win | SDID beats SC when the pre-period fit is poor, as predicted. Placebo-interval coverage is 0.4–0.8, from only 4 placebos per panel, so it is rough. |
+| Callaway–Sant'Anna, unconditional / outcome regression / IPW; Sun–Abraham; SDID per cohort, growing effects | Bias of the overall ATT | 0.13 / −0.03 / −0.05; 0.13; 0.17 | TWFE: −1.68 (the Bacon decomposition puts 0.25 of the weight on forbidden comparisons). TWFE event study: −1.76 | Win | The heterogeneity-robust estimators are nearly unbiased where TWFE is badly biased. The CS bootstrap band covers the truth in 100% of runs, and with constant effects all methods agree, as predicted. |
+
+Item verdicts: 3.6 Mixed, 3.7 Win.
+
+Not done: TROP fits once per treated unit instead of once per cell.
+
+### DiscontinuityDesigns (W11 3.8: local-linear RDD, MSE-optimal bandwidths, robust intervals and the density test)
+Sources: R-wave11. Theme: econometrics. Test: EconometricsTest. Block: `panel.RegressionDiscontinuity`. Lee design, n = 500.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| IK bandwidth with conventional CI; CCT robust bias-corrected CI | Coverage | 0.835; 0.92 | Global polynomials: bias up to 0.088 (order 3) | Win | Conventional coverage lands in the predicted 80–85%, and robust bias correction lifts it to 0.92, a little short of 0.95. |
+| McCrary density test | Size; power at 50% manipulation | 0.03; 0.97 | | Win | Correct size and high power. |
+
+Item verdict: 3.8 Win. The bandwidth pilots were fixed while testing: IK's third derivative is now fitted inside the median window, and CCT uses per-side third derivatives.
+
+### ObservationalAdjustment (W11 3.9: covariate balancing weights, 3.10: sensitivity analysis)
+Sources: R-wave11. Theme: econometrics. Test: EconometricsTest. Blocks: `panel.BalancingWeights`, `SensitivityAnalysis`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Entropy balancing; CBPS; stable weights, Kang–Schafer with misspecified covariates | ATT RMSE | 4.8; 5.6; 7.3 | IPW odds weights: 7.6. NN matching: 6.9. AIPW: 11.3. DoubleML: 19.9. Naive: 20.1 | Win | Entropy balancing and CBPS clearly beat IPW, stable weights only barely. AIPW is poor under misspecification and level with entropy balancing with correct covariates (0.12 against 0.11), as predicted. |
+| Benchmarked robustness value (Cinelli–Hazlett, k = 1); E-value; critical Rosenbaum Γ, robust vs confounded null study | Bound at k = 1; E-value; Γ | +18.5 vs −0.36; 2.79 vs 1.62; 15.6 vs 1.25 | Confidence intervals: both exclude 0 | Win | The benchmarked bound flags the null study where the CI alone does not, as predicted. k* tracks the planted confounder strength s: 0.25 → 0.06, 0.5 → 0.28, 1 → 1.12, 2 → 5.9. |
+
+Item verdicts: 3.9 Win, 3.10 Win.
+
+### CircuitShootout (W11 3.11: LearnSPN and tensorised circuits, 3.12: squared and Inception circuits, 3.13: variational GMM)
+Sources: R-wave11. Theme: probabilistic. Test: CircuitShootoutTest (about 16 s). Blocks: `circuits.RegionTree`, `TensorizedCircuit`, `LearnSpn`, `SquaredCircuit`, `InceptionCircuit`; `experimental.ml.VariationalGaussianMixture`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| LearnSPN; EM circuit; Adam circuit, digit pixels | Test log-likelihood | −8.82; −9.37; −9.39 | Bernoulli mixture: −9.36. Independent pixels: −15.8 | Mixed | LearnSPN beats the mixture; the tensorised circuits only tie it. Flows and PixelCNN were not run. |
+| LearnSPN; EM circuit, 50% of inputs missing | Accuracy | 0.475; 0.40 | Mean imputation + logistic regression: 0.23 | Win | Exact marginalisation beats imputation, as predicted. |
+| Circuit marginals | Error; time per query | 5e-15; 0.008 ms | Brute force: 1.5 ms | Win | Exact and fast. |
+| Complex squared; Inception; real squared, planted cancellation | Log-likelihood | −6.267; −6.370; −6.577 | Monotone circuit at similar size: −6.316. Truth: −6.243 | Mixed | The complex squared circuit beats the monotone one, as predicted; Inception is worse than both, against "never worse than both". |
+| Complex squared; real squared, digit pixels | Log-likelihood | −10.98; −14.4 | Monotone: −10.04 | Negative | Negative: the squared circuits lose on digits instead of tying. |
+| VB-GMM | ARI (K error; time) | 1.0 (0; 33 ms) | GMM + BIC: 0.981 (130 ms). DP Gibbs: 0.978 (69 ms). k-means elbow: 0.741 | Win | Matches GMM + BIC in one fit at a quarter of the time, but only 2x faster than DP Gibbs, not 10x. In NonparametricClustering's unknown-K table VB scores 0.990 (K error 0) against 0.991 for GMM + BIC. Over-pruning at strong priors was not reported. |
+
+Item verdicts: 3.11 Win, 3.12 Mixed, 3.13 Win.
+
+Not done: the RealNVP, PixelCNN and FactorGraph baselines.
+
+### StateSpaceEm (W11 3.14: LDS EM with a missing-aware Kalman smoother, follow-up)
+Sources: R-wave11. Theme: timeseries. Test: StateSpaceEmTest. Blocks: `experimental.ml.LinearDynamicalSystemEm`; `StateSpaceFilter.kalman` with `NaN` observations; an "LDS EM" row in `IrregularSeriesShootout.imputation`. It replaces the smoother that wave 10 10.5.11 had to write locally.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| LDS EM, 50% MAR / block missingness / MNAR | Imputation MAE | 0.371 / 0.383 / 0.915 | Local-trend smoother: 0.367 / 0.851 / 0.502. Linear interpolation: 0.463 / 0.868. BRITS (MAR): 0.487 | Win | Ties the smoother on random gaps, halves its error on blocks and beats BRITS, but loses under MNAR. One-step MAE is 0.47 against 1.12 for the smoother. On a planted system the eigenvalue error is 0.012, and the log-likelihood never decreased. |
+| LDS EM in IrregularSeriesShootout, seasonal data | Imputation MAE | 0.390 | Gaussian process: 0.403 | Win | Matches the GP, as predicted. |
+
+Item verdict: 3.14 Win.
+
+Not done: no `SeasonalSeries` planted-seasonal task and no GP or SAITS inside StateSpaceEm (those comparisons sit in the IrregularSeriesShootout row); no chaotic-series comparison with BRITS was reported.
+
+### HierarchicalForecasting (W11 3.15: bottom-up, OLS, WLS, MinT-shrink and robust reconciliation)
+Sources: R-wave11. Theme: timeseries. Test: HierarchicalForecastingTest. Block: `timeseries.Reconciliation`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| MinT-shrink; WLS-var; OLS, clean data | MASE over all nodes | 0.760; 0.761; 0.761 | Bottom-up: 0.761. Base forecasts: 0.762 | Mixed | MinT-shrink is best, but the gains are tiny. |
+| Robust Huber; WLS-var; MinT-shrink; OLS, with outliers | MASE over all nodes | 0.823; 0.831; 0.854; 0.915 | Bottom-up: 0.831. Base: 0.837 | Win | The robust version keeps a gain where MinT degrades below the base forecasts, as predicted. |
+
+Item verdict: 3.15 Mixed.
+
+Not done: base forecasts are ETS(A,N,A) recursions with weights picked by SSE on a grid, because the `ExponentialSmoothing` L-BFGS fit takes about 1 s per node; no DLinear baseline. The robust variant uses the diagonal of the shrunk covariance, because the full MinT precision made it worse (MASE 1.14).
+
+### IntermittentDemand (W11 3.16: Croston, SBA and TSB)
+Sources: R-wave11. Theme: timeseries. Test: IntermittentDemandTest. Block: `timeseries.IntermittentDemand`; generator `SeasonalSeries.intermittent`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| TSB, obsolescence | Cumulative bias | 0.30 | SES: 0.31. Croston: 1.50. SBA: 1.42 | Win | TSB tracks obsolescence and Croston does not, as predicted, but SES tracks it too. |
+| SBA; TSB, stationary series | RMSSE | about 0.658 for every method | MLE-fitted SES: about 0.658 | Negative | Negative: SBA and TSB do not beat SES. |
+
+Item verdict: 3.16 Mixed.
+
+Not done: no DeepAR baseline.
+
+### SurvivalShootout aft (W11 3.17: Weibull AFT and Deep Survival Machines)
+Sources: R-wave11. Theme: survival. Test: AftModelsTest. Blocks: `survival.Weibull`, `AftModels`; `SurvivalShootout.aft`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Weibull AFT, Weibull data | C-index (median log error of predicted times) | 0.760 (0.051) | Cox: 0.760 (0.070). DeepSurv: 0.238 | Win | Matches Cox and predicts times better, as predicted. |
+| Deep Survival Machines, crossing hazards | Time-dependent C-index | 0.679 | DeepHit: 0.678. RSF: 0.684. Cox: 0.603. DeepSurv: 0.549 | Win | Beats DeepSurv and ties DeepHit, as predicted. |
+
+Item verdict: 3.17 Win.
+
+Not done: `SurvivalData`, `OpenMax` and `PointProcessShootout` still keep private Weibull copies.
+
+---
+
+## Wave 11 WP4: uncertainty, ensembles and classic-model gaps
+
+New packages: `experimental.calibrate`, `experimental.ensemble` and `experiments.uncertainty`. Also new: `BinaryLayers` and `MonotonicLayers` in `experimental.nn`, `RestrictedBoltzmannMachine` and `TsetlinMachine` in `experimental.ml`, `experiments.classic.ClassicLearners`, and the methods `ClassicMlShootout.monotonic` and `CompactModels.binary`. All 15 test classes passed, each run on its own in under 10 s on a machine at a load average of about 13 on 4 cores. Several budgets were lowered to fit, for example the imbalance audit now runs 200 steps. MLPs on 8×8 images replace the ShapeImages CNNs throughout (R-wave11).
+
+### RecalibrationShootout (W11 4.1: recalibration maps, 4.2: structured matrix scaling, ensemble temperature and splines, 4.3: Venn–Abers)
+Sources: R-wave11. Theme: uncertainty. Test: RecalibrationShootoutTest. Blocks: `calibrate.Recalibrators`, `StructuredMatrixScaling`, `EnsembleTemperature`, `SplineCalibration`, `VennAbers`. Task: digits; figures are top-label ECE / class-wise ECE / NLL.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Temperature scaling; vector scaling; matrix; Dirichlet, 100 calibration rows | ECE / class-wise ECE / NLL | TS 0.000 / 0.027 / 1.412. Vector: ECE 0.008, NLL 1.411. Matrix: NLL 2.73. Dirichlet: NLL 3.27 | Uncalibrated: 0.209 / 0.049 / 1.700 | Win | Temperature scaling is hard to beat at 100 rows, and matrix and Dirichlet calibration overfit, as predicted. |
+| Dirichlet; matrix, 1,000 rows | Same | Dirichlet 0.000 / 0.021 / 1.357. Matrix: NLL 1.352 | Temperature scaling: NLL 1.413 | Win | With 1,000 rows the full maps win on NLL and class-wise ECE, as predicted. |
+| Structured matrix scaling, 100 / 1,000 rows | Same | 0.019 / 0.022 / 1.385; NLL 1.356 | 100 rows: TS 0.000 / 0.027 / 1.412. 1,000 rows: Dirichlet class-wise ECE 0.021, NLL 1.357 | Mixed | The best class-wise ECE at 100 rows and level with Dirichlet on NLL at 1,000, but not ahead of both at every size; its class-wise ECE at 1,000 rows was not reported. |
+| Temperature; SMS; Dirichlet, shifted test set | ECE | 0.240; 0.318; 0.359 | No recalibration: 0.472 | Mixed | Every map keeps part of its gain under shift, and the richer maps lose more of it. |
+| IVAP; CVAP, binary tabular task | NLL / Brier (interval width) | 100 rows: IVAP 0.496 / 0.329 (0.079; 0.098 shifted). 1,000 rows: CVAP 0.463 / 0.302 (IVAP width 0.021; 0.031 shifted) | 100 rows: TS 0.486 / 0.322. Isotonic: NLL 0.509. Platt: NLL 0.507 | Win | Venn–Abers beats isotonic in NLL at 100 rows and its intervals widen under shift, as predicted; temperature scaling is still slightly better. |
+
+Item verdicts: 4.1 Win, 4.2 Mixed, 4.3 Win.
+
+Not done: no histogram-binning or beta-calibration rows, and no ensemble-temperature or spline rows, were reported.
+
+### ConformalSets (W11 4.4: RAPS, Mondrian conformal and risk control, follow-up, 4.5: conformal training)
+Sources: R-wave11. Theme: uncertainty. Test: ConformalSetsTest. Blocks: `calibrate.ConformalSets`, `ConformalTraining`. It extends wave 5–6's LAC and APS sets, which every later wave reused. α = 0.1.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| APS; RAPS; Mondrian LAC | Coverage / mean set size | 0.896 / 4.52; 0.892 / 4.36; 0.906 / 3.98 | LAC: 0.903 / 3.88 | Mixed | RAPS sets are only 4% smaller than APS, not 30–50%. |
+| Mondrian LAC; Mondrian APS, long tail | Worst-class coverage (set size) | 0.878 (5.59); 0.842 | LAC: 0.385 | Win | Marginal LAC under-covers the worst class by about 50 points, more than predicted, and Mondrian fixes it with larger sets. |
+| Conformal risk control, multilabel | False-negative rate (set size) | 0.108 (4.16) | 0.5 threshold: 0.455 | Win | Holds the FNR near the 0.1 target. |
+| ConfTr | Accuracy / LAC set size | 0.488 / 3.99 | Plain fine-tuning: 0.505 / 3.96 | Negative | Negative: no smaller sets, and 1.7 points of accuracy lost. |
+
+Item verdicts: 4.4 Mixed, 4.5 Negative.
+
+Not done: ConfTr uses a hard sorted quantile, not smooth sorting; RAPS is non-randomised; `ConformalClassifier`'s score function is private.
+
+### EnsembleShootout: single-run, packed, stacked, augmented and diverse ensembles (W11 4.6: snapshot ensembles and FGE, 4.7: MIMO and packed ensembles, 4.8: super learner, 4.9: test-time augmentation, 4.10: NCL, DivDis and D-BAT)
+Sources: R-wave11. Theme: uncertainty. Tests: EnsembleShootoutSingleRunTest, EnsembleShootoutStackingTest, EnsembleShootoutTtaTest, EnsembleShootoutDiversityTest. Blocks: `ensemble.SnapshotEnsemble`, `FastGeometricEnsemble`, `MimoNetwork`, `PackedEnsemble`, `SuperLearner`, `TestTimeAugmentation`, `DiverseEnsembles`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Snapshot ensemble (weighted); FGE, 450 equal steps | Accuracy / NLL | 0.825 / 0.459; 0.803 / 0.521 | Single model: 0.775 / 0.580 (near / far AUROC 0.680 / 0.633). Deep ensemble: 0.748 / 0.797 (0.662 / 0.681). SWAG: far AUROC 0.460. MC dropout: NLL 0.674 | Win | Both beat a single model and SWAG, as predicted. At equal compute the deep ensemble loses even to the single model, so there is no deep-ensemble gain to recover. |
+| Packed ensemble; TabM; MIMO, 300 steps | Accuracy / NLL (multiply-adds) | 0.805 / 0.661 (13,056); 0.838 / 0.541 (34,304); 0.498 / 1.350 (43,264) | Single: 0.758 / 0.626 (8,576). Deep ensemble: 0.865 / 0.444 (34,304) | Mixed | The packed ensemble gains accuracy at 1.5x one model's cost but not NLL; MIMO fails at this width, as predicted. BatchEnsemble disagreement was not reported. |
+| Super learner (stacker); convex super learner | Regression MSE / classification log loss | 1.781 / 0.548; 2.026 / 0.491 | Discrete super learner (= GBT): 1.986 / 0.480. Uniform: 3.642 | Win | The stacker beats the best single learner on regression. On classification the discrete learner is best, the convex one is within 0.011, and the unconstrained stacker overfits, as predicted. |
+| Mean TTA; learned per-class weights | Accuracy / NLL after temperature scaling | 0.616 / 1.171; 0.626 / 1.027 | Single pass: 0.499 / 1.412 | Win | TTA gains 12 points and learned weights add a little more. The MC-dropout comparison under corruption was not reported. |
+| JTT; NCL; DivDis; D-BAT, colour and shape fully agree | Worst-group accuracy | 0.088; 0.102; 0.087; 0.083 | ERM: 0.068. Control at agreement 0.5: ERM 0.617, deep ensemble 0.632 | Negative | Negative: no method finds the shape head at full agreement. DivDis reached 0.248 at 250 steps, which did not hold at 200. |
+
+Item verdicts: 4.6 Win, 4.7 Mixed, 4.8 Win, 4.9 Win, 4.10 Negative.
+
+### EnsembleShootout: distillation and the ensemble audit (W11 4.14: EnD² and Hydra, 4.16: deep ensembles under label noise and imbalance)
+Sources: R-wave11. Theme: uncertainty. Tests: EnsembleShootoutDiversityTest, EnsembleShootoutAuditTest, EnsembleShootoutAuditImbalanceTest. Blocks: `ensemble.EnsembleDistillation`, `EnsembleAudit`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Hydra; mean distillation; EnD² | Accuracy / NLL / far AUROC | 0.785 / 0.570 / 0.643; 0.760 / 0.605 / 0.709; 0.645 / 1.136 / 0.449 | Teacher ensemble: 0.865 / 0.444 / 0.774 | Negative | Negative: mean distillation keeps the most OOD AUROC, against the hypothesis; Hydra keeps accuracy but not AUROC, and EnD² underperforms everywhere. |
+| Ensemble zoo at equal steps, 40% label noise | Accuracy / NLL after temperature scaling | Best: TabM 0.373 / 1.867. Worst: deep ensemble 0.305 / 2.055 | Deep ensembles, expected to stay best | Negative | Negative: the deep ensemble is the worst member of the zoo under noise. |
+| TabM; packed ensemble, imbalance ratio 10, 200 steps | Accuracy / far AUROC | 0.441 / 0.688; far AUROC 0.623 | Single model: 0.434 / 0.551 | Mixed | Both raise far-OOD AUROC over a single model with little accuracy gain. |
+
+Item verdicts: 4.14 Negative, 4.16 Negative.
+
+Not done: no SNGP row was reported.
+
+### MultipleHypotheses (W11 4.15: multiple-choice learning)
+Sources: R-wave11. Theme: uncertainty. Tests: MultipleHypothesesTest, MultipleHypothesesSineTest. Blocks: `ensemble.MultipleChoiceLearning`; `MultipleHypotheses` (with a local MDN).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Winner-takes-all heads, ARM / TURN / SINE (evolving WTA) | Oracle error / coverage | ARM 0.010 / 0.771. TURN coverage 0.999. SINE coverage 0.996 | ARM: MSE regressor coverage 0.183–0.197, MDN 0.380, NGBoost 0.201. TURN: MSE 0.005 | Win | WTA heads find the modes where single-output regressors collapse to the mean, as predicted. The resilient-MCL vs MDN NLL comparison was not reported. |
+
+Item verdict: 4.15 Win.
+
+Not done: TURN is a feature-level stand-in for ShapeScenes motion; there is no reusable MDN.
+
+### CompactModels binary (W11 4.11: BinaryConnect, BNNs, XNOR-Net and Bi-Real)
+Sources: R-wave11. Theme: compression. Test: BinaryNetworksTest. Blocks: `nn.BinaryLayers`; `CompactModels.binary`. Task: digits MLP, not the ShapeImages CNN.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| BinaryConnect; BNN; XNOR; Bi-Real; BitLinear; DoReFa 2-bit / 1-bit | Digits accuracy | 0.710; 0.550; 0.607; 0.593; 0.717; 0.577 / 0.333 | fp32: 0.747 | Mixed | Fully binary networks lose about 20 points, as predicted, but Bi-Real recovers only about a fifth of the gap, not half. |
+| XNOR/popcount kernel | Speed at batch 1 | 13.1x faster | Float kernel | Win | Several times faster, as predicted. |
+
+Item verdict: 4.11 Mixed.
+
+### ClassicLearners (W11 4.12: restricted Boltzmann machines, 4.13: Tsetlin machines)
+Sources: R-wave11. Theme: classic. Tests: RestrictedBoltzmannTest, RestrictedBoltzmannModesTest, TsetlinMachineTest. Blocks: `ml.RestrictedBoltzmannMachine` (CD-k, PCD, parallel tempering, AIS), `ml.TsetlinMachine` (standard and fuzzy-pattern); `ClassicLearners.rbmDigits`, `rbmModes`, `tsetlinXor`, `tsetlinDigits` and `tsetlinTabular`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CD-1; PCD; parallel tempering, 16 hidden units | Digits test log-likelihood (nats per image, AIS) | −41.54; −41.58; −41.53 | Independent pixels: −42.17. 10-component Bernoulli mixture: −39.57 | Negative | Negative: PCD does not beat CD-1 by tens of nats, and the mixture beats every RBM. AIS log Z is within 0.01 nats of the exact value. A linear probe on the hidden features scores about 0.45 against 0.865 on raw pixels. |
+| Parallel tempering; CD-1; PCD, bimodal task | Exact mass balance between the two modes | 1.00; 0.01; 0.01 | | Win | PT keeps both modes where CD-1 and PCD collapse, as predicted. Samples from every method, including the DTM (1 and 4 stages) and the mixture, land near both modes (about 0.5 / 0.5). |
+| Tsetlin machine, noisy XOR | Accuracy (planted rules recovered as clauses) | 1.000 (4 of 4) | Logistic regression: 0.498. Random forest: 1.000 | Win | Recovers the planted rules exactly, as predicted. |
+| Standard machine, 10 / 40 / 100 clauses; fuzzy machine, 4 / 10 clauses, digits | Accuracy | 0.426 / 0.704 / 0.820; 0.434 / 0.512 | Random forest: 0.988. HDC: 0.712. Logic-gate net: 0.692. Logistic: 0.678 | Negative | Negative: 17 points behind random forests, not a few, and the fuzzy machine does not reach 100 standard clauses with 10x fewer. It does beat the standard machine at equal clause count. |
+| Standard (40 clauses); fuzzy (4 clauses), thermometer-encoded tabular task | Accuracy | 0.707; 0.675 | Logistic: 0.647. Random forest: 0.777 | Mixed | Both beat logistic regression and trail the forest. |
+
+Item verdicts: 4.12 Mixed, 4.13 Mixed.
+
+Not done: no VAE baseline for 4.12; the Bernoulli mixture is a local EM stand-in for 11.3.11's leaves. The fuzzy Type II feedback rule is not specified in arXiv:2508.08350, so the builder includes only as many 0-literals as the clause scores (the standard rule empties a fuzzy clause after one false positive).
+
+### ClassicMlShootout monotonic (W11 4.17: min–max networks, lattices and constrained monotonic MLPs)
+Sources: R-wave11. Theme: classic. Test: MonotonicNetworksTest. Blocks: `nn.MonotonicLayers`; `ClassicMlShootout.monotonic`. Figures are RMSE / extrapolation RMSE / share of monotonicity violations; the three constrained models have zero violations by construction.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Lattice; constrained MLP; min–max, 100 rows, 3 monotone features | RMSE / extrapolation / violations | 0.444 / 0.521 / 0; 0.499 / 0.602 / 0; 0.617 / 0.616 / 0 | MLP: 0.533 / 0.605 / 3.1%. GBT: 0.399 / 0.748 / 6.1%. NAM: 0.207 / 0.198 / 5% | Win | The lattice and the constrained MLP beat the MLP at 100 rows and on extrapolation, as predicted. NAM is best on this additive target but violates monotonicity. |
+| Same, 500 rows | Same | 0.429 / 0.505 / 0; 0.228 / 0.308 / 0; 0.360 / 0.371 / 0 | MLP: 0.184 / 0.262 / 12.3%. GBT: 0.166 / 0.630 / 1.3%. NAM: 0.107 / 0.135 / 10% | Negative | Negative: with more data every constrained model is behind the MLP, also on extrapolation, where it was expected to match it in distribution. |
+| Lattice; constrained MLP, 100 rows, 1 monotone feature | Same | 0.066 / 0.636 / 0; 0.185 / 0.320 / 0 | MLP: 0.163 / 0.252 / 0. Isotonic: 0.053 / 0.485 / 0 | Mixed | The lattice is near isotonic in distribution but extrapolates worst. |
+
+Item verdict: 4.17 Mixed.
+
+Not done: the lattice is a single layer with 2 vertices per feature, not a deep lattice network; `GradientBoostedTrees` has no monotone constraints; no HoeffdingTree baseline; PFN and PFN-Boost are not in the library.
+
+---
+
+## Wave 11 WP5: perception and language gaps
+
+New packages: `experimental.music`, `experimental.nlp` and `experiments.music`. Also new: `NeuralPcfg` in `experimental.parse`; `PatchCore`, `PatchDistribution` (PaDiM), `Dinomaly` and `ImageAnomalyMetrics` in `experimental.anomaly`; video, matching, edge, hashing and FFT blocks in `experimental.vision`; and the generators `ToyMusic`, `ParallelText`, `DefectImages` and `ShapeClips`. `WindowLm` gains a `sampleUntil(..., LogitsProcessor)` overload with its default path unchanged. All 12 test classes passed. Five run over the ~10 s target: ImageAnomalyShootoutTest (23 s), AudioRetrievalTest (22 s), PitchShootoutTest (15 s), ActionRecognitionTest (15 s) and ClassicNlpTest (11 s); the others take 2–7.5 s. The slow CPU convolution kernel (about 10 ms for a small 2-D convolution) drove most budget cuts (R-wave11).
+
+### PitchShootout (W11 5.1: autocorrelation, YIN and pYIN, 5.2: CREPE, PESTO and self-supervised voicing)
+Sources: R-wave11. Theme: music. Test: PitchShootoutTest (15 s). Blocks: `music.PitchTrackers` (spectral peak, harmonic sum, autocorrelation, YIN, pYIN), `Crepe`, `EquivariantPitch` (PESTO), `MusicMetrics`, `MusicFeatures`; generator `ToyMusic`. Scores are raw pitch accuracy (RPA) / voicing F1 (VF1).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| pYIN | RPA / VF1, melody 20 dB / melody 5 dB / voice 15 dB | 1.00 / 0.98; 0.99 / 0.98; 1.00 / 0.98 | YIN: 0.98 / 0.99; 0.56 / 0.83; 0.98 / 0.97 | Win | pYIN wins at 5 dB, as predicted. The autocorrelation and spectral-peak rows were not reported. |
+| PESTO, no labels | Same | 0.93 / 0.89; 0.73 / 0.89; 0.78 / 0.74 | YIN at 5 dB: 0.56 / 0.83 | Win | Beats YIN at 5 dB without labels, as predicted, but trails pYIN everywhere. |
+| CREPE, supervised | RPA | 0.03; 0.03; 0.00 | YIN and pYIN, above | Negative | Negative: CREPE does not learn at this budget, so it is not best in distribution. |
+| PESTO with the learned SCE voicing classifier | VF1 | 0.46–0.64 | PESTO's peak threshold: 0.74–0.89. pYIN: 0.98 | Negative | Negative: worse than its own threshold, let alone pYIN. The SCE reweighting and the classifier were checked against arXiv:2601.11768. |
+
+Item verdicts: 5.1 Win, 5.2 Mixed.
+
+Not done: `SpeakerVoices` does not expose its F0 track, and `HarmonicNoiseSynth`'s noise bank is O(samples²), too slow for multi-second clips.
+
+### RhythmAndHarmony (W11 5.3: onsets and beat tracking, 5.4: chroma and HMM chord recognition)
+Sources: R-wave11. Theme: music. Tests: RhythmTest, HarmonyTest. Blocks: `music.OnsetDetection`, `BeatTracker` (Ellis DP), `NeuralBeatTracker` (shift-tolerant or plain loss), `Chroma`, `ChordRecognizer` (template, Gaussian HMM, CNN-CRF).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Spectral flux; SuperFlux | Onset F1, steady + drums / tempo change | 1.00 / 0.84; 0.74 / 0.58 | Energy envelope: 0.65 / 0.51 | Win | Spectral flux beats the energy envelope, as predicted. |
+| Neural tracker, steady without drums; with drums, shift-tolerant / plain loss | Beat F1 (CMLt) | 1.00 (0.88); 1.00 (0.87) / 0.97 (0.82) | DP tracker, steady without drums: 0.90 (0.57) | Win | The neural tracker beats DP even on steady tempi, where DP was expected to win, and the shift-tolerant loss edges plain BCE. Beat F1 on tempo changes was not reported. |
+| Template + HMM; CNN-CRF; Gaussian HMM | WCSR / segmentation | 0.918 / 0.918; 0.564 / 0.586; 0.588 / 0.302 | Frame-wise template: 0.770 / 0.588. MLP on mel: 0.177 / 0.274 | Win | HMM smoothing adds 15 points over frame-wise templates, as predicted; the CNN-CRF does not beat the templates. |
+
+Item verdicts: 5.3 Win, 5.4 Win.
+
+### AudioRetrieval (W11 5.5: audio fingerprinting, 5.6: sound event detection)
+Sources: R-wave11. Theme: music. Test: AudioRetrievalTest (22 s). Blocks: `music.LandmarkFingerprint`, `NeuralFingerprint`, `SoundEventDetector`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Landmarks; neural contrastive fingerprints | Top-1 identification, 20 dB noise / 0 dB / low-pass 1 kHz / speed +2% / reverb | 1.00 / 0.75 / 1.00 / 0.75 / 0.75; 0.83 / 0.58 / 0.58 / 0.83 / 0.92 | MFCC + DTW: 0.58 / 0 / 0.42 / 0.83 / 0.42. Mean MFCC: 0.33 / 0 / 0.17 / 0.83 / 0 | Win | Landmarks are best on noise and filtering and fast (4.9 ms per query, against 7.4 ms neural); neural fingerprints are more robust to speed and reverb, as predicted. MFCC + DTW is slowest (15.9 ms) but not the least robust to speed. |
+| CRNN | Event F1 / segment error rate | 0.542 / 0.535 | Windowed CNN: 0.487 / 0.600. Frame MLP: 0.302 / 0.809 | Win | Temporal context adds 24 points over the frame MLP, as predicted. |
+
+Item verdicts: 5.5 Win, 5.6 Win.
+
+Not done: the KeywordSpotters and VAD baselines are replaced by a windowed CNN.
+
+### ClassicNlp (W11 5.7: IBM models and HMM alignment, 5.8: noisy-channel spelling correction, 5.9: SimCSE)
+Sources: R-wave11. Theme: language. Test: ClassicNlpTest (11 s). Blocks: `nlp.WordAlignment` (IBM 1, IBM 2, HMM; intersection, union, grow-diag-final; AER; Dice), `NoisyChannelCorrector` (uniform, single-edit EM and Brill–Moore EM channels, Kneser–Ney prior, char-LM logits processor), `SimCse`; generator `ParallelText`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| IBM 1; IBM 2; HMM, 2,000 pairs | AER src→tgt / tgt→src / intersection / grow-diag-final | 0.217 / 0.165 / 0.108 / 0.260; 0.174 / 0.111 / 0.116 / 0.170; 0.228 / 0.214 / 0.188 / 0.234 | Dice: 0.287. Bahdanau attention argmax at 500 pairs: 0.375 | Mixed | The IBM models beat Dice and attention, but the HMM aligner is weaker than IBM 2 instead of best, possibly because of the long verb-final reordering. Grow-diag-final is worse than intersection here. |
+| Single-edit channel; Brill–Moore channel; char LM + channel processor | Word accuracy / accuracy on misspelt words | 0.991 / 0.962; 0.922 / 0.660; 0.746 / 0.340 | Uncorrected: 0.772 / 0. Nearest Levenshtein: 0.953 / 0.792. Uniform channel: 0.953 / 0.792 | Mixed | A learned single-edit channel beats nearest-word correction by 17 points on misspelt words, but the Brill–Moore channel overfits under EM at this data size, and the greedy char-LM decoder hurts. |
+| SimCSE, unsupervised; supervised with hard negatives | Spearman / paraphrase recall@1 (alignment) | 0.270 / 0.110; 0.664 / 0.390 (0.167) | Mean static embeddings: 0.199 / 0.130 (1.25). MLM encoder: 0.025 / 0.070 | Mixed | Supervised SimCSE wins clearly. Unsupervised SimCSE gains 0.07 Spearman, not a wide margin, and loses on recall. |
+
+Item verdicts: 5.7 Mixed, 5.8 Mixed, 5.9 Mixed.
+
+Not done: the seq2seq spelling baseline; `ParallelText` renders `ToyTreebank` trees, because `SyntheticGrammar` lives in an experiments package that blocks cannot depend on.
+
+### GrammarInduction (W11 5.10: neural and compound PCFGs)
+Sources: R-wave11. Theme: parsing. Test: GrammarInductionTest. Block: `parse.NeuralPcfg` (flat, neural and compound grammars; inside algorithm on `Var`; Viterbi and MBR decoding).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Neural PCFG; compound PCFG; flat PCFG | Unlabelled F1 (test NLL per word) | 0.395 (2.98); 0.31 (3.18); 0.21 (3.74) | Right-branching: 0.528. Left-branching: 0.297. Random trees: 0.336. Supervised treebank PCFG: 0.976 | Negative | Negative: right-branching beats both neural grammars, and the compound PCFG is worse than the neural one instead of a few points better. |
+
+Item verdict: 5.10 Negative.
+
+### ImageAnomalyShootout (W11 5.11: PaDiM and PatchCore, 5.12: Dinomaly)
+Sources: R-wave11. Theme: vision. Test: ImageAnomalyShootoutTest (23 s). Blocks: `anomaly.PatchCore`, `PatchDistribution`, `Dinomaly`, `ImageAnomalyMetrics`; generator `DefectImages`. Features come from a small frozen CNN trained on ShapeImages, because `SelfSupervisedBenchmark.pretrainEncoder` exposes no patch or ViT features.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PaDiM; PatchCore, per category | Image AUROC / pixel AUROC / PRO / AUROC on misplacements | 0.997 / 0.949 / 0.830 / 1.000; 0.924 / 0.901 / 0.738 / 0.933 | Autoencoder: 0.939 / 0.920 / 0.855 / 1.000. kNN: 0.703. ECOD: 0.661. Deep SVDD: 0.607 | Mixed | PaDiM is best, also on misplacements, because the objects are aligned. PatchCore loses to the dense autoencoder, against the hypothesis that it is best. |
+| Dinomaly; with softmax attention, multi-class | Image / pixel AUROC | 0.669 / 0.626; 0.657 / 0.623 | Plain-reconstruction ablation: 0.673 / 0.655. PaDiM pooled: 0.911 / 0.901. PatchCore pooled (2% coreset): 0.706 / 0.785 | Negative | Negative: no better than the ablation and far from PaDiM. Inputs had to be z-scored per channel, because cosine distance on raw ReLU features was degenerate. |
+
+Item verdicts: 5.11 Mixed, 5.12 Negative.
+
+Not done: the autoencoder baseline is dense, not `ImageAutoencoders`.
+
+### ActionRecognition (W11 5.13: temporal shift, (2+1)-D convolutions and late fusion)
+Sources: R-wave11. Theme: vision. Test: ActionRecognitionTest (15 s). Block: `vision.VideoClassifiers` (single frame, late fusion, frame difference, TSM, (2+1)-D, ConvLSTM); generator `ShapeClips`. 150 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ConvLSTM; (2+1)-D; TSM; frame difference; late fusion | Accuracy / direction accuracy (MACs per clip) | 0.425 / 0.680 (1.48M); 0.363 / 0.725 (498k); 0.288 / 0.575 (479k); 0.288 / 0.958 (387k); 0.250 / 0.500 (442k) | Single frame: 0.225 / 0.462 (55k) | Mixed | Late fusion is at chance on direction, as predicted, but TSM does not match (2+1)-D and ConvLSTM is the most accurate. All models are undertrained at 150 steps. |
+
+Item verdict: 5.13 Mixed.
+
+Not done: the `SimVp` head.
+
+### FeatureMatching (W11 5.14: Harris corners, learned keypoints and RANSAC homographies)
+Sources: R-wave11. Theme: vision. Test: FeatureMatchingTest. Blocks: `vision.FeatureMatching` (Harris, patch and BRIEF descriptors, mutual-NN ratio test, DLT, adaptive RANSAC, warp), `LearnedKeypoints`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Harris + patch; Harris + BRIEF; learned keypoints; Lucas–Kanade, each with RANSAC | Share with corner error below 3 px, small warp / large warp / blur + illumination | 0.53 / 0.27 / 0.20; 0.53 / 0.33 / 0.13; 0.47 / 0.33 / 0.00; 0.80 / 0.27 / 0.27 | Harris + patch with least squares on all matches: 0.00 everywhere | Mixed | RANSAC is essential and Lucas–Kanade drops on large warps, as predicted, but the learned keypoints fail completely under blur instead of beating Harris. |
+
+Item verdict: 5.14 Mixed.
+
+Not done: the spatial-transformer homography baseline; the scenes are generated inside the experiment rather than taken from `ShapeScenes` or `DegradedImages`.
+
+### EdgeDetection (W11 5.15: Sobel, Canny and HED)
+Sources: R-wave11. Theme: vision. Test: EdgeDetectionTest. Block: `vision.EdgeDetectors` (Sobel, LoG, Canny with hysteresis, HED with deep supervision, ODS / OIS / AP).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| HED; Canny | ODS / OIS / AP | 0.687 / 0.699 / 0.574; 0.663 / 0.711 / 0.658 | Sobel: 0.584 / 0.615 / 0.502. LoG: 0.404 / 0.422 / 0.285. Single-output FCN: 0.573 / 0.586 / 0.439 | Mixed | Canny beats Sobel, as predicted. HED edges Canny on ODS only and loses on OIS and AP, not the predicted wide margin. Deep supervision helps: the single-output FCN is far behind. |
+
+Item verdict: 5.15 Mixed.
+
+Not done: the U-Net baseline is replaced by the single-output FCN ablation.
+
+### HashingRetrieval (W11 5.16: deep supervised hashing and HashNet)
+Sources: R-wave11. Theme: vision. Test: HashingRetrievalTest. Block: `vision.DeepHashing` (DSH, HashNet, bit-packed Hamming search).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| HashNet; DSH, 32 bits | mAP, seen / unseen classes | 0.605 / 0.168; 0.419 / 0.173 | ITQ: 0.428 / 0.172. LSH: 0.329 / 0.154. PQ at 4 bytes: 0.434 / 0.185. Float ceiling (DSH's real-valued outputs): 0.435 / 0.190 | Win | HashNet beats DSH, LSH and PQ on seen classes and stays best at 16, 32 and 64 bits; Hamming search takes about 10 µs per query against 212 µs for PQ. Every method is near chance on unseen classes. |
+
+Item verdict: 5.16 Win.
+
+### SpectralConvolution (W11 5.17: FFT convolution and spectral pooling)
+Sources: R-wave11. Theme: vision. Test: SpectralConvolutionTest. Blocks: `vision.Fft2d`, `Conv2dOps`, `SpectralConv` (the FFT convolution passes GradCheck; FFT error 7e-6).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| FFT convolution, 16×16 input | Time at kernel 11 / 15 | 0.73 / 0.79 ms | Direct convolution: 1.47 / 2.39 ms | Mixed | FFT wins at 16 px from kernel 11, but at 32 and 64 px it is slower at every kernel size, because padding to 128 costs 15–20 ms; the predicted crossover at kernel 7–9 at 32×32 does not appear. |
+| Spectral pooling; parametrised spectral pooling | Accuracy | 0.403; 0.497 | Max pooling: 0.547. Average pooling: 0.377 | Negative | Negative: neither matches max pooling. |
+
+Item verdict: 5.17 Negative.
+
+Not done: core has no public 2-D FFT or 2-D convolution helper, so these helpers are local to `experimental.vision`.
+
+---
+
+## Wave 11 WP6: bandits, exploration, hierarchical, preference and multi-agent RL
+
+New packages: `experimental.bandit`, `experimental.explore`, `experimental.marl` and `experiments.bandits`, with the generator `experimental.data.BanditSuites`. `experimental.deeprl` gains `Mbpo`, `AverageReward` and `AccessControlQueue`, `PixelObservations` gains `cartPole` and `mountainCar` renderers, and `WorldModelShootout` and `ModernOffPolicy` gain new methods. Core is untouched. All 14 test classes passed. Most run in 5–12 s; DeepExplorationTest, the CooperativeMarlTest and DeepExplorationCountsTest pair, and WorldModelPixelsTest take 12–13 s on the shared machine. Rows use 1–2 seeds unless they say otherwise; the bandit rows average many runs (40 seeds in 11.6.1). "Opt share" is the share of seeds that reached the optimum (R-wave11).
+
+### StochasticBandits (W11 6.1: KL-UCB, Bernoulli Thompson sampling, MOSS and IMED, 6.2: EXP3, EXP3-IX and Tsallis-INF)
+Sources: R-wave11. Theme: bandits. Test: StochasticBanditsTest. Blocks: `bandit.BanditPolicy`, `BanditMath`, `BanditRuns`, `StochasticBandits`, `AdversarialBandits` (with an adapter for `BanditMixer`); generator `BanditSuites`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| IMED; Bernoulli TS; KL-UCB; MOSS, 5 arms, best mean 0.1, gap 0.05, horizon 5,000, 40 seeds | Regret | 26.7; 35.7; 41.0; 81.4 | UCB1: 193.9. ContextualBandit UCB1: 193.6. ε-greedy: 34.0. Lai–Robbins lower bound: 63.9 | Win | KL-UCB, TS and IMED have 4.7–7.3x less regret than UCB1, more than the predicted 2–5x; ε-greedy is close behind. The asymptotic bound is not a floor at this horizon. MOSS at small T with many arms was not reported. |
+| EXP3-IX; EXP3; Tsallis-INF, 4 arms, 3,000 pulls | Regret, adaptive adversary / stochastic / switching | 50.7 / 139.7 / 52.2; 52.9 / 172 / 62.1; 77.5 / 75.7 / 37.1 | KL-UCB: 1,157 / 57.9 / −100.7. SW-UCB: 811.6 / 260 / −9.4. TS: 91.7 / 30.8 / 5.9. BanditMixer EXP3: 62.8 / 334.8 / 66.2 | Win | The UCB policies break on the adaptive adversary, as predicted, and Tsallis-INF is the best all-rounder. Its stochastic regret is 2.5x TS's (predicted within 2x); EXP3 is far worse there. |
+
+Item verdicts: 6.1 Win, 6.2 Win.
+
+### PureExploration (W11 6.3: best-arm identification, 6.4: dueling bandits)
+Sources: R-wave11. Theme: bandits. Test: PureExplorationTest. Blocks: `bandit.BestArmIdentification` (uniform, successive elimination, successive halving, LUCB, Track-and-Stop, TT-TS, TT-EB, Almost Tracking from arXiv:2510.23199), `DuelingBandits`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Track-and-Stop; TT-TS; TT-EB; Almost Tracking, fixed confidence δ = 0.05, Gaussian means 1 / 0.6 / 0.5 / 0.4 / 0.3 | Mean samples to stop (0 errors for every rule) | 366; 369; 404; 679 | Successive elimination: 2,904. LUCB: 5,395. Uniform: 724 | Win | Track-and-Stop and top-two sampling need an eighth of successive elimination's samples, beyond the predicted half. |
+| Track-and-Stop; Almost Tracking; TT-EB, fixed budget | Error rate at budget 200 / 800 | 0.467 / 0.133; 0.55 / 0.233; 0.583 / 0.35 | Successive halving: 0.6 / 0.217. Uniform: 0.633 / 0.25 | Mixed | Almost Tracking beats successive halving at 200 but not at 800. On learning-rate selection (78 runs) Hyperband's regret is 0.0022 against 0.0034 for Almost Tracking. |
+| Double TS; RUCB; BT-greedy, 3,000 duels | Regret, Bradley–Terry / cyclic instance | 30.4 / 204 (winner share 0.994); 240 / 459; 198 / 865 | Independent TS (two independent pulls): 16.3 / 47.3. Uniform: 498 / 745 | Negative | Negative: the independent-pull reduction beats both DTS and RUCB, also on the cyclic instance where it was expected to suffer linear regret. |
+
+Item verdicts: 6.3 Win, 6.4 Negative.
+
+### RankingBandits (W11 6.5: combinatorial semi-bandits and cascading bandits)
+Sources: R-wave11. Theme: bandits. Test: RankingBanditsTest. Block: `bandit.RankingBandits` (CUCB, CascadeUCB1, CascadeKL-UCB, PBM-UCB, CascadeLinUCB, item-wise LinUCB and LinTS, offline ULTR).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CascadeLinUCB; CascadeKL-UCB; CUCB; PBM-UCB; CascadeUCB1 | Regret at 3,000 rounds, cascade / position-based click model | 0.3 / 1,490; 6.8 / 1,320; 15.6 / 871; 25.4 / 738; 84.2 / 904 | Item-wise LinUCB: 0.1 / 506. Item-wise LinTS: 1.9 / 175. Offline ULTR: 639 / 2,323. Random: 1,274 / 4,591 | Negative | Negative: item-wise LinUCB matches or beats every cascade-aware policy even under the cascade model, and item-wise LinTS is best under the position-based model. Offline ULTR trails the online policies, as predicted. |
+
+Item verdict: 6.5 Negative.
+
+Not done: `ClickLogs`' click model cannot be used on its own, and `ContextualBandit` has no accessor for its scores.
+
+### DeepExploration (W11 6.6: bootstrapped DQN with priors and RLSVI, 6.7: count-based bonuses, 6.8: skill discovery)
+Sources: R-wave11. Theme: control. Tests: DeepExplorationTest, DeepExplorationCountsTest, DeepExplorationSkillsTest. Blocks: `explore.DeepSeaChain`, `Rlsvi`, `BootstrappedDqn`, `CountBonuses` (SimHash, learned-code SimHash, pseudo-counts, exact counts), `SkillDiscovery` (DIAYN, METRA, CSF, random skills).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| RLSVI (tabular); bootstrapped DQN without prior; with prior, Deep Sea N = 10, 2,000 steps, 2 seeds | Episodes to first reward (share of seeds solved) | 86 (1.0); 151 (0.5); 152 (0) | DQN ε-greedy: 223 (0). NoisyNet DQN: 223 (0) | Mixed | RLSVI solves it, and ε-greedy and NoisyNet fail already at N = 10, but the randomised prior does not help bootstrapped DQN. On RiverSwim, RLSVI (tabular and linear) reaches greedy return 2.2 against 0.1 for core tabular Q-learning. |
+| Pseudo-count; RND; SimHash; exact counts, 1,500 steps | Cells visited, Deep Sea 12 / mountain car | 70 / 91; 66 / 134; 64 / 112; 64 / – | ε-greedy: 63 / 104 | Inconclusive | No method found the reward at this budget, so only coverage can be compared, and the gaps are small. On the pixel key-door grid (800 steps) every learner reaches the reward by episode 3, with 187–204 cells (exact counts 204, SimHash 193, learned-code SimHash 192). |
+| DIAYN; CSF; METRA, open point maze, 800 reward-free steps | Cells covered of 100 (held-out goals reached) | 39 (0); 32 (0); 30 (0) | RND-driven SAC: 27 (0). Random skills: 21 (0.25) | Negative | Negative: DIAYN covers the most, and no learned skill reaches a held-out goal. At 1,500 steps, a larger run than the test, METRA leads with 42 cells, so the ranking is budget-sensitive. |
+
+Item verdicts: 6.6 Mixed, 6.7 Inconclusive, 6.8 Negative.
+
+Not done: CSF uses a scalar critic.
+
+### ModelBasedAndHierarchical (W11 6.9: MBPO, 6.10: HIRO and HAC)
+Sources: R-wave11. Theme: control. Tests: ModelBasedMbpoTest, ModelBasedAndHierarchicalTest. Blocks: `deeprl.Mbpo`; `explore.PointMaze`, `StepwiseTd3`, `Hiro` (HIRO, HIRO without correction, HAC, flat HER).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| MBPO, Pendulum, 600 steps, UTD 3 | IQM return | −1,264 | SAC, UTD 3: −1,360. SAC, UTD 1: −1,692. DroQ: −1,023. CEM on the true model (ceiling): −253 | Negative | Negative: barely ahead of SAC at equal UTD and behind DroQ. At 1,000 steps and UTD 5, a larger run than the test, MBPO scores −1,469 against −134 for SAC, because its model rollouts only start after the first 200-step chunk. |
+| HAC; HIRO; HIRO without correction, open maze, 2,000 steps, 64-wide networks | Success rate | 1.0; 0.2; 0 | Flat HER: 0. Core TD3: 0 | Win | Both hierarchies beat flat HER, off-policy correction matters, and HAC learns fastest, as predicted. These numbers come from a larger run than the test, which runs only HAC (0.4) and flat HER (0) at 32-wide networks to fit the time limit. |
+
+Item verdicts: 6.9 Negative, 6.10 Win.
+
+Not done: the TD-MPC and Dreamer rows in 6.9; HAC uses relative subgoals; `StepwiseTd3` is local, because core `Td3`, `Sac` and `ModernSac` cannot be driven step by step.
+
+### RewardFormulations (W11 6.11: preference-based RL, 6.12: average-reward RL)
+Sources: R-wave11. Theme: control. Test: RewardFormulationsTest. Blocks: `explore.PreferenceRl` (Christiano, PEBBLE, SURF and the true reward; uniform, disagreement and entropy queries; label noise), `deeprl.AverageReward`, `AccessControlQueue`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PEBBLE; SURF; Christiano, dense reach task, 1,000 steps, 60 queries, 1 seed | True return (success) | −8.4 (1.0); −26.9 (0); −62.8 (0) | True reward: −26.2 (0). With 10% label noise: PEBBLE −26.3 (0), SURF −8.5 (1.0) | Inconclusive | One seed contradicts itself: PEBBLE beats training on the true reward, and label noise helps SURF. At 1,500 steps, true reward, PEBBLE and SURF all succeed and Christiano fails. |
+| Differential Q-learning; deep differential Q (4k steps); R-learning, access-control queue, 50k steps | Long-run reward rate | 2.708; 2.702; 2.689 | Optimum (relative value iteration): 2.748. Q-learning, γ = 0.9: 2.541; γ = 0.99: 2.430. Always accept: 2.192 | Win | The average-reward learners come within 1.5% of the optimum, where discounted Q-learning settles on worse policies, as predicted. |
+
+Item verdicts: 6.11 Inconclusive, 6.12 Win.
+
+Not done: a CartPole average-reward row; `ReplayBuffer` cannot relabel rewards (PEBBLE and HIRO need it).
+
+### CooperativeMarl (W11 6.13: QTRAN, QPLEX and QFIX, 6.14: mean-field RL, 6.15: other-play, 6.16: HAPPO and HATRPO)
+Sources: R-wave11. Theme: multiagent. Tests: CooperativeMarlFactorisationTest, CooperativeMarlTest, CooperativeMarlHeterogeneousTest. Blocks: `marl.FactorizedMixer`, `MixerNet`, `CompleteFactorization` (QTRAN-base, QPLEX, QFIX-sum, QFIX-mono), `CooperativeMatrixGame`, `MeanFieldQ`, `MeanFieldActorCritic`, `LocalRewardEnvironment`, `IsingCoordination`, `OtherPlay`, `Happo` (HAPPO, HATRPO, simultaneous updates), `ScoutCarrier`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| QTRAN-base; QFIX-mono; QFIX-sum; QPLEX, 600 steps, 2 seeds | Greedy return (opt share), climbing game (optimum 11) / TwoStepGame (optimum 8) | 11 (1.0) / 8 (1.0); 8.5 (0.5) / 7.5 (0.5); 6 (0) / 8 (1.0); 5 (0) / 7.5 (0.5) | QMIX: 8.5 (0.5) / 8 (1.0). VDN, independent learners: 5 (0) / 7 (0). MAPPO: 7 (0) / 7 (0) | Mixed | Only QTRAN finds both optima. QPLEX and QFIX do not, against the hypothesis, and QMIX does as well as QFIX-mono. QPLEX uses one attention head. |
+| MF-Q; MF-AC, ferromagnetic 10×10 lattice (100 agents), 600 steps | Return (order parameter) | 10 (1); 10 (1) | IQL, MAPPO: 10 (1). Random: 0.05 | Negative | Negative: every learner reaches the ground state, so mean-field gives no edge over independent learners at 100 agents. |
+| MF-AC; MF-Q, antiferromagnetic 4×4 lattice, 1,200 steps | Return (order parameter) | 2.93 (0.23); −6.15 (0.20) | IQL: 2.93 (0.23). MAPPO: 1.25 (0.20). Random: 0 (0.13) | Negative | Negative: synchronous greedy mean-field play drives every spin to align, which is exactly wrong in the antiferromagnet; MF-AC only ties IQL. |
+| Other-play with Q-learning, lever / signalling game, 3,000 episodes, 4 seeds | Self-play / cross-play | 0.90 / 0.90; 0.68 / 0.49 | Self-play Q-learning: 1.00 / 0.00; 0.98 / 0.10. IPPO seeds (lever): 1.00 / 0.17 | Win | Self-play conventions do not transfer, and other-play keeps cross-play at its self-play score on the lever game, as predicted; on signalling it lifts cross-play from 0.10 to 0.49. |
+| Other-play with policy gradient, lever / signalling game | Self-play / cross-play | 0.25 / 0.08; 0.56 / 0.13 | Self-play policy gradient: 1.00 / 0.17; 0.94 / 0.15 | Negative | Negative: REINFORCE gets stuck in the 1/9 local optimum. ReferentialGame reaches test accuracy 0.93 against 0.25 chance, but its cross-play cannot be measured because the class does not expose its agents. |
+| HATRPO; HAPPO, heterogeneous ScoutCarrier task, 3,000 steps, 2 seeds | Return ± spread across seeds | 0.86 ± 0.12; 0.55 ± 0.18 | Simultaneous updates: 0.56 ± 0.19. MAPPO: 0.41 ± 0.20. IPPO: 0.43 ± 0.44. QPLEX: 0.49 ± 0.25 | Win | Both beat MAPPO, with less spread than IPPO, as predicted. HAPPO itself is no better than simultaneous updates here. HATRPO uses a KL-penalty surrogate rather than a constrained natural-gradient step. |
+
+Item verdicts: 6.13 Mixed, 6.14 Negative, 6.15 Mixed, 6.16 Win.
+
+Not done: the penalty game is implemented but not in a test; the 400-agent lattice and the crowd-navigation grid (6.14); the cooperative card game (6.15); the continuous climbing game, the coupled pendulum and MADDPG (6.16). MF-Q's target reuses the stored mean action, and `ValueDecomposition` fixes its network seed at 61, so its seeds change only exploration.
+
+### WorldModelShootout pixels and ModernOffPolicy mountainCarGoal (W11 6.17: control from pixels and continuous MountainCar, follow-up)
+Sources: R-wave11. Themes: world, control. Tests: WorldModelPixelsTest, ModernOffPolicyMountainCarTest. Blocks: `PixelObservations.cartPole` and `.mountainCar` (2-channel frames with the previous frame), `WorldModelShootout.pixels`, `ModernOffPolicy.mountainCarGoal`. It lifts the cut of wave 9 9.5.6 and the core gap reported by wave 10 WP4.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Dreamer, states / pixels, cart-pole 32×32 renders, 1,500 steps | Return | 154 / 8.7 | DQN: 10 / 13.3 | Negative | Negative: pixel Dreamer stays far below half its state return and below pixel DQN. These numbers come from a larger run than the test, which uses 12×12 renders and 1,000 steps: Dreamer 43.3 / 10, DQN 10 / 25.7. |
+| SAC with the SimHash bonus, continuous mountain car, 1,000 steps | Greedy share reaching the flag (return) | 1.0 (62.9) | SAC, TD7, CrossQ: 0 | Mixed | The exploration bonus gets SAC to the goal, as predicted, but TD7 never reaches it. |
+
+Item verdict: 6.17 Mixed.
+
+Not done: the DrQ and SPR pixel rows; pixel Dreamer on mountain car (supported, but the test runs cart-pole only). `Dqn` allocates its full 50k replay buffer up front, which ran out of memory on 2,048-dimensional pixel observations until `bufferSize` was set.
+
+---
+
 ## Highlights
 
 The ten most interesting findings, chosen for effect size and for what they show:
@@ -5094,6 +5924,23 @@ The ten most interesting wave 10 findings (R-wave10, one seed at test budgets):
 10. **Structured decoders parse well and always give trees.** Biaffine + Eisner reaches UAS 0.925 against 0.873 greedy and 0.892 for offset tagging; the chart parser reaches F1 0.987 and PP accuracy 0.982, against 0.979 and 0.768 for a treebank PCFG (parsing).
 
 Honourable mentions: calibrated MLLS estimates label-shift weights at MSE 0.027 against 0.098 for BBSE (shift). TD3+BC scores 0.97 on expert Pendulum data against 0.59 for CQL and 0.23 for IQL (control). V-ZB pipelines cut the bubble to 0.208 at half of 1F1B's memory, against 0.280 (parallel). Spline-kernel Hawkes fits a delayed kernel at −1.087 per event against −1.139 for the exponential kernel and −1.066 for the truth, and neural TPPs win only on inhibition, reproducing the 2026 re-evaluation (events). Two hyperbolic dimensions rank a hierarchy at 1.65 against 2.59 for ten Euclidean ones (graphs). KoLeo lifts DINO's kNN accuracy from 0.508 to 0.708 (selfsupervised). GE2E with PLDA cuts speaker-verification EER to 0.146 from 0.342 for mean MFCCs (speech). ELR predicts 49% of flipped labels correctly against 3% for cross-entropy (labels). EBM matches GBT (0.880 against 0.879) and beats NAM (0.653) while ranking both planted pairs first (classic). Nash-MTL gives the best multitask Δm on digits, −3.5% against −8.8% for equal weights (multitask).
+
+### Wave 11
+
+The ten most interesting wave 11 findings (R-wave11, mostly one seed at test budgets):
+
+1. **PGD overstates robustness, and AutoAttack shows by how much.** Re-evaluating wave 8's defences at ε = 0.1, AutoAttack takes 9–12 points off PGD-10 for every one (TRADES 0.640 → 0.520, PGD-AT 0.593 → 0.487), more than the 1–5 points expected (robustness).
+2. **Prediction poisoning stops model extraction for free.** A top-1-preserving defence cuts a Knockoff attacker's agreement from 0.773 to 0.297 while honest top-1 accuracy stays at 0.997; equation solving recovers an undefended logistic model exactly from 65 queries (security).
+3. **PC with orientation rules beats NOTEARS on standardised data.** PC + Meek reaches SHD 1.5 to the true CPDAG against 10.5 for NOTEARS and GES and 11 for DAGMA (discovery).
+4. **Modern DiD estimators remove the TWFE bias.** With growing staggered effects TWFE is off by −1.68, while Callaway–Sant'Anna with outcome regression is off by −0.03 and its bootstrap band covers the truth in every run (econometrics).
+5. **A learned 2-opt selector closes the gap.** On TSP-20 it reaches a 0.0% gap at 200 moves, against 2.8% for best-improvement 2-opt and 32.8% for simulated annealing (combinatorial).
+6. **Conservative update makes Count-Min 8x more accurate.** On a Zipf 1.2 stream the weighted error falls from 7.2e-4 to 8.8e-5, and Space-Saving finds every heavy hitter at precision 1.00 (algorithms).
+7. **Learned eviction fixes the trace that breaks LRU.** On a looping trace the Parrot imitation policy gets 0.94 of Belady's hits against 0.01 for LRU, and predictive marking never falls below LRU even with noisy predictions (algorithms).
+8. **BLT correlated noise beats banded factorisation with a fifth of the state.** Prefix-sum RMSE is 6.2 with 3 floats of state per coordinate, against 9.5 (15) for banded factorisation, 15.9 for the tree and 32.0 for independent noise (privacy).
+9. **Mondrian conformal fixes tail coverage.** On a long-tailed task marginal LAC covers the worst class 0.385 of the time at a 0.90 target; class-conditional LAC raises that to 0.878 (uncertainty).
+10. **Other-play makes conventions transferable.** On the lever game, self-play Q-learners score 1.00 with each other but 0.00 with strangers; other-play learners score 0.90 both ways (multiagent).
+
+Honourable mentions: POMO reaches a 3.5% TSP gap against 15.8% for the attention model at equal rollouts (combinatorial). Track-and-Stop identifies the best arm in 366 samples against 2,904 for successive elimination (bandits). Entropy balancing cuts the Kang–Schafer ATT error to 4.8 against 11.3 for AIPW and 19.9 for DoubleML (econometrics). Parallel tempering keeps both modes of a bimodal RBM target (mass balance 1.00) where CD-1 and PCD collapse (0.01) (classic). The GFlowNet forward-looking loss finds the MIS optimum with 10 distinct near-optimal solutions, against 0.955 and 1 for trajectory balance (combinatorial). pYIN keeps 0.99 raw pitch accuracy at 5 dB where YIN drops to 0.56, and label-free PESTO reaches 0.73 (music). HMM smoothing lifts chord recognition from 0.770 to 0.918 (music). HashNet reaches mAP 0.605 at 32 bits against 0.434 for PQ at the same bytes, at 10 µs per query against 212 µs (vision). Activation clustering detects BadNets poisons at AUROC 0.947 (security). HAC solves the open maze every time where flat HER never does (control).
 
 ## Negative or null results
 
@@ -5391,5 +6238,53 @@ Wave 10 (R-wave10, one seed at test budgets; long `main()` Runs not executed):
 | edge | EdgeDeployment, BigNAS in-place distillation | 0.520 / 0.465 vs 0.915 / 0.780 for progressive shrinking at 300 steps | Distilling early from a weak teacher hurts. |
 | multimodal | FusionShootout, two-stage VQA bridge (test budget; long run pending) | 0.640 vs an answer prior of about 0.65; alignment accuracy 0.018 | Stage 1 barely aligns at 100 steps. |
 | multimodal | FusionShootout, latent Transfusion (test budget; long run pending) | Generation 0.133 vs 0.433 for VQ tokens | Better than wave 9's pixel model, still far behind. |
+
+Wave 11 (R-wave11, mostly one seed at test budgets; no long runs):
+
+| Theme | Experiment | Result | What it means |
+|---|---|---|---|
+| security | RobustAggregation, learned aggregation weights | Worst-case accuracy 0.100 vs 0.507 for NNM + median | Attackers that lie about their losses collapse the learned weights. |
+| security | RobustAggregation, centred clipping against model replacement | Backdoor success 0.719 vs 0.956 under FedAvg | Clipping does not stop the trigger; the median does better (0.352). |
+| security | BackdoorShootout, AGPD | AUROC 0.5; target-class z-score −1.41, nothing flagged | The activation-gradient detector finds nothing here. |
+| security | BackdoorShootout, filter and retrain on the patch trigger | ASR 0.841 (spectral) and 0.911 (clustering) vs 0.904 for random filtering | Good detection rankings do not remove the backdoor. |
+| security | BackdoorShootout, Neural Cleanse, fine-pruning and ANP | ASR 0.826–0.922 vs 0.930 before repair | No repair works; ANP, expected best, is worst. |
+| robustness | AdversarialRobustness, AugMix + JSD | mCE 0.814 vs 0.605 for PGD-AT and 0.732 for TrivialAugment | AugMix is not the best corruption defence on digits. |
+| combinatorial | RoutingShootout, pointer networks at 100 steps | TSP-10 gap 46.8–48.8% vs 8.2% for nearest neighbour | Undertrained at the test budget. |
+| combinatorial | RoutingShootout, Sym-NCO | Gap 2.2% on rotated instances vs 0.4% for POMO ×8 | The invariance loss does not help even where expected. |
+| combinatorial | RoutingShootout, efficient active search | Gap 12.8–12.9% vs 12.9% for plain sampling | No gain from test-time adaptation at 120 rollouts. |
+| combinatorial | GraphCoShootout, PI-GNN and Erdős goes neural | MaxCut ratio 0.784 and 0.912 vs 0.995 for bSB; Erdős MIS 0.877 vs 0.970 for greedy | The unsupervised GNN solvers lose to classical heuristics. |
+| combinatorial | SolverLearning, learned branching | 569 nodes vs 423 for strong branching and 595 for most-fractional | Far from the 2x node saving. |
+| combinatorial | SolverLearning, learned WalkSAT | Median 130 flips vs 32 for WalkSAT at n = 20 | The learned flip policy only beats a random walk. |
+| synthesis | ProgramSynthesisShootout, Probe | 0.88 of length-4–5 tasks, the same as unguided search | Just-in-time grammar learning adds nothing here. |
+| algorithms | SketchShootout, learned Misra–Gries with a trained oracle | Error 7.0e-4 vs 6.2e-4 classical; 8.2e-4 with a bad oracle | A weak classifier makes the learned sketch worse than the classical one. |
+| discovery | DiscoveryShootout, SCORE | Order divergence 3 vs 3.5 for a random order and 1.5 for DAGMA | Score-matching ordering barely beats chance. |
+| econometrics | PanelShootout, TROP | ATT RMSE 1.09 vs 0.91 for SDID | The triply robust estimator does not come out best, against its paper. |
+| probabilistic | CircuitShootout, squared circuits on digits | −10.98 (complex) and −14.4 (real) vs −10.04 for the monotone circuit | Negative weights help only on the planted cancellation task. |
+| timeseries | IntermittentDemand, SBA and TSB on stationary demand | RMSSE about 0.658 for every method, SES included | No gain over exponential smoothing. |
+| uncertainty | ConformalSets, conformal training | Set size 3.99 vs 3.96; accuracy 0.488 vs 0.505 | ConfTr does not shrink sets. |
+| uncertainty | EnsembleShootout, NCL, DivDis, D-BAT and JTT at full spurious agreement | Worst-group accuracy 0.083–0.102 vs 0.068 for ERM | No method finds the shape-based head. |
+| uncertainty | EnsembleShootout, deep ensemble at equal compute | 0.748 / NLL 0.797 vs 0.775 / 0.580 for one model; worst of the zoo under 40% label noise | At equal steps the members are too undertrained. |
+| uncertainty | EnsembleShootout, MIMO | 0.498 vs 0.758 for a single model | MIMO needs a wider network, as expected. |
+| uncertainty | EnsembleShootout, EnD² and Hydra | Far AUROC 0.449 and 0.643 vs 0.709 for mean distillation | Neither keeps the ensemble's OOD signal. |
+| classic | ClassicLearners, persistent CD | −41.58 nats vs −41.54 for CD-1 and −39.57 for a Bernoulli mixture | No gain from persistent chains with 16 hidden units. |
+| classic | ClassicLearners, Tsetlin machines on digits | 0.820 at 100 clauses vs 0.988 for a random forest; fuzzy 0.512 at 10 clauses | Far behind forests, and no 10x clause saving. |
+| classic | ClassicMlShootout, monotonic networks at 500 rows | RMSE 0.228–0.429 vs 0.184 for an unconstrained MLP | The constraints cost accuracy once data is plentiful. |
+| music | PitchShootout, CREPE | Raw pitch accuracy 0.00–0.03 | The supervised network does not learn at the test budget. |
+| language | ClassicNlp, HMM aligner | AER 0.234 (grow-diag-final) vs 0.170 for IBM 2 | Weaker than IBM 2, possibly from the verb-final reordering. |
+| language | ClassicNlp, Brill–Moore channel | 0.660 on misspelt words vs 0.792 for the nearest word | The richer channel overfits under EM. |
+| parsing | GrammarInduction, neural and compound PCFGs | F1 0.395 and 0.31 vs 0.528 for right-branching | Neither beats the trivial baseline. |
+| vision | ImageAnomalyShootout, Dinomaly | Image AUROC 0.669 vs 0.673 for its ablation and 0.911 for pooled PaDiM | No gain from the noisy bottleneck with shallow features. |
+| vision | ImageAnomalyShootout, PatchCore | Image AUROC 0.924 vs 0.939 for an autoencoder and 0.997 for PaDiM | Aligned objects favour PaDiM. |
+| vision | FeatureMatching, learned keypoints under blur | 0.00 vs 0.20 for Harris | The learned detector fails exactly where it was meant to help. |
+| vision | SpectralConvolution, spectral pooling | 0.403 (0.497 parametrised) vs 0.547 for max pooling | Does not match max pooling. |
+| bandits | PureExploration, dueling bandits | Regret 30.4 / 204 for double TS vs 16.3 / 47.3 for two independent pulls | The naive reduction wins, also on cyclic preferences. |
+| bandits | RankingBandits, cascade-aware policies | 0.3 for CascadeLinUCB vs 0.1 for item-wise LinUCB under the cascade model | Modelling the cascade gives no edge. |
+| control | DeepExploration, randomised prior functions | Deep Sea solved by 0 of 2 seeds vs 1 of 2 without the prior | The prior does not help bootstrapped DQN here. |
+| control | DeepExploration, METRA and CSF | 30 and 32 cells vs 39 for DIAYN; no goals reached | The newer skill objectives do not cover more at 800 steps. |
+| control | ModelBasedAndHierarchical, MBPO | −1,264 vs −1,360 for SAC and −1,023 for DroQ | No sample-efficiency gain at this budget. |
+| multiagent | CooperativeMarl, QPLEX and QFIX | Climbing game 5 (QPLEX) and 6–8.5 (QFIX) vs the optimum 11, which QTRAN reaches | The newer mixers miss the optimum. |
+| multiagent | CooperativeMarl, mean-field Q on the antiferromagnet | −6.15 vs 2.93 for IQL | Mean-field play aligns spins that should alternate. |
+| multiagent | CooperativeMarl, other-play with policy gradient | Cross-play 0.08 on the lever game vs 0.90 with Q-learning | REINFORCE gets stuck in a local optimum. |
+| world | WorldModelShootout, Dreamer from pixels | 8.7 vs 154 from states and 13.3 for pixel DQN | Far from half the state return at this budget. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.

@@ -1,6 +1,8 @@
 package io.github.zzuegg.brainiac.experiments.classic;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.calibrate.Recalibrators;
+import io.github.zzuegg.brainiac.experimental.data.TabularStressSuite;
 import io.github.zzuegg.brainiac.experimental.ml.Dbscan;
 import io.github.zzuegg.brainiac.experimental.ml.GaussianMixture;
 import io.github.zzuegg.brainiac.experimental.ml.GaussianProcess;
@@ -12,18 +14,27 @@ import io.github.zzuegg.brainiac.experimental.ml.MlMatrices;
 import io.github.zzuegg.brainiac.experimental.ml.MlMetrics;
 import io.github.zzuegg.brainiac.experimental.ml.RandomFourierFeatures;
 import io.github.zzuegg.brainiac.experimental.ml.SpectralClustering;
+import io.github.zzuegg.brainiac.experimental.nn.MonotonicLayers;
+import io.github.zzuegg.brainiac.experimental.nn.NeuralAdditiveModel;
 import io.github.zzuegg.brainiac.experiments.generative.ToyPoints;
 import io.github.zzuegg.brainiac.experiments.learning.ToyTasks;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.train.GradientBoostedTrees;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.SplittableRandom;
+import java.util.function.Function;
+import java.util.function.ToDoubleFunction;
+import java.util.function.UnaryOperator;
 
 /**
  * The shared harness of the classic machine-learning experiments: seeded 2-D datasets (spirals
@@ -36,7 +47,11 @@ import java.util.SplittableRandom;
  *       and an MLP: test accuracy, train time and support-vector count;</li>
  *   <li>{@link #clustering}: k-means with random and k-means++ seeding, a full-covariance GMM,
  *       spectral clustering and DBSCAN: the adjusted Rand index against the true labels, and
- *       for DBSCAN the recall of planted noise points.</li>
+ *       for DBSCAN the recall of planted noise points;</li>
+ *   <li>{@link #monotonic}: {@link MonotonicLayers} (min-max, lattice, constrained MLP) against
+ *       an unconstrained MLP, a neural additive model, gradient-boosted trees and isotonic
+ *       regression on a planted monotone target: RMSE in range, RMSE beyond the training range
+ *       and the share of monotonicity violations.</li>
  * </ul>
  */
 public final class ClassicMlShootout {
@@ -352,5 +367,164 @@ public final class ClassicMlShootout {
 
     private static double ms(long t0) {
         return (System.nanoTime() - t0) / 1e6;
+    }
+
+    /**
+     * One monotonic-regression entry.
+     *
+     * @param rmse test RMSE inside the training range
+     * @param extrapolationRmse test RMSE where the first feature exceeds the training range
+     * @param violations share of grid pairs where the output drops along a monotone feature
+     */
+    public record MonotoneRow(double rmse, double extrapolationRmse, double violations) {
+    }
+
+    /** The planted monotone shape of feature {@code j}. */
+    private static double plantedMonotone(int j, double x) {
+        return switch (j % 4) {
+            case 0 -> 0.8 * x;
+            case 1 -> Math.tanh(2 * x);
+            case 2 -> 0.15 * x * x * x;
+            default -> x > 0 ? 0.7 : -0.3 + 0.2 * x;
+        };
+    }
+
+    /**
+     * Monotonic networks against unconstrained models (item 11.4.17). Features are the 8 columns
+     * of a {@link TabularStressSuite} table (uniform in
+     * {@code [-2, 2]}); the target is {@code Σ_{j < k} m_j(x_j)} with increasing planted shapes,
+     * plus {@code 0.5 sin(2 x_k)} when {@code k > 1}, plus noise 0.1. Training and in-range test
+     * rows have {@code x_0 <= 1}; the extrapolation set has {@code x_0 > 1}.
+     *
+     * @param rows training rows (100 to 500)
+     * @param monotoneFeatures {@code k}, 1 to 4
+     * @param steps Adam steps for the neural models
+     * @param seed the seed
+     * @return MLP, min-max, lattice, constrained MLP, NAM, GBT, and isotonic regression on
+     *     {@code x_0} when {@code k = 1}
+     */
+    public static Map<String, MonotoneRow> monotonic(int rows, int monotoneFeatures, int steps, long seed) {
+        var suite = new TabularStressSuite(4, 0.5, false, seed);
+        int d = suite.columns();
+        List<double[]> inRange = new ArrayList<>();
+        List<double[]> beyond = new ArrayList<>();
+        float[] raw = suite.table(rows * 4 + 2000, seed + 1).features().toArray();
+        for (int i = 0; i < raw.length / d; i++) {
+            double[] x = new double[d];
+            for (int j = 0; j < d; j++) {
+                x[j] = raw[i * d + j];
+            }
+            (x[0] <= 1 ? inRange : beyond).add(x);
+        }
+        SplittableRandom r = new SplittableRandom(seed + 2);
+        ToDoubleFunction<double[]> target = x -> {
+            double s = 0;
+            for (int j = 0; j < monotoneFeatures; j++) {
+                s += plantedMonotone(j, x[j]);
+            }
+            return monotoneFeatures > 1 ? s + 0.5 * Math.sin(2 * x[monotoneFeatures]) : s;
+        };
+        double[][] xtr = inRange.subList(0, rows).toArray(new double[0][]);
+        double[][] xte = inRange.subList(rows, Math.min(inRange.size(), rows + 1000)).toArray(new double[0][]);
+        double[][] xex = beyond.subList(0, Math.min(beyond.size(), 500)).toArray(new double[0][]);
+        double[] ytr = new double[xtr.length];
+        for (int i = 0; i < ytr.length; i++) {
+            ytr[i] = target.applyAsDouble(xtr[i]) + 0.1 * r.nextGaussian();
+        }
+        boolean[] monotone = new boolean[d];
+        double[] low = new double[d];
+        double[] high = new double[d];
+        for (int j = 0; j < d; j++) {
+            monotone[j] = j < monotoneFeatures;
+            low[j] = -2;
+            high[j] = 2;
+        }
+        Map<String, Function<double[][], double[]>> models = new LinkedHashMap<>();
+        Model mlp = Model.sequential().input(d).dense(32, Activation.TANH).dense(32, Activation.TANH).dense(1)
+                .seed(seed).build();
+        models.put("MLP", regressor(v -> mlp.forward(v, true), mlp.parameters(), xtr, ytr, steps));
+        for (MonotonicLayers.Kind k
+                : MonotonicLayers.Kind.values()) {
+            Layer layer = MonotonicLayers.create(k, monotone, low, high, seed);
+            models.put(k.name(), regressor(layer::forward, layer.parameters(), xtr, ytr, steps));
+        }
+        NeuralAdditiveModel nam = new NeuralAdditiveModel(d, 16, new SplittableRandom(seed));
+        models.put("NAM", regressor(nam::forward, nam.parameters(), xtr, ytr, steps));
+        var gbt = GradientBoostedTrees.fit(xtr, ytr,
+                GradientBoostedTrees.Objective.REGRESSION,
+                GradientBoostedTrees.Settings.defaults().withDepth(3));
+        models.put("GBT", gbt::predict);
+        if (monotoneFeatures == 1) {
+            double[] s = new double[xtr.length];
+            for (int i = 0; i < s.length; i++) {
+                s[i] = xtr[i][0];
+            }
+            double[][] map = Recalibrators.isotonic(s, ytr);
+            models.put("isotonic", x -> {
+                double[] out = new double[x.length];
+                for (int i = 0; i < x.length; i++) {
+                    out[i] = interpolate(map, x[i][0]);
+                }
+                return out;
+            });
+        }
+        Map<String, MonotoneRow> out = new LinkedHashMap<>();
+        for (var e : models.entrySet()) {
+            out.put(e.getKey(), new MonotoneRow(rmse(e.getValue().apply(xte), xte, target),
+                    rmse(e.getValue().apply(xex), xex, target),
+                    MonotonicLayers.violations(e.getValue(), low, high,
+                            monotone, 21, 50, seed + 3)));
+        }
+        return out;
+    }
+
+    /** Piecewise-linear interpolation of an isotonic fit, flat beyond its ends. */
+    private static double interpolate(double[][] map, double x) {
+        double[] xs = map[0];
+        double[] ys = map[1];
+        if (x <= xs[0]) {
+            return ys[0];
+        }
+        for (int b = 1; b < xs.length; b++) {
+            if (x <= xs[b]) {
+                double t = (x - xs[b - 1]) / (xs[b] - xs[b - 1]);
+                return ys[b - 1] + t * (ys[b] - ys[b - 1]);
+            }
+        }
+        return ys[ys.length - 1];
+    }
+
+    private static double rmse(double[] pred, double[][] x, ToDoubleFunction<double[]> target) {
+        double s = 0;
+        for (int i = 0; i < x.length; i++) {
+            double e = pred[i] - target.applyAsDouble(x[i]);
+            s += e * e;
+        }
+        return Math.sqrt(s / x.length);
+    }
+
+    /** Full-batch Adam on squared error; returns the trained model as a function. */
+    private static Function<double[][], double[]> regressor(UnaryOperator<Var> forward, List<Var> params,
+            double[][] x, double[] y, int steps) {
+        Tensor xt = Tensor.of(MlMatrices.toFloat(x));
+        float[] yv = new float[y.length];
+        for (int i = 0; i < y.length; i++) {
+            yv[i] = (float) y[i];
+        }
+        Tensor yt = Tensor.of(Shape.of(y.length, 1), yv);
+        Optimizer opt = Optimizer.adam(0.01f);
+        for (int s = 0; s < steps; s++) {
+            Var loss = forward.apply(Var.of(xt)).reshape(y.length, 1).sub(yt).square().mean();
+            loss.backward();
+            opt.step(params);
+        }
+        return rowsIn -> {
+            float[] p = forward.apply(Var.of(Tensor.of(MlMatrices.toFloat(rowsIn)))).value().toArray();
+            double[] out = new double[rowsIn.length];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = p[i];
+            }
+            return out;
+        };
     }
 }

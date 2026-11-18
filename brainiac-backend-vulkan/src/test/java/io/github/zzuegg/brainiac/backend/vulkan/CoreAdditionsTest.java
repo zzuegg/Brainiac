@@ -90,4 +90,36 @@ class CoreAdditionsTest {
         assertThrows(UnsupportedOperationException.class, () -> ids.to(gpu));
         assertArrayEquals(new float[] {1, 2}, ids.to(DType.FLOAT32).to(gpu).to(CPU).toArray());
     }
+
+    @Test
+    void matrixAndStatisticsOps() {
+        same(d -> Var.of(random(d, 20, 2, 3, 4)).tril(0).value(), 0);
+        same(d -> Var.of(random(d, 21, 3, 3)).triu(-1).value(), 0);
+        same(d -> Var.of(random(d, 22, 2, 3, 3)).trace().value(), 1e-6f);
+        same(d -> Var.of(random(d, 23, 4, 3)).cross(Var.of(random(d, 24, 4, 3)), 1).value(), 1e-6f);
+        same(d -> Var.of(random(d, 25, 2, 3)).kron(Var.of(random(d, 26, 3, 2))).value(), 1e-6f);
+        same(d -> Var.of(random(d, 27, 6)).logaddexp(Var.of(random(d, 28, 6))).value(), 1e-6f);
+        same(d -> Var.of(random(d, 29, 6).abs()).xlogy(Var.of(random(d, 30, 6).abs().add(0.1f))).value(), 1e-5f);
+        same(d -> Var.of(random(d, 31, 3, 7)).quantile(0.3, 1, false).value(), 1e-6f);
+        same(d -> Transforms.vjp(xs -> xs.get(0).median(0, false), List.of(random(d, 32, 4, 3)),
+                Tensor.full(Shape.of(3), 1f, DType.FLOAT32, d)).gradients().get(0), 1e-6f);
+    }
+
+    @Test
+    void activationsLossesFft2AndSteps() {
+        same(d -> Var.of(random(d, 40, 8)).silu().value(), 1e-5f);
+        same(d -> Var.of(random(d, 41, 8)).gelu().value(), 1e-5f);
+        same(d -> Var.of(random(d, 42, 8)).mish().value(), 1e-5f);
+        same(d -> Var.of(random(d, 43, 2, 4, 3, 2)).fft2(false).value(), 1e-4f);
+        same(d -> io.github.zzuegg.brainiac.nn.Loss.focalFromLogits(2).compute(Var.of(random(d, 44, 3, 4)),
+                Tensor.of(Shape.of(3), new float[] {0, 3, 1}, d)).value(), 1e-5f);
+        same(d -> io.github.zzuegg.brainiac.nn.Loss.generalizedCrossEntropy(0.7f).compute(Var.of(random(d, 45, 3, 4)),
+                Tensor.of(Shape.of(3), new float[] {2, 1, 0}, d)).value(), 1e-5f);
+        same(d -> {
+            io.github.zzuegg.brainiac.nn.Recurrent lstm = (io.github.zzuegg.brainiac.nn.Recurrent)
+                    io.github.zzuegg.brainiac.nn.Recurrent.lstm(4).create(Shape.of(3, 2), new SplittableRandom(46));
+            lstm.parameters().forEach(p -> p.assign(p.value().to(d)));
+            return lstm.step(Var.of(random(d, 47, 2, 2)), lstm.initialState(2)).h().value();
+        }, 1e-5f);
+    }
 }

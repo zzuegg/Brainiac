@@ -6,6 +6,7 @@ import io.github.zzuegg.brainiac.experimental.ml.GaussianMixture;
 import io.github.zzuegg.brainiac.experimental.ml.KMeans;
 import io.github.zzuegg.brainiac.experimental.ml.MlMatrices;
 import io.github.zzuegg.brainiac.experimental.ml.MlMetrics;
+import io.github.zzuegg.brainiac.experimental.ml.VariationalGaussianMixture;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -25,7 +26,8 @@ import java.util.SplittableRandom;
  *       (kneedle) rule and {@link Dbscan} with its suggested radius. The DP models get the same
  *       weak prior: an expected cluster standard deviation of 0.6 and {@code alpha = 1}. Scores:
  *       adjusted Rand index, absolute error in {@code K} and held-out log-likelihood, averaged
- *       over {@code K}.</li>
+ *       over {@code K}. A {@link VariationalGaussianMixture} row (truncation 16, Dirichlet
+ *       concentration 0.01) was added in wave 11; it reports no held-out likelihood.</li>
  *   <li>{@link #stream}: points arrive in five chunks and every chunk brings two new clusters.
  *       Warm-started Gibbs (ten sweeps per chunk) and single-pass online DP-means against
  *       k-means with the {@code K} its elbow picked on the first chunk, and BIC-GMM refitted on
@@ -147,6 +149,10 @@ public final class NonparametricClustering {
                     Double.NaN), ks.length);
             add(out, "DBSCAN", score(y, Dbscan.cluster(x, Dbscan.suggestEps(x, 4, 0.9), 5), k, Double.NaN),
                     ks.length);
+            // wave 11 (11.3.13): one variational Bayesian fit with a generous truncation
+            VariationalGaussianMixture vb = VariationalGaussianMixture.fit(x, 16,
+                    VariationalGaussianMixture.Prior.FINITE_DIRICHLET, 1e-2, SIGMA * SIGMA, 300, seed);
+            add(out, "VB-GMM (Dirichlet 0.01)", score(y, vb.labels(), k, Double.NaN), ks.length);
         }
         return out;
     }

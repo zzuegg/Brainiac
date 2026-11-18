@@ -2101,12 +2101,13 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn ${isLive() && EV.state?.running ? "serving" : ""}" id="eval-open" aria-expanded="${!!(isLive() && EV.open)}" title="Score a chat model on this PC with a file of questions, and time how fast it reads and writes">${icon("flask")}${isLive() && EV.state?.running ? "Measuring…" : "Evaluate"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn ${isLive() && mergeBusy() ? "serving" : ""}" id="merge-open" aria-expanded="${!!(isLive() && MG.open)}" title="Merge chat models on this PC that share an architecture, such as two fine-tunes of one base model, into a new model">${icon("branch")}${isLive() && mergeBusy() ? "Merging…" : "Merge"}</button><button class="btn ${isLive() && EV.state?.running ? "serving" : ""}" id="eval-open" aria-expanded="${!!(isLive() && EV.open)}" title="Score a chat model on this PC with a file of questions, and time how fast it reads and writes">${icon("flask")}${isLive() && EV.state?.running ? "Measuring…" : "Evaluate"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() && SV.open ? servePanel() : ""}
       ${isLive() && QZ.open ? quantPanel() : ""}
       ${isLive() && FT.open ? tunePanel() : ""}
+      ${isLive() && MG.open ? mergePanel() : ""}
       ${isLive() && EV.open ? evalPanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
@@ -4681,6 +4682,84 @@ reason ::= [a-z ]+`;
     if (!FT.loaded) { FT.loaded = true; loadTune(); }
   }
 
+  // Merging: chat models of this PC that share an architecture become one new model folder.
+  const MG = { open: false, state: null, way: "linear", base: "", picked: {}, weights: {}, balance: 0.5, density: 0.5, name: "", busy: false, error: null, loaded: false, timer: null };
+  const mergeBusy = () => MG.state?.job?.state === "merging";
+  // a single GGUF file cannot be merged: only model folders are offered
+  const mergeModels = () => quantModels().filter(m => !/\.gguf$/i.test(m.id));
+  function mergePanel() {
+    const s = MG.state, j = s?.job, models = mergeModels(), ways = s?.ways || [];
+    const way = ways.find(w => w.id === MG.way) || ways[0];
+    const base = models.some(m => m.id === MG.base) ? MG.base : "";
+    const picked = models.filter(m => MG.picked[m.id] && !(way?.base && m.id === base));
+    const status = !j ? "" : j.state === "done" ? `<div class="flag ok-note">${icon("check")}<span><b>${esc(j.name)}</b> is in the model list now: ${esc(j.models.join(" and "))}, merged. <span class="faint">${esc(j.folder)}</span></span></div>`
+      : j.state === "failed" ? `<div class="flag bad">${icon("alert")}<span>${esc(j.name)} was not made: ${esc(j.error || "it failed")}</span></div>`
+      : `<div class="flag">${icon("flask")}<span><b>Merging ${esc(j.models.join(" and "))} into ${esc(j.name)}</b> for ${Math.round(j.seconds)} s. This runs on the CPU, a tensor at a time. You can leave this screen.</span></div>`;
+    return `<form class="placebox servebox tunebox mergebox" id="merge-form" autocomplete="off" novalidate>
+      <div class="place-head"><div><b>Merge models into a new one</b> <span class="muted">Models that share an architecture, such as two fine-tunes of one base model, are combined weight by weight, with the methods mergekit offers. The result is a new model folder next to the first; the models you merge stay as they are. Model folders only: a single GGUF file cannot be merged.</span></div>
+        <button type="button" class="iconbtn sm" id="merge-close" aria-label="Close">${icon("x")}</button></div>
+      ${models.length > 1 ? `<div class="place-path serve-form">
+        <select class="input" id="merge-way" aria-label="How to merge" style="flex:0 1 200px">${ways.map(w => `<option value="${esc(w.id)}" ${w.id === way?.id ? "selected" : ""}>${esc(w.label)}</option>`).join("")}</select>
+        ${way?.base ? `<select class="input" id="merge-base" aria-label="Base model" style="flex:1 1 180px;min-width:150px"><option value="">Base model: choose…</option>${models.map(m => `<option value="${esc(m.id)}" ${m.id === base ? "selected" : ""}>Base: ${esc(m.name)}</option>`).join("")}</select>` : ""}
+        <input class="input" id="merge-name" aria-label="Name of the merged model" placeholder="Name of the new model" maxlength="60" value="${esc(MG.name)}" style="flex:1 1 200px">
+      </div>
+      <div class="muted" style="font-size:12.5px">${way ? esc(way.label + ": " + way.note + ".") : ""}</div>
+      <div class="merge-list" role="group" aria-label="Models to merge">${models.map(m => {
+        const isBase = way?.base && m.id === base, on = !!MG.picked[m.id] && !isBase;
+        return `<label class="merge-row ${isBase ? "off" : ""}"><input type="checkbox" data-merge-pick="${esc(m.id)}" ${on ? "checked" : ""} ${isBase ? "disabled" : ""}><span class="grow">${esc(m.name)}${isBase ? ' <span class="faint">the base</span>' : ""}</span>
+          ${on && way?.id !== "slerp" ? `<span class="faint">weight</span><input class="input mono" type="number" step="any" data-merge-weight="${esc(m.id)}" aria-label="Weight of ${esc(m.name)}" placeholder="${way?.id === "linear" ? "equal" : "1"}" value="${esc(MG.weights[m.id] ?? "")}">` : ""}</label>`;
+      }).join("")}</div>
+      <div class="tune-nums">
+        ${way?.id === "slerp" ? `<label class="tune-num" title="0 is the first model you ticked, 1 the second.">Balance<input class="input mono" id="merge-balance" type="number" min="0" max="1" step="0.05" value="${esc(MG.balance)}"></label>` : ""}
+        ${way?.id === "ties" || way?.id === "dare" ? `<label class="tune-num" title="The share of each model's changes from the base that is kept.">Share kept<input class="input mono" id="merge-density" type="number" min="0.05" max="1" step="0.05" value="${esc(MG.density)}"></label>` : ""}
+        <span class="grow"></span>
+        <button class="btn primary" type="submit" ${MG.busy || mergeBusy() || picked.length < 2 ? "disabled" : ""}>${icon("branch")}${mergeBusy() ? "Merging…" : picked.length < 2 ? "Tick two or more models" : "Merge " + picked.length + " models"}</button>
+      </div>`
+      : `<div class="muted">Merging needs two or more chat models on this PC that are model folders. Download fine-tunes of one base model from Hugging Face, or teach a model with Fine-tune.</div>`}
+      ${status}
+      ${MG.error ? `<div class="flag bad">${icon("alert")}<span>${esc(MG.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadMerge() {
+    const was = mergeBusy();
+    try { MG.state = await api("/api/merge"); } catch (e) { console.warn("cannot read the merging state", e); }
+    clearTimeout(MG.timer);
+    if (mergeBusy()) MG.timer = setTimeout(loadMerge, 1500);
+    else if (was) await loadModels(true);   // the merged model is a model now
+    // while it runs the form is left alone, so it keeps its focus
+    if (state.view === "library" && !(was && mergeBusy())) render();
+  }
+  function bindMerge() {
+    $("#merge-open")?.addEventListener("click", () => { MG.open = !MG.open; MG.error = null; render(); });
+    $("#merge-close")?.addEventListener("click", () => { MG.open = false; MG.error = null; render(); });
+    $("#merge-way")?.addEventListener("change", e => { MG.way = e.target.value; render(); });
+    $("#merge-base")?.addEventListener("change", e => { MG.base = e.target.value; render(); });
+    $("#merge-name")?.addEventListener("input", e => { MG.name = e.target.value; });
+    $("#merge-balance")?.addEventListener("input", e => { MG.balance = e.target.value; });
+    $("#merge-density")?.addEventListener("input", e => { MG.density = e.target.value; });
+    $$("[data-merge-pick]").forEach(c => c.addEventListener("change", () => { MG.picked[c.dataset.mergePick] = c.checked; render(); }));
+    $$("[data-merge-weight]").forEach(t => t.addEventListener("input", () => { MG.weights[t.dataset.mergeWeight] = t.value; }));
+    $("#merge-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (MG.busy || mergeBusy()) return;
+      const ways = MG.state?.ways || [], way = ways.find(w => w.id === MG.way) || ways[0];
+      const base = way?.base ? ($("#merge-base")?.value || "") : "";
+      const models = mergeModels().filter(m => MG.picked[m.id] && m.id !== base).map(m => m.id);
+      const given = models.map(id => String(MG.weights[id] ?? "").trim());
+      if (way?.base && !base) { MG.error = way.label + " needs the base model the others were tuned from."; render(); return; }
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,59}$/.test(MG.name.trim())) { MG.error = "Name it with up to 60 letters, digits, dots, dashes or underscores."; render(); return; }
+      if (given.some(w => w) && given.some(w => !w || !isFinite(+w))) { MG.error = "Give every ticked model a weight, or none of them."; render(); return; }
+      MG.busy = true; MG.error = null; render();
+      try { MG.state = await postJson("/api/merge", { way: way.id, base, models, weights: given.some(w => w) ? given.map(Number) : [], balance: +MG.balance, density: +MG.density, name: MG.name.trim() }); }
+      catch (err) { MG.error = String(err.message || err).replace(/^\/api\/merge: /, ""); }
+      MG.busy = false;
+      clearTimeout(MG.timer);
+      if (mergeBusy()) MG.timer = setTimeout(loadMerge, 1000); else if (!MG.error) loadMerge();
+      if (state.view === "library") render();
+    });
+    if (!MG.loaded) { MG.loaded = true; loadMerge(); }
+  }
+
   // Evaluating: a chat model on this PC is scored on a file of questions, or timed.
   const EV = { open: false, state: null, model: "", data: "", file: "", lines: 0, limit: 100, shots: 0, busy: false, error: null, loaded: false, timer: null };
   const evalBusy = () => !!EV.state?.running;
@@ -5195,6 +5274,7 @@ reason ::= [a-z ]+`;
     bindServe();
     bindQuant();
     bindTune();
+    bindMerge();
     bindEval();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
@@ -5301,7 +5381,7 @@ reason ::= [a-z ]+`;
   // Agents the user starts: a goal, a chat model and the studio's tools. In Ask mode a tool
   // that acts (downloads, training, asking a paid model) waits here for Allow or Deny.
   const A = { loaded: false, loading: false, error: null, runs: [], tools: [], maxSteps: 30, sel: null, detail: null,
-    model: "auto", mode: "ask", steps: 12, goal: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
+    model: "auto", mode: "ask", steps: 12, goal: "", format: "", schema: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
     open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "" };
   const agentStates = { running: ["working", "c-text"], waiting: ["needs you", "c-warn"], done: ["done", "c-ok"], failed: ["failed", "c-bad"],
     stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"] };
@@ -5356,6 +5436,13 @@ reason ::= [a-z ]+`;
           <button type="button" data-ag-mode="auto" aria-pressed="${A.mode === "auto"}" title="It calls every tool itself">Auto</button></div>
         <label class="muted ag-steps">Steps <input class="input mono" id="ag-steps" type="number" min="1" max="${A.maxSteps}" value="${A.steps}"></label>
       </div>
+      <div class="field"><label for="ag-format" title="The agent works in free text, as its tool calls need, and writes its final answer in this form in a turn of its own.">Answers as</label>
+        <select class="input" id="ag-format">
+          <option value="" ${A.format === "" ? "selected" : ""}>Free text</option>
+          <option value="json" ${A.format === "json" ? "selected" : ""}>A JSON object</option>
+          <option value="schema" ${A.format === "schema" ? "selected" : ""}>JSON that fits a schema</option>
+        </select>
+        ${A.format === "schema" ? `<textarea class="input mono" id="ag-schema" rows="5" spellcheck="false" aria-label="JSON schema" placeholder="${esc(SCHEMA_EXAMPLE)}">${esc(A.schema)}</textarea>` : ""}</div>
       ${A.formError ? `<div class="flag bad">${icon("alert")}<span>${esc(A.formError)}</span></div>` : ""}
       <button class="btn primary" type="submit" ${A.busy ? "disabled" : ""}>${icon("play")}${A.busy ? "Starting…" : "Start"}</button>
     </form>`;
@@ -5389,7 +5476,7 @@ reason ::= [a-z ]+`;
       case "call": return `<div class="st st-call">${icon("plug")}<span>Calls <code>${esc(s.tool)}</code>${argText(s.arguments) ? ` <span class="mono muted">${esc(argText(s.arguments))}</span>` : ""}</span></div>`;
       case "result": return `<details class="st st-result ${s.ok ? "" : "bad"}" data-ag-open="${i}" ${A.open.has(i) ? "open" : ""}><summary>${s.ok ? icon("check") : icon("alert")}<span><code>${esc(s.tool)}</code> ${s.ok ? "answered" : "failed"}</span><span class="mono faint">${fmtCount((s.text || "").length)} chars</span></summary><pre>${esc(s.text || "")}</pre></details>`;
       case "decision": return `<div class="st st-decision">${icon(s.allow ? "check" : "x")}<span>You ${s.allow ? "allowed" : "did not allow"} <code>${esc(s.tool)}</code>${s.note ? `: “${esc(s.note)}”` : ""}</span></div>`;
-      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${md(s.text || "")}</div></div>`;
+      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${s.json && s.text ? jsonAnswer(s.text) : md(s.text || "")}</div></div>`;
       case "error": return `<div class="flag bad">${icon("alert")}<span>${esc(s.text || "")}</span></div>`;
       default: return "";
     }
@@ -5535,13 +5622,17 @@ reason ::= [a-z ]+`;
     goal.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#ag-form").requestSubmit(); };
     $("#ag-model").onchange = e => { A.model = e.target.value; };
     $("#ag-steps").oninput = e => { A.steps = Math.max(1, Math.min(A.maxSteps, +e.target.value || 12)); };
+    $("#ag-format").onchange = e => { A.format = e.target.value; A.formError = null; render(); };
+    if ($("#ag-schema")) $("#ag-schema").oninput = e => { A.schema = e.target.value; };
     $$("[data-ag-mode]").forEach(b => b.onclick = () => { A.mode = b.dataset.agMode; $$("[data-ag-mode]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
     $("#ag-form").onsubmit = async e => {
       e.preventDefault();
       if (!A.goal.trim()) { A.formError = "Say what the agent should do."; render(); return; }
+      const wrong = formatError(A);
+      if (wrong) { A.formError = wrong; render(); return; }
       A.busy = true; A.formError = null; render();
       try {
-        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps });
+        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps, format: formatOf(A) });
         A.goal = ""; A.sel = r.id; A.detail = null; A.open = new Set();
       } catch (err) {
         A.formError = String(err.message || err);

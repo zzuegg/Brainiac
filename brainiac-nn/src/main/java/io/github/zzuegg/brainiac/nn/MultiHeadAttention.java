@@ -66,6 +66,62 @@ public final class MultiHeadAttention implements MultiInputLayer {
     private final Var bv;
     private final Var bo;
     private final RandomGenerator random;
+    private final java.util.EnumMap<Projection, Adapter> adapters = new java.util.EnumMap<>(Projection.class);
+
+    /** The four projections: queries, keys, values, and the output that joins the heads. */
+    public enum Projection {
+        /** inputs to queries */
+        QUERY,
+        /** memory to keys */
+        KEY,
+        /** memory to values */
+        VALUE,
+        /** joined heads to the output */
+        OUTPUT
+    }
+
+    /**
+     * Something added to a projection's output, such as a LoRA update: {@code x W + b + delta(x)}.
+     */
+    public interface Adapter {
+
+        /**
+         * @param x the projection's input, {@code [..., in]}
+         * @return what to add to its output, {@code [..., out]}
+         */
+        Var delta(Var x);
+
+        /** @return the adapter's trainable parameters */
+        List<Var> parameters();
+    }
+
+    /**
+     * A low-rank adapter (Hu et al., 2021): {@code delta(x) = (alpha / rank) x A B}, with
+     * {@code A} small and random and {@code B} zero, so the layer starts unchanged.
+     *
+     * @param in the projection's input width
+     * @param out the projection's output width
+     * @param rank the rank of the update
+     * @param alpha the scale, often equal to the rank
+     * @param random the random source for {@code A}
+     * @return the adapter
+     */
+    public static Adapter lora(int in, int out, int rank, float alpha, SplittableRandom random) {
+        Var a = Var.param(Tensor.uniform(Shape.of(in, rank), (float) -Math.sqrt(1.0 / in), (float) Math.sqrt(1.0 / in), random));
+        Var b = Var.param(Tensor.zeros(Shape.of(rank, out)));
+        float scale = alpha / rank;
+        return new Adapter() {
+            @Override
+            public Var delta(Var x) {
+                return x.matmul(a).matmul(b).mul(scale);
+            }
+
+            @Override
+            public List<Var> parameters() {
+                return List.of(a, b);
+            }
+        };
+    }
 
     /**
      * Creates the layer with fresh weights.
@@ -352,6 +408,10 @@ public final class MultiHeadAttention implements MultiInputLayer {
         if (b != null) {
             y = y.add(b);
         }
+        Adapter adapter = adapters.get(w == wq ? Projection.QUERY : w == wk ? Projection.KEY : Projection.VALUE);
+        if (adapter != null) {
+            y = y.add(adapter.delta(x));
+        }
         return y.reshape(n, t, heads, size).permute(0, 2, 1, 3);
     }
 
@@ -416,8 +476,7 @@ public final class MultiHeadAttention implements MultiInputLayer {
 
     /** Joins the heads of {@code out} {@code [batch, heads, steps, dv]} and projects them. */
     private Var output(Var out, int n, int tq) {
-        Var y = out.permute(0, 2, 1, 3).reshape(n, tq, settings.heads() * settings.valueSize()).matmul(wo);
-        return bo != null ? y.add(bo) : y;
+        return joined(out.permute(0, 2, 1, 3).reshape(n, tq, settings.heads() * settings.valueSize()));
     }
 
     /**
@@ -607,8 +666,74 @@ public final class MultiHeadAttention implements MultiInputLayer {
         cache.keys = cache.storage != null ? k.value().to(cache.storage) : k.value();
         cache.values = cache.storage != null ? v.value().to(cache.storage) : v.value();
         cache.received = received;
-        Var y = out.permute(0, 2, 1, 3).reshape(n, tq, s.heads() * s.valueSize()).matmul(wo);
-        return bo != null ? y.add(bo) : y;
+        return joined(out.permute(0, 2, 1, 3).reshape(n, tq, s.heads() * s.valueSize()));
+    }
+
+    private Var joined(Var heads) {
+        Var y = heads.matmul(wo);
+        if (bo != null) {
+            y = y.add(bo);
+        }
+        Adapter adapter = adapters.get(Projection.OUTPUT);
+        return adapter == null ? y : y.add(adapter.delta(heads));
+    }
+
+    /**
+     * @param p a projection
+     * @return its weight, {@code [in, out]}
+     */
+    public Var weight(Projection p) {
+        return switch (p) {
+            case QUERY -> wq;
+            case KEY -> wk;
+            case VALUE -> wv;
+            case OUTPUT -> wo;
+        };
+    }
+
+    /**
+     * @param p a projection
+     * @return its bias, or null without biases
+     */
+    public Var bias(Projection p) {
+        return switch (p) {
+            case QUERY -> bq;
+            case KEY -> bk;
+            case VALUE -> bv;
+            case OUTPUT -> bo;
+        };
+    }
+
+    /**
+     * Adds an adapter to a projection, replacing any it had; its parameters join
+     * {@link #parameters()}. Freeze the base weights (or leave them out of the optimizer) to
+     * train only the adapter.
+     *
+     * @param p the projection
+     * @param adapter the adapter, or null to remove it
+     */
+    public void adapt(Projection p, Adapter adapter) {
+        if (adapter == null) {
+            adapters.remove(p);
+        } else {
+            adapters.put(p, adapter);
+        }
+    }
+
+    /**
+     * Adds a LoRA adapter of the right widths to a projection.
+     *
+     * @param p the projection
+     * @param rank the rank
+     * @param alpha the scale
+     * @param random the random source
+     * @return the adapter
+     */
+    public Adapter lora(Projection p, int rank, float alpha, SplittableRandom random) {
+        Var w = weight(p);
+        Adapter a = lora(w.shape().dim(0), w.shape().dim(1), rank, alpha, random);
+        adapt(p, a);
+        return a;
     }
 
     @Override
@@ -631,6 +756,9 @@ public final class MultiHeadAttention implements MultiInputLayer {
         List<Var> p = new ArrayList<>(List.of(wq, wk, wv, wo));
         if (bq != null) {
             p.addAll(List.of(bq, bk, bv, bo));
+        }
+        for (Adapter a : adapters.values()) {
+            p.addAll(a.parameters());
         }
         return p;
     }
