@@ -72,7 +72,7 @@ public final class PretrainedTokenizer implements Tokenizer {
      * when that is not a control token such as {@code <s>} and not already a space.
      */
     private record Spm(TokenizerParts.Model model, boolean dummyPrefix, boolean removeExtraSpaces, boolean escape,
-            int unk, int[] types, boolean addBos, boolean firstOnly) implements Engine {
+            int unk, int[] types, boolean addBos, boolean firstOnly, boolean nfkc, boolean caseFold) implements Engine {
     }
 
     private PretrainedTokenizer(List<String> tokens, List<Added> added, Engine engine, Object config, Integer bos,
@@ -383,6 +383,7 @@ public final class PretrainedTokenizer implements Tokenizer {
         spec.put("add_dummy_prefix", sp.addDummyPrefix());
         spec.put("remove_extra_whitespaces", sp.removeExtraWhitespaces());
         spec.put("escape_whitespaces", sp.escapeWhitespaces());
+        spec.put("normalizer", sp.normalizer());
         spec.put("add_bos", !Boolean.FALSE.equals(tokenizerConfig.get("add_bos_token")));
         spec.put("parse_control", false);
         if (tokenizerConfig.get("chat_template") instanceof String s) {
@@ -435,10 +436,13 @@ public final class PretrainedTokenizer implements Tokenizer {
             // byte, control and user-defined pieces never come out of the lattice
             model = new TokenizerParts.Unigram(pieces, scores, unk, byteFallback, false).excluding(excluded);
         }
+        String normalizer = spec.get("normalizer") instanceof String n ? n : "identity";
         Spm engine = new Spm(model, !Boolean.FALSE.equals(spec.get("add_dummy_prefix")),
                 !Boolean.FALSE.equals(spec.get("remove_extra_whitespaces")),
                 !Boolean.FALSE.equals(spec.get("escape_whitespaces")), unk, types,
-                !Boolean.FALSE.equals(spec.get("add_bos")), Boolean.TRUE.equals(spec.get("prefix_first_only")));
+                !Boolean.FALSE.equals(spec.get("add_bos")), Boolean.TRUE.equals(spec.get("prefix_first_only")),
+                // nmt_nfkc (T5, umT5, mT5): full-width commas and letters become plain ones
+                normalizer.contains("nfkc"), normalizer.endsWith("_cf"));
         int bos = (int) Json.integer(spec, "bos_id", -1);
         int eos = (int) Json.integer(spec, "eos_id", -1);
         for (int i = 0; i < types.length; i++) {
@@ -822,6 +826,12 @@ public final class PretrainedTokenizer implements Tokenizer {
     }
 
     private static String normalizeSpm(Spm spm, String text) {
+        if (spm.nfkc) {
+            text = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFKC);
+        }
+        if (spm.caseFold) {
+            text = text.toLowerCase(java.util.Locale.ROOT);
+        }
         String s = text;
         if (spm.removeExtraSpaces) {
             // SentencePiece trims and collapses spaces only, not other whitespace

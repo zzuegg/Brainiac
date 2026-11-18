@@ -686,7 +686,9 @@ GeneratedVideo video = wan.generate(VideoRequest.of("the waves roll in").withSiz
 On a rented machine with several GPUs, `Wan.plan` reads the files' headers and the devices'
 free memory and places the parts for a video size: Wan 2.2's two experts on different GPUs,
 umT5 and the CLIP encoder where there is room, each transformer's GPU keeping room for a
-step's activations (about 14 GB for a 14B model at 1280x720 and 81 frames in bfloat16). It
+step's working memory and the VAE's GPU room to decode, as measured on an A100: Wan 2.1
+14B at 832x480 and 9 frames held 44 GB of weights, 26 GB more while sampling and 18 GB to
+decode; 1.3B at 832x480 and 33 frames 9 and 17 GB. It
 falls back to 8- then 4-bit weights when nothing else fits. The example's `--device` takes a
 comma-separated list.
 
@@ -698,9 +700,12 @@ try (Wan wan = Wan.load(files, plan.placement(), DType.BFLOAT16, plan.options())
 
 | Model (bfloat16) | Weights | One GPU |
 | --- | --- | --- |
-| Wan 2.1 / 2.2 T2V and I2V 14B | 28.6 GB + umT5 11.4 GB (+ CLIP 1.3 GB) | 80 GB at 720p |
-| Wan 2.2 A14B (two experts) | 2 x 28.6 GB + umT5 11.4 GB | 141 GB, or two 48-80 GB GPUs |
-| Wan 2.2 TI2V-5B | 10 GB + umT5 | 24 GB at 720p (16 GB with 8-bit weights) |
+| Wan 2.1 / 2.2 T2V and I2V 14B | 28.6 GB + umT5 11.4 GB (+ CLIP 1.3 GB) | 80 GB at 832x480, short clips |
+| Wan 2.2 A14B (two experts) | 2 x 28.6 GB + umT5 11.4 GB | two 80 GB GPUs at 832x480 |
+| Wan 2.2 TI2V-5B | 10 GB + umT5 | about 56 GB at 1280x704 and 121 frames |
+
+Activations still take several times what diffusers needs, so 720p and five seconds with a
+14B model is more than one 80 GB card holds for now; `Wan.plan` says so before loading.
 
 - Frames are `1 + 4k` (81 is five seconds at 16 fps); width and height multiples of 16.
 - The VAE decodes one latent frame at a time, so memory does not grow with the length.

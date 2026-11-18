@@ -243,7 +243,7 @@ public final class WanTransformer implements MultiInputLayer {
             throw new IllegalArgumentException(this + " takes timesteps [" + batch + "] or [" + batch + ", " + n
                     + "], got " + timesteps.shape());
         }
-        Var x = Parts.step(() -> patchIn.forward(patchify(latents, p).to(type)));
+        Var x = Parts.step(() -> patchIn.forward(patchify(latents, p).to(type)).to(RESIDUAL32 ? DType.FLOAT32 : type));
         // the time embedding (temb) and its six modulations per block, [batch, 1 or n, ...]
         int m = perPatch ? n : 1;
         Var temb = Parts.step(() -> time.forward(Var.of(timesteps.reshape(batch * m))).reshape(batch, m, d));
@@ -259,10 +259,18 @@ public final class WanTransformer implements MultiInputLayer {
         });
         int imageTokens = image == null ? 0 : image.shape().dim(1);
         Tensor[] rope = FluxTransformer.rotaryTables(positions(f, h, w), settings.axes(), settings.theta(), device);
-        for (Block b : blocks) {
+        java.util.function.ObjIntConsumer<Tensor> probe = blockProbe;
+        if (probe != null) {
+            probe.accept(x.value(), -1);
+        }
+        for (int i = 0; i < blocks.size(); i++) {
+            Block b = blocks.get(i);
             Var in = x;
             x = Parts.step(() -> b.forward(in, modulation, ctx, imageTokens, rope));
             Parts.free(in);
+            if (probe != null) {
+                probe.accept(x.value(), i);
+            }
         }
         Var hidden = x;
         Var result = Parts.step(() -> {
@@ -481,28 +489,73 @@ public final class WanTransformer implements MultiInputLayer {
     }
 
     /**
+     * When set, hears the patch embedding (block -1) and each block's output
+     * {@code [batch, patches, features]} during a forward pass, for comparing a model against
+     * a reference implementation block by block.
+     */
+    public static volatile java.util.function.ObjIntConsumer<Tensor> blockProbe;
+
+    /**
      * The most query-key pairs (times heads) one attention dispatch takes in inference
      * ({@code -Dbrainiac.wan.attentionWork}); longer videos attend a slice of queries at a
      * time, each run on its own. Windows resets a GPU whose work runs for more than about
      * two seconds, and one fused attention over the 14,000 patches of an 832x480 clip can
      * take that long on a consumer card.
      */
-    static final long ATTENTION_WORK = Long.getLong("brainiac.wan.attentionWork", 1L << 28);
+    static final long ATTENTION_WORK = Long.getLong("brainiac.wan.attentionWork", 1L << 26);
+
+    /**
+     * Whether the residual stream between and inside blocks stays in float32, as Wan's own
+     * code keeps it, instead of the weights' type as diffusers does
+     * ({@code -Dbrainiac.wan.residual32=false}). In bfloat16 the 14B models' largest
+     * activations lose their low bits on every residual add.
+     */
+    static final boolean RESIDUAL32 = !"false".equals(System.getProperty("brainiac.wan.residual32"));
+
+    /** @return the query-key pairs above which self-attention runs in slices of queries */
+    public static long attentionWork() {
+        return ATTENTION_WORK;
+    }
+
+    /**
+     * Whether long attention runs as matrix products (scores, softmax, weighted values) per
+     * slice instead of the fused kernel ({@code -Dbrainiac.wan.attentionMatmul=false} for the
+     * fused one). The fused kernels keep one query per warp and read every key from memory
+     * for each, which at 14,000 patches is far slower than the backends' matrix products; a
+     * slice's scores take {@link #ATTENTION_WORK} floats (256 MB) at most.
+     */
+    static final boolean ATTENTION_MATMUL = !"false".equals(System.getProperty("brainiac.wan.attentionMatmul"));
 
     /** Attention of {@code [batch, heads, tokens, size]}, in slices of queries above {@code work} pairs. */
     static Var attend(Var q, Var k, Var v, long work) {
+        return attend(q, k, v, work, ATTENTION_MATMUL);
+    }
+
+    /** The same, choosing matrix products or the fused kernel for the slices. */
+    static Var attend(Var q, Var k, Var v, long work, boolean matmul) {
         int heads = q.shape().dim(1);
         int n = q.shape().dim(2);
         int m = k.shape().dim(2);
         if (Var.gradEnabled() || (long) heads * n * m <= work) {
             return FluxTransformer.attend(q, k, v);
         }
-        int chunk = (int) Math.max(16, Math.min(n, work / ((long) heads * m)));
+        int chunk = (int) Math.max(16, Math.min(n, work / ((long) heads * q.shape().dim(0) * m)));
+        float scale = (float) (1 / Math.sqrt(q.shape().dim(3)));
+        Var kt = matmul ? Parts.step(k::transpose) : null;
         List<Var> pieces = new ArrayList<>();
         for (int i = 0; i < n; i += chunk) {
             Var qi = q.slice(2, i, Math.min(n, i + chunk));
-            pieces.add(Parts.step(() -> FluxTransformer.attend(qi, k, v)));
+            pieces.add(Parts.step(() -> {
+                if (!matmul) {
+                    return FluxTransformer.attend(qi, k, v);
+                }
+                Var scores = qi.matmul(kt).to(DType.FLOAT32).mul(scale);
+                return Activation.SOFTMAX.forward(scores).to(v.value().dtype()).matmul(v);
+            }));
             Parts.free(qi);
+        }
+        if (kt != null) {
+            Parts.free(kt, k);
         }
         return pieces.size() == 1 ? pieces.get(0) : Var.concat(2, pieces.toArray(Var[]::new));
     }
@@ -637,37 +690,50 @@ public final class WanTransformer implements MultiInputLayer {
             int b = ms.dim(0);
             int m = ms.dim(1);
             int d = ms.dim(3);
-            DType type = x.value().dtype();
+            // the weights' type; the residual stream x may be float32
+            DType type = context.value().dtype();
+            DType res = RESIDUAL32 ? DType.FLOAT32 : type;
             Var mod = modulation.add(table.to(DType.FLOAT32).reshape(1, 1, 6, d));
             Var[] c = new Var[6];
             for (int i = 0; i < 6; i++) {
                 c[i] = mod.slice(2, i, i + 1).reshape(b, m, d);
             }
+            // each of the three parts frees its temporaries before the next starts
+            Var input = x;
             // self-attention: shift, scale, gate
-            Var n1 = norm1.forward(x.to(DType.FLOAT32)).mul(c[1].add(1f)).add(c[0]).to(type);
-            Var q = FluxTransformer.rotate(split(self.qNorm.forward(self.q.forward(n1)), heads), rope);
-            Var k = FluxTransformer.rotate(split(self.kNorm.forward(self.k.forward(n1)), heads), rope);
-            Var v = split(self.v.forward(n1), heads);
-            Var a = self.o.forward(FluxTransformer.join(attend(q, k, v, ATTENTION_WORK)));
-            x = x.to(DType.FLOAT32).add(a.to(DType.FLOAT32).mul(c[2])).to(type);
+            Var x1 = Parts.step(() -> {
+                Var n1 = norm1.forward(input.to(DType.FLOAT32)).mul(c[1].add(1f)).add(c[0]).to(type);
+                Var q = FluxTransformer.rotate(split(self.qNorm.forward(self.q.forward(n1)), heads), rope);
+                Var k = FluxTransformer.rotate(split(self.kNorm.forward(self.k.forward(n1)), heads), rope);
+                Var v = split(self.v.forward(n1), heads);
+                Var a = self.o.forward(FluxTransformer.join(attend(q, k, v, ATTENTION_WORK)));
+                return input.to(DType.FLOAT32).add(a.to(DType.FLOAT32).mul(c[2])).to(res);
+            });
             // cross-attention to text (and image) tokens, unmodulated
-            Var n2 = crossNorm == null ? x : crossNorm.forward(x);
-            Var cq = split(cross.qNorm.forward(cross.q.forward(n2)), heads);
-            int tokens = context.shape().dim(1);
-            Var text = imageTokens == 0 ? context : context.slice(1, imageTokens, tokens);
-            Var ca = FluxTransformer.attend(cq, split(cross.kNorm.forward(cross.k.forward(text)), heads),
-                    split(cross.v.forward(text), heads));
-            if (imageTokens > 0) {
-                Var img = context.slice(1, 0, imageTokens);
-                ca = ca.add(FluxTransformer.attend(cq,
-                        split(cross.imageKNorm.forward(cross.imageK.forward(img)), heads),
-                        split(cross.imageV.forward(img), heads)));
-            }
-            x = x.add(cross.o.forward(FluxTransformer.join(ca)));
+            Var x2 = Parts.step(() -> {
+                Var n2 = crossNorm == null ? x1.to(type) : crossNorm.forward(x1.to(type));
+                Var cq = split(cross.qNorm.forward(cross.q.forward(n2)), heads);
+                int tokens = context.shape().dim(1);
+                Var text = imageTokens == 0 ? context : context.slice(1, imageTokens, tokens);
+                Var ca = FluxTransformer.attend(cq, split(cross.kNorm.forward(cross.k.forward(text)), heads),
+                        split(cross.v.forward(text), heads));
+                if (imageTokens > 0) {
+                    Var img = context.slice(1, 0, imageTokens);
+                    ca = ca.add(FluxTransformer.attend(cq,
+                            split(cross.imageKNorm.forward(cross.imageK.forward(img)), heads),
+                            split(cross.imageV.forward(img), heads)));
+                }
+                return x1.add(cross.o.forward(FluxTransformer.join(ca)).to(res));
+            });
+            Parts.free(x1, input);
             // feed-forward: shift, scale, gate
-            Var n3 = norm2.forward(x.to(DType.FLOAT32)).mul(c[4].add(1f)).add(c[3]).to(type);
-            Var f = down.forward(up.forward(n3));
-            return x.to(DType.FLOAT32).add(f.to(DType.FLOAT32).mul(c[5])).to(type);
+            Var x3 = Parts.step(() -> {
+                Var n3 = norm2.forward(x2.to(DType.FLOAT32)).mul(c[4].add(1f)).add(c[3]).to(type);
+                Var f = down.forward(up.forward(n3));
+                return x2.to(DType.FLOAT32).add(f.to(DType.FLOAT32).mul(c[5])).to(res);
+            });
+            Parts.free(x2, input);
+            return x3;
         }
 
         /** {@code [batch, tokens, features]} as heads {@code [batch, heads, tokens, headSize]}. */

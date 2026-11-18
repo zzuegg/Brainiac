@@ -39,7 +39,7 @@ public final class LocalVideos {
     /**
      * What one clip asks for, beyond the prompt.
      *
-     * @param negativePrompt what the clip should not show; empty for Wan's own default
+     * @param negativePrompt what the clip should not show; empty for none
      * @param aspect {@code 16:9}, {@code 9:16}, {@code 1:1}, {@code 4:3} or {@code 3:4}
      * @param small whether to make it at half the side, much faster and lighter
      * @param seconds how long, 1 to 10

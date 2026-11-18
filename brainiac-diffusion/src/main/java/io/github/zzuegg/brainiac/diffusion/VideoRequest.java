@@ -6,7 +6,7 @@ import java.util.Objects;
  * What video to generate.
  *
  * @param prompt what the video shows
- * @param negativePrompt what it should not show ({@code null} for the model's default)
+ * @param negativePrompt what it should not show ({@code null} for none, as in diffusers; {@code Wan.DEFAULT_NEGATIVE} is Wan's own)
  * @param width the width in pixels, a multiple of 16
  * @param height the height in pixels, a multiple of 16
  * @param frames the number of frames, {@code 1 + 4k} (Wan: 81 is five seconds at 16 fps)

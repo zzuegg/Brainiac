@@ -56,7 +56,11 @@ import java.util.stream.Stream;
  */
 public final class Wan implements AutoCloseable {
 
-    /** Wan's default negative prompt (in Chinese, as it was trained): garish colours, overexposure, stillness, blur, subtitles, low quality, deformities, extra fingers, crowded backgrounds. */
+    /**
+     * Wan's own negative prompt (in Chinese, as it was trained): garish colours, overexposure, stillness, blur,
+     * subtitles, low quality, deformities, extra fingers, crowded backgrounds. Not the default: diffusers' default
+     * negative is empty, and with this one the 14B at few steps drew a grid over the video. Pass it explicitly to use it.
+     */
     public static final String DEFAULT_NEGATIVE = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，"
             + "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
             + "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走";
@@ -478,13 +482,13 @@ public final class Wan implements AutoCloseable {
                 // a device no other expert uses yet, the roomiest
                 Device d = roomiest(pool, free, need, placed);
                 placed.add(d);
-                need.merge(d, e.bytes(dtype, c[0]), Long::sum);
+                need.merge(d, pooled(e.bytes(dtype, c[0])), Long::sum);
                 work.merge(d, stepWork, Math::max);
             }
             Device textDevice = roomiest(pool, free, sum(need, work), List.of());
-            need.merge(textDevice, text.bytes(dtype, c[1]) + clipBytes, Long::sum);
+            need.merge(textDevice, pooled(text.bytes(dtype, c[1]) + clipBytes), Long::sum);
             Device vaeDevice = roomiest(pool, free, sum(need, work), List.of());
-            need.merge(vaeDevice, vaeBytes, Long::sum);
+            need.merge(vaeDevice, pooled(vaeBytes), Long::sum);
             work.merge(vaeDevice, decodeWork, Math::max);
             Map<Device, Long> total = sum(need, work);
             boolean fits = total.entrySet().stream().allMatch(en -> en.getValue() <= free.get(en.getKey()));
@@ -496,6 +500,11 @@ public final class Wan implements AutoCloseable {
             best = plan;
         }
         return best;
+    }
+
+    /** Weights as a GPU pool holds them: rounded up to its block sizes, about a tenth more (measured on CUDA). */
+    private static long pooled(long bytes) {
+        return bytes + bytes / 10;
     }
 
     private static Map<Device, Long> sum(Map<Device, Long> a, Map<Device, Long> b) {
@@ -524,30 +533,37 @@ public final class Wan implements AutoCloseable {
     }
 
     /**
-     * A transformer step's activations: per video patch the feed-forward's hidden values,
-     * the attention's queries, keys, values and output, and float32 residuals and
-     * modulations, plus the sampler's latents, with 1 GB to spare.
+     * A transformer step's working memory, from runs of Wan 2.1 1.3B (832x480, 33 frames) and
+     * 14B (832x480, 9 frames) on CUDA: per video patch the residual stream and a block part's
+     * temporaries, about 64 floats per feature; a slice of self-attention's scores in
+     * float32 and their softmax; the sampler's latents; and half the transformer's weights
+     * again, for memory the CUDA backend held over the 14B's steps that is not yet
+     * explained. With 1 GB to spare.
      */
     static long stepBytes(WanTransformer.Settings t, WanVae.Settings vae, DType dtype, VideoRequest request) {
         int sf = vae.spatialFactor();
         int[] p = t.patch();
         long frames = (request.frames() - 1) / vae.temporalFactor() + 1;
         long patches = frames / p[0] * (request.height() / sf / p[1]) * (request.width() / sf / p[2]);
-        long perPatch = (long) t.ffnSize() * dtype.bytes() + (long) t.features() * (6L * dtype.bytes() + 16);
+        long stream = patches * t.features() * 64L * 4;
+        long scores = Math.min((long) t.heads() * patches * patches, WanTransformer.attentionWork()) * 20;
         long latents = frames * (request.height() / sf) * (request.width() / sf) * vae.latentChannels() * 4L * 8;
-        return patches * perPatch + latents + (1L << 30);
+        long d = t.features();
+        long weights = t.layers() * (8 * d * d + 2 * d * t.ffnSize()) * dtype.bytes();
+        return stream + scores + latents + weights / 2 + (1L << 30);
     }
 
     /**
      * Decoding one latent frame: the widest full-resolution level over the frames of a chunk
-     * and the causal caches, a few times over for the convolutions' temporaries, with 1 GB
-     * to spare.
+     * and the causal caches, twenty times over for the convolutions' temporaries (measured:
+     * 17 GB at 832x480 on CUDA and 2.7 GB at 416x240 on Vulkan with Wan 2.1's decoder), with
+     * 1 GB to spare.
      */
     static long decodeBytes(WanVae.Settings vae, DType dtype, VideoRequest request) {
         // Wan 2.2's decoder ends at half resolution and unfolds 2x2 patches
         long pixels = (long) request.width() * request.height() / ((long) vae.patch() * vae.patch());
         long width = vae.decoderBase() * (long) vae.multipliers()[0];
-        return pixels * width * (vae.temporalFactor() + 2) * Math.max(4, dtype.bytes()) * 3 + (1L << 30);
+        return pixels * width * (vae.temporalFactor() + 2) * Math.max(4, dtype.bytes()) * 20 + (1L << 30);
     }
 
     private final Placement placement;
@@ -924,7 +940,7 @@ public final class Wan implements AutoCloseable {
         Tensor latents;
         try {
             cond = encode(request.prompt());
-            uncond = guided ? encode(request.negativePrompt() == null ? DEFAULT_NEGATIVE : request.negativePrompt())
+            uncond = guided ? encode(request.negativePrompt() == null ? "" : request.negativePrompt())
                     : null;
             float shift = request.shift() > 0 ? request.shift() : defaultShift();
             latents = denoise(noise, cond, uncond, image, request.steps(), request.guidance(),
@@ -1182,6 +1198,44 @@ public final class Wan implements AutoCloseable {
         return Tensor.of(Shape.of(1, n), v, device);
     }
 
+    /**
+     * Samples a text-to-video clip's latents from given noise, without decoding them: for
+     * comparing the sampler and transformer against a reference pipeline.
+     *
+     * @param request the video
+     * @param noise the starting noise {@code [1, z, latentFrames, h / f, w / f]}
+     * @return the final latents, float32, on the sampling device
+     */
+    public Tensor sampleLatents(VideoRequest request, Tensor noise) {
+        if (input == Input.IMAGE) {
+            throw new IllegalArgumentException(this + " is an image-to-video model: it needs a first frame");
+        }
+        boolean guided = request.guidance() > 1 || request.lowNoiseGuidance() > 1;
+        Tensor cond = encode(request.prompt());
+        Tensor uncond = guided ? encode(request.negativePrompt() == null ? "" : request.negativePrompt())
+                : null;
+        try {
+            float shift = request.shift() > 0 ? request.shift() : defaultShift();
+            return denoise(noise, cond, uncond, Conditioning.NONE, request.steps(), request.guidance(),
+                    request.lowNoiseGuidance(), shift, (step, steps, x0) -> true);
+        } finally {
+            cond.release();
+            if (uncond != null) {
+                uncond.release();
+            }
+        }
+    }
+
+    /**
+     * Decodes latents into a video.
+     *
+     * @param latents {@code [1, z, latentFrames, h / f, w / f]}
+     * @return the video
+     */
+    public GeneratedVideo decodeLatents(Tensor latents) {
+        return new GeneratedVideo(decode(latents), fps(), 0);
+    }
+
     /** Decodes latents into frames, one latent frame at a time. */
     List<GeneratedImage> decode(Tensor latents) {
         List<GeneratedImage> frames = new ArrayList<>();
@@ -1210,7 +1264,7 @@ public final class Wan implements AutoCloseable {
      * @param prompt the text
      * @return {@code [1, textTokens, features]} in the transformer's type
      */
-    Tensor encode(String prompt) {
+    public Tensor encode(String prompt) {
         int[] ids = ids(prompt);
         return Var.noGrad(() -> {
             Tensor idTensor = StableDiffusion.idTensor(new int[][] {ids}, placement.text());
@@ -1234,8 +1288,13 @@ public final class Wan implements AutoCloseable {
         });
     }
 
-    /** The prompt's token ids: cleaned, with the end token, cut to {@link Options#textTokens()}. */
-    int[] ids(String prompt) {
+    /**
+     * The prompt's token ids: cleaned, with the end token, cut to {@link Options#textTokens()}.
+     *
+     * @param prompt the text
+     * @return the ids umT5 reads
+     */
+    public int[] ids(String prompt) {
         String clean = prompt.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
                 .replace("&#39;", "'").replaceAll("\\s+", " ").strip();
         int[] text = tokenizer.encode(clean, false);
