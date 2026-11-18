@@ -131,6 +131,17 @@ class FluxReferenceTest {
         assertTrue(t.matrices() > 0 && t.other() > 0);
         assertTrue(t.bytes(DType.BFLOAT16, 4) < t.bytes(DType.BFLOAT16, 8));
         assertTrue(t.bytes(DType.BFLOAT16, 8) < t.bytes(DType.BFLOAT16, 0));
+        // quantized projections still compute in the load type
+        if (DEVICE.supports(DType.BFLOAT16)) {
+            try (Flux q = Flux.load(schnell, DEVICE, DType.BFLOAT16, new Flux.Options(8, 8, 16))) {
+                assertEquals(DType.BFLOAT16, q.transformer().dtype());
+                // and its activations stay in it: no quantized layer lifts them to float32
+                Tensor out = Var.noGrad(() -> q.transformer().forward(Var.of(ref("dit.x").to(DType.BFLOAT16)),
+                        ref("dit.sigma"), Var.of(ref("dit.ctx").to(DType.BFLOAT16)),
+                        Var.of(ref("dit.pooled").to(DType.BFLOAT16)), null, false).value());
+                assertEquals(DType.BFLOAT16, out.dtype());
+            }
+        }
         // tiny models fit any device, so the most precise choice wins
         try (ImageGenerator g = ImageGenerator.load(schnell, DEVICE, DType.FLOAT32)) {
             assertEquals("FLUX_SCHNELL", g.family());

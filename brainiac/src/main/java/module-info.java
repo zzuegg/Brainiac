@@ -10,6 +10,7 @@ module io.github.zzuegg.brainiac {
     requires transitive io.github.zzuegg.brainiac.data;
     requires transitive io.github.zzuegg.brainiac.io;
     requires transitive io.github.zzuegg.brainiac.llm;
+    requires transitive io.github.zzuegg.brainiac.audio;
     requires transitive io.github.zzuegg.brainiac.diffusion;
     requires transitive io.github.zzuegg.brainiac.rl;
     requires transitive io.github.zzuegg.brainiac.evolve;

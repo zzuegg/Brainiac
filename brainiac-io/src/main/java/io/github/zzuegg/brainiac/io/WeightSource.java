@@ -132,8 +132,10 @@ public interface WeightSource extends AutoCloseable {
     /**
      * Opens weights at a path: a {@code .safetensors} file, a sharded model's {@code
      * *.safetensors.index.json}, or a directory holding either (a Hugging Face model
-     * download), or a {@code .gguf} file. PyTorch checkpoints ({@code pytorch_model.bin},
-     * sharded or not) are read when a folder has no safetensors files. A folder whose {@code config.json} says it was
+     * download, with safetensors or a sharded or single {@code pytorch_model.bin}), a {@code
+     * .gguf} file, or a PyTorch checkpoint ({@code .bin} read by {@link PyTorchCheckpoint};
+     * {@code .pt}, {@code .pth} and {@code .ckpt}, which may nest dictionaries or hold a bare
+     * tensor, by {@link TorchCheckpoint}). A folder whose {@code config.json} says it was
      * quantized with GPTQ or AWQ reads its layers as float weights, dequantized.
      *
      * @param path the file or directory
@@ -206,8 +208,11 @@ public interface WeightSource extends AutoCloseable {
             if (file.endsWith(".gguf")) {
                 return Gguf.open(path);
             }
-            if (file.endsWith(".bin") || file.endsWith(".pt") || file.endsWith(".pth")) {
+            if (file.endsWith(".bin")) {
                 return PyTorchCheckpoint.open(path);
+            }
+            if (file.endsWith(".pt") || file.endsWith(".pth") || file.endsWith(".ckpt")) {
+                return TorchCheckpoint.open(path);
             }
             return SafeTensors.open(path);
         } catch (IOException e) {

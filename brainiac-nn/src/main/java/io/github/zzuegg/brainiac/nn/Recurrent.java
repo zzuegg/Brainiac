@@ -156,6 +156,45 @@ public final class Recurrent implements Layer {
         }
     }
 
+    private Recurrent(Settings settings, Direction[] directions) {
+        this.settings = settings;
+        this.directions = directions;
+    }
+
+    /**
+     * A recurrent layer from given weights, such as a PyTorch {@code nn.LSTM} or {@code nn.GRU}
+     * (transpose {@code weight_ih} and {@code weight_hh}, and add {@code bias_ih} and
+     * {@code bias_hh}; the gate order is the same for LSTMs: input, forget, candidate, output).
+     * One entry per direction: forward, then backward.
+     *
+     * @param settings the settings ({@code learnInitialState} and GRU reset-after are not supported)
+     * @param wx the input weights {@code [inputs, gates * units]}
+     * @param wh the recurrent weights {@code [units, gates * units]}
+     * @param b the biases {@code [gates * units]}, or {@code null} entries for none
+     * @return the layer
+     */
+    public static Recurrent of(Settings settings, Var[] wx, Var[] wh, Var[] b) {
+        int count = settings.merge() == null ? 1 : 2;
+        if (wx.length != count || wh.length != count || b.length != count) {
+            throw new IllegalArgumentException("one set of weights per direction: " + count);
+        }
+        if (settings.learnInitialState() || (settings.cell() == Cell.GRU && settings.resetAfter())) {
+            throw new IllegalArgumentException("weights for learned initial states or reset-after GRUs are not"
+                    + " supported here");
+        }
+        int g = settings.cell().gates() * settings.units();
+        Direction[] d = new Direction[count];
+        for (int i = 0; i < count; i++) {
+            if (!wx[i].shape().equals(Shape.of(settings.inputs(), g))
+                    || !wh[i].shape().equals(Shape.of(settings.units(), g))) {
+                throw new IllegalArgumentException("expected weights [" + settings.inputs() + ", " + g + "] and ["
+                        + settings.units() + ", " + g + "], got " + wx[i].shape() + " and " + wh[i].shape());
+            }
+            d[i] = new Direction(wx[i], wh[i], b[i], null, null, null);
+        }
+        return new Recurrent(settings, d);
+    }
+
     /**
      * Describes a simple RNN layer.
      *

@@ -247,8 +247,65 @@ public final class Rope {
         Tensor.evaluate(List.of(c, sn));
         last = new Tensor[] {c, sn};
         lastPositions = positions;
+        lastMulti = null;
         return rotate(x, c, sn, half);
     }
+
+    /**
+     * Rotates queries or keys by 3D positions, as Qwen2-VL: the frequency pairs split in
+     * {@code sections} (time, height, width), each rotating by its own position.
+     *
+     * @param x {@code [batch, heads, steps, dim]}
+     * @param positions {@code [3][batch][steps]}
+     * @param sections how many frequency pairs each of the three takes, summing to {@code dim / 2}
+     * @return the rotated values
+     */
+    public Var apply(Var x, int[][][] positions, int[] sections) {
+        Shape s = x.shape();
+        int batch = s.dim(0);
+        int steps = s.dim(2);
+        int d = s.dim(3);
+        int half = d / 2;
+        Device device = x.value().device();
+        DType type = x.value().dtype();
+        Tensor[] cached = last;
+        if (cached != null && lastMulti == positions && cached[0].dtype() == type
+                && cached[0].device().equals(device) && cached[0].shape().equals(Shape.of(batch, 1, steps, 2, half))) {
+            return rotate(x, cached[0], cached[1], half);
+        }
+        int[] sectionOf = new int[half];
+        for (int i = 0, sec = 0, upto = sections[0]; i < half; i++) {
+            while (i >= upto && sec < 2) {
+                upto += sections[++sec];
+            }
+            sectionOf[i] = sec;
+        }
+        float[] cos = new float[batch * steps * d];
+        float[] sin = new float[batch * steps * d];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                int row = (b * steps + t) * d;
+                for (int i = 0; i < half; i++) {
+                    float angle = (float) positions[sectionOf[i]][b][t] * (float) inv[i];
+                    float cs = (float) Math.cos(angle) * magnitude;
+                    float sn = (float) Math.sin(angle) * magnitude;
+                    cos[row + i] = cs;
+                    cos[row + half + i] = cs;
+                    sin[row + i] = -sn;
+                    sin[row + half + i] = sn;
+                }
+            }
+        }
+        Tensor c = Tensor.of(Shape.of(batch, 1, steps, 2, half), cos, device).to(type);
+        Tensor sn = Tensor.of(Shape.of(batch, 1, steps, 2, half), sin, device).to(type);
+        Tensor.evaluate(List.of(c, sn));
+        last = new Tensor[] {c, sn};
+        lastPositions = null;
+        lastMulti = positions;
+        return rotate(x, c, sn, half);
+    }
+
+    private int[][][] lastMulti;
 
     /** The angles of the last call, which the next call with the same positions array reuses. */
     private Tensor[] last;
