@@ -5,8 +5,8 @@
 #       runs diffusers' WanPipeline (832x480, 9 frames, 6 steps, seed 42) for its final latents and
 #       the prompt's text states, and stores cases c0..c3: those latents noised to sigma 0.9, 0.6,
 #       0.3 and 0.1 with the matching timesteps, as the sampler meets them
-#   python wan_probe.py reference <diffusers repo or folder> <inputs.safetensors> <ref.safetensors>
-#       runs diffusers' WanTransformer3DModel in bfloat16 and stores every block's output
+#   python wan_probe.py reference <diffusers repo or folder> <inputs.safetensors> <ref.safetensors> [f32]
+#       runs diffusers' WanTransformer3DModel in bfloat16 (or float32) and stores every block's output
 #   ./gradlew :brainiac-examples:run --args="wanprobe <model folder> inputs.safetensors ours.safetensors"
 #       (with -Dbrainiac.wan.residual32=false to keep diffusers' bfloat16 residual stream)
 #   python wan_probe.py compare <ref.safetensors> <ours.safetensors> [<more.safetensors> ...]
@@ -51,8 +51,9 @@ elif cmd == "sampled":
 elif cmd == "reference":
     from diffusers import WanTransformer3DModel
     dev = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float32 if sys.argv[5:] == ["f32"] else torch.bfloat16
     model = WanTransformer3DModel.from_pretrained(sys.argv[2], subfolder="transformer",
-                                                  torch_dtype=torch.bfloat16).to(dev).eval()
+                                                  torch_dtype=dtype).to(dev).eval()
     x = load_file(sys.argv[3])
     out = {}
     prefix = [""]
@@ -68,8 +69,8 @@ elif cmd == "reference":
     for c in cases(x):
         prefix[0] = c
         with torch.no_grad():
-            r = model(hidden_states=x[c + "latents"].to(dev, torch.bfloat16), timestep=x[c + "timestep"].to(dev),
-                      encoder_hidden_states=x[c + "context"].to(dev, torch.bfloat16), return_dict=False)[0]
+            r = model(hidden_states=x[c + "latents"].to(dev, dtype), timestep=x[c + "timestep"].to(dev),
+                      encoder_hidden_states=x[c + "context"].to(dev, dtype), return_dict=False)[0]
         out[c + "out"] = r.float().cpu()
     save_file({k: v.contiguous() for k, v in out.items()}, sys.argv[4])
 elif cmd == "compare":
