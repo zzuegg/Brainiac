@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.tensor;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.GgmlBlocks;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.RowQuantizedStorage;
@@ -565,6 +566,20 @@ public final class Tensor {
     }
 
     /**
+     * Wraps a weight matrix kept in a GGUF file's blocks (see {@link GgmlBlocks}) as a
+     * {@linkplain #packed packed} {@code [in, out]} tensor, without copying it: on the CPU
+     * the product reads the file's mapping directly.
+     *
+     * @param blocks the stored blocks
+     * @param device where to keep it; on a GPU without a kernel for the blocks, products
+     *     compute the values first
+     * @return the tensor
+     */
+    public static Tensor packed(GgmlBlocks blocks, Device device) {
+        return new Tensor(Shape.of(blocks.rows(), blocks.cols()), device, device.backend().packBlocks(blocks));
+    }
+
+    /**
      * Quantizes this {@code [rows, cols]} float32 matrix into a {@linkplain #packed packed} one
      * on the same device (see {@link PackedMatrix#quantize}): each column gets a scale for
      * every {@code group} rows. On a GPU the values stay on the device.
@@ -659,6 +674,9 @@ public final class Tensor {
             Tensor t = quantizedRows(shape, dtype(), target);
             t.write(-2, 0, unpacked().to(target));
             return t;
+        }
+        if (storage instanceof GgmlBlocks blocks) {
+            return new Tensor(shape, target, target.backend().packBlocks(blocks));
         }
         if (storage instanceof PackedStorage p) {
             return new Tensor(shape, target, target.backend().pack(backend().unpackToHost(p)));

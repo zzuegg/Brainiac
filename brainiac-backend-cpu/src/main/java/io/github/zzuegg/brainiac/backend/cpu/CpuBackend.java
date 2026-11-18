@@ -6,6 +6,7 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
 import io.github.zzuegg.brainiac.tensor.spi.Backend;
 import io.github.zzuegg.brainiac.tensor.spi.BinaryOp;
+import io.github.zzuegg.brainiac.tensor.spi.GgmlBlocks;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.PackedStorage;
 import io.github.zzuegg.brainiac.tensor.spi.QuantizedRows;
@@ -325,6 +326,14 @@ public final class CpuBackend implements Backend {
             Backend.super.unpack(packed, out);
             return;
         }
+        if (packed instanceof GgmlBlocks blocks) {
+            if (o.data != null) {
+                blocks.dequantize(o.data);
+            } else {
+                Backend.super.unpack(packed, out);
+            }
+            return;
+        }
         PackedMatrix m = unpackToHost(packed);
         if (o.data != null) {
             m.dequantize(o.data);
@@ -339,9 +348,24 @@ public final class CpuBackend implements Backend {
         }
     }
 
+    /** Rows up to which a product with GGUF blocks decodes them row by row; above, it unpacks first. */
+    private static final int BLOCK_ROWS = Integer.getInteger("brainiac.cpu.blockRows", 64);
+
     @Override
     public void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
-        if (m > PACKED_ROWS || wide(a, out)) {
+        if (b instanceof GgmlBlocks blocks && m <= BLOCK_ROWS && !wide(a, out)) {
+            float[] x = data(a);
+            float[] z = data(out);
+            int chunks = Math.ceilDiv(n, BlockKernels.CHUNK);
+            Parallel.forRange(chunks, 2L * (m + 4) * k * BlockKernels.CHUNK, (from, to) -> {
+                for (int c = from; c < to; c++) {
+                    int j0 = c * BlockKernels.CHUNK;
+                    BlockKernels.matmul(x, blocks, z, m, j0, Math.min(n, j0 + BlockKernels.CHUNK), SIMD);
+                }
+            });
+            return;
+        }
+        if (m > PACKED_ROWS || wide(a, out) || b instanceof GgmlBlocks) {
             Backend.super.matmulPacked(a, b, m, k, n, out);
             return;
         }

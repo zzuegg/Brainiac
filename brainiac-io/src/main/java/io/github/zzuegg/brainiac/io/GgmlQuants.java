@@ -153,6 +153,151 @@ final class GgmlQuants {
         return y;
     }
 
+    /** A sink that computes float values, as {@link Values} does. */
+    private record Floats(float[] y, int base) implements Sink {
+        @Override
+        public void put(int i, int q, float scale, float offset) {
+            y[base + i] = offset == 0 ? q * scale : q * scale + offset;
+        }
+    }
+
+    private static final ThreadLocal<byte[]> BLOCK_BYTES = ThreadLocal.withInitial(() -> new byte[0]);
+
+    /**
+     * Decodes {@code count} values, whole blocks, into floats: the values {@link #decode}
+     * gives, rounded to float. The formats of most large models (MXFP4, Q8_0, Q4_K, Q6_K,
+     * IQ4_XS) are decoded from an array copy of the blocks, the others block by block from
+     * the segment.
+     */
+    static void decodeFloats(Gguf.Format format, MemorySegment m, int count, float[] y, int at) {
+        int blocks = count / format.block;
+        switch (format) {
+            case F32 -> MemorySegment.copy(m, RawValues.FLOAT, 0, y, at, count);
+            case F16, BF16 -> {
+                for (int i = 0; i < count; i++) {
+                    short bits = m.get(RawValues.SHORT, 2L * i);
+                    y[at + i] = format == Gguf.Format.F16 ? Float.float16ToFloat(bits)
+                            : Float.intBitsToFloat((bits & 0xFFFF) << 16);
+                }
+            }
+            case MXFP4, Q8_0, Q4_K, Q6_K, IQ4_XS -> {
+                int bytes = Math.toIntExact((long) blocks * format.bytes);
+                byte[] b = BLOCK_BYTES.get();
+                if (b.length < bytes) {
+                    b = new byte[bytes];
+                    BLOCK_BYTES.set(b);
+                }
+                MemorySegment.copy(m, ValueLayout.JAVA_BYTE, 0, b, 0, bytes);
+                for (int k = 0; k < blocks; k++) {
+                    int from = k * format.bytes;
+                    int o = at + k * format.block;
+                    switch (format) {
+                        case MXFP4 -> mxfp4(b, from, y, o);
+                        case Q8_0 -> {
+                            float d = f16(b, from);
+                            for (int j = 0; j < 32; j++) {
+                                y[o + j] = b[from + 2 + j] * d;
+                            }
+                        }
+                        case Q4_K -> q4k(b, from, y, o);
+                        case Q6_K -> q6k(b, from, y, o);
+                        default -> iq4xs(b, from, y, o);
+                    }
+                }
+            }
+            default -> levels(format, m, count, new Floats(y, at));
+        }
+    }
+
+    private static void mxfp4(byte[] b, int at, float[] y, int o) {
+        float d = Math.scalb(1f, (b[at] & 0xFF) - 128);
+        for (int j = 0; j < 16; j++) {
+            int q = b[at + 1 + j] & 0xFF;
+            y[o + j] = MXFP4_VALUES[q & 0xF] * d;
+            y[o + j + 16] = MXFP4_VALUES[q >>> 4] * d;
+        }
+    }
+
+    private static void iq4xs(byte[] b, int at, float[] y, int o) {
+        float d = f16(b, at);
+        int high = (b[at + 2] & 0xFF) | ((b[at + 3] & 0xFF) << 8);
+        for (int ib = 0; ib < 8; ib++) {
+            int ls = (((b[at + 4 + ib / 2] & 0xFF) >>> (4 * (ib % 2))) & 0xF) | (((high >>> (2 * ib)) & 3) << 4);
+            float scale = d * (ls - 32);
+            int qs = at + 8 + 16 * ib;
+            int out = o + 32 * ib;
+            for (int j = 0; j < 16; j++) {
+                int q = b[qs + j] & 0xFF;
+                y[out + j] = IQ4[q & 0xF] * scale;
+                y[out + j + 16] = IQ4[q >>> 4] * scale;
+            }
+        }
+    }
+
+    /** As q4k, from an array into floats. */
+    private static void q4k(byte[] b, int at, float[] y, int o) {
+        float d = f16(b, at);
+        float min = f16(b, at + 2);
+        int scales = at + 4;
+        int q = at + 16;
+        int out = o;
+        for (int is = 0; is < 8; is += 2) {
+            int s0;
+            int m0;
+            int s1;
+            int m1;
+            if (is < 4) {
+                s0 = b[scales + is] & 63;
+                m0 = b[scales + is + 4] & 63;
+                s1 = b[scales + is + 1] & 63;
+                m1 = b[scales + is + 5] & 63;
+            } else {
+                s0 = (b[scales + is + 4] & 0xF) | (((b[scales + is - 4] & 0xFF) >>> 6) << 4);
+                m0 = ((b[scales + is + 4] & 0xFF) >>> 4) | (((b[scales + is] & 0xFF) >>> 6) << 4);
+                s1 = (b[scales + is + 5] & 0xF) | (((b[scales + is - 3] & 0xFF) >>> 6) << 4);
+                m1 = ((b[scales + is + 5] & 0xFF) >>> 4) | (((b[scales + is + 1] & 0xFF) >>> 6) << 4);
+            }
+            float d1 = d * s0;
+            float o1 = -(min * m0);
+            float d2 = d * s1;
+            float o2 = -(min * m1);
+            for (int l = 0; l < 32; l++) {
+                int v = b[q + l];
+                int lo = v & 0xF;
+                int hi = (v >>> 4) & 0xF;
+                y[out + l] = o1 == 0 ? lo * d1 : lo * d1 + o1;
+                y[out + 32 + l] = o2 == 0 ? hi * d2 : hi * d2 + o2;
+            }
+            out += 64;
+            q += 32;
+        }
+    }
+
+    /** As q6k, from an array into floats. */
+    private static void q6k(byte[] b, int at, float[] y, int o) {
+        int ql = at;
+        int qh = at + 128;
+        int sc = at + 192;
+        float d = f16(b, at + 208);
+        int out = o;
+        for (int n = 0; n < 256; n += 128) {
+            for (int l = 0; l < 32; l++) {
+                int h = b[qh + l] & 0xFF;
+                int lo = b[ql + l] & 0xFF;
+                int hi = b[ql + l + 32] & 0xFF;
+                int g = l / 16;
+                y[out + l] = (((lo & 0xF) | ((h & 3) << 4)) - 32) * (d * b[sc + g]);
+                y[out + l + 32] = (((hi & 0xF) | (((h >>> 2) & 3) << 4)) - 32) * (d * b[sc + g + 2]);
+                y[out + l + 64] = (((lo >>> 4) | (((h >>> 4) & 3) << 4)) - 32) * (d * b[sc + g + 4]);
+                y[out + l + 96] = (((hi >>> 4) | (((h >>> 6) & 3) << 4)) - 32) * (d * b[sc + g + 6]);
+            }
+            out += 128;
+            ql += 64;
+            qh += 32;
+            sc += 8;
+        }
+    }
+
     /**
      * Rows per scale of the formats that {@link #levels} reads, or 0: 32 for the simple
      * formats, Q4_K and Q5_K; 16 for Q2_K, Q3_K and Q6_K.
