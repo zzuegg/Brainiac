@@ -204,7 +204,19 @@ public final class WorkerClient {
         if (request.temperature() != null) {
             body.put("temperature", request.temperature());
         }
-        body.put("messages", request.messages().stream().map(m -> Map.of("role", m.role(), "text", m.text())).toList());
+        List<Object> messages = new java.util.ArrayList<>();
+        for (io.github.zzuegg.brainiac.studio.chat.ChatMessage m : request.messages()) {
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("role", m.role());
+            message.put("text", m.text());
+            if (!m.images().isEmpty()) {
+                // pictures go along for the host's models that look at them
+                message.put("images", m.images().stream().map(i -> Map.of("type", i.mime(), "data",
+                        io.github.zzuegg.brainiac.studio.chat.ChatMessage.base64(i))).toList());
+            }
+            messages.add(message);
+        }
+        body.put("messages", messages);
         // the answer streams, so only the wait for its first line is limited
         HttpResponse<InputStream> r = send(request("worker/chat").timeout(Duration.ofMinutes(10))
                 .header("Content-Type", "application/json")
