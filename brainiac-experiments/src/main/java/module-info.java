@@ -21,6 +21,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
     exports io.github.zzuegg.brainiac.experimental.edge;
+    exports io.github.zzuegg.brainiac.experimental.eval;
     exports io.github.zzuegg.brainiac.experimental.evolve;
     exports io.github.zzuegg.brainiac.experimental.graph;
     exports io.github.zzuegg.brainiac.experimental.kernels;
@@ -37,6 +38,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.serving;
     exports io.github.zzuegg.brainiac.experimental.survival;
     exports io.github.zzuegg.brainiac.experimental.stream;
+    exports io.github.zzuegg.brainiac.experimental.synth;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
@@ -54,6 +56,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.control;
     exports io.github.zzuegg.brainiac.experiments.data;
     exports io.github.zzuegg.brainiac.experiments.edge;
+    exports io.github.zzuegg.brainiac.experiments.evaluation;
     exports io.github.zzuegg.brainiac.experiments.evolution;
     exports io.github.zzuegg.brainiac.experiments.exotic;
     exports io.github.zzuegg.brainiac.experiments.generative;
