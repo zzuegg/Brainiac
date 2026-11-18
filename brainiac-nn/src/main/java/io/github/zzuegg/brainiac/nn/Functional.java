@@ -185,15 +185,31 @@ public final class Functional {
             int last = (y1 - 1) * stride[0] - pad + dilation[0] * (kernel[0] - 1) + 1;
             int a = Math.max(0, first);
             int e = Math.min(h, last);
-            Tensor part = a == 0 && e == h ? x : x.slice(2, a, e);
             ConvGeometry rows = new ConvGeometry(n, c, new int[] {e - a, g.image()[1]}, kernel, stride,
                     new int[] {a - first, g.padBefore()[1]}, dilation, new int[] {y1 - y0, wo});
-            Tensor y = part.im2col(rows, 0f).matmul(w).reshape(n, (y1 - y0) * wo, f).transpose()
-                    .reshape(n, f, y1 - y0, wo);
-            Tensor.evaluate(List.of(y));
-            parts.add(y);
+            int top = y0;
+            int bottom = y1;
+            Tensor[] y = new Tensor[1];
+            // each band's unrolled columns are freed before the next: left to the end, a 1024px
+            // decoder held every band of a block at once
+            List<Tensor> made = Tensor.created(() -> {
+                Tensor part = a == 0 && e == h ? x : x.slice(2, a, e);
+                y[0] = part.im2col(rows, 0f).matmul(w).reshape(n, (bottom - top) * wo, f).transpose()
+                        .reshape(n, f, bottom - top, wo);
+                Tensor.evaluate(List.of(y[0]));
+            });
+            Tensor.releaseCreated(made, List.of(y[0]));
+            parts.add(y[0]);
         }
-        return parts.size() == 1 ? parts.get(0) : Tensor.concat(2, parts.toArray(Tensor[]::new));
+        if (parts.size() == 1) {
+            return parts.get(0);
+        }
+        Tensor out = Tensor.concat(2, parts.toArray(Tensor[]::new));
+        Tensor.evaluate(List.of(out));
+        for (Tensor t : parts) {
+            t.release();
+        }
+        return out;
     }
 
     /**
