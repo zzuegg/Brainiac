@@ -40,6 +40,61 @@ import java.util.random.RandomGenerator;
  */
 public final class SetPredictionDetector implements Layer {
 
+    /**
+     * Convergence options, all off by default (the wave 8 DETR-lite).
+     *
+     * <ul>
+     *   <li>{@code hybridQueries > 0} adds H-DETR's one-to-many branch (Jia et al., CVPR
+     *       2023): a second group of queries, hidden from the one-to-one queries by an
+     *       attention mask, trained with every ground-truth box repeated
+     *       {@code hybridRepeat} times in the Hungarian matching, which gives many more
+     *       positive gradients; inference uses only the one-to-one queries, so it stays
+     *       NMS-free.</li>
+     *   <li>{@code anchorQueries} makes the queries explicit 4-D anchor boxes (DAB-DETR, Liu
+     *       et al., ICLR 2022): a sine embedding of each anchor through an MLP is the
+     *       positional query added to the attention queries and keys, and every layer
+     *       predicts a correction in logit space that refines the anchor for the next
+     *       layer (the anchor is detached between layers).</li>
+     *   <li>{@code auxiliaryLosses} applies the matching loss to every decoder layer's
+     *       output, not only the last.</li>
+     * </ul>
+     *
+     * <p>Options cannot be combined with denoising queries.
+     *
+     * @param hybridQueries the one-to-many queries, 0 for none
+     * @param hybridRepeat how often each ground-truth box is repeated for them
+     * @param anchorQueries whether queries are refined anchor boxes
+     * @param auxiliaryLosses whether every layer is supervised
+     */
+    public record Options(int hybridQueries, int hybridRepeat, boolean anchorQueries, boolean auxiliaryLosses) {
+
+        /**
+         * Checks the options.
+         *
+         * @param hybridQueries one-to-many queries
+         * @param hybridRepeat repeats
+         * @param anchorQueries anchor queries
+         * @param auxiliaryLosses per-layer losses
+         */
+        public Options {
+            if (hybridQueries < 0 || hybridQueries > 0 && hybridRepeat < 1) {
+                throw new IllegalArgumentException("bad hybrid matching options");
+            }
+        }
+
+        /** @return everything off */
+        public static Options none() {
+            return new Options(0, 0, false, false);
+        }
+
+        /** @return whether any option is on */
+        public boolean active() {
+            return hybridQueries > 0 || anchorQueries || auxiliaryLosses;
+        }
+    }
+
+    private static final int SINE_FREQUENCIES = 4;
+
     private final int side;
     private final int classes;
     private final int queries;
@@ -62,6 +117,13 @@ public final class SetPredictionDetector implements Layer {
     private final Var box2;
     private final Var box2b;
     private final SplittableRandom noise;
+    private final Options options;
+    private final Var hybridEmbed;
+    private final Var anchorEmbed;
+    private final Var posW1;
+    private final Var posB1;
+    private final Var posW2;
+    private final Var posB2;
 
     /**
      * Creates the detector.
@@ -77,6 +139,29 @@ public final class SetPredictionDetector implements Layer {
      */
     public SetPredictionDetector(int side, int classes, int queries, int dim, int layers, boolean denoising,
             int maxObjects, SplittableRandom random) {
+        this(side, classes, queries, dim, layers, denoising, maxObjects, Options.none(), random);
+    }
+
+    /**
+     * Creates the detector with convergence options. With {@link Options#none()} it is
+     * exactly the detector of the other constructor (same weights for the same random
+     * source); the options' extra weights are drawn afterwards.
+     *
+     * @param side the image side, divisible by 8
+     * @param classes the object classes
+     * @param queries the object queries, at least the most objects per image
+     * @param dim the model width
+     * @param layers the decoder layers
+     * @param denoising whether to train with denoising queries
+     * @param maxObjects the most objects per image (denoising query slots)
+     * @param options hybrid matching, anchor queries, auxiliary losses
+     * @param random the source of initial weights and of the denoising noise
+     */
+    public SetPredictionDetector(int side, int classes, int queries, int dim, int layers, boolean denoising,
+            int maxObjects, Options options, SplittableRandom random) {
+        if (denoising && options.active()) {
+            throw new IllegalArgumentException("convergence options cannot be combined with denoising queries");
+        }
         this.side = side;
         this.classes = classes;
         this.queries = queries;
@@ -106,6 +191,23 @@ public final class SetPredictionDetector implements Layer {
         this.box2 = Var.param(Tensor.normal(Shape.of(dim, 4), 0, 0.01f, random));
         this.box2b = VisionOps.zeros(4);
         this.noise = random.split();
+        this.options = options;
+        this.hybridEmbed = options.hybridQueries() > 0
+                ? Var.param(Tensor.normal(Shape.of(1, options.hybridQueries(), dim), 0, 1f, random)) : null;
+        if (options.anchorQueries()) {
+            int total = queries + options.hybridQueries();
+            this.anchorEmbed = Var.param(Tensor.normal(Shape.of(1, total, 4), 0, 1f, random));
+            this.posW1 = matrix(random, 8 * SINE_FREQUENCIES, dim);
+            this.posB1 = VisionOps.zeros(dim);
+            this.posW2 = matrix(random, dim, dim);
+            this.posB2 = VisionOps.zeros(dim);
+        } else {
+            this.anchorEmbed = null;
+            this.posW1 = null;
+            this.posB1 = null;
+            this.posW2 = null;
+            this.posB2 = null;
+        }
     }
 
     private static Var matrix(RandomGenerator r, int in, int out) {
@@ -172,6 +274,11 @@ public final class SetPredictionDetector implements Layer {
     public Var forward(Var images) {
         int b = images.shape().dim(0);
         Var x = queryEmbed.expand(Shape.of(b, queries, dim));
+        if (options.anchorQueries()) {
+            Var anchors = anchorEmbed.slice(1, 0, queries).sigmoid().expand(Shape.of(b, queries, 4));
+            List<Var> outs = decodeLayers(memory(images), x, null, anchors);
+            return outs.get(outs.size() - 1);
+        }
         return decode(memory(images), x, null);
     }
 
@@ -190,6 +297,9 @@ public final class SetPredictionDetector implements Layer {
      * @return the loss
      */
     public Var loss(Tensor images, float[][] boxes, int[][] labels) {
+        if (options.active()) {
+            return optionLoss(images, boxes, labels);
+        }
         int b = images.shape().dim(0);
         Var mem = memory(Var.of(images));
         Var x = queryEmbed.expand(Shape.of(b, queries, dim));
@@ -291,6 +401,140 @@ public final class SetPredictionDetector implements Layer {
                 loss = loss.add(weightedCe(dnOut.slice(1, 0, classes + 1), dnLabels, dnValid))
                         .add(boxLoss(dnOut, real, realBoxes));
             }
+        }
+        return loss;
+    }
+
+    /** The loss with convergence options: per-layer outputs, hybrid branch, anchor queries. */
+    private Var optionLoss(Tensor images, float[][] boxes, int[][] labels) {
+        int b = images.shape().dim(0);
+        Var mem = memory(Var.of(images));
+        int hq = options.hybridQueries();
+        int total = queries + hq;
+        Var x = queryEmbed.expand(Shape.of(b, queries, dim));
+        Tensor mask = null;
+        if (hq > 0) {
+            x = Var.concat(1, x, hybridEmbed.expand(Shape.of(b, hq, dim)));
+            float[] bias = new float[total * total];
+            for (int q = 0; q < total; q++) {
+                for (int k = 0; k < total; k++) {
+                    bias[q * total + k] = (q < queries) != (k < queries) ? -1e9f : 0f;
+                }
+            }
+            mask = Tensor.of(Shape.of(1, 1, total, total), bias);
+        }
+        Var anchors = options.anchorQueries() ? anchorEmbed.sigmoid().expand(Shape.of(b, total, 4)) : null;
+        List<Var> outs = decodeLayers(mem, x, mask, anchors);
+        Var loss = null;
+        int from = options.auxiliaryLosses() ? 0 : outs.size() - 1;
+        for (int l = from; l < outs.size(); l++) {
+            Var out = outs.get(l);
+            Var term = matchLoss(hq > 0 ? out.slice(1, 0, queries) : out, boxes, labels, 1);
+            if (hq > 0) {
+                term = term.add(matchLoss(out.slice(1, queries, total), boxes, labels, options.hybridRepeat()));
+            }
+            loss = loss == null ? term : loss.add(term);
+        }
+        return loss;
+    }
+
+    /** The decoder with optional anchor-box queries; one output per layer. */
+    private List<Var> decodeLayers(Var memory, Var x, Tensor mask, Var anchors) {
+        List<Var> outs = new ArrayList<>();
+        Var anchor = anchors;
+        for (Var[] p : layers) {
+            Var pos = anchor == null ? null : positional(anchor.detach());
+            Var h = norm(x, p[9], p[10]);
+            Var hq = pos == null ? h : h.add(pos);
+            Var qk = hq.matmul(p[0]);
+            Var v = h.matmul(p[0]);
+            x = x.add(attend(qk.slice(2, 0, dim), qk.slice(2, dim, 2 * dim), v.slice(2, 2 * dim, 3 * dim), mask)
+                    .matmul(p[1]));
+            h = norm(x, p[11], p[12]);
+            hq = pos == null ? h : h.add(pos);
+            Var kv = memory.matmul(p[3]);
+            x = x.add(attend(hq.matmul(p[2]), kv.slice(2, 0, dim), kv.slice(2, dim, 2 * dim), null).matmul(p[4]));
+            h = norm(x, p[13], p[14]);
+            x = x.add(h.matmul(p[5]).add(p[6]).relu().matmul(p[7]).add(p[8]));
+            Var logits = x.matmul(clsW).add(clsB);
+            Var raw = x.matmul(box1).add(box1b).relu().matmul(box2).add(box2b);
+            Var box;
+            if (anchor != null) {
+                Var a = anchor.detach().clamp(1e-3f, 1 - 1e-3f);
+                box = a.log().sub(a.neg().add(1f).log()).add(raw).sigmoid();
+                anchor = box;
+            } else {
+                box = raw.sigmoid();
+            }
+            outs.add(Var.concat(2, logits, box));
+        }
+        return outs;
+    }
+
+    /** DAB-DETR's positional query: an MLP of the sine embedding of the anchor box. */
+    private Var positional(Var anchor) {
+        int b = anchor.shape().dim(0);
+        int t = anchor.shape().dim(1);
+        float[] freq = new float[SINE_FREQUENCIES];
+        for (int f = 0; f < SINE_FREQUENCIES; f++) {
+            freq[f] = (float) (Math.PI * Math.pow(2, f));
+        }
+        Var phase = anchor.reshape(b, t, 4, 1).mul(Tensor.of(Shape.of(SINE_FREQUENCIES), freq));
+        Var sine = Var.concat(3, phase.sin(), phase.cos()).reshape(b, t, 8 * SINE_FREQUENCIES);
+        return sine.matmul(posW1).add(posB1).relu().matmul(posW2).add(posB2);
+    }
+
+    /**
+     * Hungarian-matched class and box losses of one query group, with every ground-truth
+     * box repeated {@code repeat} times (1 is the usual one-to-one matching).
+     */
+    private Var matchLoss(Var out, float[][] boxes, int[][] labels, int repeat) {
+        int b = out.shape().dim(0);
+        int nq = out.shape().dim(1);
+        float[] o = out.value().toArray();
+        int stride = classes + 5;
+        float[] clsTarget = new float[b * nq];
+        float[] clsWeight = new float[b * nq];
+        List<Integer> matched = new ArrayList<>();
+        List<float[]> matchedBoxes = new ArrayList<>();
+        for (int i = 0; i < b; i++) {
+            int g = labels[i].length;
+            int targets = Math.min(g * repeat, nq);
+            int n = Math.max(nq, targets);
+            double[][] cost = new double[n][n];
+            for (int q = 0; q < nq; q++) {
+                int base = (i * nq + q) * stride;
+                double[] p = softmax(o, base, classes + 1);
+                float[] pb = {o[base + classes + 1], o[base + classes + 2], o[base + classes + 3], o[base + classes + 4]};
+                for (int j = 0; j < targets; j++) {
+                    int gt = j % g;
+                    float[] t = centres(boxes[i], gt);
+                    double l1 = 0;
+                    for (int d = 0; d < 4; d++) {
+                        l1 += Math.abs(pb[d] - t[d]);
+                    }
+                    cost[q][j] = -p[labels[i][gt]] + 5 * l1 + 2 * (1 - giou(corners(pb), corners(t)));
+                }
+            }
+            int[] assign = MinibatchOptimalTransport.assignCost(cost);
+            for (int q = 0; q < nq; q++) {
+                int s = i * nq + q;
+                if (assign[q] < targets) {
+                    int gt = assign[q] % g;
+                    clsTarget[s] = labels[i][gt];
+                    clsWeight[s] = 1;
+                    matched.add(s);
+                    matchedBoxes.add(centres(boxes[i], gt));
+                } else {
+                    clsTarget[s] = classes;
+                    clsWeight[s] = 0.1f;
+                }
+            }
+        }
+        Var flat = out.reshape(b * nq, stride);
+        Var loss = weightedCe(flat.slice(1, 0, classes + 1), clsTarget, clsWeight);
+        if (!matched.isEmpty()) {
+            loss = loss.add(boxLoss(flat, matched, matchedBoxes));
         }
         return loss;
     }
@@ -415,6 +659,12 @@ public final class SetPredictionDetector implements Layer {
             p.addAll(List.of(l));
         }
         p.addAll(List.of(clsW, clsB, box1, box1b, box2, box2b));
+        if (hybridEmbed != null) {
+            p.add(hybridEmbed);
+        }
+        if (anchorEmbed != null) {
+            p.addAll(List.of(anchorEmbed, posW1, posB1, posW2, posB2));
+        }
         return p;
     }
 
