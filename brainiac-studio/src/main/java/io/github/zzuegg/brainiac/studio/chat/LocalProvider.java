@@ -42,6 +42,7 @@ final class LocalProvider implements ChatProvider {
     private Loaded loaded;
     private volatile LocalImages images;
     private volatile LocalSpeech speech;
+    private volatile LocalVideos videos;
 
     private record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
             Set<Integer> stops, VisionLanguageModel vision) {
@@ -147,7 +148,7 @@ final class LocalProvider implements ChatProvider {
     @Override
     public boolean ready() {
         return !find().isEmpty() || (images != null && !images.models().isEmpty())
-                || (speech != null && !speech.models().isEmpty());
+                || (speech != null && !speech.models().isEmpty()) || (videos != null && !videos.models().isEmpty());
     }
 
     @Override
@@ -170,6 +171,45 @@ final class LocalProvider implements ChatProvider {
             places.addAll(added());
             return places;
         }, hub, device);
+    }
+
+    /**
+     * Also lists and makes clips with the Wan video models in the same places. A video model
+     * and an image model do not stay loaded together: loading one lets the other go.
+     */
+    void filmToo() {
+        videos = new LocalVideos(() -> {
+            List<Path> places = new ArrayList<>(folders);
+            places.addAll(added());
+            return places;
+        }, device, () -> {
+            if (images != null) {
+                images.close();
+            }
+        });
+    }
+
+    /**
+     * Returns the video models' side, or null when this provider makes no videos.
+     *
+     * @return the video models
+     */
+    LocalVideos videos() {
+        return videos;
+    }
+
+    @Override
+    public boolean makesVideo() {
+        return videos != null;
+    }
+
+    @Override
+    public LocalVideos.Clip video(String model, String prompt, LocalVideos.Settings settings,
+            LocalVideos.Listener listener) throws IOException {
+        if (videos == null) {
+            throw new IOException("this studio makes no videos on this PC");
+        }
+        return videos.make(model, prompt, settings, listener);
     }
 
     /**
@@ -226,6 +266,9 @@ final class LocalProvider implements ChatProvider {
         }
         if (speech != null) {
             out.addAll(speech.models());
+        }
+        if (videos != null) {
+            out.addAll(videos.models());
         }
         return out;
     }

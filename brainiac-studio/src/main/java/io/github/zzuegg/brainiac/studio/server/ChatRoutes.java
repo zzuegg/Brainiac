@@ -45,6 +45,14 @@ import java.util.Map;
  *       stops the drawing. Leave {@code seed} out for a random one. {@code POST
  *       /api/images/options} with {@code {"model": "local/sdxl"}} gives the samplers and the
  *       model's usual steps and guidance.
+ *   <li>{@code POST /api/video} with {@code {"model": "local/wan2.1-t2v-1.3b", "prompt": "...",
+ *       "negativePrompt": "", "aspect": "16:9", "small": false, "seconds": 2, "steps": 30,
+ *       "guidance": 5, "seed": 42}} (optionally {@code "width"} and {@code "height"} of its own)
+ *       makes a clip with a Wan model, as a server-sent event stream:
+ *       {@code route}, {@code step} ({@code {step, total}}), one {@code video} ({@code {mime, data,
+ *       file, seed, width, height, frames, fps}}, an animated PNG), then {@code done} or
+ *       {@code error}. Closing the stream stops it. {@code POST /api/video/options} with
+ *       {@code {"model": "local/..."}} gives the model's usual steps, guidance, frame rate and sizes.
  *   <li>{@code POST /api/speech/voice} with {@code {"model": "local/f5-tts", "name": "Me", "audio":
  *       "<base64 WAV>", "transcript": "..."}} keeps a voice made from a recording, for a model that
  *       clones voices; leave {@code transcript} empty to have a Whisper model write it down. It
@@ -136,6 +144,9 @@ final class ChatRoutes {
         server.post("/api/chat", this::chat);
         server.post("/api/images", this::images);
         server.post("/api/images/draw", this::draw);
+        server.post("/api/video", this::video);
+        server.post("/api/video/options", ex -> Exchanges.json(ex, 200,
+                chat.videoOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
                 chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/transcribe", this::transcribe);
@@ -354,6 +365,74 @@ final class ChatRoutes {
                 }
                 LOG.log(System.Logger.Level.INFO, "drawing failed: " + e.getMessage());
                 events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+            }
+        } catch (IOException closed) {
+            // the page stopped reading
+        }
+    }
+
+    private void video(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 256 * 1024);
+        String model = Json.string(body, "model", ChatService.AUTO);
+        String prompt = Json.string(body, "prompt", "");
+        if (prompt.isBlank()) {
+            throw new Exchanges.BadRequest("describe the video first");
+        }
+        long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
+        io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings;
+        try {
+            settings = new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings(
+                    Json.string(body, "negativePrompt", ""), Json.string(body, "aspect", "16:9"),
+                    Boolean.TRUE.equals(body.get("small")), Json.number(body, "seconds", 2),
+                    (int) Json.integer(body, "steps", 30), Json.number(body, "guidance", 5), seed,
+                    (int) Json.integer(body, "width", 0), (int) Json.integer(body, "height", 0));
+        } catch (IllegalArgumentException e) {
+            throw new Exchanges.BadRequest(e.getMessage());
+        }
+
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, 0);
+        try (OutputStream out = ex.getResponseBody()) {
+            Events events = new Events(out);
+            long start = System.nanoTime();
+            try {
+                ChatService.Filmed f = chat.video(model, prompt, settings, (step, total) -> {
+                    events.sendQuietly("step", Map.of("step", step, "total", total));
+                    return !events.broken;   // the page went away: stop
+                }, m -> {
+                    Map<String, Object> route = new LinkedHashMap<>();
+                    route.put("key", m.key());
+                    route.put("name", m.name());
+                    route.put("seed", seed);
+                    events.sendQuietly("route", route);
+                });
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("mime", f.clip().media().mime());
+                m.put("data", java.util.Base64.getEncoder().encodeToString(f.clip().media().data()));
+                m.put("file", f.file().toString());
+                m.put("seed", f.clip().seed());
+                m.put("width", f.clip().width());
+                m.put("height", f.clip().height());
+                m.put("frames", f.clip().frames());
+                m.put("fps", f.clip().fps());
+                events.send("video", m);
+                events.send("done", Map.of("seconds", (System.nanoTime() - start) / 1e9));
+            } catch (java.util.concurrent.CancellationException e) {
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (IOException | RuntimeException e) {
+                if (events.broken) {
+                    return;
+                }
+                LOG.log(System.Logger.Level.INFO, "video failed: " + e.getMessage());
+                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+            } catch (OutOfMemoryError e) {
+                LOG.log(System.Logger.Level.WARNING, "video ran out of memory");
+                events.sendQuietly("error", Map.of("message", "out of memory: try half size, a shorter clip or another device"));
             }
         } catch (IOException closed) {
             // the page stopped reading

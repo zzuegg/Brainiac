@@ -425,6 +425,28 @@ public final class WanVae implements Layer {
             return out[0].value();
         }
 
+        /**
+         * Runs one stage of a chunk and frees what it made except its result and the carried
+         * frames, so that a chunk at full resolution holds only a stage's worth of temporaries.
+         * The input is freed too when {@code freeInput} (a previous stage's result no one else
+         * reads).
+         */
+        Var step(Var in, java.util.function.UnaryOperator<Var> stage, boolean freeInput) {
+            if (Var.gradEnabled()) {
+                return stage.apply(in);
+            }
+            Var[] out = new Var[1];
+            List<Tensor> made = Tensor.created(() -> out[0] = stage.apply(in));
+            List<Tensor> keep = new ArrayList<>(frames.values());
+            keep.add(out[0].value());
+            Tensor.evaluate(keep);
+            Tensor.releaseCreated(made, keep);
+            if (freeInput) {
+                Tensor.release(List.of(in.value()), keep);
+            }
+            return out[0];
+        }
+
         /** Frees the carried frames. */
         @Override
         public void close() {
@@ -830,12 +852,12 @@ public final class WanVae implements Layer {
             boolean first = up && !state.start(this);
             Var y = x;
             for (Stage s : body) {
-                y = s.forward(y, state);
+                y = state.step(y, v -> s.forward(v, state), y != x);
             }
             if (factorS == 1 && factorT == 1 && in == out) {
-                return y.add(x);
+                return state.step(y, v -> v.add(x), y != x);
             }
-            return y.add(up ? repeat(x, first) : average(x));
+            return state.step(y, v -> v.add(up ? repeat(x, first) : average(x)), y != x);
         }
 
         /** Frames {@code [t, in, h, w]} averaged into {@code [t / ft, out, h / fs, w / fs]}, zero frames before an uneven chunk. */
@@ -997,15 +1019,16 @@ public final class WanVae implements Layer {
         }
 
         Var forward(Var x, State state) {
-            x = in.forward(x, state);
+            // each stage is a step that frees its temporaries and its input once done
+            x = state.step(x, v -> in.forward(v, state), false);
             // the encoder narrows then thinks in the middle; the decoder thinks first, then widens
             for (Stage s : encoder ? stages : middle) {
-                x = s.forward(x, state);
+                x = state.step(x, v -> s.forward(v, state), true);
             }
             for (Stage s : encoder ? middle : stages) {
-                x = s.forward(x, state);
+                x = state.step(x, v -> s.forward(v, state), true);
             }
-            return head.forward(Parts.silu(headNorm.forward(x)), state);
+            return state.step(x, v -> head.forward(Parts.silu(headNorm.forward(v)), state), true);
         }
 
         @Override
