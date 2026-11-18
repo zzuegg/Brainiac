@@ -33,7 +33,10 @@ import java.util.function.UnaryOperator;
  * <li>{@link #atInit} (8.5.4): SNIP, GraSP and SynFlow against random pruning (uniform and with
  *     matched layer-wise ratios) and a lottery ticket;</li>
  * <li>{@link #languageModel} (8.5.5): structured pruning of a toy transformer language model
- *     (LLM-Pruner, FASP, 2SSP) against SliceGPT, Wanda and dropping blocks.</li>
+ *     (LLM-Pruner, FASP, 2SSP) against SliceGPT, Wanda and dropping blocks;</li>
+ * <li>{@link #cnn} (8.5.6): network slimming of the shapes CNN against filter-magnitude pruning
+ *     and thinner networks trained from scratch;</li>
+ * <li>{@link #moe} (8.5.7): expert pruning and MC-SMoE expert merging of a mixture of experts.</li>
  * </ul>
  */
 public final class PruningShootout {
@@ -337,6 +340,41 @@ public final class PruningShootout {
      */
     public static List<Row> languageModel(double[] shares, int steps, int recovery, long seed) {
         return LmStructuredPruning.run(shares, steps, recovery, seed);
+    }
+
+    // ------------------------------------------------------------------ 8.5.6
+
+    /**
+     * Channel pruning of the shapes CNN; see {@link CnnSlimming}.
+     *
+     * @param shares shares of all channels to remove
+     * @param steps training steps of the reference networks
+     * @param fineTune fine-tuning steps after pruning
+     * @param lambda the L1 weight on the batch-norm scales
+     * @param seed the seed
+     * @return dense and dense-with-L1 first, then per share: slimming, filter-L1, the slimmed
+     *     shape from scratch and a uniform width of equal multiply-adds from scratch;
+     *     {@code metric} is test accuracy, {@code cost} multiply-adds per image, {@code size}
+     *     parameters, {@code millis} the forward latency of the test set
+     */
+    public static List<CompactRow> cnn(double[] shares, int steps, int fineTune, float lambda, long seed) {
+        return CnnSlimming.run(shares, steps, fineTune, lambda, seed);
+    }
+
+    // ------------------------------------------------------------------ 8.5.7
+
+    /**
+     * Halving a mixture of experts; see {@link MoeCompression}.
+     *
+     * @param regimeCounts the regime counts of the tasks (4: redundant experts, 8: specialised)
+     * @param steps training steps
+     * @param seed the seed
+     * @return per task: full, search-prune, drop least-used, merge, average all, dense of the
+     *     active width; {@code metric} is validation MSE, {@code cost} the number of experts,
+     *     {@code size} parameters
+     */
+    public static List<CompactRow> moe(int[] regimeCounts, int steps, long seed) {
+        return MoeCompression.run(regimeCounts, steps, seed);
     }
 
     private static Row row(String method, List<Var> w, SimpleMlp net, ToyTasks.Data test, double extra) {
