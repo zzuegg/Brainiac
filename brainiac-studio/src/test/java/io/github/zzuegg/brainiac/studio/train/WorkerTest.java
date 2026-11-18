@@ -114,4 +114,17 @@ class WorkerTest {
         assertThrows(IllegalArgumentException.class, () -> WorkerClient.normalize("ftp://lab"));
         assertThrows(IllegalArgumentException.class, () -> WorkerClient.normalize(""));
     }
+
+    @Test
+    void aWorkerListsItsModelDownloadsAndRefusesWhatIsNotARepository() throws Exception {
+        try (WorkerServer worker = WorkerServer.start(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), lab)) {
+            WorkerClient c = new WorkerClient("127.0.0.1:" + worker.port(), worker.token());
+            assertEquals(java.util.List.of(), c.hubDownloads());
+            IOException refused = assertThrows(IOException.class, () -> c.hubDownload("not a repository", "folder"));
+            assertTrue(refused.getMessage().contains("not a Hugging Face repository"), refused.getMessage());
+            assertFalse(c.hubCancel("1"), "there is no download to stop");
+            WorkerClient stranger = new WorkerClient("127.0.0.1:" + worker.port(), "wrong-token-wrong-token-wrong-token");
+            assertThrows(IOException.class, stranger::hubDownloads);
+        }
+    }
 }

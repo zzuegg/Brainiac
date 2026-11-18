@@ -1633,6 +1633,48 @@
   }
 
   const selectedRun = () => T.runs.find(r => r.id === T.sel) || T.runs[0] || null;
+
+  // ----- trying a trained model: one sample of its data, or values typed in
+  T.tries = {};   // run id -> {busy, result, error, values}
+  function tryPanel(r) {
+    const t = T.tries[r.id] || {}, res = t.result, id = esc(r.id);
+    const m = (T.models || []).find(x => x.name === r.output);
+    const size = m?.input ? m.input.reduce((a, b) => a * b, 1) : null;
+    let shown = "";
+    if (res) {
+      const name = i => res.classes ? res.classes[i] : "output " + i;
+      const one = res.outputSize === 1;
+      const right = res.expectedBest != null ? res.expectedBest === res.best : null;
+      const top = res.output.map((v, i) => ({ v, i })).filter(x => x.v != null).sort((a, b) => b.v - a.v).slice(0, 5);
+      const span = Math.max(1e-9, ...top.map(x => Math.abs(x.v)));
+      shown = `<div class="try-result">
+        ${res.index != null ? `<div class="faint mono" style="font-size:11.5px">sample ${(res.index + 1).toLocaleString()} of ${res.samples.toLocaleString()} · ${res.input.slice(0, 6).map(fmtNum).join(", ")}${res.inputSize > 6 ? ", … " + res.inputSize + " values" : ""}</div>` : ""}
+        <div class="try-answer">${one ? `<b class="mono">${fmtNum(res.output[0])}</b>` : `<b>${esc(res.label ?? name(res.best))}</b>`}
+          ${right === true ? `<span class="chip c-ok">${icon("check")}right</span>` : right === false ? `<span class="chip c-bad">should be ${esc(res.expectedLabel ?? name(res.expectedBest))}</span>`
+            : res.expected ? `<span class="chip plain mono">should be ${res.expected.slice(0, 4).map(fmtNum).join(", ")}${res.expected.length > 4 ? ", …" : ""}</span>` : ""}</div>
+        ${one ? "" : `<div class="try-bars">${top.map(x => `<div><span class="nm">${esc(name(x.i))}</span><span class="bar"><i style="width:${(Math.abs(x.v) / span * 100).toFixed(1)}%"></i></span><span class="mono tnum">${fmtNum(x.v)}</span></div>`).join("")}</div>`}
+      </div>`;
+    }
+    return `<div class="trybox"><div class="eyebrow">Try it</div>
+      <div class="try-row"><button class="btn sm" data-try-sample="${id}" ${t.busy ? "disabled" : ""}>${icon("play")}${res && res.index != null ? "Another sample" : "A sample of its data"}</button></div>
+      <form class="try-row" data-try-own="${id}" autocomplete="off"><input class="input mono" data-try-values="${id}" value="${esc(t.values || "")}" placeholder="or your own ${size ? size.toLocaleString() + " " : ""}values, comma separated" spellcheck="false" aria-label="Your own input values">
+        <button class="btn sm" type="submit" ${t.busy ? "disabled" : ""}>Run</button></form>
+      ${t.error ? `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(t.error)}</span></div>` : ""}${shown}</div>`;
+  }
+  async function tryModel(r, own) {
+    const t = T.tries[r.id] ||= {};
+    if (t.busy) return;
+    const body = { model: r.output };
+    if (own) {
+      const vals = String(t.values || "").split(/[\s,;]+/).filter(Boolean).map(Number);
+      if (!vals.length || vals.some(v => !isFinite(v))) { t.error = "Type numbers, separated by commas."; renderTrainLive(true); return; }
+      body.values = vals;
+    } else body.data = r.spec.data;
+    t.busy = true; t.error = null; renderTrainLive(true);
+    try { t.result = await postJson("/api/train/predict", body); }
+    catch (e) { t.error = String(e.message || e); t.result = null; }
+    t.busy = false; renderTrainLive(true);
+  }
   function trainDetail() {
     const r = selectedRun();
     if (!r) return `<div class="col-head" style="padding:0"><span class="h3">Run</span></div><p class="muted" style="margin:0">Details of the selected run show here: its settings, every epoch and where the trained model was saved.</p>`;
@@ -1646,6 +1688,7 @@
       <div class="col-head" style="padding:0"><span class="dot" style="--c:${runColor(r)}"></span><span class="h3">${esc(r.name)}</span><span class="grow"></span><span class="chip ${stateChip(r.state)}">${stateName(r.state)}</span></div>
       ${r.error ? `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(r.error)}</span></div>` : ""}
       ${r.output ? `<div class="flag ok">${icon("check")}<span>Saved as <b>${esc(r.output)}</b> in the models folder${r.state === "stopped" ? ", with what it learned before it was stopped" : ""}${r.stoppedEarly ? `; stopped early, best at epoch ${r.bestEpoch}` : ""}.</span></div>` : ""}
+      ${r.output && !isActive(r) ? tryPanel(r) : ""}
       <dl class="kv"><dt>Host</dt><dd>${esc(r.host || "This PC")}${r.device ? " · " + esc(r.device) : ""}</dd><dt>Model</dt><dd>${esc(s.model || "?")}</dd><dt>Data</dt><dd>${esc(r.data || "?")}${r.samples ? ` · ${r.samples.toLocaleString()} samples` : ""}</dd>
         <dt>Optimizer</dt><dd>${esc(optLabel(o) + args(o, s.optimizer || {}))}</dd><dt>Loss</dt><dd>${esc(optLabel(lo) + args(lo, s.loss || {}))}</dd>
         ${sc ? `<dt>Schedule</dt><dd>${esc(optLabel(sc) + args(sc, s.schedule))}</dd>` : ""}
@@ -1658,12 +1701,14 @@
   }
 
   // ----- partial updates while runs train, so typing in the form is never interrupted
-  function renderTrainLive() {
+  function renderTrainLive(force) {
     if (state.view !== "train" || !T.loaded) return;
+    // values being typed for Try it are not redrawn away by the poll
+    const trying = !force && !!document.activeElement?.matches?.("#train-detail input");
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
     const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours");
     if (!typing) set("train-hosts", trainHosts());
-    set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
+    set("train-runs", trainRunsTable()); if (!trying) set("train-detail", trainDetail());
     const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
     const tip = $("#lc-tip");
     if (!tip || tip.hidden) { set("train-chart", trainChartFrame()); drawLossChart(); }
@@ -1994,6 +2039,9 @@
     $$("#train-runs tr[data-run]").forEach(tr => tr.addEventListener("click", e => { if (e.target.closest("button")) return; T.sel = tr.dataset.run; store.set("trainSel", T.sel); renderTrainLive(); }));
     $$("[data-tstop]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/stop", { id: b.dataset.tstop }).catch(() => {}); pollRuns(false); }));
     $$("[data-tdel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/delete", { id: b.dataset.tdel }).catch(() => {}); if (T.sel === b.dataset.tdel) T.sel = null; pollRuns(false); }));
+    $$("[data-try-values]").forEach(el => el.addEventListener("input", () => { (T.tries[el.dataset.tryValues] ||= {}).values = el.value; }));
+    $$("[data-try-sample]").forEach(b => b.addEventListener("click", () => { const r = T.runs.find(x => x.id === b.dataset.trySample); if (r) tryModel(r, false); }));
+    $$("[data-try-own]").forEach(f => f.addEventListener("submit", e => { e.preventDefault(); const r = T.runs.find(x => x.id === f.dataset.tryOwn); if (r) tryModel(r, true); }));
     $$("[data-tagain]").forEach(b => b.addEventListener("click", () => {
       const r = T.runs.find(x => x.id === b.dataset.tagain); if (!r) return;
       const s = JSON.parse(JSON.stringify(r.spec));
@@ -2043,7 +2091,7 @@
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
         <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
-      ${isLive() && H.open ? hubPanel() : isLive() && H.downloads.length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
+      ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
@@ -3655,6 +3703,11 @@
   const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
   const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
   const hubActive = d => d.state === "queued" || d.state === "downloading" || d.state === "checking";
+  // Where a download goes: this PC, or a worker host, which fetches the model itself so it can run it.
+  H.target = "local"; H.remote = {};   // remote: host id -> that host's downloads
+  const hubHosts = () => (L.info?.providers || []).filter(p => p.kind === "host" && !p.error).map(p => ({ id: p.id.replace(/^host-/, ""), name: p.name }));
+  const hubTarget = () => hubHosts().find(h => h.id === H.target) || null;
+  const allDownloads = () => [...H.downloads, ...Object.entries(H.remote).flatMap(([id, ds]) => ds.map(d => ({ ...d, host: id, model: `host-${id}/${d.name}` })))];
   // The token the downloader sends to huggingface.co, shown only by its last four characters.
   function hubToken() {
     const t = H.token;
@@ -3703,28 +3756,40 @@
     if (H.repoError) return head + `<div class="flag bad">${icon("alert")}<span>${esc(H.repoError)}</span></div>`;
     const opts = (H.listing?.options || []).slice().sort((a, b) => (b.supported - a.supported) || (a.size - b.size));
     if (!opts.length) return head + `<div class="faint pad">No GGUF file or model folder here.</div>`;
-    const busy = o => H.downloads.find(d => d.repo === H.repo && hubActive(d) && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name));
-    return head + `<div class="hub-opts">${opts.map(o => `<div class="hub-opt ${o.supported ? "" : "off"}">
+    const hosts = hubHosts();
+    const target = hosts.length ? `<label class="hub-target">Download to <select class="input" id="hub-target">
+        <option value="local" ${hubTarget() ? "" : "selected"}>This PC</option>
+        ${hosts.map(h => `<option value="${esc(h.id)}" ${h.id === H.target ? "selected" : ""}>${esc(h.name)}</option>`).join("")}</select>
+        ${hubTarget() ? `<span class="faint">The host fetches it with its own connection and then offers it in Chat. Gated models need <code>HF_TOKEN</code> set on the host.</span>` : ""}</label>` : "";
+    const to = hubTarget();
+    const list = to ? (H.remote[to.id] || []) : H.downloads;
+    const same = (d, o) => d.repo === H.repo && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name);
+    const busy = o => list.find(d => same(d, o) && hubActive(d));
+    const have = o => to ? list.some(d => same(d, o) && d.state === "done") : o.have;
+    return head + target + `<div class="hub-opts">${opts.map(o => `<div class="hub-opt ${o.supported ? "" : "off"}">
         <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}</div>
         <span class="mono faint tnum">${o.size ? fmtBytes(o.size) : ""}</span>
-        ${o.have ? `<span class="chip c-ok">on this PC</span>` : busy(o) ? `<span class="chip c-text">downloading</span>`
-          : o.supported ? `<button class="btn sm" data-download="${esc(o.id)}">${icon("download")}Download</button>` : `<span class="chip c-warn">won’t run</span>`}
+        ${have(o) ? `<span class="chip c-ok">on ${to ? esc(to.name) : "this PC"}</span>` : busy(o) ? `<span class="chip c-text">downloading</span>`
+          : o.supported ? `<button class="btn sm" data-download="${esc(o.id)}">${icon("download")}${to ? "Download to " + esc(to.name) : "Download"}</button>` : `<span class="chip c-warn">won’t run</span>`}
         ${o.reason ? `<div class="why">${esc(o.reason)}</div>` : ""}</div>`).join("")}</div>`;
   }
   function hubDownloads() {
-    if (!H.downloads.length) return "";
-    return `<div class="hub-downs" aria-label="Downloads">${H.downloads.map(d => {
+    const all = allDownloads();
+    if (!all.length) return "";
+    const hostName = id => hubHosts().find(h => h.id === id)?.name || "the host";
+    return `<div class="hub-downs" aria-label="Downloads">${all.map(d => {
+      const where = d.host ? hostName(d.host) : "this PC", hostAttr = d.host ? ` data-host="${esc(d.host)}"` : "";
       const pct = d.total ? Math.min(100, d.done / d.total * 100) : 0;
-      const status = d.state === "done" ? "on this PC" : d.state === "checking" ? "checking…" : d.state === "queued" ? "starting…"
+      const status = d.state === "done" ? "on " + where : d.state === "checking" ? "checking…" : d.state === "queued" ? "starting…"
         : d.state === "downloading" ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}${d.speed ? ` · ${fmtBytes(d.speed)}/s · ${fmtWait((d.total - d.done) / d.speed)}` : ""}`
         : d.state === "stopped" ? `stopped at ${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "failed";
       return `<div class="hub-down ${d.state}">
-        <div class="nm"><b>${esc(d.name)}</b><span class="faint">${esc(d.repo)}</span></div>
+        <div class="nm"><b>${esc(d.name)}</b><span class="faint">${esc(d.repo)}</span>${d.host ? `<span class="chip plain">to ${esc(where)}</span>` : ""}</div>
         <div class="meter wide"><i style="width:${pct.toFixed(1)}%;${d.state === "failed" ? "background:var(--bad)" : d.state === "done" ? "background:var(--ok)" : ""}"></i></div>
         <span class="mono faint tnum st">${esc(status)}</span>
-        <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}">${icon("stop")}Stop</button>`
-          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button><button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
-          : `<button class="btn sm" data-hub-retry="${esc(d.id)}">${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
+        <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}"${hostAttr}>${icon("stop")}Stop</button>`
+          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button>${d.host ? "" : `<button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`}`
+          : `<button class="btn sm" data-hub-retry="${esc(d.id)}"${hostAttr}>${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
         ${d.error ? `<div class="why bad">${esc(d.error)}</div>` : ""}
       </div>`;
     }).join("")}</div>`;
@@ -3759,13 +3824,24 @@
       const before = new Map(H.downloads.map(d => [d.id, d.state]));
       H.downloads = j.downloads || []; H.folder = j.folder || H.folder; H.runs = j.runs || H.runs;
       if ("token" in j && JSON.stringify(j.token) !== JSON.stringify(H.token)) { H.token = j.token; if (!H.tokenEdit && $("#hub-token-box")) { $("#hub-token-box").innerHTML = hubToken(); bindHubToken(); } }
+      // the host that downloads go to, and every host still fetching something
+      let hostFinished = false;
+      const watch = new Set([...Object.keys(H.remote).filter(id => H.remote[id].some(hubActive)), ...(hubTarget() ? [H.target] : [])]);
+      await Promise.all([...watch].map(async id => {
+        try {
+          const was = new Map((H.remote[id] || []).map(d => [d.id, d.state]));
+          H.remote[id] = (await postJson("/api/hosts/downloads", { host: id })).downloads || [];
+          if (H.remote[id].some(d => d.state === "done" && was.has(d.id) && was.get(d.id) !== "done")) hostFinished = true;
+        } catch (e) { console.warn("cannot read the downloads of host " + id, e); }
+      }));
       const finished = H.downloads.some(d => d.state === "done" && before.has(d.id) && before.get(d.id) !== "done");
-      if (finished) {
+      if (hostFinished) await loadModels(true);   // the host now serves the model: list it
+      else if (finished) {
         if (H.listing) H.listing.options.forEach(o => { if (H.downloads.some(d => d.state === "done" && d.repo === H.repo && (o.kind === "folder" ? d.kind === "folder" : d.name === o.name))) o.have = true; });
         await loadModels(false);
       } else renderHub();
     } catch (e) { console.warn("cannot read the downloads", e); }
-    if (H.downloads.some(hubActive)) H.timer = setTimeout(pollHub, 1000);
+    if (allDownloads().some(hubActive)) H.timer = setTimeout(pollHub, 1000);
   }
   function chatWith(key) {
     go("chat"); newChat(false);
@@ -3806,15 +3882,25 @@
     $$("[data-repo]").forEach(b => b.addEventListener("click", () => hubRepo(b.dataset.repo)));
     $$("[data-download]").forEach(b => b.addEventListener("click", async () => {
       b.disabled = true;
-      try { await postJson("/api/hub/download", { repo: H.repo, option: b.dataset.download }); H.repoError = null; }
+      try {
+        if (hubTarget()) await postJson("/api/hosts/download", { host: H.target, repo: H.repo, option: b.dataset.download });
+        else await postJson("/api/hub/download", { repo: H.repo, option: b.dataset.download });
+        H.repoError = null;
+      }
       catch (e) { H.repoError = e.message; }
       await pollHub(); renderHub();
     }));
-    $$("[data-hub-cancel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/hub/cancel", { id: b.dataset.hubCancel }).catch(() => {}); setTimeout(pollHub, 300); }));
-    $$("[data-hub-retry]").forEach(b => b.addEventListener("click", async () => {
-      const d = H.downloads.find(x => x.id === b.dataset.hubRetry); if (!d) return;
+    $$("[data-hub-cancel]").forEach(b => b.addEventListener("click", async () => {
       b.disabled = true;
-      try { await postJson("/api/hub/download", { repo: d.repo, option: d.option }); }
+      await (b.dataset.host ? postJson("/api/hosts/cancel", { host: b.dataset.host, id: b.dataset.hubCancel }) : postJson("/api/hub/cancel", { id: b.dataset.hubCancel })).catch(() => {});
+      setTimeout(pollHub, 300);
+    }));
+    $("#hub-target")?.addEventListener("change", e => { H.target = e.target.value; renderHub(); pollHub(); });
+    $$("[data-hub-retry]").forEach(b => b.addEventListener("click", async () => {
+      const host = b.dataset.host;
+      const d = (host ? H.remote[host] || [] : H.downloads).find(x => x.id === b.dataset.hubRetry); if (!d) return;
+      b.disabled = true;
+      try { await postJson(host ? "/api/hosts/download" : "/api/hub/download", host ? { host, repo: d.repo, option: d.option } : { repo: d.repo, option: d.option }); }
       catch (e) { d.error = e.message; }
       await pollHub(); renderHub();
     }));
