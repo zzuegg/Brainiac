@@ -36,10 +36,12 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.parallel;
     exports io.github.zzuegg.brainiac.experimental.privacy;
     exports io.github.zzuegg.brainiac.experimental.recsys;
+    exports io.github.zzuegg.brainiac.experimental.restore;
     exports io.github.zzuegg.brainiac.experimental.rl;
     exports io.github.zzuegg.brainiac.experimental.robust;
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.serving;
+    exports io.github.zzuegg.brainiac.experimental.speech;
     exports io.github.zzuegg.brainiac.experimental.survival;
     exports io.github.zzuegg.brainiac.experimental.stream;
     exports io.github.zzuegg.brainiac.experimental.synth;
@@ -81,12 +83,14 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.probabilistic;
     exports io.github.zzuegg.brainiac.experiments.reasoning;
     exports io.github.zzuegg.brainiac.experiments.recsys;
+    exports io.github.zzuegg.brainiac.experiments.restoration;
     exports io.github.zzuegg.brainiac.experiments.robustness;
     exports io.github.zzuegg.brainiac.experiments.safety;
     exports io.github.zzuegg.brainiac.experiments.sciml;
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
     exports io.github.zzuegg.brainiac.experiments.sequence;
     exports io.github.zzuegg.brainiac.experiments.serving;
+    exports io.github.zzuegg.brainiac.experiments.speech;
     exports io.github.zzuegg.brainiac.experiments.survival;
     exports io.github.zzuegg.brainiac.experiments.streaming;
     exports io.github.zzuegg.brainiac.experiments.synthesis;
