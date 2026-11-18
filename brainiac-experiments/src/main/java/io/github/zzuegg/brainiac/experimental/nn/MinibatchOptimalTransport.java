@@ -1,6 +1,9 @@
 package io.github.zzuegg.brainiac.experimental.nn;
 
+import io.github.zzuegg.brainiac.experimental.ml.EntropicTransport;
+
 import java.util.Arrays;
+import java.util.SplittableRandom;
 
 /**
  * Exact optimal transport between two equal-size minibatches under the squared Euclidean
@@ -8,6 +11,10 @@ import java.util.Arrays;
  * noise with data this way before flow matching (OT-CFM, Tong et al.,
  * <a href="https://arxiv.org/abs/2302.00482">arXiv:2302.00482</a>) gives straighter, non-crossing
  * paths; energy matching and bridge matching use it for the same reason.
+ *
+ * <p>{@link #pairSinkhorn} is the entropic alternative ({@link EntropicTransport}): a Sinkhorn
+ * coupling, {@code O(n^2)} per iteration, sampled into a pairing, which scales to couplings of
+ * thousands of points (Klein et al. 2025). The Hungarian {@link #pair} stays the default.
  */
 public final class MinibatchOptimalTransport {
     private MinibatchOptimalTransport() {
@@ -102,5 +109,56 @@ public final class MinibatchOptimalTransport {
             out[i] = b[p[i]];
         }
         return out;
+    }
+
+    /**
+     * Pairs {@code b} with {@code a} by sampling from an entropic (Sinkhorn) coupling under the
+     * squared Euclidean cost; {@code epsilon} is relative to the mean cost.
+     *
+     * @param a source points {@code [n][d]}
+     * @param b target points {@code [m][d]}
+     * @param relativeEpsilon the regularisation as a fraction of the mean cost, for example 0.01
+     * @param iterations Sinkhorn iterations
+     * @param random draws the pairing
+     * @return for each row of {@code a}, its sampled partner from {@code b}
+     */
+    public static float[][] pairSinkhorn(float[][] a, float[][] b, double relativeEpsilon, int iterations,
+            SplittableRandom random) {
+        double[][] x = new double[a.length][];
+        double[][] y = new double[b.length][];
+        for (int i = 0; i < a.length; i++) {
+            x[i] = toDouble(a[i]);
+        }
+        for (int j = 0; j < b.length; j++) {
+            y[j] = toDouble(b[j]);
+        }
+        double[][] c = EntropicTransport.squaredEuclidean(x, y);
+        double mean = 0;
+        double max = 0;
+        for (double[] row : c) {
+            for (double v : row) {
+                mean += v / ((double) c.length * row.length);
+                max = Math.max(max, v);
+            }
+        }
+        double eps = relativeEpsilon * mean;
+        double[] wa = EntropicTransport.uniform(a.length);
+        double[] wb = EntropicTransport.uniform(b.length);
+        EntropicTransport.Plan plan = max / eps < 80 ? EntropicTransport.sinkhornScaling(wa, wb, c, eps, iterations)
+                : EntropicTransport.sinkhorn(wa, wb, c, eps, iterations, 1e-4);
+        int[] p = EntropicTransport.pairing(plan, random);
+        float[][] out = new float[a.length][];
+        for (int i = 0; i < p.length; i++) {
+            out[i] = b[p[i]];
+        }
+        return out;
+    }
+
+    private static double[] toDouble(float[] v) {
+        double[] d = new double[v.length];
+        for (int i = 0; i < v.length; i++) {
+            d[i] = v[i];
+        }
+        return d;
     }
 }
