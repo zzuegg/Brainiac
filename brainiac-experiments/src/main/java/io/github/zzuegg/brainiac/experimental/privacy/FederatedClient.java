@@ -15,7 +15,7 @@ import java.util.function.Supplier;
  * the replica's current parameters. The data never leaves the closure; algorithms only read
  * the parameters and gradients. It is a {@link LocalWorker}, so core-style
  * {@code FederatedAveraging} runs it unchanged (its {@link #train} is plain local SGD), while
- * {@link FederatedAlgorithms} and {@link PersonalizedFederated} drive {@link #gradients()}
+ * {@link FederatedAlgorithms} and {@link PersonalizedFederated} drive {@link #gradients(float[])}
  * themselves to add proximal terms, control variates or personal heads.
  */
 public final class FederatedClient implements LocalWorker {
