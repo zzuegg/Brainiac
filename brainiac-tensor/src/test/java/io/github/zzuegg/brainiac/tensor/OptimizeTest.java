@@ -68,4 +68,53 @@ class OptimizeTest {
         assertTrue(e.converged(), e.toString());
         assertArrayEquals(new double[] {2, 2, 2, 2, 2, 2}, e.x(), 1e-4);
     }
+
+    @Test
+    void badlyScaledCuttingPlanesStaySolvable() {
+        // RiskSLIM-like: a box-bounded variable set, cuts whose coefficients span 16 decades
+        java.util.SplittableRandom r = new java.util.SplittableRandom(5);
+        for (int trial = 0; trial < 150; trial++) {
+            int n = 6;
+            int cuts = 30;
+            double[] feasible = new double[n];
+            for (int j = 0; j < n; j++) {
+                feasible[j] = r.nextDouble(0, 3);
+            }
+            double[][] a = new double[cuts + n][n];
+            double[] b = new double[cuts + n];
+            for (int i = 0; i < cuts; i++) {
+                double dot = 0;
+                for (int j = 0; j < n; j++) {
+                    a[i][j] = (r.nextBoolean() ? 1 : -1) * Math.pow(10, r.nextDouble(-8, 8));
+                    dot += a[i][j] * feasible[j];
+                }
+                b[i] = dot + Math.abs(dot) * 1e-3 * r.nextDouble();
+            }
+            for (int j = 0; j < n; j++) {
+                a[cuts + j][j] = 1;
+                b[cuts + j] = 10;
+            }
+            double[] c = new double[n];
+            for (int j = 0; j < n; j++) {
+                c[j] = r.nextDouble(-1, 1) * Math.pow(10, r.nextDouble(-3, 3));
+            }
+            Optimize.LinearSolution s = Optimize.linearProgram(c, a, b, null, null);
+            assertEquals(Optimize.Status.OPTIMAL, s.status(), "trial " + trial);
+            double atFeasible = 0;
+            for (int j = 0; j < n; j++) {
+                atFeasible += c[j] * feasible[j];
+                assertTrue(s.x()[j] >= 0);
+            }
+            assertTrue(s.value() <= atFeasible + 1e-6 * Math.max(1, Math.abs(atFeasible)), "trial " + trial);
+            for (int i = 0; i < a.length; i++) {
+                double dot = 0;
+                double scale = 0;
+                for (int j = 0; j < n; j++) {
+                    dot += a[i][j] * s.x()[j];
+                    scale = Math.max(scale, Math.abs(a[i][j] * s.x()[j]));
+                }
+                assertTrue(dot <= b[i] + 1e-7 * Math.max(1, Math.max(scale, Math.abs(b[i]))), "trial " + trial + " row " + i + " dot " + dot + " b " + b[i] + " scale " + scale + " x " + java.util.Arrays.toString(s.x()) + " a " + java.util.Arrays.toString(a[i]));
+            }
+        }
+    }
 }

@@ -177,61 +177,88 @@ public final class Optimize {
         int mu = aUb == null ? 0 : aUb.length;
         int me = aEq == null ? 0 : aEq.length;
         int m = mu + me;
-        // columns: n variables, mu slacks, m artificials, then the right-hand side
+        // equilibrate: scale each variable by its column's largest coefficient, then each row by
+        // its largest, so that badly scaled problems (cutting planes) keep their pivots readable
+        double[] colScale = new double[n];
+        for (int i = 0; i < m; i++) {
+            double[] row = i < mu ? aUb[i] : aEq[i - mu];
+            if (row.length != n) {
+                throw new IllegalArgumentException("constraint " + i + " has " + row.length + " coefficients, not " + n);
+            }
+            for (int j = 0; j < n; j++) {
+                colScale[j] = Math.max(colScale[j], Math.abs(row[j]));
+            }
+        }
+        for (int j = 0; j < n; j++) {
+            colScale[j] = colScale[j] > 0 ? colScale[j] : 1;
+        }
+        // columns: n variables (as x_j * colScale_j), mu slacks, m artificials, then the right-hand side
         int cols = n + mu + m + 1;
         double[][] t = new double[m + 1][cols];
         int[] basis = new int[m];
         for (int i = 0; i < m; i++) {
             double[] row = i < mu ? aUb[i] : aEq[i - mu];
             double rhs = i < mu ? bUb[i] : bEq[i - mu];
-            if (row.length != n) {
-                throw new IllegalArgumentException("constraint " + i + " has " + row.length + " coefficients, not " + n);
-            }
-            double sign = rhs < 0 ? -1 : 1;
+            double rowMax = 0;
             for (int j = 0; j < n; j++) {
-                t[i][j] = sign * row[j];
+                rowMax = Math.max(rowMax, Math.abs(row[j] / colScale[j]));
+            }
+            double scale = (rhs < 0 ? -1 : 1) / (rowMax > 0 ? rowMax : 1);
+            for (int j = 0; j < n; j++) {
+                t[i][j] = scale * row[j] / colScale[j];
             }
             if (i < mu) {
-                t[i][n + i] = sign;
+                t[i][n + i] = Math.signum(scale);   // the slack's own scale is free
             }
             t[i][n + mu + i] = 1;
-            t[i][cols - 1] = sign * rhs;
+            t[i][cols - 1] = scale * rhs;
             basis[i] = n + mu + i;
         }
-        // phase 1: minimize the sum of the artificials
+        double rhsMax = 0;
+        for (int i = 0; i < m; i++) {
+            rhsMax = Math.max(rhsMax, Math.abs(t[i][cols - 1]));
+        }
+        // phase 1: minimize the sum of the artificials (never unbounded: columns that only look
+        // unbounded through rounding are set aside)
         double[] phase1 = new double[cols];
         for (int i = 0; i < m; i++) {
             phase1[n + mu + i] = 1;
         }
         setObjective(t, basis, phase1);
-        if (!simplex(t, basis, n + mu + m)) {
-            throw new IllegalStateException("phase 1 cannot be unbounded");
-        }
-        if (-t[m][cols - 1] > 1e-9 * Math.max(1, maxAbs(bUb, bEq))) {
+        simplex(t, basis, n + mu + m, true);
+        if (-t[m][cols - 1] > 1e-9 * Math.max(1, rhsMax)) {
             return new LinearSolution(Status.INFEASIBLE, null, Double.NaN);
         }
         // drive artificials out of the basis where a real column can replace them
         for (int i = 0; i < m; i++) {
             if (basis[i] >= n + mu) {
+                int best = -1;
                 for (int j = 0; j < n + mu; j++) {
-                    if (Math.abs(t[i][j]) > 1e-12) {
-                        pivot(t, basis, i, j);
-                        break;
+                    if (Math.abs(t[i][j]) > 1e-14 && (best < 0 || Math.abs(t[i][j]) > Math.abs(t[i][best]))) {
+                        best = j;
                     }
+                }
+                if (best >= 0) {
+                    pivot(t, basis, i, best);
+                } else {
+                    // a redundant row: keep it from moving in phase 2
+                    java.util.Arrays.fill(t[i], 0, n + mu, 0);
                 }
             }
         }
         // phase 2 on the real columns only
         double[] cost = new double[cols];
-        System.arraycopy(c, 0, cost, 0, n);
+        for (int j = 0; j < n; j++) {
+            cost[j] = c[j] / colScale[j];
+        }
         setObjective(t, basis, cost);
-        if (!simplex(t, basis, n + mu)) {
+        if (!simplex(t, basis, n + mu, false)) {
             return new LinearSolution(Status.UNBOUNDED, null, Double.NEGATIVE_INFINITY);
         }
         double[] x = new double[n];
         for (int i = 0; i < m; i++) {
             if (basis[i] < n) {
-                x[basis[i]] = t[i][cols - 1];
+                x[basis[i]] = Math.max(0, t[i][cols - 1]) / colScale[basis[i]];
             }
         }
         double value = 0;
@@ -256,14 +283,21 @@ public final class Optimize {
         }
     }
 
-    // minimizes over the first `usable` columns; false if unbounded
-    private static boolean simplex(double[][] t, int[] basis, int usable) {
+    // minimizes over the first `usable` columns; false if unbounded. With `bounded` (phase 1, whose
+    // objective cannot fall below 0) a column with no pivot is rounding noise and is set aside.
+    private static boolean simplex(double[][] t, int[] basis, int usable, boolean bounded) {
         int m = basis.length;
         int rhs = t[0].length - 1;
-        for (int iter = 0; iter < 100_000; iter++) {
+        boolean[] aside = new boolean[usable];
+        double costScale = 0;
+        for (int j = 0; j < usable; j++) {
+            costScale = Math.max(costScale, Math.abs(t[m][j]));
+        }
+        double enterTol = 1e-11 * Math.max(1, costScale);
+        for (int iter = 0; iter < 200_000; iter++) {
             int enter = -1;
             for (int j = 0; j < usable; j++) {
-                if (t[m][j] < -1e-12) {
+                if (!aside[j] && t[m][j] < -enterTol) {
                     enter = j;   // Bland: the lowest index
                     break;
                 }
@@ -271,19 +305,30 @@ public final class Optimize {
             if (enter < 0) {
                 return true;
             }
+            double colMax = 0;
+            for (int i = 0; i < m; i++) {
+                colMax = Math.max(colMax, Math.abs(t[i][enter]));
+            }
+            double pivotTol = 1e-11 * Math.max(1, colMax);
             int leave = -1;
             double best = Double.POSITIVE_INFINITY;
             for (int i = 0; i < m; i++) {
-                if (t[i][enter] > 1e-12) {
-                    double ratio = t[i][rhs] / t[i][enter];
-                    if (ratio < best - 1e-12 || (Math.abs(ratio - best) <= 1e-12 && basis[i] < basis[leave])) {
+                if (t[i][enter] > pivotTol) {
+                    double ratio = Math.max(0, t[i][rhs]) / t[i][enter];
+                    double tie = leave < 0 ? 0 : 1e-12 * Math.max(1, best);
+                    if (leave < 0 || ratio < best - tie
+                            || (Math.abs(ratio - best) <= tie && basis[i] < basis[leave])) {
                         best = ratio;
                         leave = i;
                     }
                 }
             }
             if (leave < 0) {
-                return false;
+                if (!bounded) {
+                    return false;
+                }
+                aside[enter] = true;
+                continue;
             }
             pivot(t, basis, leave, enter);
         }
@@ -292,30 +337,22 @@ public final class Optimize {
 
     private static void pivot(double[][] t, int[] basis, int row, int col) {
         double p = t[row][col];
-        for (int j = 0; j < t[row].length; j++) {
-            t[row][j] /= p;
+        double[] r = t[row];
+        for (int j = 0; j < r.length; j++) {
+            r[j] /= p;
         }
+        r[col] = 1;
         for (int i = 0; i < t.length; i++) {
             if (i != row && t[i][col] != 0) {
                 double f = t[i][col];
-                for (int j = 0; j < t[i].length; j++) {
-                    t[i][j] -= f * t[row][j];
+                double[] ti = t[i];
+                for (int j = 0; j < ti.length; j++) {
+                    ti[j] -= f * r[j];
                 }
+                ti[col] = 0;
             }
         }
         basis[row] = col;
-    }
-
-    private static double maxAbs(double[] a, double[] b) {
-        double m = 0;
-        for (double[] v : new double[][] {a, b}) {
-            if (v != null) {
-                for (double x : v) {
-                    m = Math.max(m, Math.abs(x));
-                }
-            }
-        }
-        return m;
     }
 
     /**
