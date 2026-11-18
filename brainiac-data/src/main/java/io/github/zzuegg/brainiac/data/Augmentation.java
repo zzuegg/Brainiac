@@ -21,6 +21,107 @@ public interface Augmentation {
     void apply(float[] features, int offset, SplittableRandom random);
 
     /**
+     * Transforms a batch of samples stored one after another, each with its own random draws.
+     *
+     * @param features the samples, {@code count * sampleSize} values
+     * @param sampleSize the values per sample
+     * @param random the source of randomness
+     */
+    default void applyBatch(float[] features, int sampleSize, SplittableRandom random) {
+        if (sampleSize <= 0 || features.length % sampleSize != 0) {
+            throw new IllegalArgumentException(features.length + " values are not whole samples of " + sampleSize);
+        }
+        for (int offset = 0; offset < features.length; offset += sampleSize) {
+            apply(features, offset, random);
+        }
+    }
+
+    /**
+     * Rotates by a fixed angle about the centre and shifts, with nearest-neighbour sampling and
+     * zeros outside: the geometric operation RandAugment uses, at a chosen strength.
+     *
+     * @param channels the channels, stored first
+     * @param height the image height
+     * @param width the image width
+     * @param degrees the rotation, counter-clockwise
+     * @param dx the shift to the right, in pixels
+     * @param dy the shift down, in pixels
+     * @return the augmentation
+     */
+    static Augmentation affine(int channels, int height, int width, double degrees, double dx, double dy) {
+        checkImage(channels, height, width);
+        double angle = Math.toRadians(degrees);
+        return (f, offset, random) -> warp(f, offset, channels, height, width, angle, dx, dy);
+    }
+
+    /**
+     * A random rotation of up to {@code maxDegrees} either way.
+     *
+     * @param channels the channels, stored first
+     * @param height the image height
+     * @param width the image width
+     * @param maxDegrees the largest rotation
+     * @return the augmentation
+     */
+    static Augmentation rotate(int channels, int height, int width, double maxDegrees) {
+        checkImage(channels, height, width);
+        return (f, offset, random) -> warp(f, offset, channels, height, width,
+                Math.toRadians(random.nextDouble(-maxDegrees, Math.nextUp(maxDegrees))), 0, 0);
+    }
+
+    /**
+     * A random shift of up to a share of the width and height either way.
+     *
+     * @param channels the channels, stored first
+     * @param height the image height
+     * @param width the image width
+     * @param maxShare the largest shift as a share of the size, such as 0.1
+     * @return the augmentation
+     */
+    static Augmentation translate(int channels, int height, int width, double maxShare) {
+        checkImage(channels, height, width);
+        return (f, offset, random) -> warp(f, offset, channels, height, width, 0,
+                random.nextDouble(-maxShare, Math.nextUp(maxShare)) * width,
+                random.nextDouble(-maxShare, Math.nextUp(maxShare)) * height);
+    }
+
+    /**
+     * Inverts the values at or above a threshold, for values in {@code [0, 1]}.
+     *
+     * @param size the values per sample
+     * @param threshold the threshold
+     * @return the augmentation
+     */
+    static Augmentation solarize(int size, float threshold) {
+        return (f, offset, random) -> {
+            for (int i = 0; i < size; i++) {
+                if (f[offset + i] >= threshold) {
+                    f[offset + i] = 1 - f[offset + i];
+                }
+            }
+        };
+    }
+
+    /**
+     * Keeps {@code bits} bits of each value in {@code [0, 1]}.
+     *
+     * @param size the values per sample
+     * @param bits from 1 to 8
+     * @return the augmentation
+     */
+    static Augmentation posterize(int size, int bits) {
+        if (bits < 1 || bits > 8) {
+            throw new IllegalArgumentException("bits must be 1 to 8, not " + bits);
+        }
+        int levels = 1 << bits;
+        return (f, offset, random) -> {
+            for (int i = 0; i < size; i++) {
+                f[offset + i] = (float) Math.floor(f[offset + i] * levels) / levels;
+            }
+        };
+    }
+
+    /**
      * The standard augmentation for small photos (as for CIFAR-10): a random shift of up to
      * {@code pad} pixels in each direction, filling the uncovered border with zeros (as if
      * cropped from an image padded with zeros), and a horizontal mirror half the time.
@@ -268,14 +369,31 @@ public interface Augmentation {
      * @return the augmentation
      */
     static Augmentation randAugment(int channels, int height, int width, int n, double magnitude) {
+        return randAugment(channels, height, width, n, magnitude, true);
+    }
+
+    /**
+     * RandAugment with the horizontal flip left out when {@code flip} is false, for images
+     * whose mirror is a different thing (digits, text, maps).
+     *
+     * @param channels the channels, stored first
+     * @param height the image height
+     * @param width the image width
+     * @param n operations per sample
+     * @param magnitude their strength, 0 to 10
+     * @param flip whether the flip is one of the operations
+     * @return the augmentation
+     */
+    static Augmentation randAugment(int channels, int height, int width, int n, double magnitude, boolean flip) {
         checkImage(channels, height, width);
         double m = Math.clamp(magnitude, 0, 10) / 10;
         int plane = height * width;
-        Augmentation flip = horizontalFlip(channels, height, width);
+        Augmentation mirror = horizontalFlip(channels, height, width);
+        int operations = flip ? 9 : 8;
         return (f, offset, random) -> {
             for (int k = 0; k < n; k++) {
                 double sign = random.nextBoolean() ? 1 : -1;
-                switch (random.nextInt(9)) {
+                switch (random.nextInt(operations)) {
                     case 0 -> {
                     }
                     case 1 -> warp(f, offset, channels, height, width, 0, sign * m * 0.3 * width, 0);
@@ -306,7 +424,7 @@ public interface Augmentation {
                             f[offset + i] = (float) Math.floor(f[offset + i] * levels) / levels;
                         }
                     }
-                    default -> flip.apply(f, offset, random);
+                    default -> mirror.apply(f, offset, random);
                 }
             }
         };

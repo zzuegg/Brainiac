@@ -399,6 +399,36 @@ public final class TransformerBlock implements MultiInputLayer {
         return p;
     }
 
+    /**
+     * The self-attention, whose projections take adapters such as LoRA; see
+     * {@link MultiHeadAttention#lora}.
+     *
+     * @return the self-attention
+     */
+    public MultiHeadAttention selfAttention() {
+        return selfAttention;
+    }
+
+    /** @return the cross-attention over the memory, or null for a block without one */
+    public MultiHeadAttention crossAttention() {
+        return crossAttention;
+    }
+
+    /** @return the feed-forward's first projection */
+    public Dense up() {
+        return up;
+    }
+
+    /** @return the feed-forward's gate, or null when it is not gated */
+    public Dense gate() {
+        return gate;
+    }
+
+    /** @return the feed-forward's last projection */
+    public Dense down() {
+        return down;
+    }
+
     /** @return the settings */
     public Settings settings() {
         return settings;

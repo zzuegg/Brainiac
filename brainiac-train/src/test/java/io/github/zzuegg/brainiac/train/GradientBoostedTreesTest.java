@@ -143,4 +143,66 @@ class GradientBoostedTreesTest {
             assertEquals(copies.predict(x[i]), weighted.predict(x[i]), 1e-9);
         }
     }
+
+    @Test
+    void aMarginOfTheBaseGivesTheSameTreesAndObjectivesAreLosses() {
+        SplittableRandom r = new SplittableRandom(11);
+        int n = 200;
+        double[][] x = new double[n][2];
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) {
+            x[i][0] = r.nextDouble(-1, 1);
+            x[i][1] = r.nextDouble(-1, 1);
+            y[i] = r.nextDouble() < 1 / (1 + Math.exp(-3 * x[i][0] * x[i][1])) ? 1 : 0;
+        }
+        GradientBoostedTrees.Loss binary = GradientBoostedTrees.Objective.BINARY.loss();
+        GradientBoostedTrees.Settings s = GradientBoostedTrees.Settings.defaults().withTrees(20);
+        GradientBoostedTrees plain = GradientBoostedTrees.fit(x, y, binary, s);
+        double base = binary.base(y);
+        double[] margin = new double[n];
+        java.util.Arrays.fill(margin, base);
+        GradientBoostedTrees shifted = GradientBoostedTrees.fit(x, y, null, margin, binary, s);
+        for (int i = 0; i < n; i++) {
+            assertEquals(plain.predict(x[i]), shifted.predict(x[i], base), 1e-12);
+            assertEquals(plain.raw(x[i]), base + shifted.raw(x[i]), 1e-12);
+        }
+    }
+
+    @Test
+    void monotoneConstraintsHold() {
+        // y rises with x0 but noise makes an unconstrained fit wiggle; x1 is noise
+        SplittableRandom r = new SplittableRandom(13);
+        int n = 300;
+        double[][] x = new double[n][2];
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) {
+            x[i][0] = r.nextDouble(0, 1);
+            x[i][1] = r.nextDouble(0, 1);
+            y[i] = x[i][0] + 0.3 * Math.sin(12 * x[i][0]) + r.nextGaussian() * 0.2;
+        }
+        GradientBoostedTrees.Settings s = GradientBoostedTrees.Settings.defaults().withTrees(60);
+        GradientBoostedTrees up = GradientBoostedTrees.fit(x, y, null, null, GradientBoostedTrees.Objective.REGRESSION.loss(),
+                s, new int[] {1, 0});
+        GradientBoostedTrees down = GradientBoostedTrees.fit(x, y, null, null,
+                GradientBoostedTrees.Objective.REGRESSION.loss(), s, new int[] {-1, 0});
+        GradientBoostedTrees free = GradientBoostedTrees.fit(x, y, GradientBoostedTrees.Objective.REGRESSION, s);
+        boolean freeWiggles = false;
+        for (double other : new double[] {0.1, 0.5, 0.9}) {
+            double lastUp = Double.NEGATIVE_INFINITY;
+            double lastDown = Double.POSITIVE_INFINITY;
+            double lastFree = Double.NEGATIVE_INFINITY;
+            for (int k = 0; k <= 100; k++) {
+                double[] row = {k / 100.0, other};
+                double u = up.predict(row);
+                double d = down.predict(row);
+                assertTrue(u >= lastUp - 1e-12, "not increasing at " + k);
+                assertTrue(d <= lastDown + 1e-12, "not decreasing at " + k);
+                freeWiggles |= free.predict(row) < lastFree - 1e-9;
+                lastUp = u;
+                lastDown = d;
+                lastFree = free.predict(row);
+            }
+        }
+        assertTrue(freeWiggles, "the data should make an unconstrained fit wiggle");
+    }
 }
