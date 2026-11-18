@@ -11,7 +11,7 @@ class PinnSecondOrderTest {
     @Test
     void naturalGradientAndNewtonCgSharpenPoisson() {
         PdeShootout.Pde pde = PdeShootout.poisson();
-        List<PdeShootout.Row> rows = PdeShootout.optimisers(pde, 12, 2, 64, 200, 30, 10, 15, 1);
+        List<PdeShootout.Row> rows = PdeShootout.optimisers(pde, 12, 2, 64, 200, 30, 10, 40, 1);
         StringBuilder line = new StringBuilder("9.5.15 Poisson, rel L2 (ms):");
         rows.forEach(r -> line.append(String.format(" %s %.2e (%.0f);", r.method(), r.error(), r.millis())));
         System.out.println(line);

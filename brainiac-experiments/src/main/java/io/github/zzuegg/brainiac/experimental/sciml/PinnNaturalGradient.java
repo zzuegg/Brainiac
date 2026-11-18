@@ -20,7 +20,9 @@ import java.util.function.ToDoubleFunction;
  * Each iteration forms {@code J} (one vector-Jacobian product per residual, so for networks
  * of up to a couple of thousand parameters), solves {@code (G + mu I) d = J^T r} by Cholesky
  * and takes the best step {@code theta - eta d} over a grid line search
- * {@code eta = 2^-k}. On small networks it reaches errors orders of magnitude below Adam.
+ * {@code eta = 2^-k}. When no step size lowers the loss (the near-singular Gram matrix of a
+ * fresh network gives huge directions), the damping is raised 100-fold and the solve retried;
+ * after an accepted step it relaxes 10-fold back towards {@code mu}.
  *
  * <p>{@link Mode#LEVENBERG_MARQUARDT} replaces the line search with Marquardt's adaptive
  * damping {@code lambda diag(G)} (accept and shrink, or reject and grow), a baseline built here
@@ -40,6 +42,7 @@ public final class PinnNaturalGradient {
     private final Mode mode;
     private double damping;
     private int lineSearch = 14;
+    private double boost = 1;
 
     private PinnNaturalGradient(Mode mode, double damping) {
         this.mode = mode;
@@ -201,26 +204,34 @@ public final class PinnNaturalGradient {
         for (int a = 0; a < p; a++) {
             trace += g[a][a];
         }
-        double mu = damping * Math.max(1e-12, trace / p);
-        double[][] sys = new double[p][];
-        for (int a = 0; a < p; a++) {
-            sys[a] = g[a].clone();
-            sys[a][a] += mu + 1e-14;
-        }
-        double[] d = CurvatureProducts.solveSpd(sys, grad);
-        double best = l0;
-        double bestEta = 0;
-        double eta = 1;
-        for (int k = 0; k < lineSearch; k++) {
-            double l = lossAt(pinn, problem, points, params, CurvatureProducts.axpy(theta, -eta, d));
-            if (Double.isFinite(l) && l < best) {
-                best = l;
-                bestEta = eta;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            double mu = damping * boost * Math.max(1e-12, trace / p);
+            double[][] sys = new double[p][];
+            for (int a = 0; a < p; a++) {
+                sys[a] = g[a].clone();
+                sys[a][a] += mu + 1e-14;
             }
-            eta /= 2;
+            double[] d = CurvatureProducts.solveSpd(sys, grad);
+            double best = l0;
+            double bestEta = 0;
+            double eta = 1;
+            for (int k = 0; k < lineSearch; k++) {
+                double l = lossAt(pinn, problem, points, params, CurvatureProducts.axpy(theta, -eta, d));
+                if (Double.isFinite(l) && l < best) {
+                    best = l;
+                    bestEta = eta;
+                }
+                eta /= 2;
+            }
+            if (bestEta > 0) {
+                CurvatureProducts.assign(params, CurvatureProducts.axpy(theta, -bestEta, d));
+                boost = Math.max(1, boost / 10);
+                return best;
+            }
+            boost *= 100;
         }
-        CurvatureProducts.assign(params, CurvatureProducts.axpy(theta, -bestEta, d));
-        return best;
+        CurvatureProducts.assign(params, theta);
+        return l0;
     }
 
     private double marquardtStep(PhysicsInformedNetwork pinn, PinnTraining.Problem problem, Tensor points,

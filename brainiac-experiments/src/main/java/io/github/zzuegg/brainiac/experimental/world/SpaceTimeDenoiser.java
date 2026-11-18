@@ -96,11 +96,11 @@ public final class SpaceTimeDenoiser {
         for (int l = 0; l < depth; l++) {
             switch (mode) {
                 case FACTORISED -> {
-                    spatial.add((TransformerBlock) space.create(Shape.of(1, tokens, width), r));
-                    temporal.add((TransformerBlock) time.create(Shape.of(1, frames, width), r));
+                    spatial.add((TransformerBlock) space.create(Shape.of(tokens, width), r));
+                    temporal.add((TransformerBlock) time.create(Shape.of(frames, width), r));
                 }
-                case FRAME_WISE -> spatial.add((TransformerBlock) space.create(Shape.of(1, tokens, width), r));
-                case FULL_3D -> full.add((TransformerBlock) space.create(Shape.of(1, frames * tokens, width), r));
+                case FRAME_WISE -> spatial.add((TransformerBlock) space.create(Shape.of(tokens, width), r));
+                case FULL_3D -> full.add((TransformerBlock) space.create(Shape.of(frames * tokens, width), r));
                 default -> throw new IllegalArgumentException(mode.toString());
             }
         }

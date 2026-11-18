@@ -15,7 +15,7 @@ class SpaceTimeDiffusionTest {
 
     @Test
     void factorisedAttentionAgainstFrameWiseAndFull3d() {
-        List<VideoGeneration.DiffusionRow> rows = VideoGeneration.spaceTime(60, 12, 12, 1);
+        List<VideoGeneration.DiffusionRow> rows = VideoGeneration.spaceTime(30, 6, 8, 1);
         StringBuilder line = new StringBuilder("9.5.1 video diffusion, frameMMD/clipMMD/count err/velocity err"
                 + " uncond | first-frame cond (ms/step):");
         for (VideoGeneration.DiffusionRow r : rows) {

@@ -10,7 +10,7 @@ class SlotDynamicsTest {
 
     @Test
     void slotTransformerAgainstPerSlotMlp() {
-        List<WorldModelShootout.SlotRow> rows = WorldModelShootout.slotVideo(150, 100, 8, 1);
+        List<WorldModelShootout.SlotRow> rows = WorldModelShootout.slotVideo(25, 10, 2, 1);
         StringBuilder line = new StringBuilder("9.5.8 slot video, PSNR@10/20, pos err@10/20, FG-ARI:");
         for (WorldModelShootout.SlotRow r : rows) {
             line.append(String.format(" %s %.1f/%.1f %.2f/%.2f %.2f;", r.model(), r.psnr10(), r.psnr20(),

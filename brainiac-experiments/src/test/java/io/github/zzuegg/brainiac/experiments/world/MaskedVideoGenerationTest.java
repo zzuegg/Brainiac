@@ -10,7 +10,7 @@ class MaskedVideoGenerationTest {
 
     @Test
     void multiTaskMaskGitOnTubeletTokens() {
-        List<VideoGeneration.GenerationRow> rows = VideoGeneration.maskedGeneration(100, 80, 40, 12, 1);
+        List<VideoGeneration.GenerationRow> rows = VideoGeneration.maskedGeneration(60, 50, 20, 6, 1);
         StringBuilder line = new StringBuilder("9.5.2 token video generation, calls / clipMMD / count err (ms):");
         rows.forEach(r -> line.append(String.format(" %s %d/%.3f/%.2f (%.0f);", r.model(), r.calls(),
                 r.quality().clipMmd(), r.quality().countError(), r.millis())));

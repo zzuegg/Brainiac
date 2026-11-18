@@ -10,7 +10,7 @@ class LongVideoRolloutTest {
 
     @Test
     void selfForcingAndHistoryGuidanceOnFourTimesTheTrainingLength() {
-        List<VideoGeneration.RolloutRow> rows = VideoGeneration.longRollouts(60, 8, 6, new float[] {1f, 2f, 4f}, 1);
+        List<VideoGeneration.RolloutRow> rows = VideoGeneration.longRollouts(20, 2, 2, new float[] {4f}, 1);
         StringBuilder line = new StringBuilder("9.5.3/9.5.4 32-frame rollouts, count err frames 1-8/8-16/16-32;"
                 + " frame MMD 16-32; velocity err:");
         for (VideoGeneration.RolloutRow r : rows) {

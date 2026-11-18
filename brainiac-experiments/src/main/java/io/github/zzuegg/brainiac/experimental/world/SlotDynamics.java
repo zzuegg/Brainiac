@@ -82,7 +82,7 @@ public final class SlotDynamics {
         timeEmb = Var.param(Tensor.normal(Shape.of(history, width), 0, 0.1f, r));
         for (int l = 0; l < 2; l++) {
             blocks.add((TransformerBlock) TransformerBlock.of(2).ffnSize(2 * width)
-                    .create(Shape.of(1, history * slots, width), r));
+                    .create(Shape.of(history * slots, width), r));
         }
         head = Var.param(Tensor.normal(Shape.of(width, width), 0, (float) (0.1 / Math.sqrt(width)), r));
         slotMlp = SimpleMlp.of(seed + 2, v -> v.mul(v.sigmoid()), 2 * width, 64, width);
@@ -184,7 +184,7 @@ public final class SlotDynamics {
         int p = side * side;
         Var grid = s.reshape(b * slots, 1, width).add(Var.of(positions).matmul(posOut).reshape(1, p, width));
         Var out = render.forward(grid.reshape(b * slots * p, width)).reshape(b, slots, p, 2);
-        Var value = out.slice(3, 0, 1).reshape(b, slots, p);
+        Var value = out.slice(3, 0, 1).reshape(b, slots, p).sigmoid();
         Var logits = out.slice(3, 1, 2).reshape(b, slots, p);
         Var masks = Activation.SOFTMAX.forward(logits.permute(0, 2, 1)).permute(0, 2, 1);
         return new Var[] {value.mul(masks).sum(1, false), masks};

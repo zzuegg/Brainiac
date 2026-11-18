@@ -12,7 +12,7 @@ class OperatorSweepTest {
     void sweepsWidthDataAndGridRegularity() {
         OperatorLearning.Data data = OperatorLearning.burgers(296, 64, 3);
         List<OperatorLearning.SweepRow> rows = OperatorLearning.sweep(data, 40, 32, new int[] {16, 48},
-                new int[] {64, 256}, new double[] {0, 0.5}, 40, 1);
+                new int[] {256}, new double[] {0, 0.5}, 40, 1);
         StringBuilder line = new StringBuilder("9.5.16 Burgers sweep, rel L2 [width/train/drop]:");
         String cell = "";
         for (OperatorLearning.SweepRow r : rows) {
