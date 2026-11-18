@@ -4082,7 +4082,7 @@
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
           <span class="meta">${r.family ? `<span class="chip c-ok">${esc(r.family)}</span>` : ""}${r.gguf ? `<span class="chip c-text">GGUF</span>` : ""}${r.safetensors ? `<span class="chip c-text">safetensors</span>` : ""}
-            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add your token above">gated</span>` : ""}
+            ${r.parameters ? `<span class="chip plain">${r.parameters >= 1e9 ? (r.parameters / 1e9).toFixed(r.parameters < 1e10 ? 1 : 0) + "B" : Math.round(r.parameters / 1e6) + "M"} params</span>` : ""}${r.sees ? `<span class="chip plain">looks at pictures</span>` : ""}${r.gated ? `<span class="chip c-warn" title="Accept its license on huggingface.co and add your token above">gated</span>` : ""}
             <span class="faint tnum" title="downloads">${icon("download")}${fmtCount(r.downloads)}</span></span></button>`).join("")
         + (H.hidden ? `<div class="faint pad">${H.hidden} more found that the studio cannot run yet.</div>` : "");
     return `<section class="placebox hubbox" id="hub-box" aria-label="Download from Hugging Face">
@@ -4119,8 +4119,8 @@
     const busy = o => list.find(d => same(d, o) && hubActive(d));
     const have = o => to ? list.some(d => same(d, o) && d.state === "done") : o.have;
     return head + target + `<div class="hub-opts">${opts.map(o => `<div class="hub-opt ${o.supported ? "" : "off"}">
-        <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}</div>
-        <span class="mono faint tnum">${o.size ? fmtBytes(o.size) : ""}</span>
+        <div class="nm">${esc(o.kind === "folder" ? "Whole model folder" : o.name)}${o.quant ? ` <span class="chip plain">${esc(o.quant)}</span>` : ""}${o.kind === "folder" ? ` <span class="chip plain">safetensors</span>` : ""}${o.sees ? ` <span class="chip plain" title="${o.projector ? "Its image projector (" + esc(o.projector.split("/").pop()) + ", " + fmtBytes(o.projectorSize) + ") is downloaded with it" : "Attach pictures to a message in chat"}">looks at pictures</span>` : ""}</div>
+        <span class="mono faint tnum">${o.size ? fmtBytes(o.size + (o.projectorSize || 0)) : ""}</span>
         ${have(o) ? `<span class="chip c-ok">on ${to ? esc(to.name) : "this PC"}</span>` : busy(o) ? `<span class="chip c-text">downloading</span>`
           : o.supported ? `<button class="btn sm" data-download="${esc(o.id)}">${icon("download")}${to ? "Download to " + esc(to.name) : "Download"}</button>` : `<span class="chip c-warn">won’t run</span>`}
         ${o.reason ? `<div class="why">${esc(o.reason)}</div>` : ""}</div>`).join("")}</div>`;

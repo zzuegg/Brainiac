@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.studio.chat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,12 +47,16 @@ class HubTest {
     private Keys keys;
 
     static byte[] gguf(String arch, int padding) {
+        return gguf(arch, "general.name", "test", padding);
+    }
+
+    static byte[] gguf(String arch, String key, String value, int padding) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ByteBuffer b = ByteBuffer.allocate(4096).order(ByteOrder.LITTLE_ENDIAN);
         b.putInt(0x46554747).putInt(3).putLong(0).putLong(2);
-        byte[] k1 = "general.name".getBytes(StandardCharsets.UTF_8);
+        byte[] k1 = key.getBytes(StandardCharsets.UTF_8);
         b.putLong(k1.length).put(k1).putInt(8);
-        byte[] v1 = "test".getBytes(StandardCharsets.UTF_8);
+        byte[] v1 = value.getBytes(StandardCharsets.UTF_8);
         b.putLong(v1.length).put(v1);
         byte[] k2 = "general.architecture".getBytes(StandardCharsets.UTF_8);
         b.putLong(k2.length).put(k2).putInt(8);
@@ -76,6 +81,16 @@ class HubTest {
         files.put("Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-tq1_0.gguf", gguf("qwen2", 10));
         files.put("Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m-00001-of-00002.gguf", gguf("qwen2", 10));
         files.put("google/gemma-3-1b-it-GGUF/gemma-3-1b-it-Q4_K_M.gguf", gguf("gemma3", 10));
+        files.put("ggml-org/gemma-3-4b-it-GGUF/gemma-3-4b-it-Q4_K_M.gguf", gguf("gemma3", 4000));
+        files.put("ggml-org/gemma-3-4b-it-GGUF/mmproj-model-Q8_0.gguf", gguf("clip", 10));
+        files.put("ggml-org/gemma-3-4b-it-GGUF/mmproj-model-f16.gguf", gguf("clip", "clip.projector_type", "gemma3", 2000));
+        files.put("other/odd-vlm-GGUF/odd-Q4_K_M.gguf", gguf("llama", 10));
+        files.put("other/odd-vlm-GGUF/mmproj-odd-f16.gguf", gguf("clip", "clip.projector_type", "resampler", 10));
+        files.put("llava-hf/llava-1.5-7b-hf/model.safetensors", new byte[3000]);
+        for (String f : List.of("tokenizer.json", "preprocessor_config.json", "tokenizer_config.json")) {
+            files.put("llava-hf/llava-1.5-7b-hf/" + f, "{}".getBytes(StandardCharsets.UTF_8));
+        }
+        configs.put("llava-hf/llava-1.5-7b-hf", "{\"model_type\": \"llava\"}");
         files.put("Qwen/Qwen2.5-0.5B-Instruct/model.safetensors", new byte[5000]);
         files.put("Qwen/Qwen2.5-0.5B-Instruct/tokenizer.json", "{}".getBytes(StandardCharsets.UTF_8));
         files.put("Qwen/Qwen2.5-0.5B-Instruct/README.md", "# hi".getBytes(StandardCharsets.UTF_8));
@@ -122,6 +137,18 @@ class HubTest {
                 if (q.contains("pipeline_tag=text-to-speech")) {
                     out.add(Map.of("id", "facebook/mms-tts-eng", "downloads", 800, "tags", List.of("safetensors", "vits"),
                             "config", Map.of("model_type", "vits")));
+                    send(ex, 200, Json.write(out).getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                if (q.contains("pipeline_tag=image-text-to-text")) {
+                    out.add(Map.of("id", "ggml-org/gemma-3-4b-it-GGUF", "downloads", 6000,
+                            "tags", List.of("gguf", "image-text-to-text"), "gguf", Map.of("architecture", "gemma3")));
+                    out.add(Map.of("id", "llava-hf/llava-1.5-7b-hf", "downloads", 2800,
+                            "tags", List.of("safetensors", "llava", "image-text-to-text"),
+                            "config", Map.of("model_type", "llava")));
+                    // some repositories are filed under both tasks
+                    out.add(Map.of("id", "google/gemma-3-1b-it-GGUF", "downloads", 4000, "likes", 50,
+                            "tags", List.of("gguf"), "gguf", Map.of("architecture", "gemma3")));
                     send(ex, 200, Json.write(out).getBytes(StandardCharsets.UTF_8));
                     return;
                 }
@@ -250,14 +277,19 @@ class HubTest {
     void searchKeepsOnlyWhatTheCoreRuns() throws Exception {
         Map<String, Object> found = hub().search("1b");
         List<Map<String, Object>> models = Json.array(found.get("models")).stream().map(Json::object).toList();
-        assertEquals(List.of("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "Qwen/Qwen2.5-0.5B-Instruct", "google/gemma-3-1b-it-GGUF",
-                "meta-llama/Llama-3.2-1B"), models.stream().map(m -> m.get("id")).toList());
-        assertEquals(2, found.get("hidden"), "the multimodal gemma3 type, and ONNX weights the core does not load");
-        assertEquals(true, models.getFirst().get("gguf"));
-        assertEquals(630_167_424L, models.getFirst().get("parameters"));
-        assertEquals(true, models.get(1).get("safetensors"));
+        // text models and the ones that look at pictures, most downloaded first, each once
+        assertEquals(List.of("ggml-org/gemma-3-4b-it-GGUF", "google/gemma-3-1b-it", "google/gemma-3-1b-it-GGUF",
+                "meta-llama/Llama-3.2-1B", "llava-hf/llava-1.5-7b-hf", "Qwen/Qwen2.5-0.5B-Instruct",
+                "Qwen/Qwen2.5-0.5B-Instruct-GGUF"), models.stream().map(m -> m.get("id")).toList());
+        assertEquals(1, found.get("hidden"), "ONNX weights the core does not load");
+        assertEquals(true, models.getFirst().get("sees"));
+        assertEquals(true, models.get(4).get("sees"));
+        assertEquals(false, models.get(5).get("sees"));
+        assertEquals(true, models.getLast().get("gguf"));
+        assertEquals(630_167_424L, models.getLast().get("parameters"));
+        assertEquals(true, models.get(5).get("safetensors"));
         assertEquals(true, models.get(3).get("gated"));
-        assertEquals(false, models.get(1).get("gated"));
+        assertEquals(false, models.get(5).get("gated"));
         // what runs comes from the core
         assertEquals(io.github.zzuegg.brainiac.llm.LlamaConfig.GGUF_ARCHITECTURES.stream().sorted().toList(),
                 hub().runs().get("architectures"));
@@ -292,6 +324,62 @@ class HubTest {
         IOException missing = assertThrows(IOException.class, () -> hub().files("nobody/nothing"));
         assertTrue(missing.getMessage().contains("nothing at"), missing.getMessage());
         assertThrows(IOException.class, () -> hub().files("../etc"));
+    }
+
+    @Test
+    void aVisionModelComesWithItsProjector() throws Exception {
+        ChatService chat = ChatService.at(keys, List.of(), Map.of("hub",
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/")), data.resolve("outputs"));
+        Hub hub = chat.hub();
+        Map<String, Object> l = hub.files("ggml-org/gemma-3-4b-it-GGUF");
+        Map<String, Object> q4 = option(l, "gemma-3-4b-it-Q4_K_M.gguf");
+        // the full-precision projector is the one taken
+        assertEquals("mmproj-model-f16.gguf", q4.get("projector"), q4.toString());
+        assertEquals(true, q4.get("sees"));
+        assertEquals(false, option(l, "mmproj-model-f16.gguf").get("supported"));
+        assertTrue(((String) option(l, "mmproj-model-f16.gguf").get("reason")).contains("downloaded with each model"));
+
+        Map<String, Object> d = hub.download("ggml-org/gemma-3-4b-it-GGUF", "gemma-3-4b-it-Q4_K_M.gguf");
+        assertEquals(((Number) q4.get("size")).longValue() + ((Number) q4.get("projectorSize")).longValue(), d.get("total"));
+        await(hub, (String) d.get("id"));
+        assertEquals("done", hub.downloads().getFirst().get("state"), hub.downloads().getFirst().toString());
+        Path model = data.resolve("downloads/gemma-3-4b-it-Q4_K_M.gguf");
+        Path projector = data.resolve("downloads/mmproj-gemma-3-4b-it-Q4_K_M.gguf");
+        assertTrue(Files.isRegularFile(model) && Files.isRegularFile(projector));
+        assertEquals(Files.size(projector), files.get("ggml-org/gemma-3-4b-it-GGUF/mmproj-model-f16.gguf").length);
+        assertEquals(projector, LocalProvider.mmproj(model));
+        // the projector is not a model of its own, and not another model's projector either
+        Path other = Files.write(data.resolve("downloads/qwen-q8_0.gguf"), gguf("qwen2", 10));
+        assertNull(LocalProvider.mmproj(other));
+        List<Map<String, Object>> local = Json.array(chat.describe(false).get("models")).stream().map(Json::object)
+                .filter(m -> "local".equals(m.get("provider"))).toList();
+        assertEquals(List.of("gemma-3-4b-it-Q4_K_M.gguf", "qwen-q8_0.gguf"), local.stream().map(m -> m.get("name")).toList());
+        assertEquals(true, option(hub.files("ggml-org/gemma-3-4b-it-GGUF"), "gemma-3-4b-it-Q4_K_M.gguf").get("have"));
+
+        // a model downloaded before, without its projector, is offered again and only the projector is fetched
+        Files.delete(projector);
+        assertEquals(false, option(hub.files("ggml-org/gemma-3-4b-it-GGUF"), "gemma-3-4b-it-Q4_K_M.gguf").get("have"));
+        seen.clear();
+        Map<String, Object> again = hub.download("ggml-org/gemma-3-4b-it-GGUF", "gemma-3-4b-it-Q4_K_M.gguf");
+        await(hub, (String) again.get("id"));
+        assertTrue(Files.isRegularFile(projector));
+        // only the start of the model is read again, to tell its architecture
+        assertTrue(seen.stream().noneMatch(s -> s.startsWith("/cdn/") && s.contains("Q4_K_M") && !s.endsWith("bytes=0-1048575")),
+                seen.toString());
+
+        assertTrue(hub.delete("gemma-3-4b-it-Q4_K_M.gguf"));
+        assertFalse(Files.exists(projector), "the projector goes with its model");
+
+        // a projector of a kind the core does not read is left where it is: the model still chats with text
+        Map<String, Object> odd = option(hub.files("other/odd-vlm-GGUF"), "odd-Q4_K_M.gguf");
+        assertEquals(true, odd.get("supported"), odd.toString());
+        assertNull(odd.get("projector"));
+
+        // a vision model's folder comes with its preprocessor
+        Map<String, Object> folder = option(hub.files("llava-hf/llava-1.5-7b-hf"), "llava-1.5-7b-hf");
+        assertEquals(true, folder.get("supported"), folder.toString());
+        assertEquals(true, folder.get("sees"));
+        assertTrue(Json.array(folder.get("files")).contains("preprocessor_config.json"), folder.toString());
     }
 
     @Test
