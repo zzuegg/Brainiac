@@ -2370,15 +2370,15 @@
   document.addEventListener("click", e => { const p = $("#pop"); if (p && !p.contains(e.target)) p.remove(); });
 
   // ---------- live chat ----------
-  // Served by the studio, Chat holds real conversations. They are kept in this browser; the
-  // example conversation stays in the list so the agent screens can still be seen.
+  // Served by the studio, Chat holds real conversations, kept in the studio's data folder. The
+  // invented example conversation and the MCP mock-up show only when the page is opened as a file.
   const L = {
     info: null,                           // GET /api/models: providers, models, what auto picks
     convos: store.get("convos", []),
-    sel: store.get("convo", null) === "example" ? "example" : null,   // "example" while the design preview shows
+    sel: null,                            // the design preview ("example") shows only when the page is opened as a plain file
     model: store.get("chatModel", "auto"),  // what a new conversation starts with
     tabs: store.get("chatTabs", []),      // open conversations, in tab order
-    panes: store.get("chatPanes", [{ id: store.get("convo", null) === "example" ? null : store.get("convo", null) }]),
+    panes: store.get("chatPanes", [{ id: null }]),
     active: store.get("chatActive", 0),   // the pane that has the focus
     running: {},                          // conversation id: the AbortController of the answer being written
     drafts: {},                           // conversation id ("#" and the pane for a new one): what is typed but not sent
@@ -2402,8 +2402,16 @@
 
   // A little Markdown: code fences, inline code, bold, paragraphs. Everything is escaped first.
   function md(text) {
-    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    // code spans are set aside first, so nothing inside them is read as bold, a link or an address
+    const link = (href, label) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    const plain = s => s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) => link(href, label))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]])/g, (_, pre, href) => pre + link(href, href))
+      .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s.,;:!?)]|$)/g, "$1<i>$2</i>").replace(/\n/g, "<br>");
+    const inline = s => esc(s).split(/(`[^`\n]+`)/).map((x, i) => i % 2 ? `<code>${x.slice(1, -1)}</code>` : plain(x)).join("");
+    const cells = line => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(x => x.trim());
+    const isRow = line => /^\s*\|.*\|\s*$/.test(line);
+    const isRule = line => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
     return text.split("```").map((part, i) => {
       if (i % 2) {
         const nl = part.indexOf("\n");
@@ -2417,8 +2425,18 @@
         if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map(x => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`);
         list = null;
       };
-      for (const raw of part.split("\n")) {
-        const line = raw.trimEnd();
+      const lines = part.split("\n");
+      for (let n = 0; n < lines.length; n++) {
+        const raw = lines[n], line = raw.trimEnd();
+        if (isRow(line) && n + 1 < lines.length && isRule(lines[n + 1]) && lines[n + 1].includes("-")) {
+          flushPara(); flushList();
+          const head = cells(line), rows = [];
+          for (n += 2; n < lines.length && isRow(lines[n]); n++) rows.push(cells(lines[n]));
+          n--;
+          out.push(`<div class="mdtable"><table><thead><tr>${head.map(c => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map(r =>
+            `<tr>${head.map((_, k) => `<td>${inline(r[k] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+          continue;
+        }
         const h = /^(#{1,4})\s+(.*)$/.exec(line), ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
         if (!line.trim()) { flushPara(); continue; }
         if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); flushList(); out.push("<hr>"); }
@@ -2458,8 +2476,12 @@
     const w = window.innerWidth / state.scale - 64 - 268;
     return Math.max(1, Math.min(4, Math.floor(w / 480)));
   };
+  // What a conversation is told before it starts and how long an answer may get. A new
+  // conversation keeps them on its pane until the first message makes it a conversation.
+  const paneSettings = i => paneConvo(i) || L.panes[i] || {};
+  const hasSettings = o => !!((o.system || "").trim() || +o.maxTokens > 0);
   function savePanes() {
-    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null })));
+    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null, system: p.id ? undefined : p.system || undefined, maxTokens: p.id ? undefined : p.maxTokens || undefined })));
     store.set("chatTabs", L.tabs);
     store.set("chatActive", L.active);
   }
@@ -2584,7 +2606,7 @@
         <span class="tacts">
           ${!fin && maxPanes() > 1 && at < 0 ? `<button class="iconbtn sm" data-beside="${c.id}" aria-label="Open beside" title="Open beside">${icon("panel")}</button>` : ""}
           ${fin ? `<button class="iconbtn sm" data-reopen="${c.id}" aria-label="Reopen" title="Reopen">${icon("retry")}</button>
-            <button class="iconbtn sm" data-delete="${c.id}" aria-label="Delete" title="Delete">${icon("stop")}</button>`
+            <button class="iconbtn sm" data-delete="${c.id}" aria-label="Delete" title="Delete">${icon("trash")}</button>`
             : `<button class="iconbtn sm" data-finish="${c.id}" aria-label="Mark finished" title="Mark finished">${icon("check")}</button>`}
         </span></div>`;
     };
@@ -2599,12 +2621,6 @@
         </div>
         ${done.length ? `<div class="tgroup"><button class="eyebrow fold" id="fold-finished" aria-expanded="${!!(L.showFinished || q)}">${icon("chev")}Finished <span class="faint">${done.length}</span></button>
           ${L.showFinished || q ? done.map(item).join("") : ""}</div>` : ""}
-        <div class="tgroup"><span class="eyebrow">Example</span>
-          <div class="titem ${L.sel === "example" ? "active" : ""}" data-convo="example" tabindex="0">
-            <span class="dot ic" style="--c:var(--cap-agent)"></span>
-            <div style="min-width:0"><div class="t">Voiceover for the builder demo</div><div class="s">design preview · agents</div></div>
-            <span class="when"></span></div>
-        </div>
       </div>
     </aside>`;
   }
@@ -2616,11 +2632,18 @@
     return r ? { ...m, thinking: r[1].trim(), text: m.text.slice(r[0].length) } : m;
   }
 
+  // The Reasoning bubble: the one place a model's thinking is drawn, in Chat and in Agents.
+  const thinkHtml = (text, { open = false, live = false, attrs = "" } = {}) => `<details class="tool think" ${attrs} ${open ? "open" : ""}>
+      <summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${live ? "thinking…" : "summary"}</span></summary><pre>${esc(text)}</pre></details>`;
+
   function msgHtml(m, i) {
     m = splitThink(m);
     if (m.role === "user") {
       return `<div class="msg user" data-i="${i}"><div class="avatar user">${icon("chat")}</div><div style="min-width:0">
-        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div></div></div>`;
+        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div>
+        <div class="actions">
+          <button class="iconbtn" data-copy="${i}" aria-label="Copy" title="Copy">${icon("copy")}</button>
+          <button class="iconbtn" data-edit-msg="${i}" aria-label="Edit and send again" title="Edit and send again: the answers after it are replaced">${icon("edit")}</button></div></div></div>`;
     }
     const s = m.stats, model = m.model;
     const rate = s && s.outputTokens > 0 && s.seconds > 0 ? `${(s.outputTokens / s.seconds).toFixed(0)} tok/s` : "";
@@ -2636,14 +2659,14 @@
           ${s ? `<span class="mono">${s.outputTokens >= 0 ? s.outputTokens + " tok" : ""}${rate ? " · " + rate : ""}${s.seconds ? " · " + s.seconds.toFixed(1) + " s" : ""}</span>` : ""}
           ${notes.join("")}</div>
         <div class="body">
-          ${m.thinking ? `<details class="tool think" ${m.streaming && !m.text ? "open" : ""}><summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${m.streaming && !m.text ? "thinking…" : "summary"}</span></summary><pre>${esc(m.thinking)}</pre></details>` : ""}
+          ${m.thinking ? thinkHtml(m.thinking, { open: m.streaming && !m.text, live: m.streaming && !m.text }) : ""}
           ${md(m.text)}
           ${m.streaming && !m.text && !m.thinking ? `<span class="typing" aria-label="Writing"><i></i><i></i><i></i></span>` : ""}
           ${m.error ? `<div class="flag bad">${icon("flask")}<div><b>No answer.</b> ${esc(m.error)}</div></div>` : ""}
         </div>
         ${m.streaming ? "" : `<div class="actions">
-          <button class="iconbtn" data-copy="${i}" aria-label="Copy">${icon("copy")}</button>
-          <button class="iconbtn" data-retry="${i}" aria-label="Answer again">${icon("retry")}</button></div>`}
+          <button class="iconbtn" data-copy="${i}" aria-label="Copy" title="Copy">${icon("copy")}</button>
+          <button class="iconbtn" data-retry="${i}" aria-label="Answer again" title="Answer again">${icon("retry")}</button></div>`}
       </div></div>`;
   }
 
@@ -2690,15 +2713,23 @@
         ${fin ? `<span class="chip c-ok">finished</span>` : ""}
         <span class="grow"></span>
         ${fin ? "" : modelPicker(i)}
+        ${fin ? "" : `<button class="iconbtn ${hasSettings(paneSettings(i)) ? "has-set" : ""}" data-chat-settings="${i}" aria-label="Instructions and answer length" title="Instructions and answer length${hasSettings(paneSettings(i)) ? " (set)" : ""}" aria-expanded="${L.settingsOpen === (key || "#" + i)}">${icon("gear")}</button>`}
         ${c ? (fin ? `<button class="btn sm" data-reopen="${c.id}">${icon("retry")}Reopen</button>`
           : `<button class="btn ghost sm" data-finish="${c.id}" title="Mark finished: it leaves the tabs and waits under Finished">${icon("check")}Finish</button>`) : ""}
         ${L.panes.length > 1 ? `<button class="iconbtn" data-close-pane="${i}" aria-label="Close this pane" title="Close this pane"><span aria-hidden="true" style="font-size:17px;line-height:1">×</span></button>` : ""}
       </div>
+      ${!fin && (L.settingsOpen === (key || "#" + i)) ? `<div class="chat-settings">
+        <div class="field"><label for="cs-system-${i}">Instructions <span class="faint">a system prompt, sent before every message of this conversation</span></label>
+          <textarea class="input" id="cs-system-${i}" data-cs-system="${i}" rows="3" placeholder="For example: You are a terse code reviewer. Answer in German.">${esc(paneSettings(i).system || "")}</textarea></div>
+        <div class="field cs-len"><label for="cs-max-${i}">Longest answer <span class="faint">tokens</span></label>
+          <input class="input mono" id="cs-max-${i}" data-cs-max="${i}" type="number" min="1" max="65536" step="1" placeholder="8192" value="${esc(paneSettings(i).maxTokens || "")}"></div>
+      </div>` : ""}
       <div class="transcript" data-transcript="${i}"><div class="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
       <div class="composer-wrap">
         ${fin ? `<div class="finished-bar">${icon("check")}<span>Finished ${when(c.finishedAt || c.updated)}. Reopen it to keep going.</span><span class="grow"></span>
             <button class="btn sm" data-reopen="${c.id}">Reopen</button></div>`
         : `<div class="composer">
+          ${c && L.editingMsg && L.editingMsg.convo === c.id ? `<div class="route-hint editing">${icon("edit")}<span>Editing an earlier message. Sending replaces it and the answers after it.</span><span class="grow"></span><button class="btn ghost sm" data-edit-cancel>Cancel</button></div>` : ""}
           <div class="route-hint" data-route="${i}">${routeLine(paneModel(i))}</div>
           <textarea data-prompt="${i}" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.drafts[draftKey(i)] || "")}</textarea>
           <div class="row">
@@ -2782,7 +2813,7 @@
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal,
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: usable(c.model || L.model), messages: history }),
+        body: JSON.stringify({ model: usable(c.model || L.model), messages: history, system: (c.system || "").trim() || undefined, maxTokens: +c.maxTokens > 0 ? Math.floor(+c.maxTokens) : undefined }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
       const reader = r.body.getReader(), dec = new TextDecoder();
@@ -2819,6 +2850,9 @@
     if (!c) {
       c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70),
         messages: [], updated: Date.now(), status: "open", model: L.panes[i].model || L.model };
+      if ((L.panes[i].system || "").trim()) c.system = L.panes[i].system;
+      if (+L.panes[i].maxTokens > 0) c.maxTokens = +L.panes[i].maxTokens;
+      if (L.settingsOpen === "#" + i) L.settingsOpen = c.id;
       L.convos.unshift(c);
       L.panes[i] = { id: c.id };
       L.tabs.push(c.id);
@@ -2827,6 +2861,8 @@
     }
     L.active = i;
     L.drafts[c.id] = "";
+    // an edited message takes the place of the old one; what was answered after it goes
+    if (L.editingMsg && L.editingMsg.convo === c.id) { c.messages.splice(L.editingMsg.at); L.editingMsg = null; }
     c.messages.push({ role: "user", text, at: Date.now() });
     persist(c);
     answer(c);
@@ -2877,6 +2913,29 @@
       if (c) { c.model = s.value; persist(c); } else { L.panes[i].model = s.value; L.model = s.value; store.set("chatModel", s.value); savePanes(); }
       $(`[data-route="${i}"]`).innerHTML = routeLine(s.value);
     }));
+    $$("[data-chat-settings]").forEach(b => b.addEventListener("click", () => {
+      const k = draftKey(+b.dataset.chatSettings);
+      L.settingsOpen = L.settingsOpen === k ? null : k;
+      render();
+      if (L.settingsOpen) $(`[data-cs-system="${b.dataset.chatSettings}"]`)?.focus();
+    }));
+    const setSetting = (i, k, v) => {
+      const c = paneConvo(i);
+      if (c) { if (v) c[k] = v; else delete c[k]; persist(c); } else { L.panes[i][k] = v || undefined; savePanes(); }
+      $(`[data-chat-settings="${i}"]`)?.classList.toggle("has-set", hasSettings(paneSettings(i)));
+    };
+    $$("[data-cs-system]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csSystem, "system", t.value)));
+    $$("[data-cs-max]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csMax, "maxTokens", Math.max(0, Math.min(65536, Math.floor(+t.value || 0))))));
+    $$("[data-edit-msg]").forEach(b => b.addEventListener("click", () => {
+      const pane = b.closest(".pane"), c = convoById(pane?.dataset.convo);
+      if (!c || running(c.id) || c.status === "finished") return;
+      const at = +b.dataset.editMsg, i = +pane.dataset.pane;
+      L.editingMsg = { convo: c.id, at };
+      L.drafts[c.id] = c.messages[at].text;
+      render();
+      const p = $(`[data-prompt="${i}"]`); p?.focus(); p?.setSelectionRange(p.value.length, p.value.length);
+    }));
+    $$("[data-edit-cancel]").forEach(b => b.addEventListener("click", () => { const e = L.editingMsg; L.editingMsg = null; if (e) L.drafts[e.convo] = ""; render(); }));
     $$("[data-prompt]").forEach(p => {
       const i = +p.dataset.prompt;
       p.addEventListener("input", () => { L.drafts[draftKey(i)] = p.value; });
@@ -3843,8 +3902,7 @@
   }
 
   // the chat's Reasoning bubble, for an agent's thinking
-  const agentThink = (text, open, i, live) => `<div class="st md-body"><details class="tool think" ${i != null ? `data-ag-open="${i}"` : ""} ${open ? "open" : ""}>
-      <summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${live ? "thinking…" : "summary"}</span></summary><pre>${esc(text)}</pre></details></div>`;
+  const agentThink = (text, open, i, live) => `<div class="st md-body">${thinkHtml(text, { open, live, attrs: i != null ? `data-ag-open="${i}"` : "" })}</div>`;
 
   function agentStep(s, i) {
     switch (s.kind) {
@@ -3872,7 +3930,7 @@
       <div class="ag-steps-list" id="ag-steps-list">${(r.steps || []).map(agentStep).join("")}
         ${r.state === "waiting" && r.pending ? agentAsk(r, true) : ""}
         ${r.state === "running" ? (r.thinking ? agentThink(r.thinking, true, null, true) : `<div class="st st-say"><span class="typing"><i></i><i></i><i></i></span></div>`) : ""}</div>
-      ${agentActive(r) ? "" : `<form class="ag-reply" id="ag-reply"><textarea class="input" id="ag-reply-text" rows="2" placeholder="Tell it more and let it go on">${esc(A.reply)}</textarea><button class="btn primary" type="submit">${icon("send")}Send</button></form>`}`;
+      ${agentActive(r) ? "" : `<form class="ag-reply" id="ag-reply"><textarea class="input" id="ag-reply-text" rows="2" placeholder="Tell it more and let it go on. Enter sends, Shift+Enter adds a line">${esc(A.reply)}</textarea><button class="btn primary" type="submit">${icon("send")}Send</button></form>`}`;
   }
 
   function liveAgentsView() {
@@ -3986,7 +4044,8 @@
         A.reply = ""; A.detailKey = null;
         agentDo("/api/agents/reply", { id: A.sel, text });
       };
-      $("#ag-reply-text").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) reply.requestSubmit(); };
+      // like the chat composer: Enter sends, Shift+Enter adds a line
+      $("#ag-reply-text").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); reply.requestSubmit(); } };
     }
   }
 
@@ -4068,7 +4127,12 @@
   const start = location.hash.slice(1);
   state.view = views[start] ? start : "chat";
   // the badge counts real agents waiting for the user
-  if (isLive()) $('.rail a[data-view="agents"] .badge')?.remove();
+  if (isLive()) {
+    $('.rail a[data-view="agents"] .badge')?.remove();
+    // nothing serves MCP yet: the screen is a mock-up, so the studio does not offer it as if it were real
+    $('.rail a[data-view="mcp"]')?.remove();
+    if (state.view === "mcp") state.view = "chat";
+  }
   render();
   loadLive();
   if (document.fonts) document.fonts.ready.then(paintAll);
