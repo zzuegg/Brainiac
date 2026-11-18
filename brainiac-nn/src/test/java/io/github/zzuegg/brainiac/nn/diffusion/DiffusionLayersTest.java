@@ -311,7 +311,9 @@ class DiffusionLayersTest {
         Var v = Var.of(Tensor.normal(Shape.of(1, 3, 50, 8), 0, 1, r));
         float[] whole = Var.noGrad(() -> WanTransformer.attend(q, k, v, Long.MAX_VALUE)).value().toArray();
         // 16 queries a slice: four slices, the last of two
-        float[] sliced = Var.noGrad(() -> WanTransformer.attend(q, k, v, 3 * 16 * 50)).value().toArray();
+        float[] sliced = Var.noGrad(() -> WanTransformer.attend(q, k, v, 3 * 16 * 50, false)).value().toArray();
         assertArrayEquals(whole, sliced, 1e-5f);
+        float[] products = Var.noGrad(() -> WanTransformer.attend(q, k, v, 3 * 16 * 50, true)).value().toArray();
+        assertArrayEquals(whole, products, 1e-5f);
     }
 }

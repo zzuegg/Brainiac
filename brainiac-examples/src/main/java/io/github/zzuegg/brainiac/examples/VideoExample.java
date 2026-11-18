@@ -118,6 +118,11 @@ public final class VideoExample {
                 });
                 System.out.printf("%nGenerated %d frames (%dx%d, %.1f s of video) in %.1f s%n", video.frames().size(),
                         video.width(), video.height(), video.seconds(), (System.nanoTime() - t0) / 1e9);
+                for (Device d : wan.placement().devices()) {
+                    // what the run held at most, next to what the backend's pool reserved
+                    d.memory().ifPresent(m -> System.out.printf("%s: peak %.1f GB in use, %.1f GB reserved%n",
+                            d, m.peak() / 1e9, m.reserved() / 1e9));
+                }
                 Files.createDirectories(out);
                 Path file = out.resolve("video-" + video.seed() + ".png");
                 Files.write(file, video.apng());

@@ -489,20 +489,45 @@ public final class WanTransformer implements MultiInputLayer {
      */
     static final long ATTENTION_WORK = Long.getLong("brainiac.wan.attentionWork", 1L << 28);
 
+    /**
+     * Whether long attention runs as matrix products (scores, softmax, weighted values) per
+     * slice instead of the fused kernel ({@code -Dbrainiac.wan.attentionMatmul=false} for the
+     * fused one). The fused kernels keep one query per warp and read every key from memory
+     * for each, which at 14,000 patches is far slower than the backends' matrix products; a
+     * slice's scores take {@link #ATTENTION_WORK} floats (1 GB) at most.
+     */
+    static final boolean ATTENTION_MATMUL = !"false".equals(System.getProperty("brainiac.wan.attentionMatmul"));
+
     /** Attention of {@code [batch, heads, tokens, size]}, in slices of queries above {@code work} pairs. */
     static Var attend(Var q, Var k, Var v, long work) {
+        return attend(q, k, v, work, ATTENTION_MATMUL);
+    }
+
+    /** The same, choosing matrix products or the fused kernel for the slices. */
+    static Var attend(Var q, Var k, Var v, long work, boolean matmul) {
         int heads = q.shape().dim(1);
         int n = q.shape().dim(2);
         int m = k.shape().dim(2);
         if (Var.gradEnabled() || (long) heads * n * m <= work) {
             return FluxTransformer.attend(q, k, v);
         }
-        int chunk = (int) Math.max(16, Math.min(n, work / ((long) heads * m)));
+        int chunk = (int) Math.max(16, Math.min(n, work / ((long) heads * q.shape().dim(0) * m)));
+        float scale = (float) (1 / Math.sqrt(q.shape().dim(3)));
+        Var kt = matmul ? Parts.step(k::transpose) : null;
         List<Var> pieces = new ArrayList<>();
         for (int i = 0; i < n; i += chunk) {
             Var qi = q.slice(2, i, Math.min(n, i + chunk));
-            pieces.add(Parts.step(() -> FluxTransformer.attend(qi, k, v)));
+            pieces.add(Parts.step(() -> {
+                if (!matmul) {
+                    return FluxTransformer.attend(qi, k, v);
+                }
+                Var scores = qi.matmul(kt).to(DType.FLOAT32).mul(scale);
+                return Activation.SOFTMAX.forward(scores).to(v.value().dtype()).matmul(v);
+            }));
             Parts.free(qi);
+        }
+        if (kt != null) {
+            Parts.free(kt, k);
         }
         return pieces.size() == 1 ? pieces.get(0) : Var.concat(2, pieces.toArray(Var[]::new));
     }
