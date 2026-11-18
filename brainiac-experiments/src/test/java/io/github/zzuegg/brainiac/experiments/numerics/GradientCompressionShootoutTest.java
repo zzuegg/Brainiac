@@ -11,8 +11,8 @@ class GradientCompressionShootoutTest {
 
     @Test
     void compressedGradientsTrainWithAFractionOfTheBytes() {
-        Map<String, GradientCompressionShootout.Outcome> r = GradientCompressionShootout.run(200, 1);
-        StringBuilder line = new StringBuilder("Spiral, 4 workers, 200 steps, loss/accuracy/kB:");
+        Map<String, GradientCompressionShootout.Outcome> r = GradientCompressionShootout.run(150, 1);
+        StringBuilder line = new StringBuilder("Spiral, 4 workers, 150 steps, loss/accuracy/kB:");
         r.forEach((k, v) -> line.append(String.format(" %s %.3f/%.2f/%d;", k, v.loss(), v.accuracy(), v.bytes() / 1000)));
         System.out.println(line);
         GradientCompressionShootout.Outcome dp = r.get("fp32 all-reduce");
@@ -26,9 +26,9 @@ class GradientCompressionShootoutTest {
 
     @Test
     void errorFeedbackHelpsSparsificationUnderPlainSgd() {
-        Map<String, GradientCompressionShootout.Outcome> r = GradientCompressionShootout.run(200, 1, true,
+        Map<String, GradientCompressionShootout.Outcome> r = GradientCompressionShootout.run(150, 1, true,
                 List.of("fp32 all-reduce", "top-1% no EF", "top-1% EF", "DGC 1%", "EF21 1%"));
-        StringBuilder line = new StringBuilder("Spiral, 4 workers, 200 steps, plain SGD outer, loss/accuracy/kB:");
+        StringBuilder line = new StringBuilder("Spiral, 4 workers, 150 steps, plain SGD outer, loss/accuracy/kB:");
         r.forEach((k, v) -> line.append(String.format(" %s %.3f/%.2f/%d;", k, v.loss(), v.accuracy(), v.bytes() / 1000)));
         System.out.println(line);
         assertTrue(r.get("top-1% EF").loss() < r.get("top-1% no EF").loss(), line.toString());

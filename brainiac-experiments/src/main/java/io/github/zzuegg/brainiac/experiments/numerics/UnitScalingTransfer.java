@@ -22,7 +22,7 @@ import java.util.function.UnaryOperator;
  * {@link ToyTasks#digits}:
  *
  * <ul>
- *   <li>{@link #transfer}: the optimal Adam learning rate at each width, for the standard
+ *   <li>{@link #sweep} and {@link #optimum}: the optimal Adam learning rate at each width, for the standard
  *       parameterization (Glorot init, one rate) and for u-muP ({@link UnitScaledOps},
  *       {@link UnitMup}); the hypothesis is that u-muP's optimum does not move with width;</li>
  *   <li>{@link #fp8}: training with every matmul output rounded to FP8 E4M3 and every gradient

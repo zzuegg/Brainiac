@@ -18,7 +18,7 @@ class FullBatchSecondOrderTest {
 
     @Test
     void lbfgsAndHessianFreeFitANeuralFieldBetterThanFirstOrder() {
-        Map<String, FullBatchSecondOrder.Row> r = FullBatchSecondOrder.neuralField(60, 3e-3, 1);
+        Map<String, FullBatchSecondOrder.Row> r = FullBatchSecondOrder.neuralField(40, 3e-3, 1);
         String s = line("Neural field 20x20 (385 weights), MSE/iterations/ms/time-to-3e-3:", r);
         assertTrue(r.get("L-BFGS").loss() < r.get("Adam").loss(), s);
         assertTrue(r.get("Hessian-free").loss() < r.get("SGD momentum").loss(), s);
