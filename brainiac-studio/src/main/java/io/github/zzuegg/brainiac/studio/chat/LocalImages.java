@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.studio.chat;
 
 import io.github.zzuegg.brainiac.diffusion.AspectRatio;
 import io.github.zzuegg.brainiac.diffusion.GeneratedImage;
+import io.github.zzuegg.brainiac.diffusion.ImageGenerator;
 import io.github.zzuegg.brainiac.diffusion.ImageRequest;
 import io.github.zzuegg.brainiac.diffusion.Progress;
 import io.github.zzuegg.brainiac.diffusion.Sampler;
@@ -24,9 +25,10 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
- * The Stable Diffusion models on this PC (1.x, 2.x and XL, as diffusers folders or single
- * {@code .safetensors} checkpoints), found in the same places as the language models, and drawing
- * with them. One model is kept loaded at a time.
+ * The image models on this PC, found in the same places as the language models, and drawing with
+ * them: Stable Diffusion 1.x, 2.x and XL (diffusers folders or single {@code .safetensors}
+ * checkpoints) and FLUX.1 dev and schnell (diffusers folders). One model is kept loaded at a time,
+ * in the type and, for Flux, the weight bits that fit the device.
  */
 public final class LocalImages {
 
@@ -98,13 +100,13 @@ public final class LocalImages {
     /** The samplers offered. */
     static final List<String> SAMPLERS = java.util.Arrays.stream(Sampler.values()).map(Enum::name).toList();
 
-    private record Found(FileTime modified, Optional<StableDiffusion.Kind> kind) {
+    private record Found(FileTime modified, Optional<String> family) {
     }
 
     private final Supplier<List<Path>> places;
     private final Supplier<HuggingFaceHub> hub;
     private final Map<Path, Found> seen = new ConcurrentHashMap<>();
-    private StableDiffusion loaded;
+    private ImageGenerator loaded;
     private Path loadedPath;
 
     LocalImages(Supplier<List<Path>> places, Supplier<HuggingFaceHub> hub) {
@@ -120,9 +122,9 @@ public final class LocalImages {
     List<ModelInfo> models() {
         List<ModelInfo> out = new ArrayList<>();
         for (Map.Entry<String, Path> e : find().entrySet()) {
-            StableDiffusion.Kind k = kind(e.getValue()).orElseThrow();
+            String family = family(e.getValue()).orElseThrow();
             out.add(new ModelInfo("local", e.getKey(), e.getKey(), List.of("image"), 0,
-                    label(k) + " · " + (Files.isDirectory(e.getValue()) ? "diffusers" : "checkpoint")));
+                    label(family) + " · " + (Files.isDirectory(e.getValue()) ? "diffusers" : "checkpoint")));
         }
         return out;
     }
@@ -137,11 +139,24 @@ public final class LocalImages {
         return find().containsKey(id);
     }
 
-    static String label(StableDiffusion.Kind k) {
-        return switch (k) {
-            case SD1 -> "Stable Diffusion 1.x";
-            case SD2 -> "Stable Diffusion 2.x";
-            case SDXL -> "Stable Diffusion XL";
+    static String label(String family) {
+        return switch (family) {
+            case "SD1" -> "Stable Diffusion 1.x";
+            case "SD2" -> "Stable Diffusion 2.x";
+            case "SDXL" -> "Stable Diffusion XL";
+            case "FLUX_DEV" -> "FLUX.1 dev";
+            case "FLUX_SCHNELL" -> "FLUX.1 schnell";
+            default -> family;
+        };
+    }
+
+    // what ImageGenerator.defaults() gives once a model is loaded, known here before loading it
+    static ImageGenerator.Defaults defaults(String family) {
+        return switch (family) {
+            case "FLUX_DEV" -> new ImageGenerator.Defaults(28, 3.5f, false, false);
+            case "FLUX_SCHNELL" -> new ImageGenerator.Defaults(4, 0f, false, false);
+            case "SDXL" -> new ImageGenerator.Defaults(25, 5f, true, true);
+            default -> new ImageGenerator.Defaults(25, 7f, true, true);
         };
     }
 
@@ -149,7 +164,7 @@ public final class LocalImages {
         Map<String, Path> found = new LinkedHashMap<>();
         for (Path place : places.get()) {
             for (Path p : candidates(place)) {
-                if (kind(p).isPresent()) {
+                if (family(p).isPresent()) {
                     found.putIfAbsent(p.getFileName().toString(), p);
                 }
             }
@@ -174,23 +189,33 @@ public final class LocalImages {
 
     private static boolean looksLikeOne(Path p) {
         return Files.isDirectory(p) ? Files.isRegularFile(p.resolve("unet/config.json"))
+                        || Files.isRegularFile(p.resolve("transformer/config.json"))
                 : p.getFileName() != null && p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".safetensors");
     }
 
     // reading a checkpoint's header each time the models are listed would be slow: kept until the file changes
-    private Optional<StableDiffusion.Kind> kind(Path p) {
+    private Optional<String> family(Path p) {
         FileTime t;
         try {
-            t = Files.getLastModifiedTime(Files.isDirectory(p) ? p.resolve("unet/config.json") : p);
+            Path marker = !Files.isDirectory(p) ? p
+                    : Files.isRegularFile(p.resolve("transformer/config.json")) ? p.resolve("transformer/config.json")
+                    : p.resolve("unet/config.json");
+            t = Files.getLastModifiedTime(marker);
         } catch (IOException e) {
             return Optional.empty();
         }
         Found f = seen.get(p);
         if (f == null || !f.modified().equals(t)) {
-            f = new Found(t, StableDiffusion.detect(p));
+            Optional<String> family;
+            try {
+                family = ImageGenerator.detect(p);
+            } catch (RuntimeException e) {
+                family = Optional.empty();
+            }
+            f = new Found(t, family);
             seen.put(p, f);
         }
-        return f.kind();
+        return f.family();
     }
 
     /**
@@ -207,9 +232,10 @@ public final class LocalImages {
     synchronized List<Picture> draw(String id, String prompt, Settings s, Listener listener) throws IOException {
         Path path = find().get(id);
         if (path == null) {
-            throw new IOException("no Stable Diffusion model named " + id + " on this PC");
+            throw new IOException("no image model named " + id + " on this PC");
         }
-        StableDiffusion sd = load(path);
+        ImageGenerator model = load(path);
+        ImageGenerator.Defaults d = model.defaults();
         AspectRatio ratio = switch (s.aspect()) {
             case "4:3" -> AspectRatio.LANDSCAPE_4_3;
             case "3:4" -> AspectRatio.PORTRAIT_3_4;
@@ -217,16 +243,20 @@ public final class LocalImages {
             case "9:16" -> AspectRatio.TALL_9_16;
             default -> AspectRatio.SQUARE;
         };
-        int[] size = sd.size(ratio);
-        Sampler sampler;
-        try {
-            sampler = Sampler.valueOf(s.sampler().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("no sampler named " + s.sampler());
+        int[] size = model.size(ratio);
+        ImageRequest.Builder request = ImageRequest.of(prompt).size(size[0], size[1])
+                .steps(s.steps()).guidance((float) s.guidance()).seed(s.seed()).count(s.count());
+        if (d.negativePrompt()) {
+            request.negativePrompt(s.negativePrompt());
         }
-        ImageRequest request = ImageRequest.of(prompt).negativePrompt(s.negativePrompt()).size(size[0], size[1])
-                .steps(s.steps()).guidance((float) s.guidance()).seed(s.seed()).count(s.count()).sampler(sampler).build();
-        List<GeneratedImage> images = sd.generate(request, Progress.withPreviews(2, listener::step));
+        if (d.samplers()) {
+            try {
+                request.sampler(Sampler.valueOf(s.sampler().toUpperCase(Locale.ROOT)));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("no sampler named " + s.sampler());
+            }
+        }
+        List<GeneratedImage> images = model.generate(request.build(), Progress.withPreviews(2, listener::step));
         List<Picture> out = new ArrayList<>();
         for (GeneratedImage g : images) {
             out.add(new Picture(new Media(g.png(), "image/png"), g.seed()));
@@ -234,7 +264,7 @@ public final class LocalImages {
         return out;
     }
 
-    private StableDiffusion load(Path path) throws IOException {
+    private ImageGenerator load(Path path) throws IOException {
         if (loaded != null && path.equals(loadedPath)) {
             return loaded;
         }
@@ -250,10 +280,13 @@ public final class LocalImages {
             StableDiffusion.downloadTokenizer(hub.get());
         }
         Device device = Device.best();
-        DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
-        loaded = StableDiffusion.load(path, device, dtype);
+        // the type suits the family and device; Flux's weights are quantized as far as memory needs,
+        // and a model that cannot fit is refused before anything is loaded, saying how much it needs
+        DType dtype = ImageGenerator.dtype(path, device);
+        loaded = ImageGenerator.load(path, device, dtype);
         loadedPath = path;
-        LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + label(loaded.kind()) + ") on " + device);
+        LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + label(loaded.family()) + ", " + dtype
+                + ") on " + device);
         return loaded;
     }
 
@@ -261,18 +294,24 @@ public final class LocalImages {
      * Says what a model draws best at, for the page: its native square side.
      *
      * @param id the model's name
-     * @return {@code {kind, nativeSize}}, or empty if unknown
+     * @return {@code {kind, label, steps, guidance, usesGuidance, usesNegative, usesSampler}} (the
+     *     uses* say whether those settings do anything), or empty if unknown
      */
     Optional<Map<String, Object>> describe(String id) {
         Path p = find().get(id);
         if (p == null) {
             return Optional.empty();
         }
-        StableDiffusion.Kind k = kind(p).orElseThrow();
+        String family = family(p).orElseThrow();
+        ImageGenerator.Defaults d = defaults(family);
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("kind", k.name());
-        m.put("steps", k == StableDiffusion.Kind.SDXL ? 30 : 25);
-        m.put("guidance", k == StableDiffusion.Kind.SDXL ? 6.0 : 7.0);
+        m.put("kind", family);
+        m.put("label", label(family));
+        m.put("steps", d.steps());
+        m.put("guidance", (double) d.guidance());
+        m.put("usesGuidance", !"FLUX_SCHNELL".equals(family));
+        m.put("usesNegative", d.negativePrompt());
+        m.put("usesSampler", d.samplers());
         return Optional.of(m);
     }
 

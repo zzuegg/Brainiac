@@ -2978,14 +2978,16 @@
   function localSettings(m) {
     const o = drawOpts(m) || {};
     const steps = G.steps[m.key] ?? o.steps ?? 25, guidance = G.guidance[m.key] ?? o.guidance ?? 7;
-    return `<div class="flag ok-note">${icon("lock")}<div><b>Draws on this PC.</b> Nothing is sent anywhere.${o.kind ? ` <span class="muted">${esc({ SD1: "Stable Diffusion 1.x", SD2: "Stable Diffusion 2.x", SDXL: "Stable Diffusion XL" }[o.kind] || o.kind)}</span>` : ""}</div></div>
-      <div class="field"><label for="img-neg">Leave out</label><input class="input" id="img-neg" placeholder="blurry, text, watermark" value="${esc(G.neg)}"></div>
+    // settings a model ignores are left out (FLUX.1 has no negative prompt or sampler choice, schnell no guidance)
+    const neg = o.usesNegative !== false, guid = o.usesGuidance !== false, samp = o.usesSampler !== false;
+    return `<div class="flag ok-note">${icon("lock")}<div><b>Draws on this PC.</b> Nothing is sent anywhere.${o.label ? ` <span class="muted">${esc(o.label)}</span>` : ""}</div></div>
+      ${neg ? `<div class="field"><label for="img-neg">Leave out</label><input class="input" id="img-neg" placeholder="blurry, text, watermark" value="${esc(G.neg)}"></div>` : ""}
       <div class="img-grid">
         <div class="field"><label for="img-steps">Steps</label><input class="input mono" id="img-steps" type="number" min="1" max="150" value="${steps}"></div>
-        <div class="field"><label for="img-guidance" title="How closely to follow the prompt">Guidance</label><input class="input mono" id="img-guidance" type="number" min="0" max="30" step="0.5" value="${guidance}"></div>
+        ${guid ? `<div class="field"><label for="img-guidance" title="How closely to follow the prompt">Guidance</label><input class="input mono" id="img-guidance" type="number" min="0" max="30" step="0.5" value="${guidance}"></div>` : ""}
         <div class="field"><label for="img-seed">Seed</label><div class="seed-row"><input class="input mono" id="img-seed" inputmode="numeric" placeholder="random" value="${esc(G.seed)}">
           <button class="iconbtn sm" id="img-seed-dice" type="button" aria-label="Random seed" title="Random seed each time">${icon("retry")}</button></div></div>
-        <div class="field"><label for="img-sampler">Sampler</label><select class="input" id="img-sampler">${(o.samplers || [G.sampler]).map(n => `<option value="${n}" ${n === G.sampler ? "selected" : ""}>${esc(samplerName(n))}</option>`).join("")}</select></div>
+        ${samp ? `<div class="field"><label for="img-sampler">Sampler</label><select class="input" id="img-sampler">${(o.samplers || [G.sampler]).map(n => `<option value="${n}" ${n === G.sampler ? "selected" : ""}>${esc(samplerName(n))}</option>`).join("")}</select></div>` : ""}
       </div>`;
   }
 
@@ -3002,8 +3004,10 @@
     if ($("#img-prompt")) G.prompt = $("#img-prompt").value;
     if ($("#img-neg")) G.neg = $("#img-neg").value;
     if ($("#img-seed")) G.seed = $("#img-seed").value.trim();
-    if (m && $("#img-steps")) G.steps[m.key] = +$("#img-steps").value || undefined;
-    if (m && $("#img-guidance")) { const g = parseFloat($("#img-guidance").value); G.guidance[m.key] = isNaN(g) ? undefined : g; }
+    // only what was changed by hand is kept: a shown default may be a stand-in until the model's own arrive
+    const edited = el => el && el.value !== el.defaultValue;
+    if (m && edited($("#img-steps"))) G.steps[m.key] = +$("#img-steps").value || undefined;
+    if (m && edited($("#img-guidance"))) { const g = parseFloat($("#img-guidance").value); G.guidance[m.key] = isNaN(g) ? undefined : g; }
   }
 
   function liveCreateView() {

@@ -1020,9 +1020,12 @@ Every picture and take is also saved to `outputs` in the data folder. A video ad
 Voice screen plays in the browser under each take and is never uploaded.
 
 **Images on this PC**: a Stable Diffusion model (1.x, 2.x or XL, as a diffusers folder or a single
-`.safetensors` checkpoint) in a model folder shows up as an image model of This PC, and Auto picks
-it before any provider. Such a model also takes what to leave out, the steps, the guidance, the
-seed and the sampler. The picture shows a rough preview as it is drawn, **Stop** ends it, and each
+`.safetensors` checkpoint) or a FLUX.1 dev or schnell diffusers folder in a model folder shows up as
+an image model of This PC, and Auto picks it before any provider. Stable Diffusion also takes what
+to leave out, the steps, the guidance, the seed and the sampler; FLUX.1 takes the steps and the seed
+(and dev the guidance), and the settings it ignores are not shown. FLUX.1 runs in bfloat16 on a GPU
+with its weights quantized as far as the GPU's memory needs; a model that cannot fit is refused,
+saying how much memory it needs. The picture shows a rough preview as it is drawn, **Stop** ends it, and each
 picture keeps its seed, so **Reuse seed** draws it again. A single checkpoint needs the CLIP
 vocabulary, which is fetched once from Hugging Face (about 1.6 MB) into
 `~/.cache/brainiac/clip-tokenizer`.
