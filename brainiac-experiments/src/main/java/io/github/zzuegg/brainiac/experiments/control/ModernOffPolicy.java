@@ -8,7 +8,9 @@ import io.github.zzuegg.brainiac.experimental.deeprl.ModernSac;
 import io.github.zzuegg.brainiac.experimental.deeprl.MrQ;
 import io.github.zzuegg.brainiac.experimental.deeprl.SimbaV2;
 import io.github.zzuegg.brainiac.experimental.deeprl.Td7;
+import io.github.zzuegg.brainiac.experimental.evolve.CmaEs;
 import io.github.zzuegg.brainiac.experimental.explore.CountBonuses;
+import io.github.zzuegg.brainiac.experimental.explore.EvolutionaryRl;
 import io.github.zzuegg.brainiac.experimental.rl.CuriosityEnvironment;
 import io.github.zzuegg.brainiac.experimental.rl.HighUtdSac;
 import io.github.zzuegg.brainiac.experimental.rl.HlGaussValue;
@@ -56,6 +58,9 @@ import java.util.function.Supplier;
  *   <li>{@link #mountainCarGoal}: the share of seeds that reach the flag on the continuous
  *       mountain car for SAC, TD7, CrossQ and SAC with an 11.6.7 SimHash count bonus (wave 11,
  *       11.6.17).</li>
+ *   <li>{@link #evolutionary}: ERL and CEM-RL on the step-by-step TD3 driver against plain TD3 and
+ *       CMA-ES direct policy search (a width-8 actor) at an equal environment-step budget (wave 12,
+ *       12.6.17).</li>
  * </ul>
  *
  * <p>Tasks: the pendulum swing-up (200 steps, return about -1,200 for random play) and the
@@ -441,6 +446,106 @@ public final class ModernOffPolicy {
             out.put(row.getKey(), new double[] {greedy / seeds, trained / seeds, ret / seeds});
         }
         return out;
+    }
+
+    /**
+     * Wave 12, 12.6.17: evolutionary RL at an equal environment-step budget.
+     *
+     * @param task the task
+     * @param steps environment steps per run
+     * @param seeds seeds
+     * @param width hidden width
+     * @return method to {@code {mean greedy return (3 episodes), mean environment steps used}}
+     */
+    public static Map<String, double[]> evolutionary(Task task, long steps, int seeds, int width) {
+        int obs = task.observations();
+        RlNetworkFactory n = RlNetworkFactory.mlp(Activation.RELU, width, width);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (int s = 0; s < seeds; s++) {
+            long seed = s;
+            Td3 plain = td3(task, width, steps, seed);
+            plain.fit(task.create(), steps);
+            accumulate(out, "TD3", Rl.evaluate(plain, task.create(), 3, 1000 + s), steps, seeds);
+            for (EvolutionaryRl.Method m : EvolutionaryRl.Method.values()) {
+                EvolutionaryRl runner = EvolutionaryRl.of(m, td3(task, width, steps, seed), n, obs, 1, seed)
+                        .population(6).episodeCap(200);
+                EvolutionaryRl.Result r = runner.run(task.create(), steps);
+                accumulate(out, m.name(), Rl.evaluate(runner.agent(r.champion()), task.create(), 3, 1000 + s),
+                        r.stepsUsed(), seeds);
+            }
+            // full-covariance CMA-ES is cubic in the parameter count, so it searches a width-8 actor
+            RlNetworkFactory small = RlNetworkFactory.mlp(Activation.RELU, 8, 8);
+            Td3 holder = Td3.td3(obs, 1, small).seed(seed);
+            holder.begin(task.create());
+            EvolutionaryRl search = EvolutionaryRl.of(EvolutionaryRl.Method.ERL, holder, small, obs, 1, seed);
+            double[] start = toDouble(EvolutionaryRl.flatten(small.create(obs, 1, 21)));
+            long[] used = {0};
+            int evaluations = (int) Math.max(8, steps / 200);
+            CmaEs cma = CmaEs.of(start, 0.3).population(Math.max(4, Math.min(12, evaluations / 3))).seed(seed);
+            double[] best = cma.minimize(x -> {
+                Environment env = task.create();
+                StepCounter counted = new StepCounter(env);
+                double ret = Rl.evaluate(search.agent(toFloat(x)), counted, 1, 7 + used[0]);
+                used[0] += counted.steps;
+                return -ret;
+            }, evaluations);
+            accumulate(out, "CMA-ES (direct policy search)", Rl.evaluate(search.agent(toFloat(best)), task.create(),
+                    3, 1000 + s), used[0], seeds);
+        }
+        return out;
+    }
+
+    private static void accumulate(Map<String, double[]> out, String key, double ret, long used, int seeds) {
+        double[] row = out.computeIfAbsent(key, k -> new double[2]);
+        row[0] += ret / seeds;
+        row[1] += used / (double) seeds;
+    }
+
+    private static double[] toDouble(float[] v) {
+        double[] d = new double[v.length];
+        for (int i = 0; i < v.length; i++) {
+            d[i] = v[i];
+        }
+        return d;
+    }
+
+    private static float[] toFloat(double[] v) {
+        float[] f = new float[v.length];
+        for (int i = 0; i < v.length; i++) {
+            f[i] = (float) v[i];
+        }
+        return f;
+    }
+
+    /** Counts environment steps. */
+    private static final class StepCounter implements Environment {
+        private final Environment inner;
+        private long steps;
+
+        StepCounter(Environment inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public Space observationSpace() {
+            return inner.observationSpace();
+        }
+
+        @Override
+        public Space actionSpace() {
+            return inner.actionSpace();
+        }
+
+        @Override
+        public float[] reset(SplittableRandom random) {
+            return inner.reset(random);
+        }
+
+        @Override
+        public Step step(float[] action) {
+            steps++;
+            return inner.step(action);
+        }
     }
 
     /**

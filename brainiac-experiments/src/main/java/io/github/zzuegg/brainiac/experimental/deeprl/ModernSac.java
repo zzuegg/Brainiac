@@ -106,6 +106,7 @@ public final class ModernSac implements Learner {
     private long resets;
     private long plannedSteps = 1;
     private long stepsTaken;
+    private ArrayDeque<Pending> window = new ArrayDeque<>();
     private double lastCriticLoss = Double.NaN;
     private final RunningReturnScale returnScale = new RunningReturnScale();
 
@@ -463,8 +464,17 @@ public final class ModernSac implements Learner {
     private record Pending(float[] obs, float[] action, float reward) {
     }
 
-    @Override
-    public RlResult fit(Environment env, long steps, RlListener listener) {
+    /**
+     * Prepares step-by-step driving on {@code env}: checks the spaces, builds the networks, takes the
+     * action bounds, creates the replay buffer on first use and clears the pending n-step window.
+     * The step counter keeps running across calls (as in {@link #fit}); {@code plannedSteps} sets the
+     * horizon of the learning-rate decay. {@link #fit} calls it too.
+     *
+     * @param env the environment to act in
+     * @param plannedSteps environment steps this run will take
+     * @return this learner
+     */
+    public ModernSac begin(Environment env, long plannedSteps) {
         if (!(env.actionSpace() instanceof Space.Box box) || box.size() != actDims
                 || env.observationSpace().size() != obsDims) {
             throw new IllegalArgumentException("needs " + obsDims + " observation values and a box of "
@@ -476,33 +486,86 @@ public final class ModernSac implements Learner {
         if (buffer == null) {
             buffer = new ReplayBuffer(bufferSize, obsDims, actDims);
         }
-        plannedSteps = stepsTaken + steps;
+        this.plannedSteps = stepsTaken + plannedSteps;
+        window = new ArrayDeque<>();
+        return this;
+    }
+
+    /**
+     * The behaviour action in unit space {@code [-1, 1]}: uniform random during the warm-up, then
+     * a sample of the (optimistic, if enabled) squashed Gaussian policy.
+     *
+     * @param observation the observation
+     * @return the unit action; pass it to {@link #toEnvironment} before stepping
+     */
+    public float[] actUnit(float[] observation) {
+        if (stepsTaken < learningStarts) {
+            float[] unit = new float[actDims];
+            for (int i = 0; i < actDims; i++) {
+                unit[i] = (float) random.nextDouble(-1, 1);
+            }
+            return unit;
+        }
+        return unitAction(act(observation, true));
+    }
+
+    /**
+     * @param unit an action in unit space
+     * @return the action scaled to the environment's box (call {@link #begin} first)
+     */
+    public float[] toEnvironment(float[] unit) {
+        return scale(unit);
+    }
+
+    /**
+     * Records one environment step: updates the return scale and writes the n-step transitions that
+     * are complete (all pending ones at an episode end).
+     *
+     * @param observation the observation acted on
+     * @param unitAction the action taken, in unit space
+     * @param step the environment's answer
+     */
+    public void observe(float[] observation, float[] unitAction, Environment.Step step) {
+        stepsTaken++;
+        returnScale.observe(step.reward(), gamma, step.done());
+        window.addLast(new Pending(observation, unitAction, step.reward()));
+        if (window.size() == nStep || step.done()) {
+            flush(window, step, step.done());
+        }
+    }
+
+    /**
+     * The configured number of gradient updates (the UTD ratio), once the warm-up is over and the
+     * buffer holds a batch.
+     *
+     * @return whether updates ran
+     */
+    public boolean updateOnce() {
+        if (stepsTaken >= learningStarts && buffer.size() >= batchSize) {
+            for (int g = 0; g < utd; g++) {
+                update();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** @return the environment steps observed so far */
+    public long stepsObserved() {
+        return stepsTaken;
+    }
+
+    @Override
+    public RlResult fit(Environment env, long steps, RlListener listener) {
+        begin(env, steps);
         Tracker recorder = new Tracker(listener);
         float[] obs = env.reset(random.split());
-        ArrayDeque<Pending> window = new ArrayDeque<>();
         while (recorder.steps() < steps) {
-            float[] unit;
-            if (stepsTaken < learningStarts) {
-                unit = new float[actDims];
-                for (int i = 0; i < actDims; i++) {
-                    unit[i] = (float) random.nextDouble(-1, 1);
-                }
-            } else {
-                unit = unitAction(act(obs, true));
-            }
+            float[] unit = actUnit(obs);
             Environment.Step s = env.step(scale(unit));
-            stepsTaken++;
-            returnScale.observe(s.reward(), gamma, s.done());
-            window.addLast(new Pending(obs, unit, s.reward()));
-            if (window.size() == nStep || s.done()) {
-                flush(window, s, s.done());
-            }
+            observe(obs, unit, s);
             obs = recorder.step(s) ? env.reset(random.split()) : s.observation();
-            if (stepsTaken >= learningStarts && buffer.size() >= batchSize) {
-                for (int g = 0; g < utd; g++) {
-                    update();
-                }
-            }
+            updateOnce();
         }
         return recorder.result();
     }
