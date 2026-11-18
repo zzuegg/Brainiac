@@ -1,22 +1,29 @@
 package io.github.zzuegg.brainiac.experiments.imaging;
 
+import io.github.zzuegg.brainiac.experimental.data.DegradedImages;
 import io.github.zzuegg.brainiac.experimental.data.InverseProblems;
 import io.github.zzuegg.brainiac.experimental.imaging.ImageMath;
 import io.github.zzuegg.brainiac.experimental.imaging.LinearOperator;
+import io.github.zzuegg.brainiac.experimental.imaging.OperatorPlugAndPlay;
+import io.github.zzuegg.brainiac.experimental.imaging.PnpFlow;
 import io.github.zzuegg.brainiac.experimental.imaging.PosteriorSamplers;
 import io.github.zzuegg.brainiac.experimental.ml.AnnealedImportanceSampler;
 import io.github.zzuegg.brainiac.experimental.ml.LogDensity;
+import io.github.zzuegg.brainiac.experimental.restore.Denoisers;
 import io.github.zzuegg.brainiac.experimental.train.HamiltonianMonteCarlo;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.SplittableRandom;
 
 /**
  * Posterior sampling for inverse problems (wave 13, items 13.4.7 and 13.4.8): {@link #exact}
  * checks DPS, PI-GDM, DDRM and DAPS against exact posterior samples on Gaussian-mixture priors,
- * with HMC, an SMC sampler and multi-start MAP as the sampler baselines.
+ * with HMC, an SMC sampler and multi-start MAP as the sampler baselines; {@link #images} uses a
+ * flow-matching prior on small images with PnP-Flow, PnP-HQS, DPS and DAPS.
  */
 public final class PosteriorSampling {
 
@@ -127,6 +134,99 @@ public final class PosteriorSampling {
                     map[i] = mapAscent(post, prior.sample(1, r)[0], 1 / (1 / 0.04 + norm2 / (sy * sy)), 300);
                 }
                 put(out, name + " / MAP (multi-start)", map, ref, prior, 300, r);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The image table (13.4.8): a flow-matching prior trained on 16x16 shapes, used by PnP-Flow,
+     * as the denoiser of PnP-HQS and as the score of DPS and DAPS, against PnP-HQS with non-local
+     * means and the back-projected observation, on box inpainting, random-pixel inpainting,
+     * Gaussian deblurring and 2x super-resolution.
+     *
+     * @param side the image side
+     * @param trainImages the training images
+     * @param testImages the test images
+     * @param trainSteps the flow model's Adam steps
+     * @param iterations the iterations or noise levels of every method
+     * @param sigmaY the measurement noise
+     * @param seed the seed
+     * @return method to {PSNR box, PSNR 50% pixels, PSNR deblur, PSNR 2x SR, mean SSIM, milliseconds per image}
+     */
+    public static Map<String, double[]> images(int side, int trainImages, int testImages, int trainSteps,
+            int iterations, double sigmaY, long seed) {
+        List<double[]> train = new ArrayList<>();
+        for (float[] f : DegradedImages.shapes(trainImages, side, seed)) {
+            train.add(ImageMath.toDouble(f));
+        }
+        List<double[]> test = new ArrayList<>();
+        for (float[] f : DegradedImages.shapes(testImages, side, seed + 1)) {
+            test.add(ImageMath.toDouble(f));
+        }
+        PnpFlow flow = new PnpFlow(side, 16, 4, seed + 2);
+        flow.fit(train, trainSteps, 8, 3e-3f, seed + 3);
+        double variance = 0;
+        for (double[] x : train) {
+            variance += ImageMath.dot(x, x) / ((double) train.size() * x.length);
+        }
+        PosteriorSamplers.Settings settings = PosteriorSamplers.Settings.defaults(iterations, 20, 0.01, variance);
+        String[] names = {"observation (A^T y / |A|^2)", "PnP-Flow", "PnP-HQS (flow denoiser)", "PnP-HQS (NLM)",
+            "DPS (flow score)", "DAPS (flow score)"};
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (String n : names) {
+            out.put(n, new double[6]);
+        }
+        SplittableRandom r = new SplittableRandom(seed + 4);
+        double[] kernel = new double[25];
+        double ks = 0;
+        for (int i = 0; i < 25; i++) {
+            double dy = i / 5 - 2;
+            double dx = i % 5 - 2;
+            kernel[i] = Math.exp(-(dx * dx + dy * dy) / 2);
+            ks += kernel[i];
+        }
+        for (int i = 0; i < 25; i++) {
+            kernel[i] /= ks;
+        }
+        int n = side * side;
+        for (int task = 0; task < 4; task++) {
+            for (double[] x : test) {
+                LinearOperator a = switch (task) {
+                    case 0 -> LinearOperator.mask(InverseProblems.boxMask(side, 6, r), n);
+                    case 1 -> LinearOperator.mask(InverseProblems.pixelMask(n, 0.5, r.nextLong()), n);
+                    case 2 -> LinearOperator.blur(kernel, 5, side);
+                    default -> LinearOperator.downsample(side, 2);
+                };
+                double[] y = InverseProblems.gaussian(a.apply(x), sigmaY, r);
+                double norm2 = a.normSquared(30);
+                PosteriorSamplers.Problem problem = new PosteriorSamplers.Problem(
+                        PosteriorSamplers.Forward.linear(a), y, sigmaY, n, norm2);
+                double[] aty = a.adjoint(y);
+                double[] start = aty.clone();
+                for (int i = 0; i < n; i++) {
+                    start[i] /= norm2;
+                }
+                for (int m = 0; m < names.length; m++) {
+                    long t0 = System.nanoTime();
+                    double[] est = switch (m) {
+                        case 0 -> start;
+                        case 1 -> flow.restore(a, y, iterations, 1.0, r);
+                        case 2 -> OperatorPlugAndPlay.hqs(a, y, sigmaY, flow.prior(), 8, 0.25, start, 10);
+                        case 3 -> OperatorPlugAndPlay.hqs(a, y, sigmaY,
+                            (v, s) -> ImageMath.toDouble(Denoisers.nonLocalMeans(ImageMath.toFloat(v), side, s, 3,
+                                0.9 * s)), 8, 0.25, start, 10);
+                        case 4 -> PosteriorSamplers.sample(PosteriorSamplers.Method.DPS, flow.score(), problem,
+                            settings, r).x();
+                        default -> PosteriorSamplers.sample(PosteriorSamplers.Method.DAPS, flow.score(), problem,
+                            settings, r).x();
+                    };
+                    double ms = (System.nanoTime() - t0) / 1e6;
+                    double[] row = out.get(names[m]);
+                    row[task] += ImageMath.psnr(est, x) / test.size();
+                    row[4] += ImageMath.ssim(ImageMath.clip(est), x, side) / (4.0 * test.size());
+                    row[5] += ms / (4.0 * test.size());
+                }
             }
         }
         return out;
