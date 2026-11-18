@@ -15,6 +15,7 @@ include(
     "brainiac-tensor",
     "brainiac-backend-cpu",
     "brainiac-backend-vulkan",
+    "brainiac-backend-cuda",
     "brainiac-autograd",
     "brainiac-nn",
     "brainiac-train",
@@ -29,4 +30,5 @@ include(
     "brainiac-benchmarks",
     "brainiac-experiments",
     "brainiac-studio",
+    "brainiac-cloud",
 )
