@@ -44,6 +44,9 @@ class CompatibleProvider extends RemoteProvider {
 
     @Override
     List<String> auth(String key) {
+        if (key == null || key.isEmpty()) {
+            return List.of();
+        }
         String org = options.getOrDefault(ProviderSettings.BILL_TO, "");
         return org.isEmpty() ? List.of("Authorization", "Bearer " + key)
                 : List.of("Authorization", "Bearer " + key, "X-HF-Bill-To", org);

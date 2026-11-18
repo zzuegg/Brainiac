@@ -534,6 +534,10 @@ public final class ChatService {
         for (Preset p : Preset.COMPATIBLE) {
             ps.add(new CompatibleProvider(keys, p.at(bases.getOrDefault(p.id(), p.base()))));
         }
+        {
+            Preset o = OllamaProvider.PRESET;
+            ps.add(new OllamaProvider(keys, o.at(bases.getOrDefault(o.id(), o.base()))));
+        }
         ChatService service = new ChatService(keys, ps, outputs);
         service.hub = new Hub(keys, downloads, bases.getOrDefault("hub", Hub.BASE));
         local.drawToo(() -> service.hub().core());

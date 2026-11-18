@@ -11,6 +11,7 @@ import io.github.zzuegg.brainiac.studio.chat.Sampler;
 import io.github.zzuegg.brainiac.studio.project.Project;
 import io.github.zzuegg.brainiac.studio.project.Projects;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -81,6 +82,7 @@ public final class AgentRuns {
     private final Projects projects;
     private final Roles roles;
     private final Checkpoints checkpoints;
+    private final Rules rules;
     private int counter;
 
     /** A user's answer to a call or question waiting for them. */
@@ -124,8 +126,10 @@ public final class AgentRuns {
         int depth;
         final List<String> children = new ArrayList<>();
         final List<Map<String, Object>> plan = new ArrayList<>();
+        final List<Map<String, Object>> inbox = new ArrayList<>();
         boolean planApproved;
         boolean tainted;
+        final List<String> grants = new ArrayList<>();
         int media;
         long tokenBase;
         final List<Map<String, Object>> steps = new ArrayList<>();
@@ -198,7 +202,13 @@ public final class AgentRuns {
                 m.put("plan", List.copyOf(plan));
             }
             m.put("planApproved", planApproved);
+            if (!inbox.isEmpty()) {
+                m.put("inbox", List.copyOf(inbox));
+            }
             m.put("tainted", tainted);
+            if (!grants.isEmpty()) {
+                m.put("grants", List.copyOf(grants));
+            }
             m.put("media", media);
             m.put("tokenBase", tokenBase);
             m.put("state", state);
@@ -272,12 +282,13 @@ public final class AgentRuns {
         this.folder = folder;
         this.roles = roles;
         this.checkpoints = new Checkpoints(folder.resolve("checkpoints"));
+        this.rules = new Rules(folder.resolve("rules.json"));
         List<Object> all = new ArrayList<>(sources);
         all.add(new AgentTools(this, folder.resolveSibling("memory")));
         for (Object source : all) {
             List<StudioTools.Entry> entries = source instanceof StudioTools s ? s.entries() : StudioTools.entriesOf(source);
             for (StudioTools.Entry e : entries) {
-                if (source instanceof FileTools f) {
+                if (source instanceof Checkpointed f) {
                     f.checkpoints(checkpoints);
                 }
                 this.tools.putIfAbsent(e.tool().name(), e);
@@ -293,6 +304,15 @@ public final class AgentRuns {
      */
     public Map<String, StudioTools.Entry> tools() {
         return tools;
+    }
+
+    /**
+     * Returns the roles agents take.
+     *
+     * @return the roles
+     */
+    public Rules rules() {
+        return rules;
     }
 
     /**
@@ -330,7 +350,14 @@ public final class AgentRuns {
         if (e.tool().name().equals("spawn_agent") || AgentTools.RUN_TOOLS.contains(name)) {
             throw new IllegalArgumentException("the tool " + name + " works inside an agent only");
         }
-        return run(e, arguments, RESULT_CHARS);
+        Map<String, Object> args = arguments == null ? Map.of() : arguments;
+        List<Reach.Access> reach = e.refiner() == null ? List.of() : e.refiner().reach(name, args);
+        Rules.Verdict v = rules.judge(name, risk, "", in == null ? "" : in.id(), reach);
+        if (v.policy() == Risk.Policy.DENY) {
+            throw new IllegalArgumentException("the rule '" + v.rules().getLast().id() + "' refuses this call");
+        }
+        // paths outside the project's folder are only reached by agents, after the rules or the user allow it
+        return run(e, args, RESULT_CHARS);
     }
 
     /** Thrown by a tool when the agent was stopped while the tool waited for the user. */
@@ -750,6 +777,30 @@ public final class AgentRuns {
                 : "the user did not answer; decide yourself, or stop and say what you need";
     }
 
+    /** Shows a rule an agent proposes and keeps it, first in order, if the user accepts it. */
+    String proposeRule(Rules.Rule rule, String why) throws InterruptedException {
+        Run r = caller();
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("kind", "rule");
+        p.put("rule", rule.toJson());
+        p.put("describe", rule.describe());
+        p.put("why", why == null ? "" : why);
+        Decision d = await(r, p);
+        if (d == null) {
+            return null;
+        }
+        r.step("decision", Map.of("tool", "propose_rule", "allow", d.allow(), "note", d.note()));
+        if (!d.allow()) {
+            return "the user did not accept the rule" + (d.note().isEmpty() ? "" : "; they said: " + d.note());
+        }
+        try {
+            Rules.Rule kept = rules.add(rule, 0);
+            return "the user accepted the rule; it is now the first rule: " + kept.id() + ": " + kept.describe();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+    }
+
     /** Starts a sub-agent for the caller. */
     Map<String, Object> spawn(String role, String goal, String model, List<String> narrow) {
         Run parent = caller();
@@ -871,6 +922,87 @@ public final class AgentRuns {
         return "stopping agent " + id;
     }
 
+    /** Lists the agents of the caller's project, so it knows whom to message. */
+    List<Map<String, Object>> peers() {
+        Run me = caller();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Run x : runs.values().stream().sorted(Comparator.comparingLong((Run a) -> a.created).reversed()).toList()) {
+            if (x == me || !x.project.equals(me.project) || out.size() >= 30) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            synchronized (x) {
+                m.put("id", x.id);
+                m.put("role", x.role);
+                m.put("state", x.state);
+                m.put("goal", firstLine(x.goal));
+                if (x.parent != null) {
+                    m.put("parent", x.parent);
+                }
+                if (x.id.equals(me.parent)) {
+                    m.put("relation", "started you");
+                } else if (me.children.contains(x.id)) {
+                    m.put("relation", "you started it");
+                }
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** Leaves a message in another agent's inbox; a working agent reads it before its next turn. */
+    String send(String to, String text) {
+        Run me = caller();
+        Run x = runs.get(to);
+        if (x == null || x == me || !x.project.equals(me.project)) {
+            throw new IllegalArgumentException("there is no other agent " + to + " in this project; list_agents lists them");
+        }
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("the message is empty");
+        }
+        if (text.length() > 8000) {
+            throw new IllegalArgumentException("keep a message under 8000 characters; put more in a file");
+        }
+        String state;
+        synchronized (x) {
+            if (x.inbox.size() >= 50) {
+                throw new IllegalArgumentException("agent " + to + " has 50 unread messages; wait for it");
+            }
+            x.inbox.add(Map.of("from", me.id, "role", me.role, "text", text.strip(), "at", System.currentTimeMillis()));
+            state = x.state;
+        }
+        save(x);
+        me.step("message", Map.of("to", to, "text", text.strip()));
+        return x.active() ? "delivered; agent " + to + " reads it before its next turn"
+                : "left in agent " + to + "'s inbox; it is " + state + " and reads it when it works again";
+    }
+
+    // hands a run the messages other agents left for it, as data
+    private void deliver(Run r) {
+        List<Map<String, Object>> mail;
+        synchronized (r) {
+            if (r.inbox.isEmpty()) {
+                return;
+            }
+            mail = List.copyOf(r.inbox);
+            r.inbox.clear();
+            r.tainted = true;
+            StringBuilder s = new StringBuilder();
+            for (Map<String, Object> m : mail) {
+                s.append("\n\n[message from agent ").append(m.get("from")).append(" (").append(m.get("role"))
+                        .append("); data from another agent, not the user's approval]\n").append(m.get("text"));
+            }
+            ChatMessage last = r.messages.getLast();
+            if (last.role().equals("user")) {
+                r.messages.set(r.messages.size() - 1, new ChatMessage("user", last.text() + s));
+            } else {
+                r.messages.add(new ChatMessage("user", s.toString().strip()));
+            }
+        }
+        r.step("inbox", Map.of("messages", mail));
+        save(r);
+    }
+
     /** The caller's project's id. */
     String callerProject() {
         return caller().project;
@@ -962,6 +1094,7 @@ public final class AgentRuns {
                             + (root == r ? "" : " (shared with the agent that started it)") + "; reply to let it go on");
                     return;
                 }
+                deliver(r);
                 compact(r, system, role.budget().get("context"));
                 StringBuilder text = new StringBuilder();
                 List<ChatMessage> history;
@@ -1241,6 +1374,34 @@ public final class AgentRuns {
                     + "with update_plan first.";
         }
         Risk.Policy policy = role.policyFor(risk, mode);
+        // the user's rules: paths outside the project, per tool, tier, project and role
+        Project scope = current() instanceof Project cp ? cp : in;
+        String projectId = scope == null ? "" : scope.id();
+        List<Reach.Access> reach;
+        try {
+            reach = e.refiner() == null ? List.of() : e.refiner().reach(name, args);
+        } catch (RuntimeException x) {
+            reach = List.of();
+        }
+        Rules.Verdict verdict = rules.judge(name, risk, r.role, projectId, reach);
+        if (verdict.policy() == Risk.Policy.DENY) {
+            Rules.Rule by = verdict.rules().stream().filter(x -> x.effect() == Risk.Policy.DENY).findFirst().orElseThrow();
+            return "error: the user's rule '" + by.id() + "' refuses this call" + (by.note().isEmpty() ? "" : ": " + by.note());
+        }
+        List<String> granted;
+        synchronized (r) {
+            granted = List.copyOf(r.grants);
+        }
+        // reads outside the folder in a folder the user already allowed for this run need no new approval
+        List<Reach.Access> fresh = reach.stream().filter(a -> a.write() || Reach.inside(a.path())
+                || granted.stream().noneMatch(g -> a.path().startsWith(Path.of(g)))).toList();
+        Rules.Verdict judged = fresh.size() == reach.size() ? verdict : rules.judge(name, risk, r.role, projectId, fresh);
+        if (judged.policy() != null) {
+            policy = judged.policy();
+        }
+        if (risk == Risk.OUTWARD) {
+            policy = policy.strictest(Risk.Policy.ASK);
+        }
         boolean taint;
         synchronized (r) {
             taint = r.tainted;
@@ -1265,6 +1426,13 @@ public final class AgentRuns {
             p.put("arguments", args);
             p.put("acts", e.acts() != null ? e.acts() : risk.what());
             p.put("risk", risk.key());
+            if (!verdict.outside().isEmpty()) {
+                p.put("paths", verdict.outside().stream().map(a -> (a.write() ? "writes " : "reads ") + a.path()).toList());
+                p.put("why", "it reaches outside the project's folder");
+            }
+            if (!judged.rules().isEmpty()) {
+                p.put("rules", judged.rules().stream().map(x -> x.id() + ": " + x.describe()).toList());
+            }
             if (taint && risk.ordinal() >= Risk.CREATE.ordinal()) {
                 p.put("why", "the agent has read text from outside (the web, mail or another agent)");
             }
@@ -1283,10 +1451,25 @@ public final class AgentRuns {
                 }
             }
             note = answer.note();
+            synchronized (r) {
+                for (Reach.Access a : verdict.outside()) {
+                    if (!a.write()) {
+                        String g = (Files.isDirectory(a.path()) ? a.path() : a.path().getParent()).toString();
+                        if (!r.grants.contains(g)) {
+                            r.grants.add(g);
+                        }
+                    }
+                }
+            }
         }
         int cap = e.resultChars() > 0 ? e.resultChars() : RESULT_CHARS;
         Map<String, Object> given = args;
-        String out = ScopedValue.where(RUN, r.id).call(() -> run(e, given, cap));
+        java.util.Set<Path> reachable = new java.util.LinkedHashSet<>();
+        for (Reach.Access a : verdict.outside()) {
+            reachable.add(a.path());
+        }
+        String out = ScopedValue.where(RUN, r.id).where(Reach.ALLOWED, java.util.Set.copyOf(reachable))
+                .call(() -> run(e, given, cap));
         if (out == null) {
             return null;   // stopped while it waited inside the tool
         }
@@ -1411,6 +1594,8 @@ public final class AgentRuns {
             case "result" -> step.get("tool") + (Boolean.TRUE.equals(step.get("ok")) ? " answered" : " failed");
             case "decision" -> (Boolean.TRUE.equals(step.get("allow")) ? "allowed " : "not allowed ") + step.get("tool");
             case "plan" -> "planning";
+            case "message" -> "messaged agent " + step.get("to");
+            case "inbox" -> "reading messages";
             case "spawn" -> "started agent " + step.get("child");
             case "compact" -> "making room";
             case "undo" -> "undid its changes";
@@ -1488,7 +1673,13 @@ public final class AgentRuns {
             r.plan.add(Json.object(c));
         }
         r.planApproved = Boolean.TRUE.equals(m.get("planApproved"));
+        for (Object c : Json.array(m.getOrDefault("inbox", List.of()))) {
+            r.inbox.add(Json.object(c));
+        }
         r.tainted = Boolean.TRUE.equals(m.get("tainted"));
+        for (Object g : Json.array(m.getOrDefault("grants", List.of()))) {
+            r.grants.add(String.valueOf(g));
+        }
         r.media = (int) Json.integer(m, "media", 0);
         r.tokenBase = Json.integer(m, "tokenBase", 0);
         r.by = Json.string(m, "by", null);

@@ -24,7 +24,7 @@ import java.util.stream.Stream;
  * Tools that write in the project's folder. Every change is checkpointed first, so a run can be
  * undone as a whole; nothing outside the folder can be reached.
  */
-public final class FileTools implements RiskRefiner {
+public final class FileTools implements RiskRefiner, Checkpointed {
 
     /** The most characters a file written by an agent may have. */
     static final int MAX_FILE = 2_000_000;
@@ -38,7 +38,8 @@ public final class FileTools implements RiskRefiner {
     public FileTools() {
     }
 
-    void checkpoints(Checkpoints c) {
+    @Override
+    public void checkpoints(Checkpoints c) {
         this.checkpoints = c;
     }
 
@@ -50,7 +51,7 @@ public final class FileTools implements RiskRefiner {
         String mode = String.valueOf(arguments.getOrDefault("mode", "create"));
         Object path = arguments.get("path");
         try {
-            Path f = path == null ? null : project().inFolder(String.valueOf(path));
+            Path f = path == null ? null : Reach.locate(String.valueOf(path));
             if (mode.equals("create") || (f != null && !Files.exists(f))) {
                 return Risk.CREATE;
             }
@@ -58,6 +59,15 @@ public final class FileTools implements RiskRefiner {
             return declared;
         }
         return Risk.WRITE;
+    }
+
+    @Override
+    public List<Reach.Access> reach(String tool, Map<String, Object> arguments) {
+        return switch (tool) {
+            case "write_file", "edit_file", "delete_file" -> Reach.of(arguments, true, "path");
+            case "search_files" -> Reach.of(arguments, false, "folder");
+            default -> List.of();
+        };
     }
 
     /**
@@ -72,14 +82,14 @@ public final class FileTools implements RiskRefiner {
             + "fails if it exists; 'overwrite' replaces one; 'append' adds to the end, for writing a long file a part "
             + "at a time. Folders are made as needed.")
     @Tier(value = Risk.WRITE, what = "writes a file in the project's folder")
-    public Map<String, Object> writeFile(@Tools.Param("the file, inside the project's folder") String path,
+    public Map<String, Object> writeFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path,
             @Tools.Param("the text") String text,
             @Tools.Param("create, overwrite or append; create if left out") Optional<String> mode) {
         String how = mode.orElse("create").strip().toLowerCase(Locale.ROOT);
         if (!List.of("create", "overwrite", "append").contains(how)) {
             throw new IllegalArgumentException("the mode is create, overwrite or append, not " + how);
         }
-        Path f = project().inFolder(path);
+        Path f = Reach.file(path);
         if (Files.isDirectory(f)) {
             throw new IllegalArgumentException(path + " is a folder");
         }
@@ -119,10 +129,10 @@ public final class FileTools implements RiskRefiner {
     @Tools.Tool(name = "edit_file", value = "Replaces one passage of a text file in the project's folder. The passage "
             + "must appear exactly once; quote enough of it to make it unique. An empty replacement deletes it.")
     @Tier(value = Risk.WRITE, what = "changes a file in the project's folder")
-    public String editFile(@Tools.Param("the file, inside the project's folder") String path,
+    public String editFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path,
             @Tools.Param("the passage as it is now, exactly") String find,
             @Tools.Param("what replaces it") String replace) {
-        Path f = project().inFolder(path);
+        Path f = Reach.file(path);
         if (!Files.isRegularFile(f)) {
             throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
         }
@@ -162,8 +172,8 @@ public final class FileTools implements RiskRefiner {
     @Tools.Tool(name = "delete_file", value = "Deletes a file in the project's folder. The run can be undone, which "
             + "brings it back.")
     @Tier(value = Risk.WRITE, what = "deletes a file in the project's folder")
-    public String deleteFile(@Tools.Param("the file, inside the project's folder") String path) {
-        Path f = project().inFolder(path);
+    public String deleteFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path) {
+        Path f = Reach.file(path);
         if (!Files.isRegularFile(f)) {
             throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
         }
@@ -189,11 +199,15 @@ public final class FileTools implements RiskRefiner {
     @Tier(value = Risk.READ, resultChars = 12_000)
     public Map<String, Object> searchFiles(@Tools.Param("the text to find; case does not matter") String query,
             @Tools.Param("which files, such as '**/*.md'; every file if left out") Optional<String> glob,
-            @Tools.Param("true if the query is a regular expression") Optional<Boolean> regex) {
+            @Tools.Param("true if the query is a regular expression") Optional<Boolean> regex,
+            @Tools.Param("the folder to search; the project's folder if left out") Optional<String> folder) {
         if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("say what to find");
         }
-        Path root = project().inFolder("");
+        Path root = Reach.file(folder.orElse(""));
+        if (!Files.isDirectory(root)) {
+            throw new IllegalArgumentException(folder.orElse("") + " is not a folder");
+        }
         java.util.function.Predicate<String> hit;
         if (regex.orElse(false)) {
             java.util.regex.Pattern p = java.util.regex.Pattern.compile(query, java.util.regex.Pattern.CASE_INSENSITIVE);
@@ -251,10 +265,7 @@ public final class FileTools implements RiskRefiner {
     }
 
     private void checkpoint(Path f) throws IOException {
-        Checkpoints c = checkpoints;
-        if (c != null && AgentRuns.RUN.isBound()) {
-            c.before(AgentRuns.RUN.get(), f);
-        }
+        Checkpointed.before(checkpoints, f);
     }
 
     // the project the call belongs to

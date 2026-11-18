@@ -10,6 +10,17 @@ import java.util.Map;
 public interface RiskRefiner {
 
     /**
+     * Says which paths a call reads or writes, so the rules can judge paths outside the project.
+     *
+     * @param tool the tool's name
+     * @param arguments the call's arguments
+     * @return the paths; none by default
+     */
+    default java.util.List<Reach.Access> reach(String tool, Map<String, Object> arguments) {
+        return java.util.List.of();
+    }
+
+    /**
      * Decides a call's tier.
      *
      * @param tool the tool's name

@@ -32,7 +32,7 @@ import java.util.Optional;
  * <p>Tools marked {@link Acts} change something, spend money or use the GPU; an agent running in
  * {@code ask} mode waits for the user's approval before calling them.
  */
-public final class StudioTools {
+public final class StudioTools implements RiskRefiner {
 
     /** Marks a tool that changes something, spends money or keeps the machine busy. */
     @Retention(RetentionPolicy.RUNTIME)
@@ -183,6 +183,19 @@ public final class StudioTools {
         return entriesOf(this);
     }
 
+    @Override
+    public Risk refine(String tool, Map<String, Object> arguments, Risk declared) {
+        return declared;
+    }
+
+    @Override
+    public List<Reach.Access> reach(String tool, Map<String, Object> arguments) {
+        return switch (tool) {
+            case "read_project_file", "list_project_files" -> Reach.of(arguments, false, "path");
+            default -> List.of();
+        };
+    }
+
     // ---------------------------------------------------------------- models
 
     /**
@@ -327,10 +340,10 @@ public final class StudioTools {
      * @return the entries
      */
     @Tools.Tool(name = "list_project_files", value = "Lists the files and folders in the project's folder, or in a "
-            + "folder inside it. Agents can only read inside their project's folder.")
-    public Map<String, Object> listProjectFiles(@Tools.Param("a folder inside the project's folder; empty for the top")
+            + "folder inside it, or a folder elsewhere, which the user's rules may make ask first.")
+    public Map<String, Object> listProjectFiles(@Tools.Param("a folder relative to the project's folder, or a full path elsewhere; empty for the top")
             Optional<String> path) {
-        Path dir = project().inFolder(path.orElse(""));
+        Path dir = Reach.file(path.orElse(""));
         if (!Files.isDirectory(dir)) {
             throw new IllegalArgumentException(path.orElse("") + " is not a folder");
         }
@@ -363,12 +376,12 @@ public final class StudioTools {
             + "up to 'limit' characters (12000 if left out) from character 'offset'. The answer says how long the file "
             + "is, so you can read on.")
     @Tier(value = Risk.READ, resultChars = 16_000)
-    public String readProjectFile(@Tools.Param("the file, inside the project's folder") String path,
+    public String readProjectFile(@Tools.Param("the file, relative to the project's folder, or a full path elsewhere") String path,
             @Tools.Param("the character to start at, 0 if left out") Optional<Integer> offset,
             @Tools.Param("how many characters, 12000 if left out, at most 15000") Optional<Integer> limit) {
-        Path f = project().inFolder(path);
+        Path f = Reach.file(path);
         if (!Files.isRegularFile(f)) {
-            throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
+            throw new IllegalArgumentException("there is no file " + path);
         }
         String text;
         try {
