@@ -713,6 +713,23 @@ public final class Llama implements LanguageModel {
     /** {@code -Dbrainiac.llm.fusedNorm=false}: RMSNorm from separate operations while decoding too. */
     private static final boolean FUSED_NORM = !"false".equals(System.getProperty("brainiac.llm.fusedNorm"));
 
+    /**
+     * {@code x + delta} and its RMSNorm: one kernel while decoding where the backend has it.
+     * A null {@code delta} adds nothing.
+     */
+    private Var[] addNorm(Var x, Var delta, Var weight, boolean decoding) {
+        if (delta == null) {
+            return new Var[] {x, rmsNorm(x, weight, decoding)};
+        }
+        if (decoding && FUSED_NORM && x.value().hasRmsNorm() && x.dtype() == delta.dtype()
+                && x.shape().equals(delta.shape()) && x.value().device().equals(delta.value().device())) {
+            Tensor[] t = x.value().addRmsNorm(delta.value(), weight.value(), config.rmsEps());
+            return new Var[] {Var.of(t[0]), Var.of(t[1])};
+        }
+        Var sum = x.add(delta);
+        return new Var[] {sum, rmsNorm(sum, weight, decoding)};
+    }
+
     private Var rmsNorm(Var x, Var weight, boolean decoding) {
         if (decoding && FUSED_NORM && x.value().hasRmsNorm()) {
             // no gradients while decoding: one kernel instead of a reduction and its chains
@@ -1848,7 +1865,13 @@ public final class Llama implements LanguageModel {
         }
         boolean decoding = cache != null;
         boolean recompute = checkpointing && !decoding;
+        // decoding: each block's last residual add runs with the next normalization
+        Var delta = null;
         for (int l = 0; l < blocks.size(); l++) {
+            if (delta != null && (!x.value().device().equals(deviceOf(l)) || x.dtype() != typeOf(l))) {
+                x = x.add(delta);   // crossing a device split
+                delta = null;
+            }
             x = x.to(deviceOf(l)).to(typeOf(l));   // crossing a device split
             int layer = l;
             Tensor[] m = masks;
@@ -1857,15 +1880,32 @@ public final class Llama implements LanguageModel {
                 x = io.github.zzuegg.brainiac.autograd.Recompute.apply(in -> block(layer, in, positions, null, m, false), x,
                         blockParameters(l));
             } else {
-                x = block(layer, x, positions, cache, m, decoding);
+                Var[] out = block(layer, x, delta, positions, cache, m, decoding, decoding);
+                x = out[0];
+                delta = out[1];
             }
         }
+        if (delta != null && (!x.value().device().equals(headDevice()) || x.dtype() != headType())) {
+            x = x.add(delta);
+            delta = null;
+        }
         x = x.to(headDevice()).to(headType());
-        return rmsNorm(x, norm, decoding);
+        return addNorm(x, delta, norm, decoding)[1];
     }
 
     /** Block {@code l} on the hidden states {@code x} {@code [batch, steps, hidden]}. */
     private Var block(int l, Var x, int[][] positions, Cache cache, Tensor[] masks, boolean decoding) {
+        Var[] out = block(l, x, null, positions, cache, masks, decoding, false);
+        return out[0];
+    }
+
+    /**
+     * Block {@code l} on {@code x + delta}. With {@code defer} the block's last residual add is
+     * left to the caller: it returns the stream before it and what it adds, so the add can join
+     * the next normalization; otherwise the sum and null.
+     */
+    private Var[] block(int l, Var x, Var delta, int[][] positions, Cache cache, Tensor[] masks, boolean decoding,
+            boolean defer) {
         LlamaConfig.Extras e = config.extras();
         int batch = x.shape().dim(0);
         int steps = x.shape().dim(1);
@@ -1874,7 +1914,9 @@ public final class Llama implements LanguageModel {
         float scale = e.queryScale() > 0 ? e.queryScale() : (float) (1 / Math.sqrt(hd));
         Block blk = blocks.get(l);
         Device layerDev = deviceOf(l);
-        Var h = rmsNorm(x, blk.attnNorm, decoding);
+        Var[] xh = addNorm(x, delta, blk.attnNorm, decoding);
+        x = xh[0];
+        Var h = xh[1];
         Fused f = fused == null ? null : fused[l];
         Var qOut;
         Var kOut;
@@ -1923,16 +1965,16 @@ public final class Llama implements LanguageModel {
         if (blk.postAttnNorm != null) {
             attn = rmsNorm(attn, blk.postAttnNorm, decoding);
         }
-        x = x.add(attn);
-        h = rmsNorm(x, blk.ffnNorm, decoding);
+        xh = addNorm(x, attn, blk.ffnNorm, decoding);
+        x = xh[0];
+        h = xh[1];
         // both products first: the activation and the product then run as one chain
         if (blk.experts != null) {
             Var ffnOut = experts(blk.experts, h);
             if (blk.postFfnNorm != null) {
                 ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
             }
-            x = x.add(ffnOut);
-            return x;
+            return defer ? new Var[] {x, ffnOut} : new Var[] {x.add(ffnOut), null};
         }
         Var gate;
         Var up;
@@ -1950,8 +1992,7 @@ public final class Llama implements LanguageModel {
         if (blk.postFfnNorm != null) {
             ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
         }
-        x = x.add(ffnOut);
-        return x;
+        return defer ? new Var[] {x, ffnOut} : new Var[] {x.add(ffnOut), null};
     }
 
     /** The values block {@code l} learns: its weights unless frozen, and its adapters. */

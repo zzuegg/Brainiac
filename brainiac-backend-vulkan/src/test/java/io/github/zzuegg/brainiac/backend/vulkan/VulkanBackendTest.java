@@ -717,6 +717,33 @@ class VulkanBackendTest {
         }
     }
 
+    /** The residual add and RMSNorm in one kernel give what the add and the norm give apart. */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"1, 896", "3, 1000", "2, 7", "1, 3584"})
+    void addRmsNormMatchesTheAddAndTheNorm(int rows, int cols) {
+        Tensor a = random(44, rows, cols);
+        Tensor b = random(45, rows, cols);
+        Tensor w = random(46, cols);
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor x = a.to(type).to(gpu);
+            Tensor r = b.to(type).to(gpu);
+            Tensor sum = x.add(r);
+            float[] expectedSum = sum.toArray();
+            float[] expected = sum.rmsNorm(w.to(gpu), 1e-5f).toArray();
+            Tensor[] fused = x.addRmsNorm(r, w.to(gpu), 1e-5f);
+            org.junit.jupiter.api.Assertions.assertArrayEquals(expectedSum, fused[0].toArray(), type.toString());
+            float[] got = fused[1].toArray();
+            // the mean square may round differently (contracted multiply-adds): a unit in the last place
+            float tolerance = type == DType.FLOAT32 ? 1e-6f : type == DType.FLOAT16 ? 2e-3f : 1.6e-2f;
+            for (int i = 0; i < got.length; i++) {
+                assertEquals(expected[i], got[i], tolerance * (1 + Math.abs(expected[i])), type + " at " + i);
+            }
+        }
+    }
+
     /** Decoding's products of a few rows: one pass over the matrix, in pieces of rows added up. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 896, 896", "1, 4864, 896", "2, 64, 7", "3, 1000, 130", "5, 17, 4",

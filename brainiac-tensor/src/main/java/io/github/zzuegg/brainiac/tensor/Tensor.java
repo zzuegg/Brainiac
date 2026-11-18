@@ -1826,6 +1826,32 @@ public final class Tensor {
     }
 
     /**
+     * A residual add and the RMSNorm after it, for inference: {@code this + r} and
+     * {@code rmsNorm(this + r, weight, eps)}, in one kernel where the backend has one.
+     * Requires {@link #hasRmsNorm}.
+     *
+     * @param r added to this tensor: the same shape and type
+     * @param weight the scale {@code [last]}
+     * @param eps added to the mean square
+     * @return the sum and the normalized sum
+     */
+    public Tensor[] addRmsNorm(Tensor r, Tensor weight, float eps) {
+        sameDevice(r);
+        sameDevice(weight);
+        int cols = shape.dim(shape.rank() - 1);
+        if (!backend().hasAddRmsNorm(dtype()) || !r.shape.equals(shape) || r.dtype() != dtype()
+                || weight.size() != cols) {
+            Tensor sum = add(r);
+            return new Tensor[] {sum, sum.rmsNorm(weight, eps)};
+        }
+        Tensor w = weight.dtype() == dtype() ? weight : weight.to(dtype());
+        Storage sum = backend().allocateUninitialized(size(), dtype());
+        Storage out = backend().allocateUninitialized(size(), dtype());
+        backend().addRmsNorm(storage(), r.storage(), w.storage(), size() / cols, cols, eps, sum, out);
+        return new Tensor[] {new Tensor(shape, device, sum), new Tensor(shape, device, out)};
+    }
+
+    /**
      * Whether {@link #attention(Tensor, Tensor, Tensor, Tensor, float, boolean)} runs fused on
      * the backend of {@code q} for these arrays.
      *
