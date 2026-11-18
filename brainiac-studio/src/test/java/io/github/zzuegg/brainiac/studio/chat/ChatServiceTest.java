@@ -104,6 +104,23 @@ class ChatServiceTest {
         assertEquals("g-test", apis.headers.get("g").getFirst("x-goog-api-key"));
         Map<String, Object> body = Json.object(Json.parse(apis.bodies.get("g POST")));
         assertTrue(body.containsKey("contents"));
+        assertFalse(Json.object(body.get("generationConfig")).containsKey("temperature"), "left to the model unless asked");
+    }
+
+    @Test
+    void aTemperatureGoesOnlyToModelsThatTakeOne() throws Exception {
+        ChatService chat = apis.service(keys(Map.of("ANTHROPIC_API_KEY", "a", "OPENAI_API_KEY", "o",
+                "GEMINI_API_KEY", "g")), List.of());
+        chat.chat("google/gemini-3-pro", "", HELLO, 50, null, 0.2f, m -> { }, new Heard());
+        Map<String, Object> config = Json.object(Json.object(Json.parse(apis.bodies.get("g POST"))).get("generationConfig"));
+        assertEquals(0.2, ((Number) config.get("temperature")).doubleValue(), 1e-6);
+        chat.chat("openai/gpt-5", "", HELLO, 50, null, 0.2f, m -> { }, new Heard());
+        assertFalse(Json.object(Json.parse(apis.bodies.get("o POST"))).containsKey("temperature"),
+                "OpenAI's reasoning models answer only at their own temperature");
+        chat.chat("anthropic/claude-opus-5-5", "", HELLO, 50, null, 0.2f, m -> { }, new Heard());
+        assertFalse(Json.object(Json.parse(apis.bodies.get("a POST"))).containsKey("temperature"));
+        assertThrows(IllegalArgumentException.class,
+                () -> chat.chat("google/gemini-3-pro", "", HELLO, 50, null, 3f, m -> { }, new Heard()));
     }
 
     @Test

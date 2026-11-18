@@ -1123,7 +1123,224 @@ public final class Llama implements LanguageModel {
                 positions[b][t] = t;
             }
         }
-        return run(tokens, positions, null, null);
+        if (insert != null && insert.grids != null) {
+            multiPositions = gridPositions(tokens, new int[batch]);
+        }
+        try {
+            return run(tokens, positions, null, null);
+        } finally {
+            multiPositions = null;
+        }
+    }
+
+    /**
+     * As {@link #forward(int[][])}, with outside embeddings (image features from a
+     * vision-language model's projector) in place of a placeholder token: each occurrence of
+     * {@code placeholder}, row by row, takes the next row of {@code embeddings}.
+     *
+     * @param tokens {@code [batch][steps]} token ids, all sequences the same length
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}
+     * @return logits {@code [batch, steps, vocab]} in the model's type
+     */
+    public Var forward(int[][] tokens, int placeholder, Tensor embeddings) {
+        return inserting(placeholder, embeddings, false, () -> forward(tokens));
+    }
+
+    /**
+     * As {@link #forward(int[][], int, Tensor)}, optionally with each run of consecutive
+     * placeholders attending to itself both ways (as Gemma 3 reads an image).
+     *
+     * @param tokens {@code [batch][steps]} token ids, all sequences the same length
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}
+     * @param bidirectional whether a run of placeholders sees all of itself
+     * @return logits {@code [batch, steps, vocab]} in the model's type
+     */
+    public Var forward(int[][] tokens, int placeholder, Tensor embeddings, boolean bidirectional) {
+        return inserting(placeholder, embeddings, bidirectional, () -> forward(tokens));
+    }
+
+    /**
+     * As {@link #next}, with outside embeddings in place of a placeholder token (see
+     * {@link #forward(int[][], int, Tensor)}): how a vision-language model reads a prompt
+     * with images. The calls that follow read tokens as usual.
+     *
+     * @param state the state; updated
+     * @param tokens the new tokens per sequence
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}, in order
+     * @return the next-token logits {@code [batch, vocab]}, float32
+     */
+    public Tensor next(State state, int[][] tokens, int placeholder, Tensor embeddings) {
+        return inserting(placeholder, embeddings, false, () -> next(state, tokens, null));
+    }
+
+    /**
+     * As {@link #next(State, int[][], int, Tensor)}, optionally with each run of consecutive
+     * placeholders attending to itself both ways (as Gemma 3 reads an image; a run must not
+     * cross a {@linkplain #prefillChunk prefill chunk}).
+     *
+     * @param state the state; updated
+     * @param tokens the new tokens per sequence
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}, in order
+     * @param bidirectional whether a run of placeholders sees all of itself
+     * @return the next-token logits {@code [batch, vocab]}, float32
+     */
+    public Tensor next(State state, int[][] tokens, int placeholder, Tensor embeddings, boolean bidirectional) {
+        return inserting(placeholder, embeddings, bidirectional, () -> next(state, tokens, null));
+    }
+
+    /** Embeddings that replace a placeholder token, consumed in order across prefill chunks. */
+    private static final class Insert {
+        final int token;
+        final Tensor rows;
+        final boolean bidirectional;
+        int used;
+
+        /** Per image, its {height, width} in tokens, for 3D rotary positions; or null. */
+        int[][] grids;
+        int gridsUsed;
+
+        Insert(int token, Tensor rows, boolean bidirectional) {
+            this.token = token;
+            this.rows = rows;
+            this.bidirectional = bidirectional;
+        }
+    }
+
+    private Insert insert;
+
+    /** Qwen2-VL's rotary sections (of the frequency pairs: time, height, width), or null. */
+    private int[] ropeSections;
+
+    /** The current call's 3D positions {@code [3][batch][steps]}, or null for 1D ones. */
+    private int[][][] multiPositions;
+
+    /**
+     * Turns on Qwen2-VL's 3D rotary positions: the frequency pairs split in sections that
+     * rotate by a token's time, height and width positions (all equal for text).
+     */
+    void ropeSections(int[] sections) {
+        int sum = 0;
+        for (int v : sections) {
+            sum += v;
+        }
+        if (sections.length != 3 || sum * 2 != config.rope().dim()) {
+            throw new IllegalArgumentException("rotary sections " + java.util.Arrays.toString(sections)
+                    + " do not split " + config.rope().dim() / 2 + " frequency pairs in three");
+        }
+        ropeSections = sections.clone();
+    }
+
+    /**
+     * As {@link #next(State, int[][], int, Tensor)} for a model with {@linkplain
+     * #ropeSections 3D positions}: each run of placeholders is an image of {@code grids[i]}
+     * tokens (height, width), placed at the run's start and spanning the larger of the two.
+     */
+    Tensor next(State state, int[][] tokens, int placeholder, Tensor embeddings, int[][] grids) {
+        return inserting(placeholder, embeddings, false, grids, () -> next(state, tokens, null));
+    }
+
+    /** As {@link #forward(int[][], int, Tensor)} with images placed in 3D (see the {@code next} above). */
+    Var forward(int[][] tokens, int placeholder, Tensor embeddings, int[][] grids) {
+        return inserting(placeholder, embeddings, false, grids, () -> forward(tokens));
+    }
+
+    /**
+     * Qwen2-VL's positions {@code [3][batch][steps]} from each row's next position: text
+     * moves all three by one; an image's tokens share its start in time and count rows and
+     * columns from it, and the text after it starts past its larger side.
+     */
+    private int[][][] gridPositions(int[][] tokens, int[] start) {
+        int batch = tokens.length;
+        int steps = tokens[0].length;
+        int[][][] out = new int[3][batch][steps];
+        for (int b = 0; b < batch; b++) {
+            int cur = start[b];
+            int t = 0;
+            while (t < steps) {
+                if (tokens[b][t] != insert.token) {
+                    out[0][b][t] = out[1][b][t] = out[2][b][t] = cur++;
+                    t++;
+                    continue;
+                }
+                if (insert.gridsUsed >= insert.grids.length) {
+                    throw new IllegalArgumentException("more images than the " + insert.grids.length + " grids given");
+                }
+                int[] g = insert.grids[insert.gridsUsed++];
+                for (int k = 0; k < g[0] * g[1]; k++, t++) {
+                    if (t >= steps || tokens[b][t] != insert.token) {
+                        throw new IllegalArgumentException("an image of " + g[0] + " x " + g[1]
+                                + " tokens needs as many placeholders in one run");
+                    }
+                    out[0][b][t] = cur;
+                    out[1][b][t] = cur + k / g[1];
+                    out[2][b][t] = cur + k % g[1];
+                }
+                cur += Math.max(g[0], g[1]);
+            }
+            start[b] = cur;
+        }
+        return out;
+    }
+
+    /**
+     * Per token, the index of its run of placeholders that attends both ways, or -1; {@code
+     * null} when no run does.
+     */
+    private int[][] runs(int[][] tokens) {
+        if (insert == null || !insert.bidirectional) {
+            return null;
+        }
+        int[][] out = new int[tokens.length][];
+        boolean any = false;
+        for (int b = 0; b < tokens.length; b++) {
+            out[b] = new int[tokens[b].length];
+            int run = -1;
+            for (int t = 0; t < tokens[b].length; t++) {
+                if (tokens[b][t] == insert.token) {
+                    if (t == 0 || tokens[b][t - 1] != insert.token) {
+                        run++;
+                    }
+                    out[b][t] = run;
+                    any = true;
+                } else {
+                    out[b][t] = -1;
+                }
+            }
+        }
+        return any ? out : null;
+    }
+
+    private <T> T inserting(int placeholder, Tensor embeddings, boolean bidirectional,
+            java.util.function.Supplier<T> body) {
+        return inserting(placeholder, embeddings, bidirectional, null, body);
+    }
+
+    private <T> T inserting(int placeholder, Tensor embeddings, boolean bidirectional, int[][] grids,
+            java.util.function.Supplier<T> body) {
+        if (embeddings.shape().rank() != 2 || embeddings.shape().dim(1) != config.hidden()) {
+            throw new IllegalArgumentException("embeddings must be [n, " + config.hidden() + "], got "
+                    + embeddings.shape());
+        }
+        Insert in = new Insert(placeholder, embeddings.to(device).to(dtype), bidirectional);
+        if (grids != null && ropeSections == null) {
+            throw new IllegalStateException("images placed in 3D need rotary sections");
+        }
+        in.grids = grids;
+        insert = in;
+        try {
+            T out = body.get();
+            if (in.used != embeddings.shape().dim(0)) {
+                throw new IllegalArgumentException("the tokens hold " + in.used + " placeholders for "
+                        + embeddings.shape().dim(0) + " embeddings");
+            }
+            return out;
+        } finally {
+            insert = null;
+        }
     }
 
     /**
@@ -1429,7 +1646,22 @@ public final class Llama implements LanguageModel {
                 positions[b][t] = pad ? 1 : cache.next[b]++;
             }
         }
+        // 3D positions: images move the next position by their larger side, not their size
+        int[][][] multi = null;
+        if (ropeSections != null) {
+            int[] start = new int[batch];
+            for (int b = 0; b < batch; b++) {
+                start[b] = cache.next[b] - steps;
+            }
+            if (insert != null && insert.grids != null) {
+                multi = gridPositions(tokens, start);
+                for (int b = 0; b < batch; b++) {
+                    cache.next[b] = start[b];
+                }
+            }
+        }
         // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]; one per window
+        int[][] runs = runs(tokens);
         Tensor[] masks = new Tensor[blocks.size()];
         Map<String, Tensor> byWindow = new java.util.HashMap<>();
         for (int l = 0; l < masks.length; l++) {
@@ -1437,10 +1669,16 @@ public final class Llama implements LanguageModel {
             Device d = deviceOf(l);
             DType t = typeOf(l);
             masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t,
-                    k -> cacheMask(cache, keysPad, steps, window, d, t));
+                    k -> cacheMask(cache, keysPad, steps, window, d, t, runs));
         }
         Var[] hidden = new Var[1];
-        Var logits = run(tokens, positions, cache, masks, hidden);
+        multiPositions = multi;
+        Var logits;
+        try {
+            logits = run(tokens, positions, cache, masks, hidden);
+        } finally {
+            multiPositions = null;
+        }
         cache.padding = keysPad;
         cache.length += steps;
         Tensor out = everyStep ? logits.value().to(DType.FLOAT32)
@@ -1456,7 +1694,8 @@ public final class Llama implements LanguageModel {
         return out;
     }
 
-    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window, Device device, DType dtype) {
+    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window, Device device, DType dtype,
+            int[][] runs) {
         int batch = keysPad.length;
         int keys = cache.capacity;
         float[] m = new float[batch * steps * keys];
@@ -1464,7 +1703,10 @@ public final class Llama implements LanguageModel {
             for (int t = 0; t < steps; t++) {
                 int row = (b * steps + t) * keys;
                 for (int k = 0; k < keys; k++) {
-                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]
+                    int at = k - cache.length;
+                    boolean together = runs != null && at > t && at < steps && runs[b][t] >= 0
+                            && runs[b][at] == runs[b][t];
+                    if (k > cache.length + t && !together || keysPad[b][Math.min(k, keysPad[b].length - 1)]
                             || window > 0 && k <= cache.length + t - window) {
                         m[row + k] = -1e9f;
                     }
@@ -1516,10 +1758,50 @@ public final class Llama implements LanguageModel {
             System.arraycopy(tokens[b], 0, flat, b * steps, steps);
         }
         LlamaConfig.Extras e = config.extras();
-        Var x = base(embed).gather(0, indices(flat, device)).reshape(batch, steps, config.hidden());
+        int[] lookup = flat;
+        if (insert != null) {
+            // the placeholder need not be in the vocabulary: it reads row 0, then is replaced
+            lookup = flat.clone();
+            for (int i = 0; i < lookup.length; i++) {
+                if (lookup[i] == insert.token) {
+                    lookup[i] = 0;
+                }
+            }
+        }
+        Var x = base(embed).gather(0, indices(lookup, device)).reshape(batch, steps, config.hidden());
         if (e.scaleEmbeddings()) {
             // as Gemma: the factor rounded to the model's type first
             x = x.mul(Tensor.full(Shape.of(), (float) Math.sqrt(config.hidden()), Device.cpu()).to(dtype).item());
+        }
+        if (insert != null) {
+            // the placeholders read rows appended after the token embeddings
+            int[] from = new int[flat.length];
+            int n = flat.length;
+            int count = 0;
+            for (int i = 0; i < flat.length; i++) {
+                from[i] = flat[i] == insert.token ? n + count++ : i;
+            }
+            if (count > 0) {
+                if (insert.used + count > insert.rows.shape().dim(0)) {
+                    throw new IllegalArgumentException("more placeholders than the " + insert.rows.shape().dim(0)
+                            + " embeddings given");
+                }
+                Var rows = Var.of(insert.rows.slice(0, insert.used, insert.used + count));
+                insert.used += count;
+                x = Var.concat(0, x.reshape(n, config.hidden()), rows).gather(0, indices(from, device))
+                        .reshape(batch, steps, config.hidden());
+            }
+        }
+        int[][] runs = masks == null ? runs(tokens) : null;
+        if (runs != null) {
+            masks = new Tensor[blocks.size()];
+            Map<String, Tensor> byWindow = new java.util.HashMap<>();
+            for (int l = 0; l < blocks.size(); l++) {
+                int window = windowOf(l);
+                Device d = deviceOf(l);
+                DType t = typeOf(l);
+                masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t, k -> runMask(runs, window, d, t));
+            }
         }
         if (masks == null) {
             masks = new Tensor[blocks.size()];
@@ -1754,7 +2036,13 @@ public final class Llama implements LanguageModel {
     }
 
     /** Rotates the first {@code rotary} features of each head; the rest pass (partial rotary, Phi). */
-    private static Var rotate(Rope r, Var x, int[][] positions, int rotary, int hd) {
+    private Var rotate(Rope r, Var x, int[][] positions, int rotary, int hd) {
+        if (multiPositions != null) {
+            if (rotary != hd) {
+                throw new IllegalStateException("3D positions with partial rotation");
+            }
+            return r.apply(x, multiPositions, ropeSections);
+        }
         if (rotary == hd) {
             return r.apply(x, positions);
         }
@@ -1768,6 +2056,27 @@ public final class Llama implements LanguageModel {
             return set;
         }
         return config.extras().local(layer) ? config.extras().slidingWindow() : 0;
+    }
+
+    /**
+     * Causal, within a window when {@code window > 0}, with each run seeing all of itself:
+     * {@code [batch, 1, steps, steps]}.
+     */
+    private static Tensor runMask(int[][] runs, int window, Device device, DType dtype) {
+        int batch = runs.length;
+        int steps = runs[0].length;
+        float[] m = new float[batch * steps * steps];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                for (int k = 0; k < steps; k++) {
+                    boolean together = runs[b][t] >= 0 && runs[b][k] == runs[b][t];
+                    if (k > t && !together || window > 0 && k <= t - window) {
+                        m[(b * steps + t) * steps + k] = -1e9f;
+                    }
+                }
+            }
+        }
+        return Tensor.of(Shape.of(batch, 1, steps, steps), m, device).to(dtype);
     }
 
     /** A causal mask over {@code steps} steps where each sees only the last {@code window}. */

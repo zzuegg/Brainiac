@@ -386,6 +386,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .vcard { display: grid; grid-template-columns: 40px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
 .vcard:hover { background: var(--panel-2); }
 .vcard.active { background: var(--panel); box-shadow: inset 3px 0 0 var(--cap-speech); }
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .vface { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font: 600 15px var(--font-display); color: var(--bg); }
 .vcard .n { font-weight: 600; font-size: 13.5px; }
 .vcard .d { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -727,6 +728,16 @@ input[type="range"]:disabled { opacity: .35; }
 /* ---------- live images and voice ---------- */
 .tile img { display: block; width: 100%; object-fit: cover; }
 .tile .ov a { flex: 1; border-radius: 6px; padding: 5px 0; font-size: 11.5px; background: rgba(9, 11, 16, .78); color: #e7eaf1; backdrop-filter: blur(6px); text-align: center; text-decoration: none; }
+.tile.previewing img { image-rendering: auto; filter: blur(1.5px) saturate(1.1); transform: scale(1.04); }
+.tile .step { pointer-events: none; }
+.draw-bar { height: 3px; border-radius: 2px; background: var(--line-soft); overflow: hidden; margin: -2px 0 8px; }
+.draw-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+.img-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.img-grid .field { min-width: 0; }
+.seed-row { display: flex; gap: 6px; align-items: center; }
+.seed-row input { flex: 1; min-width: 0; }
+.flag.ok-note { border-style: solid; border-color: var(--line); background: var(--panel-2); }
+.flag.ok-note > svg { color: var(--ok); }
 .tile.wait { background: linear-gradient(100deg, var(--panel) 30%, var(--panel-2) 50%, var(--panel) 70%); background-size: 300% 100%; animation: shimmer 1.4s infinite linear; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .tile.wait { animation: none; } }
@@ -736,6 +747,17 @@ input[type="range"]:disabled { opacity: .35; }
 .take .who { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .take .grow { flex: 1; }
 .take audio { width: 100%; height: 36px; }
+.voice.listen { grid-template-columns: minmax(0,1fr) 300px; }
+.tr-list { padding: 16px 24px; overflow: auto; display: grid; gap: 12px; align-content: start; }
+.tr-list.over .video-drop, .tr-list.over { outline: 2px dashed var(--cap-speech); outline-offset: -6px; }
+.transcript .segs { display: grid; gap: 4px; font-size: 14px; line-height: 1.5; }
+.transcript .seg-line { display: flex; gap: 10px; }
+.transcript .seg-line .mono { font-size: 11.5px; padding-top: 3px; flex: none; width: 34px; }
+.voice-settings .check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--fg-2); }
+.voice-settings .check output { color: var(--faint); font-size: 12px; }
+label.btn.disabled { opacity: .5; pointer-events: none; }
+@media (max-width: 1080px) { .voice.listen { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 720px) { .stage-head .seg.vo-mode { display: inline-flex; } .stage-head { flex-wrap: wrap; } }
 a.btn { text-decoration: none; }
 .vo-video video { width: 100%; border-radius: 12px; background: #000; border: 1px solid var(--line-soft); aspect-ratio: 16 / 9; }
 .video-drop { border: 1px dashed var(--line); border-radius: 12px; padding: 28px 16px; display: grid; gap: 6px; justify-items: center; text-align: center; cursor: pointer; color: var(--fg-2); font-size: 13px; }
@@ -1159,3 +1181,33 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
   .vast-filters input, .vast-filters #vf-gpu { width: 100%; }
   .vast-filters label { flex: 1 1 130px; }
 }
+
+/* ---------- chat: instructions and answer length, editing a sent message, links and tables ---------- */
+.chat-settings { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 12px; align-items: start; padding: 10px 14px 12px; border-bottom: 1px solid var(--line-soft); background: var(--panel-2); }
+.chat-settings textarea { resize: vertical; min-height: 60px; }
+.chat-settings .field label { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
+.iconbtn.has-set { color: var(--accent); }
+.route-hint.editing { color: var(--fg-2); }
+.route-hint.editing .grow { flex: 1; }
+@media (max-width: 720px) { .chat-settings { grid-template-columns: minmax(0, 1fr); } }
+:is(.msg .body, .md-body) a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+:is(.msg .body, .md-body) .mdtable { overflow-x: auto; margin: 0 0 10px; border: 1px solid var(--line-soft); border-radius: 10px; }
+:is(.msg .body, .md-body) .mdtable table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+:is(.msg .body, .md-body) .mdtable :is(th, td) { padding: 6px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line-soft); }
+:is(.msg .body, .md-body) .mdtable th { font-weight: 600; background: var(--panel-2); white-space: nowrap; }
+:is(.msg .body, .md-body) .mdtable tr:last-child td { border-bottom: 0; }
+.hub-target { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; font-size: 12.5px; color: var(--fg-2); border-bottom: 1px solid var(--line-soft); }
+.hub-target select { width: auto; height: 30px; }
+.hub-target .faint { flex-basis: 100%; font-size: 12px; }
+
+/* ---------- training: try a trained model ---------- */
+.trybox { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel-2); }
+.try-row { display: flex; gap: 6px; align-items: center; }
+.try-row .input { flex: 1; min-width: 0; height: 30px; }
+.try-result { display: grid; gap: 6px; }
+.try-answer { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 15px; }
+.try-bars { display: grid; gap: 4px; font-size: 12.5px; }
+.try-bars > div { display: grid; grid-template-columns: minmax(60px, 34%) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.try-bars .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
+.try-bars .bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.try-bars .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }

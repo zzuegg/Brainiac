@@ -56,6 +56,12 @@ public final class Hub {
     // What runs is asked from the core, so a family or quantization it learns shows up here unchanged.
     /** The Hugging Face model families the core loads from a model folder. */
     static final Set<String> FAMILIES = LlamaConfig.MODEL_TYPES;
+    /** The speech model families the studio runs: Whisper writes down, VITS (MMS-TTS) speaks. */
+    static final Set<String> SPEECH_FAMILIES = Set.of("whisper", "vits");
+    // what a speech model folder needs besides its weights
+    private static final Set<String> SPEECH_FILES = Set.of("config.json", "generation_config.json",
+            "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt",
+            "normalizer.json", "added_tokens.json", "special_tokens_map.json");
     /** The GGUF architectures the core loads. */
     static final Set<String> GGUF_ARCHITECTURES = LlamaConfig.GGUF_ARCHITECTURES;
     /** The GGUF tensor types the core reads. */
@@ -91,6 +97,16 @@ public final class Hub {
     }
 
     /**
+     * Returns the core library's client for the same hub, with the same token, for files the core
+     * fetches itself (such as the CLIP vocabulary of Stable Diffusion checkpoints).
+     *
+     * @return the client
+     */
+    public io.github.zzuegg.brainiac.io.HuggingFaceHub core() {
+        return new io.github.zzuegg.brainiac.io.HuggingFaceHub(base, token().orElse(null));
+    }
+
+    /**
      * Returns where downloads go.
      *
      * @return the folder
@@ -112,16 +128,37 @@ public final class Hub {
      * @throws IOException if the Hub cannot be reached
      */
     public Map<String, Object> search(String query) throws IOException {
-        StringBuilder q = new StringBuilder("api/models?limit=100&sort=downloads&direction=-1&pipeline_tag=text-generation");
-        if (!query.isBlank()) {
-            q.append("&search=").append(URLEncoder.encode(query.strip(), StandardCharsets.UTF_8));
+        return search(query, "text");
+    }
+
+    /**
+     * Searches the Hub for models the studio runs, most downloaded first: text generation models,
+     * or speech models (Whisper to write down, VITS to speak).
+     *
+     * @param query words in the name, such as "whisper base"
+     * @param kind {@code text} or {@code speech}
+     * @return as {@link #search(String)}
+     * @throws IOException if the Hub cannot be reached
+     */
+    public Map<String, Object> search(String query, String kind) throws IOException {
+        boolean speech = "speech".equals(kind);
+        List<Object> found = new ArrayList<>();
+        for (String tag : speech ? List.of("automatic-speech-recognition", "text-to-speech") : List.of("text-generation")) {
+            StringBuilder q = new StringBuilder("api/models?limit=100&sort=downloads&direction=-1&pipeline_tag=" + tag);
+            if (!query.isBlank()) {
+                q.append("&search=").append(URLEncoder.encode(query.strip(), StandardCharsets.UTF_8));
+            }
+            for (String e : List.of("downloads", "likes", "tags", "lastModified", "gated", "config", "gguf")) {
+                q.append("&expand%5B%5D=").append(e);
+            }
+            found.addAll(Json.array(Json.parse(text(base.resolve(q.toString())))));
         }
-        for (String e : List.of("downloads", "likes", "tags", "lastModified", "gated", "config", "gguf")) {
-            q.append("&expand%5B%5D=").append(e);
+        if (speech) {
+            found.sort((a, b) -> Long.compare(downloads(b), downloads(a)));
         }
         List<Map<String, Object>> out = new ArrayList<>();
         int hidden = 0;
-        for (Object o : Json.array(Json.parse(text(base.resolve(q.toString()))))) {
+        for (Object o : found) {
             Map<String, Object> m = Json.object(o);
             List<String> tags = Json.array(m.getOrDefault("tags", List.of())).stream().map(String::valueOf).toList();
             Map<String, Object> gguf = m.get("gguf") instanceof Map<?, ?> g ? Json.object(g) : Map.of();
@@ -129,7 +166,8 @@ public final class Hub {
             String arch = Json.string(gguf, "architecture", "");
             String type = Json.string(config, "model_type", "");
             boolean hasGguf = !gguf.isEmpty() || tags.contains("gguf");
-            boolean runs = (!arch.isEmpty() && GGUF_ARCHITECTURES.contains(arch))
+            boolean runs = speech ? SPEECH_FAMILIES.contains(type) && tags.contains("safetensors")
+                    : (!arch.isEmpty() && GGUF_ARCHITECTURES.contains(arch))
                     || (!type.isEmpty() && FAMILIES.contains(type) && tags.contains("safetensors"));
             if (!runs) {
                 hidden++;
@@ -143,7 +181,7 @@ public final class Hub {
             r.put("downloads", m.getOrDefault("downloads", 0));
             r.put("likes", m.getOrDefault("likes", 0));
             r.put("gguf", !arch.isEmpty() && GGUF_ARCHITECTURES.contains(arch));
-            r.put("safetensors", FAMILIES.contains(type) && tags.contains("safetensors"));
+            r.put("safetensors", (FAMILIES.contains(type) || SPEECH_FAMILIES.contains(type)) && tags.contains("safetensors"));
             r.put("family", arch.isEmpty() ? type : arch);
             Object gated = m.get("gated");
             r.put("gated", gated != null && !Boolean.FALSE.equals(gated));
@@ -156,6 +194,10 @@ public final class Hub {
         res.put("models", out);
         res.put("hidden", hidden);
         return res;
+    }
+
+    private static long downloads(Object o) {
+        return o instanceof Map<?, ?> m && m.get("downloads") instanceof Number n ? n.longValue() : 0;
     }
 
     /**
@@ -203,12 +245,19 @@ public final class Hub {
                     .toList();
             if (!weights.isEmpty()) {
                 List<String> files = new ArrayList<>(weights);
-                byPath.keySet().stream().filter(FOLDER_FILES::contains).forEach(files::add);
+                boolean speaks = SPEECH_FAMILIES.contains(family);
+                byPath.keySet().stream().filter(speaks ? SPEECH_FILES::contains : FOLDER_FILES::contains).forEach(files::add);
                 long size = files.stream().mapToLong(p -> size(byPath.get(p))).sum();
                 Map<String, Object> o = option("folder", "folder", repoName(repo), size);
                 o.put("files", files);
                 o.put("family", family);
-                if (!FAMILIES.contains(family)) {
+                if ("whisper".equals(family) && !byPath.containsKey("tokenizer.json")) {
+                    unsupported(o, "it has no tokenizer.json");
+                } else if ("vits".equals(family) && !byPath.containsKey("vocab.json")) {
+                    unsupported(o, "it has no vocab.json");
+                } else if (speaks) {
+                    o.put("speech", true);
+                } else if (!FAMILIES.contains(family)) {
                     unsupported(o, configError != null ? configError : family.isEmpty() ? "no model_type in config.json"
                             : "the " + family + " family does not run in the studio yet; "
                                     + String.join(", ", new java.util.TreeSet<>(FAMILIES)) + " do");
@@ -369,6 +418,7 @@ public final class Hub {
         private final String name;
         private final String kind;
         private final String option;
+        private final String family;
         private final long total;
         private final long started = System.currentTimeMillis();
         private volatile long done;
@@ -378,8 +428,9 @@ public final class Hub {
         private volatile boolean cancelled;
         private volatile Thread thread;
 
-        Download(String id, String repo, String name, String kind, String option, long total) {
+        Download(String id, String repo, String name, String kind, String option, String family, long total) {
             this.id = id;
+            this.family = family == null ? "" : family;
             this.repo = repo;
             this.name = name;
             this.kind = kind;
@@ -410,6 +461,7 @@ public final class Hub {
             m.put("error", error);
             m.put("started", started);
             m.put("model", "local/" + name);
+            m.put("family", family);
             return m;
         }
     }
@@ -460,7 +512,8 @@ public final class Hub {
         }
         List<Map<String, Object>> tree = tree(repo);
         String name = (String) o.get("name");
-        Download d = new Download(String.valueOf(ids.incrementAndGet()), repo, name, (String) o.get("kind"), option, size);
+        Download d = new Download(String.valueOf(ids.incrementAndGet()), repo, name, (String) o.get("kind"), option,
+                Json.string(o, "family", ""), size);
         downloads.put(d.id, d);
         List<String> files = o.get("files") instanceof List<?> l ? l.stream().map(String::valueOf).toList()
                 : List.of(option);

@@ -118,7 +118,17 @@ final class Registry {
         simple("padding_mask", PaddingMask.class, PaddingMask::write, PaddingMask::read);
         simple("masked_pool", MaskedPool.class, MaskedPool::write, MaskedPool::read);
         simple("brain", Brain.class, Brain::write, Brain::read);
+        simple("mel_spectrogram", MelSpectrogram.class, MelSpectrogram::write, MelSpectrogram::read);
+        simple("relative_attention", RelativeAttention.class, RelativeAttention::write, RelativeAttention::read);
+        simple("hifigan_block", HifiGanBlock.class, HifiGanBlock::write, HifiGanBlock::read);
+        simple("wavenet", WaveNet.class, WaveNet::write, WaveNet::read);
+        simple("style_norm", StyleNorm.class, StyleNorm::write, StyleNorm::read);
+        simple("adain_res_block", AdainResBlock.class, AdainResBlock::write, AdainResBlock::read);
+        simple("adain_snake_block", AdainSnakeBlock.class, AdainSnakeBlock::write, AdainSnakeBlock::read);
         DiffusionCodecs.register();
+        simple("convnext1d", ConvNeXt1d.class, ConvNeXt1d::write, ConvNeXt1d::read);
+        simple("dit_block", DitBlock.class, DitBlock::write, DitBlock::read);
+        simple("snake", Snake.class, Snake::write, Snake::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.QUICK_GELU,
                 Activation.SOFTPLUS, Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,

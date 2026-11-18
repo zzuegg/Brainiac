@@ -84,6 +84,18 @@ public final class CpuBackend implements Backend {
             case FLOAT64 -> java.lang.foreign.MemorySegment.copy(data, RawValues.DOUBLE, 0, s.wide, 0, s.wide.length);
             case FLOAT16, BFLOAT16 ->
                     java.lang.foreign.MemorySegment.copy(data, RawValues.SHORT, 0, s.half, 0, s.half.length);
+            case INT64 -> java.lang.foreign.MemorySegment.copy(data, RawValues.LONG, 0, s.ints, 0, s.ints.length);
+            case INT32 -> {
+                for (int i = 0; i < s.ints.length; i++) {
+                    s.ints[i] = data.getAtIndex(RawValues.INT, i);
+                }
+            }
+            case UINT8, BOOL -> {
+                for (int i = 0; i < s.ints.length; i++) {
+                    long v = Byte.toUnsignedLong(data.get(java.lang.foreign.ValueLayout.JAVA_BYTE, i));
+                    s.ints[i] = dtype == DType.BOOL && v != 0 ? 1 : v;
+                }
+            }
         }
         return s;
     }

@@ -201,6 +201,10 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         double partial = Json.number(ropeNode, "partial_rotary_factor", Json.number(config, "partial_rotary_factor", 1));
         int rotary = (int) Math.round(headDim * partial);
         String ropeType = Json.string(ropeNode, "rope_type", Json.string(ropeNode, "type", "default"));
+        if (ropeType.equals("mrope")) {
+            // Qwen2-VL's older spelling: default frequencies, the sections are read by the VLM
+            ropeType = "default";
+        }
         int maxPositions = (int) Json.integer(config, "max_position_embeddings", 2048);
         int original = (int) Json.integer(ropeNode, "original_max_position_embeddings",
                 Json.integer(config, "original_max_position_embeddings", maxPositions));

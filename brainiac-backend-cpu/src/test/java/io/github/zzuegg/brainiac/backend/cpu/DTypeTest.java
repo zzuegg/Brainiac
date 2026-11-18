@@ -33,6 +33,7 @@ class DTypeTest {
             case FLOAT32 -> 1e-6;
             case FLOAT16 -> 2e-2;
             case BFLOAT16 -> 8e-2;
+            default -> 0;
         };
     }
 

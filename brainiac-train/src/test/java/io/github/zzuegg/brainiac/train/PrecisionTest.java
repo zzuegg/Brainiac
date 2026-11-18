@@ -90,7 +90,7 @@ class PrecisionTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void savedModelsKeepTheirNumberFormat(DType type, @TempDir Path dir) throws IOException {
         Model m = model().to(type);
         Path file = dir.resolve("m.brainiac");

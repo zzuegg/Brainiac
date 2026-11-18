@@ -28,6 +28,8 @@ tasks.test {
         testLogging.showStandardStreams = true
     }
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    // -PtestJvmArgs="-Dbrainiac.vulkan.submitEvery=1 ..." for diagnosing real-model runs
+    providers.gradleProperty("testJvmArgs").orNull?.split(" ")?.filter { it.isNotBlank() }?.let { jvmArgs(it) }
     if (device != "cpu") {
         jvmArgs("-Dbrainiac.vulkan.devices=all")   // lavapipe counts too
     }

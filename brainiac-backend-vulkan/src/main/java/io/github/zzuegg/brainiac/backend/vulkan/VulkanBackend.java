@@ -245,7 +245,7 @@ public final class VulkanBackend implements Backend {
     private void loadTuning(boolean force) {
         java.nio.file.Path file = Tuning.file(vk.deviceKey);
         Tuning kept = force ? null : Tuning.load(file);
-        if (kept != null) {
+        if (kept != null && (kept.complete || vk.softwareDevice)) {
             tuning = kept;
             tuningNote = "tuned (" + file + ")";
             return;
@@ -506,6 +506,7 @@ public final class VulkanBackend implements Backend {
             case FLOAT64 -> "_f64";
             case FLOAT16 -> "_f16";
             case BFLOAT16 -> "_bf16";
+            default -> throw new IllegalArgumentException("no Vulkan shaders for " + dtype);
         };
     }
 
@@ -1886,6 +1887,16 @@ public final class VulkanBackend implements Backend {
     @Override
     public synchronized PackedStorage quantize(Storage values, int rows, int cols, int bits, int group) {
         VkStorage x = vs(values);
+        if (bits <= 4 && rows % group == 0 && group % 2 == 0 && x.dtype == DType.FLOAT32
+                && x.size == (long) rows * cols) {
+            // levels on the host, two per byte on the device; no host copy is kept, so a large
+            // model quantized at load takes no Java heap
+            PackedMatrix m = PackedMatrix.quantize(download(values), rows, cols, bits, group);
+            VkStorage levels = uploadBytes(m.data());
+            VkStorage scales = vs(upload(m.scales()));
+            return new Packed(rows, cols, bits, group, Packed.NIBBLES, 1, 0, null, levels, null, null, null, scales,
+                    null);
+        }
         if (bits != 8 || cols % 4 != 0 || rows % group != 0 || x.dtype != DType.FLOAT32 || x.size != (long) rows * cols) {
             return Backend.super.quantize(values, rows, cols, bits, group);
         }
@@ -1909,9 +1920,23 @@ public final class VulkanBackend implements Backend {
             float[] scales = download(p.scales());
             float[] offsets = p.offsets() == null ? null : download(p.offsets());
             byte[] levels = new byte[(int) p.size()];
-            synchronized (this) {
-                eager(p.levels());
-                vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
+            if ((p.flags() & Packed.NIBBLES) != 0) {
+                byte[] data = new byte[p.rows() / 2 * p.cols()];
+                synchronized (this) {
+                    eager(p.levels());
+                    vk.download(p.levels().slot(), p.levels().bytes()).get(data);
+                }
+                for (int r = 0; r < p.rows(); r++) {
+                    for (int c = 0; c < p.cols(); c++) {
+                        int b = data[r / 2 * p.cols() + c];
+                        levels[r * p.cols() + c] = (byte) ((r & 1) == 0 ? (b << 28) >> 28 : (b << 24) >> 28);
+                    }
+                }
+            } else {
+                synchronized (this) {
+                    eager(p.levels());
+                    vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
+                }
             }
             return PackedMatrix.of(levels, scales, offsets, p.rows(), p.cols(), p.bits(), p.group());
         }
@@ -1974,7 +1999,9 @@ public final class VulkanBackend implements Backend {
         VkStorage z = vs(out);
         eager(vs(a), z);
         VkStorage x = as(vs(a), z.dtype);
-        int columnGroups = ceil(n, 128);
+        // one row, sixteen columns per invocation from 16-byte loads, where the tuning chose it
+        boolean wide = m == 1 && n % 16 == 0 && ((p.layout() >> 8) & 15) == 0 && tuning.get("packedWide") != 0;
+        int columnGroups = ceil(n, wide ? 512 : 128);
         // enough pieces to fill the device, of at least PACKED_PIECE rows each, as matvec does:
         // with 256 a 896-wide model ran only 28 work groups and decoded at half f16's speed
         int pieces = Math.max(1, Math.min(ceil(k, (int) tuning.get("packedPiece")),
@@ -1988,7 +2015,8 @@ public final class VulkanBackend implements Backend {
         push.putLong(z.address()).putLong(split.partsAddress()).putLong(counters.address()).putInt(m).putInt(k)
                 .putInt(n).putInt(p.group()).putInt(p.layout()).putInt(chunk).putInt(pieces).putInt(split.counter())
                 .putInt(p.perSuper()).putFloat(p.shift());
-        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
+        vk.dispatch(shader(wide ? "matmul_packed_wide" : "matmul_packed" + rows, z.dtype), columnGroups, 1, pieces,
+                split.writes(z), p.reads(x));
         split.release();
         done(x, vs(a));
     }

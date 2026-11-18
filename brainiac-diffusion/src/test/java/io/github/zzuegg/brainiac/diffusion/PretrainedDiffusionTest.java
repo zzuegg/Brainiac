@@ -50,11 +50,22 @@ class PretrainedDiffusionTest {
                     : Flux.load(p, device, fluxType, Flux.Options.bits(Integer.parseInt(bits.split(",")[0].trim()),
                             Integer.parseInt(bits.split(",")[1].trim())))) {
                 long t1 = System.nanoTime();
+                System.out.printf("%s: %s%s loaded in %.1f s, peak %s%n", p.getFileName(), model,
+                        model instanceof Flux f ? " " + f.options() : "", (t1 - t0) / 1e9,
+                        device.memory().map(m -> MemoryFit.gb(m.peak())).orElse("n/a"));
                 ImageGenerator.Defaults d = model.defaults();
                 ImageRequest r = ImageRequest.of("a photo of a red fox sitting in fresh snow, golden hour, detailed fur")
                         .negativePrompt("blurry, low quality").steps(d.steps()).guidance(d.guidance()).seed(42)
                         .build();
-                GeneratedImage img = model.generate(r, Progress.NONE).get(0);
+                long[] last = {System.nanoTime()};
+                GeneratedImage img = model.generate(r, (step, total, preview) -> {
+                    long now = System.nanoTime();
+                    System.out.printf("  step %d/%d in %.2f s, in use %s, peak %s%n", step, total,
+                            (now - last[0]) / 1e9, device.memory().map(m -> MemoryFit.gb(m.inUse())).orElse("n/a"),
+                            device.memory().map(m -> MemoryFit.gb(m.peak())).orElse("n/a"));
+                    last[0] = now;
+                    return true;
+                }).get(0);
                 long t2 = System.nanoTime();
                 assertEquals(model.nativeSize(), img.width());
                 double mean = 0;

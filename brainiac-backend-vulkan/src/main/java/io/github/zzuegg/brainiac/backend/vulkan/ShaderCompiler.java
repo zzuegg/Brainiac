@@ -76,6 +76,7 @@ final class ShaderCompiler {
             case FLOAT64 -> "TYPE_F64";
             case FLOAT16 -> "TYPE_F16";
             case BFLOAT16 -> "TYPE_BF16";
+            default -> throw new IllegalArgumentException("Vulkan shaders hold floating point values, not " + type);
         };
         return "#version 460\n#define " + define + "\n" + prelude + body;
     }

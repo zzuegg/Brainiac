@@ -312,6 +312,10 @@ public final class SafeTensors implements WeightSource {
                 case FLOAT32 -> "F32";
                 case FLOAT16 -> "F16";
                 case BFLOAT16 -> "BF16";
+                case INT32 -> "I32";
+                case INT64 -> "I64";
+                case UINT8 -> "U8";
+                case BOOL -> "BOOL";
             });
             info.put("shape", t.shape().toArray());
             info.put("data_offsets", List.of(offset, offset + bytes));
@@ -359,6 +363,19 @@ public final class SafeTensors implements WeightSource {
                 for (double v : t.toDoubleArray()) {
                     s.put(DType.floatToBfloat16((float) v));
                 }
+            }
+            case INT64 -> b.asLongBuffer().put(t.toLongArray());
+            case INT32 -> {
+                var s = b.asIntBuffer();
+                for (long v : t.toLongArray()) {
+                    s.put((int) v);
+                }
+            }
+            case UINT8, BOOL -> {
+                for (long v : t.toLongArray()) {
+                    b.put((byte) v);
+                }
+                b.rewind();
             }
         }
         return b;

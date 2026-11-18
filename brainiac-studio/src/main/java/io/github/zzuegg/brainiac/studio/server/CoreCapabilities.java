@@ -28,7 +28,11 @@ public final class CoreCapabilities implements CapabilityProvider {
             out.add(Capability.available("model.finetune", Medium.TRAINING, "Fine-tune",
                     "LoRA and QLoRA on Llama-family models", "brainiac-llm"));
         }
-        if (present("io.github.zzuegg.brainiac.nn.diffusion.Diffusion")) {
+        if (present("io.github.zzuegg.brainiac.diffusion.StableDiffusion")) {
+            out.add(Capability.available("image.generate", Medium.IMAGE, "Generate images",
+                    "Stable Diffusion and FLUX.1 models from a model folder, with samplers, seeds and guidance",
+                    "brainiac-diffusion"));
+        } else if (present("io.github.zzuegg.brainiac.nn.diffusion.Diffusion")) {
             out.add(Capability.available("image.generate", Medium.IMAGE, "Generate images",
                     "Diffusion (DDPM, DDIM) and flow-matching samplers for denoisers built here", "brainiac-nn")
                     .withNote("No pretrained text-to-image weights yet"));
@@ -57,14 +61,22 @@ public final class CoreCapabilities implements CapabilityProvider {
                         "Research building blocks from brainiac.experimental", "brainiac-experiments")
                         .withNote(m.getPackages().size() + " packages, untested")));
 
-        out.add(Capability.planned("speech.synthesize", Medium.SPEECH, "Text to speech",
-                "Speak text with a chosen voice, pace and emotion"));
-        out.add(Capability.planned("speech.transcribe", Medium.SPEECH, "Transcribe",
-                "Turn speech into text with timings"));
+        if (present("io.github.zzuegg.brainiac.audio.TextToSpeech")) {
+            out.add(Capability.available("speech.synthesize", Medium.SPEECH, "Text to speech",
+                    "Speak with Kokoro and VITS (MMS-TTS) voices on this PC, by name or blended", "brainiac-audio"));
+            out.add(Capability.available("speech.transcribe", Medium.SPEECH, "Transcribe",
+                    "Whisper writes down speech, with timings and translation to English", "brainiac-audio"));
+        } else {
+            out.add(Capability.planned("speech.synthesize", Medium.SPEECH, "Text to speech",
+                    "Speak text with a chosen voice, pace and emotion"));
+            out.add(Capability.planned("speech.transcribe", Medium.SPEECH, "Transcribe",
+                    "Turn speech into text with timings"));
+        }
         out.add(Capability.planned("vision.describe", Medium.VISION, "Describe images",
                 "Answer questions about pictures and video frames"));
-        out.add(Capability.planned("agent.run", Medium.AGENT, "Agents",
-                "An orchestrator that plans and hands each part to an agent with that medium's tools"));
+        out.add(Capability.available("agent.run", Medium.AGENT, "Agents",
+                "An agent works toward a goal with the studio's tools, asking first before it changes anything if you want",
+                "brainiac-studio"));
         return out;
     }
 

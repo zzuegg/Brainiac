@@ -126,6 +126,16 @@ class CompatibleProvider extends RemoteProvider {
                 : List.of("text");
     }
 
+    /**
+     * Whether a model accepts a temperature; OpenAI's reasoning models answer only at their own.
+     *
+     * @param model the model's id
+     * @return true to send the temperature asked for
+     */
+    boolean takesTemperature(String model) {
+        return !(preset.id().equals("openai") && model.matches("(gpt-5|o\\d).*"));
+    }
+
     @Override
     ChatResult chat(ChatRequest request, ChatListener listener, String key) throws IOException, InterruptedException {
         List<Object> messages = new ArrayList<>();
@@ -140,6 +150,9 @@ class CompatibleProvider extends RemoteProvider {
         body.put("messages", messages);
         body.put(preset.tokensField(), request.maxTokens());
         body.put("stream", true);
+        if (request.temperature() != null && takesTemperature(request.model())) {
+            body.put("temperature", request.temperature());
+        }
         if (preset.usageOption()) {
             body.put("stream_options", Map.of("include_usage", true));
         }

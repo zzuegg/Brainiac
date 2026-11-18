@@ -426,6 +426,7 @@ final class Fusion {
                                 + " & 1u) * 16u)) & 0xFFFFu) << 16))";
                     }
                     case FLOAT64 -> throw new IllegalStateException("float64 read by a " + type + " chain");
+                    default -> throw new IllegalStateException(st.dtype + " read by a " + type + " chain");
                 });
             }
             at.put(j, v);

@@ -276,6 +276,7 @@ public final class CudaBackend implements Backend {
             case FLOAT64 -> "_f64";
             case FLOAT16 -> "_f16";
             case BFLOAT16 -> "_bf16";
+            default -> throw new IllegalArgumentException("no CUDA kernels for " + dtype);
         };
     }
 
@@ -298,7 +299,7 @@ public final class CudaBackend implements Backend {
 
     @Override
     public boolean supports(DType dtype) {
-        return isAvailable();
+        return dtype.floating() && isAvailable();   // integer tensors live on the CPU
     }
 
     @Override
@@ -365,6 +366,7 @@ public final class CudaBackend implements Backend {
                 cuda.upload(s.address(), MemorySegment.ofArray(h));
                 yield s;
             }
+            default -> throw new UnsupportedOperationException("CUDA holds no " + dtype + " tensors");
         };
     }
 

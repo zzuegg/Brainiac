@@ -60,6 +60,7 @@ class VulkanBackendTest {
             case FLOAT32 -> 2e-5;
             case FLOAT16 -> 2e-2;
             case BFLOAT16 -> 8e-2;
+            default -> 0;
         };
     }
 
@@ -91,7 +92,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void everyOperationMatchesTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         Tensor x = random(1, 5, 7);
@@ -131,7 +132,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void customKernelsMatchTheirJavaVersion(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         io.github.zzuegg.brainiac.tensor.Kernel k = io.github.zzuegg.brainiac.tensor.Kernel.of("mix", 2, """
@@ -160,7 +161,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void sortsLikeTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // short rows, a non-power-of-two width, a vocabulary-sized row; ties from rounding
@@ -180,7 +181,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void uploadsRawValuesFromNativeMemory(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // small (inline update), mid-size (staging ring) and large (own staging block)
@@ -547,7 +548,7 @@ class VulkanBackendTest {
         String status = Device.available().stream().map(Device::name).filter(n -> n.startsWith("vulkan"))
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "vulkan".length(), status);
-        assertTrue(List.of(DType.values()).size() == 4);
+        assertTrue(List.of(DType.values()).stream().filter(DType::floating).count() == 4);
     }
 
     @ParameterizedTest
@@ -797,6 +798,26 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4, 32, 64, 96, 5", "4, 32, 64, 96, 70", "3, 16, 48, 40, 3",
+        "2, 8, 16, 24, 130"})
+    void quantizesFewBitsWithoutAHostCopy(int bits, int group, int rows, int cols, int m) {
+        Tensor x = random(13, rows, cols).mul(2);
+        PackedMatrix expected = PackedMatrix.quantize(x.toArray(), rows, cols, bits, group);
+        Tensor q = x.to(gpu).quantized(bits, group);
+        assertTrue(q.isPacked());
+        float[] values = new float[rows * cols];
+        expected.dequantize(values);
+        assertArrayEquals(values, q.toArray(), 0f);
+        assertArrayEquals(values, q.to(CPU).toArray(), 0f);   // nibbles read back from the device
+        Tensor a = random(14, m, rows);
+        float[] want = a.matmul(Tensor.of(Shape.of(rows, cols), values, CPU)).toArray();
+        float[] got = a.to(gpu).matmul(q).toArray();
+        for (int i = 0; i < want.length; i++) {
+            assertEquals(want[i], got[i], 1e-3 * Math.sqrt(rows) + Math.abs(want[i]) * 1e-3, bits + " bits at " + i);
+        }
+    }
+
+    @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"8, 64, 1", "8, 64, 5", "4, 64, 1", "4, 32, 8", "3, 48, 2",
         "4, 3, 9", "8, 64, 20", "8, 1536, 1", "4, 32, 3", "2, 2, 4", "4, 32, 70", "8, 1536, 40", "4, 3, 130", "3, 48, 70", "4, 16, 140"})
     void packedMatricesMatchTheCpu(int bits, int group, int m) {
@@ -952,6 +973,7 @@ class VulkanBackendTest {
         }
         choices.add(new String[] {"bigTileGroups", "1", "splitBelow", "100000"});
         choices.add(new String[] {"bigTileGroups", "100000", "splitBelow", "1"});
+        choices.add(new String[] {"packedWide", "1", "packedGroups", "1024", "packedPiece", "32"});
         for (String[] choice : choices) {
             for (int i = 0; i < choice.length; i += 2) {
                 System.setProperty("brainiac.vulkan." + choice[i], choice[i + 1]);
@@ -990,6 +1012,32 @@ class VulkanBackendTest {
                     float[] actual = x.to(DType.FLOAT16).to(gpu).matmul(w.to(gpu)).toArray();
                     for (int j = 0; j < expected.length; j++) {
                         assertEquals(expected[j], actual[j], 0.05, String.join(" ", choice) + ", packed at " + j);
+                    }
+                }
+                // one row (decode), 144 columns as the wide kernel needs: 4-bit, 8-bit and codebook levels
+                for (int bits : new int[] {4, 8, 0}) {
+                    int wide = 144;
+                    byte[] lv = new byte[rows * wide];
+                    byte[] book = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+                    for (int j = 0; j < lv.length; j++) {
+                        lv[j] = bits == 0 ? book[r.nextInt(16)] : (byte) (r.nextInt(1 << bits) - (1 << (bits - 1)));
+                    }
+                    float[] sc = new float[rows / 32 * wide];
+                    for (int j = 0; j < sc.length; j++) {
+                        sc[j] = 0.001f * (1 + j % 7);
+                    }
+                    Tensor w1 = Tensor.packed(PackedMatrix.of(lv, sc, rows, wide, bits == 0 ? 8 : bits, 32), CPU);
+                    Tensor x1 = random(10, 1, rows);
+                    float[] want = x1.matmul(w1).toArray();
+                    for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+                        if (!supported(type)) {
+                            continue;
+                        }
+                        float[] got = x1.to(type).to(gpu).matmul(w1.to(gpu)).toArray();
+                        for (int j = 0; j < want.length; j++) {
+                            assertEquals(want[j], got[j], type == DType.FLOAT16 ? 0.05 : 1e-3,
+                                    String.join(" ", choice) + ", one row, " + bits + " bits, " + type + " at " + j);
+                        }
                     }
                 }
             } finally {
