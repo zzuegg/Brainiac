@@ -39,6 +39,8 @@ import java.util.function.UnaryOperator;
  * <li>{@link #latentGeneration}: class-conditional spoken digits by latent and by mel diffusion.
  * <li>{@link #codecs}: FSQ against VQ and RVQ on {@link ToyAudioCodec} frames at matched code
  * spaces.
+ * <li>{@link #vocoderFollowUp} (wave 10, 10.6.16): the GAN vocoder with a mel-loss warm-up and
+ * checkpoints, trained far longer, against Griffin-Lim; {@link #main} also re-vocodes the TTS.
  * </ul>
  */
 public final class AudioGeneration {
@@ -318,6 +320,23 @@ public final class AudioGeneration {
      * @return one row per model, plus the vocoded ground-truth mels
      */
     public static List<TtsRow> tts(int steps, int test, int odeSteps, long seed) {
+        return tts(steps, test, odeSteps, seed, null, "Griffin-Lim");
+    }
+
+    /**
+     * 9.5.11's TTS rows with another vocoder (10.6.16 re-vocodes them with a trained GAN).
+     *
+     * @param steps training steps of each model
+     * @param test test utterances per split
+     * @param odeSteps Euler steps
+     * @param seed the seed
+     * @param vocoder log-mels {@code [frames][mels]} to one waveform, or null for Griffin-Lim
+     *     with 32 iterations
+     * @param vocoderName the vocoder's name for the ground-truth row
+     * @return one row per model, plus the vocoded ground-truth mels
+     */
+    public static List<TtsRow> tts(int steps, int test, int odeSteps, long seed,
+            java.util.function.Function<float[][], float[]> vocoder, String vocoderName) {
         int frames = 34;
         int longFrames = JUDGE_FRAMES;
         SplittableRandom r = new SplittableRandom(seed);
@@ -332,8 +351,9 @@ public final class AudioGeneration {
         TalkingDigits judge = judge(seed);
         GriffinLim gl = new GriffinLim(MEL.nFft(), MEL.hop(), 32, 0.99f, seed);
         List<TtsRow> rows = new ArrayList<>();
-        UnaryOperator<float[][]> vocode = m -> new float[][] {gl.vocode(MEL, withExtraRow(m), m.length * HOP)};
-        rows.add(new TtsRow("ground-truth mels + Griffin-Lim",
+        UnaryOperator<float[][]> vocode = vocoder != null ? m -> new float[][] {vocoder.apply(m)}
+                : m -> new float[][] {gl.vocode(MEL, withExtraRow(m), m.length * HOP)};
+        rows.add(new TtsRow("ground-truth mels + " + vocoderName,
                 judgeTts(shortTest, frames, (a, f) -> firstRows(melOf(a.wave(), f), f), vocode, judge),
                 judgeTts(longTest, longFrames, (a, f) -> firstRows(melOf(a.wave(), f), f), vocode, judge), 0, 0));
         String[] names = {"Matcha-style (MAS + durations)", "Matcha-style with true durations", "F5-style filler padding"};
@@ -672,5 +692,118 @@ public final class AudioGeneration {
             System.arraycopy(rows[i], 0, f, i * d, d);
         }
         return Tensor.of(Shape.of(n, d), f);
+    }
+
+    // ---------------------------------------------------------------- 10.6.16 vocoder follow-up
+
+    /**
+     * Trains a GAN vocoder to {@code steps} total steps, resuming from and saving to a
+     * checkpoint when one is given.
+     *
+     * @param warmup mel-loss warm-up steps
+     * @param steps total training steps
+     * @param train training waveforms
+     * @param checkpoint the checkpoint file, or null
+     * @param seed the seed
+     * @return the vocoder
+     */
+    public static GanVocoder trainGan(int warmup, int steps, List<float[]> train, java.nio.file.Path checkpoint,
+            long seed) {
+        GanVocoder g = GanVocoder.of(MEL, 32, seed).melWarmup(warmup);
+        if (checkpoint != null && java.nio.file.Files.exists(checkpoint)) {
+            g.load(checkpoint);
+        }
+        while (g.trainedSteps() < steps) {
+            g.step(g.crops(train, 4, 8));
+        }
+        if (checkpoint != null) {
+            g.save(checkpoint);
+        }
+        return g;
+    }
+
+    /**
+     * Wave 10 item 10.6.16: the HiFi-GAN-lite {@link GanVocoder} with a mel-loss warm-up,
+     * scored at each training checkpoint, against the same vocoder without warm-up at the same
+     * steps, Griffin-Lim with 32 and 100 iterations and the real waveform; with {@code wave9}
+     * also wave 9's short-trained GAN and diffusion vocoder rows (6 and 10 steps). The warm-up
+     * run resumes from and saves to {@code checkpoint} (null for none); a checkpoint already
+     * past a checkpoint step is scored at its own step count. Wave 9's rows are unchanged.
+     *
+     * @param warmup mel-loss warm-up steps
+     * @param checkpoints total training steps at which to score, increasing
+     * @param test test utterances
+     * @param checkpoint the warm-up vocoder's checkpoint file, or null
+     * @param wave9 whether to add wave 9's short-trained rows
+     * @param seed the seed
+     * @return the rows
+     */
+    public static List<VocoderRow> vocoderFollowUp(int warmup, int[] checkpoints, int test,
+            java.nio.file.Path checkpoint, boolean wave9, long seed) {
+        int frames = 32;
+        SplittableRandom r = new SplittableRandom(seed);
+        List<float[]> train = new ArrayList<>();
+        for (Aligned a : corpus(200, 1, 3, r)) {
+            train.add(a.wave());
+        }
+        List<Aligned> held = corpus(test, 1, 3, new SplittableRandom(seed + 77));
+        TalkingDigits judge = judge(seed);
+        List<VocoderRow> rows = new ArrayList<>();
+        rows.add(realRow(held, frames, judge));
+        for (int it : new int[] {32, 100}) {
+            GriffinLim gl = new GriffinLim(MEL.nFft(), MEL.hop(), it, 0.99f, seed);
+            rows.add(score("Griffin-Lim " + it, held, frames,
+                    m -> new float[][] {gl.vocode(MEL, m, frames * HOP)}, judge));
+        }
+        for (int variant = 0; variant < 2; variant++) {
+            int w = variant == 0 ? warmup : 0;
+            GanVocoder g = GanVocoder.of(MEL, 32, seed + 50).melWarmup(w);
+            if (variant == 0 && checkpoint != null && java.nio.file.Files.exists(checkpoint)) {
+                g.load(checkpoint);
+            }
+            for (int c : checkpoints) {
+                while (g.trainedSteps() < c) {
+                    g.step(g.crops(train, 4, 8));
+                }
+                String name = "HiFi-GAN-lite, " + (w > 0 ? w + "-step mel warm-up" : "no warm-up") + ", "
+                        + g.trainedSteps() + " steps";
+                rows.add(score(name, held, frames, m -> new float[][] {g.vocode(m, frames * HOP)}, judge));
+            }
+            if (variant == 0 && checkpoint != null) {
+                g.save(checkpoint);
+            }
+        }
+        if (wave9) {
+            for (VocoderRow row : vocoders(6, 10, test, new int[] {6}, seed)) {
+                if (!row.vocoder().startsWith("Griffin") && !row.vocoder().equals("real waveform")) {
+                    rows.add(new VocoderRow("wave 9: " + row.vocoder(), row.stftDistance(), row.digitErrorRate(),
+                            row.millisPerSecond()));
+                }
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * The long 10.6.16 Run: 2,000 warm-up steps and checkpoints to 20,000 steps (saved to
+     * {@code gan-vocoder.ckpt} in the working directory, resumed when present), then 9.5.11's
+     * TTS re-vocoded with the trained GAN.
+     *
+     * @param args ignored
+     */
+    public static void main(String[] args) {
+        java.nio.file.Path ckpt = java.nio.file.Path.of("gan-vocoder.ckpt");
+        for (VocoderRow row : vocoderFollowUp(2000, new int[] {2000, 5000, 10000, 20000}, 24, ckpt, true, 1)) {
+            System.out.println(row);
+        }
+        SplittableRandom r = new SplittableRandom(1);
+        List<float[]> train = new ArrayList<>();
+        for (Aligned a : corpus(200, 1, 3, r)) {
+            train.add(a.wave());
+        }
+        GanVocoder g = trainGan(2000, 20000, train, ckpt, 1 + 50);
+        for (TtsRow row : tts(1500, 24, 16, 1, m -> g.vocode(m, m.length * HOP), "HiFi-GAN-lite")) {
+            System.out.println(row);
+        }
     }
 }

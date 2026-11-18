@@ -58,6 +58,7 @@ public final class DiffusionVocoder {
     private final Var skipBias;
     private final Var out;
     private final Optimizer optimizer = Optimizer.adam(2e-3f);
+    private int trained;
 
     /**
      * Creates the vocoder.
@@ -189,6 +190,7 @@ public final class DiffusionVocoder {
         float v = loss.value().item();
         loss.backward();
         optimizer.step(parameters());
+        trained++;
         return v;
     }
 
@@ -252,6 +254,31 @@ public final class DiffusionVocoder {
             y[i] = Math.max(-1, Math.min(1, y[i]));
         }
         return y;
+    }
+
+    /** @return the training steps taken (including those of a loaded checkpoint) */
+    public int trainedSteps() {
+        return trained;
+    }
+
+    /**
+     * Saves the weights and the step counter (not the optimiser state).
+     *
+     * @param file the file
+     */
+    public void save(java.nio.file.Path file) {
+        ParameterFiles.write(file, parameters(), trained);
+    }
+
+    /**
+     * Loads weights saved by {@link #save} from a vocoder of the same configuration.
+     *
+     * @param file the file
+     * @return this vocoder
+     */
+    public DiffusionVocoder load(java.nio.file.Path file) {
+        trained = ParameterFiles.read(file, parameters());
+        return this;
     }
 
     /** @return the trainable parameters */

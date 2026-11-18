@@ -39,6 +39,10 @@ import java.util.SplittableRandom;
  * only, a BiGRU-CRF tagger and the nearest-key rules; with reading order kept or shuffled,
  * with ground-truth or OCR tokens, and with or without masked pretraining. Score: F1 over
  * extracted (field, value text) pairs.
+ *
+ * <p><b>Reading pretraining</b> ({@link #donutFollowUp}, 10.6.11): Donut pretrained to read a
+ * pool of synthetic forms before it is fine-tuned on parsing, against parsing only at the
+ * same total steps and the OCR pipelines, as a learning curve.
  */
 public final class DocumentParsing {
 
@@ -691,5 +695,156 @@ public final class DocumentParsing {
         }
         return new TagScores(tagger, shuffled, ocr != null, pretrained, f1(tp, np, ng),
                 System.currentTimeMillis() - start);
+    }
+
+    // ------------------------------------------------------------------ 10.6.11 reading pretraining
+
+    /**
+     * One point of a 10.6.11 learning curve.
+     *
+     * @param method the parser
+     * @param fineTuneSteps parsing steps
+     * @param totalSteps all training steps (reading pretraining plus parsing)
+     * @param f1 field-level F1
+     * @param exact the share of pages parsed exactly
+     * @param readingCer the character error rate of reading the test pages after pretraining
+     *     ({@code NaN} when there was no reading stage)
+     */
+    public record DonutRow(String method, int fineTuneSteps, int totalSteps, double f1, double exact,
+            double readingCer) {
+
+        @Override
+        public String toString() {
+            return String.format("%s @%d/%d: F1 %.3f exact %.3f%s", method, fineTuneSteps, totalSteps, f1, exact,
+                    Double.isNaN(readingCer) ? "" : String.format(" (reading CER %.3f)", readingCer));
+        }
+    }
+
+    /**
+     * Wave 10 item 10.6.11: Donut with a separate reading-pretraining stage. One
+     * {@link ImageToMarkup} is pretrained with {@link ImageToMarkup#pretrainReading} to read a
+     * fixed pool of synthetic forms (all text in reading order), its reading CER on the test
+     * forms is measured, and from that checkpoint it is fine-tuned on parsing, scored at each
+     * checkpoint. The baseline is the same model trained on parsing only for the same total
+     * number of steps; with {@code pipelines} also wave 9's OCR plus rules and OCR plus layout
+     * tagger (oracle word boxes) at the final total budget. Wave 9's rows are unchanged.
+     *
+     * @param pretrainSteps reading-pretraining steps (batches of 8)
+     * @param pretrainPages the size of the reading pool
+     * @param checkpoints fine-tuning step counts at which to score, increasing
+     * @param testPages held-out forms
+     * @param noise pixel flip probability
+     * @param pipelines whether to add the OCR pipelines
+     * @param seed the seed
+     * @return the rows
+     */
+    public static List<DonutRow> donutFollowUp(int pretrainSteps, int pretrainPages, int[] checkpoints,
+            int testPages, double noise, boolean pipelines, long seed) {
+        List<Page> test = forms(testPages, noise, new SplittableRandom(seed + 99));
+        List<Page> pool = forms(pretrainPages, noise, new SplittableRandom(seed + 5));
+        List<DonutRow> rows = new ArrayList<>();
+        // reading pretraining, then parsing from the checkpoint
+        ImageToMarkup m = new ImageToMarkup(HEIGHT, WIDTH, 4, 32, 2, 2, DONUT_VOCAB, seed);
+        SplittableRandom pr = new SplittableRandom(seed + 6);
+        m.pretrainReading(pretrainSteps, s -> {
+            List<Page> batch = new ArrayList<>();
+            for (int i = 0; i < 8; i++) {
+                batch.add(pool.get(pr.nextInt(pool.size())));
+            }
+            return donutBatch(batch, true);
+        }, Optimizer.adam(1e-3f));
+        double cer = readingCer(m, test);
+        List<Tensor> checkpoint = m.checkpoint();
+        m.restore(checkpoint);
+        Optimizer opt = Optimizer.adam(1e-3f);
+        SplittableRandom fr = new SplittableRandom(seed + 1);
+        int done = 0;
+        for (int c : checkpoints) {
+            m.fineTune(c - done, s -> donutBatch(forms(8, noise, fr), false), opt);
+            done = c;
+            ParseScores sc = score(Parser.DONUT, test, donutPredict(m, test), System.currentTimeMillis());
+            rows.add(new DonutRow("Donut + reading pretraining", c, pretrainSteps + c, sc.f1(), sc.exact(), cer));
+        }
+        // parsing only, same total steps
+        ImageToMarkup plain = new ImageToMarkup(HEIGHT, WIDTH, 4, 32, 2, 2, DONUT_VOCAB, seed);
+        Optimizer popt = Optimizer.adam(1e-3f);
+        SplittableRandom nr = new SplittableRandom(seed + 1);
+        done = 0;
+        for (int c : checkpoints) {
+            int total = pretrainSteps + c;
+            plain.fineTune(total - done, s -> donutBatch(forms(8, noise, nr), false), popt);
+            done = total;
+            ParseScores sc = score(Parser.DONUT_NO_READING, test, donutPredict(plain, test),
+                    System.currentTimeMillis());
+            rows.add(new DonutRow("Donut without reading pretraining", total, total, sc.f1(), sc.exact(), Double.NaN));
+        }
+        if (pipelines) {
+            int total = pretrainSteps + checkpoints[checkpoints.length - 1];
+            for (ParseScores sc : pipelines(total, total, testPages, noise, seed)) {
+                rows.add(new DonutRow(sc.parser().name(), total, total, sc.f1(), sc.exact(), Double.NaN));
+            }
+        }
+        return rows;
+    }
+
+    private static ImageToMarkup.Batch donutBatch(List<Page> pages, boolean reading) {
+        int[][] targets = new int[pages.size()][];
+        for (int i = 0; i < targets.length; i++) {
+            targets[i] = reading ? readingTarget(pages.get(i)) : parseTarget(pages.get(i));
+        }
+        return new ImageToMarkup.Batch(GlyphDocuments.images(pages, HEIGHT, WIDTH), targets);
+    }
+
+    private static List<String[]> donutPredict(ImageToMarkup m, List<Page> test) {
+        List<String[]> predicted = new ArrayList<>();
+        for (int from = 0; from < test.size(); from += 16) {
+            List<Page> part = test.subList(from, Math.min(test.size(), from + 16));
+            for (int[] out : m.generate(GlyphDocuments.images(part, HEIGHT, WIDTH), 4 + FIELDS * 8)) {
+                predicted.add(fromTokens(out));
+            }
+        }
+        return predicted;
+    }
+
+    /** Character error rate of reading each page's full text. */
+    private static double readingCer(ImageToMarkup m, List<Page> test) {
+        int longest = 0;
+        for (Page p : test) {
+            longest = Math.max(longest, readingTarget(p).length);
+        }
+        double err = 0;
+        double len = 0;
+        for (int from = 0; from < test.size(); from += 16) {
+            List<Page> part = test.subList(from, Math.min(test.size(), from + 16));
+            int[][] out = m.generate(GlyphDocuments.images(part, HEIGHT, WIDTH), longest + 4);
+            for (int i = 0; i < part.size(); i++) {
+                String gold = text(readingTarget(part.get(i)));
+                err += LineRecognizer.editDistance(text(out[i]), gold);
+                len += gold.length();
+            }
+        }
+        return err / len;
+    }
+
+    private static String text(int[] tokens) {
+        StringBuilder sb = new StringBuilder();
+        for (int t : tokens) {
+            if (t >= CHAR0 && t < DONUT_VOCAB) {
+                sb.append(GlyphDocuments.CHARSET.charAt(t - CHAR0));
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * The long 10.6.11 Run: 2,000 reading steps on 2,000 pages, then parsing curves to 3,000
+     * steps, with the OCR pipelines.
+     *
+     * @param args ignored
+     */
+    public static void main(String[] args) {
+        for (DonutRow r : donutFollowUp(2000, 2000, new int[] {100, 300, 1000, 3000}, 64, 0.02, true, 1)) {
+            System.out.println(r);
+        }
     }
 }

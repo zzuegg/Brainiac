@@ -201,4 +201,21 @@ class LinalgTest {
         assertThrows(IllegalArgumentException.class, () -> t.reshape(-1, -1));
         assertEquals(Shape.of(2, 7, 4), t.shape().withDim(-2, 7));
     }
+
+    @Test
+    void erfcAndNormalQuantile() {
+        Tensor x = Tensor.of(Shape.of(5), new double[] {-1.5, 0, 0.3, 2, 6}, DType.FLOAT64, Device.getDefault());
+        double[] want = {1.9661051464753108, 1.0, 0.6713732405408726, 0.004677734981047266, 2.1519736712498913e-17};
+        double[] got = io.github.zzuegg.brainiac.tensor.Special.erfc(x).toDoubleArray();
+        for (int i = 0; i < want.length; i++) {
+            assertEquals(want[i], got[i], 1e-14 * Math.max(1e-3, want[i]), "erfc[" + i + "]");
+        }
+        Tensor p = Tensor.of(Shape.of(6), new double[] {1e-10, 0.01, 0.3, 0.5, 0.975, 1 - 1e-12}, DType.FLOAT64,
+                Device.getDefault());
+        assertArrayEquals(new double[] {-6.361340902404056, -2.3263478740408408, -0.5244005127080409, 0.0,
+            1.959963984540054, 7.0344869100478356},
+                io.github.zzuegg.brainiac.tensor.Special.normalQuantile(p).toDoubleArray(), 1e-9);
+        assertEquals(Shape.of(2, 3).dims()[1], 3);
+        assertArrayEquals(new float[] {0, 0, 1}, Tensor.of(-1f, 0f, 2f).maximum(0f).minimum(1f).toArray());
+    }
 }

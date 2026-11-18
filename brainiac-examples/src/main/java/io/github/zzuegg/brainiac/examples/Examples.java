@@ -35,6 +35,7 @@ public final class Examples {
             case "evolve" -> EvolveExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "chat" -> ChatExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "image" -> ImageExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+            case "video" -> VideoExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
                       xor     learn XOR with a tiny network
@@ -52,7 +53,9 @@ public final class Examples {
                       chat    chat with a model downloaded from Hugging Face: chat <model dir or .gguf>
                               [--prompt text] [--device vulkan] [--dtype f16] [--max N] [--temperature T]
                       image   generate images with Stable Diffusion: image <diffusers folder or .safetensors> <prompt>
-                              [--size WxH] [--steps N] [--seed S] [--count N] [--negative text]""");
+                              [--size WxH] [--steps N] [--seed S] [--count N] [--negative text]
+                      video   generate a short video with Wan: video <model folder> <prompt>
+                              [--size WxH] [--frames N] [--steps N] [--seed S] [--avi]""");
         }
     }
 }

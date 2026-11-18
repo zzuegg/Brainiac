@@ -4,11 +4,13 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.data.ShapeScenes;
 import io.github.zzuegg.brainiac.experimental.llm.HookedDecoder;
 import io.github.zzuegg.brainiac.experimental.multimodal.BottleneckFusion;
+import io.github.zzuegg.brainiac.experimental.multimodal.ConvVae;
 import io.github.zzuegg.brainiac.experimental.multimodal.FusionDecoder;
 import io.github.zzuegg.brainiac.experimental.multimodal.GatedCrossAttentionAdapter;
 import io.github.zzuegg.brainiac.experimental.multimodal.PatchProjector;
 import io.github.zzuegg.brainiac.experimental.multimodal.QueryTransformer;
 import io.github.zzuegg.brainiac.experimental.multimodal.TransfusionModel;
+import io.github.zzuegg.brainiac.experimental.multimodal.TwoStageBridgeTrainer;
 import io.github.zzuegg.brainiac.experimental.nn.VisionTransformer;
 import io.github.zzuegg.brainiac.experiments.generative.TalkingDigits;
 import io.github.zzuegg.brainiac.nn.Functional;
@@ -57,6 +59,12 @@ import java.util.SplittableRandom;
  * {@link BottleneckFusion} with bottleneck tokens, full early fusion and late fusion, each with
  * and without modality dropout, and the unimodal models; accuracy with both modalities and
  * with each missing, and multiply-adds.
+ *
+ * <p><b>Wave 10 follow-ups.</b> {@link #vqaFollowUp} (10.6.12) trains the bridges with
+ * LLaVA's two stages ({@link TwoStageBridgeTrainer}: description alignment, then question
+ * answering with the LM frozen, LoRA-adapted or fully trained); {@link #transfusionFollowUp}
+ * (10.6.13) runs Transfusion on a {@link ConvVae} latent with U-Net patch layers at matched
+ * compute.
  */
 public final class FusionShootout {
 
@@ -887,4 +895,368 @@ public final class FusionShootout {
 
     /** The audio-visual models' Adam learning rate. */
     private static final float AV_LR = 4e-3f;
+
+    // ------------------------------------------------------------------ 10.6.12 two-stage bridges
+
+    /**
+     * Scores of one bridge trained with {@link TwoStageBridgeTrainer}.
+     *
+     * @param bridge the bridge
+     * @param mode how the LM trained in stage 2
+     * @param alignSteps stage-1 steps (0 skips the alignment stage)
+     * @param accuracy answer accuracy over all questions
+     * @param count accuracy on {@code HOW MANY}
+     * @param exists accuracy on {@code IS THERE}
+     * @param left accuracy on {@code WHAT LEFT OF}
+     * @param alignment teacher-forced accuracy of the description tokens of occupied slots on
+     *     held-out scenes, after stage 1 ({@code NaN} without it)
+     * @param textLoss the LM's loss on held-out text-only questions afterwards (with adapters)
+     * @param trainable values trained in stage 2
+     */
+    public record TwoStageScores(Bridge bridge, TwoStageBridgeTrainer.LmMode mode, int alignSteps, double accuracy,
+            double count, double exists, double left, double alignment, double textLoss, long trainable) {
+
+        @Override
+        public String toString() {
+            return String.format("%s %s align %d: acc %.3f (count %.3f exists %.3f left %.3f) alignment %.3f"
+                    + " text loss %.3f trainable %d", bridge, mode, alignSteps, accuracy, count, exists, left,
+                    alignment, textLoss, trainable);
+        }
+    }
+
+    /**
+     * Wave 10 item 10.6.12: one bridge (projector, Q-Former or gated cross-attention) trained
+     * with LLaVA's two stages: {@code alignSteps} of description alignment (the image to its
+     * 16-slot {@link #description}, LM frozen), then {@code steps} of question answering with
+     * the LM frozen, LoRA-adapted or fully trained. A fully trained LM is restored afterwards,
+     * so the setup stays shared. Wave 9's {@link #vqa} rows are unchanged.
+     *
+     * @param setup the frozen parts and data
+     * @param bridge {@link Bridge#PROJECTOR}, {@link Bridge#QFORMER} or {@link Bridge#GATED}
+     * @param mode how the LM trains in stage 2
+     * @param alignSteps stage-1 steps of 32 scenes (0 for none)
+     * @param steps stage-2 steps of 32 questions
+     * @param seed the seed
+     * @return the scores
+     */
+    public static TwoStageScores vqaFollowUp(VqaSetup setup, Bridge bridge, TwoStageBridgeTrainer.LmMode mode,
+            int alignSteps, int steps, long seed) {
+        FusionDecoder lm = setup.lm;
+        List<Tensor> saved = new ArrayList<>();
+        for (Var p : lm.parameters()) {
+            saved.add(Tensor.of(p.value().shape(), p.value().toArray()));
+        }
+        TwoStageBridgeTrainer.Bridge b = switch (bridge) {
+            case PROJECTOR -> TwoStageBridgeTrainer.Bridge.projector(new PatchProjector(DIM, DIM, true, seed));
+            case QFORMER -> TwoStageBridgeTrainer.Bridge.queryTransformer(
+                    new QueryTransformer(DIM, DIM, DIM, DIM, SLOTS, 1, 4, seed));
+            case GATED -> TwoStageBridgeTrainer.Bridge.gated(
+                    new GatedCrossAttentionAdapter(DIM, DIM, 8, 1, lm.layers(), 1, 4, seed), SLOTS);
+            default -> throw new IllegalArgumentException("not a trainable bridge: " + bridge);
+        };
+        TwoStageBridgeTrainer t = new TwoStageBridgeTrainer(lm, b, mode, 4, seed + 3);
+        int n = setup.train.length;
+        double alignment = Double.NaN;
+        if (alignSteps > 0) {
+            SplittableRandom ar = new SplittableRandom(seed + 5);
+            t.align(alignSteps, s -> {
+                int[] idx = ar.ints(32, 0, n).toArray();
+                return descriptionBatch(setup.train, setup.trainFeatures, idx);
+            }, 3e-3f);
+            int[] all = new int[setup.test.length];
+            for (int i = 0; i < all.length; i++) {
+                all[i] = i;
+            }
+            TwoStageBridgeTrainer.Batch test = descriptionBatch(setup.test, setup.testFeatures, all);
+            float[] l = Var.noGrad(() -> t.logits(test.features(), test.text(), false)).value().toArray();
+            int[][] targets = test.targets();
+            int len = targets[0].length;
+            double hit = 0;
+            double tot = 0;
+            for (int i = 0; i < all.length; i++) {
+                for (int k = 0; k < len; k++) {
+                    int want = targets[i][k];
+                    if (want <= 0) {
+                        continue; // skipped or an empty slot
+                    }
+                    int off = (i * len + k) * VOCAB;
+                    int best = 0;
+                    for (int v = 1; v < VOCAB; v++) {
+                        best = l[off + v] > l[off + best] ? v : best;
+                    }
+                    hit += best == want ? 1 : 0;
+                    tot++;
+                }
+            }
+            alignment = hit / tot;
+        }
+        SplittableRandom r = new SplittableRandom(seed + 1);
+        t.instruct(steps, s -> {
+            int[] idx = r.ints(32, 0, n).toArray();
+            int[][] text = new int[idx.length][];
+            int[] ans = new int[idx.length];
+            for (int i = 0; i < idx.length; i++) {
+                Question q = question(setup.train[idx[i]], r);
+                text[i] = q.text();
+                ans[i] = q.answer();
+            }
+            return new TwoStageBridgeTrainer.Batch(rows(setup.trainFeatures, idx), text,
+                    answerTargets(idx.length, SLOTS + TEXT, ans));
+        }, 3e-3f);
+        double[] hit = new double[3];
+        double[] tot = new double[3];
+        SplittableRandom tr = new SplittableRandom(seed + 2);
+        ShapeScenes.Scene[] test = setup.test;
+        for (int from = 0; from < test.length; from += 64) {
+            int[] idx = new int[Math.min(64, test.length - from)];
+            for (int i = 0; i < idx.length; i++) {
+                idx[i] = from + i;
+            }
+            int[][] text = new int[idx.length][];
+            Question[] qs = new Question[idx.length];
+            for (int i = 0; i < idx.length; i++) {
+                qs[i] = question(test[idx[i]], tr);
+                text[i] = qs[i].text();
+            }
+            Tensor logits = Var.noGrad(() -> t.logits(rows(setup.testFeatures, idx), text, false)).value();
+            int len = logits.shape().dim(1);
+            float[] l = logits.toArray();
+            for (int i = 0; i < idx.length; i++) {
+                int off = (i * len + len - 1) * VOCAB;
+                int best = 0;
+                for (int k = 1; k < VOCAB; k++) {
+                    best = l[off + k] > l[off + best] ? k : best;
+                }
+                hit[qs[i].kind()] += best == qs[i].answer() ? 1 : 0;
+                tot[qs[i].kind()]++;
+            }
+        }
+        double after = Var.noGrad(() -> {
+            SplittableRandom lr = new SplittableRandom(setup.seed + 7);
+            ShapeScenes.Scene[] s = SCENES.scenes(256, 1, 3, ShapeScenes.Layout.SPARSE, lr.nextLong());
+            int[][] text = new int[s.length][];
+            int[] ans = new int[s.length];
+            for (int i = 0; i < s.length; i++) {
+                Question q = question(s[i], lr);
+                text[i] = q.text();
+                ans[i] = q.answer();
+            }
+            return FusionDecoder.loss(t.textLogits(text, false), answerTargets(s.length, TEXT, ans));
+        }).value().item();
+        TwoStageScores scores = new TwoStageScores(bridge, mode, alignSteps,
+                (hit[0] + hit[1] + hit[2]) / (tot[0] + tot[1] + tot[2]), hit[0] / tot[0], hit[1] / tot[1],
+                tot[2] == 0 ? Double.NaN : hit[2] / tot[2], alignment, after, t.trainableCount());
+        List<Var> params = lm.parameters();
+        for (int i = 0; i < params.size(); i++) {
+            params.get(i).assign(saved.get(i));
+        }
+        lm.zeroGrad();
+        return scores;
+    }
+
+    /** Stage-1 data: the image, then {@code Q d0 .. d14} predicting {@code d0 .. d15}. */
+    private static TwoStageBridgeTrainer.Batch descriptionBatch(ShapeScenes.Scene[] scenes, Tensor features,
+            int[] idx) {
+        int[][] text = new int[idx.length][SLOTS];
+        int[][] targets = new int[idx.length][2 * SLOTS];
+        for (int i = 0; i < idx.length; i++) {
+            int[] d = description(scenes[idx[i]]);
+            text[i][0] = Q;
+            System.arraycopy(d, 0, text[i], 1, SLOTS - 1);
+            Arrays.fill(targets[i], -1);
+            System.arraycopy(d, 0, targets[i], SLOTS, SLOTS);
+        }
+        return new TwoStageBridgeTrainer.Batch(rows(features, idx), text, targets);
+    }
+
+    /**
+     * The long Runs: 10.6.12 (the wave 9 bridges at 4x their budget against the two-stage
+     * recipe with a frozen, LoRA-adapted and fully trained LM) and 10.6.13 (latent Transfusion
+     * at 1,600 pixel-model steps).
+     *
+     * @param args ignored
+     */
+    public static void main(String[] args) {
+        VqaSetup setup = vqaSetup(500, 100, 512, 200, 1);
+        System.out.printf("frozen LM text loss %.3f%n", setup.textLoss());
+        for (Bridge b : new Bridge[] {Bridge.TEXT_ONLY, Bridge.DESCRIPTION}) {
+            System.out.println(vqa(setup, b, 600, 1));
+        }
+        for (Bridge b : new Bridge[] {Bridge.PROJECTOR, Bridge.QFORMER, Bridge.GATED}) {
+            System.out.println(vqa(setup, b, 600, 1));
+            System.out.println(vqaFollowUp(setup, b, TwoStageBridgeTrainer.LmMode.FROZEN, 0, 600, 1));
+            for (TwoStageBridgeTrainer.LmMode mode : TwoStageBridgeTrainer.LmMode.values()) {
+                System.out.println(vqaFollowUp(setup, b, mode, 300, 600, 1));
+            }
+        }
+        for (LatentScores row : transfusionFollowUp(1600, 2000, 5f, 20, true, 1)) {
+            System.out.println(row);
+        }
+    }
+
+    // ------------------------------------------------------------------ 10.6.13 latent Transfusion
+
+    /**
+     * One row of 10.6.13.
+     *
+     * @param method the setup
+     * @param steps training steps of 32 sequences
+     * @param captionAccuracy caption accuracy on the clean renderings
+     * @param generationAccuracy the share of generated images whose nearest clean rendering
+     *     shows the requested digit
+     * @param distance the mean squared distance per pixel to that rendering
+     * @param trainingMacs multiply-adds of training (3 x forward per sequence), without the
+     *     frozen VAE ({@code -1} when not counted)
+     */
+    public record LatentScores(String method, int steps, double captionAccuracy, double generationAccuracy,
+            double distance, long trainingMacs) {
+
+        @Override
+        public String toString() {
+            return String.format(Locale.ROOT, "%s (%d steps, %.2fG MACs): caption %.3f generation %.3f distance %.3f",
+                    method, steps, trainingMacs / 1e9, captionAccuracy, generationAccuracy, distance);
+        }
+    }
+
+    /**
+     * Wave 10 item 10.6.13: Transfusion on a VAE latent with U-Net patch layers and loss weight
+     * {@code lambda}, at matched training compute. A {@link ConvVae} ({@code 8x8} digits to a
+     * {@code 4 x 4x4} latent) is trained and frozen; one shared {@link TransfusionModel} with
+     * {@link TransfusionModel.UNetPatches} learns captioning and generation on the latents for
+     * as many steps as give the wave 9 pixel model's multiply-adds at {@code steps}; the
+     * ablation uses the same latents with linear patch layers at {@code steps}. Baselines: the
+     * wave 9 pixel-patch Transfusion and the VQ-token early fusion at {@code steps} (shared
+     * model; the VQ model's compute is not counted). Wave 9's rows are unchanged.
+     *
+     * @param steps the pixel model's steps of 32 sequences
+     * @param vaeSteps VAE steps of 32 renderings
+     * @param lambda the diffusion loss weight of the latent models (the paper uses 5)
+     * @param perDigit generated samples per digit
+     * @param baselines whether to run the pixel, linear-latent and VQ rows (else only the
+     *     U-Net latent model, whose step count is still matched to the pixel model)
+     * @param seed the seed
+     * @return the rows
+     */
+    public static List<LatentScores> transfusionFollowUp(int steps, int vaeSteps, float lambda, int perDigit,
+            boolean baselines, long seed) {
+        List<Integer> labels = new ArrayList<>();
+        List<float[]> renders = renders(labels);
+        float[][] all = renders.toArray(new float[0][]);
+        ConvVae vae = new ConvVae(DigitGlyphs.SIDE, 4, 16, 1e-3f, seed + 20);
+        Optimizer vo = Optimizer.adam(3e-3f);
+        SplittableRandom vr = new SplittableRandom(seed + 21);
+        for (int s = 0; s < vaeSteps; s++) {
+            float[][] batch = new float[32][];
+            for (int i = 0; i < batch.length; i++) {
+                batch[i] = all[vr.nextInt(all.length)];
+            }
+            vae.trainStep(batch, vo);
+        }
+        vae.calibrate(all);
+        List<float[]> latents = Arrays.asList(vae.encode(all));
+        List<LatentScores> rows = new ArrayList<>();
+        double reconstruction = 0;
+        float[][] rec = vae.decode(latents.toArray(new float[0][]));
+        for (int i = 0; i < all.length; i++) {
+            for (int p = 0; p < all[i].length; p++) {
+                reconstruction += (rec[i][p] - all[i][p]) * (rec[i][p] - all[i][p]) / all[i].length / all.length;
+            }
+        }
+        System.out.printf(Locale.ROOT, "VAE reconstruction MSE %.4f per pixel%n", reconstruction);
+
+        TransfusionModel pixel = transfusion(seed);
+        long pixelStep = 3 * 32 * pixel.forwardMacs(1);
+        if (baselines) {
+            GenerationScores p = generation(Arrangement.TRANSFUSION_SHARED, steps, perDigit, seed);
+            rows.add(new LatentScores("pixel patches (wave 9)", steps, p.captionAccuracy(), p.generationAccuracy(),
+                    p.distance(), steps * pixelStep));
+            TransfusionModel linear = new TransfusionModel(DigitGlyphs.CLASSES, 4, 16, DIM, 2, 4, 24, 100, seed);
+            rows.add(trainLatent("VAE latent, linear patches, lambda " + lambda, linear, steps, lambda, latents,
+                    labels, renders, vae, perDigit, seed));
+        }
+
+        TransfusionModel unet = new TransfusionModel(DigitGlyphs.CLASSES, 4, 16, DIM, 2, 4, 24, 100,
+                new TransfusionModel.UNetPatches(4, 4, 16), seed);
+        int matched = (int) Math.max(1, steps * pixelStep / (3 * 32 * unet.forwardMacs(1)));
+        rows.add(trainLatent("VAE latent, U-Net patches, lambda " + lambda + ", matched MACs", unet, matched, lambda,
+                latents, labels, renders, vae, perDigit, seed));
+
+        if (baselines) {
+            GenerationScores vq = generation(Arrangement.VQ_SHARED, steps, perDigit, seed);
+            rows.add(new LatentScores("VQ tokens (wave 9)", steps, vq.captionAccuracy(), vq.generationAccuracy(),
+                    vq.distance(), -1));
+        }
+        return rows;
+    }
+
+    private static LatentScores trainLatent(String name, TransfusionModel m, int steps, float lambda,
+            List<float[]> latents, List<Integer> labels, List<float[]> renders, ConvVae vae, int perDigit, long seed) {
+        Optimizer opt = Optimizer.adam(TRANSFUSION_LR);
+        SplittableRandom r = new SplittableRandom(seed);
+        for (int s = 0; s < steps; s++) {
+            m.loss(captionBatchOf(latents, labels, 16, r), 0f, r)
+                    .add(m.loss(generationBatchOf(latents, labels, 16, r), lambda, r)).backward();
+            opt.step(m.parameters());
+        }
+        List<int[]> before = new ArrayList<>();
+        for (int i = 0; i < latents.size(); i++) {
+            before.add(new int[0]);
+        }
+        int[] got = m.caption(before, latents.toArray(new float[0][]));
+        int hit = 0;
+        for (int i = 0; i < got.length; i++) {
+            hit += got[i] == labels.get(i) ? 1 : 0;
+        }
+        List<int[]> prompts = new ArrayList<>();
+        for (int i = 0; i < perDigit * DigitGlyphs.CLASSES; i++) {
+            prompts.add(new int[] {i % DigitGlyphs.CLASSES});
+        }
+        float[][] images = vae.decode(m.generate(prompts, 20, new SplittableRandom(seed + 1)));
+        double[] g = nearestRendering(images, renders, labels);
+        return new LatentScores(name, steps, (double) hit / got.length, g[0], g[1], steps * 3L * 32 * m.forwardMacs(1));
+    }
+
+    private static List<TransfusionModel.Sequence> captionBatchOf(List<float[]> latents, List<Integer> labels, int n,
+            SplittableRandom r) {
+        List<TransfusionModel.Sequence> out = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            int k = r.nextInt(latents.size());
+            out.add(new TransfusionModel.Sequence(new int[0], latents.get(k), new int[] {labels.get(k)}, 50));
+        }
+        return out;
+    }
+
+    private static List<TransfusionModel.Sequence> generationBatchOf(List<float[]> latents, List<Integer> labels,
+            int n, SplittableRandom r) {
+        List<TransfusionModel.Sequence> out = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            int k = r.nextInt(latents.size());
+            out.add(new TransfusionModel.Sequence(new int[] {labels.get(k)}, latents.get(k), new int[0], 100));
+        }
+        return out;
+    }
+
+    /** {share whose nearest clean rendering shows the requested digit (i mod 10), mean squared distance}. */
+    private static double[] nearestRendering(float[][] images, List<float[]> renders, List<Integer> labels) {
+        int hit = 0;
+        double dist = 0;
+        for (int i = 0; i < images.length; i++) {
+            int best = 0;
+            double bestD = Double.MAX_VALUE;
+            for (int k = 0; k < renders.size(); k++) {
+                double d = 0;
+                for (int q = 0; q < images[i].length; q++) {
+                    double e = images[i][q] - renders.get(k)[q];
+                    d += e * e;
+                }
+                if (d < bestD) {
+                    bestD = d;
+                    best = k;
+                }
+            }
+            hit += labels.get(best) == i % DigitGlyphs.CLASSES ? 1 : 0;
+            dist += bestD / images[i].length / images.length;
+        }
+        return new double[] {(double) hit / images.length, dist};
+    }
 }

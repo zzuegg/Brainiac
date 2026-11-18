@@ -42,6 +42,10 @@ class LocalVisionTest {
 
     // the fixture has no tokenizer: a word-level one over its 64 tokens, with <image> where its config says
     private Path tinyLlava(String name, String template) throws IOException {
+        return tinyLlava(models, name, template);
+    }
+
+    static Path tinyLlava(Path models, String name, String template) throws IOException {
         Path dir = Files.createDirectories(models.resolve(name));
         for (String f : List.of("config.json", "model.safetensors", "preprocessor_config.json", "generation_config.json")) {
             Files.copy(LLAVA.resolve(f), dir.resolve(f));

@@ -118,6 +118,15 @@ public final class Shape {
         return size;
     }
 
+        /**
+     * The dimensions, as {@link #toArray()}; named as PyTorch's {@code size()} tuple is read.
+     *
+     * @return a copy of the dimensions
+     */
+    public int[] dims() {
+        return toArray();
+    }
+
     /**
      * Returns a copy of the dimensions.
      *

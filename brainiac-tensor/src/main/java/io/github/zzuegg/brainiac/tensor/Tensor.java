@@ -869,6 +869,17 @@ public final class Tensor {
     }
 
     /**
+     * As {@link #toArray}, without waiting now: the device copies the values after the work
+     * queued so far, and the supplier waits for that copy only. Meanwhile more work can be
+     * queued, such as the next decoding step from tokens still on the device.
+     *
+     * @return the values, as {@link #toArray} would give them, when asked
+     */
+    public java.util.function.Supplier<float[]> toArrayLater() {
+        return backend().downloadLater(storage());
+    }
+
+    /**
      * Returns the only value of a tensor with one element.
      *
      * @return the value
@@ -1288,6 +1299,22 @@ public final class Tensor {
      */
     public Tensor minimum(Tensor other) {
         return binary(BinaryOp.MIN, other);
+    }
+
+    /**
+     * @param c the lower bound
+     * @return {@code max(this, c)} element-wise
+     */
+    public Tensor maximum(float c) {
+        return maximum(full(Shape.of(), c, dtype(), device()));
+    }
+
+    /**
+     * @param c the upper bound
+     * @return {@code min(this, c)} element-wise
+     */
+    public Tensor minimum(float c) {
+        return minimum(full(Shape.of(), c, dtype(), device()));
     }
 
     /**

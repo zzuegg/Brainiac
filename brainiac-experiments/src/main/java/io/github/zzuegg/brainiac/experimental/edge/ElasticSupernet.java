@@ -60,7 +60,14 @@ public final class ElasticSupernet {
         /** progressive shrinking with distillation (kernel, then depth, then width) */
         PROGRESSIVE,
         /** every elastic dimension sampled uniformly from the start, no distillation */
-        RANDOM
+        RANDOM,
+        /**
+         * BigNAS (Yu et al., ECCV 2020): every step trains, on one batch, the largest network on
+         * the labels and the smallest plus two random subnets on the largest network's soft
+         * predictions of that same step (in-place distillation, the sandwich rule); the four
+         * losses are summed (averaged) into one update. No phases, no channel sorting.
+         */
+        INPLACE_DISTILLATION
     }
 
     private final int side;
@@ -291,6 +298,13 @@ public final class ElasticSupernet {
         float last = 0;
         boolean sorted = false;
         int lastPhase = 0;
+        if (schedule == Schedule.INPLACE_DISTILLATION) {
+            Config small = smallest(kernels, depths, expands);
+            for (int s = 0; s < steps; s++) {
+                last = sandwichStep(x, y, big, small, kernels, depths, expands, opt, r);
+            }
+            return last;
+        }
         for (int s = 0; s < steps; s++) {
             Config c;
             boolean kd = false;
@@ -347,6 +361,50 @@ public final class ElasticSupernet {
             last = step(x, y, c, null, opt, r);
         }
         return last;
+    }
+
+    /**
+     * The smallest subnet of the given choices.
+     *
+     * @param kernels the kernel choices
+     * @param depths the depth choices
+     * @param expands the expansion choices
+     * @return the subnet with the least depth, kernel and expansion everywhere
+     */
+    public Config smallest(int[] kernels, int[] depths, int[] expands) {
+        int[] d = new int[widths.length];
+        Arrays.fill(d, Arrays.stream(depths).min().orElseThrow());
+        int[] k = new int[widths.length * maxDepth];
+        Arrays.fill(k, Arrays.stream(kernels).min().orElseThrow());
+        int[] e = new int[widths.length * maxDepth];
+        Arrays.fill(e, Arrays.stream(expands).min().orElseThrow());
+        return new Config(d, k, e);
+    }
+
+    /** One BigNAS step: largest on labels, smallest and two random subnets on its soft labels. */
+    private float sandwichStep(Tensor x, Tensor y, Config big, Config small, int[] kernels, int[] depths,
+            int[] expands, Optimizer opt, SplittableRandom r) {
+        int n = x.shape().dim(0);
+        int batch = Math.min(16, n);
+        int from = r.nextInt(Math.max(1, n - batch));
+        Tensor bx = x.slice(0, from, from + batch);
+        Tensor by = y.slice(0, from, from + batch);
+        List<Var> params = parameters();
+        params.forEach(Var::zeroGrad);
+        Var bigLogits = forward(Var.of(bx), big);
+        Var loss = Functional.crossEntropy(bigLogits, by);
+        Tensor soft = Activation.SOFTMAX.forward(bigLogits.detach()).value();
+        Config[] students = {small, sample(r, kernels, depths, expands), sample(r, kernels, depths, expands)};
+        for (Config c : students) {
+            Var kd = Activation.LOG_SOFTMAX.forward(forward(Var.of(bx), c)).mul(soft).sum().mul(-1f / batch);
+            loss = loss.add(kd);
+        }
+        loss = loss.mul(1f / (1 + students.length));
+        float v = loss.value().item();
+        loss.backward();
+        opt.step(params);
+        params.forEach(Var::zeroGrad);
+        return v;
     }
 
     private float step(Tensor x, Tensor y, Config c, Config teacher, Optimizer opt, SplittableRandom r) {
