@@ -154,8 +154,8 @@ public final class HyperbolicEmbedding {
             }
             case LORENTZ -> {
                 double m = -minkowski(a, b);
-                double s = -1 / Math.sqrt(Math.max(m * m - 1, 1e-12));
-                // d/da of -<a, b>_L is (b0, -b1, ..., -bd)
+                double s = 1 / Math.sqrt(Math.max(m * m - 1, 1e-12));
+                // d/da of -<a, b>_L is (b0, -b1, ..., -bd), times d arcosh(m)/dm
                 g[0] = s * b[0];
                 for (int k = 1; k < a.length; k++) {
                     g[k] = -s * b[k];
