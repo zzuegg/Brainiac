@@ -1264,7 +1264,7 @@ public final class Wan implements AutoCloseable {
      * @param prompt the text
      * @return {@code [1, textTokens, features]} in the transformer's type
      */
-    Tensor encode(String prompt) {
+    public Tensor encode(String prompt) {
         int[] ids = ids(prompt);
         return Var.noGrad(() -> {
             Tensor idTensor = StableDiffusion.idTensor(new int[][] {ids}, placement.text());
@@ -1288,8 +1288,13 @@ public final class Wan implements AutoCloseable {
         });
     }
 
-    /** The prompt's token ids: cleaned, with the end token, cut to {@link Options#textTokens()}. */
-    int[] ids(String prompt) {
+    /**
+     * The prompt's token ids: cleaned, with the end token, cut to {@link Options#textTokens()}.
+     *
+     * @param prompt the text
+     * @return the ids umT5 reads
+     */
+    public int[] ids(String prompt) {
         String clean = prompt.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
                 .replace("&#39;", "'").replaceAll("\\s+", " ").strip();
         int[] text = tokenizer.encode(clean, false);

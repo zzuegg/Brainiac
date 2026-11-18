@@ -13,6 +13,11 @@
 #       runs diffusers' WanTransformer3DModel in bfloat16 (or float32) and stores every block's output
 #   ./gradlew :brainiac-examples:run --args="wanprobe <model folder> inputs.safetensors ours.safetensors"
 #       (with -Dbrainiac.wan.residual32=false to keep diffusers' bfloat16 residual stream)
+#   python wan_probe.py text <diffusers repo> <text.safetensors> [bf16]
+#       encodes a few prompts (Wan's Chinese negative among them) as WanPipeline does, with umT5 on
+#       the CPU in float32 (or bfloat16), and stores each prompt, its token ids and its text states
+#   ./gradlew :brainiac-examples:run --args="wanprobe text <model folder> text.safetensors [--dtype bf16]"
+#       encodes the same prompts on the CPU and prints how far the ids and states are from those
 #   python wan_probe.py compare <ref.safetensors> <ours.safetensors> [<more.safetensors> ...]
 #       prints how far each block's output is from the reference, relative to its size
 import sys, torch
@@ -82,6 +87,30 @@ elif cmd == "reference":
                       encoder_hidden_states=x[c + "context"].to(dev, dtype), return_dict=False)[0]
         out[c + "out"] = r.float().cpu()
     save_file({k: v.contiguous() for k, v in out.items()}, sys.argv[4])
+elif cmd == "text":
+    import html, re
+    from transformers import AutoTokenizer, UMT5EncoderModel
+    negative = ("色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，"
+                "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
+                "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走")
+    prompts = [negative, "a red fox runs through deep snow", ""]
+    dtype = torch.bfloat16 if sys.argv[4:] == ["bf16"] else torch.float32
+    tok = AutoTokenizer.from_pretrained(sys.argv[2], subfolder="tokenizer")
+    enc = UMT5EncoderModel.from_pretrained(sys.argv[2], subfolder="text_encoder", torch_dtype=dtype).eval()
+    out = {}
+    for k, p in enumerate(prompts):
+        clean = re.sub(r"\s+", " ", html.unescape(html.unescape(p))).strip()
+        t = tok([clean], padding="max_length", max_length=512, truncation=True, add_special_tokens=True,
+                return_attention_mask=True, return_tensors="pt")
+        n = int(t.attention_mask.sum())
+        with torch.no_grad():
+            h = enc(t.input_ids, t.attention_mask).last_hidden_state.float()
+        h[:, n:] = 0
+        out[f"t{k}.prompt"] = torch.tensor([float(ord(c)) for c in p] or [32.0])
+        out[f"t{k}.ids"] = t.input_ids[0, :n].float()
+        out[f"t{k}.states"] = h
+        print(f"t{k}: {n} tokens, |states| {h.norm().item():.4g}")
+    save_file({k: v.contiguous().clone() for k, v in out.items()}, sys.argv[3])
 elif cmd == "compare":
     ref = load_file(sys.argv[2])
     runs = [(p, load_file(p)) for p in sys.argv[3:]]

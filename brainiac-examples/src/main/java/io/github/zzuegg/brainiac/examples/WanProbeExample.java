@@ -48,6 +48,10 @@ public final class WanProbeExample {
             pipeline(java.util.Arrays.copyOfRange(args, 1, args.length));
             return;
         }
+        if (args.length > 0 && args[0].equals("text")) {
+            text(java.util.Arrays.copyOfRange(args, 1, args.length));
+            return;
+        }
         if (args.length < 3) {
             System.out.println("Usage: wanprobe <model folder> <inputs.safetensors> <out.safetensors>"
                     + " [--device name] [--dtype f32|bf16]");
@@ -92,6 +96,66 @@ public final class WanProbeExample {
         }
         SafeTensors.write(Path.of(args[2]), out);
         System.out.println("Wrote " + out.size() + " tensors to " + args[2]);
+    }
+
+    /**
+     * {@code wanprobe text <model folder> <text.safetensors> [--device name] [--dtype f32|bf16]}:
+     * encodes each prompt {@code t<i>.prompt} (stored as code points) with umT5 and compares the
+     * token ids and text states with {@code t<i>.ids} and {@code t<i>.states} from
+     * {@code wan_probe.py text}.
+     */
+    private static void text(String[] args) throws java.io.IOException {
+        String deviceName = "cpu";
+        DType dtype = DType.FLOAT32;
+        for (int i = 2; i < args.length; i++) {
+            switch (args[i]) {
+                case "--device" -> deviceName = args[++i];
+                case "--dtype" -> dtype = "f32".equals(args[++i]) ? DType.FLOAT32 : DType.BFLOAT16;
+                default -> throw new IllegalArgumentException("unknown option " + args[i]);
+            }
+        }
+        Device device = VideoExample.device(deviceName);
+        try (SafeTensors in = SafeTensors.open(Path.of(args[1]));
+                Wan wan = Wan.load(Path.of(args[0]), device, dtype, new Wan.Options(0, 0, 512))) {
+            System.out.println("Loaded " + wan + " on " + device + " in " + dtype);
+            for (int k = 0; in.names().contains("t" + k + ".prompt"); k++) {
+                float[] cp = in.tensor("t" + k + ".prompt", Device.cpu(), DType.FLOAT32).toArray();
+                StringBuilder sb = new StringBuilder();
+                for (float c : cp) {
+                    sb.appendCodePoint((int) c);
+                }
+                String prompt = sb.toString();
+                float[] theirIds = in.tensor("t" + k + ".ids", Device.cpu(), DType.FLOAT32).toArray();
+                int[] ids = wan.ids(prompt);
+                int same = 0;
+                for (int i = 0; i < Math.min(ids.length, theirIds.length); i++) {
+                    if (ids[i] == (int) theirIds[i]) {
+                        same++;
+                    } else if (same == i) {
+                        System.out.printf("  first differing id at %d: ours %d, theirs %d%n", i, ids[i],
+                                (int) theirIds[i]);
+                    }
+                }
+                System.out.printf("t%d (%s...): %d ids, theirs %d, %d the same%n", k,
+                        prompt.substring(0, Math.min(20, prompt.length())), ids.length, theirIds.length, same);
+                long t0 = System.nanoTime();
+                Tensor ours = wan.encode(prompt);
+                float[] a = in.tensor("t" + k + ".states", Device.cpu(), DType.FLOAT32).toArray();
+                float[] b = ours.to(Device.cpu()).to(DType.FLOAT32).toArray();
+                ours.release();
+                double diff = 0;
+                double norm = 0;
+                double worst = 0;
+                for (int i = 0; i < a.length; i++) {
+                    double d = a[i] - b[i];
+                    diff += d * d;
+                    norm += a[i] * (double) a[i];
+                    worst = Math.max(worst, Math.abs(d));
+                }
+                System.out.printf("  states in %.1f s: relative difference %.5f, largest %.4g, |theirs| %.4g%n",
+                        (System.nanoTime() - t0) / 1e9, Math.sqrt(diff / norm), worst, Math.sqrt(norm));
+            }
+        }
     }
 
     /**
