@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.github.zzuegg.brainiac.autograd.Decompositions;
 import io.github.zzuegg.brainiac.autograd.OptimalTransport;
 import io.github.zzuegg.brainiac.autograd.Transforms;
 import io.github.zzuegg.brainiac.autograd.Var;
@@ -137,5 +138,21 @@ class CoreAdditionsTest {
                     .backward();
             return x.grad();
         }, 1e-3f);
+    }
+
+    @Test
+    void decompositionGradients() {
+        same(d -> {
+            Var a = Var.param(random(d, 40, 4, 3));
+            Var[] u = Decompositions.svd(a);
+            u[0].mul(u[0]).mul(random(d, 41, 4, 3)).sum().add(u[1].sum()).backward();
+            return a.grad();
+        }, 1e-4f);
+        same(d -> {
+            Var a = Var.param(random(d, 42, 3, 3));
+            Var[] e = Decompositions.eigh(a);
+            e[1].mul(e[1]).mul(random(d, 43, 3, 3)).sum().add(e[0].sum()).backward();
+            return a.grad();
+        }, 1e-4f);
     }
 }
