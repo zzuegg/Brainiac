@@ -1291,6 +1291,22 @@ public final class Tensor {
     }
 
     /**
+     * @param c the lower bound
+     * @return {@code max(this, c)} element-wise
+     */
+    public Tensor maximum(float c) {
+        return maximum(full(Shape.of(), c, dtype(), device()));
+    }
+
+    /**
+     * @param c the upper bound
+     * @return {@code min(this, c)} element-wise
+     */
+    public Tensor minimum(float c) {
+        return minimum(full(Shape.of(), c, dtype(), device()));
+    }
+
+    /**
      * Compares element-wise with broadcasting.
      *
      * @param other the other tensor
