@@ -220,6 +220,33 @@ public final class PretrainedTokenizer implements Tokenizer {
                         Boolean.TRUE.equals(a.get("lstrip")), Boolean.TRUE.equals(a.get("rstrip"))));
             }
         }
+        // transformers also adds the tokens tokenizer_config.json declares that tokenizer.json
+        // lacks (Qwen2-VL-2B's <|image_pad|>)
+        if (tokenizerConfig.get("added_tokens_decoder") instanceof Map<?, ?> decoder) {
+            java.util.Set<Integer> known = new java.util.HashSet<>();
+            for (Added a : added) {
+                known.add(a.id());
+            }
+            for (Map.Entry<?, ?> e : decoder.entrySet()) {
+                int id;
+                try {
+                    id = Integer.parseInt(String.valueOf(e.getKey()));
+                } catch (NumberFormatException ex) {
+                    continue;
+                }
+                if (known.contains(id) || !(e.getValue() instanceof Map<?, ?> v)) {
+                    continue;
+                }
+                Map<String, Object> a = Json.object(v);
+                String content = Json.string(a, "content", "");
+                if (content.isEmpty()) {
+                    continue;
+                }
+                set(tokens, id, content);
+                added.add(new Added(content, id, Boolean.TRUE.equals(a.get("special")),
+                        Boolean.TRUE.equals(a.get("lstrip")), Boolean.TRUE.equals(a.get("rstrip"))));
+            }
+        }
         Object normalizer = root.get("normalizer");
         Object preTokenizer = root.get("pre_tokenizer");
         if (LLAMA_CLASSES.contains(String.valueOf(tokenizerConfig.get("tokenizer_class")))
