@@ -39,19 +39,33 @@ public final class KnowledgeTools {
     private static final Set<String> SKIP = Set.of(".git", "node_modules", "build", "target", ".gradle", "dist", "out",
             ".venv", "__pycache__");
 
+    private static final int EMBED_MAX = 5000;
+
     private final Path folder;
+    private final Embedder embedder;
+
+    /**
+     * Creates the tools, finding passages by their words only.
+     *
+     * @param folder where indexes are kept, one file per project
+     */
+    public KnowledgeTools(Path folder) {
+        this(folder, null);
+    }
 
     /**
      * Creates the tools.
      *
      * @param folder where indexes are kept, one file per project
+     * @param embedder what finds passages by meaning too, or null for words only
      */
-    public KnowledgeTools(Path folder) {
+    public KnowledgeTools(Path folder, Embedder embedder) {
         this.folder = folder;
+        this.embedder = embedder;
     }
 
     @Tools.Tool(name = "index_files", value = "Builds or refreshes the search index over the project's text files, "
-            + "so search_knowledge can find passages by meaning words. Only changed files are read again.")
+            + "so search_knowledge can find passages by their words and, with an embedding model, by meaning. Only changed files are read again.")
     @Tier(value = Risk.COMPUTE, what = "indexes the project's files")
     public Map<String, Object> indexFiles(@Tools.Param("which files, such as '**/*.md'; every text file if left out")
             Optional<String> glob) {
@@ -62,6 +76,10 @@ public final class KnowledgeTools {
         synchronized (this) {
             Map<String, Object> old = load(p.id());
             Map<String, Object> oldFiles = old.get("files") instanceof Map<?, ?> m ? Json.object(m) : Map.of();
+            String model = embedder == null ? "" : embedder.name().orElse("");
+            boolean sameModel = model.equals(Json.string(old, "embedder", ""));
+            List<Map<String, Object>> toEmbed = new ArrayList<>();
+            List<String> texts = new ArrayList<>();
             Map<String, Object> files = new LinkedHashMap<>();
             int read = 0;
             int kept = 0;
@@ -77,7 +95,7 @@ public final class KnowledgeTools {
                     String key = rel.toString().replace('\\', '/');
                     long stamp = Files.getLastModifiedTime(f).toMillis() ^ Files.size(f);
                     Object was = oldFiles.get(key);
-                    if (was instanceof Map<?, ?> w && Json.integer(Json.object(w), "stamp", -1) == stamp) {
+                    if (was instanceof Map<?, ?> w && Json.integer(Json.object(w), "stamp", -1) == stamp && sameModel) {
                         files.put(key, was);
                         kept++;
                         continue;
@@ -94,8 +112,15 @@ public final class KnowledgeTools {
                         String text = String.join("\n", lines.subList(i, end));
                         Map<String, Integer> tf = terms(key + "\n" + text);
                         if (!tf.isEmpty()) {
-                            passages.add(Map.of("line", i + 1, "terms", tf, "length",
-                                    tf.values().stream().mapToInt(Integer::intValue).sum()));
+                            Map<String, Object> ps = new LinkedHashMap<>();
+                            ps.put("line", i + 1);
+                            ps.put("terms", tf);
+                            ps.put("length", tf.values().stream().mapToInt(Integer::intValue).sum());
+                            passages.add(ps);
+                            if (!model.isEmpty() && toEmbed.size() < EMBED_MAX) {
+                                toEmbed.add(ps);
+                                texts.add(key + "\n" + text);
+                            }
                         }
                         if (end == lines.size()) {
                             break;
@@ -107,8 +132,20 @@ public final class KnowledgeTools {
             } catch (IOException e) {
                 throw new UncheckedIOException(e.getMessage(), e);
             }
+            String note = null;
+            if (!toEmbed.isEmpty()) {
+                try {
+                    float[][] v = embedder.embed(texts, false);
+                    for (int i = 0; i < v.length; i++) {
+                        toEmbed.get(i).put("vec", Embedder.pack(v[i]));
+                    }
+                } catch (RuntimeException | LinkageError e) {
+                    note = "found by words only: the embedding model failed (" + e.getMessage() + ")";
+                }
+            }
             Map<String, Object> index = new LinkedHashMap<>();
             index.put("project", p.id());
+            index.put("embedder", note == null ? model : "");
             index.put("built", System.currentTimeMillis());
             index.put("files", files);
             save(p.id(), index);
@@ -116,6 +153,13 @@ public final class KnowledgeTools {
             out.put("files", files.size());
             out.put("readAgain", read);
             out.put("unchanged", kept);
+            out.put("meaning", note == null && !model.isEmpty() ? model : "off: words only");
+            if (note != null) {
+                out.put("note", note);
+            } else if (model.isEmpty()) {
+                out.put("note", "found by words only; download a sentence-embedding model such as BAAI/bge-small-en-v1.5, "
+                        + "or set an embeddings API, to find passages by meaning too");
+            }
             return out;
         }
     }
@@ -161,6 +205,17 @@ public final class KnowledgeTools {
             }
         }
         double avg = n == 0 ? 1 : totalLength / n;
+        String model = Json.string(index, "embedder", "");
+        float[] qv = null;
+        if (embedder != null && !model.isEmpty() && model.equals(embedder.name().orElse(""))) {
+            try {
+                qv = embedder.embed(List.of(query), true)[0];
+            } catch (RuntimeException | LinkageError e) {
+                qv = null;
+            }
+        }
+        double best = 0;
+        List<double[]> raw = new ArrayList<>();
         for (Object[] x : passages) {
             @SuppressWarnings("unchecked")
             Map<String, Object> ps = (Map<String, Object>) x[1];
@@ -176,8 +231,18 @@ public final class KnowledgeTools {
                     score += idf * f * 2.2 / (f + 1.2 * (0.25 + 0.75 * len / avg));
                 }
             }
-            if (score > 0) {
-                all.add(new Hit((String) x[0], (int) Json.integer(ps, "line", 1), score));
+            double meaning = qv != null && ps.get("vec") instanceof String vs ? Math.max(0, Embedder.cosine(qv, Embedder.unpack(vs))) : 0;
+            best = Math.max(best, score);
+            raw.add(new double[] {score, meaning});
+        }
+        for (int i = 0; i < passages.size(); i++) {
+            double[] r = raw.get(i);
+            // words and meaning, each scaled to 0..1, count the same once vectors are there
+            double s = qv == null ? r[0] : 0.5 * (best > 0 ? r[0] / best : 0) + 0.5 * r[1];
+            if (s > 0 && (qv == null || r[0] > 0 || r[1] > 0.3)) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> ps = (Map<String, Object>) passages.get(i)[1];
+                all.add(new Hit((String) passages.get(i)[0], (int) Json.integer(ps, "line", 1), s));
             }
         }
         all.sort((a, b) -> Double.compare(b.score(), a.score()));
@@ -191,7 +256,7 @@ public final class KnowledgeTools {
             m.put("text", excerpt(root.resolve(h.file()), h.line(), q));
             out.add(m);
         }
-        return Map.of("query", query, "passages", out);
+        return Map.of("query", query, "by", qv == null ? "words" : "words and meaning", "passages", out);
     }
 
     private static String excerpt(Path f, int line, Set<String> q) {

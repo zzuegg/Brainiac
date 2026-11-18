@@ -36,6 +36,8 @@ import java.util.Map;
  *       {@code /resolve {id}}.
  *   <li>{@code GET /api/rules}, {@code POST /api/rules/save {rules}}, {@code /reset}.
  *   <li>{@code GET /api/services}, {@code POST /api/services/save {section, values, secret?}}.
+ *   <li>{@code GET /api/reminders}, {@code POST /api/reminders/add {at, text, goal?, role?, project?,
+ *       repeat?}}, {@code /dismiss {id}}.
  *   <li>{@code POST /api/agents/notes {project}} and {@code /notes/save {project, text}}: what
  *       agents remember per project.
  * </ul>
@@ -170,6 +172,24 @@ final class AgentRoutes {
         server.post("/api/rules/reset", ex -> {
             agents.rules().save(Rules.shipped());
             Exchanges.json(ex, 200, rules());
+        });
+
+        // reminders
+        server.get("/api/reminders", ex -> Exchanges.json(ex, 200, Map.of("reminders", agents.reminders().list())));
+        server.post("/api/reminders/add", ex -> {
+            Map<String, Object> b = Exchanges.body(ex, MAX_BODY);
+            Map<String, Object> r = agents.reminders().add(Json.string(b, "at", ""), Json.string(b, "text", ""),
+                    Json.string(b, "goal", ""), Json.string(b, "role", ""), Json.string(b, "project",
+                            io.github.zzuegg.brainiac.studio.chat.ChatService.SCOPE.isBound()
+                            && io.github.zzuegg.brainiac.studio.chat.ChatService.SCOPE.get()
+                                    instanceof io.github.zzuegg.brainiac.studio.project.Project p ? p.id() : ""),
+                    Json.string(b, "repeat", ""), "you");
+            Exchanges.json(ex, 200, r);
+        });
+        server.post("/api/reminders/dismiss", ex -> {
+            String id = Json.string(Exchanges.body(ex, MAX_BODY), "id", "");
+            Exchanges.json(ex, agents.reminders().dismiss(id) ? 200 : 404,
+                    Map.of("reminders", agents.reminders().list()));
         });
 
         // outside services

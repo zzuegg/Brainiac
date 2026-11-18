@@ -29,7 +29,8 @@ public final class Services {
             "webhook", List.of("url"),
             "mail", List.of("imapHost", "imapPort", "smtpHost", "smtpPort", "user", "from"),
             "calendar", List.of("url"),
-            "github", List.of("repo", "api"));
+            "github", List.of("repo", "api"),
+            "embeddings", List.of("source", "url", "model", "folder"));
 
     /** The ids secrets are kept under, per section. */
     public static final Map<String, String> SECRETS = Map.of(
@@ -38,7 +39,8 @@ public final class Services {
             "bluesky", "bluesky",
             "discord", "discord",
             "mail", "mail",
-            "github", "github");
+            "github", "github",
+            "embeddings", "embeddings");
 
     private final Path file;
     private final ChatService chat;
@@ -134,7 +136,7 @@ public final class Services {
      */
     public synchronized Map<String, Object> toJson() {
         Map<String, Object> out = new LinkedHashMap<>();
-        for (String section : List.of("search", "sandbox", "github", "mastodon", "bluesky", "discord", "webhook", "mail",
+        for (String section : List.of("search", "embeddings", "sandbox", "github", "mastodon", "bluesky", "discord", "webhook", "mail",
                 "calendar")) {
             Map<String, Object> m = new LinkedHashMap<>(sections.getOrDefault(section, Map.of()));
             if (SECRETS.containsKey(section)) {

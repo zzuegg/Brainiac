@@ -18,7 +18,7 @@ import java.util.Optional;
  * Tools that act on the agent calling them: its plan, its questions to the user, the agents it
  * starts, and the notes it keeps for its project.
  */
-public final class AgentTools {
+public final class AgentTools implements RiskRefiner {
 
     /** Tools every agent has, whatever its role and project allow: they only talk to the user. */
     static final List<String> ALWAYS = List.of("update_plan", "ask_user");
@@ -50,6 +50,16 @@ public final class AgentTools {
     AgentTools(AgentRuns runs, Path memory) {
         this.runs = runs;
         this.memory = memory;
+    }
+
+    @Override
+    public Risk refine(String tool, Map<String, Object> arguments, Risk declared) {
+        // listing reminders reads; cancelling one changes what will happen
+        if (tool.equals("list_reminders") && arguments.get("cancel") != null
+                && !String.valueOf(arguments.get("cancel")).isBlank()) {
+            return Risk.WRITE;
+        }
+        return declared;
     }
 
     /**
@@ -384,6 +394,43 @@ public final class AgentTools {
         Rules.Rule rule = new Rules.Rule(null, Risk.Policy.of(effect), tools.orElse(List.of()), rs,
                 paths.orElse(List.of()), access.orElse("any"), project.orElse(""), role.orElse(""), note, true);
         return waited(() -> runs.proposeRule(rule, why));
+    }
+
+    /**
+     * Sets a reminder.
+     *
+     * @param at when
+     * @param text what to remind of
+     * @param goal what an agent should do then
+     * @param role its role
+     * @param repeat daily or weekly
+     * @return the reminder
+     */
+    @Tools.Tool(name = "remind", value = "Sets a reminder for the user in this project. At its time it shows on the "
+            + "Agents page; with a goal it also starts an agent on that goal, which asks before each action. Use it "
+            + "to follow up later, such as checking a training run tomorrow or posting weekly.")
+    @Tier(value = Risk.CREATE)
+    public Map<String, Object> remind(
+            @Tools.Param("when: 2026-12-01T09:00, or 'in 30 minutes', '+2h', '1d'") String at,
+            @Tools.Param("what to remind of, in a sentence") String text,
+            @Tools.Param("what an agent should do then; none if left out") Optional<String> goal,
+            @Tools.Param("the role that agent takes; this agent's if left out") Optional<String> role,
+            @Tools.Param("daily or weekly, to repeat it") Optional<String> repeat) {
+        return runs.remind(at, text, goal.orElse(""), role.orElse(""), repeat.orElse(""));
+    }
+
+    /**
+     * Lists reminders.
+     *
+     * @param cancel one to cancel
+     * @return the reminders
+     */
+    @Tools.Tool(name = "list_reminders", value = "Lists this project's reminders, soonest first, and cancels one if "
+            + "asked. Times are milliseconds since the epoch.")
+    @Tier(value = Risk.READ)
+    public List<Map<String, Object>> listReminders(
+            @Tools.Param("the id of a reminder to cancel") Optional<String> cancel) {
+        return runs.projectReminders(cancel.orElse(null));
     }
 
     private static String waited(Wait w) {

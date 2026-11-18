@@ -502,6 +502,15 @@ public final class ChatService {
         return evaluation;
     }
 
+    /**
+     * Returns the folders local models are found in, the downloads folder among them.
+     *
+     * @return the folders
+     */
+    public List<Path> modelFolders() {
+        return local().folders();
+    }
+
     private LocalProvider local() {
         return providers().stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
                 .orElseThrow(() -> new IllegalStateException("no local provider"));

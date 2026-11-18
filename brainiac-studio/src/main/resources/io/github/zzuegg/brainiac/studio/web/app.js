@@ -5382,7 +5382,7 @@ reason ::= [a-z ]+`;
   // that acts (downloads, training, asking a paid model) waits here for Allow or Deny.
   const A = { loaded: false, loading: false, error: null, runs: [], tools: [], maxSteps: 30, sel: null, detail: null,
     model: "auto", mode: "ask", steps: 12, goal: "", format: "", schema: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
-    open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "",
+    open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "", reminders: [], remind: { at: "", text: "", goal: "", repeat: "", open: false },
     role: "assistant", roles: [], tab: "runs", undoing: null, undone: null };
   const agentStates = { running: ["working", "c-text"], waiting: ["needs you", "c-warn"], done: ["done", "c-ok"], failed: ["failed", "c-bad"],
     stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"], "out of budget": ["out of budget", "c-warn"] };
@@ -5461,12 +5461,64 @@ reason ::= [a-z ]+`;
     </div>`;
   }
 
+  const agentAsksKey = () => A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",")
+    + "|" + A.reminders.map(m => m.id + ":" + m.state + ":" + m.at + ":" + (m.run || "") + ":" + (m.error || "")).join(",");
+
+  function remindWhen(t) {
+    const d = new Date(t), day = x => new Date(x).setHours(0, 0, 0, 0);
+    const days = Math.round((day(d) - day(Date.now())) / 864e5), hm = d.toTimeString().slice(0, 5);
+    return days === 0 ? "today " + hm : days === 1 ? "tomorrow " + hm : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " " + hm;
+  }
+
+  function reminderBy(m) {
+    return m.by === "you" ? "you" : `agent <a href="#" data-run="${esc(m.by)}">${esc(m.by)}</a>`;
+  }
+
+  function reminderDue(m) {
+    const run = m.run ? A.runs.find(r => r.id === m.run) : null;
+    return `<div class="ask ag-remind" style="--c:var(--cap-agent)">
+      <div style="display:flex;gap:8px;align-items:center;min-width:0">${icon("clock")}<b class="agent-goal">${esc(m.text)}</b></div>
+      <div class="muted">Reminder for ${remindWhen(m.fired || m.at)}, set by ${reminderBy(m)}.${m.goal ? ` An agent ${run ? "works on" : "was to work on"}: ${esc(m.goal)}` : ""}</div>
+      ${m.error ? `<div class="flag bad">${icon("alert")}<span>The agent did not start: ${esc(m.error)}</span></div>` : ""}
+      <div class="approve"><button class="btn primary" data-rm-dismiss="${esc(m.id)}">Dismiss</button>
+        ${run ? `<button class="btn ghost" data-run="${esc(run.id)}">Open agent</button>` : ""}</div>
+    </div>`;
+  }
+
+  function reminderList() {
+    const xs = A.reminders.filter(m => m.state === "waiting");
+    if (!xs.length) return "";
+    return `<div class="col-head" style="padding-top:14px"><span class="h3">Reminders</span><span class="chip">${xs.length}</span></div>
+      <ul class="ag-rm-list">${xs.map(m => `<li><span class="ag-rm-text"><span class="mono ag-rm-at">${remindWhen(m.at)}</span>${esc(m.text)}${m.repeat ? ` <span class="chip">${m.repeat}</span>` : ""}${m.goal ? ` <span class="chip" title="${esc(m.goal)}">${icon("play")}agent</span>` : ""}
+          <span class="muted">by ${reminderBy(m)}</span></span>
+        <button class="btn ghost sm" data-rm-dismiss="${esc(m.id)}" title="Cancel this reminder">Cancel</button></li>`).join("")}</ul>`;
+  }
+
   function agentAsks() {
     const xs = A.runs.filter(r => r.state === "waiting" && r.pending);
+    const due = A.reminders.filter(m => m.state === "due");
     const busy = A.runs.filter(agentActive).length;
-    return `<div class="col-head"><span class="h3">Waiting for you</span>${xs.length ? `<span class="chip c-warn">${xs.length}</span>` : ""}<span class="grow"></span>
+    const n = xs.length + due.length;
+    return `<div class="col-head"><span class="h3">Waiting for you</span>${n ? `<span class="chip c-warn">${n}</span>` : ""}<span class="grow"></span>
         ${busy ? `<button class="btn ghost sm" id="ag-stop-all" title="Stop every agent that works or waits">${icon("stop")}Stop all ${busy}</button>` : ""}</div>
-      ${xs.length ? xs.map(r => agentAsk(r, false)).join("") : `<p class="muted ag-none">Nothing waits for you. Agents stop here with a plan to approve, a question, a rule they propose, or a call your rules or the mode say to ask about.</p>`}`;
+      ${due.map(reminderDue).join("")}
+      ${n ? xs.map(r => agentAsk(r, false)).join("") : `<p class="muted ag-none">Nothing waits for you. Agents stop here with a plan to approve, a question, a rule they propose, or a call your rules or the mode say to ask about. Reminders show here when they are due.</p>`}
+      ${reminderList()}`;
+  }
+
+  function remindForm() {
+    const R = A.remind;
+    return `<details class="ag-remind-form" ${R.open ? "open" : ""} id="rm-details"><summary>${icon("clock")}Set a reminder</summary>
+      <form id="rm-form" autocomplete="off">
+        <div class="ag-form-grid">
+          <label class="field"><span>When</span><input class="input mono" id="rm-at" value="${esc(R.at)}" placeholder="in 2 hours, or 2026-12-01T09:00"></label>
+          <label class="field"><span>Repeat</span><select class="input" id="rm-repeat">${[["", "Once"], ["daily", "Daily"], ["weekly", "Weekly"]].map(([v, t]) => `<option value="${v}" ${R.repeat === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+        </div>
+        <label class="field"><span>Remind me of</span><input class="input" id="rm-text" value="${esc(R.text)}" placeholder="Check how the fine-tune is doing"></label>
+        <label class="field"><span>Then an agent should (optional)</span><textarea class="input" id="rm-goal" rows="2" placeholder="Read the run's loss and tell me whether to stop it. It takes the role above and asks before it acts.">${esc(R.goal)}</textarea></label>
+        ${R.error ? `<div class="flag bad">${icon("alert")}<span>${esc(R.error)}</span></div>` : ""}
+        <button class="btn sm" type="submit">${icon("check")}Set reminder</button>
+      </form></details>`;
   }
 
   function agentForm() {
@@ -5492,7 +5544,7 @@ reason ::= [a-z ]+`;
         ${A.format === "schema" ? `<textarea class="input mono" id="ag-schema" rows="5" spellcheck="false" aria-label="JSON schema" placeholder="${esc(SCHEMA_EXAMPLE)}">${esc(A.schema)}</textarea>` : ""}</div>
       ${A.formError ? `<div class="flag bad">${icon("alert")}<span>${esc(A.formError)}</span></div>` : ""}
       <button class="btn primary" type="submit" ${A.busy ? "disabled" : ""}>${icon("play")}${A.busy ? "Starting…" : "Start"}</button>
-    </form>`;
+    </form>${remindForm()}`;
   }
 
   function agentTools() {
@@ -5579,7 +5631,7 @@ reason ::= [a-z ]+`;
   const agentCrumb = () => `Agents <span class="muted">· ${A.loaded ? `${A.runs.filter(r => r.state === "running").length} working · ${A.runs.filter(r => r.state === "waiting").length} waiting for you` : "looking…"}</span>`;
 
   function agentBadge() {
-    const n = A.runs.filter(r => r.state === "waiting").length;
+    const n = A.runs.filter(r => r.state === "waiting").length + A.reminders.filter(m => m.state === "due").length;
     const a = $('.rail a[data-view="agents"]');
     if (!a) return;
     let b = a.querySelector(".badge");
@@ -5595,7 +5647,7 @@ reason ::= [a-z ]+`;
     if (!$(".live-agents") || !!A.sel !== !!$("#ag-detail")) { render(); return; }
     $("#ag-lanes").innerHTML = agentLanes();
     $("#crumb").innerHTML = agentCrumb();
-    const asksKey = A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",");
+    const asksKey = agentAsksKey();
     if (asksKey !== A.asksKey) { A.asksKey = asksKey; $("#ag-asks").innerHTML = agentAsks(); }
     const d = A.detail;
     const detailKey = d ? [d.id, d.state, (d.steps || []).length, d.turns, A.removing, A.undoing, A.undone?.id, (d.thinking || "").length,
@@ -5619,6 +5671,7 @@ reason ::= [a-z ]+`;
       if (!L.info) await loadModels(false);
       const j = await api("/api/agents");
       A.runs = j.runs; A.tools = j.tools; A.maxSteps = j.maxSteps; A.roles = j.roles || []; A.loaded = true; A.error = null;
+      A.reminders = (await api("/api/reminders")).reminders || [];
       if (A.sel && !A.runs.some(r => r.id === A.sel)) { A.sel = null; A.detail = null; }
       if (A.sel) A.detail = await postJson("/api/agents/get", { id: A.sel });
     } catch (e) {
@@ -5655,6 +5708,11 @@ reason ::= [a-z ]+`;
     const decide = (id, allow, mode) => { const note = A.notes[id] || ""; delete A.notes[id]; A.asksKey = null; A.detailKey = null; agentDo("/api/agents/answer", { id, allow, note, mode }); };
     $$("[data-ag-auto]").forEach(el => el.onclick = () => decide(el.dataset.agAuto, true, "auto"));
     $$("[data-ag-pick]").forEach(el => el.onclick = () => { A.notes[el.dataset.agPick] = el.dataset.v; decide(el.dataset.agPick, true); });
+    $$("[data-rm-dismiss]").forEach(el => el.onclick = async () => {
+      try { A.reminders = (await postJson("/api/reminders/dismiss", { id: el.dataset.rmDismiss })).reminders || []; }
+      catch (e) { A.formError = String(e.message || e); }
+      refreshAgents();
+    });
     const stopAll = $("#ag-stop-all");
     if (stopAll) stopAll.onclick = () => agentDo("/api/agents/stop-all", {});
     $$("[data-ag-undo]").forEach(el => el.onclick = async () => {
@@ -5696,7 +5754,7 @@ reason ::= [a-z ]+`;
       if (missing) loadAgentSettings(); else bindAgentSettings();
       return;
     }
-    A.asksKey = A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",");
+    A.asksKey = agentAsksKey();
     A.detailKey = "";
     const goal = $("#ag-goal");
     if (!goal) return;
@@ -5729,6 +5787,17 @@ reason ::= [a-z ]+`;
       A.busy = false;
       render();
       loadAgents();
+    };
+    $("#rm-details").ontoggle = e => { A.remind.open = e.target.open; };
+    for (const k of ["at", "text", "goal", "repeat"]) { const el = $("#rm-" + k); el.oninput = el.onchange = () => { A.remind[k] = el.value; }; }
+    $("#rm-form").onsubmit = async e => {
+      e.preventDefault();
+      const R = A.remind;
+      try {
+        await postJson("/api/reminders/add", { at: R.at, text: R.text, goal: R.goal, role: R.goal.trim() ? A.role : "", repeat: R.repeat });
+        A.remind = { at: "", text: "", goal: "", repeat: "", open: false };
+      } catch (err) { R.error = String(err.message || err); render(); return; }
+      render(); loadAgents();
     };
     $("#ag-tools-toggle").onclick = () => { A.toolsOpen = !A.toolsOpen; $("#ag-tools").innerHTML = agentTools(); bindLiveAgents(); };
     $("#ag-close")?.addEventListener("click", () => { A.sel = null; A.detail = null; render(); });
@@ -5874,6 +5943,7 @@ reason ::= [a-z ]+`;
   // outside services
   const SERVICES = [
     ["search", "Web search", "For web_search. Brave Search needs a key; SearXNG needs its address; Ollama uses an Ollama key.", [["provider", "Provider", ["brave", "searxng", "ollama"]], ["url", "SearXNG address", "https://search.example.org"]], "API key"],
+    ["embeddings", "Meaning search", "index_files and search_knowledge find passages by meaning as well as by words. They use a sentence-embedding model downloaded here, such as BAAI/bge-small-en-v1.5, or an OpenAI-compatible embeddings API, such as Ollama's at http://localhost:11434/v1.", [["source", "Use", ["", "off"]], ["url", "API address", "empty for a model on this PC"], ["model", "API model", "nomic-embed-text"], ["folder", "Model folder", "found among downloads if empty"]], "API key"],
     ["sandbox", "Code sandbox", "run_command runs in a Docker or Podman container on a copy of the project, never on this PC directly.", [["kind", "Engine", ["", "docker", "podman"]], ["image", "Image", "debian:stable-slim"], ["cpus", "CPUs", "2"], ["memory", "Memory", "4g"], ["network", "Network", ["none", "on"]], ["timeout", "Time limit, seconds", "600"]], null],
     ["github", "GitHub", "For reading issues and, after you approve, opening issues and pull requests and commenting. A fine-grained token limited to the repositories agents may touch is best.", [["repo", "Repository", "owner/name; the project's origin if empty"], ["api", "API address", "https://api.github.com/"]], "Token"],
     ["mastodon", "Mastodon", "For publish_post. Make an access token under Preferences, Development.", [["instance", "Server", "mastodon.social"]], "Access token"],

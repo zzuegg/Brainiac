@@ -43,6 +43,7 @@ public final class StudioServer implements AutoCloseable {
     private final TrainingService training;
     private volatile VastRentals rentals;
     private volatile io.github.zzuegg.brainiac.studio.agent.PublishTools publish;
+    private volatile AgentRuns agents;
     private volatile boolean closed;
     private volatile io.github.zzuegg.brainiac.studio.project.Projects projects;
 
@@ -106,13 +107,14 @@ public final class StudioServer implements AutoCloseable {
                 chat.folder().resolve("services.json"), chat);
         server.publish = new io.github.zzuegg.brainiac.studio.agent.PublishTools(services,
                 agentsFolder.resolve("scheduled-posts.json"), server.projects);
-        AgentRuns agents = new AgentRuns(chat, List.of(new StudioTools(chat, server.training),
+        AgentRuns agents = server.agents = new AgentRuns(chat, List.of(new StudioTools(chat, server.training),
                 new io.github.zzuegg.brainiac.studio.agent.FileTools(),
                 new io.github.zzuegg.brainiac.studio.agent.DataTools(),
                 new io.github.zzuegg.brainiac.studio.agent.MediaTools(chat),
                 new io.github.zzuegg.brainiac.studio.agent.MlTools(chat, server.training),
                 new io.github.zzuegg.brainiac.studio.agent.WebTools(services),
-                new io.github.zzuegg.brainiac.studio.agent.KnowledgeTools(agentsFolder.resolve("index")),
+                new io.github.zzuegg.brainiac.studio.agent.KnowledgeTools(agentsFolder.resolve("index"),
+                        new io.github.zzuegg.brainiac.studio.agent.Embedder(services, chat::modelFolders)),
                 new io.github.zzuegg.brainiac.studio.agent.CodeTools(services),
                 new io.github.zzuegg.brainiac.studio.agent.GitHubTools(services),
                 new io.github.zzuegg.brainiac.studio.agent.RunnerTools(chat, () -> server.rentals, server.projects),
@@ -218,6 +220,9 @@ public final class StudioServer implements AutoCloseable {
         }
         if (publish != null) {
             publish.close();
+        }
+        if (agents != null) {
+            agents.close();
         }
         training.close();
         executor.shutdownNow();

@@ -11,7 +11,9 @@ import io.github.zzuegg.brainiac.studio.chat.Keys;
 import io.github.zzuegg.brainiac.studio.project.Project;
 import io.github.zzuegg.brainiac.studio.project.Projects;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
+import com.sun.net.httpserver.HttpServer;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,14 +39,16 @@ class AgentRulesTest {
     private Project project;
     private Path folder;
     private Path outside;
+    private Services services;
+    private ChatService chat;
 
     @BeforeEach
     void open() throws Exception {
         script = new AgentRunsTest.Script();
-        ChatService chat = new ChatService(new Keys(data.resolve("keys.properties"), Map.of()), List.of(script),
+        chat = new ChatService(new Keys(data.resolve("keys.properties"), Map.of()), List.of(script),
                 data.resolve("outputs"));
         training = new TrainingService(data);
-        Services services = new Services(data.resolve("services.json"), chat);
+        services = new Services(data.resolve("services.json"), chat);
         Projects projects = new Projects(data.resolve("projects.json"));
         folder = Files.createDirectories(data.resolve("work"));
         outside = Files.createDirectories(data.resolve("elsewhere"));
@@ -295,5 +299,78 @@ class AgentRulesTest {
             assertEquals("guide.md", best.get("file"));
             assertEquals(0, k.indexFiles(Optional.empty()).get("readAgain"), "unchanged files are not read again");
         });
+    }
+
+    @Test
+    void meaningFindsAPassageThatSharesNoWordWithTheQuery() throws Exception {
+        // a fake embeddings API: cats and kittens point one way, engines another
+        HttpServer api = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        api.createContext("/v1/embeddings", ex -> {
+            List<Object> input = Json.array(Json.object(Json.parse(new String(ex.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8))).get("input"));
+            List<Object> data = new java.util.ArrayList<>();
+            for (int i = 0; i < input.size(); i++) {
+                String t = String.valueOf(input.get(i)).toLowerCase(java.util.Locale.ROOT);
+                boolean pet = t.contains("cat") || t.contains("kitten");
+                data.add(Map.of("index", i, "embedding", List.of(pet ? 1.0 : 0.1, pet ? 0.1 : 1.0)));
+            }
+            byte[] b = Json.write(Map.of("data", data)).getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, b.length);
+            ex.getResponseBody().write(b);
+            ex.close();
+        });
+        api.start();
+        try {
+            services.set("embeddings", Map.of("url", "http://127.0.0.1:" + api.getAddress().getPort() + "/v1",
+                    "model", "fake"), null);
+            Files.writeString(folder.resolve("pets.md"), "Our cat sleeps all day on the sofa.\n", StandardCharsets.UTF_8);
+            Files.writeString(folder.resolve("cars.md"), "The engine needs fresh oil every year.\n", StandardCharsets.UTF_8);
+            KnowledgeTools k = new KnowledgeTools(data.resolve("index2"), new Embedder(services, List::of));
+            ScopedValue.where(ChatService.SCOPE, project).run(() -> {
+                Map<String, Object> built = k.indexFiles(Optional.empty());
+                assertEquals("api:fake", built.get("meaning"));
+                Map<String, Object> hits = k.searchKnowledge("young kitten", Optional.empty());
+                assertEquals("words and meaning", hits.get("by"));
+                assertEquals("pets.md", Json.object(Json.array(hits.get("passages")).getFirst()).get("file"));
+            });
+        } finally {
+            api.stop(0);
+        }
+        assertEquals(1f, Embedder.unpack(Embedder.pack(new float[] {1f, 0f}))[0]);
+    }
+
+    @Test
+    void remindersComeDueRepeatAndStartAnAgent() throws Exception {
+        Reminders r = agents.reminders();
+        assertThrows(IllegalArgumentException.class, () -> Reminders.when("next tuesday-ish"));
+        assertTrue(Reminders.when("in 2 hours") > System.currentTimeMillis() + 7_000_000);
+        assertThrows(IllegalArgumentException.class, () -> r.add("2020-01-01T09:00", "late", "", "", "", "", "you"));
+        Map<String, Object> plain = r.add("in 0 minutes", "stretch", "", "", project.id(), "daily", "you");
+        script.turns.add("All checked.");
+        Map<String, Object> work = r.add("in 0 minutes", "check the run", "Look at the latest run", "", project.id(), "",
+                "you");
+        Map<String, Object> later = r.add("in 3 days", "renew", "", "", project.id(), "", "you");
+        r.tick();
+        List<Map<String, Object>> all = r.list();
+        Map<String, Object> rolled = all.stream().filter(m -> plain.get("id").equals(m.get("id"))).findFirst().orElseThrow();
+        assertEquals("waiting", rolled.get("state"), "a daily reminder waits for tomorrow");
+        assertTrue(Json.integer(rolled, "at", 0) > System.currentTimeMillis() + 80_000_000L);
+        assertTrue(all.stream().anyMatch(m -> "stretch".equals(m.get("text")) && "due".equals(m.get("state"))));
+        Map<String, Object> fired = all.stream().filter(m -> work.get("id").equals(m.get("id"))).findFirst().orElseThrow();
+        assertEquals("due", fired.get("state"));
+        String run = String.valueOf(fired.get("run"));
+        Map<String, Object> agent = agents.get(run).orElseThrow();
+        assertEquals("ask", agent.get("mode"), "an agent a reminder starts asks before it acts");
+        assertTrue(String.valueOf(agent.get("goal")).contains("Look at the latest run"));
+        assertEquals("waiting", all.stream().filter(m -> later.get("id").equals(m.get("id"))).findFirst()
+                .orElseThrow().get("state"));
+        assertTrue(r.dismiss(String.valueOf(later.get("id"))));
+        assertFalse(r.dismiss("nope"));
+        until(run, m -> !"running".equals(m.get("state")));
+        AgentRuns again = new AgentRuns(chat, List.of(new FileTools()), data.resolve("agents"), null,
+                new Roles(data.resolve("roles")));
+        again.close();
+        assertTrue(again.list().stream().allMatch(m -> String.valueOf(m.get("id")).matches("\\d+")),
+                "the reminders kept beside the runs are not read as runs");
     }
 }

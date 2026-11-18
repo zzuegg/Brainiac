@@ -83,6 +83,7 @@ public final class AgentRuns {
     private final Roles roles;
     private final Checkpoints checkpoints;
     private final Rules rules;
+    private final Reminders reminders;
     private int counter;
 
     /** A user's answer to a call or question waiting for them. */
@@ -298,6 +299,7 @@ public final class AgentRuns {
             }
         }
         load();
+        this.reminders = new Reminders(folder.resolve("reminders.json"), this::remindNow);
     }
 
     /**
@@ -307,6 +309,78 @@ public final class AgentRuns {
      */
     public Map<String, StudioTools.Entry> tools() {
         return tools;
+    }
+
+    /**
+     * Returns the reminders the user and agents set.
+     *
+     * @return the reminders
+     */
+    public Reminders reminders() {
+        return reminders;
+    }
+
+    /** Stops watching reminders. */
+    public void close() {
+        reminders.close();
+    }
+
+    // a reminder with a goal starts an agent on it, which asks before it acts
+    private void remindNow(Map<String, Object> m) {
+        String goal = io.github.zzuegg.brainiac.io.Json.string(m, "goal", "");
+        if (goal.isBlank()) {
+            return;
+        }
+        String role = io.github.zzuegg.brainiac.io.Json.string(m, "role", "");
+        String text = "Reminder: " + io.github.zzuegg.brainiac.io.Json.string(m, "text", "") + "\n\n" + goal;
+        Spec spec = new Spec(text, role.isBlank() ? null : role, null, "ask", 0, null, Format.NONE);
+        Project p = projects == null ? null
+                : projects.get(io.github.zzuegg.brainiac.io.Json.string(m, "project", "")).orElse(null);
+        Run r = p == null ? start(spec, null) : ScopedValue.where(ChatService.SCOPE, p).call(() -> start(spec, null));
+        reminders.started(String.valueOf(m.get("id")), r.id);
+    }
+
+    /**
+     * Sets a reminder for the calling agent, in its project.
+     *
+     * @param at when
+     * @param text what to remind of
+     * @param goal what an agent should then do, or blank
+     * @param role its role
+     * @param repeat daily, weekly or blank
+     * @return the reminder
+     */
+    Map<String, Object> remind(String at, String text, String goal, String role, String repeat) {
+        Run r = caller();
+        if (goal != null && !goal.isBlank()) {
+            Roles.Effective mine = r.effective != null ? r.effective : roles.resolve(r.role, tools.keySet());
+            String want = role == null || role.isBlank() ? r.role : role;
+            if (!want.equals(r.role) && !mine.spawns(want)) {
+                throw new IllegalArgumentException("the role " + r.role + " may not set work for the role " + want);
+            }
+            role = want;
+        }
+        return reminders.add(at, text, goal, role, r.project, repeat, r.id);
+    }
+
+    /**
+     * Lists the reminders of the calling agent's project, and cancels one if asked.
+     *
+     * @param cancel a reminder to cancel, or null
+     * @return the reminders left
+     */
+    List<Map<String, Object>> projectReminders(String cancel) {
+        Run r = caller();
+        List<Map<String, Object>> mine = reminders.list().stream()
+                .filter(m -> r.project.equals(m.get("project"))).toList();
+        if (cancel != null && !cancel.isBlank()) {
+            if (mine.stream().noneMatch(m -> cancel.equals(m.get("id")))) {
+                throw new IllegalArgumentException("this project has no reminder " + cancel);
+            }
+            reminders.dismiss(cancel);
+            mine = mine.stream().filter(m -> !cancel.equals(m.get("id"))).toList();
+        }
+        return mine;
     }
 
     /**
@@ -1634,6 +1708,9 @@ public final class AgentRuns {
         }
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(folder, "*.json")) {
             for (Path p : ds) {
+                if (!p.getFileName().toString().matches("\\d+\\.json")) {
+                    continue;   // the rules, reminders and posts kept beside the runs
+                }
                 try {
                     Run r = read(Json.object(Json.parse(Files.readString(p, StandardCharsets.UTF_8))));
                     runs.put(r.id, r);
