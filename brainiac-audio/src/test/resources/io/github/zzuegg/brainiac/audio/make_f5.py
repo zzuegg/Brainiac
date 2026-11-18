@@ -22,9 +22,9 @@ from vocos.models import VocosBackbone
 from vocos.heads import ISTFTHead
 
 out = sys.argv[1]
-f5_dir, vocos_dir = f"{out}/f5", f"{out}/vocos"
-os.makedirs(f5_dir, exist_ok=True)
-os.makedirs(vocos_dir, exist_ok=True)
+f5_dir, vocos_dir, same_dir = f"{out}/f5", f"{out}/vocos", f"{out}/vocos-same"
+for d in (f5_dir, vocos_dir, same_dir):
+    os.makedirs(d, exist_ok=True)
 torch.manual_seed(0)
 
 SR, NFFT, HOP, MELS = 24000, 256, 64, 8
@@ -49,7 +49,7 @@ vocos_cfg = {
     "backbone": {"class_path": "vocos.models.VocosBackbone",
                  "init_args": {"input_channels": MELS, "dim": 16, "intermediate_dim": 48, "num_layers": 2}},
     "head": {"class_path": "vocos.heads.ISTFTHead",
-             "init_args": {"dim": 16, "n_fft": NFFT, "hop_length": HOP, "padding": "same"}},
+             "init_args": {"dim": 16, "n_fft": NFFT, "hop_length": HOP, "padding": "center"}},
 }
 yaml.safe_dump(vocos_cfg, open(f"{vocos_dir}/config.yaml", "w"), sort_keys=False)
 vocos = Vocos.from_hparams(f"{vocos_dir}/config.yaml")
@@ -61,6 +61,13 @@ with torch.no_grad():
         if "norm" in n and n.endswith("weight"):
             p.copy_(1 + torch.randn_like(p) * 0.1)
 torch.save(vocos.state_dict(), f"{vocos_dir}/pytorch_model.bin")
+# the same weights with a "same"-padded head (charactr/vocos-mel-24khz itself is "center")
+vocos_cfg["head"]["init_args"]["padding"] = "same"
+yaml.safe_dump(vocos_cfg, open(f"{same_dir}/config.yaml", "w"), sort_keys=False)
+torch.save(vocos.state_dict(), f"{same_dir}/pytorch_model.bin")
+vocos_same = Vocos.from_hparams(f"{same_dir}/config.yaml")
+vocos_same.load_state_dict(vocos.state_dict())
+vocos_same.eval()
 vocos = u.load_vocoder("vocos", is_local=True, local_path=vocos_dir, device="cpu")
 
 # --- F5-TTS --------------------------------------------------------------------------------
@@ -117,6 +124,7 @@ with torch.no_grad():
 with torch.no_grad():
     mel = torch.from_numpy(np.cos(np.arange(MELS * 12) * 0.37).astype(np.float32).reshape(1, MELS, 12) * 2 - 3)
     expected["vocos"] = {"mel": mel[0].numpy().tolist(), "audio": vocos.decode(mel)[0].numpy().round(6).tolist()}
+    expected["vocosSame"] = vocos_same.decode(mel)[0].numpy().round(6).tolist()
 
 # the whole pipeline: chunk the text, estimate the length, sample the flow (4 Euler steps), vocode
 real_randn = torch.randn

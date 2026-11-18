@@ -38,8 +38,10 @@ public final class Vocos implements AutoCloseable {
      * @param mels the mel bands
      * @param nFft the head's inverse STFT frame length
      * @param hop samples per frame
+     * @param center whether the head's inverse STFT is centred ({@code padding: center}, as
+     *               charactr/vocos-mel-24khz is) rather than {@code padding: same}
      */
-    public record Config(int sampleRate, int featureFft, int mels, int nFft, int hop) {
+    public record Config(int sampleRate, int featureFft, int mels, int nFft, int hop, boolean center) {
 
         /**
          * Reads {@code config.yaml} (only the numbers it needs, without a YAML library).
@@ -69,12 +71,12 @@ public final class Vocos implements AutoCloseable {
             int sr = num(v, "feature_extractor.sample_rate", 24_000);
             int nFft = num(v, "head.n_fft", 1024);
             int hop = num(v, "head.hop_length", num(v, "feature_extractor.hop_length", 256));
-            if (v.containsKey("head.padding") && !v.get("head.padding").equals("same")) {
-                throw new IllegalArgumentException("only Vocos heads with \"same\" padding are supported, got "
-                        + v.get("head.padding"));
+            String padding = v.getOrDefault("head.padding", "same").replace("'", "").replace("\"", "");
+            if (!padding.equals("same") && !padding.equals("center")) {
+                throw new IllegalArgumentException("Vocos heads pad \"same\" or \"center\", got " + padding);
             }
             return new Config(sr, num(v, "feature_extractor.n_fft", nFft), num(v, "feature_extractor.n_mels", 100),
-                    nFft, hop);
+                    nFft, hop, padding.equals("center"));
         }
 
         private static int num(Map<String, String> v, String key, int fallback) {
@@ -185,7 +187,8 @@ public final class Vocos implements AutoCloseable {
      * Turns mel frames into audio.
      *
      * @param mel {@code [batch, mels, frames]}
-     * @return {@code [batch, frames * hop]}
+     * @return {@code [batch, frames * hop]}, or {@code [batch, (frames - 1) * hop]} for a
+     *         centred head
      */
     public Var decode(Var mel) {
         int n = mel.shape().dim(0);
@@ -202,7 +205,9 @@ public final class Vocos implements AutoCloseable {
         Var mag = h.slice(2, 0, bins).exp().minimum(100f).reshape(n, frames, bins, 1);
         Var phase = h.slice(2, bins, 2 * bins).reshape(n, frames, bins, 1);
         Var spec = Var.concat(3, mag.mul(phase.cos()), mag.mul(phase.sin()));
-        return settle(Signal.istftSame(spec, config.nFft(), config.hop()));
+        return settle(config.center()
+                ? Signal.istft(spec, config.nFft(), config.hop(), (frames - 1) * config.hop())
+                : Signal.istftSame(spec, config.nFft(), config.hop()));
     }
 
     /**

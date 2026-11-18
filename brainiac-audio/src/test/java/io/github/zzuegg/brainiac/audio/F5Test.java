@@ -80,6 +80,10 @@ class F5Test {
             float[] audio = tts.vocoder().decode(WhisperTest.matrix(vc.get("mel")));
             closeWave(WhisperTest.floats(vc.get("audio")), audio);
         }
+        try (Vocos same = Vocos.load(WhisperTest.resource("vocos-same"), TestDevice.get(), DType.FLOAT32)) {
+            assertTrue(!same.config().center());
+            closeWave(WhisperTest.floats(expected.get("vocosSame")), same.decode(WhisperTest.matrix(vc.get("mel"))));
+        }
     }
 
     @Test

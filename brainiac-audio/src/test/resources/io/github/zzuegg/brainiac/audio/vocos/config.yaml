@@ -19,4 +19,4 @@ head:
     dim: 16
     n_fft: 256
     hop_length: 64
-    padding: same
+    padding: center
