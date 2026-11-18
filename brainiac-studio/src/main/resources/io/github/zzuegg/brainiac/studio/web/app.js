@@ -1403,9 +1403,10 @@
   function liveTrainView() {
     if (!T.loaded) return `<div class="train live-train"><div class="empty" style="padding:60px"><span class="typing"><i></i><i></i><i></i></span>
       <div class="muted">${T.error ? esc(T.error) : "Looking for models, data and every optimizer the installed modules offer…"}</div></div></div>`;
+    if (T.mode === "rl") return rlView();
     return `
     <div class="train live-train">
-      <div class="sect-head train-note"><span class="h3">Runs on ${T.hosts.length ? `this PC and ${T.hosts.length} host${T.hosts.length === 1 ? "" : "s"}` : "this PC"}</span><span class="muted">Add worker hosts and rent GPUs in <a href="#settings" data-go-settings data-go-section="set-hosts">Settings, Machines</a>.</span></div>
+      <div class="sect-head train-note"><div class="seg train-mode" role="group" aria-label="What kind of training"><button type="button" data-train-mode="nets" aria-pressed="${T.mode !== "rl"}" title="A model learns from a data set">From data</button><button type="button" data-train-mode="rl" aria-pressed="${T.mode === "rl"}" title="Reinforcement learning: an agent learns an environment by acting in it">From rewards</button></div><span class="h3">Runs on ${T.hosts.length ? `this PC and ${T.hosts.length} host${T.hosts.length === 1 ? "" : "s"}` : "this PC"}</span><span class="muted">Add worker hosts and rent GPUs in <a href="#settings" data-go-settings data-go-section="set-hosts">Settings, Machines</a>.</span></div>
       <div class="train-body">
         <aside class="launch panel" id="train-form" aria-label="Start a training run">${trainForm()}</aside>
         <section class="runs-col">
@@ -1756,7 +1757,7 @@
 
   // ----- partial updates while runs train, so typing in the form is never interrupted
   function renderTrainLive(force) {
-    if (state.view !== "train" || !T.loaded) return;
+    if (state.view !== "train" || !T.loaded || T.mode === "rl") return;
     // values being typed for Try it are not redrawn away by the poll
     const trying = !force && !!document.activeElement?.matches?.("#train-detail input");
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
@@ -2136,7 +2137,163 @@
       T.starting = false; renderTrainCheck(); pollRuns(false);
     }
   }
+  // ----- reinforcement learning: an agent learns a built-in environment by acting in it
+  const R = { data: null, error: null, sel: null, detail: null, env: "cartpole", algorithm: "ppo", steps: 50000, hidden: "64, 64", seed: 1,
+    busy: false, formError: null, timer: 0, frame: 0, playing: false, player: 0, framesOf: null };
+  const rlStates = { running: ["learning", "c-text"], done: ["done", "c-ok"], stopped: ["stopped", "plain"], failed: ["failed", "c-bad"] };
+  const rlEnv = () => (R.data?.environments || []).find(e => e.id === R.env);
+  // the learners that fit the chosen environment
+  const rlFits = (a, e) => !e || ((!a.table || e.grid) && (!a.discreteOnly || !e.continuous));
+  function rlView() {
+    return `<div class="train live-train rl">
+      <div class="sect-head train-note"><div class="seg train-mode" role="group" aria-label="What kind of training"><button type="button" data-train-mode="nets" aria-pressed="${T.mode !== "rl"}" title="A model learns from a data set">From data</button><button type="button" data-train-mode="rl" aria-pressed="${T.mode === "rl"}" title="Reinforcement learning: an agent learns an environment by acting in it">From rewards</button></div><span class="h3">An agent learns by acting</span><span class="muted">On this PC's CPU. Runs are kept until the studio closes.</span></div>
+      <div class="train-body rl-body">
+        <aside class="launch panel" id="rl-form-box" aria-label="Start a reinforcement learning run">${rlForm()}</aside>
+        <section class="runs-col"><div class="panel" id="rl-runs">${rlRuns()}</div><div class="panel run-detail" id="rl-detail">${rlDetail()}</div></section>
+      </div></div>`;
+  }
+  function rlForm() {
+    if (!R.data) return `<div class="muted">${R.error ? esc(R.error) : "Looking for environments…"}</div>`;
+    const e = rlEnv(), algos = R.data.algorithms, a = algos.find(x => x.id === R.algorithm);
+    return `<form id="rl-form" autocomplete="off" novalidate style="display:grid;gap:12px">
+      <div class="col-head" style="padding:0 0 4px"><span class="h3">New run</span></div>
+      <div class="field"><label for="rl-env">Environment</label><select class="input" id="rl-env">${R.data.environments.map(x => `<option value="${esc(x.id)}" ${x.id === R.env ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
+        <span class="faint" style="font-size:12.5px">${e ? esc(e.what) + ` ${e.observations} numbers seen, ${e.continuous ? e.actions + " continuous action" + (e.actions === 1 ? "" : "s") : e.actions + " actions"}.` : ""}</span></div>
+      <div class="field"><label for="rl-algo">Learner</label><select class="input" id="rl-algo">${algos.map(x => `<option value="${esc(x.id)}" ${x.id === R.algorithm ? "selected" : ""} ${rlFits(x, e) ? "" : "disabled"}>${esc(x.name)}</option>`).join("")}</select>
+        <span class="faint" style="font-size:12.5px">${a ? esc(a.what) : ""}</span></div>
+      <div class="two">
+        <div class="field"><label for="rl-steps">Steps</label><input class="input mono" id="rl-steps" type="number" min="100" max="${R.data.maxSteps}" step="1000" value="${esc(R.steps)}"></div>
+        <div class="field"><label for="rl-seed">Seed</label><input class="input mono" id="rl-seed" type="number" step="1" value="${esc(R.seed)}"></div>
+      </div>
+      ${a?.table ? "" : `<div class="field"><label for="rl-hidden">Hidden layers</label><input class="input mono" id="rl-hidden" value="${esc(R.hidden)}" placeholder="64, 64" spellcheck="false"></div>`}
+      ${R.formError ? `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(R.formError)}</span></div>` : ""}
+      <button class="btn primary" type="submit" ${R.busy ? "disabled" : ""}>${icon("play")}${R.busy ? "Starting…" : "Start learning"}</button>
+    </form>`;
+  }
+  function rlRuns() {
+    const runs = R.data?.runs || [];
+    if (!runs.length) return `<div class="col-head" style="padding:0"><span class="h3">Runs</span></div><p class="muted" style="margin:8px 0 0">No runs yet. CartPole with PPO learns to balance in about 50,000 steps.</p>`;
+    return `<table class="runs-table"><thead><tr><th>Run</th><th>State</th><th>Steps</th><th>Episodes</th><th title="The mean return of the last 20 episodes while learning">Return</th><th title="The mean return of 10 fresh episodes played without exploring, after the run ended">Score</th></tr></thead><tbody>
+      ${runs.map(r => { const st = rlStates[r.state] || [r.state, "plain"]; return `<tr class="${r.id === R.sel ? "sel" : ""}" data-rl-run="${esc(r.id)}" tabindex="0">
+        <td><b>${esc(r.envName)}</b> <span class="faint">${esc(r.algorithmName)}</span></td>
+        <td><span class="chip ${st[1]}">${r.state === "running" ? '<span class="dot pulse" style="--c:var(--accent)"></span>' : ""}${st[0]}</span></td>
+        <td class="mono tnum">${fmtCount(r.done)} <span class="faint">/ ${fmtCount(r.steps)}</span></td><td class="mono tnum">${r.episodes.toLocaleString()}</td>
+        <td class="mono tnum">${r.meanReturn != null ? fmtNum(r.meanReturn) : "–"}</td><td class="mono tnum">${r.score != null ? fmtNum(r.score) : "–"}</td></tr>`; }).join("")}</tbody></table>`;
+  }
+  function rlCurve(curve) {
+    if (!curve || curve.length < 2) return `<p class="muted" style="margin:0">The curve shows after a few episodes.</p>`;
+    const W = 640, H = 200, L = 58, B = 24, Tp = 8, xs = curve.map(p => p[0]), ys = curve.map(p => p[1]);
+    const x0 = 0, x1 = Math.max(...xs), lo = Math.min(...ys), hi = Math.max(...ys), span = Math.max(1e-9, hi - lo);
+    const X = v => L + (v - x0) / Math.max(1, x1 - x0) * (W - L - 8), Y = v => Tp + (1 - (v - lo) / span) * (H - Tp - B);
+    return `<svg class="rl-curve" viewBox="0 0 ${W} ${H}" role="img" aria-label="Return per episode over the steps of the run, from ${fmtNum(ys[0])} to ${fmtNum(ys[ys.length - 1])}">
+      <line x1="${L}" y1="${Y(lo)}" x2="${W - 8}" y2="${Y(lo)}" stroke="var(--line-soft)"/><line x1="${L}" y1="${Y(hi)}" x2="${W - 8}" y2="${Y(hi)}" stroke="var(--line-soft)"/>
+      <text x="${L - 6}" y="${Y(hi) + 4}" text-anchor="end" fill="var(--muted)" font-size="13">${fmtNum(hi)}</text><text x="${L - 6}" y="${Y(lo) + 4}" text-anchor="end" fill="var(--muted)" font-size="13">${fmtNum(lo)}</text>
+      <text x="${L}" y="${H - 5}" fill="var(--muted)" font-size="13">0</text><text x="${W - 8}" y="${H - 5}" text-anchor="end" fill="var(--muted)" font-size="13">${fmtCount(x1)} steps</text>
+      <polyline fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" points="${curve.map(p => X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1)).join(" ")}"/></svg>`;
+  }
+  function rlDetail() {
+    const r = R.detail && R.detail.id === R.sel ? R.detail : null;
+    if (!r) return `<div class="col-head" style="padding:0"><span class="h3">Run</span></div><p class="muted" style="margin:0">Select a run to see how its return grew and to watch the agent play.</p>`;
+    const st = rlStates[r.state] || [r.state, "plain"], frames = r.frames || [];
+    const i = Math.min(R.frame, Math.max(0, frames.length - 1));
+    return `<div class="col-head" style="padding:0"><span class="h3">${esc(r.envName)} · ${esc(r.algorithmName)}</span><span class="chip ${st[1]}">${st[0]}</span><span class="grow"></span>
+        ${r.state === "running" ? `<button class="btn sm" data-rl-stop="${esc(r.id)}">${icon("stop")}Stop</button>` : `<button class="btn sm ghost" data-rl-delete="${esc(r.id)}">${icon("trash")}Remove</button>`}</div>
+      ${r.error ? `<div class="flag bad">${icon("alert")}<span>${esc(r.error)}</span></div>` : ""}
+      <dl class="kv"><dt>Steps</dt><dd class="mono">${r.done.toLocaleString()} of ${r.steps.toLocaleString()}</dd><dt>Episodes</dt><dd class="mono">${r.episodes.toLocaleString()}</dd>
+        <dt>Return</dt><dd class="mono">${r.meanReturn != null ? `${fmtNum(r.meanReturn)} <span class="faint">last 20 · best ${fmtNum(r.bestReturn)}</span>` : "–"}</dd>
+        ${r.score != null ? `<dt>Score</dt><dd class="mono">${fmtNum(r.score)} <span class="faint">10 fresh episodes, no exploring</span></dd>` : ""}
+        ${r.hidden?.length && !["qlearning", "sarsa"].includes(r.algorithm) ? `<dt>Networks</dt><dd class="mono">${r.hidden.join(" × ")} hidden</dd>` : ""}<dt>Seed</dt><dd class="mono">${r.seed}</dd></dl>
+      <div id="rl-curve-box">${rlCurve(r.curve)}</div>
+      ${frames.length ? `<div class="rl-watch"><div class="try-row"><span class="eyebrow">Watch it play</span><span class="grow"></span>
+          <button class="btn sm" id="rl-play" aria-label="${R.playing ? "Pause" : "Play"}">${icon(R.playing ? "pause" : "play")}${R.playing ? "Pause" : "Play"}</button></div>
+        <pre class="rl-frame" id="rl-frame" aria-live="off">${esc(frames[i])}</pre>
+        <div class="try-row"><input type="range" id="rl-seek" min="0" max="${frames.length - 1}" value="${i}" aria-label="Step of the episode" style="flex:1"><span class="mono faint tnum" id="rl-at">${i + 1} / ${frames.length}</span></div></div>`
+        : r.state === "running" ? `<p class="muted" style="margin:0">When the run ends, one of the agent's episodes can be watched here.</p>` : ""}`;
+  }
+  function rlShowFrame() {
+    const frames = R.detail?.frames || [], pre = $("#rl-frame");
+    if (!pre || !frames.length) return;
+    pre.textContent = frames[R.frame]; const seek = $("#rl-seek"); if (seek) seek.value = R.frame;
+    const at = $("#rl-at"); if (at) at.textContent = `${R.frame + 1} / ${frames.length}`;
+  }
+  function rlPlay(on) {
+    clearInterval(R.player); R.playing = on;
+    if (on) {
+      if (R.frame >= (R.detail?.frames?.length || 1) - 1) R.frame = 0;
+      R.player = setInterval(() => {
+        const n = R.detail?.frames?.length || 0;
+        if (state.view !== "train" || T.mode !== "rl" || !n || R.frame >= n - 1) { rlPlay(false); rlRedraw(); return; }
+        R.frame++; rlShowFrame();
+      }, 90);
+    }
+  }
+  function rlRedraw() {
+    if (state.view !== "train" || T.mode !== "rl") return;
+    const runs = $("#rl-runs"), det = $("#rl-detail");
+    if (!runs || !det) { render(); return; }
+    runs.innerHTML = rlRuns();
+    // an episode being played or scrubbed is not redrawn away by the poll
+    if (!R.playing && document.activeElement?.id !== "rl-seek") det.innerHTML = rlDetail();
+    bindRlLists();
+  }
+  async function loadRl() {
+    clearTimeout(R.timer);
+    try {
+      const first = !R.data;
+      R.data = await api("/api/rl"); R.error = null;
+      if (R.sel && !R.data.runs.some(r => r.id === R.sel)) { R.sel = null; R.detail = null; }
+      if (!R.sel && R.data.runs.length) R.sel = R.data.runs[0].id;
+      // a run that has ended and is loaded already does not change any more
+      if (R.sel && !(R.detail && R.detail.id === R.sel && R.detail.state !== "running")) {
+        R.detail = await postJson("/api/rl/get", { id: R.sel });
+        if (R.framesOf !== R.sel + ":" + R.detail.state) { R.framesOf = R.sel + ":" + R.detail.state; R.frame = 0; }
+      }
+      if (first && state.view === "train" && T.mode === "rl") render(); else rlRedraw();
+    } catch (e) { R.error = String(e.message || e); console.warn("cannot load reinforcement learning", e); }
+    const active = (R.data?.runs || []).some(r => r.state === "running");
+    if (state.view === "train" && T.mode === "rl" && isLive()) R.timer = setTimeout(loadRl, active ? 1200 : 6000);
+  }
+  function bindRlLists() {
+    $$("[data-rl-run]").forEach(tr => { const pick = () => { if (R.sel === tr.dataset.rlRun) return; rlPlay(false); R.sel = tr.dataset.rlRun; R.detail = null; loadRl(); };
+      tr.addEventListener("click", pick); tr.addEventListener("keydown", e => { if (e.key === "Enter") pick(); }); });
+    $$("[data-rl-stop]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; try { await postJson("/api/rl/stop", { id: b.dataset.rlStop }); } catch (e) { console.warn(e); } loadRl(); }));
+    $$("[data-rl-delete]").forEach(b => b.addEventListener("click", async () => { rlPlay(false); try { await postJson("/api/rl/delete", { id: b.dataset.rlDelete }); } catch (e) { console.warn(e); } R.sel = null; R.detail = null; loadRl(); }));
+    $("#rl-play")?.addEventListener("click", () => { rlPlay(!R.playing); const d = $("#rl-detail"); if (d) { d.innerHTML = rlDetail(); bindRlLists(); } });
+    $("#rl-seek")?.addEventListener("input", e => { rlPlay(false); R.frame = +e.target.value; rlShowFrame(); });
+  }
+  function bindRl() {
+    $$("[data-train-mode]").forEach(b => b.addEventListener("click", () => { if ((T.mode || "nets") === b.dataset.trainMode) return; rlPlay(false); T.mode = b.dataset.trainMode; render(); }));
+    if (T.mode !== "rl") return;
+    const redrawForm = () => { const box = $("#rl-form-box"); if (box) { box.innerHTML = rlForm(); bindRlForm(); } };
+    function bindRlForm() {
+      $("#rl-env")?.addEventListener("change", e => {
+        R.env = e.target.value; const env = rlEnv(), cur = R.data.algorithms.find(a => a.id === R.algorithm);
+        if (cur && !rlFits(cur, env)) R.algorithm = "ppo";
+        R.formError = null; redrawForm();
+      });
+      $("#rl-algo")?.addEventListener("change", e => { R.algorithm = e.target.value; R.formError = null; redrawForm(); });
+      $("#rl-steps")?.addEventListener("input", e => { R.steps = e.target.value; });
+      $("#rl-seed")?.addEventListener("input", e => { R.seed = e.target.value; });
+      $("#rl-hidden")?.addEventListener("input", e => { R.hidden = e.target.value; });
+      $("#rl-form")?.addEventListener("submit", async e => {
+        e.preventDefault();
+        if (R.busy) return;
+        const hidden = String(R.hidden).split(/[\s,x×]+/).filter(Boolean).map(Number), steps = Math.round(+R.steps);
+        const table = R.data.algorithms.find(a => a.id === R.algorithm)?.table;
+        if (!(steps >= 100 && steps <= R.data.maxSteps)) { R.formError = `Steps are between 100 and ${R.data.maxSteps.toLocaleString()}.`; redrawForm(); return; }
+        if (!table && (!hidden.length || hidden.length > 2 || hidden.some(h => !Number.isInteger(h) || h < 4 || h > 512))) { R.formError = "Give one or two hidden layers of 4 to 512 units, such as 64, 64."; redrawForm(); return; }
+        R.busy = true; R.formError = null; redrawForm();
+        try { const r = await postJson("/api/rl/start", { env: R.env, algorithm: R.algorithm, steps, seed: Math.round(+R.seed) || 0, hidden: table ? undefined : hidden }); rlPlay(false); R.sel = r.id; R.detail = null; }
+        catch (err) { R.formError = String(err.message || err).replace(/^\/api\/rl\/start: /, ""); }
+        R.busy = false; redrawForm(); loadRl();
+      });
+    }
+    bindRlForm(); bindRlLists();
+    if (!R.timer || !R.data) loadRl();
+  }
   function bindLiveTrain() {
+    bindRl();
+    if (T.mode === "rl") return;
     bindTrainForm(); bindTrainLists(); bindHosts(); bindVastCard(); bindVastPanel(); drawLossChart();
     if (!T.timer) pollRuns(false);
   }
