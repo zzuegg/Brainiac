@@ -320,7 +320,7 @@ public final class MusicMetrics {
      *
      * @param f the detection function
      * @param window the local-maximum half-width
-     * @param avgWindow the moving-average half-width
+     * @param avgWindow the moving-average half-width; 0 compares against {@code delta} alone
      * @param delta the threshold offset
      * @param minGap the smallest distance between peaks
      * @return the peak frames
@@ -344,7 +344,8 @@ public final class MusicMetrics {
                 mean += f[j];
                 cnt++;
             }
-            if (f[t] >= mean / cnt + delta && (peaks.isEmpty() || t - peaks.get(peaks.size() - 1) >= minGap)) {
+            double threshold = avgWindow <= 0 ? delta : mean / cnt + delta;
+            if (f[t] >= threshold && (peaks.isEmpty() || t - peaks.get(peaks.size() - 1) >= minGap)) {
                 peaks.add(t);
             }
         }
