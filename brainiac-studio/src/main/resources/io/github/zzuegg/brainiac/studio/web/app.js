@@ -2226,7 +2226,7 @@
   // ---------- SETTINGS, PROJECTS AND GPU SCHEDULING ----------
   // One page for everything that is set once: the project and its routes, how this PC's GPU is
   // shared, the machines and providers that run models. The palette (Ctrl K) reaches most of it too.
-  const PJ = { data: null, editing: null, draft: null, error: null, note: null, oneShot: null };
+  const PJ = { data: null, view: null, editing: null, draft: null, dirty: false, error: null, note: null, oneShot: null };
   const GP = { data: null, error: null, timer: 0 };
   const KIND_NAMES = { chat: "Chat", image: "Images", speech: "Speech", transcribe: "Transcription", video: "Video" };
   const MEDIUM_NAMES = { text: "Chat", image: "Images", speech: "Speech", transcribe: "Transcription", video: "Video" };
@@ -2248,7 +2248,7 @@
   async function loadGpu() {
     clearTimeout(GP.timer);
     try { GP.data = await api("/api/gpu"); GP.error = null; } catch (e) { GP.error = String(e.message || e); }
-    if (state.view === "settings") { const box = $("#set-gpu"); if (box && !box.contains(document.activeElement)) { box.innerHTML = gpuSection(); bindGpu(); } }
+    if (state.view === "settings") { const box = $("#set-gpu"); if (box && !box.contains(document.activeElement)) renderSection(); else renderNavStatus(); }
     // something loading or waiting: look again soon
     if (state.view === "settings") GP.timer = setTimeout(loadGpu, GP.data?.waiting?.length || GP.data?.slots?.some(s => s.busy) ? 2000 : 8000);
   }
@@ -2271,106 +2271,192 @@
     chip.innerHTML = `${icon("folder")}<span>${esc(p ? p.name : "Default")}</span>`;
   }
 
+  // ---- the settings page: one section at a time, picked on the left or found by typing
+  // Other parts of the page add their own section with addSettingsSection: an entry is
+  // {id, title, icon, blurb, keywords, status(), render(), bind()}, and render returns the
+  // section's HTML (setHead gives it the shared heading).
+  const S = { tab: store.get("setTab", "project"), q: "" };
+  const SET_ALIASES = { "set-project": "project", "set-gpu": "gpu", "set-hosts": "machines", "set-providers": "providers", "set-look": "look" };
+  const MEDIUM_CAP = { text: "text", image: "image", speech: "speech", transcribe: "vision", video: "video" };
+  const KIND_CAP = { chat: "text", image: "image", speech: "speech", transcribe: "vision", video: "video" };
+  const SETTINGS_SECTIONS = [
+    { id: "project", title: "Projects", icon: "folder", keywords: "project folder description routes route runner vast tools models agents access scope new delete active",
+      status: () => PJ.data ? `${activeProject()?.name || "Default"} is active · ${PJ.data.projects.length} in all` : "Scope, routes and runners",
+      render: projectSection, bind: bindProjects },
+    { id: "gpu", title: "GPU and scheduling", icon: "flask", keywords: "gpu vram memory unload pin pinned policy swap queue remote ask spill idle device loaded full",
+      status: () => { const g = GP.data; if (!g) return "What is loaded, and what waits"; const n = g.slots.filter(s => s.model).length; return `${g.device || "no device"} · ${n ? `${n} loaded` : "nothing loaded"}${g.waiting.length ? ` · ${g.waiting.length} waiting` : ""}`; },
+      render: gpuSection, bind: bindGpu },
+    { id: "machines", title: "Machines", icon: "plug", keywords: "host hosts worker vast rent rental gpu machine model folders gguf this pc offers",
+      status: () => T.loaded ? `This PC${T.hosts.length ? ` and ${T.hosts.length} host${T.hosts.length === 1 ? "" : "s"}` : ""}${(V.rentals || []).length ? ` · ${V.rentals.length} rented` : ""}` : "Workers and rented GPUs",
+      render: machinesSection, bind: bindMachines },
+    { id: "providers", title: "Model APIs and keys", icon: "lock", keywords: "api key keys provider providers routing usage balance tokens anthropic openai google gemini hugging face deepseek qwen kimi glm minimax mistral xai grok groq openrouter",
+      status: () => { if (!L.info) return "Keys for hosted models"; const n = L.info.providers.filter(p => p.kind === "api" && p.keys.length).length; return n ? `${n} provider${n === 1 ? "" : "s"} with a key` : "No key yet"; },
+      render: () => setHead("Model APIs and keys", "Hosted models you reach with an API key. Auto tries them after your own machines.") + liveProviders("apis"),
+      bind: () => { bindLiveLibrary(); bindSettingsJumps($("#set-providers")); } },
+    { id: "look", title: "Appearance", icon: "sun", keywords: "theme light dark system layout density compact comfortable size scale zoom ultrawide keyboard shortcuts data folder",
+      status: () => `${themeName()} · ${state.layout === "auto" ? "auto layout" : state.layout + " layout"}`, render: lookSection, bind: bindLook },
+  ];
+  function addSettingsSection(sec, after) {
+    const i = SETTINGS_SECTIONS.findIndex(s => s.id === sec.id);
+    if (i >= 0) SETTINGS_SECTIONS.splice(i, 1);
+    const at = SETTINGS_SECTIONS.findIndex(s => s.id === after);
+    SETTINGS_SECTIONS.splice(at < 0 ? SETTINGS_SECTIONS.length : at + 1, 0, sec);
+  }
+  const setHead = (title, text, actions = "") => `<header class="set-head"><div><h2 class="h2">${esc(title)}</h2>${text ? `<p class="muted">${text}</p>` : ""}</div>${actions ? `<div class="set-actions">${actions}</div>` : ""}</header>`;
+  const currentSection = () => SETTINGS_SECTIONS.find(s => s.id === S.tab) || SETTINGS_SECTIONS[0];
+  const sectionMatches = (s, q) => { const words = q.toLowerCase().split(/\s+/).filter(Boolean); const hay = `${s.title} ${s.blurb || ""} ${s.keywords || ""}`.toLowerCase(); return words.every(w => hay.includes(w)); };
+
+  function openSettings(id, then) {
+    id = SET_ALIASES[id] || id;
+    if (SETTINGS_SECTIONS.some(s => s.id === id)) { S.tab = id; store.set("setTab", id); }
+    if (state.view !== "settings") go("settings"); else render();
+    $(".set-inner")?.scrollTo?.({ top: 0 });
+    if (then) setTimeout(then, 30);
+  }
+
   function settingsView() {
     if (!isLive()) return `<div class="settings"><div class="set-inner"><span class="h2">Settings</span><p class="muted">Start the studio to change settings; this is example data.</p></div></div>`;
     if (!PJ.data && !PJ.error) loadProjects();
     if (!GP.data && !GP.error) loadGpu();
     if (!T.loaded && !T.loading) loadTrain();
-    const nav = [["set-project", "Project"], ["set-gpu", "GPU and scheduling"], ["set-hosts", "Machines and Vast.ai"], ["set-providers", "Providers and keys"], ["set-look", "Appearance"]];
-    return `<div class="settings"><nav class="set-nav" aria-label="Settings sections">${nav.map(([id, n]) => `<a href="#settings" data-jump="${id}">${esc(n)}</a>`).join("")}
-        <p class="faint" style="font-size:12px;margin-top:14px"><span class="kbd">Ctrl K</span> runs any of these from anywhere; <span class="kbd">Ctrl ,</span> opens this page.</p></nav>
-      <div class="set-inner">
-        <section id="set-project" class="set-sect">${projectSection()}</section>
-        <section id="set-gpu" class="set-sect">${gpuSection()}</section>
-        <section id="set-hosts" class="set-sect"><div class="sect-head"><span class="h2">Machines and Vast.ai</span><span class="muted">Your other machines running as workers, and GPUs rented by the hour. Routes can send tasks to them.</span></div>
-          ${T.loaded ? `<div class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</div><div id="train-vast" aria-label="GPUs to rent">${vastPanel()}</div>` : `<div class="muted">${T.error ? esc(T.error) : "Asking the hosts…"}</div>`}</section>
-        <section id="set-providers" class="set-sect">${liveProviders()}</section>
-        <section id="set-look" class="set-sect"><div class="sect-head"><span class="h2">Appearance</span></div>
-          <div class="provset"><button class="btn" data-set-theme>${icon("sun")}Switch light or dark</button><button class="btn" data-set-layout>${icon("layout")}Layout and density</button></div></section>
-      </div></div>`;
+    const cur = currentSection();
+    return `<div class="settings">
+      <nav class="set-nav" aria-label="Settings sections">
+        <label class="set-search">${icon("search")}<input id="set-q" type="search" placeholder="Find a setting" value="${esc(S.q)}" aria-label="Find a setting" autocomplete="off"></label>
+        <div class="set-tabs">${SETTINGS_SECTIONS.map(s => `<button class="set-tab" type="button" data-set-tab="${esc(s.id)}" ${s === cur ? `aria-current="page"` : ""} ${S.q && !sectionMatches(s, S.q) ? "hidden" : ""}>
+            <span class="set-ico">${icon(s.icon)}</span><span class="set-tab-t"><b>${esc(s.title)}</b><small>${esc(s.status?.() || s.blurb || "")}</small></span></button>`).join("")}
+          <p class="faint set-none" ${S.q && !SETTINGS_SECTIONS.some(s => sectionMatches(s, S.q)) ? "" : "hidden"}>Nothing matches. The palette (Ctrl K) knows more.</p></div>
+        <div class="set-keys"><div><span class="kbd">Ctrl K</span> any setting, from anywhere</div><div><span class="kbd">Ctrl ,</span> this page</div></div>
+      </nav>
+      <div class="set-inner"><section id="set-${esc(cur.id)}" class="set-sect">${cur.render()}</section></div></div>`;
   }
 
-  // ---- the project and its routes
+  // re-renders the open section alone, so the left side and what is typed elsewhere stay
+  function renderSection() {
+    const cur = currentSection(), box = $("#set-" + cur.id);
+    if (!box) return render();
+    box.innerHTML = cur.render(); cur.bind?.();
+    $$(".set-tab").forEach(b => { const s = SETTINGS_SECTIONS.find(x => x.id === b.dataset.setTab); const sm = b.querySelector("small"); if (s && sm) sm.textContent = s.status?.() || s.blurb || ""; });
+  }
+
+  // ---- projects: the list on the left of the section, the one picked on the right
+  function medDots(p) {
+    return Object.keys(MEDIUM_NAMES).filter(m => p.routes?.[m]).map(m => `<span class="dot" style="--c:var(--cap-${MEDIUM_CAP[m]})" title="${MEDIUM_NAMES[m]} has a route"></span>`).join("");
+  }
   function projectSection() {
-    if (PJ.error && !PJ.data) return `<div class="flag bad">${icon("alert")}<span>${esc(PJ.error)}</span></div>`;
-    if (!PJ.data) return `<span class="muted">Reading the projects…</span>`;
-    const ps = PJ.data.projects, a = activeProject();
-    const head = `<div class="sect-head"><span class="h2">Project</span><span class="muted">A project scopes its agents: the tools and models they may use, the one folder they may read, and where each kind of task runs.</span></div>
-      <div class="provset proj-pick">${ps.map(p => `<button class="btn ${p.id === PJ.data.active ? "primary" : ""}" data-proj-use="${esc(p.id)}" aria-pressed="${p.id === PJ.data.active}">${icon("folder")}${esc(p.name)}</button>`).join("")}
-        <button class="btn ghost" data-proj-new>${icon("plus")}New project</button>${PJ.note ? `<span class="chip c-ok" role="status">${esc(PJ.note)}</span>` : ""}</div>`;
-    const p = PJ.editing ? PJ.draft : a;
-    if (!p) return head;
-    return head + projectForm(p, !!PJ.editing);
+    const newBtn = `<button class="btn" type="button" data-proj-new>${icon("plus")}New project</button>`;
+    const head = setHead("Projects", "A project scopes its agents: the tools and models they may use, the one folder they may read, and where each kind of task runs.", newBtn);
+    if (PJ.error && !PJ.data) return head + `<div class="flag bad">${icon("alert")}<span>${esc(PJ.error)}</span></div>`;
+    if (!PJ.data) return head + `<div class="set-card"><span class="muted">Reading the projects…</span></div>`;
+    const ps = PJ.data.projects;
+    if (PJ.editing !== "new" && !ps.some(p => p.id === PJ.view)) PJ.view = PJ.data.active;
+    if (PJ.editing !== "new" && (!PJ.draft || PJ.draft.id !== PJ.view)) { PJ.draft = JSON.parse(JSON.stringify(ps.find(p => p.id === PJ.view))); PJ.dirty = false; }
+    const card = p => `<button class="proj-card" type="button" data-proj-view="${esc(p.id)}" ${p.id === PJ.view && PJ.editing !== "new" ? `aria-current="true"` : ""}>
+        <span class="proj-card-top"><b>${esc(p.name)}</b>${p.id === PJ.data.active ? `<span class="chip c-ok">active</span>` : ""}</span>
+        <span class="mono faint proj-card-f">${p.folder ? esc(p.folder) : "no folder"}</span>
+        <span class="proj-card-m">${medDots(p)}<span class="faint">${Object.keys(p.routes || {}).length ? `${Object.keys(p.routes).length} route${Object.keys(p.routes).length === 1 ? "" : "s"}` : "no routes"}${Object.keys(p.runners || {}).length ? ` · ${Object.keys(p.runners).length} runner${Object.keys(p.runners).length === 1 ? "" : "s"}` : ""}</span></span></button>`;
+    return head + `<div class="proj-layout">
+      <div class="proj-list" role="list">${ps.map(card).join("")}${PJ.editing === "new" ? `<div class="proj-card" aria-current="true"><span class="proj-card-top"><b>${esc(PJ.draft.name || "New project")}</b><span class="chip c-text">new</span></span><span class="faint">not saved yet</span></div>` : ""}</div>
+      ${projectForm(PJ.draft)}</div>`;
   }
 
   function modelOptions(medium, chosen, remoteOnly, runners) {
     const ms = (L.info?.models || []).filter(m => (m.media || []).includes(medium) && (!remoteOnly || m.provider !== "local"));
     const rs = remoteOnly ? Object.keys(runners || {}).map(n => "vast:" + n) : [];
     const known = ms.some(m => m.key === chosen) || rs.includes(chosen);
-    return `<option value="">${remoteOnly ? "none" : "Auto, as the studio picks"}</option>`
-      + rs.map(k => `<option value="${esc(k)}" ${k === chosen ? "selected" : ""}>Vast.ai runner ${esc(k.slice(5))} · rented when needed</option>`).join("")
+    return `<option value="">${remoteOnly ? "None" : "Auto, as the studio picks"}</option>`
+      + rs.map(k => `<option value="${esc(k)}" ${k === chosen ? "selected" : ""}>${esc(k.slice(5))} · Vast.ai runner</option>`).join("")
       + (chosen && !known ? `<option value="${esc(chosen)}" selected>${esc(chosen)}</option>` : "")
       + ms.map(m => `<option value="${esc(m.key)}" ${m.key === chosen ? "selected" : ""}>${esc(m.name)} · ${esc(m.provider === "local" ? "this PC" : providerName(m.provider))}</option>`).join("");
   }
 
-  function projectForm(p, editing) {
-    const dis = editing ? "" : "disabled";
+  function projectForm(p) {
+    const isNew = PJ.editing === "new", active = !isNew && p.id === PJ.data.active;
     const tools = A.tools || [];
     const routeRow = m => {
       const r = (p.routes || {})[m] || {};
-      return `<tr><td><b>${MEDIUM_NAMES[m]}</b></td>
-        <td><select class="input" data-route="${m}" data-rf="model" ${dis} aria-label="${MEDIUM_NAMES[m]} model">${modelOptions(m, r.model || "", false)}</select></td>
-        <td><select class="input" data-route="${m}" data-rf="policy" ${dis} aria-label="When the GPU is full">
-          <option value="">Studio's choice (${esc(GP.data?.policies?.[m === "text" ? "chat" : m] || "swap")})</option>${POLICIES.map(([k, n, d]) => `<option value="${k}" ${r.policy === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></td>
-        <td><select class="input" data-route="${m}" data-rf="fallback" ${dis} aria-label="Remote runner">${modelOptions(m, r.fallback || "", true, p.runners)}</select></td></tr>`;
+      return `<div class="route-row" style="--c:var(--cap-${MEDIUM_CAP[m]})">
+        <span class="route-name"><span class="dot"></span><b>${MEDIUM_NAMES[m]}</b></span>
+        <label><span class="route-l">Model</span><select class="input" data-route="${m}" data-rf="model" aria-label="${MEDIUM_NAMES[m]} model">${modelOptions(m, r.model || "", false)}</select></label>
+        <label><span class="route-l">When the GPU is full</span><select class="input" data-route="${m}" data-rf="policy" aria-label="${MEDIUM_NAMES[m]}: when the GPU is full">
+          <option value="">Studio's choice (${esc((POLICIES.find(x => x[0] === (GP.data?.policies?.[m === "text" ? "chat" : m] || "swap")) || POLICIES[0])[1].toLowerCase())})</option>${POLICIES.map(([k, n, d]) => `<option value="${k}" ${r.policy === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></label>
+        <label><span class="route-l">Remote runner</span><select class="input" data-route="${m}" data-rf="fallback" aria-label="${MEDIUM_NAMES[m]} remote runner">${modelOptions(m, r.fallback || "", true, p.runners)}</select></label></div>`;
     };
-    return `<form class="panel proj-form" id="proj-form" autocomplete="off">
-      <div class="proj-grid">
-        <label class="field"><span>Name</span><input class="input" data-pf="name" value="${esc(p.name)}" ${dis} maxlength="60" required></label>
-        <label class="field"><span>Folder agents may read</span><input class="input mono" data-pf="folder" value="${esc(p.folder || "")}" ${dis} placeholder="none, such as D:/Films/A"></label>
-        <label class="field wide"><span>What it is about (agents read this)</span><textarea class="input" data-pf="description" rows="2" ${dis}>${esc(p.description || "")}</textarea></label>
+    const runners = Object.entries(p.runners || {});
+    return `<form class="proj-main" id="proj-form" autocomplete="off">
+      <div class="proj-title">
+        <div><div class="h2">${esc(p.name || "New project")}</div>
+          <div class="muted" style="font-size:12.5px">${isNew ? "A new project. Save it to start working in it." : active ? "The project this window works in now." : "Not active: its routes and limits apply once you work in it."}</div></div>
+        <span class="grow"></span>
+        ${isNew ? "" : active ? `<span class="chip c-ok">active</span>` : `<button class="btn primary" type="button" data-proj-use="${esc(p.id)}">${icon("check")}Work in this project</button>`}
+        ${isNew || p.id === "default" ? "" : `<button class="btn ghost ${PJ.deleting ? "danger" : ""}" type="button" data-proj-delete>${icon("trash")}${PJ.deleting ? "Click again to delete" : "Delete"}</button>`}
       </div>
-      <div class="h3">Routes</div>
-      <p class="muted" style="margin:0;font-size:12.5px">Auto in this project uses the model below. When it runs on this PC and the GPU is full, the policy decides; Remote sends it to the runner on the right (a worker host or a rented machine).</p>
-      <div class="tablebox"><table class="models routes"><thead><tr><th>Task</th><th>Model</th><th>When the GPU is full</th><th>Remote runner</th></tr></thead>
-        <tbody>${["text", "image", "speech", "transcribe", "video"].map(routeRow).join("")}</tbody></table></div>
-      <div class="h3">Vast.ai runners</div>
-      <p class="muted" style="margin:0;font-size:12.5px">A runner is a GPU machine rented when a route first sends it a task: the cheapest verified offer within your price, built into a worker host, with the model fetched from Hugging Face. It stays rented for the hours set, so later tasks reuse it, then it is destroyed. Pick it as a route's remote runner above.</p>
-      <div class="tablebox"><table class="models runners"><thead><tr><th>Name</th><th>GPU</th><th>GB at least</th><th>Most $/hour</th><th>Hours</th><th>Model repository</th><th>File, or folder</th><th></th></tr></thead><tbody>
-        ${Object.entries(p.runners || {}).map(([n, r]) => runnerRow(n, r, dis)).join("")}
-        ${editing ? runnerRow("", { hours: 2, option: "folder" }, "", true) : ""}</tbody></table></div>
-      <div class="h3">Agents may use</div>
-      <div class="proj-tools"><label class="check"><input type="checkbox" data-pf-alltools ${p.tools == null ? "checked" : ""} ${dis}> every tool</label>
-        ${p.tools == null ? "" : tools.map(t => `<label class="check" title="${esc(t.description || "")}"><input type="checkbox" data-pf-tool="${esc(t.name)}" ${p.tools.includes(t.name) ? "checked" : ""} ${dis}> <span class="mono">${esc(t.name)}</span>${t.acts ? ` <span class="faint">acts</span>` : ""}</label>`).join("")}</div>
-      <label class="field"><span>Models allowed (one per line: <code>provider/id</code>, or <code>local/</code> for every model of a provider; empty for all)</span>
-        <textarea class="input mono" data-pf="models" rows="2" ${dis}>${esc((p.models || []).join("\n"))}</textarea></label>
-      ${PJ.error ? `<div class="flag bad">${icon("alert")}<span>${esc(PJ.error)}</span></div>` : ""}
-      <div class="provset"><span class="grow"></span>
-        ${editing ? `<button class="btn ghost" type="button" data-proj-cancel>Cancel</button><button class="btn primary" type="submit">${icon("check")}Save</button>`
-          : `${p.id !== "default" ? `<button class="btn ghost" type="button" data-proj-delete>${icon("trash")}${PJ.deleting ? "Click again to delete" : "Delete"}</button>` : ""}<button class="btn" type="button" data-proj-edit>${icon("edit")}Edit</button>`}</div>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">About</span><span class="muted">Agents read the description; they may read and list files in the folder, and nothing outside it.</span></div>
+        <div class="proj-grid">
+          <label class="field"><span>Name</span><input class="input" data-pf="name" value="${esc(p.name || "")}" maxlength="60" required></label>
+          <label class="field"><span>Folder agents may read</span><input class="input mono" data-pf="folder" value="${esc(p.folder || "")}" placeholder="none, such as D:/Films/A"></label>
+          <label class="field wide"><span>What it is about</span><textarea class="input" data-pf="description" rows="2" placeholder="A short film about…; agents get this with every task">${esc(p.description || "")}</textarea></label>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">Routes</span><span class="muted">Auto in this project uses the model set here. When it runs on this PC and the GPU is full, the policy decides; Remote sends it to the runner.</span></div>
+        <div class="routes">${Object.keys(MEDIUM_NAMES).map(routeRow).join("")}</div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">Vast.ai runners</span><span class="muted">A GPU machine rented when a route first sends it a task: the cheapest verified offer within your price, with the model fetched from Hugging Face. It stays rented for the hours set, so later tasks reuse it.</span>
+          <button class="btn sm" type="button" data-runner-add>${icon("plus")}Add runner</button></div>
+        ${runners.length ? `<div class="runners">${runners.map(([n, r]) => runnerCard(n, r)).join("")}</div>`
+          : `<div class="set-empty">${icon("plug")}<span>No runners. Add one, then pick it as a route's remote runner above.</span></div>`}
+      </section>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">What agents may use</span><span class="muted">Tools marked <i>acts</i> change something outside the studio.</span></div>
+        <label class="switch-row"><input type="checkbox" class="switch" data-pf-alltools ${p.tools == null ? "checked" : ""}><span><b>Every tool</b><span class="muted"> · new tools are allowed as they appear</span></span></label>
+        ${p.tools == null ? "" : `<div class="toolpills">${tools.map(t => `<label class="pill" title="${esc(t.description || "")}"><input type="checkbox" data-pf-tool="${esc(t.name)}" ${p.tools.includes(t.name) ? "checked" : ""}><span class="mono">${esc(t.name)}</span>${t.acts ? `<span class="pill-acts">acts</span>` : ""}</label>`).join("") || `<span class="muted">Reading the tools…</span>`}</div>`}
+        <label class="field"><span>Models allowed: one per line, <code>provider/id</code>, or <code>local/</code> for every model of a provider. Empty allows all.</span>
+          <textarea class="input mono" data-pf="models" rows="2" placeholder="local/&#10;anthropic/claude-sonnet-5-5">${esc((p.models || []).join("\n"))}</textarea></label>
+      </section>
+
+      <div class="savebar" ${PJ.dirty || isNew || PJ.error ? "" : "hidden"} role="region" aria-label="Unsaved changes">
+        ${PJ.error ? `<span class="savebar-err">${icon("alert")}${esc(PJ.error)}</span>` : `<span class="savebar-t"><span class="dot" style="--c:var(--warn)"></span>${isNew ? "New project, not saved yet" : `Unsaved changes to ${esc(p.name)}`}</span>`}
+        <span class="grow"></span>
+        <button class="btn ghost" type="button" data-proj-cancel>${isNew ? "Discard" : "Undo changes"}</button>
+        <button class="btn primary" type="submit">${icon("check")}${isNew ? "Make project" : "Save"}</button>
+      </div>
+      ${PJ.note ? `<div class="toast" role="status">${esc(PJ.note)}</div>` : ""}
     </form>`;
   }
 
-  function runnerRow(n, r, dis, adding) {
-    const f = (k, type, ph, w) => `<input class="input ${type === "number" ? "mono" : ""}" data-rn="${k}" ${type === "number" ? `type="number" min="0" step="any"` : ""} value="${esc(r[k] ?? "")}" placeholder="${esc(ph)}" ${dis} style="min-width:${w}px">`;
-    return `<tr data-runner-row="${adding ? "new" : esc(n)}"><td><input class="input" data-rn="name" value="${esc(n)}" placeholder="${adding ? "new runner, such as video" : ""}" ${dis} style="min-width:90px"></td>
-      <td>${f("gpu", "text", "4090, A100…", 80)}</td><td>${f("minGpuRam", "number", "24", 50)}</td><td>${f("maxPrice", "number", "0.60", 60)}</td><td>${f("hours", "number", "2", 45)}</td>
-      <td>${f("repo", "text", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 160)}</td><td>${f("option", "text", "folder", 70)}</td>
-      <td>${dis || adding ? "" : `<button class="iconbtn sm" type="button" data-runner-remove="${esc(n)}" aria-label="Remove runner ${esc(n)}">${icon("trash")}</button>`}</td></tr>`;
+  function runnerCard(n, r) {
+    const f = (k, label, ph, type = "text", cls = "") => `<label class="field ${cls}"><span>${label}</span><input class="input ${type === "number" ? "mono" : ""}" data-rn="${k}" ${type === "number" ? `type="number" min="0" step="any"` : ""} value="${esc(r[k] ?? "")}" placeholder="${esc(ph)}"></label>`;
+    return `<div class="runner" data-runner-row="${esc(n)}">
+      <div class="runner-h"><span class="runner-tag mono">vast:</span><input class="input runner-name" data-rn="name" value="${esc(n)}" aria-label="Runner name" placeholder="name">
+        <span class="grow"></span><button class="iconbtn sm" type="button" data-runner-remove="${esc(n)}" aria-label="Remove runner ${esc(n)}" title="Remove this runner">${icon("trash")}</button></div>
+      <div class="runner-grid">
+        ${f("gpu", "GPU", "any, or 4090")}${f("minGpuRam", "GB at least", "24", "number")}${f("maxPrice", "Max $/hour", "0.60", "number")}${f("hours", "Hours rented", "2", "number")}
+        ${f("repo", "Hugging Face repository", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", "text", "wide")}${f("option", "File or folder", "folder", "text", "half")}
+      </div></div>`;
   }
 
   function readProjectForm() {
+    const form = $("#proj-form"); if (!form) return PJ.draft;
     const d = { ...PJ.draft };
-    $$("[data-pf]").forEach(el => { d[el.dataset.pf] = el.value; });
-    d.models = d.models.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+    $$("[data-pf]", form).forEach(el => { d[el.dataset.pf] = el.value; });
+    d.models = String(d.models || "").split(/\n|,/).map(s => s.trim()).filter(Boolean);
     if (!d.models.length) d.models = null;
-    d.tools = $("[data-pf-alltools]")?.checked ? null : $$("[data-pf-tool]").filter(c => c.checked).map(c => c.dataset.pfTool);
+    const all = $("[data-pf-alltools]", form);
+    d.tools = all?.checked ? null : $$("[data-pf-tool]", form).filter(c => c.checked).map(c => c.dataset.pfTool);
     const routes = {};
-    $$("[data-route]").forEach(el => { (routes[el.dataset.route] ||= {})[el.dataset.rf] = el.value || null; });
+    $$("[data-route]", form).forEach(el => { (routes[el.dataset.route] ||= {})[el.dataset.rf] = el.value || null; });
+    for (const m in routes) if (!routes[m].model && !routes[m].policy && !routes[m].fallback) delete routes[m];
     d.routes = routes;
     const runners = {};
-    $$("[data-runner-row]").forEach(tr => {
-      const r = {}; tr.querySelectorAll("[data-rn]").forEach(i => { r[i.dataset.rn] = i.type === "number" ? (i.value === "" ? null : +i.value) : i.value.trim(); });
+    $$("[data-runner-row]", form).forEach(tr => {
+      const r = {}; tr.querySelectorAll("[data-rn]").forEach(i => { const v = i.value.trim(); if (v !== "") r[i.dataset.rn] = i.type === "number" ? +v : v; });
       const name = r.name; delete r.name;
       if (name) runners[name] = r;
     });
@@ -2378,88 +2464,188 @@
     return d;
   }
 
+  function startNewProject() {
+    PJ.editing = "new"; PJ.dirty = true; PJ.error = null;
+    PJ.draft = { name: "New project", description: "", folder: "", tools: null, models: null, routes: {}, runners: {} };
+    openSettings("project", () => { const n = $("[data-pf=name]"); n?.focus(); n?.select(); });
+  }
+  function discardProject() { PJ.editing = null; PJ.draft = null; PJ.dirty = false; PJ.error = null; PJ.deleting = false; }
+  function nudgeSavebar() {
+    const bar = $(".savebar"); if (!bar) return;
+    bar.hidden = false; bar.classList.remove("nudge"); void bar.offsetWidth; bar.classList.add("nudge");
+    toast("Save or undo the changes first.");
+  }
+
   function bindProjects() {
-    $$("[data-proj-use]").forEach(b => b.addEventListener("click", () => { PJ.editing = null; activateProject(b.dataset.projUse); }));
-    $("[data-proj-new]")?.addEventListener("click", () => { PJ.editing = "new"; PJ.draft = { name: "New project", description: "", folder: "", tools: null, models: null, routes: {}, runners: {} }; PJ.error = null; render(); $("[data-pf=name]")?.select(); });
-    $("[data-proj-edit]")?.addEventListener("click", () => { PJ.editing = activeProject().id; PJ.draft = JSON.parse(JSON.stringify(activeProject())); PJ.error = null; render(); });
-    $("[data-proj-cancel]")?.addEventListener("click", () => { PJ.editing = null; PJ.error = null; render(); });
-    $$("[data-runner-remove]").forEach(b => b.addEventListener("click", () => { $(`[data-runner-row="${CSS.escape(b.dataset.runnerRemove)}"]`)?.remove(); }));
-    $("[data-pf-alltools]")?.addEventListener("change", e => { PJ.draft = readProjectForm(); PJ.draft.tools = e.target.checked ? null : (A.tools || []).map(t => t.name); render(); });
-    $("[data-proj-delete]")?.addEventListener("click", async () => {
-      if (!PJ.deleting) { PJ.deleting = true; render(); setTimeout(() => { PJ.deleting = false; if (state.view === "settings") render(); }, 4000); return; }
-      PJ.deleting = false;
-      try { PJ.data = await postJson("/api/projects/delete", { id: activeProject().id }); } catch (e) { PJ.error = String(e.message || e); }
-      renderProjectChip(); render();
+    const form = $("#proj-form");
+    $("[data-proj-new]")?.addEventListener("click", () => { if (PJ.dirty && PJ.editing !== "new") return nudgeSavebar(); startNewProject(); });
+    $$("[data-proj-view]").forEach(b => b.addEventListener("click", () => {
+      if (b.dataset.projView === PJ.view && PJ.editing !== "new") return;
+      if (PJ.dirty) return nudgeSavebar();
+      discardProject(); PJ.view = b.dataset.projView; renderSection();
+    }));
+    $$("[data-proj-use]").forEach(b => b.addEventListener("click", async () => {
+      if (PJ.dirty) return nudgeSavebar();
+      await activateProject(b.dataset.projUse); toast(`Working in ${activeProject()?.name || "it"} now.`);
+    }));
+    if (!form) return;
+    const changed = () => { PJ.draft = readProjectForm(); if (!PJ.dirty) { PJ.dirty = true; PJ.error = null; } const bar = $(".savebar", form); if (bar) bar.hidden = false; };
+    form.addEventListener("input", e => { if (!e.target.matches("[data-pf-alltools]")) changed(); });
+    form.addEventListener("change", e => { if (!e.target.matches("[data-pf-alltools]")) changed(); });
+    $("[data-pf-alltools]", form)?.addEventListener("change", e => {
+      PJ.draft = readProjectForm(); PJ.draft.tools = e.target.checked ? null : (A.tools || []).map(t => t.name); PJ.dirty = true; renderSection();
     });
-    $("#proj-form")?.addEventListener("submit", async e => {
+    $("[data-runner-add]", form)?.addEventListener("click", () => {
+      const d = readProjectForm(); let n = "runner"; for (let i = 2; d.runners[n]; i++) n = "runner-" + i;
+      d.runners[n] = { hours: 2, option: "folder" }; PJ.draft = d; PJ.dirty = true; renderSection();
+      const inp = $(`[data-runner-row="${CSS.escape(n)}"] [data-rn=name]`); inp?.focus(); inp?.select();
+    });
+    $$("[data-runner-remove]", form).forEach(b => b.addEventListener("click", () => {
+      $(`[data-runner-row="${CSS.escape(b.dataset.runnerRemove)}"]`, form)?.remove(); PJ.draft = readProjectForm(); PJ.dirty = true; renderSection();
+    }));
+    $("[data-proj-cancel]", form)?.addEventListener("click", () => { const wasNew = PJ.editing === "new"; discardProject(); if (wasNew) PJ.view = PJ.data.active; renderSection(); });
+    $("[data-proj-delete]", form)?.addEventListener("click", async () => {
+      if (!PJ.deleting) { PJ.deleting = true; renderSection(); setTimeout(() => { if (PJ.deleting) { PJ.deleting = false; if (state.view === "settings" && S.tab === "project") renderSection(); } }, 4000); return; }
+      const gone = PJ.draft.name;
+      try { PJ.data = await postJson("/api/projects/delete", { id: PJ.view }); discardProject(); PJ.view = PJ.data.active; toast(`${gone} deleted; its agents now belong to the default project.`); }
+      catch (e) { PJ.error = String(e.message || e); PJ.deleting = false; }
+      renderProjectChip(); renderSection();
+    });
+    form.addEventListener("submit", async e => {
       e.preventDefault();
-      if (!PJ.editing) return;
       const d = readProjectForm(), create = PJ.editing === "new";
       try {
         const r = await postJson("/api/projects", { project: d, create });
-        PJ.data = r; PJ.editing = null; PJ.error = null;
-        if (create) await activateProject(r.saved);
-        flashProject(create ? "Project made" : "Saved");
+        PJ.data = r; discardProject();
+        if (create) { PJ.view = r.saved; await activateProject(r.saved); toast(`${d.name} made; you work in it now.`); }
+        else { PJ.view = d.id; toast("Saved."); }
+        renderProjectChip();
       } catch (err) { PJ.error = String(err.message || err).replace(/^\/api\/projects: /, ""); PJ.draft = d; }
-      render();
+      renderSection();
     });
   }
-  function flashProject(text) { PJ.note = text; setTimeout(() => { PJ.note = null; if (state.view === "settings" && !PJ.editing) render(); }, 3000); }
 
   // ---- this PC's GPU: what is loaded, what waits, and the studio's own policies
   function gpuSection() {
     const g = GP.data;
-    const head = `<div class="sect-head"><span class="h2">GPU and scheduling</span><span class="muted">Chat, image, speech, transcription and video each keep one model loaded on this PC. When the next one does not fit, the policy for its kind decides; a project's route can choose another.</span></div>`;
-    if (!g) return head + `<div class="muted">${GP.error ? esc(GP.error) : "Asking this PC…"}</div>`;
-    const used = g.inUse, budget = g.budget, pct = budget ? Math.min(100, Math.round(100 * used / budget)) : 0;
-    const meter = budget ? `<span class="meter wide"><i style="width:${pct}%"></i></span><span class="mono tnum">${gb(used)} of ${gb(budget)}</span>` : `<span class="muted">this device does not count its memory; everything fits</span>`;
-    const rows = g.slots.map(s => `<tr><td><b>${KIND_NAMES[s.kind] || esc(s.kind)}</b></td>
-        <td>${s.model ? esc(s.model) : `<span class="faint">nothing loaded</span>`}${s.busy ? ` <span class="chip c-text">working</span>` : ""}</td>
-        <td class="mono tnum">${s.model ? gb(s.bytes) : ""}</td>
-        <td><select class="input sm" data-gpu-policy="${s.kind}" aria-label="${KIND_NAMES[s.kind]} when the GPU is full">${POLICIES.map(([k, n, d]) => `<option value="${k}" ${g.policies[s.kind] === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></td>
-        <td><label class="check" title="A pinned model is never unloaded to make room"><input type="checkbox" data-gpu-pin="${s.kind}" ${s.pinned ? "checked" : ""}> pin</label></td>
-        <td>${s.model ? `<button class="btn ghost sm" data-gpu-unload="${s.kind}" ${s.busy ? "disabled" : ""}>Unload</button>` : ""}</td></tr>`).join("");
-    return head + `<div class="panel gpu-panel">
-      <div class="provset"><b>${esc(g.device || "No device")}</b>${meter}<span class="grow"></span><button class="btn sm" data-gpu-unload="all">Unload all idle</button></div>
-      <div class="tablebox"><table class="models"><thead><tr><th>Kind</th><th>Loaded</th><th>Takes</th><th>When the GPU is full</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-      ${g.waiting.length ? `<div class="flag warn">${icon("alert")}<span>Waiting for room: ${g.waiting.map(w => `${esc(KIND_NAMES[w.kind] || w.kind)} · ${esc(w.model)} (${gb(w.need)})`).join(", ")}. Unload a model to let it start.</span></div>` : ""}
-      <div class="provset"><label class="check">Unload a model after <input class="input mono sm" type="number" min="0" max="1440" step="5" data-gpu-idle value="${g.idleMinutes}" style="width:70px"> idle minutes</label><span class="faint">0 keeps it until the room is needed</span>
-        <span class="grow"></span><span class="muted">Device and GPU memory limit: the buttons in the top bar.</span></div>
-    </div>`;
+    const head = setHead("GPU and scheduling", "Chat, images, speech, transcription and video each keep one model loaded on this PC. When the next one does not fit, the policy for its kind decides; a project's route can choose another.",
+      g ? `<button class="btn" type="button" data-gpu-unload="all">${icon("x")}Unload all idle</button>` : "");
+    if (!g) return head + `<div class="set-card"><span class="muted">${GP.error ? esc(GP.error) : "Asking this PC…"}</span></div>`;
+    const budget = g.budget, used = g.inUse;
+    const segs = budget ? g.slots.filter(s => s.model && s.bytes).map(s => `<i style="--c:var(--cap-${KIND_CAP[s.kind] || "text"});width:${Math.max(0.6, 100 * s.bytes / budget)}%" title="${esc(KIND_NAMES[s.kind])} · ${esc(s.model)} · ${gb(s.bytes)}"></i>`).join("") : "";
+    const other = budget ? Math.max(0, used - g.slots.reduce((a, s) => a + (s.model ? s.bytes || 0 : 0), 0)) : 0;
+    const hero = `<div class="set-card gpu-hero">
+        <div class="gpu-top"><span class="set-ico big">${icon("flask")}</span><div><b>${esc(g.device || "No device")}</b>
+          <div class="muted" style="font-size:12.5px">${budget ? `${gb(used)} of ${gb(budget)} in use · ${gb(Math.max(0, budget - used))} free` : "This device does not count its memory: everything fits."}</div></div>
+          <span class="grow"></span><span class="faint" style="font-size:12px">Device and memory limit: the buttons in the top bar.</span></div>
+        ${budget ? `<div class="gpu-bar" role="img" aria-label="${gb(used)} of ${gb(budget)} in use">${segs}${other > budget * 0.005 ? `<i style="--c:var(--faint);width:${100 * other / budget}%" title="Other use · ${gb(other)}"></i>` : ""}</div>` : ""}
+      </div>`;
+    const slot = s => `<div class="gpu-slot ${s.model ? "on" : ""}" style="--c:var(--cap-${KIND_CAP[s.kind] || "text"})">
+        <div class="gpu-slot-h"><span class="dot"></span><b>${esc(KIND_NAMES[s.kind] || s.kind)}</b><span class="grow"></span>
+          ${s.busy ? `<span class="chip c-text">working</span>` : ""}${s.pinned ? `<span class="chip plain">${icon("lock")}pinned</span>` : ""}</div>
+        <div class="gpu-model">${s.model ? `<span class="mono" title="${esc(s.model)}">${esc(s.model)}</span><span class="mono faint">${gb(s.bytes)}</span>` : `<span class="faint">Nothing loaded</span>`}</div>
+        <div class="route-l">When the GPU is full</div>
+        <div class="seg gpu-seg" role="group" aria-label="${esc(KIND_NAMES[s.kind])}: when the GPU is full">${POLICIES.map(([k, n, d]) => `<button type="button" data-gpu-policy="${s.kind}" data-v="${k}" aria-pressed="${g.policies[s.kind] === k}" title="${esc(d)}">${n}</button>`).join("")}</div>
+        <div class="gpu-slot-f"><label class="switch-row sm" title="A pinned model is never unloaded to make room"><input type="checkbox" class="switch" data-gpu-pin="${s.kind}" ${s.pinned ? "checked" : ""}><span>Keep loaded</span></label>
+          <span class="grow"></span>${s.model ? `<button class="btn ghost sm" type="button" data-gpu-unload="${s.kind}" ${s.busy ? "disabled" : ""}>Unload</button>` : ""}</div>
+      </div>`;
+    return head + hero
+      + (g.waiting.length ? `<div class="flag warn">${icon("alert")}<span>Waiting for room: ${g.waiting.map(w => `${esc(KIND_NAMES[w.kind] || w.kind)} · ${esc(w.model)} (${gb(w.need)})`).join(", ")}. Unload a model to let it start.</span></div>` : "")
+      + `<div class="gpu-slots">${g.slots.map(slot).join("")}</div>
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">Idle models</span></div>
+        <label class="gpu-idle">Unload a model after <input class="input mono sm" type="number" min="0" max="1440" step="5" data-gpu-idle value="${g.idleMinutes}" aria-label="Idle minutes"> idle minutes <span class="faint">· 0 keeps it until the room is needed</span></label>
+        <dl class="policy-key">${POLICIES.map(([, n, d]) => `<dt>${n}</dt><dd>${esc(d)}</dd>`).join("")}</dl>
+      </section>`;
   }
   async function changeGpu(body) {
-    try { GP.data = await postJson("/api/gpu", body); GP.error = null; } catch (e) { GP.error = String(e.message || e); }
-    const box = $("#set-gpu"); if (box) { box.innerHTML = gpuSection(); bindGpu(); }
+    try { GP.data = await postJson("/api/gpu", body); GP.error = null; } catch (e) { GP.error = String(e.message || e); toast(GP.error); }
+    if (state.view === "settings" && S.tab === "gpu") renderSection();
   }
   async function unloadGpu(kind) {
     try { GP.data = await postJson("/api/gpu/unload", { kind }); } catch (e) { GP.error = String(e.message || e); }
-    const box = $("#set-gpu"); if (box) { box.innerHTML = gpuSection(); bindGpu(); }
+    if (state.view === "settings" && S.tab === "gpu") renderSection();
   }
   function bindGpu() {
-    $$("[data-gpu-policy]").forEach(s => s.addEventListener("change", () => changeGpu({ policies: { [s.dataset.gpuPolicy]: s.value } })));
+    $$("[data-gpu-policy]").forEach(b => b.addEventListener("click", () => changeGpu({ policies: { [b.dataset.gpuPolicy]: b.dataset.v } })));
     $$("[data-gpu-pin]").forEach(c => c.addEventListener("change", () => changeGpu({ pinned: $$("[data-gpu-pin]").filter(x => x.checked).map(x => x.dataset.gpuPin) })));
     $$("[data-gpu-unload]").forEach(b => b.addEventListener("click", () => unloadGpu(b.dataset.gpuUnload)));
     $("[data-gpu-idle]")?.addEventListener("change", e => changeGpu({ idleMinutes: Math.max(0, Math.round(+e.target.value || 0)) }));
   }
 
-  // the providers' cards on the settings page change without wiping what is typed elsewhere on it
-  function refreshProviders() {
-    const box = $("#set-providers");
-    if (!box || (box.contains(document.activeElement) && document.activeElement.matches("input, textarea, select"))) return;
-    box.innerHTML = liveProviders(); bindLiveLibrary(); bindSettingsJumps(box);
+  // ---- machines: worker hosts, rented GPUs and the folders this PC reads models from
+  function machinesSection() {
+    const head = setHead("Machines", "Your other machines running as workers, and GPUs rented by the hour. Their models show up next to this PC's, and routes can send tasks to them.");
+    if (!T.loaded) return head + `<div class="set-card"><span class="muted">${T.error ? esc(T.error) : "Asking the hosts…"}</span></div>`;
+    return head + `<div class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</div>
+      <div id="train-vast" aria-label="GPUs to rent">${vastPanel()}</div>
+      <section class="set-card"><div class="set-card-h"><span class="h3">Models on this PC</span><span class="muted">Where the studio looks for model folders and GGUF files. Add more in Models.</span>
+        <button class="btn sm" type="button" data-go="library">${icon("library")}Models</button></div>${liveProviders("local")}</section>`;
   }
+  function bindMachines() {
+    if (T.loaded) { bindHosts(); bindVastCard(); bindVastPanel(); }
+    bindLiveLibrary();
+    $$("#set-machines [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
+  // ---- appearance
+  const themeName = () => ({ light: "Light", dark: "Dark" })[document.documentElement.dataset.theme] || "System theme";
+  function lookSection() {
+    const seg = (k, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button type="button" data-look="${k}" data-v="${v}" aria-pressed="${(k === "theme" ? document.documentElement.dataset.theme || "system" : state[k]) === v}">${l}</button>`).join("")}</div>`;
+    return setHead("Appearance", "How the studio looks on this screen. Kept in this browser.") + `<section class="set-card look">
+        <div class="look-row"><div><b>Theme</b><div class="muted">System follows your computer's light or dark setting.</div></div>${seg("theme", [["system", "System"], ["light", "Light"], ["dark", "Dark"]])}</div>
+        <div class="look-row"><div><b>Layout</b><div class="muted">Auto picks Ultrawide from 2200 px: threads, conversation, agent and media side by side.</div></div>${seg("layout", [["auto", "Auto"], ["focus", "Focus"], ["wide", "Wide"], ["ultra", "Ultrawide"]])}</div>
+        <div class="look-row"><div><b>Density</b></div>${seg("density", [["cozy", "Comfortable"], ["compact", "Compact"]])}</div>
+        <div class="look-row"><div><b>Interface size</b> <output class="mono faint" id="look-scale-out">${Math.round(state.scale * 100)}%</output></div><input type="range" id="look-scale" min="0.8" max="1.6" step="0.05" value="${state.scale}" aria-label="Interface size"></div>
+      </section>
+      <section class="set-card look">
+        <div class="set-card-h"><span class="h3">Keys</span></div>
+        <dl class="policy-key"><dt><span class="kbd">Ctrl K</span></dt><dd>Run anything: switch project, change a GPU policy, unload a model, add a key, open a conversation.</dd>
+          <dt><span class="kbd">Ctrl ,</span></dt><dd>Open this page.</dd><dt><span class="kbd">Esc</span></dt><dd>Close a dialog or the provider editor.</dd></dl>
+        ${dataFolder ? `<div class="look-row"><div><b>Kept in</b><div class="muted">Keys, conversations, projects, settings and every picture and take. Start with <code>--data &lt;folder&gt;</code> to use another one.</div></div><code class="datafolder">${esc(dataFolder)}</code></div>` : ""}
+      </section>`;
+  }
+  function bindLook() {
+    $$("[data-look]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.look, v = b.dataset.v;
+      if (k === "theme") { if (v === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = v; store.set("theme", v); paintAll(); }
+      else { state[k] = v; store.set(k, v); }
+      render();
+    }));
+    $("#look-scale")?.addEventListener("input", e => { $("#look-scale-out").textContent = Math.round(e.target.value * 100) + "%"; });
+    $("#look-scale")?.addEventListener("change", e => { state.scale = +e.target.value; store.set("scale", state.scale); render(); });
+  }
+  { const t = store.get("theme", "system"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; }
+
+  // the open section's cards change without wiping what is typed on the page
+  function refreshProviders() {
+    if (!["providers", "machines"].includes(S.tab)) { renderNavStatus(); return; }
+    const box = $("#set-" + S.tab);
+    if (!box || (box.contains(document.activeElement) && document.activeElement.matches("input, textarea, select"))) return;
+    renderSection();
+  }
+  function renderNavStatus() { $$(".set-tab").forEach(b => { const s = SETTINGS_SECTIONS.find(x => x.id === b.dataset.setTab); const sm = b.querySelector("small"); if (s && sm) sm.textContent = s.status?.() || s.blurb || ""; }); }
   function bindSettingsJumps(root = document) {
-    $$("[data-jump]", root).forEach(a => a.addEventListener("click", e => { e.preventDefault(); $("#" + a.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
+    $$("[data-jump]", root || document).forEach(a => a.addEventListener("click", e => { e.preventDefault(); openSettings(a.dataset.jump); }));
   }
 
   function bindSettings() {
-    bindSettingsJumps();
-    bindProjects(); bindGpu();
-    if (T.loaded) { bindHosts(); bindVastCard(); bindVastPanel(); }
-    bindLiveLibrary();
-    $("[data-set-theme]")?.addEventListener("click", () => $("#theme-btn").click());
-    $("[data-set-layout]")?.addEventListener("click", () => $("#layout-btn").click());
-    if (!A.tools?.length) api("/api/agents").then(d => { A.tools = d.tools || []; if (PJ.editing && state.view === "settings") { PJ.draft = readProjectForm(); render(); } }).catch(() => {});
+    $$("[data-set-tab]").forEach(b => b.addEventListener("click", () => {
+      if (b.dataset.setTab === S.tab) return;
+      if (S.tab === "project" && PJ.dirty) { PJ.draft = readProjectForm(); }
+      S.tab = b.dataset.setTab; store.set("setTab", S.tab); render();
+    }));
+    const q = $("#set-q");
+    q?.addEventListener("input", () => {
+      S.q = q.value;
+      let first = null;
+      $$(".set-tab").forEach(b => { const s = SETTINGS_SECTIONS.find(x => x.id === b.dataset.setTab); const ok = !S.q || sectionMatches(s, S.q); b.hidden = !ok; if (ok && !first) first = b; });
+      $(".set-none").hidden = !!first || !S.q;
+      if (first && S.q && !sectionMatches(currentSection(), S.q)) { S.tab = first.dataset.setTab; const pos = q.selectionStart; render(); const nq = $("#set-q"); nq.focus(); nq.setSelectionRange(pos, pos); }
+    });
+    q?.addEventListener("keydown", e => { if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = ""; q.dispatchEvent(new Event("input")); } });
+    currentSection().bind?.();
+    if (!A.tools?.length) api("/api/agents").then(d => { A.tools = d.tools || []; if (S.tab === "project" && state.view === "settings" && PJ.draft?.tools) { PJ.draft = readProjectForm(); renderSection(); } }).catch(() => {});
     if (!GP.timer) loadGpu();
   }
 
@@ -2654,10 +2840,12 @@
       { label: "Start an agent", icon: "agent", run: () => { go("agents"); setTimeout(() => $("#ag-goal")?.focus(), 300); } },
       { label: "Add models from a folder or GGUF file…", icon: "folder", run: () => { P.open = true; P.error = null; go("library"); $("#place-path")?.focus(); if (!P.list) browsePlace(""); } },
       { label: "Download a model from Hugging Face…", icon: "download", run: () => { H.open = true; go("library"); $("#hub-q")?.focus(); pollHub(); } },
-      { label: "Add an API key…", icon: "lock", run: () => { go("settings"); setTimeout(() => $("#set-providers")?.scrollIntoView({ block: "start" }), 50); } },
-      { label: "Add a worker host or rent a GPU…", icon: "plug", run: () => { go("settings"); setTimeout(() => $("#set-hosts")?.scrollIntoView({ block: "start" }), 50); } },
-      { label: "New project…", icon: "folder", run: () => { go("settings"); setTimeout(() => $("[data-proj-new]")?.click(), 50); } },
-      { label: "Edit this project's routes and tools…", icon: "edit", run: () => { go("settings"); setTimeout(() => $("[data-proj-edit]")?.click(), 50); } },
+      { label: "Add an API key…", icon: "lock", run: () => openSettings("providers") },
+      { label: "Settings: GPU and scheduling", icon: "flask", run: () => openSettings("gpu") },
+      { label: "Settings: appearance", icon: "sun", run: () => openSettings("look") },
+      { label: "Add a worker host or rent a GPU…", icon: "plug", run: () => openSettings("machines") },
+      { label: "New project…", icon: "folder", run: () => startNewProject() },
+      { label: "Edit this project's routes and tools…", icon: "edit", run: () => { if (!PJ.dirty) { PJ.view = PJ.data?.active; PJ.draft = null; } openSettings("project"); } },
       { label: "Unload every idle model from the GPU", icon: "x", run: () => unloadGpu("all").then(() => toast("Idle models unloaded.")) },
       { label: "Start a training run…", icon: "train", run: () => go("train") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide"),
@@ -2727,8 +2915,7 @@
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === ",") { e.preventDefault(); go("settings"); } });
   document.addEventListener("click", e => {
     const a = e.target.closest("[data-go-settings]"); if (!a) return;
-    e.preventDefault(); go("settings");
-    if (a.dataset.goSection) setTimeout(() => $("#" + a.dataset.goSection)?.scrollIntoView({ block: "start" }), 50);
+    e.preventDefault(); openSettings(a.dataset.goSection || S.tab);
   });
   $("#theme-btn").addEventListener("click", () => {
     const root = document.documentElement;
@@ -4391,7 +4578,7 @@ reason ::= [a-z ]+`;
     </div>`;
   }
 
-  function liveProviders() {
+  function liveProviders(part) {
     if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
     const apis = L.info.providers.filter(p => p.kind === "api");
     const ready = apis.filter(p => p.keys.length);
@@ -4444,12 +4631,14 @@ reason ::= [a-z ]+`;
         ${form(p, true)}
         <span class="mono faint" style="font-size:11px">${total && p.keys.length > 1 ? esc(usageLine(total)) + " in all · " : ""}several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
     };
-    return `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
+    if (part === "local") return `<div class="providers">${local.map(card).join("")}</div>`;
+    return `${part === "apis" ? "" : `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
       <div class="providers">${local.map(card).join("")}${hosts.map(card).join("")}${hosts.length ? "" : `<div class="prov off hint-card">
           <b>Another machine of yours</b>
           <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it under Machines below. Its models show up here and answer in Chat; it can also train.</div>
           <div class="provset"><span class="grow"></span><button class="btn sm" data-jump="set-hosts">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
-      <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>
+      <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>`}
+      ${part === "apis" && !ready.length && !more.length ? `<div class="set-card muted">No provider takes a key.</div>` : ""}
       ${ready.length ? `<div class="providers">${ready.map(card).join("")}</div>` : ""}
       ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
       <div class="more">${more.map(p => `<div class="prov-row ${L.adding === p.id ? "open" : ""}">
@@ -5280,9 +5469,7 @@ reason ::= [a-z ]+`;
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {
       if (V.status?.key) { V.open = true; if (!V.offers) searchVast(); }
-      if (state.view !== "settings") go("settings");
-      else { renderHosts(); renderVast(); }
-      setTimeout(() => $("#set-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+      openSettings("machines");
     });
     $$("[data-place-remove]").forEach(b => b.addEventListener("click", async () => {
       const f = b.dataset.placeRemove;

@@ -82,4 +82,12 @@ class ProjectsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> io.github.zzuegg.brainiac.studio.train.VastRunners.Runner.fromJson(Map.of("gpu", "4090")));
     }
+
+    @Test
+    void aRunnerFieldLeftEmptyIsNotSet() {
+        Map<String, Object> runner = new java.util.HashMap<>(Map.of("maxPrice", 0.5, "repo", ""));
+        runner.put("minGpuRam", null);
+        Project p = Project.fromJson(Map.of("name", "C", "runners", Map.of("video", runner)));
+        assertEquals(Map.of("maxPrice", 0.5), p.runner("video"));
+    }
 }
