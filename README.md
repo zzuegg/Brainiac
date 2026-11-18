@@ -673,7 +673,8 @@ GeneratedVideo video = wan.generate(VideoRequest.of("the waves roll in").withSiz
 On a rented machine with several GPUs, `Wan.plan` reads the files' headers and the devices'
 free memory and places the parts for a video size: Wan 2.2's two experts on different GPUs,
 umT5 and the CLIP encoder where there is room, each transformer's GPU keeping room for a
-step's activations (about 14 GB for a 14B model at 1280x720 and 81 frames in bfloat16). It
+step's activations (about 17 GB for a 14B model at 1280x720 and 81 frames in bfloat16) and
+the VAE's GPU room to decode (about 26 GB at 1280x720, 12 GB at 832x480). It
 falls back to 8- then 4-bit weights when nothing else fits. The example's `--device` takes a
 comma-separated list.
 

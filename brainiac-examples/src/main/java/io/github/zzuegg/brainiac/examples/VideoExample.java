@@ -111,18 +111,21 @@ public final class VideoExample {
             long start = System.nanoTime();
             try (Wan wan = Wan.load(files, placement, dtype, options)) {
                 System.out.printf("Loaded %s in %.1f s%n", wan, (System.nanoTime() - start) / 1e9);
+                // the peak of each phase: loading, the prompts and the first step, sampling, decoding
+                List<Device> used = wan.placement().devices();
+                peaks(used, "loading");
                 long t0 = System.nanoTime();
                 GeneratedVideo video = wan.generate(request, image, (step, total, preview) -> {
                     System.out.printf("\rstep %d / %d  (%.0f s)", step, total, (System.nanoTime() - t0) / 1e9);
+                    if (step == 1 || step == total) {
+                        System.out.println();
+                        peaks(used, step == 1 ? "prompts and the first step" : "sampling");
+                    }
                     return true;
                 });
+                peaks(used, "decoding");
                 System.out.printf("%nGenerated %d frames (%dx%d, %.1f s of video) in %.1f s%n", video.frames().size(),
                         video.width(), video.height(), video.seconds(), (System.nanoTime() - t0) / 1e9);
-                for (Device d : wan.placement().devices()) {
-                    // what the run held at most, next to what the backend's pool reserved
-                    d.memory().ifPresent(m -> System.out.printf("%s: peak %.1f GB in use, %.1f GB reserved%n",
-                            d, m.peak() / 1e9, m.reserved() / 1e9));
-                }
                 Files.createDirectories(out);
                 Path file = out.resolve("video-" + video.seed() + ".png");
                 Files.write(file, video.apng());
@@ -166,5 +169,14 @@ public final class VideoExample {
         return Device.available().stream().filter(d -> d.name().toLowerCase(Locale.ROOT).contains(want)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("no device matches '" + want + "': "
                         + Device.available()));
+    }
+
+    /** Prints each device's peak since the last call, next to what its pool reserved, and starts again. */
+    private static void peaks(List<Device> devices, String phase) {
+        for (Device d : devices) {
+            d.memory().ifPresent(m -> System.out.printf("%s, %s: peak %.1f GB in use (%.1f GB now), %.1f GB reserved%n",
+                    phase, d, m.peak() / 1e9, m.inUse() / 1e9, m.reserved() / 1e9));
+            d.resetPeakMemory();
+        }
     }
 }

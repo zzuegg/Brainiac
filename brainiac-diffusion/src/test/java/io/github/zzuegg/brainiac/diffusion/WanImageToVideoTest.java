@@ -187,12 +187,13 @@ class WanImageToVideoTest {
         assertEquals(2, plan.placement().transformers().size());
         assertEquals(0, plan.options().transformerBits());
 
-        // Wan 2.1 14B at 720p, five seconds: about 10 GB of activations per step in bfloat16
+        // Wan 2.1 14B at 720p, five seconds: about 17 GB of activations per step in bfloat16, and
+        // about 26 GB to decode (Wan 2.1 1.3B's step measured 0.33 GB and decode 2.7 GB at 416x240)
         WanTransformer.Settings big = WanTransformer.Settings.of(16, 40, 128, 40, 13824, 4096);
         VideoRequest hd = new VideoRequest("a fox", null, 1280, 720, 81, 40, 5f, 0f, 0);
         long step = Wan.stepBytes(big, WanVae.Settings.wan21(), DType.BFLOAT16, hd);
-        assertTrue(step > 8e9 && step < 16e9, "step " + step);
+        assertTrue(step > 12e9 && step < 24e9, "step " + step);
         long decode = Wan.decodeBytes(WanVae.Settings.wan21(), DType.BFLOAT16, hd);
-        assertTrue(decode > 2e9 && decode < 8e9, "decode " + decode);
+        assertTrue(decode > 15e9 && decode < 35e9, "decode " + decode);
     }
 }

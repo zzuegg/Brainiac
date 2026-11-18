@@ -668,31 +668,42 @@ public final class WanTransformer implements MultiInputLayer {
             for (int i = 0; i < 6; i++) {
                 c[i] = mod.slice(2, i, i + 1).reshape(b, m, d);
             }
+            // each of the three parts frees its temporaries before the next starts
+            Var input = x;
             // self-attention: shift, scale, gate
-            Var n1 = norm1.forward(x.to(DType.FLOAT32)).mul(c[1].add(1f)).add(c[0]).to(type);
-            Var q = FluxTransformer.rotate(split(self.qNorm.forward(self.q.forward(n1)), heads), rope);
-            Var k = FluxTransformer.rotate(split(self.kNorm.forward(self.k.forward(n1)), heads), rope);
-            Var v = split(self.v.forward(n1), heads);
-            Var a = self.o.forward(FluxTransformer.join(attend(q, k, v, ATTENTION_WORK)));
-            x = x.to(DType.FLOAT32).add(a.to(DType.FLOAT32).mul(c[2])).to(type);
+            Var x1 = Parts.step(() -> {
+                Var n1 = norm1.forward(input.to(DType.FLOAT32)).mul(c[1].add(1f)).add(c[0]).to(type);
+                Var q = FluxTransformer.rotate(split(self.qNorm.forward(self.q.forward(n1)), heads), rope);
+                Var k = FluxTransformer.rotate(split(self.kNorm.forward(self.k.forward(n1)), heads), rope);
+                Var v = split(self.v.forward(n1), heads);
+                Var a = self.o.forward(FluxTransformer.join(attend(q, k, v, ATTENTION_WORK)));
+                return input.to(DType.FLOAT32).add(a.to(DType.FLOAT32).mul(c[2])).to(type);
+            });
             // cross-attention to text (and image) tokens, unmodulated
-            Var n2 = crossNorm == null ? x : crossNorm.forward(x);
-            Var cq = split(cross.qNorm.forward(cross.q.forward(n2)), heads);
-            int tokens = context.shape().dim(1);
-            Var text = imageTokens == 0 ? context : context.slice(1, imageTokens, tokens);
-            Var ca = FluxTransformer.attend(cq, split(cross.kNorm.forward(cross.k.forward(text)), heads),
-                    split(cross.v.forward(text), heads));
-            if (imageTokens > 0) {
-                Var img = context.slice(1, 0, imageTokens);
-                ca = ca.add(FluxTransformer.attend(cq,
-                        split(cross.imageKNorm.forward(cross.imageK.forward(img)), heads),
-                        split(cross.imageV.forward(img), heads)));
-            }
-            x = x.add(cross.o.forward(FluxTransformer.join(ca)));
+            Var x2 = Parts.step(() -> {
+                Var n2 = crossNorm == null ? x1 : crossNorm.forward(x1);
+                Var cq = split(cross.qNorm.forward(cross.q.forward(n2)), heads);
+                int tokens = context.shape().dim(1);
+                Var text = imageTokens == 0 ? context : context.slice(1, imageTokens, tokens);
+                Var ca = FluxTransformer.attend(cq, split(cross.kNorm.forward(cross.k.forward(text)), heads),
+                        split(cross.v.forward(text), heads));
+                if (imageTokens > 0) {
+                    Var img = context.slice(1, 0, imageTokens);
+                    ca = ca.add(FluxTransformer.attend(cq,
+                            split(cross.imageKNorm.forward(cross.imageK.forward(img)), heads),
+                            split(cross.imageV.forward(img), heads)));
+                }
+                return x1.add(cross.o.forward(FluxTransformer.join(ca)));
+            });
+            Parts.free(x1, input);
             // feed-forward: shift, scale, gate
-            Var n3 = norm2.forward(x.to(DType.FLOAT32)).mul(c[4].add(1f)).add(c[3]).to(type);
-            Var f = down.forward(up.forward(n3));
-            return x.to(DType.FLOAT32).add(f.to(DType.FLOAT32).mul(c[5])).to(type);
+            Var x3 = Parts.step(() -> {
+                Var n3 = norm2.forward(x2.to(DType.FLOAT32)).mul(c[4].add(1f)).add(c[3]).to(type);
+                Var f = down.forward(up.forward(n3));
+                return x2.to(DType.FLOAT32).add(f.to(DType.FLOAT32).mul(c[5])).to(type);
+            });
+            Parts.free(x2, input);
+            return x3;
         }
 
         /** {@code [batch, tokens, features]} as heads {@code [batch, heads, tokens, headSize]}. */
