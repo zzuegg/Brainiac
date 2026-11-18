@@ -5381,7 +5381,7 @@ reason ::= [a-z ]+`;
   // Agents the user starts: a goal, a chat model and the studio's tools. In Ask mode a tool
   // that acts (downloads, training, asking a paid model) waits here for Allow or Deny.
   const A = { loaded: false, loading: false, error: null, runs: [], tools: [], maxSteps: 30, sel: null, detail: null,
-    model: "auto", mode: "ask", steps: 12, goal: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
+    model: "auto", mode: "ask", steps: 12, goal: "", format: "", schema: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
     open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "" };
   const agentStates = { running: ["working", "c-text"], waiting: ["needs you", "c-warn"], done: ["done", "c-ok"], failed: ["failed", "c-bad"],
     stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"] };
@@ -5436,6 +5436,13 @@ reason ::= [a-z ]+`;
           <button type="button" data-ag-mode="auto" aria-pressed="${A.mode === "auto"}" title="It calls every tool itself">Auto</button></div>
         <label class="muted ag-steps">Steps <input class="input mono" id="ag-steps" type="number" min="1" max="${A.maxSteps}" value="${A.steps}"></label>
       </div>
+      <div class="field"><label for="ag-format" title="The agent works in free text, as its tool calls need, and writes its final answer in this form in a turn of its own.">Answers as</label>
+        <select class="input" id="ag-format">
+          <option value="" ${A.format === "" ? "selected" : ""}>Free text</option>
+          <option value="json" ${A.format === "json" ? "selected" : ""}>A JSON object</option>
+          <option value="schema" ${A.format === "schema" ? "selected" : ""}>JSON that fits a schema</option>
+        </select>
+        ${A.format === "schema" ? `<textarea class="input mono" id="ag-schema" rows="5" spellcheck="false" aria-label="JSON schema" placeholder="${esc(SCHEMA_EXAMPLE)}">${esc(A.schema)}</textarea>` : ""}</div>
       ${A.formError ? `<div class="flag bad">${icon("alert")}<span>${esc(A.formError)}</span></div>` : ""}
       <button class="btn primary" type="submit" ${A.busy ? "disabled" : ""}>${icon("play")}${A.busy ? "Starting…" : "Start"}</button>
     </form>`;
@@ -5469,7 +5476,7 @@ reason ::= [a-z ]+`;
       case "call": return `<div class="st st-call">${icon("plug")}<span>Calls <code>${esc(s.tool)}</code>${argText(s.arguments) ? ` <span class="mono muted">${esc(argText(s.arguments))}</span>` : ""}</span></div>`;
       case "result": return `<details class="st st-result ${s.ok ? "" : "bad"}" data-ag-open="${i}" ${A.open.has(i) ? "open" : ""}><summary>${s.ok ? icon("check") : icon("alert")}<span><code>${esc(s.tool)}</code> ${s.ok ? "answered" : "failed"}</span><span class="mono faint">${fmtCount((s.text || "").length)} chars</span></summary><pre>${esc(s.text || "")}</pre></details>`;
       case "decision": return `<div class="st st-decision">${icon(s.allow ? "check" : "x")}<span>You ${s.allow ? "allowed" : "did not allow"} <code>${esc(s.tool)}</code>${s.note ? `: “${esc(s.note)}”` : ""}</span></div>`;
-      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${md(s.text || "")}</div></div>`;
+      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${s.json && s.text ? jsonAnswer(s.text) : md(s.text || "")}</div></div>`;
       case "error": return `<div class="flag bad">${icon("alert")}<span>${esc(s.text || "")}</span></div>`;
       default: return "";
     }
@@ -5615,13 +5622,17 @@ reason ::= [a-z ]+`;
     goal.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#ag-form").requestSubmit(); };
     $("#ag-model").onchange = e => { A.model = e.target.value; };
     $("#ag-steps").oninput = e => { A.steps = Math.max(1, Math.min(A.maxSteps, +e.target.value || 12)); };
+    $("#ag-format").onchange = e => { A.format = e.target.value; A.formError = null; render(); };
+    if ($("#ag-schema")) $("#ag-schema").oninput = e => { A.schema = e.target.value; };
     $$("[data-ag-mode]").forEach(b => b.onclick = () => { A.mode = b.dataset.agMode; $$("[data-ag-mode]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
     $("#ag-form").onsubmit = async e => {
       e.preventDefault();
       if (!A.goal.trim()) { A.formError = "Say what the agent should do."; render(); return; }
+      const wrong = formatError(A);
+      if (wrong) { A.formError = wrong; render(); return; }
       A.busy = true; A.formError = null; render();
       try {
-        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps });
+        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps, format: formatOf(A) });
         A.goal = ""; A.sel = r.id; A.detail = null; A.open = new Set();
       } catch (err) {
         A.formError = String(err.message || err);

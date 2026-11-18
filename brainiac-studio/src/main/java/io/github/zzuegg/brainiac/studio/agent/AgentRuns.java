@@ -6,6 +6,8 @@ import io.github.zzuegg.brainiac.studio.chat.ChatListener;
 import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
 import io.github.zzuegg.brainiac.studio.chat.ChatResult;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.chat.Format;
+import io.github.zzuegg.brainiac.studio.chat.Sampler;
 import io.github.zzuegg.brainiac.studio.project.Project;
 import io.github.zzuegg.brainiac.studio.project.Projects;
 import java.io.IOException;
@@ -43,6 +45,9 @@ public final class AgentRuns {
     /** The most model turns a run may take, unless asked for fewer. */
     public static final int MAX_STEPS = 30;
 
+    /** What a model is told when its final answer must have a form. */
+    static final String SHAPE_ASK = "Now give your final answer as one JSON object and nothing else. Call no tool.";
+
     private static final int TURN_TOKENS = 2048;
     private static final int RESULT_CHARS = 6000;
 
@@ -72,6 +77,8 @@ public final class AgentRuns {
         final long created;
         /** The project it works in. */
         String project = Project.DEFAULT;
+        /** The form its final answer must have. */
+        Format format = Format.NONE;
         final List<Map<String, Object>> steps = new ArrayList<>();
         final List<ChatMessage> messages = new ArrayList<>();
         String state = "running";
@@ -122,6 +129,9 @@ public final class AgentRuns {
             m.put("maxSteps", maxSteps);
             if (allowed != null) {
                 m.put("tools", allowed);
+            }
+            if (!format.none()) {
+                m.put("format", format.toJson());
             }
             m.put("state", state);
             m.put("created", created);
@@ -229,8 +239,28 @@ public final class AgentRuns {
      * @param allowed the tools it may use, or null for all
      * @return the run
      */
+    public Map<String, Object> start(String goal, String model, String mode, int maxSteps, List<String> allowed) {
+        return start(goal, model, mode, maxSteps, allowed, Format.NONE);
+    }
+
+    /**
+     * Starts an agent whose final answer has a given form. It works in free text, as its tool
+     * calls need, and writes the answer in that form in a turn of its own at the end.
+     *
+     * @param goal what it should do
+     * @param model the chat model key, or {@code auto}
+     * @param mode {@code ask} to wait for approval before tools that act, {@code auto} to call them alone
+     * @param maxSteps the most model turns
+     * @param allowed the tools it may use, or null for all
+     * @param format free text, a JSON object, or JSON that fits a schema
+     * @return the run
+     */
     public synchronized Map<String, Object> start(String goal, String model, String mode, int maxSteps,
-            List<String> allowed) {
+            List<String> allowed, Format format) {
+        if (format.kind().equals("grammar")) {
+            throw new IllegalArgumentException("an agent answers in free text, JSON, or JSON that fits a schema");
+        }
+        format.constraint();   // a schema that cannot be used is refused before the agent works
         if (goal == null || goal.isBlank()) {
             throw new IllegalArgumentException("say what the agent should do");
         }
@@ -266,6 +296,7 @@ public final class AgentRuns {
         if (in != null) {
             r.project = in.id();
         }
+        r.format = format;
         r.messages.add(new ChatMessage("user", r.goal));
         r.step("goal", Map.of("text", r.goal));
         runs.put(r.id, r);
@@ -467,6 +498,18 @@ public final class AgentRuns {
                     r.outputTokens += Math.max(0, result.outputTokens());
                     r.messages.add(new ChatMessage("assistant", turn.isEmpty() ? "(nothing)" : turn));
                 }
+                if (calls.isEmpty() && !r.format.none()) {
+                    if (!said.isEmpty()) {
+                        r.step("say", Map.of("text", said));
+                    }
+                    String shaped = shaped(r, system);
+                    r.step("answer", Map.of("text", shaped, "json", true));
+                    synchronized (r) {
+                        r.answer = shaped;
+                    }
+                    end(r, "done", null);
+                    return;
+                }
                 if (calls.isEmpty()) {
                     r.step("answer", Map.of("text", said));
                     synchronized (r) {
@@ -511,6 +554,34 @@ public final class AgentRuns {
             LOG.log(System.Logger.Level.WARNING, "agent " + r.id + " failed", e);
             end(r, "failed", String.valueOf(e.getMessage()));
         }
+    }
+
+    /** Has the model write its answer again in the run's format, in a turn that calls no tool. */
+    private String shaped(Run r, String system) throws IOException, InterruptedException {
+        List<ChatMessage> history;
+        synchronized (r) {
+            r.messages.add(new ChatMessage("user", SHAPE_ASK));
+            history = List.copyOf(r.messages);
+        }
+        StringBuilder text = new StringBuilder();
+        ChatResult result = chat.chat(r.model, system, history, TURN_TOKENS, null, null, Sampler.NONE, r.format,
+                m -> { synchronized (r) { r.by = m.key(); } },
+                piece -> {
+                    if (r.stopping) {
+                        throw new IOException("stopped");
+                    }
+                    text.append(piece);
+                });
+        String shaped = text.toString().strip();
+        if (shaped.isEmpty()) {
+            throw new IOException("the model wrote no answer in the form asked for; its context may be full");
+        }
+        synchronized (r) {
+            r.inputTokens += Math.max(0, result.inputTokens());
+            r.outputTokens += Math.max(0, result.outputTokens());
+            r.messages.add(new ChatMessage("assistant", shaped));
+        }
+        return shaped;
     }
 
     /** Runs one call, after asking the user if it acts; null if the agent was stopped meanwhile. */
@@ -696,6 +767,11 @@ public final class AgentRuns {
                 Json.integer(m, "created", 0));
         r.state = Json.string(m, "state", "stopped");
         r.project = Json.string(m, "project", Project.DEFAULT);
+        try {
+            r.format = Format.of(m);
+        } catch (IllegalArgumentException e) {
+            r.format = Format.NONE;
+        }
         r.by = Json.string(m, "by", null);
         r.answer = Json.string(m, "answer", null);
         r.error = Json.string(m, "error", null);
