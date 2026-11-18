@@ -141,9 +141,11 @@ public final class ChatTemplate {
             if (trimBefore) {
                 text = text.stripTrailing();
             } else if (type != '{') {
-                // lstrip_blocks: spaces and tabs from the start of the line up to a block
+                // lstrip_blocks: spaces and tabs from the start of the line up to a block, when
+                // the line starts in this text (not after an expression on the same line)
                 int line = text.lastIndexOf('\n') + 1;
-                if (text.substring(line).chars().allMatch(c -> c == ' ' || c == '\t')) {
+                boolean lineStart = at == 0 || src.lastIndexOf('\n', open - 1) >= at;
+                if (lineStart && text.substring(line).chars().allMatch(c -> c == ' ' || c == '\t')) {
                     text = text.substring(0, line);
                 }
             }

@@ -23,9 +23,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * A PyTorch checkpoint written by {@code torch.save} in its zip format (PyTorch 1.6 and
- * later), such as a Hugging Face {@code pytorch_model.bin}: a pickled state dict whose
- * tensors point into the archive's storages. The pickle is interpreted, never executed: only
+ * A PyTorch checkpoint written by {@code torch.save}, in its zip format (PyTorch 1.6 and
+ * later) or the older legacy format, such as a Hugging Face {@code pytorch_model.bin}: a
+ * pickled state dict whose tensors point into the file's storages. The pickle is interpreted, never executed: only
  * dictionaries, tensors and parameters are understood, and anything else in it is skipped.
  * Storages are memory-mapped, so opening a checkpoint reads only its pickle.
  */
@@ -33,6 +33,9 @@ final class PyTorchCheckpoint implements WeightSource {
 
     private static final ValueLayout.OfShort U16 = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfInt U32 = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
+    /** A pickle of the magic number 0x1950a86a20f9469cfc6c that starts legacy checkpoints. */
+    private static final int[] LEGACY_MAGIC = {0x80, 0x02, 0x8a, 0x0a, 0x6c, 0xfc, 0x9c, 0x46, 0xf9, 0x20, 0x6a, 0xa8,
+        0x50, 0x19, 0x2e};
     private static final ValueLayout.OfLong U64 = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     /** A tensor: a view of {@code storage} with an element offset and strides. */
@@ -53,6 +56,10 @@ final class PyTorchCheckpoint implements WeightSource {
             file = ch.map(FileChannel.MapMode.READ_ONLY, 0, ch.size(), arena);
         }
         try {
+            if (file.byteSize() >= LEGACY_MAGIC.length && (file.get(ValueLayout.JAVA_BYTE, 0) & 0xFF) == 0x80) {
+                legacy();
+                return;
+            }
             Map<String, MemorySegment> zip = entries(file);
             String pickle = null;
             for (String n : zip.keySet()) {
@@ -62,7 +69,7 @@ final class PyTorchCheckpoint implements WeightSource {
             }
             if (pickle == null) {
                 throw new IllegalArgumentException(path + " is not a PyTorch zip checkpoint"
-                        + " (checkpoints saved before PyTorch 1.6 are not supported)");
+                        + " (no data.pkl)");
             }
             String root = pickle.substring(0, pickle.length() - "data.pkl".length());
             for (Map.Entry<String, MemorySegment> e : zip.entrySet()) {
@@ -70,25 +77,81 @@ final class PyTorchCheckpoint implements WeightSource {
                     storages.put(e.getKey().substring(root.length() + "data/".length()), e.getValue());
                 }
             }
-            Object state = new Unpickler(zip.get(pickle).toArray(ValueLayout.JAVA_BYTE)).load();
-            if (state instanceof Map<?, ?> m && m.get("state_dict") instanceof Map<?, ?> inner
-                    && !(m.values().stream().anyMatch(Entry.class::isInstance))) {
-                state = inner;   // a training checkpoint holding the weights under "state_dict"
-            }
-            if (!(state instanceof Map<?, ?> dict)) {
-                throw new IllegalArgumentException(path + " does not hold a state dict");
-            }
-            for (Map.Entry<?, ?> e : dict.entrySet()) {
-                if (e.getKey() instanceof String name && e.getValue() instanceof Entry t) {
-                    if (!storages.containsKey(t.storage)) {
-                        throw new IllegalArgumentException(path + ": storage " + t.storage + " is missing");
-                    }
-                    entries.put(name, t);
-                }
-            }
+            Object state = new Unpickler(zip.get(pickle), 0).load();
+            collect(state);
         } catch (RuntimeException e) {
             arena.close();
             throw e;
+        }
+    }
+
+    /** Takes the tensors out of a loaded state dict, or a checkpoint holding one. */
+    private void collect(Object state) {
+        if (state instanceof Map<?, ?> m && m.get("state_dict") instanceof Map<?, ?> inner
+                && !(m.values().stream().anyMatch(Entry.class::isInstance))) {
+            state = inner;   // a training checkpoint holding the weights under "state_dict"
+        }
+        if (!(state instanceof Map<?, ?> dict)) {
+            throw new IllegalArgumentException(path + " does not hold a state dict");
+        }
+        for (Map.Entry<?, ?> e : dict.entrySet()) {
+            if (e.getKey() instanceof String name && e.getValue() instanceof Entry t) {
+                if (!storages.containsKey(t.storage)) {
+                    throw new IllegalArgumentException(path + ": storage " + t.storage + " is missing");
+                }
+                entries.put(name, t);
+            }
+        }
+    }
+
+    /**
+     * The format before PyTorch 1.6: pickles of a magic number, the protocol version and
+     * system facts, then the state dict, then the storage keys in the order their data
+     * follows, each as a little-endian element count and the raw elements.
+     */
+    private void legacy() {
+        for (int i = 0; i < LEGACY_MAGIC.length; i++) {
+            if ((file.get(ValueLayout.JAVA_BYTE, i) & 0xFF) != LEGACY_MAGIC[i]) {
+                throw new IllegalArgumentException(path + " is neither a zip nor a legacy PyTorch checkpoint");
+            }
+        }
+        // the magic number is an 80-bit integer, past what the unpickler reads, so it is matched as bytes
+        Unpickler u = new Unpickler(file, LEGACY_MAGIC.length);
+        u.load();   // protocol version
+        u = new Unpickler(file, u.position());
+        u.load();   // system information
+        Unpickler main = new Unpickler(file, u.position());
+        Object state = main.load();
+        Unpickler keys = new Unpickler(file, main.position());
+        Object order = keys.load();
+        if (!(order instanceof List<?> list)) {
+            throw new IllegalArgumentException(path + ": no storage list in a legacy checkpoint");
+        }
+        Map<String, Integer> sizes = new HashMap<>();
+        collectSizes(state, sizes);
+        long at = keys.position();
+        for (Object k : list) {
+            String key = String.valueOf(k);
+            long count = file.get(U64, at);
+            at += 8;
+            int element = sizes.getOrDefault(key, 4);
+            long length = count * element;
+            if (at + length > file.byteSize()) {
+                throw new IllegalArgumentException(path + ": storage " + key + " reaches past the end of the file");
+            }
+            storages.put(key, file.asSlice(at, length));
+            at += length;
+        }
+        collect(state);
+    }
+
+    private static void collectSizes(Object v, Map<String, Integer> sizes) {
+        if (v instanceof Entry e) {
+            sizes.put(e.storage, bytes(e.format));
+        } else if (v instanceof Map<?, ?> m) {
+            m.values().forEach(x -> collectSizes(x, sizes));
+        } else if (v instanceof List<?> l) {
+            l.forEach(x -> collectSizes(x, sizes));
         }
     }
 
@@ -293,13 +356,19 @@ final class PyTorchCheckpoint implements WeightSource {
 
         private static final Object MARK = new Object();
 
-        private final byte[] in;
-        private int at;
+        private final MemorySegment in;
+        private long at;
         private final List<Object> stack = new ArrayList<>();
         private final Map<Long, Object> memo = new HashMap<>();
 
-        Unpickler(byte[] in) {
+        Unpickler(MemorySegment in, long start) {
             this.in = in;
+            this.at = start;
+        }
+
+        /** @return where the next pickle starts, once {@link #load()} returned */
+        long position() {
+            return at;
         }
 
         Object load() {
@@ -533,10 +602,10 @@ final class PyTorchCheckpoint implements WeightSource {
         }
 
         private int u8() {
-            if (at >= in.length) {
+            if (at >= in.byteSize()) {
                 throw new IllegalArgumentException("pickle ends early");
             }
-            return in[at++] & 0xFF;
+            return in.get(ValueLayout.JAVA_BYTE, at++) & 0xFF;
         }
 
         private int i32() {
@@ -548,10 +617,10 @@ final class PyTorchCheckpoint implements WeightSource {
         }
 
         private byte[] rawBytes(int n) {
-            if (n < 0 || at + n > in.length) {
+            if (n < 0 || at + n > in.byteSize()) {
                 throw new IllegalArgumentException("pickle ends early");
             }
-            byte[] b = java.util.Arrays.copyOfRange(in, at, at + n);
+            byte[] b = in.asSlice(at, n).toArray(ValueLayout.JAVA_BYTE);
             at += n;
             return b;
         }
@@ -565,11 +634,11 @@ final class PyTorchCheckpoint implements WeightSource {
         }
 
         private String line() {
-            int end = at;
-            while (end < in.length && in[end] != '\n') {
+            long end = at;
+            while (end < in.byteSize() && in.get(ValueLayout.JAVA_BYTE, end) != '\n') {
                 end++;
             }
-            String s = new String(in, at, end - at, StandardCharsets.UTF_8);
+            String s = new String(in.asSlice(at, end - at).toArray(ValueLayout.JAVA_BYTE), StandardCharsets.UTF_8);
             at = end + 1;
             return s;
         }

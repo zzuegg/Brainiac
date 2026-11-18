@@ -48,6 +48,14 @@ class PyTorchCheckpointTest {
     }
 
     @Test
+    void readsTheLegacyFormatBeforePyTorch16() throws Exception {
+        try (WeightSource pt = WeightSource.open(resource("model-legacy.bin"));
+                WeightSource st = WeightSource.open(resource("expected.safetensors"))) {
+            sameTensors(pt, st);
+        }
+    }
+
+    @Test
     void readsAShardedHuggingFaceFolder() throws Exception {
         try (WeightSource pt = WeightSource.open(resource("sharded"));
                 WeightSource st = WeightSource.open(resource("sharded-expected.safetensors"))) {
