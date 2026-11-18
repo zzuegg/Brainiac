@@ -38,6 +38,54 @@ public final class Shape {
     }
 
     /**
+     * Creates a shape in which one dimension may be {@code -1}, standing for whatever
+     * makes the shape hold {@code size} values, as {@code reshape(-1)} in PyTorch.
+     *
+     * @param size the number of values the shape must hold
+     * @param dims the dimensions, at most one of them {@code -1}
+     * @return the shape
+     * @throws IllegalArgumentException if no size fits or two dimensions are {@code -1}
+     */
+    public static Shape inferred(long size, int... dims) {
+        int unknown = -1;
+        long known = 1;
+        for (int i = 0; i < dims.length; i++) {
+            if (dims[i] == -1) {
+                if (unknown >= 0) {
+                    throw new IllegalArgumentException("only one dimension can be -1 in " + Arrays.toString(dims));
+                }
+                unknown = i;
+            } else {
+                known *= dims[i];
+            }
+        }
+        if (unknown < 0) {
+            return of(dims);
+        }
+        if (known <= 0 || size % known != 0) {
+            throw new IllegalArgumentException(size + " values do not fit " + Arrays.toString(dims));
+        }
+        int[] d = dims.clone();
+        d[unknown] = Math.toIntExact(size / known);
+        return new Shape(d);
+    }
+
+    /**
+     * Returns this shape with one dimension changed.
+     *
+     * @param axis the dimension; negative values count from the end
+     * @param size its new size
+     * @return the new shape
+     */
+    public Shape withDim(int axis, int size) {
+        int a = axis < 0 ? dims.length + axis : axis;
+        dim(axis);
+        int[] d = dims.clone();
+        d[a] = size;
+        return new Shape(d);
+    }
+
+    /**
      * Returns the number of dimensions.
      *
      * @return the rank, 0 for a scalar
