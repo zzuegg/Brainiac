@@ -6,6 +6,15 @@ import io.github.zzuegg.brainiac.experimental.compress.DoReFaQuantizer;
 import io.github.zzuegg.brainiac.experimental.compress.FixedSparsityOptimizer;
 import io.github.zzuegg.brainiac.experimental.compress.HessianAwareBitAllocation;
 import io.github.zzuegg.brainiac.experimental.compress.PactActivation;
+import io.github.zzuegg.brainiac.experimental.compress.TensorDecomposition;
+import io.github.zzuegg.brainiac.experimental.compress.TensorTrainDense;
+import io.github.zzuegg.brainiac.experimental.kernels.KernelTimer;
+import io.github.zzuegg.brainiac.experimental.nn.LowRankDense;
+import io.github.zzuegg.brainiac.experimental.tensor.ThinSvd;
+import io.github.zzuegg.brainiac.nn.Activation;
+import io.github.zzuegg.brainiac.nn.Dense;
+import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.experimental.compress.WeightSharingQuantizer;
 import io.github.zzuegg.brainiac.experimental.compress.RelationalKdLoss;
 import io.github.zzuegg.brainiac.experimental.nn.DistillationLoss;
@@ -38,7 +47,9 @@ import java.util.function.UnaryOperator;
  * <li>{@link #mixedPrecision} (8.5.10): HAWQ-V2 bit allocation against uniform, random and
  *     weight-variance allocation at the same average bits;</li>
  * <li>{@link #quantizationAware} (8.5.11): PACT and DoReFa against LSQ and fixed-range clipping
- *     for 2 to 4-bit weights and activations.</li>
+ *     for 2 to 4-bit weights and activations;</li>
+ * <li>{@link #denseDecompositions} and {@link #convDecompositions} (8.5.12): tensor-train and
+ *     CP/Tucker-2 decompositions of layers against the matrix SVD at equal parameters.</li>
  * </ul>
  */
 public final class CompactModels {
@@ -347,6 +358,171 @@ public final class CompactModels {
         float max = Math.max(1e-8f, w.value().abs().max().item());
         Tensor q = w.value().mul(qp / max).round().mul(max / qp);
         return Functional.straightThrough(Var.of(q), w);
+    }
+
+    // ------------------------------------------------------------------ 8.5.12
+
+    /**
+     * Decomposes the {@code 256 x 256} middle layer of a {@code 64-256-256-10} digits MLP.
+     *
+     * @param ttRank the largest tensor-train rank (cores over {@code 4 x 4 x 4 x 4} modes)
+     * @param steps training steps of the dense network
+     * @param fineTune fine-tuning steps after decomposing
+     * @param seed the seed
+     * @return dense; SVD at the tensor train's parameter count (before and after fine-tuning);
+     *     the tensor train (before and after); an SVD-shaped bottleneck trained from scratch;
+     *     {@code metric} is test accuracy, {@code size} the middle layer's weights,
+     *     {@code millis} its forward time on the training batch
+     */
+    public static List<CompactRow> denseDecompositions(int ttRank, int steps, int fineTune, long seed) {
+        CompressionBench.Split data = CompressionBench.digits(seed);
+        SimpleMlp net = SimpleMlp.relu(seed, 64, 256, 256, 10);
+        CompressionBench.train(net::forward, net.parameters(), Optimizer.adam(0.005f), data.train(), steps);
+        Dense middle = new Dense(256, 256, Activation.RELU, net.weight(1).value(), net.bias(1).value().reshape(256));
+        int[] f = {4, 4, 4, 4};
+        TensorTrainDense tt = TensorTrainDense.from(middle, f, f, ttRank);
+        int svdRank = Math.max(1, (int) Math.round(tt.weightCount() / 512.0));
+        LowRankDense svd = LowRankDense.factorize(middle, svdRank);
+        Tensor batch = data.train().inputs();
+        Tensor hidden = Var.noGrad(() -> net.layer(0, Var.of(batch)).value());
+        List<CompactRow> rows = new ArrayList<>();
+        rows.add(mlpRow("dense", net, middle, 65536, hidden, data));
+        rows.add(mlpRow("svd r=" + svdRank, net, svd, 512L * svdRank, hidden, data));
+        fineTuneMiddle(net, svd, data, fineTune);
+        rows.add(mlpRow("svd r=" + svdRank + " +ft", net, svd, 512L * svdRank, hidden, data));
+        SimpleMlp net2 = SimpleMlp.relu(seed, 64, 256, 256, 10);
+        for (int i = 0; i < net2.parameters().size(); i++) {
+            net2.parameters().get(i).assign(net.parameters().get(i).value());
+        }
+        rows.add(mlpRow("tt r=" + ttRank, net2, tt, tt.weightCount(), hidden, data));
+        fineTuneMiddle(net2, tt, data, fineTune);
+        rows.add(mlpRow("tt r=" + ttRank + " +ft", net2, tt, tt.weightCount(), hidden, data));
+        SimpleMlp scratch = SimpleMlp.relu(seed + 5, 64, 256, 256, 10);
+        java.util.SplittableRandom r = new java.util.SplittableRandom(seed + 6);
+        LowRankDense small = new LowRankDense(Tensor.normal(Shape.of(256, svdRank), 0, 0.25f, r),
+                Tensor.normal(Shape.of(svdRank, 256), 0, 0.25f, r), Tensor.zeros(Shape.of(256)), Activation.RELU);
+        fineTuneMiddle(scratch, small, data, steps + fineTune);
+        rows.add(mlpRow("bottleneck r=" + svdRank + " from scratch", scratch, small, 512L * svdRank, hidden, data));
+        return rows;
+    }
+
+    private static UnaryOperator<Var> withMiddle(SimpleMlp net, Layer middle) {
+        return x -> net.layer(2, middle.forward(net.layer(0, x)));
+    }
+
+    private static void fineTuneMiddle(SimpleMlp net, Layer middle, CompressionBench.Split data, int steps) {
+        List<Var> params = new ArrayList<>(List.of(net.weight(0), net.bias(0), net.weight(2), net.bias(2)));
+        params.addAll(middle.parameters());
+        CompressionBench.train(withMiddle(net, middle), params, Optimizer.adam(0.003f), data.train(), steps);
+    }
+
+    private static CompactRow mlpRow(String name, SimpleMlp net, Layer middle, long size, Tensor hidden,
+            CompressionBench.Split data) {
+        double ms = KernelTimer.millis(() -> Var.noGrad(() -> middle.forward(Var.of(hidden)).value().toArray()), 3, 9);
+        return new CompactRow(name, CompressionBench.accuracy(withMiddle(net, middle), data.test()), 0, size, ms);
+    }
+
+    /**
+     * Decomposes the second convolution ({@code 32 x 16 x 3 x 3}, stride 2) of the shapes CNN at
+     * roughly equal parameters.
+     *
+     * @param tuckerRanks {@code {r_out, r_in}}
+     * @param steps training steps of the CNN
+     * @param fineTune fine-tuning steps after decomposing
+     * @param seed the seed
+     * @return dense; then SVD of the {@code [f, c k k]} unfolding, CP and Tucker-2, each before
+     *     and after fine-tuning; {@code size} the layer's weights, {@code millis} the forward time
+     *     of the test set
+     */
+    public static List<CompactRow> convDecompositions(int[] tuckerRanks, int steps, int fineTune, long seed) {
+        Tensor[] train = ShapesCnn.data(192, seed);
+        Tensor[] test = ShapesCnn.data(192, seed + 1);
+        ShapesCnn cnn = ShapesCnn.create(16, 32, seed);
+        cnn.train(train, Optimizer.adam(0.01f), steps, 0);
+        Tensor w = cnn.w2().value();
+        List<CompactRow> rows = new ArrayList<>();
+        rows.add(cnnRow("dense", cnn, ShapesCnn.CORE, w.shape().size(), test));
+        TensorDecomposition.Tucker2 tk = TensorDecomposition.tucker2(w, tuckerRanks[0], tuckerRanks[1]);
+        long budget = tk.parameters();
+        int svdRank = Math.max(1, (int) Math.round(budget / (32.0 + 144.0)));
+        int cpRank = Math.max(1, (int) Math.round(budget / (32.0 + 16 + 3 + 3)));
+        for (String method : List.of("svd r=" + svdRank, "cp r=" + cpRank,
+                "tucker2 " + tuckerRanks[0] + "x" + tuckerRanks[1])) {
+            ShapesCnn net = cnn.copy();
+            List<Var> factors = new ArrayList<>();
+            ShapesCnn.Convolution conv;
+            long size;
+            if (method.startsWith("svd")) {
+                double[][] m = new double[32][144];
+                double[] wv = w.toDoubleArray();
+                for (int i = 0; i < 32; i++) {
+                    System.arraycopy(wv, i * 144, m[i], 0, 144);
+                }
+                ThinSvd s = ThinSvd.of(m);
+                Var first = Var.param(s.right(svdRank, 0.5).reshape(svdRank, 16, 3, 3));
+                Var second = Var.param(s.left(svdRank, 0.5).reshape(32, svdRank, 1, 1));
+                factors.addAll(List.of(first, second));
+                conv = (x, ignored, stride) -> conv(conv(x, first, stride, 1, 1, 1), second, 1, 0, 0, 1);
+                size = 176L * svdRank;
+            } else if (method.startsWith("cp")) {
+                TensorDecomposition.Cp cp = TensorDecomposition.cp(w.toDoubleArray(), new int[] {32, 16, 3, 3}, cpRank,
+                        40, seed);
+                Var in = Var.param(fromFactor(cp.factors().get(1), true).reshape(cpRank, 16, 1, 1));
+                Var vert = Var.param(fromFactor(cp.factors().get(2), true).reshape(cpRank, 1, 3, 1));
+                Var hor = Var.param(fromFactor(cp.factors().get(3), true).reshape(cpRank, 1, 1, 3));
+                Var out = Var.param(fromFactor(cp.factors().get(0), false).reshape(32, cpRank, 1, 1));
+                factors.addAll(List.of(in, vert, hor, out));
+                int rank = cpRank;
+                conv = (x, ignored, stride) -> {
+                    Var a = Functional.conv(x, in, null, new int[] {1, 1}, new int[] {0, 0}, new int[] {0, 0},
+                            new int[] {1, 1}, 1);
+                    Var b = Functional.conv(a, vert, null, new int[] {stride, 1}, new int[] {1, 0}, new int[] {1, 0},
+                            new int[] {1, 1}, rank);
+                    Var c = Functional.conv(b, hor, null, new int[] {1, stride}, new int[] {0, 1}, new int[] {0, 1},
+                            new int[] {1, 1}, rank);
+                    return Functional.conv(c, out, null, new int[] {1, 1}, new int[] {0, 0}, new int[] {0, 0},
+                            new int[] {1, 1}, 1);
+                };
+                size = cp.parameters();
+            } else {
+                Var in = Var.param(tk.in().transpose().reshape(tuckerRanks[1], 16, 1, 1));
+                Var core = Var.param(tk.core());
+                Var out = Var.param(tk.out().reshape(32, tuckerRanks[0], 1, 1));
+                factors.addAll(List.of(in, core, out));
+                conv = (x, ignored, stride) -> conv(conv(conv(x, in, 1, 0, 0, 1), core, stride, 1, 1, 1), out, 1, 0,
+                        0, 1);
+                size = tk.parameters();
+            }
+            rows.add(cnnRow(method, net, conv, size, test));
+            net.train(train, Optimizer.adam(0.005f), fineTune, conv, factors);
+            rows.add(cnnRow(method + " +ft", net, conv, size, test));
+        }
+        return rows;
+    }
+
+    private static Var conv(Var x, Var w, int stride, int padBefore, int padAfter, int groups) {
+        return Functional.conv(x, w, null, new int[] {stride, stride}, new int[] {padBefore, padBefore},
+                new int[] {padAfter, padAfter}, new int[] {1, 1}, groups);
+    }
+
+    /** A CP factor {@code [dim][R]} as {@code [R, dim]} (transposed) or {@code [dim, R]}. */
+    private static Tensor fromFactor(double[][] f, boolean transpose) {
+        int d = f.length;
+        int r = f[0].length;
+        float[] v = new float[d * r];
+        for (int i = 0; i < d; i++) {
+            for (int k = 0; k < r; k++) {
+                v[transpose ? k * d + i : i * r + k] = (float) f[i][k];
+            }
+        }
+        return transpose ? Tensor.of(Shape.of(r, d), v) : Tensor.of(Shape.of(d, r), v);
+    }
+
+    private static CompactRow cnnRow(String name, ShapesCnn net, ShapesCnn.Convolution conv2, long size,
+            Tensor[] test) {
+        double ms = KernelTimer.millis(() -> Var.noGrad(() -> net.forward(Var.of(test[0]), ShapesCnn.CORE, conv2)
+                .value().toArray()), 2, 5);
+        return new CompactRow(name, net.accuracy(test, ShapesCnn.CORE, conv2), 0, size, ms);
     }
 
     private static SimpleMlp prunedReference(long seed, double sparsity, int fineTune, CompressionBench.Split data) {

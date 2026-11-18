@@ -185,6 +185,25 @@ public final class ShapesCnn {
     }
 
     /**
+     * Full-batch training with a replacement for the second convolution (a decomposed layer),
+     * whose own parameters are trained instead of {@link #w2()}.
+     *
+     * @param data {@code {images, ids}}
+     * @param optimizer the optimizer
+     * @param steps the steps
+     * @param conv2 the replacement convolution
+     * @param conv2Parameters its parameters
+     */
+    public void train(Tensor[] data, Optimizer optimizer, int steps, Convolution conv2, List<Var> conv2Parameters) {
+        List<Var> params = new ArrayList<>(List.of(w1, g1, b1, g2, b2, head, headBias));
+        params.addAll(conv2Parameters);
+        for (int s = 0; s < steps; s++) {
+            Functional.crossEntropy(forward(Var.of(data[0]), CORE, conv2), data[1]).backward();
+            optimizer.step(params);
+        }
+    }
+
+    /**
      * @param data {@code {images, ids}}
      * @param conv1 the first convolution
      * @param conv2 the second convolution
