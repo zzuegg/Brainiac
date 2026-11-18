@@ -5,6 +5,11 @@ import io.github.zzuegg.brainiac.experimental.ml.McmcDiagnostics;
 import io.github.zzuegg.brainiac.experimental.ml.SimulationBasedInference;
 import io.github.zzuegg.brainiac.experimental.ml.SimulationBasedInference.Prior;
 import io.github.zzuegg.brainiac.experimental.ml.SimulationBasedInference.Simulator;
+import io.github.zzuegg.brainiac.experimental.sbi.ConditionalDensity;
+import io.github.zzuegg.brainiac.experimental.sbi.FlowMatchingPosterior;
+import io.github.zzuegg.brainiac.experimental.sbi.NeuralLikelihood;
+import io.github.zzuegg.brainiac.experimental.sbi.NeuralRatio;
+import io.github.zzuegg.brainiac.experimental.sbi.SequentialPosterior;
 import io.github.zzuegg.brainiac.experimental.train.HamiltonianMonteCarlo;
 
 import java.util.LinkedHashMap;
@@ -80,6 +85,22 @@ public final class SimulatorInference {
      * @return method and budget to {@code {C2ST}}
      */
     public static Map<String, double[]> gaussianLinear(int[] budgets, long seed) {
+        return gaussianLinear(budgets, seed, false);
+    }
+
+    /**
+     * Wave 13 rows on the Gaussian-linear model: neural likelihood (13.5.1), contrastive ratio
+     * (13.5.2), flow-matching posterior (13.5.3) and TSNPE (13.5.4) at one budget.
+     *
+     * @param budget the simulation budget
+     * @param seed the seed
+     * @return method to {@code {C2ST}}
+     */
+    public static Map<String, double[]> gaussianLinearNeural(int budget, long seed) {
+        return gaussianLinear(new int[] {budget}, seed, true);
+    }
+
+    private static Map<String, double[]> gaussianLinear(int[] budgets, long seed, boolean neural) {
         double[][] a = {{1, 0.5}, {-0.3, 1}, {0.8, 0.8}};
         double s = 0.3;
         Prior prior = gaussianPrior(new double[2], 1);
@@ -120,6 +141,9 @@ public final class SimulatorInference {
             double z1 = r.nextGaussian();
             reference[i] = new double[] {m0 + l00 * z0, m1 + l10 * z0 + l11 * z1};
         }
+        if (neural) {
+            return neuralRows(prior, sim, observed, reference, budgets[0], seed);
+        }
         Map<String, double[]> out = compare(prior, sim, observed, reference, budgets, seed);
         LogDensity post = (t, g) -> {
             double lp = -0.5 * (t[0] * t[0] + t[1] * t[1]);
@@ -154,6 +178,22 @@ public final class SimulatorInference {
      * @return method and budget to {@code {C2ST}}
      */
     public static Map<String, double[]> twoMoons(int[] budgets, long seed) {
+        return twoMoons(budgets, seed, false);
+    }
+
+    /**
+     * Wave 13 rows on two moons: neural likelihood (13.5.1), contrastive ratio (13.5.2),
+     * flow-matching posterior (13.5.3) and TSNPE (13.5.4) at one budget.
+     *
+     * @param budget the simulation budget
+     * @param seed the seed
+     * @return method to {@code {C2ST}}
+     */
+    public static Map<String, double[]> twoMoonsNeural(int budget, long seed) {
+        return twoMoons(new int[] {budget}, seed, true);
+    }
+
+    private static Map<String, double[]> twoMoons(int[] budgets, long seed, boolean neural) {
         Prior prior = new Prior() {
             @Override
             public double[] sample(SplittableRandom random) {
@@ -193,6 +233,9 @@ public final class SimulatorInference {
             reference[i] = thetas[pick[i * (pool / 500)]].clone();
             reference[i][0] += 1e-3 * r.nextGaussian();   // break ties between resampled copies
             reference[i][1] += 1e-3 * r.nextGaussian();
+        }
+        if (neural) {
+            return neuralRows(prior, sim, observed, reference, budgets[0], seed);
         }
         return compare(prior, sim, observed, reference, budgets, seed);
     }
@@ -247,6 +290,52 @@ public final class SimulatorInference {
         out.put("SMC-ABC", score(SimulationBasedInference.smcAbc(prior, sim, observed, 200, budget, 0.5, r).samples()));
         out.put("NPE", score(SimulationBasedInference.neuralPosterior(prior, sim, budget, 4, 32, 800, seed)
                 .sample(observed, 500, r)));
+        return out;
+    }
+
+    /**
+     * Wave 13 rows on Lotka-Volterra: sequential NPE (APT with the atomic loss, TSNPE; 13.5.4)
+     * and sequential neural likelihood (13.5.1) over {@code rounds} rounds, against amortised
+     * NPE at the same total budget.
+     *
+     * @param rounds the rounds
+     * @param perRound simulations per round
+     * @param seed the seed
+     * @return method to {@code {RMSE of the posterior mean log-rates, mean posterior std}}
+     */
+    public static Map<String, double[]> lotkaVolterraSequential(int rounds, int perRound, long seed) {
+        Prior prior = gaussianPrior(new double[] {-0.125, -3, -0.125, -3}, 0.5);
+        Simulator sim = SimulatorInference::lotkaVolterraSimulate;
+        SplittableRandom r = new SplittableRandom(seed);
+        double[] observed = sim.simulate(LV_TRUE, r);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        ConditionalDensity.Config cfg = new ConditionalDensity.Config(3, 32, 300, 128, 3e-3);
+        for (SequentialPosterior.Method m : SequentialPosterior.Method.values()) {
+            out.put(m.name(), score(SequentialPosterior.run(m, prior, sim, observed, rounds, perRound, cfg, 10, 1e-3,
+                    400, seed).samples()));
+        }
+        out.put("NPE (amortised)", score(SimulationBasedInference.neuralPosterior(prior, sim, rounds * perRound, 3, 32,
+                300 * rounds, seed).sample(observed, 400, r)));
+        return out;
+    }
+
+    private static Map<String, double[]> neuralRows(Prior prior, Simulator sim, double[] observed,
+            double[][] reference, int budget, long seed) {
+        Map<String, double[]> out = new LinkedHashMap<>();
+        SplittableRandom r = new SplittableRandom(seed + 13);
+        ConditionalDensity.Config cfg = new ConditionalDensity.Config(4, 32, 500, 128, 3e-3);
+        NeuralLikelihood nle = NeuralLikelihood.train(prior, sim, budget, ConditionalDensity.Kind.MDN, cfg, seed);
+        out.put("NLE n=" + budget, new double[] {SimulationBasedInference.c2st(reference,
+                nle.posterior(prior, new double[][] {observed}, 300, r))});
+        NeuralRatio nre = NeuralRatio.train(NeuralRatio.Variant.NRE_C, prior, sim, budget, 5, 0, 32, 500, seed);
+        out.put("NRE-C n=" + budget, new double[] {SimulationBasedInference.c2st(reference,
+                nre.posteriorSir(prior, observed, 300, 4000, r))});
+        FlowMatchingPosterior fm = FlowMatchingPosterior.fmpe(prior, sim, budget, 64, 600, seed);
+        out.put("FMPE n=" + budget, new double[] {SimulationBasedInference.c2st(reference,
+                fm.sample(observed, 300, 20, r))});
+        out.put("TSNPE 2x" + budget / 2, new double[] {SimulationBasedInference.c2st(reference,
+                SequentialPosterior.run(SequentialPosterior.Method.TSNPE, prior, sim, observed, 2, budget / 2, cfg, 10,
+                        1e-3, 300, seed).samples())});
         return out;
     }
 
