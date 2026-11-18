@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.SplittableRandom;
+import java.util.function.Supplier;
 
 /**
  * Weight-averaged reward models (WARM, Ramé et al., ICML 2024,
@@ -102,6 +103,68 @@ public final class WeightAveragedReward {
         }
         average(params, avg.parameters());
         return new Result(avg, List.copyOf(ms));
+    }
+
+    /**
+     * WARM from a <em>trained</em> shared start (W10 4.15): every member begins as a copy of
+     * {@code sharedStart}, head included, and is fine-tuned on its own random subset of the
+     * pairs. This is the setting of the paper, where all fine-tunes share one pretrained model
+     * and therefore stay linearly mode-connected; {@link #fit} starts from an untrained backbone.
+     *
+     * @param sharedStart the trained shared start (copied, not changed)
+     * @param blank builds an untrained model of the same architecture
+     * @param chosen the preferred sequences
+     * @param rejected the other sequences
+     * @param members how many fine-tunes
+     * @param steps optimizer steps per member
+     * @param batch pairs per step
+     * @param learningRate the Adam learning rate
+     * @param subsetFraction the share of the pairs each member draws (with replacement)
+     * @param seed the seed of the subsets and orders
+     * @return the averaged model and the members
+     */
+    public static Result fineTune(RewardModel sharedStart, Supplier<RewardModel> blank, int[][] chosen,
+            int[][] rejected, int members, int steps, int batch, float learningRate, double subsetFraction,
+            long seed) {
+        List<RewardModel> ms = new ArrayList<>();
+        SplittableRandom random = new SplittableRandom(seed);
+        int n = chosen.length;
+        int k = Math.max(1, (int) Math.round(n * subsetFraction));
+        for (int m = 0; m < members; m++) {
+            RewardModel rm = blank.get();
+            copy(sharedStart, rm);
+            SplittableRandom pick = random.split();
+            int[][] c = new int[k][];
+            int[][] r = new int[k][];
+            for (int i = 0; i < k; i++) {
+                int j = pick.nextInt(n);
+                c[i] = chosen[j];
+                r[i] = rejected[j];
+            }
+            train(rm, c, r, steps, batch, learningRate, pick);
+            ms.add(rm);
+        }
+        RewardModel avg = blank.get();
+        List<List<Var>> params = new ArrayList<>();
+        for (RewardModel rm : ms) {
+            params.add(rm.parameters());
+        }
+        average(params, avg.parameters());
+        return new Result(avg, List.copyOf(ms));
+    }
+
+    /**
+     * Copies one reward model's parameters into another of the same architecture.
+     *
+     * @param from the source
+     * @param to the model overwritten
+     */
+    public static void copy(RewardModel from, RewardModel to) {
+        List<Var> a = from.parameters();
+        List<Var> b = to.parameters();
+        for (int i = 0; i < a.size(); i++) {
+            b.get(i).assign(a.get(i).value());
+        }
     }
 
     /**

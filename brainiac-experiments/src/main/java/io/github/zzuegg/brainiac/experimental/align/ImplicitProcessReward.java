@@ -31,6 +31,7 @@ public final class ImplicitProcessReward {
     private final WindowLm reference;
     private final float beta;
     private Optimizer optimizer = Optimizer.adam(3e-3f);
+    private int epochs = 1;
 
     private ImplicitProcessReward(WindowLm prm, WindowLm reference, float beta) {
         this.prm = Objects.requireNonNull(prm);
@@ -58,6 +59,18 @@ public final class ImplicitProcessReward {
     }
 
     /**
+     * @param n cross-entropy steps per {@link #update} on the same rollouts (1 by default)
+     * @return this PRM
+     */
+    public ImplicitProcessReward epochs(int n) {
+        if (n < 1) {
+            throw new IllegalArgumentException("epochs must be positive");
+        }
+        this.epochs = n;
+        return this;
+    }
+
+    /**
      * @param prompts the prompts
      * @param completions the completions
      * @return {@code beta log(pi_phi / ref)} per token, in the order of {@link WindowLm#logProbs}
@@ -80,6 +93,14 @@ public final class ImplicitProcessReward {
      * @return the loss before the step
      */
     public float update(List<int[]> prompts, List<int[]> completions, boolean[] correct) {
+        float first = step(prompts, completions, correct);
+        for (int e = 1; e < epochs; e++) {
+            step(prompts, completions, correct);
+        }
+        return first;
+    }
+
+    private float step(List<int[]> prompts, List<int[]> completions, boolean[] correct) {
         Var seq = Var.of(WindowLm.sequenceSum(completions, false)).matmul(prm.logProbs(prompts, completions));
         Tensor ref = WindowLm.sequenceSum(completions, false).matmul(reference.logProbs(prompts, completions).value());
         Var z = seq.sub(ref).mul(beta);

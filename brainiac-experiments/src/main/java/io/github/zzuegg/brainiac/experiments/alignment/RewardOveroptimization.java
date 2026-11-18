@@ -235,6 +235,139 @@ public final class RewardOveroptimization {
     }
 
     /**
+     * W10 4.15, one label budget.
+     *
+     * @param pairs the preference pairs the proxies learned from
+     * @param accuracy reward name to held-out pair accuracy ("ensemble members" is their mean)
+     * @param curves reward name to its best-of-n and GRPO curves
+     */
+    public record StrongProxyRow(int pairs, Map<String, Double> accuracy, Map<String, Curves> curves) {
+
+        /**
+         * @param reward a reward name
+         * @return the GRPO gold peak minus the final gold: how much over-optimization lost
+         */
+        public double drop(String reward) {
+            Curves c = curves.get(reward);
+            return c.rlPeak() - c.rlFinal();
+        }
+    }
+
+    private static double pairAccuracy(RewardEnsemble reward, GoldRewardHarness.Pairs test) {
+        float[] c = reward.scoreAll(test.prompts(), test.chosenResponses());
+        float[] r = reward.scoreAll(test.prompts(), test.rejectedResponses());
+        int right = 0;
+        for (int i = 0; i < c.length; i++) {
+            right += c[i] > r[i] ? 1 : 0;
+        }
+        return right / (double) c.length;
+    }
+
+    /**
+     * W10 4.15: wave 9's comparison with proxies strong enough for the ensemble claims to be
+     * tested. The label budget is swept ({@code basePairs} times each multiplier; wave 9 used
+     * 600 pairs and 40 steps), the members train for {@code rmSteps}, and WARM fine-tunes three
+     * members from one <em>trained</em> shared start
+     * ({@link WeightAveragedReward#fineTune}) on bootstrap halves, as the paper's linear mode
+     * connectivity requires. Ensemble members are independent initializations
+     * ({@link RewardEnsemble#trainMembers}). Wave 9's {@link #run} is unchanged.
+     *
+     * @param multipliers label budgets as multiples of {@code basePairs}
+     * @param basePairs the 1x label budget
+     * @param rmSteps reward-model training steps (the shared start and each member)
+     * @param rlSteps GRPO steps per reward
+     * @param checkpoints GRPO checkpoints
+     * @param seed the seed
+     * @return one row per budget; the gold oracle's curves are in every row under "gold (oracle)"
+     */
+    public static List<StrongProxyRow> strongProxies(int[] multipliers, int basePairs, int rmSteps, int rlSteps,
+            int checkpoints, long seed) {
+        GoldRewardHarness.Split split = GoldRewardHarness.split(seed);
+        WindowLm sft = GoldRewardHarness.supervised(split.train(), seed);
+        SplittableRandom poolRandom = new SplittableRandom(seed + 21);
+        int pool = BON[BON.length - 1];
+        int[][] ps = GoldRewardHarness.repeat(split.test(), pool);
+        int[][] outs = sft.sample(ps, GoldRewardHarness.MAX_TOKENS, GoldRewardHarness.EOS, 1.0, poolRandom);
+        double[] gold = new double[outs.length];
+        for (int i = 0; i < outs.length; i++) {
+            gold[i] = GoldRewardHarness.GOLD.score(ps[i], outs[i]);
+        }
+        Curves oracle = new Curves(bestOfN(gold, toFloat(gold), split.test().size(), pool),
+                rl(sft, split, null, 0, rlSteps, checkpoints, seed));
+        List<int[]> calP = new ArrayList<>();
+        List<int[]> calR = new ArrayList<>();
+        int[][] cp = GoldRewardHarness.repeat(split.train(), 4);
+        int[][] cal = sft.sample(cp, GoldRewardHarness.MAX_TOKENS, GoldRewardHarness.EOS, 1.0,
+                new SplittableRandom(seed + 12));
+        for (int i = 0; i < cal.length; i++) {
+            calP.add(cp[i]);
+            calR.add(cal[i]);
+        }
+        List<StrongProxyRow> rows = new ArrayList<>();
+        for (int mult : multipliers) {
+            int pairs = basePairs * mult;
+            SplittableRandom random = new SplittableRandom(seed + 11);
+            GoldRewardHarness.Pairs train = GoldRewardHarness.pairs(sft, split.train(), pairs, 0.1, random);
+            GoldRewardHarness.Pairs test = GoldRewardHarness.pairs(sft, split.test(), 256, 1e-6, random);
+            List<RewardModel> members = RewardEnsemble.trainMembers(m -> GoldRewardHarness.rewardModel(seed + 100 + m),
+                    null, train.chosen(), train.rejected(), MEMBERS, rmSteps, RM_BATCH, 3e-3f, seed + 200);
+            List<RewardEnsemble.BatchScorer> scorers = new ArrayList<>();
+            double memberAcc = 0;
+            for (RewardModel m : members) {
+                scorers.add(GoldRewardHarness.member(m));
+                memberAcc += m.accuracy(test.chosen(), test.rejected()) / members.size();
+            }
+            RewardEnsemble ens = RewardEnsemble.of(scorers, RewardEnsemble.Mode.MEAN, 0).calibrate(calP, calR);
+            RewardModel shared = GoldRewardHarness.rewardModel(seed + 300);
+            WeightAveragedReward.train(shared, train.chosen(), train.rejected(), rmSteps, RM_BATCH, 3e-3f,
+                    new SplittableRandom(seed + 301));
+            WeightAveragedReward.Result warm = WeightAveragedReward.fineTune(shared,
+                    () -> GoldRewardHarness.rewardModel(seed + 300), train.chosen(), train.rejected(), MEMBERS,
+                    rmSteps / 2, RM_BATCH, 1e-3f, 0.5, seed + 400);
+            double warmMembers = 0;
+            for (RewardModel m : warm.members()) {
+                warmMembers += m.accuracy(test.chosen(), test.rejected()) / warm.members().size();
+            }
+            Map<String, RewardEnsemble> rewards = new LinkedHashMap<>();
+            rewards.put("single RM", ens.member(0));
+            rewards.put("ensemble mean", ens);
+            rewards.put("ensemble worst", ens.withMode(RewardEnsemble.Mode.WORST, 0));
+            rewards.put("ensemble mean-std", ens.withMode(RewardEnsemble.Mode.UNCERTAINTY, 1));
+            rewards.put("WARM", RewardEnsemble.of(List.of(GoldRewardHarness.member(warm.averaged())),
+                    RewardEnsemble.Mode.MEAN, 0).calibrate(calP, calR));
+            Map<String, Double> acc = new LinkedHashMap<>();
+            acc.put("ensemble members", memberAcc);
+            acc.put("WARM members", warmMembers);
+            acc.put("shared start", shared.accuracy(test.chosen(), test.rejected()));
+            Map<String, Curves> curves = new LinkedHashMap<>();
+            for (Map.Entry<String, RewardEnsemble> e : rewards.entrySet()) {
+                acc.put(e.getKey(), pairAccuracy(e.getValue(), test));
+                float[] proxy = e.getValue().scoreAll(Arrays.asList(ps), Arrays.asList(outs));
+                curves.put(e.getKey(), new Curves(bestOfN(gold, proxy, split.test().size(), pool),
+                        rl(sft, split, e.getValue(), 0, rlSteps, checkpoints, seed)));
+            }
+            curves.put("gold (oracle)", oracle);
+            rows.add(new StrongProxyRow(pairs, acc, curves));
+        }
+        return rows;
+    }
+
+    /**
+     * Runs W10 4.15 at label budgets 1x, 4x and 8x with 4x wave 9's reward-model steps.
+     *
+     * @param args unused
+     */
+    public static void main(String[] args) {
+        for (StrongProxyRow row : strongProxies(new int[] {1, 4, 8}, 600, 160, 64, 4, 1)) {
+            StringBuilder b = new StringBuilder();
+            row.accuracy().forEach((k, v) -> b.append(String.format("%s acc %.3f, ", k, v)));
+            row.curves().forEach((k, c) -> b.append(String.format("%s RL peak %.3f final %.3f, BoN64 %.3f; ", k,
+                    c.rlPeak(), c.rlFinal(), c.bonFinal())));
+            System.out.printf("%d pairs: %s%n", row.pairs(), b);
+        }
+    }
+
+    /**
      * The baselines of 9.2.1: GRPO against the single proxy without and with a KL penalty, and
      * {@link PpoLmTrainer} with a KL penalty.
      *
