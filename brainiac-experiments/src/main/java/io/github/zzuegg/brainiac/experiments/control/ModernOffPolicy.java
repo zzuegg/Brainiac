@@ -8,6 +8,8 @@ import io.github.zzuegg.brainiac.experimental.deeprl.ModernSac;
 import io.github.zzuegg.brainiac.experimental.deeprl.MrQ;
 import io.github.zzuegg.brainiac.experimental.deeprl.SimbaV2;
 import io.github.zzuegg.brainiac.experimental.deeprl.Td7;
+import io.github.zzuegg.brainiac.experimental.explore.CountBonuses;
+import io.github.zzuegg.brainiac.experimental.rl.CuriosityEnvironment;
 import io.github.zzuegg.brainiac.experimental.rl.HighUtdSac;
 import io.github.zzuegg.brainiac.experimental.rl.HlGaussValue;
 import io.github.zzuegg.brainiac.experimental.rl.ResidualRlNetworks;
@@ -22,13 +24,16 @@ import io.github.zzuegg.brainiac.rl.Learner;
 import io.github.zzuegg.brainiac.rl.Nets;
 import io.github.zzuegg.brainiac.rl.Pendulum;
 import io.github.zzuegg.brainiac.rl.Ppo;
+import io.github.zzuegg.brainiac.rl.Rl;
 import io.github.zzuegg.brainiac.rl.RlListener;
 import io.github.zzuegg.brainiac.rl.RlResult;
+import io.github.zzuegg.brainiac.rl.Space;
 import io.github.zzuegg.brainiac.rl.Tracker;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.SplittableRandom;
+import java.util.function.LongFunction;
 import java.util.function.Supplier;
 
 /**
@@ -48,6 +53,9 @@ import java.util.function.Supplier;
  *   <li>{@link #fairBudget}: the wave 1 continuous-control lineup (PPO, SAC, TD3, DDPG) re-run
  *       with the new recipes at budgets where the comparison means something, with Kendall's tau
  *       between budgets (W10 4.14).</li>
+ *   <li>{@link #mountainCarGoal}: the share of seeds that reach the flag on the continuous
+ *       mountain car for SAC, TD7, CrossQ and SAC with an 11.6.7 SimHash count bonus (wave 11,
+ *       11.6.17).</li>
  * </ul>
  *
  * <p>Tasks: the pendulum swing-up (200 steps, return about -1,200 for random play) and the
@@ -358,6 +366,81 @@ public final class ModernOffPolicy {
     public static double probabilityOfImprovement(LearningCurveHarness.Report r, String x, String y, int checkpoint) {
         return LearningCurveHarness.probabilityOfImprovement(new double[][] {r.curve(x).at(checkpoint)},
                 new double[][] {r.curve(y).at(checkpoint)});
+    }
+
+    /** Counts the episodes that reach the flag while a learner trains. */
+    private static final class FlagWatch implements Environment {
+        private final Environment inner;
+        private int reached;
+
+        FlagWatch(Environment inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public Space observationSpace() {
+            return inner.observationSpace();
+        }
+
+        @Override
+        public Space actionSpace() {
+            return inner.actionSpace();
+        }
+
+        @Override
+        public float[] reset(SplittableRandom random) {
+            return inner.reset(random);
+        }
+
+        @Override
+        public Step step(float[] action) {
+            Step s = inner.step(action);
+            if (s.terminated()) {
+                reached++;
+            }
+            return s;
+        }
+    }
+
+    /**
+     * 11.6.17: who reaches the flag on the continuous mountain car, where the only positive reward
+     * is at the flag and every push costs.
+     *
+     * @param steps environment steps per learner
+     * @param seeds seeds
+     * @param width hidden width
+     * @return learner to {share of seeds whose greedy policy reaches the flag (3 episodes, any),
+     *     share of seeds that reached it at least once in training, mean greedy return}
+     */
+    public static Map<String, double[]> mountainCarGoal(long steps, int seeds, int width) {
+        Task task = Task.MOUNTAIN_CAR;
+        int obs = task.observations();
+        int start = warmup(steps);
+        Map<String, LongFunction<Learner>> rows = new LinkedHashMap<>();
+        rows.put("SAC", s -> sac(task, width, steps, s));
+        rows.put("TD7", s -> Td7.of(obs, 1, width, 16, Td7.Components.all()).learningStarts(start)
+                .learningRate(LR).targetEvery(100).seed(s));
+        rows.put("CrossQ", s -> CrossQ.learner(obs, 1, width, 2 * width).learningStarts(start).seed(s));
+        rows.put("SAC + SimHash bonus", s -> sac(task, width, steps, s));
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (Map.Entry<String, LongFunction<Learner>> row : rows.entrySet()) {
+            double greedy = 0;
+            double trained = 0;
+            double ret = 0;
+            for (int s = 0; s < seeds; s++) {
+                FlagWatch watch = new FlagWatch(task.create());
+                Environment train = row.getKey().contains("SimHash")
+                        ? CuriosityEnvironment.of(watch, CountBonuses.simHash(obs, 16, s + 1), 1f) : watch;
+                Learner l = row.getValue().apply(s);
+                l.fit(train, steps, null);
+                trained += watch.reached > 0 ? 1 : 0;
+                FlagWatch eval = new FlagWatch(task.create());
+                ret += Rl.evaluate(l, eval, 3, 500 + s);
+                greedy += eval.reached > 0 ? 1 : 0;
+            }
+            out.put(row.getKey(), new double[] {greedy / seeds, trained / seeds, ret / seeds});
+        }
+        return out;
     }
 
     /**

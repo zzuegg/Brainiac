@@ -23,7 +23,7 @@ class CooperativeMarlTest {
 
     @Test
     void otherPlay() {
-        Map<String, OtherPlay.Result> r = CooperativeMarl.otherPlay(2000, 4);
+        Map<String, OtherPlay.Result> r = CooperativeMarl.otherPlay(3000, 4);
         System.out.printf("11.6.15 self-play/cross-play: %s%n", CooperativeMarl.line(r));
         assertTrue(r.get("levers(10) Q_LEARNING OTHER_PLAY").crossPlay() > 0.5);
         assertTrue(r.get("levers(10) Q_LEARNING SELF_PLAY").crossPlay() < 0.5);
