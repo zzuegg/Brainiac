@@ -50,6 +50,9 @@ import java.util.SplittableRandom;
  */
 public final class ProcessSupervision {
 
+    /** The policy learning rate of the RL methods. */
+    private static final float RL_RATE = 3e-3f;
+
     private ProcessSupervision() {
     }
 
@@ -58,28 +61,33 @@ public final class ProcessSupervision {
      *
      * @param task the chains
      * @param train training prompts
-     * @param test held-out prompts
+     * @param test the evaluation prompts (the problem set itself)
      * @param base the supervised policy
      */
     public record Setup(StepChainTask task, List<int[]> train, List<int[]> test, WindowLm base) {
     }
 
     /**
-     * Builds the start: a policy fine-tuned on solutions with 25% step errors.
+     * Builds the start: a policy fine-tuned on solutions with 25% step errors. The problem set
+     * is every prompt of the task (up to 400), and accuracy is measured on that same set: a
+     * {@link WindowLm} of this size memorizes running sums rather than learning them for unseen
+     * prompts (about 0.3 held-out against 0.8 on the training prompts after 300 supervised
+     * steps), so these experiments compare how well each method optimizes a fixed problem set.
      *
-     * @param task the chains
+     * @param task the chains (use a small one, such as 2 to 3 operands of 0 to 4)
+     * @param sftSteps supervised steps
      * @param seed the seed
      * @return the setup
      */
-    public static Setup setup(StepChainTask task, long seed) {
+    public static Setup setup(StepChainTask task, int sftSteps, long seed) {
         List<int[]> prompts = task.prompts(400, seed);
-        List<int[]> train = new ArrayList<>(prompts.subList(0, prompts.size() * 3 / 4));
-        List<int[]> test = new ArrayList<>(prompts.subList(prompts.size() * 3 / 4, prompts.size()));
+        List<int[]> train = new ArrayList<>(prompts);
+        List<int[]> test = train;
         int window = task.maxPromptTokens() + task.maxSolutionTokens();
         WindowLm lm = WindowLm.of(task.vocabSize(), window, 64, seed);
         SplittableRandom r = new SplittableRandom(seed + 1);
         Optimizer opt = Optimizer.adam(3e-3f);
-        for (int s = 0; s < 80; s++) {
+        for (int s = 0; s < sftSteps; s++) {
             List<int[]> ps = new ArrayList<>();
             List<int[]> cs = new ArrayList<>();
             for (int i = 0; i < 64; i++) {
@@ -93,19 +101,30 @@ public final class ProcessSupervision {
     }
 
     /**
+     * Sampled accuracy (temperature 1, four samples per prompt, a fixed seed): what the RL
+     * methods optimize. Greedy accuracy first dips while RL reshapes the distribution.
+     *
      * @param lm a policy
      * @param task the chains
      * @param prompts the prompts
-     * @return greedy accuracy
+     * @return sampled accuracy
      */
     public static double accuracy(WindowLm lm, StepChainTask task, List<int[]> prompts) {
-        int[][] outs = lm.sample(prompts.toArray(int[][]::new), task.maxSolutionTokens(), task.eos(), 0,
-                new SplittableRandom(0));
+        int[][] ps = new int[prompts.size() * 4][];
+        for (int i = 0; i < ps.length; i++) {
+            ps[i] = prompts.get(i / 4);
+        }
+        int[][] outs = lm.sample(ps, task.maxSolutionTokens(), task.eos(), 1.0, new SplittableRandom(0));
         double ok = 0;
         for (int i = 0; i < outs.length; i++) {
-            ok += task.correct(prompts.get(i), outs[i]) ? 1 : 0;
+            ok += task.correct(ps[i], outs[i]) ? 1 : 0;
         }
         return ok / outs.length;
+    }
+
+    /** The prompts used for the costlier best-of-n and beam-search evaluations. */
+    private static List<int[]> evalSubset(Setup setup) {
+        return setup.test().subList(0, Math.min(60, setup.test().size()));
     }
 
     private static GrpoTrainer.Reward outcome(StepChainTask task) {
@@ -117,7 +136,7 @@ public final class ProcessSupervision {
     /**
      * One 9.2.8 trainer.
      *
-     * @param accuracy held-out greedy accuracy after training
+     * @param accuracy sampled accuracy after training
      * @param tokens tokens sampled in training, value rollouts included
      */
     public record VineRow(double accuracy, long tokens) {
@@ -168,7 +187,7 @@ public final class ProcessSupervision {
         out.put("start", new VineRow(accuracy(setup.base(), task, setup.test()), 0));
         // VinePPO: 16 solutions x 4 rollouts per step boundary
         WindowLm vineLm = setup.base().copy();
-        MonteCarloValuePpo vine = MonteCarloValuePpo.of(vineLm).optimizer(Optimizer.adam(3e-3f)).sampling(16, 4)
+        MonteCarloValuePpo vine = MonteCarloValuePpo.of(vineLm).optimizer(Optimizer.adam(RL_RATE)).sampling(16, 4)
                 .completions(max, task.eos(), task.stepEnd());
         SplittableRandom r = new SplittableRandom(seed);
         for (int s = 0; s < updates; s++) {
@@ -177,7 +196,7 @@ public final class ProcessSupervision {
         out.put("VinePPO (MC values)", new VineRow(accuracy(vineLm, task, setup.test()), vine.tokensSampled()));
         // PPO with a learned critic, same 64 solutions per update as GRPO
         WindowLm ppoLm = setup.base().copy();
-        PpoLmTrainer ppo = PpoLmTrainer.of(ppoLm).optimizers(Optimizer.adam(3e-3f), Optimizer.adam(3e-3f)).batch(64)
+        PpoLmTrainer ppo = PpoLmTrainer.of(ppoLm).optimizers(Optimizer.adam(RL_RATE), Optimizer.adam(3e-3f)).batch(64)
                 .klCoefficient(0.02f).completions(max, task.eos());
         r = new SplittableRandom(seed);
         for (int s = 0; s < updates; s++) {
@@ -186,7 +205,7 @@ public final class ProcessSupervision {
         out.put("PPO (learned critic)", new VineRow(accuracy(ppoLm, task, setup.test()), (long) updates * 64 * max));
         for (GrpoTrainer.Variant v : new GrpoTrainer.Variant[] {GrpoTrainer.Variant.GRPO, GrpoTrainer.Variant.RLOO}) {
             WindowLm lm = setup.base().copy();
-            GrpoTrainer g = GrpoTrainer.of(lm).variant(v).optimizer(Optimizer.adam(3e-3f)).groupSize(8)
+            GrpoTrainer g = GrpoTrainer.of(lm).variant(v).optimizer(Optimizer.adam(RL_RATE)).groupSize(8)
                     .promptsPerStep(8).klCoefficient(0.02f).completions(max, task.eos());
             r = new SplittableRandom(seed);
             for (int s = 0; s < updates; s++) {
@@ -250,7 +269,7 @@ public final class ProcessSupervision {
      *
      * @param softAgreement agreement of soft rollout labels with the gold step labels
      * @param hardAgreement agreement of hard rollout labels
-     * @param bestOf16 verifier name to held-out best-of-16 accuracy
+     * @param bestOf16 verifier name to best-of-16 accuracy
      */
     public record ShepherdResult(double softAgreement, double hardAgreement, Map<String, Double> bestOf16) {
     }
@@ -300,11 +319,11 @@ public final class ProcessSupervision {
         Map<String, TestTimeCompute.Scorer> verifiers = new LinkedHashMap<>();
         int[] stops = {task.stepEnd(), task.eos()};
         ProcessRewardModel goldPrm = ProcessRewardModel.of(scorer(task, seed + 1), stops);
-        goldPrm.fit(ps, cs, gold, 300);
+        goldPrm.fit(ps, cs, gold, 150);
         ProcessRewardModel softPrm = ProcessRewardModel.of(scorer(task, seed + 1), stops);
-        softPrm.fit(ps, cs, soft, 300);
+        softPrm.fit(ps, cs, soft, 150);
         ProcessRewardModel hardPrm = ProcessRewardModel.of(scorer(task, seed + 1), stops);
-        hardPrm.fit(ps, cs, hard, 300);
+        hardPrm.fit(ps, cs, hard, 150);
         SequenceScorer orm = scorer(task, seed + 1);
         List<int[]> full = new ArrayList<>();
         float[] y = new float[cs.size()];
@@ -314,7 +333,7 @@ public final class ProcessSupervision {
             full.add(f);
             y[i] = task.correct(ps.get(i), cs.get(i)) ? 1 : 0;
         }
-        orm.fit(full, y, 300);
+        orm.fit(full, y, 150);
         int query = task.tokenizer().encode("?")[0];
         GenerativeVerifier genrm = GenerativeVerifier.of(WindowLm.of(task.vocabSize(),
                 task.maxPromptTokens() + task.maxSolutionTokens() + 1, 64, seed + 2), query, 1, 0);
@@ -323,7 +342,7 @@ public final class ProcessSupervision {
         for (int i = 0; i < ok.length; i++) {
             ok[i] = y[i] > 0.5f;
         }
-        for (int s = 0; s < 150; s++) {
+        for (int s = 0; s < 100; s++) {
             genrm.step(ps, cs, ok, null, go);
         }
         verifiers.put("PRM, gold step labels", (p, c) -> goldPrm.score(p, c, ProcessRewardModel.Aggregate.MIN));
@@ -340,12 +359,12 @@ public final class ProcessSupervision {
         for (Map.Entry<String, TestTimeCompute.Scorer> e : verifiers.entrySet()) {
             SplittableRandom br = new SplittableRandom(seed + 3);
             double acc = 0;
-            for (int[] p : setup.test()) {
+            for (int[] p : evalSubset(setup)) {
                 int[] best = TestTimeCompute.bestOfN(p, TestTimeCompute.Sampler.of(setup.base(), max, task.eos(), 1.0),
                         16, e.getValue(), br);
                 acc += task.correct(p, best) ? 1 : 0;
             }
-            bon.put(e.getKey(), acc / setup.test().size());
+            bon.put(e.getKey(), acc / evalSubset(setup).size());
         }
         return new ShepherdResult(softAgree / cs.size(), hardAgree / cs.size(), bon);
     }
@@ -405,7 +424,7 @@ public final class ProcessSupervision {
     /**
      * 9.2.10's measurements.
      *
-     * @param accuracy method name to held-out accuracy at each checkpoint
+     * @param accuracy method name to sampled accuracy at each checkpoint
      * @param samples RL samples at each checkpoint
      * @param beam beam-search accuracy with the PRM and with the PAV score
      */
@@ -431,7 +450,7 @@ public final class ProcessSupervision {
         List<int[]> ps = new ArrayList<>();
         List<int[]> cs = new ArrayList<>();
         List<float[]> labels = new ArrayList<>();
-        for (int i = 0; i < 300; i++) {
+        for (int i = 0; i < 200; i++) {
             int[] p = setup.train().get(r.nextInt(setup.train().size()));
             int[] c = setup.base().sample(new int[][] {p}, max, task.eos(), 1.0, r)[0];
             if (c.length > 0) {
@@ -441,7 +460,7 @@ public final class ProcessSupervision {
             }
         }
         ProcessRewardModel prm = ProcessRewardModel.of(scorer(task, seed + 1), stops);
-        prm.fit(ps, cs, labels, 300);
+        prm.fit(ps, cs, labels, 150);
         // PAV with a weaker, complementary prover: the base trained half as long on noisier data
         WindowLm prover = WindowLm.of(task.vocabSize(), task.maxPromptTokens() + max, 64, seed + 5);
         Optimizer po = Optimizer.adam(3e-3f);
@@ -456,14 +475,14 @@ public final class ProcessSupervision {
             prover.supervisedStep(pp, pc, po);
         }
         ProgressReward pav = ProgressReward.of(prover, scorer(task, seed + 2), max, task.eos(), task.stepEnd())
-                .rollouts(8);
-        pav.fit(ps.subList(0, Math.min(150, ps.size())), cs.subList(0, Math.min(150, cs.size())), outcome(task), 300,
+                .rollouts(4);
+        pav.fit(ps.subList(0, Math.min(100, ps.size())), cs.subList(0, Math.min(100, cs.size())), outcome(task), 150,
                 r);
         Map<String, double[]> acc = new LinkedHashMap<>();
         long[] samples = new long[checkpoints];
         for (String name : new String[] {"outcome-only GRPO", "GRPO + Q-value PRM", "GRPO + PAV"}) {
             WindowLm lm = setup.base().copy();
-            TokenPolicyGradient pg = TokenPolicyGradient.of(lm).optimizer(Optimizer.adam(3e-3f)).klCoefficient(0.02f);
+            TokenPolicyGradient pg = TokenPolicyGradient.of(lm).optimizer(Optimizer.adam(RL_RATE)).klCoefficient(0.02f);
             double[] a = new double[checkpoints];
             int next = 0;
             SplittableRandom rr = new SplittableRandom(seed + 9);
@@ -511,12 +530,12 @@ public final class ProcessSupervision {
         for (Map.Entry<String, TestTimeCompute.Scorer> e : scorers.entrySet()) {
             SplittableRandom br = new SplittableRandom(seed + 11);
             double ok = 0;
-            for (int[] p : setup.test()) {
+            for (int[] p : evalSubset(setup)) {
                 int[] c = TestTimeCompute.stepBeamSearch(setup.base(), p, e.getValue(), 2, 4, task.steps(p) + 1, 2,
                         task.stepEnd(), task.eos(), br);
                 ok += task.correct(p, c) ? 1 : 0;
             }
-            beam.put(e.getKey(), ok / setup.test().size());
+            beam.put(e.getKey(), ok / evalSubset(setup).size());
         }
         return new ProgressResult(acc, samples, beam);
     }
@@ -524,7 +543,7 @@ public final class ProcessSupervision {
     /**
      * One 9.2.11 method's curve.
      *
-     * @param accuracy held-out accuracy at each checkpoint
+     * @param accuracy sampled accuracy at each checkpoint
      * @param frozenPrmScore the frozen PRM's mean score of the policy's samples at each checkpoint
      */
     public record PrimeRow(double[] accuracy, double[] frozenPrmScore) {
@@ -557,11 +576,11 @@ public final class ProcessSupervision {
             }
         }
         ProcessRewardModel frozen = ProcessRewardModel.of(scorer(task, seed + 1), stops);
-        frozen.fit(ps, cs, labels, 200);
+        frozen.fit(ps, cs, labels, 150);
         Map<String, PrimeRow> out = new LinkedHashMap<>();
         for (String name : new String[] {"RLOO (outcome)", "RLOO + frozen PRM", "PRIME (online implicit PRM)"}) {
             WindowLm lm = setup.base().copy();
-            TokenPolicyGradient pg = TokenPolicyGradient.of(lm).optimizer(Optimizer.adam(3e-3f)).klCoefficient(0.02f);
+            TokenPolicyGradient pg = TokenPolicyGradient.of(lm).optimizer(Optimizer.adam(RL_RATE)).klCoefficient(0.02f);
             ImplicitProcessReward implicit = ImplicitProcessReward.of(setup.base().copy(), setup.base(), 0.05f)
                     .optimizer(Optimizer.adam(1e-3f));
             double[] acc = new double[checkpoints];
@@ -633,9 +652,9 @@ public final class ProcessSupervision {
     /**
      * One 9.2.12 method.
      *
-     * @param accuracy overall held-out accuracy
-     * @param shortChains accuracy on chains of at most 5 steps
-     * @param longChains accuracy on chains of more than 5 steps
+     * @param accuracy overall sampled accuracy
+     * @param shortChains accuracy on chains shorter than the longest
+     * @param longChains accuracy on the longest chains
      * @param pairs training pairs (or kept solutions) used
      * @param tokens tokens generated to build the training data
      */
@@ -645,8 +664,12 @@ public final class ProcessSupervision {
     private static StepDpoRow sliced(WindowLm lm, Setup setup, int pairs, long tokens) {
         List<int[]> shortP = new ArrayList<>();
         List<int[]> longP = new ArrayList<>();
+        int most = 0;
         for (int[] p : setup.test()) {
-            (setup.task().steps(p) <= 5 ? shortP : longP).add(p);
+            most = Math.max(most, setup.task().steps(p));
+        }
+        for (int[] p : setup.test()) {
+            (setup.task().steps(p) < most ? shortP : longP).add(p);
         }
         return new StepDpoRow(accuracy(lm, setup.task(), setup.test()),
                 shortP.isEmpty() ? 0 : accuracy(lm, setup.task(), shortP),
@@ -654,7 +677,7 @@ public final class ProcessSupervision {
     }
 
     /**
-     * Runs 9.2.12 (use a task with 4 to 8 steps).
+     * Runs 9.2.12.
      *
      * @param setup the start
      * @param pairs preference pairs per DPO method

@@ -7,7 +7,6 @@ import io.github.zzuegg.brainiac.experimental.code.RepairLoop;
 import io.github.zzuegg.brainiac.experimental.code.TraceLm;
 import io.github.zzuegg.brainiac.experimental.evolve.GuidedEnumerator;
 import io.github.zzuegg.brainiac.experimental.llm.ReflexionLoop;
-import io.github.zzuegg.brainiac.experimental.nn.TransformerSeq2Seq;
 import io.github.zzuegg.brainiac.experiments.reasoning.ListPrograms;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
@@ -25,9 +24,9 @@ import java.util.SplittableRandom;
  * <ul>
  *   <li>{@link #executionPrediction} (9.2.14): predict a program's output directly, through a
  *       scratchpad of states, or through CWM-style traces ({@link TraceLm}), trained on programs
- *       of 2 to 4 primitives and tested on up to 8; a {@link TransformerSeq2Seq} predicts
- *       directly as a second baseline.</li>
- *   <li>{@link #repair} (9.2.15): a {@link ProgramSampler} writes programs from examples; at
+ *       of 1 to 3 primitives and tested on up to 6.</li>
+ *   <li>{@link #repair} (9.2.15): a {@link ProgramSampler} writes programs (random programs of 1
+ *       or 2 primitives, its training distribution) from three examples; at
  *       equal total samples, plain resampling is compared with a {@link RepairLoop} whose
  *       repairer sees the output diff or the full trace, with {@link ReflexionLoop}'s text-only
  *       reflection (a memory of failed attempts) and with {@link GuidedEnumerator}.</li>
@@ -39,12 +38,23 @@ import java.util.SplittableRandom;
  */
 public final class CodeExecution {
 
-    /** The primitives of 9.2.14: every one keeps values below 10. */
-    static final List<String> TRACE_PRIMITIVES = List.of("rev", "sort", "swap", "tail", "init", "+1", "+2", "*3");
+    /** The primitives of 9.2.14: every one keeps the list length and values below 10. */
+    static final List<String> TRACE_PRIMITIVES = List.of("rev", "sort", "swap", "+1", "+2", "*3");
     private static final int VALUES = 10;
-    private static final int MAX_LIST = 8;
+    /** Input values of 9.2.14 are below this. */
+    private static final int TRACE_INPUT_VALUES = 5;
+    /** The longest program tested in 9.2.14. */
+    private static final int TRACE_MAX_LENGTH = 6;
 
     private CodeExecution() {
+    }
+
+    private static int[] smallList(SplittableRandom r) {
+        int[] xs = new int[2 + r.nextInt(2)];
+        for (int i = 0; i < xs.length; i++) {
+            xs[i] = r.nextInt(TRACE_INPUT_VALUES);
+        }
+        return xs;
     }
 
     private static int[] randomList(SplittableRandom r, int min, int max) {
@@ -68,17 +78,17 @@ public final class CodeExecution {
     /**
      * One 9.2.14 model.
      *
-     * @param accuracyByLength exact-output accuracy for programs of 2, 3, ..., 8 primitives
+     * @param accuracyByLength exact-output accuracy for programs of 1, 2, ..., 6 primitives
      * @param tokensPerProgram mean target tokens per test program
      */
     public record PredictionRow(double[] accuracyByLength, double tokensPerProgram) {
 
-        /** @return mean accuracy on the training lengths (2 to 4) */
+        /** @return mean accuracy on the training lengths (1 to 3) */
         public double inDistribution() {
             return (accuracyByLength[0] + accuracyByLength[1] + accuracyByLength[2]) / 3;
         }
 
-        /** @return mean accuracy on the longer programs (5 to 8) */
+        /** @return mean accuracy on the longer programs (4 to 6) */
         public double longer() {
             double s = 0;
             for (int i = 3; i < accuracyByLength.length; i++) {
@@ -89,9 +99,10 @@ public final class CodeExecution {
     }
 
     /**
-     * Runs 9.2.14.
+     * Runs 9.2.14: lists of 2 or 3 values below 5, programs of 1 to 3 primitives in training
+     * and 1 to 6 in testing.
      *
-     * @param steps training steps per model
+     * @param steps training steps per model (32 programs each)
      * @param testPerLength test programs per length
      * @param seed the seed
      * @return model name to its row
@@ -100,29 +111,29 @@ public final class CodeExecution {
         ExecutionTracer tracer = ExecutionTracer.of(TRACE_PRIMITIVES, ListPrograms::apply, VALUES);
         Map<String, PredictionRow> out = new LinkedHashMap<>();
         for (ExecutionTracer.Format f : ExecutionTracer.Format.values()) {
-            TraceLm lm = TraceLm.of(tracer, f, 20, 96, seed);
+            TraceLm lm = TraceLm.of(tracer, f, 16, 64, seed);
             Optimizer opt = Optimizer.adam(3e-3f);
             SplittableRandom r = new SplittableRandom(seed + 1);
             for (int s = 0; s < steps; s++) {
                 List<List<String>> ps = new ArrayList<>();
                 List<int[]> in = new ArrayList<>();
-                for (int i = 0; i < 16; i++) {
-                    ps.add(randomProgram(TRACE_PRIMITIVES, 2 + r.nextInt(3), r));
-                    in.add(randomList(r, 3, MAX_LIST));
+                for (int i = 0; i < 32; i++) {
+                    ps.add(randomProgram(TRACE_PRIMITIVES, 1 + r.nextInt(3), r));
+                    in.add(smallList(r));
                 }
                 lm.trainStep(ps, in, opt);
             }
-            double[] acc = new double[7];
+            double[] acc = new double[TRACE_MAX_LENGTH];
             double tokens = 0;
             SplittableRandom tr = new SplittableRandom(seed + 2);
-            for (int len = 2; len <= 8; len++) {
+            for (int len = 1; len <= TRACE_MAX_LENGTH; len++) {
                 for (int k = 0; k < testPerLength; k++) {
                     List<String> p = randomProgram(TRACE_PRIMITIVES, len, tr);
-                    int[] x = randomList(tr, 3, MAX_LIST);
+                    int[] x = smallList(tr);
                     ExecutionTracer.Trace t = tracer.trace(p, x);
-                    tokens += tracer.target(f, t).length / (7.0 * testPerLength);
+                    tokens += tracer.target(f, t).length / ((double) TRACE_MAX_LENGTH * testPerLength);
                     int[] pred = lm.predict(p, x, tracer.target(ExecutionTracer.Format.TRACE, t).length + 8);
-                    acc[len - 2] += pred != null && Arrays.equals(pred, t.output()) ? 1.0 / testPerLength : 0;
+                    acc[len - 1] += pred != null && Arrays.equals(pred, t.output()) ? 1.0 / testPerLength : 0;
                 }
             }
             out.put(switch (f) {
@@ -131,71 +142,7 @@ public final class CodeExecution {
                 case TRACE -> "CWM-style trace";
             }, new PredictionRow(acc, tokens));
         }
-        out.put("TransformerSeq2Seq direct", seq2seq(tracer, steps, testPerLength, seed));
         return out;
-    }
-
-    private static PredictionRow seq2seq(ExecutionTracer tracer, int steps, int testPerLength, long seed) {
-        int srcLen = 1 + 8 + 1 + MAX_LIST + 1;
-        int pad = tracer.vocabSize();
-        int end = VALUES + 1;
-        int tgtLen = MAX_LIST + 1;
-        TransformerSeq2Seq model = TransformerSeq2Seq.of(pad + 1, VALUES + 2, 32, 4, 1, seed);
-        Optimizer opt = Optimizer.adam(3e-3f);
-        SplittableRandom r = new SplittableRandom(seed + 1);
-        for (int s = 0; s < steps; s++) {
-            int[][] src = new int[16][];
-            int[][] tgt = new int[16][];
-            for (int i = 0; i < 16; i++) {
-                List<String> p = randomProgram(TRACE_PRIMITIVES, 2 + r.nextInt(3), r);
-                int[] x = randomList(r, 3, MAX_LIST);
-                src[i] = source(tracer, p, x, srcLen, pad);
-                tgt[i] = target(ListPrograms.execute(p, x), tgtLen, end);
-            }
-            var loss = model.loss(src, tgt);
-            loss.backward();
-            opt.step(model.parameters());
-        }
-        double[] acc = new double[7];
-        SplittableRandom tr = new SplittableRandom(seed + 2);
-        for (int len = 2; len <= 8; len++) {
-            int[][] src = new int[testPerLength][];
-            int[][] want = new int[testPerLength][];
-            for (int k = 0; k < testPerLength; k++) {
-                List<String> p = randomProgram(TRACE_PRIMITIVES, len, tr);
-                int[] x = randomList(tr, 3, MAX_LIST);
-                src[k] = source(tracer, p, x, srcLen, pad);
-                want[k] = ListPrograms.execute(p, x);
-            }
-            int[][] got = model.greedy(src, tgtLen);
-            for (int k = 0; k < testPerLength; k++) {
-                int stop = 0;
-                while (stop < got[k].length && got[k][stop] != end) {
-                    stop++;
-                }
-                acc[len - 2] += Arrays.equals(Arrays.copyOf(got[k], stop), want[k]) ? 1.0 / testPerLength : 0;
-            }
-        }
-        return new PredictionRow(acc, MAX_LIST / 2.0 + 1);
-    }
-
-    private static int[] source(ExecutionTracer tracer, List<String> p, int[] x, int len, int pad) {
-        int[] prompt = tracer.prompt(p, x);
-        int[] s = new int[len];
-        Arrays.fill(s, pad);
-        System.arraycopy(prompt, 0, s, 0, Math.min(len, prompt.length));
-        return s;
-    }
-
-    private static int[] target(int[] output, int len, int end) {
-        int[] t = new int[len];
-        Arrays.fill(t, -1);
-        int n = Math.min(output.length, len - 1);
-        for (int i = 0; i < n; i++) {
-            t[i] = Math.min(VALUES, output[i]);
-        }
-        t[n] = end;
-        return t;
     }
 
     // ------------------------------------------------------------------------- 9.2.15
@@ -218,6 +165,37 @@ public final class CodeExecution {
         return new int[][][] {in, out};
     }
 
+    /**
+     * A synthesis task: a random program of 1 or 2 primitives (the generator's training
+     * distribution) and its examples.
+     *
+     * @param program the hidden program
+     * @param inputs the example inputs
+     * @param outputs the example outputs
+     */
+    private record CodeTask(List<String> program, int[][] inputs, int[][] outputs) {
+
+        boolean solvedBy(List<String> p) {
+            for (int e = 0; e < inputs.length; e++) {
+                int[] o = ListPrograms.execute(p, inputs[e]);
+                if (o == null || !Arrays.equals(o, outputs[e])) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private static CodeTask randomTask(int examples, SplittableRandom r) {
+        int[][][] ex = null;
+        List<String> p = null;
+        while (ex == null) {
+            p = randomProgram(ListPrograms.primitives(), 1 + r.nextInt(2), r);
+            ex = examples(p, examples, r);
+        }
+        return new CodeTask(p, ex[0], ex[1]);
+    }
+
     private static float[] condition(int[][] in, int[][] out, int examples) {
         return ProgramSampler.encodeExamples(in, out, examples, LIST_SLOTS, VALUES);
     }
@@ -226,7 +204,7 @@ public final class CodeExecution {
         return ProgramSampler.exampleFeatures(examples, LIST_SLOTS, VALUES);
     }
 
-    /** Trains a generator on random programs of 1 to 4 primitives. */
+    /** Trains a generator on random programs of 1 or 2 primitives (the test tasks' lengths). */
     static ProgramSampler generator(int examples, int steps, long seed) {
         List<String> prims = ListPrograms.primitives();
         ProgramSampler g = ProgramSampler.of(prims, MAX_PROGRAM, conditionSize(examples), 128, seed);
@@ -236,7 +214,7 @@ public final class CodeExecution {
             List<float[]> cs = new ArrayList<>();
             List<List<String>> ps = new ArrayList<>();
             while (ps.size() < 32) {
-                List<String> p = randomProgram(prims, 1 + r.nextInt(4), r);
+                List<String> p = randomProgram(prims, 1 + r.nextInt(2), r);
                 int[][][] ex = examples(p, examples, r);
                 if (ex != null) {
                     cs.add(condition(ex[0], ex[1], examples));
@@ -354,12 +332,9 @@ public final class CodeExecution {
                 .sample(repairCondition(in, out, failed, traces, mode), 1, 1.0, r).programs().get(0);
         RepairLoop loop = RepairLoop.of(tracer, g, rep).repairs(1);
         SplittableRandom tr = new SplittableRandom(seed + 2);
-        List<ListPrograms.Task> test = new ArrayList<>();
+        List<CodeTask> test = new ArrayList<>();
         while (test.size() < tasks) {
-            ListPrograms.Task t = ListPrograms.task(1 + tr.nextInt(2), EXAMPLES, tr);
-            if (t.hidden().size() <= MAX_PROGRAM) {
-                test.add(t);
-            }
+            test.add(randomTask(EXAMPLES, tr));
         }
         int max = BUDGETS[BUDGETS.length - 1];
         Map<String, double[]> curves = new LinkedHashMap<>();
@@ -367,7 +342,7 @@ public final class CodeExecution {
         for (RepairLoop.Feedback mode : RepairLoop.Feedback.values()) {
             double[] c = new double[BUDGETS.length];
             SplittableRandom r = new SplittableRandom(seed + 3);
-            for (ListPrograms.Task t : test) {
+            for (CodeTask t : test) {
                 RepairLoop.Result res = loop.run(t.inputs(), t.outputs(), max, mode, r);
                 for (int b = 0; b < BUDGETS.length; b++) {
                     c[b] += res.solvedWithin(BUDGETS[b]) ? 1.0 / test.size() : 0;
@@ -385,7 +360,7 @@ public final class CodeExecution {
         // Reflexion: a text memory of failed attempts, which the actor avoids repeating
         double[] refl = new double[BUDGETS.length];
         SplittableRandom rr = new SplittableRandom(seed + 3);
-        for (ListPrograms.Task t : test) {
+        for (CodeTask t : test) {
             ReflexionLoop<List<String>> reflexion = ReflexionLoop.of((List<String> memory, SplittableRandom r) -> {
                 Set<String> avoid = new HashSet<>(memory);
                 List<String> p = g.generate(t.inputs(), t.outputs(), r);
@@ -403,7 +378,7 @@ public final class CodeExecution {
         curves.put("Reflexion, text memory", refl);
         GuidedEnumerator enumerator = new GuidedEnumerator(ListPrograms.primitives(), ListPrograms::apply);
         double[] en = new double[BUDGETS.length];
-        for (ListPrograms.Task t : test) {
+        for (CodeTask t : test) {
             for (int b = 0; b < BUDGETS.length; b++) {
                 GuidedEnumerator.Result res = enumerator.enumerate(t.inputs(), t.outputs(), MAX_PROGRAM, BUDGETS[b]);
                 en[b] += res.solved() ? 1.0 / test.size() : 0;
@@ -439,7 +414,7 @@ public final class CodeExecution {
         List<float[]> bx = new ArrayList<>();
         List<Boolean> ly = new ArrayList<>();
         for (int k = 0; k < 30; k++) {
-            ListPrograms.Task t = ListPrograms.task(1 + r.nextInt(2), given + 5, r);
+            CodeTask t = randomTask(given + 5, r);
             int[][] in = Arrays.copyOf(t.inputs(), given);
             int[][] out = Arrays.copyOf(t.outputs(), given);
             for (List<String> p : gen.sample(condition(in, out, given), 8, 1.0, r).programs()) {
@@ -466,7 +441,7 @@ public final class CodeExecution {
             }
         }
         for (int k = 0; k < tasks; k++) {
-            ListPrograms.Task t = ListPrograms.task(1 + tr.nextInt(2), given + 5, tr);
+            CodeTask t = randomTask(given + 5, tr);
             int[][] in = Arrays.copyOf(t.inputs(), given);
             int[][] outs = Arrays.copyOf(t.outputs(), given);
             int[][] hiddenIn = Arrays.copyOfRange(t.inputs(), given, given + 5);
