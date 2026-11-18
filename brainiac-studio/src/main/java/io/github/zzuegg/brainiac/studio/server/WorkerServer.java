@@ -52,6 +52,7 @@ import java.util.zip.ZipInputStream;
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
  *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
  *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
+ *       (a message may carry {@code images: [{type, data}]} for a model that looks at pictures)
  *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
  *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
  *       {@code downloads} folder, with its own connection; {@code GET /worker/hub/downloads} lists
@@ -315,7 +316,7 @@ public final class WorkerServer implements AutoCloseable {
             if (text.isBlank()) {
                 throw new IllegalArgumentException("every message needs a non-empty \"text\"");
             }
-            messages.add(new ChatMessage(Json.string(m, "role", "user"), text));
+            messages.add(new ChatMessage(Json.string(m, "role", "user"), text, ChatRoutes.images(m)));
         }
         if (messages.isEmpty()) {
             throw new IllegalArgumentException("\"messages\" is empty");

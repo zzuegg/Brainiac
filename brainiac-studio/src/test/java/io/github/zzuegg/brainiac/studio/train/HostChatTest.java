@@ -126,6 +126,20 @@ class HostChatTest {
             assertEquals("be brief", heard.system());
             assertEquals(64, heard.maxTokens());
 
+            // a picture on a message reaches the host's model as it was sent
+            byte[] png = {(byte) 0x89, 'P', 'N', 'G', 1, 2, 3};
+            chat.chat("host-" + h.id() + "/qwen-0.5b", "", List.of(new ChatMessage("user", "what is this?",
+                    List.of(new io.github.zzuegg.brainiac.studio.chat.Media(png, "image/png")))), 64, null, x -> { },
+                    new ChatListener() {
+                        @Override
+                        public void text(String text) {
+                        }
+                    });
+            ChatMessage seen = echo.heard.getLast().messages().getLast();
+            assertEquals(1, seen.images().size());
+            assertEquals("image/png", seen.images().getFirst().mime());
+            org.junit.jupiter.api.Assertions.assertArrayEquals(png, seen.images().getFirst().data());
+
             HostProvider direct = new HostProvider(h, t.hosts().client(h));
             IOException e = assertThrows(IOException.class, () -> direct.chat(
                     new ChatRequest("broken", "", List.of(new ChatMessage("user", "hi")), 16, null), new ChatListener() {
