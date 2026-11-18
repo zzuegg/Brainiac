@@ -27,7 +27,11 @@ public final class LocalDevice {
     /** The file a GPU memory limit is kept in, beside the studio's other settings. */
     public static final String MEMORY_FILE = "local-gpu-memory.txt";
 
+    /** The file the GPU scheduling choices are kept in, beside the studio's other settings. */
+    public static final String SCHEDULING_FILE = "gpu-scheduling.json";
+
     private final Path file;
+    private final GpuResidency residency;
     private volatile String choice = BEST;
     private volatile int memory;
 
@@ -108,6 +112,7 @@ public final class LocalDevice {
      */
     LocalDevice(Path file) {
         this.file = file;
+        this.residency = new GpuResidency(file == null ? null : file.resolveSibling(SCHEDULING_FILE));
         if (file != null && Files.isRegularFile(file)) {
             try {
                 String kept = Files.readString(file).strip();
@@ -119,6 +124,15 @@ public final class LocalDevice {
             }
         }
         memory = readMemory(memoryFile());
+    }
+
+    /**
+     * Returns what decides which models stay in GPU memory, shared by the chat, image and speech models.
+     *
+     * @return the scheduler
+     */
+    public GpuResidency residency() {
+        return residency;
     }
 
     /**

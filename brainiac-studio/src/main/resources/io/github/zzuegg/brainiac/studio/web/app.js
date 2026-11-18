@@ -1368,8 +1368,8 @@
       loadVast();
       await pollRuns(true);
       checkTrain();
-      if (state.view === "train") render();
-    } catch (e) { T.error = String(e.message || e); console.warn("cannot load training", e); if (state.view === "train") render(); }
+      if (state.view === "train" || state.view === "settings") render();
+    } catch (e) { T.error = String(e.message || e); console.warn("cannot load training", e); if (state.view === "train" || state.view === "settings") render(); }
     finally { T.loading = false; }
   }
 
@@ -1405,8 +1405,7 @@
       <div class="muted">${T.error ? esc(T.error) : "Looking for models, data and every optimizer the installed modules offer…"}</div></div></div>`;
     return `
     <div class="train live-train">
-      <section class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</section>
-      <section id="train-vast" aria-label="GPUs to rent">${vastPanel()}</section>
+      <div class="sect-head train-note"><span class="h3">Runs on ${T.hosts.length ? `this PC and ${T.hosts.length} host${T.hosts.length === 1 ? "" : "s"}` : "this PC"}</span><span class="muted">Add worker hosts and rent GPUs in <a href="#settings" data-go-settings data-go-section="set-hosts">Settings, Machines</a>.</span></div>
       <div class="train-body">
         <aside class="launch panel" id="train-form" aria-label="Start a training run">${trainForm()}</aside>
         <section class="runs-col">
@@ -1428,6 +1427,7 @@
       ${devs.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${run && run.device === d.name && run.samplesPerSecond ? fmtCount(run.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
       <div class="host-foot"><span class="muted">${run ? `${esc(run.name)} · epoch ${run.epoch + (run.state === "running" ? 1 : 0)} of ${run.epochs}` : "Ready for a run."}</span></div>
     </div>`;
+    const lent = h => (h.lend || []).includes("huggingface");
     const remote = T.hosts.map(h => {
       const st = !h.online ? ["c-bad", "offline", "bad"] : h.active ? ["c-text", "training", "accent"] : ["c-ok", "idle", "ok"];
       const tr = h.training;
@@ -1436,7 +1436,9 @@
           <span class="mono faint" title="Token ${esc(h.token)}">${esc(h.url.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</span>
           <button class="iconbtn sm" data-host-remove="${esc(h.id)}" aria-label="Forget ${esc(h.name)}" title="${T.removing === h.id ? "Click again to forget it" : "Forget this host"}">${T.removing === h.id ? icon("check") : icon("trash")}</button></div>
         ${(h.devices || []).map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${tr && tr.samplesPerSecond && d.kind === "gpu" ? fmtCount(tr.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
-        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span></div>
+        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span><span class="grow"></span>
+          ${h.lendable ? `<button class="btn sm ${lent(h) ? "serving" : ""}" data-host-lend="${esc(h.id)}" aria-pressed="${lent(h)}" ${T.lending === h.id ? "disabled" : ""} title="${lent(h) ? "This host holds your Hugging Face token in its memory, for gated models. It was sent sealed, is not written to its disk or log, and is gone when its worker stops. Click to take it back." : "Lend this host your Hugging Face token, so it can download gated models. It is sent sealed, held in the worker's memory only, and never written to its disk or log. Whoever controls the machine could still read its memory, so lend it only to machines you trust."}">${icon("lock")}${lent(h) ? "Holds your HF token" : "Lend HF token"}</button>` : ""}</div>
+        ${T.lendError && T.lendError.id === h.id ? `<div class="flag bad">${icon("alert")}<span>${esc(T.lendError.text)}</span></div>` : ""}
       </div>`;
     }).join("");
     const add = T.addingHost ? `<form class="host add-form" id="host-form" autocomplete="off">
@@ -1800,27 +1802,27 @@
     try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
     finally { V.loading = false; }
     await loadRentals(false);
-    if (state.view === "train" && T.loaded) renderHosts();
-    else if (state.view === "library") render();
+    if ((state.view === "train" || state.view === "settings") && T.loaded) renderHosts();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
 
   // the machines rented from the studio; watched while any is being set up or runs
   async function loadRentals(draw = true) {
     try { takeRentals(await api("/api/vast/rentals")); } catch (e) { console.warn(e); }
-    if (draw && state.view === "train" && T.loaded && !document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours")) renderHosts();
+    if (draw && (state.view === "train" || state.view === "settings") && T.loaded && !document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours")) renderHosts();
     watchRentals();
   }
   function takeRentals(r) {
     const was = V.rentals.filter(x => x.stage === "ready").length;
     V.rentals = r.rentals || []; V.rentUnavailable = r.unavailable || null; V.maxHours = r.maxHours || 48;
     // a machine that just became ready is a new host
-    if (V.rentals.filter(x => x.stage === "ready").length !== was) api("/api/hosts").then(h => { T.hosts = h.hosts || []; T.hostsAt = Date.now(); if (state.view === "train" && T.loaded) renderHosts(); }).catch(() => {});
+    if (V.rentals.filter(x => x.stage === "ready").length !== was) api("/api/hosts").then(h => { T.hosts = h.hosts || []; T.hostsAt = Date.now(); if ((state.view === "train" || state.view === "settings") && T.loaded) renderHosts(); }).catch(() => {});
   }
   function watchRentals() {
     clearTimeout(V.poll);
     if (!V.rentals.some(rentalActive)) return;
     const settingUp = V.rentals.some(r => rentalActive(r) && r.stage !== "ready");
-    V.poll = setTimeout(() => { if (state.view === "train" || state.view === "library") loadRentals(); else watchRentals(); }, settingUp ? 4000 : 20000);
+    V.poll = setTimeout(() => { if (state.view === "train" || state.view === "library" || state.view === "settings") loadRentals(); else watchRentals(); }, settingUp ? 4000 : 20000);
   }
   const hoursLeft = r => Math.max(0, (r.until - Date.now()) / 3600000);
   const fmtHours = h => h >= 1 ? `${h.toFixed(h >= 10 ? 0 : 1)} h` : `${Math.max(1, Math.round(h * 60))} min`;
@@ -1871,7 +1873,7 @@
   // Vast.ai on the Models screen, under Compute: the account at a glance; renting and offers are on Training.
   function vastCompute() {
     const s = V.status;
-    const open = `<button class="btn sm" data-vast-train>${icon("search")}${s?.key ? "Find GPUs on Training" : "Add the key on Training"}</button>`;
+    const open = `<button class="btn sm" data-vast-train>${icon("search")}${s?.key ? "Find GPUs" : "Add the key"}</button>`;
     if (!s) return `<div class="prov off"><div style="display:flex;gap:10px;align-items:center"><span class="plogo">V</span><b>Vast.ai</b><span class="grow"></span>${V.error ? `<span class="chip plain">unreachable</span>` : `<span class="typing"><i></i><i></i><i></i></span>`}</div></div>`;
     const ins = s.instances || [];
     return `<div class="prov ${s.key && !s.error ? "on" : "off"}">
@@ -2024,6 +2026,14 @@
       } catch (err) { T.hostError = String(err.message || err).replace(/^\/api\/hosts: /, ""); }
       finally { T.hostBusy = false; renderHosts(T.addingHost ? "#host-token" : null); }
     });
+    $$("[data-host-lend]").forEach(b => b.addEventListener("click", async () => {
+      const id = b.dataset.hostLend, h = T.hosts.find(x => x.id === id);
+      if (!h || T.lending) return;
+      T.lending = id; T.lendError = null; renderHosts();
+      try { T.hosts = (await postJson("/api/hosts/secret", { host: id, name: "huggingface", lend: !(h.lend || []).includes("huggingface") })).hosts || T.hosts; T.hostsAt = Date.now(); }
+      catch (err) { T.lendError = { id, text: String(err.message || err).replace(/^\/api\/hosts\/secret: /, "") }; }
+      T.lending = null; renderHosts();
+    }));
     $$("[data-host-remove]").forEach(b => b.addEventListener("click", async () => {
       const id = b.dataset.hostRemove;
       if (T.removing !== id) { T.removing = id; renderHosts(); setTimeout(() => { if (T.removing === id) { T.removing = null; renderHosts(); } }, 4000); return; }
@@ -2107,7 +2117,7 @@
           <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "remote" ? `<span class="chip c-agent">remote · your key</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
         </tr>`).join("")}</tbody></table></div>`}
       ${isLive() ? "" : `<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>`}
-      ${isLive() ? liveProviders() : `<div class="providers">${M.providers.map(p => `
+      ${isLive() ? `<div class="sect-head"><span class="h2">Providers and machines</span><span class="muted">API keys, worker hosts and rented GPUs are set up in <a href="#settings" data-go-settings>Settings</a> (Ctrl ,).</span></div>` : `<div class="providers">${M.providers.map(p => `
         <div class="prov ${p.state}">
           <div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
             ${p.key === "local" ? `<span class="chip c-ok">always on</span>` : `<label class="switch"><input type="checkbox" ${p.state === "on" ? "checked" : ""} aria-label="Use ${esc(p.name)}"><i></i></label>`}</div>
@@ -2212,16 +2222,309 @@
     </div>`;
   }
 
+  // ---------- SETTINGS, PROJECTS AND GPU SCHEDULING ----------
+  // One page for everything that is set once: the project and its routes, how this PC's GPU is
+  // shared, the machines and providers that run models. The palette (Ctrl K) reaches most of it too.
+  const PJ = { data: null, editing: null, draft: null, error: null, note: null, oneShot: null };
+  const GP = { data: null, error: null, timer: 0 };
+  const KIND_NAMES = { chat: "Chat", image: "Images", speech: "Speech", transcribe: "Transcription", video: "Video" };
+  const MEDIUM_NAMES = { text: "Chat", image: "Images", speech: "Speech", transcribe: "Transcription", video: "Video" };
+  const POLICIES = [
+    ["swap", "Swap", "Unload idle models of other kinds to make room"],
+    ["queue", "Queue", "Wait until there is room"],
+    ["remote", "Remote", "Send it to the route's remote runner"],
+    ["ask", "Ask", "Ask me each time"],
+    ["spill", "Spill", "Load anyway; what does not fit goes to slower system memory"],
+  ];
+  const gb = b => b == null ? "?" : (b / 1073741824).toFixed(b >= 10 * 1073741824 ? 0 : 1) + " GB";
+  const activeProject = () => PJ.data?.projects.find(p => p.id === PJ.data.active) || null;
+
+  async function loadProjects() {
+    try { PJ.data = await api("/api/projects"); PJ.error = null; } catch (e) { PJ.error = String(e.message || e); }
+    renderProjectChip();
+    if (state.view === "settings") render();
+  }
+  async function loadGpu() {
+    clearTimeout(GP.timer);
+    try { GP.data = await api("/api/gpu"); GP.error = null; } catch (e) { GP.error = String(e.message || e); }
+    if (state.view === "settings") { const box = $("#set-gpu"); if (box && !box.contains(document.activeElement)) { box.innerHTML = gpuSection(); bindGpu(); } }
+    // something loading or waiting: look again soon
+    if (state.view === "settings") GP.timer = setTimeout(loadGpu, GP.data?.waiting?.length || GP.data?.slots?.some(s => s.busy) ? 2000 : 8000);
+  }
+  async function activateProject(id) {
+    try { PJ.data = await postJson("/api/projects/activate", { id }); } catch (e) { PJ.error = String(e.message || e); }
+    renderProjectChip();
+    loadAgents?.();
+    if (state.view === "settings" || state.view === "agents") render();
+  }
+
+  function renderProjectChip() {
+    let chip = $("#project-chip");
+    if (!tokenMeta) return;
+    if (!chip) {
+      $("#crumb")?.insertAdjacentHTML("beforebegin", `<button class="chip plain linkchip" id="project-chip" title="The project this window works in (Ctrl K, then type project)"></button>`);
+      chip = $("#project-chip");
+      chip.addEventListener("click", () => openCmdk("project "));
+    }
+    const p = activeProject();
+    chip.innerHTML = `${icon("folder")}<span>${esc(p ? p.name : "Default")}</span>`;
+  }
+
+  function settingsView() {
+    if (!isLive()) return `<div class="settings"><div class="set-inner"><span class="h2">Settings</span><p class="muted">Start the studio to change settings; this is example data.</p></div></div>`;
+    if (!PJ.data && !PJ.error) loadProjects();
+    if (!GP.data && !GP.error) loadGpu();
+    if (!T.loaded && !T.loading) loadTrain();
+    const nav = [["set-project", "Project"], ["set-gpu", "GPU and scheduling"], ["set-hosts", "Machines and Vast.ai"], ["set-providers", "Providers and keys"], ["set-look", "Appearance"]];
+    return `<div class="settings"><nav class="set-nav" aria-label="Settings sections">${nav.map(([id, n]) => `<a href="#settings" data-jump="${id}">${esc(n)}</a>`).join("")}
+        <p class="faint" style="font-size:12px;margin-top:14px"><span class="kbd">Ctrl K</span> runs any of these from anywhere; <span class="kbd">Ctrl ,</span> opens this page.</p></nav>
+      <div class="set-inner">
+        <section id="set-project" class="set-sect">${projectSection()}</section>
+        <section id="set-gpu" class="set-sect">${gpuSection()}</section>
+        <section id="set-hosts" class="set-sect"><div class="sect-head"><span class="h2">Machines and Vast.ai</span><span class="muted">Your other machines running as workers, and GPUs rented by the hour. Routes can send tasks to them.</span></div>
+          ${T.loaded ? `<div class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</div><div id="train-vast" aria-label="GPUs to rent">${vastPanel()}</div>` : `<div class="muted">${T.error ? esc(T.error) : "Asking the hosts…"}</div>`}</section>
+        <section id="set-providers" class="set-sect">${liveProviders()}</section>
+        <section id="set-look" class="set-sect"><div class="sect-head"><span class="h2">Appearance</span></div>
+          <div class="provset"><button class="btn" data-set-theme>${icon("sun")}Switch light or dark</button><button class="btn" data-set-layout>${icon("layout")}Layout and density</button></div></section>
+      </div></div>`;
+  }
+
+  // ---- the project and its routes
+  function projectSection() {
+    if (PJ.error && !PJ.data) return `<div class="flag bad">${icon("alert")}<span>${esc(PJ.error)}</span></div>`;
+    if (!PJ.data) return `<span class="muted">Reading the projects…</span>`;
+    const ps = PJ.data.projects, a = activeProject();
+    const head = `<div class="sect-head"><span class="h2">Project</span><span class="muted">A project scopes its agents: the tools and models they may use, the one folder they may read, and where each kind of task runs.</span></div>
+      <div class="provset proj-pick">${ps.map(p => `<button class="btn ${p.id === PJ.data.active ? "primary" : ""}" data-proj-use="${esc(p.id)}" aria-pressed="${p.id === PJ.data.active}">${icon("folder")}${esc(p.name)}</button>`).join("")}
+        <button class="btn ghost" data-proj-new>${icon("plus")}New project</button>${PJ.note ? `<span class="chip c-ok" role="status">${esc(PJ.note)}</span>` : ""}</div>`;
+    const p = PJ.editing ? PJ.draft : a;
+    if (!p) return head;
+    return head + projectForm(p, !!PJ.editing);
+  }
+
+  function modelOptions(medium, chosen, remoteOnly, runners) {
+    const ms = (L.info?.models || []).filter(m => (m.media || []).includes(medium) && (!remoteOnly || m.provider !== "local"));
+    const rs = remoteOnly ? Object.keys(runners || {}).map(n => "vast:" + n) : [];
+    const known = ms.some(m => m.key === chosen) || rs.includes(chosen);
+    return `<option value="">${remoteOnly ? "none" : "Auto, as the studio picks"}</option>`
+      + rs.map(k => `<option value="${esc(k)}" ${k === chosen ? "selected" : ""}>Vast.ai runner ${esc(k.slice(5))} · rented when needed</option>`).join("")
+      + (chosen && !known ? `<option value="${esc(chosen)}" selected>${esc(chosen)}</option>` : "")
+      + ms.map(m => `<option value="${esc(m.key)}" ${m.key === chosen ? "selected" : ""}>${esc(m.name)} · ${esc(m.provider === "local" ? "this PC" : providerName(m.provider))}</option>`).join("");
+  }
+
+  function projectForm(p, editing) {
+    const dis = editing ? "" : "disabled";
+    const tools = A.tools || [];
+    const routeRow = m => {
+      const r = (p.routes || {})[m] || {};
+      return `<tr><td><b>${MEDIUM_NAMES[m]}</b></td>
+        <td><select class="input" data-route="${m}" data-rf="model" ${dis} aria-label="${MEDIUM_NAMES[m]} model">${modelOptions(m, r.model || "", false)}</select></td>
+        <td><select class="input" data-route="${m}" data-rf="policy" ${dis} aria-label="When the GPU is full">
+          <option value="">Studio's choice (${esc(GP.data?.policies?.[m === "text" ? "chat" : m] || "swap")})</option>${POLICIES.map(([k, n, d]) => `<option value="${k}" ${r.policy === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></td>
+        <td><select class="input" data-route="${m}" data-rf="fallback" ${dis} aria-label="Remote runner">${modelOptions(m, r.fallback || "", true, p.runners)}</select></td></tr>`;
+    };
+    return `<form class="panel proj-form" id="proj-form" autocomplete="off">
+      <div class="proj-grid">
+        <label class="field"><span>Name</span><input class="input" data-pf="name" value="${esc(p.name)}" ${dis} maxlength="60" required></label>
+        <label class="field"><span>Folder agents may read</span><input class="input mono" data-pf="folder" value="${esc(p.folder || "")}" ${dis} placeholder="none, such as D:/Films/A"></label>
+        <label class="field wide"><span>What it is about (agents read this)</span><textarea class="input" data-pf="description" rows="2" ${dis}>${esc(p.description || "")}</textarea></label>
+      </div>
+      <div class="h3">Routes</div>
+      <p class="muted" style="margin:0;font-size:12.5px">Auto in this project uses the model below. When it runs on this PC and the GPU is full, the policy decides; Remote sends it to the runner on the right (a worker host or a rented machine).</p>
+      <div class="tablebox"><table class="models routes"><thead><tr><th>Task</th><th>Model</th><th>When the GPU is full</th><th>Remote runner</th></tr></thead>
+        <tbody>${["text", "image", "speech", "transcribe", "video"].map(routeRow).join("")}</tbody></table></div>
+      <div class="h3">Vast.ai runners</div>
+      <p class="muted" style="margin:0;font-size:12.5px">A runner is a GPU machine rented when a route first sends it a task: the cheapest verified offer within your price, built into a worker host, with the model fetched from Hugging Face. It stays rented for the hours set, so later tasks reuse it, then it is destroyed. Pick it as a route's remote runner above.</p>
+      <div class="tablebox"><table class="models runners"><thead><tr><th>Name</th><th>GPU</th><th>GB at least</th><th>Most $/hour</th><th>Hours</th><th>Model repository</th><th>File, or folder</th><th></th></tr></thead><tbody>
+        ${Object.entries(p.runners || {}).map(([n, r]) => runnerRow(n, r, dis)).join("")}
+        ${editing ? runnerRow("", { hours: 2, option: "folder" }, "", true) : ""}</tbody></table></div>
+      <div class="h3">Agents may use</div>
+      <div class="proj-tools"><label class="check"><input type="checkbox" data-pf-alltools ${p.tools == null ? "checked" : ""} ${dis}> every tool</label>
+        ${p.tools == null ? "" : tools.map(t => `<label class="check" title="${esc(t.description || "")}"><input type="checkbox" data-pf-tool="${esc(t.name)}" ${p.tools.includes(t.name) ? "checked" : ""} ${dis}> <span class="mono">${esc(t.name)}</span>${t.acts ? ` <span class="faint">acts</span>` : ""}</label>`).join("")}</div>
+      <label class="field"><span>Models allowed (one per line: <code>provider/id</code>, or <code>local/</code> for every model of a provider; empty for all)</span>
+        <textarea class="input mono" data-pf="models" rows="2" ${dis}>${esc((p.models || []).join("\n"))}</textarea></label>
+      ${PJ.error ? `<div class="flag bad">${icon("alert")}<span>${esc(PJ.error)}</span></div>` : ""}
+      <div class="provset"><span class="grow"></span>
+        ${editing ? `<button class="btn ghost" type="button" data-proj-cancel>Cancel</button><button class="btn primary" type="submit">${icon("check")}Save</button>`
+          : `${p.id !== "default" ? `<button class="btn ghost" type="button" data-proj-delete>${icon("trash")}${PJ.deleting ? "Click again to delete" : "Delete"}</button>` : ""}<button class="btn" type="button" data-proj-edit>${icon("edit")}Edit</button>`}</div>
+    </form>`;
+  }
+
+  function runnerRow(n, r, dis, adding) {
+    const f = (k, type, ph, w) => `<input class="input ${type === "number" ? "mono" : ""}" data-rn="${k}" ${type === "number" ? `type="number" min="0" step="any"` : ""} value="${esc(r[k] ?? "")}" placeholder="${esc(ph)}" ${dis} style="min-width:${w}px">`;
+    return `<tr data-runner-row="${adding ? "new" : esc(n)}"><td><input class="input" data-rn="name" value="${esc(n)}" placeholder="${adding ? "new runner, such as video" : ""}" ${dis} style="min-width:90px"></td>
+      <td>${f("gpu", "text", "4090, A100…", 80)}</td><td>${f("minGpuRam", "number", "24", 50)}</td><td>${f("maxPrice", "number", "0.60", 60)}</td><td>${f("hours", "number", "2", 45)}</td>
+      <td>${f("repo", "text", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 160)}</td><td>${f("option", "text", "folder", 70)}</td>
+      <td>${dis || adding ? "" : `<button class="iconbtn sm" type="button" data-runner-remove="${esc(n)}" aria-label="Remove runner ${esc(n)}">${icon("trash")}</button>`}</td></tr>`;
+  }
+
+  function readProjectForm() {
+    const d = { ...PJ.draft };
+    $$("[data-pf]").forEach(el => { d[el.dataset.pf] = el.value; });
+    d.models = d.models.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+    if (!d.models.length) d.models = null;
+    d.tools = $("[data-pf-alltools]")?.checked ? null : $$("[data-pf-tool]").filter(c => c.checked).map(c => c.dataset.pfTool);
+    const routes = {};
+    $$("[data-route]").forEach(el => { (routes[el.dataset.route] ||= {})[el.dataset.rf] = el.value || null; });
+    d.routes = routes;
+    const runners = {};
+    $$("[data-runner-row]").forEach(tr => {
+      const r = {}; tr.querySelectorAll("[data-rn]").forEach(i => { r[i.dataset.rn] = i.type === "number" ? (i.value === "" ? null : +i.value) : i.value.trim(); });
+      const name = r.name; delete r.name;
+      if (name) runners[name] = r;
+    });
+    d.runners = runners;
+    return d;
+  }
+
+  function bindProjects() {
+    $$("[data-proj-use]").forEach(b => b.addEventListener("click", () => { PJ.editing = null; activateProject(b.dataset.projUse); }));
+    $("[data-proj-new]")?.addEventListener("click", () => { PJ.editing = "new"; PJ.draft = { name: "New project", description: "", folder: "", tools: null, models: null, routes: {}, runners: {} }; PJ.error = null; render(); $("[data-pf=name]")?.select(); });
+    $("[data-proj-edit]")?.addEventListener("click", () => { PJ.editing = activeProject().id; PJ.draft = JSON.parse(JSON.stringify(activeProject())); PJ.error = null; render(); });
+    $("[data-proj-cancel]")?.addEventListener("click", () => { PJ.editing = null; PJ.error = null; render(); });
+    $$("[data-runner-remove]").forEach(b => b.addEventListener("click", () => { $(`[data-runner-row="${CSS.escape(b.dataset.runnerRemove)}"]`)?.remove(); }));
+    $("[data-pf-alltools]")?.addEventListener("change", e => { PJ.draft = readProjectForm(); PJ.draft.tools = e.target.checked ? null : (A.tools || []).map(t => t.name); render(); });
+    $("[data-proj-delete]")?.addEventListener("click", async () => {
+      if (!PJ.deleting) { PJ.deleting = true; render(); setTimeout(() => { PJ.deleting = false; if (state.view === "settings") render(); }, 4000); return; }
+      PJ.deleting = false;
+      try { PJ.data = await postJson("/api/projects/delete", { id: activeProject().id }); } catch (e) { PJ.error = String(e.message || e); }
+      renderProjectChip(); render();
+    });
+    $("#proj-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (!PJ.editing) return;
+      const d = readProjectForm(), create = PJ.editing === "new";
+      try {
+        const r = await postJson("/api/projects", { project: d, create });
+        PJ.data = r; PJ.editing = null; PJ.error = null;
+        if (create) await activateProject(r.saved);
+        flashProject(create ? "Project made" : "Saved");
+      } catch (err) { PJ.error = String(err.message || err).replace(/^\/api\/projects: /, ""); PJ.draft = d; }
+      render();
+    });
+  }
+  function flashProject(text) { PJ.note = text; setTimeout(() => { PJ.note = null; if (state.view === "settings" && !PJ.editing) render(); }, 3000); }
+
+  // ---- this PC's GPU: what is loaded, what waits, and the studio's own policies
+  function gpuSection() {
+    const g = GP.data;
+    const head = `<div class="sect-head"><span class="h2">GPU and scheduling</span><span class="muted">Chat, image, speech, transcription and video each keep one model loaded on this PC. When the next one does not fit, the policy for its kind decides; a project's route can choose another.</span></div>`;
+    if (!g) return head + `<div class="muted">${GP.error ? esc(GP.error) : "Asking this PC…"}</div>`;
+    const used = g.inUse, budget = g.budget, pct = budget ? Math.min(100, Math.round(100 * used / budget)) : 0;
+    const meter = budget ? `<span class="meter wide"><i style="width:${pct}%"></i></span><span class="mono tnum">${gb(used)} of ${gb(budget)}</span>` : `<span class="muted">this device does not count its memory; everything fits</span>`;
+    const rows = g.slots.map(s => `<tr><td><b>${KIND_NAMES[s.kind] || esc(s.kind)}</b></td>
+        <td>${s.model ? esc(s.model) : `<span class="faint">nothing loaded</span>`}${s.busy ? ` <span class="chip c-text">working</span>` : ""}</td>
+        <td class="mono tnum">${s.model ? gb(s.bytes) : ""}</td>
+        <td><select class="input sm" data-gpu-policy="${s.kind}" aria-label="${KIND_NAMES[s.kind]} when the GPU is full">${POLICIES.map(([k, n, d]) => `<option value="${k}" ${g.policies[s.kind] === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></td>
+        <td><label class="check" title="A pinned model is never unloaded to make room"><input type="checkbox" data-gpu-pin="${s.kind}" ${s.pinned ? "checked" : ""}> pin</label></td>
+        <td>${s.model ? `<button class="btn ghost sm" data-gpu-unload="${s.kind}" ${s.busy ? "disabled" : ""}>Unload</button>` : ""}</td></tr>`).join("");
+    return head + `<div class="panel gpu-panel">
+      <div class="provset"><b>${esc(g.device || "No device")}</b>${meter}<span class="grow"></span><button class="btn sm" data-gpu-unload="all">Unload all idle</button></div>
+      <div class="tablebox"><table class="models"><thead><tr><th>Kind</th><th>Loaded</th><th>Takes</th><th>When the GPU is full</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${g.waiting.length ? `<div class="flag warn">${icon("alert")}<span>Waiting for room: ${g.waiting.map(w => `${esc(KIND_NAMES[w.kind] || w.kind)} · ${esc(w.model)} (${gb(w.need)})`).join(", ")}. Unload a model to let it start.</span></div>` : ""}
+      <div class="provset"><label class="check">Unload a model after <input class="input mono sm" type="number" min="0" max="1440" step="5" data-gpu-idle value="${g.idleMinutes}" style="width:70px"> idle minutes</label><span class="faint">0 keeps it until the room is needed</span>
+        <span class="grow"></span><span class="muted">Device and GPU memory limit: the buttons in the top bar.</span></div>
+    </div>`;
+  }
+  async function changeGpu(body) {
+    try { GP.data = await postJson("/api/gpu", body); GP.error = null; } catch (e) { GP.error = String(e.message || e); }
+    const box = $("#set-gpu"); if (box) { box.innerHTML = gpuSection(); bindGpu(); }
+  }
+  async function unloadGpu(kind) {
+    try { GP.data = await postJson("/api/gpu/unload", { kind }); } catch (e) { GP.error = String(e.message || e); }
+    const box = $("#set-gpu"); if (box) { box.innerHTML = gpuSection(); bindGpu(); }
+  }
+  function bindGpu() {
+    $$("[data-gpu-policy]").forEach(s => s.addEventListener("change", () => changeGpu({ policies: { [s.dataset.gpuPolicy]: s.value } })));
+    $$("[data-gpu-pin]").forEach(c => c.addEventListener("change", () => changeGpu({ pinned: $$("[data-gpu-pin]").filter(x => x.checked).map(x => x.dataset.gpuPin) })));
+    $$("[data-gpu-unload]").forEach(b => b.addEventListener("click", () => unloadGpu(b.dataset.gpuUnload)));
+    $("[data-gpu-idle]")?.addEventListener("change", e => changeGpu({ idleMinutes: Math.max(0, Math.round(+e.target.value || 0)) }));
+  }
+
+  // the providers' cards on the settings page change without wiping what is typed elsewhere on it
+  function refreshProviders() {
+    const box = $("#set-providers");
+    if (!box || (box.contains(document.activeElement) && document.activeElement.matches("input, textarea, select"))) return;
+    box.innerHTML = liveProviders(); bindLiveLibrary(); bindSettingsJumps(box);
+  }
+  function bindSettingsJumps(root = document) {
+    $$("[data-jump]", root).forEach(a => a.addEventListener("click", e => { e.preventDefault(); $("#" + a.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
+  }
+
+  function bindSettings() {
+    bindSettingsJumps();
+    bindProjects(); bindGpu();
+    if (T.loaded) { bindHosts(); bindVastCard(); bindVastPanel(); }
+    bindLiveLibrary();
+    $("[data-set-theme]")?.addEventListener("click", () => $("#theme-btn").click());
+    $("[data-set-layout]")?.addEventListener("click", () => $("#layout-btn").click());
+    if (!A.tools?.length) api("/api/agents").then(d => { A.tools = d.tools || []; if (PJ.editing && state.view === "settings") { PJ.draft = readProjectForm(); render(); } }).catch(() => {});
+    if (!GP.timer) loadGpu();
+  }
+
+  // ---- a model that does not fit: the page asks once, and the choice holds for the next try
+  function noRoomCard(nr) {
+    if (!nr || document.querySelector(".noroom-back")) return;
+    const back = document.createElement("div");
+    back.className = "cmdk-back noroom-back";
+    const kind = KIND_NAMES[nr.kind] || nr.kind, medium = nr.kind === "chat" ? "text" : nr.kind;
+    const hasRunner = !!activeProject()?.routes?.[medium]?.fallback;
+    back.innerHTML = `<div class="cmdk noroom" role="dialog" aria-label="Not enough GPU memory">
+      <div class="pad"><b>${esc(kind)} does not fit in the GPU memory that is free</b><p class="muted" style="margin:6px 0 0">${esc(nr.message || "")}</p></div>
+      <ul role="listbox">
+        <li data-room="swap">${icon("retry")}<span class="grow">Unload the other models and try again</span><span class="faint">pinned ones too stay</span></li>
+        <li data-room="queue">${icon("pause")}<span class="grow">Wait here until there is room</span></li>
+        <li data-room="remote" ${hasRunner ? "" : `class="none"`}>${icon("plug")}<span class="grow">Run it on the remote runner</span><span class="faint">${hasRunner ? esc(activeProject().routes[medium].fallback) : "set one in Settings, Project"}</span></li>
+        <li data-room="spill">${icon("layout")}<span class="grow">Load anyway and spill to system memory</span><span class="faint">slow</span></li>
+      </ul>
+      <label class="check pad"><input type="checkbox" id="noroom-keep"> do this every time for ${esc(kind.toLowerCase())} in ${esc(activeProject()?.name || "this project")}</label></div>`;
+    document.body.appendChild(back);
+    back.addEventListener("click", async e => {
+      if (e.target === back) { back.remove(); return; }
+      const li = e.target.closest("li[data-room]"); if (!li || li.classList.contains("none")) return;
+      const policy = li.dataset.room;
+      if ($("#noroom-keep").checked && activeProject()) {
+        const p = JSON.parse(JSON.stringify(activeProject()));
+        (p.routes[medium] ||= {}).policy = policy;
+        try { PJ.data = await postJson("/api/projects", { project: p }); } catch (err) { console.warn(err); }
+      } else {
+        PJ.oneShot = policy;   // the next request carries it
+      }
+      back.remove();
+      toast(policy === "remote" ? "It goes to the remote runner: send it again." : "Choice set: send it again.");
+    });
+  }
+  function toast(text) {
+    const t = document.createElement("div"); t.className = "toast"; t.setAttribute("role", "status"); t.textContent = text;
+    document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
+  }
+
+  // every API call carries the project it belongs to, and once the choice for a full GPU
+  if (tokenMetaEarly()) {
+    const plain = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url && url.startsWith("/api/") && PJ.data) {
+        const h = new Headers(init.headers || {});
+        h.set("X-Studio-Project", PJ.data.active);
+        if (PJ.oneShot && !url.startsWith("/api/gpu") && !url.startsWith("/api/projects") && !url.startsWith("/api/state")) { h.set("X-Studio-Policy", PJ.oneShot); PJ.oneShot = null; }
+        init = { ...init, headers: h };
+      }
+      return plain(input, init);
+    };
+  }
+  function tokenMetaEarly() { return !!document.querySelector('meta[name="studio-token"]'); }
+
   // ---------- render ----------
-  const views = { chat: chatView, agents: () => isLive() ? liveAgentsView() : agentsView(), create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView };
+  const views = { chat: chatView, agents: () => isLive() ? liveAgentsView() : agentsView(), create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView, settings: settingsView };
   const crumbs = {
     chat: `Chat <span class="muted">· Voiceover for the builder demo</span>`, agents: `Agents <span class="muted">· 4 running · 2 waiting for you</span>`, create: `Images <span class="muted">· thumb-dit-64</span>`,
     voice: `Voice <span class="muted">· Builder demo voiceover</span>`, builder: `Model builder <span class="muted">· resnet-s</span>`,
-    train: `Training <span class="muted">· 3 hosts · 2 runs live</span>`, library: `Models <span class="muted">· 6 on this machine</span>`, mcp: `MCP <span class="muted">· 2 agents connected</span>`,
+    train: `Training <span class="muted">· 3 hosts · 2 runs live</span>`, library: `Models <span class="muted">· 6 on this machine</span>`, settings: `Settings`, mcp: `MCP <span class="muted">· 2 agents connected</span>`,
   };
   const routes = {
     chat: ["c-text", "Qwen2.5 7B Instruct"], agents: ["c-agent", "per agent"], create: ["c-image", "thumb-dit-64"], voice: ["c-speech", "OpenAI speech · remote"],
-    builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "2 hosts busy"], library: ["c-text", "Qwen2.5 7B Instruct"], mcp: ["c-agent", "per call"],
+    builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "2 hosts busy"], library: ["c-text", "Qwen2.5 7B Instruct"], settings: ["c-agent", "per project"], mcp: ["c-agent", "per call"],
   };
 
   let builderLoading = false;
@@ -2240,7 +2543,7 @@
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>`
       : liveBuilder ? `Model builder <span class="muted">· ${esc(B.graph.name || "Untitled")}</span>`
       : liveTrain ? `Training <span class="muted">· ${T.loaded ? `${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}` : "looking…"}</span>`
-      : liveAgents ? agentCrumb() : crumbs[state.view];
+      : liveAgents ? agentCrumb() : state.view === "settings" && isLive() ? `Settings <span class="muted">· ${esc(activeProject()?.name || "Default")} project</span>` : crumbs[state.view];
     const picked = liveChat ? paneModel(L.active) : "auto";
     const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
@@ -2261,6 +2564,7 @@
     if (state.view === "train" && isLive()) { if (T.loaded) bindLiveTrain(); else loadTrain(); }
     if (state.view === "chat") bindChat();
     if (state.view === "library" && isLive()) bindLiveLibrary();
+    if (state.view === "settings" && isLive()) bindSettings();
     if (state.view === "create" && isLive()) bindLiveCreate();
     if (state.view === "voice" && isLive()) bindLiveVoice();
     if (liveAgents) { if (A.loaded) bindLiveAgents(); if (!A.loading && !A.timer) loadAgents(); }
@@ -2339,7 +2643,7 @@
       { label: "Go to Chat", icon: "chat", run: () => go("chat") }, { label: "Go to Images", icon: "image", run: () => go("create") },
       { label: "Go to Voice", icon: "speech", run: () => go("voice") }, { label: "Go to Model builder", icon: "build", run: () => go("builder") },
       { label: "Go to Training", icon: "train", run: () => go("train") }, { label: "Go to Models", icon: "library", run: () => go("library") },
-      { label: "Go to Agents", icon: "agent", run: () => go("agents") },
+      { label: "Go to Agents", icon: "agent", run: () => go("agents") }, { label: "Open settings", hint: "Ctrl ,", icon: "gear", run: () => go("settings") },
     ];
     if (!isLive()) return [...out, { label: "Go to MCP server", icon: "plug", run: () => go("mcp") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide")];
@@ -2349,7 +2653,11 @@
       { label: "Start an agent", icon: "agent", run: () => { go("agents"); setTimeout(() => $("#ag-goal")?.focus(), 300); } },
       { label: "Add models from a folder or GGUF file…", icon: "folder", run: () => { P.open = true; P.error = null; go("library"); $("#place-path")?.focus(); if (!P.list) browsePlace(""); } },
       { label: "Download a model from Hugging Face…", icon: "download", run: () => { H.open = true; go("library"); $("#hub-q")?.focus(); pollHub(); } },
-      { label: "Add an API key…", icon: "lock", run: () => { go("library"); $("[data-add-key]")?.scrollIntoView({ block: "center" }); } },
+      { label: "Add an API key…", icon: "lock", run: () => { go("settings"); setTimeout(() => $("#set-providers")?.scrollIntoView({ block: "start" }), 50); } },
+      { label: "Add a worker host or rent a GPU…", icon: "plug", run: () => { go("settings"); setTimeout(() => $("#set-hosts")?.scrollIntoView({ block: "start" }), 50); } },
+      { label: "New project…", icon: "folder", run: () => { go("settings"); setTimeout(() => $("[data-proj-new]")?.click(), 50); } },
+      { label: "Edit this project's routes and tools…", icon: "edit", run: () => { go("settings"); setTimeout(() => $("[data-proj-edit]")?.click(), 50); } },
+      { label: "Unload every idle model from the GPU", icon: "x", run: () => unloadGpu("all").then(() => toast("Idle models unloaded.")) },
       { label: "Start a training run…", icon: "train", run: () => go("train") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide"),
       { label: "Switch light or dark", icon: "sun", run: () => $("#theme-btn").click() },
@@ -2361,9 +2669,21 @@
       run: () => { if (state.view !== "chat") go("chat"); newChat(false); L.panes[L.active].model = m.key; L.model = m.key; store.set("chatModel", m.key); savePanes(); render(); } }));
     B.graphs.forEach(g => out.push({ label: `Open ${g.name} in the builder`, hint: g.built ? "built" : "drawing", icon: "build", run: () => openGraph(g.name) }));
     T.runs.slice(0, 30).forEach(r => out.push({ label: `Run ${r.id}: ${r.name}`, hint: r.state, icon: "train", run: () => { T.sel = r.id; store.set("trainSel", r.id); go("train"); } }));
+    (PJ.data?.projects || []).forEach(p => out.push({ label: `Switch to project ${p.name}`, hint: p.id === PJ.data.active ? "active project" : "project", icon: "folder", run: () => activateProject(p.id).then(() => toast(`Working in ${p.name}.`)) }));
+    // quick GPU choices without opening settings
+    Object.keys(KIND_NAMES).forEach(k => {
+      POLICIES.forEach(([key, n, d]) => out.push({ label: `${KIND_NAMES[k]} when the GPU is full: ${n}`, hint: d, icon: "layout",
+        run: () => postJson("/api/gpu", { policies: { [k]: key } }).then(g => { GP.data = g; toast(`${KIND_NAMES[k]}: ${n.toLowerCase()} when the GPU is full.`); }) }));
+      out.push({ label: `Unload the ${KIND_NAMES[k].toLowerCase()} model`, icon: "x", run: () => unloadGpu(k) });
+      out.push({ label: `Pin or unpin the ${KIND_NAMES[k].toLowerCase()} model`, hint: "a pinned model stays loaded", icon: "lock",
+        run: async () => { const g = GP.data || await api("/api/gpu"); const pins = new Set(g.pinned); pins.has(k) ? pins.delete(k) : pins.add(k);
+          GP.data = await postJson("/api/gpu", { pinned: [...pins] }); toast(`${KIND_NAMES[k]} ${pins.has(k) ? "pinned" : "unpinned"}.`); } });
+    });
+    (M.system?.devices || []).forEach(d => out.push({ label: `Run this PC's models on ${d.name}`, icon: d.kind === "gpu" ? "flask" : "layout",
+      run: () => postJson("/api/local/device", { device: d.name }).then(x => { M.localDevice = x; renderDevices(); toast(`Models now run on ${d.name}.`); }) }));
     return out;
   }
-  function openCmdk() {
+  function openCmdk(query) {
     if (document.querySelector(".cmdk-back")) { $("#cmdk-in")?.focus(); return; }
     const back = document.createElement("div");
     back.className = "cmdk-back";
@@ -2380,6 +2700,7 @@
       $("#cmdk-list li.on")?.scrollIntoView({ block: "nearest" });
     };
     const run = c => { back.remove(); if (c) c.run(); };
+    if (typeof query === "string") $("#cmdk-in").value = query;
     list();
     $("#cmdk-in").focus();
     $("#cmdk-in").addEventListener("input", () => { sel = 0; list(); });
@@ -2401,7 +2722,13 @@
   window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") { if (isLive()) drawLiveEdges(); else fitWorld(); } else if (state.view === "train" && isLive()) drawLossChart(); else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
-  $("#cmdk-open").addEventListener("click", openCmdk);
+  $("#cmdk-open").addEventListener("click", () => openCmdk());
+  document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === ",") { e.preventDefault(); go("settings"); } });
+  document.addEventListener("click", e => {
+    const a = e.target.closest("[data-go-settings]"); if (!a) return;
+    e.preventDefault(); go("settings");
+    if (a.dataset.goSection) setTimeout(() => $("#" + a.dataset.goSection)?.scrollIntoView({ block: "start" }), 50);
+  });
   $("#theme-btn").addEventListener("click", () => {
     const root = document.documentElement;
     const dark = root.dataset.theme ? root.dataset.theme === "dark" : !matchMedia("(prefers-color-scheme: light)").matches;
@@ -2966,7 +3293,7 @@ reason ::= [a-z ]+`;
       else if (event === "text") a.text += d.text;
       else if (event === "thinking") a.thinking += d.text;
       else if (event === "done") a.stats = d;
-      else if (event === "error") a.error = d.message;
+      else if (event === "error") { a.error = d.message; if (d.noRoom) noRoomCard(d.noRoom); }
       paintMsg(c, i);
     };
     try {
@@ -3218,6 +3545,7 @@ reason ::= [a-z ]+`;
   async function postJson(path, body) {
     const r = await fetch(path, { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
+    if (r.status === 409 && j.noRoom) noRoomCard(j.noRoom);
     if (!r.ok) throw new Error(j.error || `the studio answered ${r.status}`);
     return j;
   }
@@ -3354,7 +3682,7 @@ reason ::= [a-z ]+`;
         else if (event === "preview") G.drawing.preview = "data:image/png;base64," + d.data;
         else if (event === "image") { const it = { url: blobUrl(d), file: d.file, seed: d.seed }; batch.items.push(it); G.drawing.items.push(it); }
         else if (event === "done") batch.seconds = d.seconds;
-        else if (event === "error") { batch.error = d.message; batch.stopped = d.message === "stopped"; }
+        else if (event === "error") { batch.error = d.message; batch.stopped = d.message === "stopped"; if (d.noRoom) noRoomCard(d.noRoom); }
         // a preview a few times a second is plenty
         const now = performance.now();
         if (event !== "step" || now - last > 120) { last = now; paintDrawing(); }
@@ -3536,7 +3864,7 @@ reason ::= [a-z ]+`;
         else if (event === "step") { if (d.step === 1) VID.making.first = performance.now(); VID.making.step = d.step; VID.making.total = d.total; }
         else if (event === "video") Object.assign(clip, { url: blobUrl(d), file: d.file, seed: d.seed, width: d.width, height: d.height, frames: d.frames });
         else if (event === "done") clip.seconds = d.seconds;
-        else if (event === "error") { clip.error = d.message; clip.stopped = d.message === "stopped"; }
+        else if (event === "error") { clip.error = d.message; clip.stopped = d.message === "stopped"; if (d.noRoom) noRoomCard(d.noRoom); }
         const box = $("#vmaking");
         if (box && VID.making) box.innerHTML = makingHtml();
       });
@@ -3680,7 +4008,7 @@ reason ::= [a-z ]+`;
         if (event === "route") t.model = d.name;
         else if (event === "segment") t.segments.push(d);
         else if (event === "done") Object.assign(t, { text: d.text, language: d.language, seconds: d.seconds });
-        else if (event === "error") t.error = d.message;
+        else if (event === "error") { t.error = d.message; if (d.noRoom) noRoomCard(d.noRoom); }
         paint();
       });
       if (!t.text && t.segments.length) t.text = t.segments.map(g => g.text.trim()).join(" ");
@@ -4083,7 +4411,7 @@ reason ::= [a-z ]+`;
           <div class="muted" style="font-size:12.5px">A machine of yours running <code>brainiac-studio --worker</code>. Its models answer with its own engine and hardware.</div>
           ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
           <div class="provset"><span class="mono faint" style="font-size:11px">free · your machine${L.usage && L.usage.providers[p.id] ? " · " + esc(usageLine(L.usage.providers[p.id])) : ""}</span><span class="grow"></span>
-            <button class="btn sm" data-go="train">${icon("train")}Hosts on Training</button></div></div>`;
+            <button class="btn sm" data-jump="set-hosts">${icon("plug")}Machines</button></div></div>`;
       }
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
@@ -4118,8 +4446,8 @@ reason ::= [a-z ]+`;
     return `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
       <div class="providers">${local.map(card).join("")}${hosts.map(card).join("")}${hosts.length ? "" : `<div class="prov off hint-card">
           <b>Another machine of yours</b>
-          <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it on Training. Its models show up here and answer in Chat; it can also train.</div>
-          <div class="provset"><span class="grow"></span><button class="btn sm" data-go="train">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
+          <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it under Machines below. Its models show up here and answer in Chat; it can also train.</div>
+          <div class="provset"><span class="grow"></span><button class="btn sm" data-jump="set-hosts">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
       <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>
       ${ready.length ? `<div class="providers">${ready.map(card).join("")}</div>` : ""}
       ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
@@ -4533,7 +4861,7 @@ reason ::= [a-z ]+`;
   }
   async function loadServe() {
     try { SV.state = await api("/api/serve"); } catch (e) { console.warn("cannot read the serving state", e); }
-    if (state.view === "library") render();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
   function bindServe() {
     $("#serve-open")?.addEventListener("click", () => { SV.open = !SV.open; SV.error = null; render(); });
@@ -4550,14 +4878,14 @@ reason ::= [a-z ]+`;
       try { SV.state = await postJson("/api/serve", { model, port: Math.floor(+SV.port) || 8080, network: SV.network }); }
       catch (err) { SV.error = err.message || String(err); }
       SV.busy = false;
-      if (state.view === "library") render();
+      if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
     });
     $("#serve-stop")?.addEventListener("click", async () => {
       SV.busy = true; SV.error = null; render();
       try { SV.state = await postJson("/api/serve", { stop: true }); }
       catch (err) { SV.error = err.message || String(err); }
       SV.busy = false;
-      if (state.view === "library") render();
+      if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
     });
     if (!SV.loaded) { SV.loaded = true; loadServe(); }
   }
@@ -4604,7 +4932,7 @@ reason ::= [a-z ]+`;
         const r = await postJson("/api/local", { path: P.path.trim() });
         P.open = false; P.busy = false; P.path = ""; P.list = null;
         P.note = r.models ? `Added ${r.models} model${r.models === 1 ? "" : "s"}; they are under This PC below.` : "Added. Models put there later show up too.";
-        setTimeout(() => { P.note = null; if (state.view === "library") render(); }, 8000);
+        setTimeout(() => { P.note = null; if (state.view === "library") render(); else if (state.view === "settings") refreshProviders(); }, 8000);
         await loadModels(false);
       } catch (err) { P.busy = false; P.error = err.message; renderPlace(); }
     });
@@ -4872,11 +5200,13 @@ reason ::= [a-z ]+`;
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {
       if (V.status?.key) { V.open = true; if (!V.offers) searchVast(); }
-      go("train");
+      if (state.view !== "settings") go("settings");
+      else { renderHosts(); renderVast(); }
+      setTimeout(() => $("#set-hosts")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     });
     $$("[data-place-remove]").forEach(b => b.addEventListener("click", async () => {
       const f = b.dataset.placeRemove;
-      if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); } }, 4000); return; }
+      if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); else if (state.view === "settings") refreshProviders(); } }, 4000); return; }
       P.removing = null;
       try { await postJson("/api/local", { path: f, remove: true }); } catch (e) { console.warn(e); }
       await loadModels(false);
@@ -4945,7 +5275,7 @@ reason ::= [a-z ]+`;
 
   async function loadUsage() {
     try { L.usage = await api("/api/usage"); } catch (e) { console.warn("cannot read usage", e); L.usage = { providers: {}, keys: {}, models: {}, daily: [], recent: [] }; }
-    if (state.view === "library") render();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
 
   let balancesBusy = false;
@@ -4954,7 +5284,7 @@ reason ::= [a-z ]+`;
     balancesBusy = true;
     try { L.balances = await api("/api/balances"); } catch (e) { console.warn("cannot read balances", e); L.balances = {}; }
     balancesBusy = false;
-    if (state.view === "library") render();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
 
   async function loadModels(refresh) {
@@ -5232,7 +5562,7 @@ reason ::= [a-z ]+`;
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
   // screens that show only real data
-  const showsLiveData = () => ["library", "create", "voice", "builder", "train", "agents"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
+  const showsLiveData = () => ["library", "create", "voice", "builder", "train", "agents", "settings"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });
@@ -5323,6 +5653,7 @@ reason ::= [a-z ]+`;
       loadModels(false);
       loadConvos();
       loadAgents();
+      loadProjects();
     } catch (e) {
       console.warn("studio API not reachable, showing example data", e);
     }

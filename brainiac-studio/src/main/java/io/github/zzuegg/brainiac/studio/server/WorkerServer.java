@@ -51,14 +51,20 @@ import java.util.zip.ZipInputStream;
  *   <li>{@code GET /worker/runs?id=<id>}, {@code POST /worker/stop {id}} and
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
  *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
- *       {@code downloads} folder; {@code POST /worker/draw}, {@code /worker/speak} and {@code /worker/transcribe} use its
- *       image and speech models, answering as event streams; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
+ *       {@code downloads} folder; {@code POST /worker/draw}, {@code /worker/video}, {@code /worker/speak} and
+ *       {@code /worker/transcribe} use its image, video and speech models, answering as event streams
+ *       ({@code POST /worker/video/options {model}} gives a video model's usual settings); {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
  *       (a message may carry {@code images: [{type, data}]} for a model that looks at pictures)
  *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
  *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
  *       {@code downloads} folder, with its own connection; {@code GET /worker/hub/downloads} lists
  *       the downloads and {@code POST /worker/hub/cancel {id}} stops one. Gated models use the
- *       worker's own Hugging Face token ({@code $HF_TOKEN}); the studio never sends its token.
+ *       Hugging Face token the studio lent it, or else the worker's own ({@code $HF_TOKEN}).
+ *   <li>{@code GET /worker/secrets} names the secrets the studio lent it (never their values) and
+ *       gives a one-time public key; {@code POST /worker/secrets {id, public, name, sealed}} lends
+ *       one, sealed as {@link io.github.zzuegg.brainiac.studio.train.SealedSecret} describes, or
+ *       takes it back when the sealed value is empty. A lent secret is held in memory only: it is
+ *       not written to disk or to the log, and is gone when the worker stops.
  * </ul>
  */
 public final class WorkerServer implements AutoCloseable {
@@ -79,6 +85,13 @@ public final class WorkerServer implements AutoCloseable {
     private final Path files;
     private final ChatProvider models;
     private final io.github.zzuegg.brainiac.studio.chat.Hub hub;
+    private final Keys keys;
+    // one-time key pairs waiting for a sealed secret: id -> pair and when it was made
+    private final Map<String, Object[]> pairs = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The secrets a studio may lend a worker: only what the worker has a use for. */
+    public static final List<String> SECRETS = List.of("huggingface");
+    private static final long PAIR_MILLIS = 60_000;
 
     private WorkerServer(HttpServer http, ExecutorService executor, String token, Path folder, ChatProvider models) {
         this.http = http;
@@ -87,7 +100,8 @@ public final class WorkerServer implements AutoCloseable {
         this.training = new TrainingService(folder);
         this.files = folder.resolve("files");
         this.models = models;
-        this.hub = new io.github.zzuegg.brainiac.studio.chat.Hub(new Keys(folder.resolve("keys.properties"), System.getenv()),
+        this.keys = new Keys(folder.resolve("keys.properties"), System.getenv());
+        this.hub = new io.github.zzuegg.brainiac.studio.chat.Hub(keys,
                 folder.resolve("downloads"), io.github.zzuegg.brainiac.studio.chat.Hub.BASE);
     }
 
@@ -260,6 +274,11 @@ public final class WorkerServer implements AutoCloseable {
                 chat(ex, Exchanges.body(ex, 32 << 20));
             } else if (path.equals("/worker/draw") && method.equals("POST")) {
                 draw(ex, Exchanges.body(ex, MAX_BODY));
+            } else if (path.equals("/worker/video") && method.equals("POST")) {
+                video(ex, Exchanges.body(ex, 32 << 20));
+            } else if (path.equals("/worker/video/options") && method.equals("POST")) {
+                Map<String, Object> options = models.videoOptions(modelId(Exchanges.body(ex, MAX_BODY)));
+                Exchanges.json(ex, 200, options == null ? Map.of() : options);
             } else if (path.equals("/worker/speak") && method.equals("POST")) {
                 speak(ex, Exchanges.body(ex, MAX_BODY));
             } else if (path.equals("/worker/transcribe") && method.equals("POST")) {
@@ -272,6 +291,20 @@ public final class WorkerServer implements AutoCloseable {
                     // not there, does not run here, or does not fit on the disk: the caller's to fix
                     answerError(ex, 400, e.getMessage());
                 }
+            } else if (path.equals("/worker/secrets") && method.equals("GET")) {
+                long now = System.currentTimeMillis();
+                pairs.values().removeIf(p -> now - (long) p[1] > PAIR_MILLIS);
+                if (pairs.size() > 64) {
+                    pairs.clear();
+                }
+                java.security.KeyPair pair = io.github.zzuegg.brainiac.studio.train.SealedSecret.pair();
+                byte[] id = new byte[12];
+                new SecureRandom().nextBytes(id);
+                pairs.put(HexFormat.of().formatHex(id), new Object[] {pair, now});
+                Exchanges.json(ex, 200, Map.of("names", heldSecrets(), "id", HexFormat.of().formatHex(id),
+                        "public", io.github.zzuegg.brainiac.studio.train.SealedSecret.publicText(pair)));
+            } else if (path.equals("/worker/secrets") && method.equals("POST")) {
+                lend(ex, Exchanges.body(ex, MAX_BODY));
             } else if (path.equals("/worker/hub/downloads") && method.equals("GET")) {
                 Exchanges.json(ex, 200, Map.of("downloads", hub.downloads()));
             } else if (path.equals("/worker/hub/cancel") && method.equals("POST")) {
@@ -448,6 +481,49 @@ public final class WorkerServer implements AutoCloseable {
         });
     }
 
+    private void video(HttpExchange ex, Map<String, Object> body) throws IOException {
+        String prompt = Json.string(body, "prompt", "");
+        if (prompt.isBlank()) {
+            throw new IllegalArgumentException("describe the video first");
+        }
+        io.github.zzuegg.brainiac.studio.chat.Media start = null;
+        if (body.get("start") instanceof Map<?, ?> given) {
+            Map<String, Object> picture = Json.object(given);
+            start = new io.github.zzuegg.brainiac.studio.chat.Media(
+                    java.util.Base64.getDecoder().decode(Json.string(picture, "data", "")),
+                    Json.string(picture, "type", "image/png"));
+        }
+        long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
+        io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings =
+                new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings(Json.string(body, "negativePrompt", ""),
+                        Json.string(body, "aspect", "16:9"), Boolean.TRUE.equals(body.get("small")),
+                        Json.number(body, "seconds", 2), (int) Json.integer(body, "steps", 30),
+                        Json.number(body, "guidance", 5), seed, (int) Json.integer(body, "width", 0),
+                        (int) Json.integer(body, "height", 0), start);
+        String model = modelId(body);
+        stream(ex, (out, gone) -> {
+            io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip clip = models.video(model, prompt, settings,
+                    (step, total) -> {
+                        try {
+                            event(out, "step", Map.of("step", step, "total", total));
+                        } catch (IOException e) {
+                            gone[0] = true;   // the studio went away: stop the clip
+                        }
+                        return !gone[0];
+                    });
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("mime", clip.media().mime());
+            m.put("data", java.util.Base64.getEncoder().encodeToString(clip.media().data()));
+            m.put("seed", clip.seed());
+            m.put("width", clip.width());
+            m.put("height", clip.height());
+            m.put("frames", clip.frames());
+            m.put("fps", clip.fps());
+            event(out, "video", m);
+            return Map.of("frames", clip.frames());
+        });
+    }
+
     private void speak(HttpExchange ex, Map<String, Object> body) throws IOException {
         String text = Json.string(body, "text", "");
         if (text.isBlank()) {
@@ -515,8 +591,39 @@ public final class WorkerServer implements AutoCloseable {
         }
     }
 
+    private List<String> heldSecrets() {
+        return SECRETS.stream().filter(keys::lent).toList();
+    }
+
+    // opens a secret the studio sealed for the one-time key it asked for; nothing of it is logged or stored
+    private void lend(HttpExchange ex, Map<String, Object> body) throws IOException {
+        String name = Json.string(body, "name", "");
+        Object[] pair = pairs.remove(Json.string(body, "id", ""));
+        if (!SECRETS.contains(name)) {
+            answerError(ex, 400, "this worker has no use for a secret called " + name);
+            return;
+        }
+        if (pair == null || System.currentTimeMillis() - (long) pair[1] > PAIR_MILLIS) {
+            answerError(ex, 400, "the one-time key is used up or too old: ask for a new one");
+            return;
+        }
+        String value;
+        try {
+            byte[] key = io.github.zzuegg.brainiac.studio.train.SealedSecret.key(
+                    ((java.security.KeyPair) pair[0]).getPrivate(), Json.string(body, "public", ""), token);
+            value = io.github.zzuegg.brainiac.studio.train.SealedSecret.open(key, name, Json.string(body, "sealed", ""));
+        } catch (java.security.GeneralSecurityException e) {
+            // sealed for another worker's token, or changed on the way
+            answerError(ex, 400, "the secret could not be opened");
+            return;
+        }
+        keys.lend(name, value);
+        Exchanges.json(ex, 200, Map.of("names", heldSecrets()));
+    }
+
     private Map<String, Object> info() {
         Map<String, Object> m = new LinkedHashMap<>();
+        m.put("secrets", heldSecrets());
         String name;
         try {
             name = InetAddress.getLocalHost().getHostName();

@@ -19,9 +19,15 @@ import java.util.SplittableRandom;
  * (image, then text) and generates them (text, then {@code BOI} and denoising of the image
  * span with deterministic DDIM steps).
  *
- * <p>The trunk is a {@link FusionDecoder} with a custom attention bias. The paper encodes
- * patches from a VAE latent; here the patches are raw pixel tiles, which for tiny images
- * plays the same role.
+ * <p>The trunk is a {@link FusionDecoder} with a custom attention bias. By default the patches
+ * are raw pixel tiles entering and leaving through linear layers (wave 9). With
+ * {@link UNetPatches} (wave 10, the paper's setting) the image is a VAE latent (for example
+ * from {@link ConvVae}), one patch per latent position, embedded by a small U-Net down block
+ * (two 3x3 convolutions over the latent grid, then a linear map to the model width) and
+ * un-embedded by the matching up block (a linear map back, concatenated with the down block's
+ * features as a skip connection, then two 3x3 convolutions); the paper reports that these
+ * layers matter a lot at small scale. {@link #forwardMacs} counts the multiply-adds of one
+ * sequence for comparisons at matched compute.
  *
  * <p>Ids: the text vocabulary is {@code 0..textVocab-1}; {@code BOI = textVocab},
  * {@code EOI = textVocab + 1}, {@code BOS = textVocab + 2}.
@@ -42,6 +48,16 @@ public final class TransfusionModel {
     public record Sequence(int[] before, float[] image, int[] after, int maxNoise) {
     }
 
+    /**
+     * U-Net patch layers over a latent grid.
+     *
+     * @param grid the latent side (patches are {@code grid * grid} positions)
+     * @param channels latent channels (the patch size)
+     * @param hidden U-Net channels
+     */
+    public record UNetPatches(int grid, int channels, int hidden) {
+    }
+
     private final int textVocab;
     private final int patchDim;
     private final int patches;
@@ -53,6 +69,19 @@ public final class TransfusionModel {
     private final Var patchOutB;
     private final Var time;
     private final double[] alphaBar;
+    private final UNetPatches unet;
+    private final Var down1;
+    private final Var down1b;
+    private final Var down2;
+    private final Var down2b;
+    private final Var downProj;
+    private final Var downProjB;
+    private final Var upProj;
+    private final Var upProjB;
+    private final Var up1;
+    private final Var up1b;
+    private final Var up2;
+    private final Var up2b;
 
     /**
      * Creates the model.
@@ -69,6 +98,29 @@ public final class TransfusionModel {
      */
     public TransfusionModel(int textVocab, int patchDim, int patches, int dim, int layers, int heads, int maxLength,
             int diffusionSteps, long seed) {
+        this(textVocab, patchDim, patches, dim, layers, heads, maxLength, diffusionSteps, null, seed);
+    }
+
+    /**
+     * Creates the model, optionally with U-Net patch layers over a latent grid. Without them
+     * it is exactly the model of the other constructor; the U-Net weights are drawn afterwards.
+     *
+     * @param textVocab text tokens
+     * @param patchDim values per patch (the latent channels with U-Net patches)
+     * @param patches patches per image ({@code grid * grid} with U-Net patches)
+     * @param dim the width
+     * @param layers blocks
+     * @param heads attention heads
+     * @param maxLength the longest sequence
+     * @param diffusionSteps timesteps of the noise schedule
+     * @param unet the U-Net patch layers, or null for linear patch layers
+     * @param seed the seed
+     */
+    public TransfusionModel(int textVocab, int patchDim, int patches, int dim, int layers, int heads, int maxLength,
+            int diffusionSteps, UNetPatches unet, long seed) {
+        if (unet != null && (unet.channels() != patchDim || unet.grid() * unet.grid() != patches)) {
+            throw new IllegalArgumentException("U-Net patches need patchDim = channels and patches = grid^2");
+        }
         SplittableRandom r = new SplittableRandom(seed);
         this.textVocab = textVocab;
         this.patchDim = patchDim;
@@ -87,6 +139,86 @@ public final class TransfusionModel {
             double f = Math.pow(Math.cos(((double) t / diffusionSteps + s) / (1 + s) * Math.PI / 2), 2);
             alphaBar[t] = Math.max(1e-4, Math.min(1, f / f0));
         }
+        this.unet = unet;
+        if (unet != null) {
+            int c = unet.channels();
+            int h = unet.hidden();
+            this.down1 = ConvVae.conv(r, c, h, 3);
+            this.down1b = ConvVae.zeros(h);
+            this.down2 = ConvVae.conv(r, h, h, 3);
+            this.down2b = ConvVae.zeros(h);
+            this.downProj = Var.param(Tensor.normal(Shape.of(h, dim), 0, (float) Math.sqrt(1.0 / h), r));
+            this.downProjB = Var.param(Tensor.zeros(Shape.of(dim)));
+            this.upProj = Var.param(Tensor.normal(Shape.of(dim, h), 0, (float) Math.sqrt(1.0 / dim), r));
+            this.upProjB = Var.param(Tensor.zeros(Shape.of(h)));
+            this.up1 = ConvVae.conv(r, 2 * h, h, 3);
+            this.up1b = ConvVae.zeros(h);
+            this.up2 = Var.param(Tensor.normal(Shape.of(c, h, 3, 3), 0, (float) Math.sqrt(0.1 / (h * 9)), r));
+            this.up2b = ConvVae.zeros(c);
+        } else {
+            this.down1 = null;
+            this.down1b = null;
+            this.down2 = null;
+            this.down2b = null;
+            this.downProj = null;
+            this.downProjB = null;
+            this.upProj = null;
+            this.upProjB = null;
+            this.up1 = null;
+            this.up1b = null;
+            this.up2 = null;
+            this.up2b = null;
+        }
+    }
+
+    /** The image tokens {@code [b, patches, dim]} and the U-Net skip features (or null). */
+    private Var[] embedImage(Var noisy) {
+        int b = noisy.shape().dim(0);
+        if (unet == null) {
+            return new Var[] {noisy.matmul(patchIn).add(patchInB), null};
+        }
+        int g = unet.grid();
+        Var grid = noisy.reshape(b, g, g, patchDim).permute(0, 3, 1, 2);
+        Var d = ConvVae.silu(ConvVae.apply(grid, down1, down1b, 1));
+        d = ConvVae.silu(ConvVae.apply(d, down2, down2b, 1)).add(d);
+        Var tokens = d.reshape(b, unet.hidden(), patches).permute(0, 2, 1).matmul(downProj).add(downProjB);
+        return new Var[] {tokens, d};
+    }
+
+    /** The predicted noise {@code [b, patches, patchDim]} of the image span's hidden states. */
+    private Var unembed(Var h, Var skip) {
+        if (unet == null) {
+            return h.matmul(patchOut).add(patchOutB);
+        }
+        int b = h.shape().dim(0);
+        int g = unet.grid();
+        Var u = h.matmul(upProj).add(upProjB).permute(0, 2, 1).reshape(b, unet.hidden(), g, g);
+        u = ConvVae.silu(ConvVae.apply(Var.concat(1, u, skip), up1, up1b, 1));
+        u = ConvVae.apply(u, up2, up2b, 1);
+        return u.permute(0, 2, 3, 1).reshape(b, patches, patchDim);
+    }
+
+    /**
+     * Multiply-adds of one forward pass over a sequence: the trunk (projections, MLPs,
+     * attention, output head at every position) and the patch layers.
+     *
+     * @param textTokens text tokens in the sequence besides {@code BOS}, {@code BOI}, {@code EOI}
+     * @return multiply-adds
+     */
+    public long forwardMacs(int textTokens) {
+        long length = textTokens + 3L + patches;
+        long d = trunk.dim();
+        long perToken = trunk.layers() * (4 * d * d + 2 * d * 4 * d) + d * trunk.vocab();
+        long attention = trunk.layers() * length * length * d * 2;
+        long patchLayers;
+        if (unet == null) {
+            patchLayers = 2L * patches * patchDim * d;
+        } else {
+            long c = unet.channels();
+            long h = unet.hidden();
+            patchLayers = patches * (9 * c * h + 9 * h * h + h * d + d * h + 9 * 2 * h * h + 9 * h * c);
+        }
+        return length * perToken + attention + patchLayers;
     }
 
     /** @return the begin-of-image id */
@@ -139,11 +271,15 @@ public final class TransfusionModel {
             System.arraycopy(noisy[i], 0, flat, i * patches * patchDim, patches * patchDim);
             ts[i] = t[i];
         }
-        Var img = Var.of(Tensor.of(Shape.of(b, patches, patchDim), flat)).matmul(patchIn).add(patchInB)
-                .add(time.gather(0, Tensor.of(Shape.of(b), ts)).reshape(b, 1, trunk.dim()));
+        Var[] embedded = embedImage(Var.of(Tensor.of(Shape.of(b, patches, patchDim), flat)));
+        lastSkip = embedded[1];
+        Var img = embedded[0].add(time.gather(0, Tensor.of(Shape.of(b), ts)).reshape(b, 1, trunk.dim()));
         Var x = Var.concat(1, trunk.embed(lead), img, trunk.embed(tail));
         return trunk.hidden(x, mask(a, length), null, training);
     }
+
+    /** The U-Net skip features of the last {@link #hidden} call (null without U-Net patches). */
+    private Var lastSkip;
 
     /**
      * The training loss of a batch with one layout (equal text lengths before and after).
@@ -179,7 +315,7 @@ public final class TransfusionModel {
         Var h = hidden(before, noisy, t, after, true);
         int length = h.shape().dim(1);
         int start = a + 2;
-        Var pred = h.slice(1, start, start + patches).matmul(patchOut).add(patchOutB);
+        Var pred = unembed(h.slice(1, start, start + patches), lastSkip);
         Var diffusion = pred.sub(Tensor.of(Shape.of(b, patches, patchDim), eps)).square().mean();
         int[][] targets = new int[b][length];
         for (int i = 0; i < b; i++) {
@@ -256,8 +392,8 @@ public final class TransfusionModel {
             int[] ts = new int[b];
             java.util.Arrays.fill(ts, t);
             float[][] cur = x;
-            float[] eps = Var.noGrad(() -> hidden(prompts, cur, ts, after, false).slice(1, start, start + patches)
-                    .matmul(patchOut).add(patchOutB)).value().toArray();
+            float[] eps = Var.noGrad(() -> unembed(hidden(prompts, cur, ts, after, false)
+                    .slice(1, start, start + patches), lastSkip)).value().toArray();
             double sa = Math.sqrt(alphaBar[t]);
             double sn = Math.sqrt(1 - alphaBar[t]);
             double pa = Math.sqrt(alphaBar[prev]);
@@ -279,12 +415,18 @@ public final class TransfusionModel {
     /** @return every trainable value */
     public List<Var> parameters() {
         List<Var> p = new ArrayList<>(trunk.parameters());
-        p.addAll(List.of(patchIn, patchInB, patchOut, patchOutB, time));
+        if (unet == null) {
+            p.addAll(List.of(patchIn, patchInB, patchOut, patchOutB, time));
+        } else {
+            p.add(time);
+            p.addAll(List.of(down1, down1b, down2, down2b, downProj, downProjB, upProj, upProjB, up1, up1b, up2, up2b));
+        }
         return p;
     }
 
     @Override
     public String toString() {
-        return "TransfusionModel(" + trunk + ", " + patches + " patches)";
+        return "TransfusionModel(" + trunk + ", " + patches + " patches" + (unet != null ? ", U-Net patch layers" : "")
+                + ")";
     }
 }

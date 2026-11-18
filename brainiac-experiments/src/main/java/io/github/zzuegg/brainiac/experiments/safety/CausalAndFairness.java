@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experiments.safety;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.data.ShapeImages;
+import io.github.zzuegg.brainiac.experimental.data.ShiftSuites;
 import io.github.zzuegg.brainiac.experimental.ml.CausalEstimators;
 import io.github.zzuegg.brainiac.experimental.ml.Dagma;
 import io.github.zzuegg.brainiac.experimental.ml.GreedyEquivalenceSearch;
@@ -622,6 +623,22 @@ public final class CausalAndFairness {
     }
 
     private record Coloured(Tensor x, Tensor y, int[] group) {
+    }
+
+    /**
+     * The coloured-shapes generator of {@link #spurious}, unchanged, for other experiments
+     * (wave 10's last-layer retraining): horizontal (0) and vertical (1) bars drawn in the
+     * channel that agrees with the class with probability {@code agreement}, the other channel
+     * holding noise; features {@code [n, 128]}.
+     *
+     * @param n the number of images
+     * @param agreement how often colour and class agree (0.5 = no correlation)
+     * @param seed the seed
+     * @return the images, labels and groups {@code 2 * class + colour}
+     */
+    public static ShiftSuites.Grouped colouredShapes(int n, double agreement, long seed) {
+        Coloured c = coloured(n, agreement, seed);
+        return new ShiftSuites.Grouped(new ShiftSuites.Split(c.x(), c.y().toIntArray()), c.group().clone());
     }
 
     private static Coloured coloured(int n, double agreement, long seed) {

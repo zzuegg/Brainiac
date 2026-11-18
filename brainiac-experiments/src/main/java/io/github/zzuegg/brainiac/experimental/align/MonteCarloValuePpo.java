@@ -84,6 +84,25 @@ public final class MonteCarloValuePpo {
     }
 
     /**
+     * @param k Monte Carlo rollouts per step boundary (4 by default)
+     * @return this trainer
+     */
+    public MonteCarloValuePpo rollouts(int k) {
+        this.rollouts = k;
+        return this;
+    }
+
+    /**
+     * @param start the checkpoint the KL penalty anchors to, instead of a frozen copy of the
+     *     policy as given to {@link #of}
+     * @return this trainer
+     */
+    public MonteCarloValuePpo startCheckpoint(WindowLm start) {
+        update.reference(start);
+        return this;
+    }
+
+    /**
      * @param max the most tokens per solution
      * @param endToken the end token
      * @param steps the tokens that end a reasoning step

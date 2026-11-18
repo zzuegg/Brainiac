@@ -1271,3 +1271,30 @@ button.dev:hover { border-color: var(--line); color: var(--fg); }
 .vstart { position: relative; display: inline-block; max-width: 100%; }
 .vstart img { display: block; max-width: 100%; max-height: 140px; border-radius: 8px; border: 1px solid var(--line, rgba(127,127,127,.3)); }
 .vstart .iconbtn { position: absolute; top: 4px; right: 4px; }
+
+/* ---------- settings ---------- */
+.settings { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 24px; padding: 20px 24px 60px; max-width: 1280px; margin: 0 auto; }
+.set-nav { position: sticky; top: 12px; align-self: start; display: grid; gap: 2px; }
+.set-nav a { padding: 7px 10px; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: 13.5px; }
+.set-nav a:hover { background: var(--panel-2); color: var(--fg); }
+.set-inner { display: grid; gap: 34px; min-width: 0; }
+.set-sect { display: grid; gap: 12px; scroll-margin-top: 12px; }
+.proj-pick { flex-wrap: wrap; }
+.proj-form { display: grid; gap: 12px; padding: 16px; }
+.proj-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.proj-grid .wide { grid-column: 1 / -1; }
+.proj-form .field { display: grid; gap: 4px; font-size: 12.5px; }
+.proj-tools { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; }
+.routes select.input, .gpu-panel select.input { min-width: 0; width: 100%; }
+.gpu-panel { display: grid; gap: 12px; padding: 14px 16px; }
+.meter.wide { width: 180px; }
+.noroom { max-width: 560px; }
+.noroom .pad { padding: 14px 16px; }
+.noroom li.none { opacity: .5; cursor: not-allowed; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 16px; box-shadow: var(--shadow); z-index: 60; font-size: 13px; }
+#project-chip { margin-right: 8px; gap: 5px; display: inline-flex; align-items: center; }
+#project-chip svg { width: 14px; height: 14px; }
+@media (max-width: 860px) { .settings { grid-template-columns: 1fr; } .set-nav { position: static; display: flex; flex-wrap: wrap; } .proj-grid { grid-template-columns: 1fr; } }
+.train-note { padding: 6px 20px 0; }
+.sect-head a, .train-note a { color: var(--accent); }

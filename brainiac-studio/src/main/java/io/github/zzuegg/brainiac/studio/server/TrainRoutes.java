@@ -25,6 +25,9 @@ import java.util.Map;
  *       /api/hosts {name, url, token}} adds one after checking it answers, and {@code {id, remove: true}}
  *       forgets one. Tokens are never sent back.
  *   <li>{@code POST /api/train/predict {model, values? | data?, index?}} runs a saved model on one sample.
+ *   <li>{@code POST /api/hosts/secret {host, name, lend}} lends a host one of this studio's secrets
+ *       ({@code huggingface}: its Hugging Face token), sealed and held in the host's memory only,
+ *       or takes it back.
  *   <li>{@code POST /api/hosts/download {host, repo, option}} has a host download a Hugging Face model
  *       itself, so it can chat with it; {@code POST /api/hosts/downloads {host}} lists that host's
  *       downloads and {@code POST /api/hosts/cancel {host, id}} stops one.
@@ -97,6 +100,7 @@ final class TrainRoutes {
         server.post("/api/hosts", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             if (Boolean.TRUE.equals(body.get("remove"))) {
+                training.hosts().takeBack(Json.string(body, "id", ""));
                 boolean ok = training.hosts().remove(Json.string(body, "id", ""));
                 Exchanges.json(ex, ok ? 200 : 404, Map.of("ok", ok));
                 return;
@@ -109,8 +113,22 @@ final class TrainRoutes {
                 Exchanges.error(ex, 400, e.getMessage());
             }
         });
-        server.post("/api/hosts/download", ex -> onHost(ex, (client, body) ->
-                client.hubDownload(Json.string(body, "repo", "").strip(), Json.string(body, "option", ""))));
+        server.post("/api/hosts/secret", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            try {
+                training.hosts().lend(Json.string(body, "host", ""), Json.string(body, "name", "huggingface"),
+                        !Boolean.FALSE.equals(body.get("lend")));
+                Exchanges.json(ex, 200, Map.of("hosts", training.hosts().toJson()));
+            } catch (java.io.IOException e) {
+                // no such host, no key to lend here, or a worker that does not answer or is too old
+                Exchanges.error(ex, 400, e.getMessage());
+            }
+        });
+        server.post("/api/hosts/download", ex -> onHost(ex, (client, body) -> {
+            // a host that restarted lost the token it was lent: it gets it again before a gated download
+            training.hosts().find(Json.string(body, "host", "")).ifPresent(training.hosts()::relend);
+            return client.hubDownload(Json.string(body, "repo", "").strip(), Json.string(body, "option", ""));
+        }));
         server.post("/api/hosts/downloads", ex -> onHost(ex, (client, body) -> Map.of("downloads", client.hubDownloads())));
         server.post("/api/hosts/cancel", ex -> onHost(ex, (client, body) ->
                 Map.of("ok", client.hubCancel(Json.string(body, "id", "")))));

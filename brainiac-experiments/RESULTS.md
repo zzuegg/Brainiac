@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes.
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes. It also covers wave 10: 101 more techniques in six work packages (WP1–WP6, listed in `wave10-ideas.md`), tagged **W10** in the same way and measured in 39 new experiment entries (106 new test classes), with eight new themes: events, labels, metric, multitask, parsing, restoration, shift and speech. Wave 10 is gathered in its own section after wave 9, one part per work package; all its numbers are single-seed and at test budgets, because its long-budget Runs were not executed.
 
 ## How the module is laid out
 
@@ -21,6 +21,7 @@ Rules this page follows:
 - Wave 7 numbers are keyed **Run-w7**: they were printed by the tests in one full suite run of the merged wave 7 work on 2026-11-18 (543 test classes, 1,150 tests, all passing). Where a wave 7 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave7)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - Wave 8 numbers are keyed **Run-w8**: they were printed by the tests in one full suite run of the merged wave 8 work on 2026-11-18 (667 test classes, 1,328 tests, all passing). Where a wave 8 test printed nothing on a point, or the number comes from a larger run than the test budget allows, it is taken from the implementing agent's final report and marked **(R-wave8)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - Wave 9 numbers are keyed **R-wave9**: they come from the final reports of the six wave 9 work-package agents, who ran their own test classes one at a time with `--tests` filters on 2026-11-18 (all passing). No full suite run of the merged wave 9 work has been made, so there is no Run-w9 key. Where an agent's first report and its follow-up after fixes disagree, the follow-up is used. Most wave 9 rows are one seed, and small gaps are within noise.
+- Wave 10 numbers are keyed **R-wave10**: they come from the final reports of the six wave 10 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 10 branch or of the merged branch has been made, so there is no Run-w10 key. Every wave 10 number is single-seed and at the test budget. The long-budget `main()` Runs, including most of the wave 9 follow-ups, were written but not executed, so a hypothesis that needs them is marked **Inconclusive (long run pending)** unless the test-budget numbers already settle it.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -50,6 +51,7 @@ Source keys (given under each experiment):
 | Run-w8 | Full suite run after wave 8, 2026-11-18: merged WP1–WP6 work (667 test classes, 1,328 tests), all passing |
 | R-wave8 | Session transcript: final reports of the six wave 8 work-package agents (WP1–WP6) |
 | R-wave9 | Session transcript: final reports of the six wave 9 work-package agents (WP1–WP6), including their follow-ups after fixes; per-class test runs, 2026-11-18 |
+| R-wave10 | Session transcript: final reports of the six wave 10 work-package agents (WP1–WP6); per-class test runs only, single seed at test budgets, 2026-11-18; long-budget `main()` Runs not executed |
 
 ---
 
@@ -4325,6 +4327,636 @@ Not done: no receptive-field redistribution in patch inference; no LsqDense or P
 
 ---
 
+## Wave 10
+
+Wave 10 adds 101 techniques in six work packages (WP1–WP6, items 10.1.1 to 10.6.16 in `wave10-ideas.md`). An item is tagged **W10** in the same way as earlier waves, so "W10 1.3" is item 10.1.3. The six work-package branches are merged on the local branch `wave10-int`, which builds on wave 9's `claude/project-thread-8zvcl0` and has not been pushed. Wave 10 adds 106 test classes and eight new themes (events, labels, metric, multitask, parsing, restoration, shift and speech), and extends fourteen existing ones (alignment, audio, classic, control, document, edge, graphs, interp, language, multimodal, parallel, reasoning, selfsupervised and vision). As in wave 9, the section has one part per work package, and the theme of each experiment is given on its Sources line. Twelve items are fair-test follow-ups of earlier negatives (10.3.17, 10.4.13 to 10.4.16 and 10.6.10 to 10.6.16).
+
+Every wave 10 number is keyed **R-wave10**. It comes from the final report of the work-package agent that built the item. The user asked for no extensive test runs, so each agent ran only its own test classes, one or two at a time with `--tests` filters, in the cloud container on 2026-11-18, and all of them passed when last run. No full suite run has been made, neither of a single branch nor of the merged `wave10-int`, so there is no Run-w10 key. Two caveats apply to every row:
+
+- **All numbers are test-budget and single-seed** (seed 1 unless a row says otherwise). Gaps of a few points are within noise, and several rows are probes at sanity budgets.
+- **The long-budget `main()` Runs were written but not executed.** Each experiment has a `main()` with more seeds, larger budgets and the full grids, and most of the wave 9 follow-ups (10.4.14 to 10.4.16, 10.6.10 to 10.6.14 and 10.6.16) state their hypotheses at those budgets. None of them was run, because the user asked for no extensive test runs. A follow-up whose hypothesis needs the long budget is marked **Inconclusive (long run pending)**, unless the test-budget numbers already settle it.
+
+Some test classes were changed after the run that produced their numbers (budgets lowered, or a class split in two) and were not run again; each WP part says which. Where a number comes from an earlier or longer run than the test's, the row says so.
+
+The **Verdict** column reads as follows:
+- **Win:** the technique beats its baseline clearly.
+- **Mixed:** it wins on some measures or settings and loses on others.
+- **Negative:** it does not beat its baseline, or the hypothesis in `wave10-ideas.md` did not hold. These rows are kept and labelled.
+- **Inconclusive:** the test is only a smoke run, so the numbers cannot decide. **Inconclusive (long run pending)** means the hypothesis needs a budget that only the unexecuted `main()` Run provides.
+
+### Wave 10 verdicts by item
+
+| WP | Win | Mixed | Negative | Inconclusive | Items |
+|---|---|---|---|---|---|
+| WP1 imperfect supervision | 6 | 6 | 5 | 0 | 17 |
+| WP2 distribution shift and the open world | 7 | 5 | 5 | 0 | 17 |
+| WP3 representation learning | 1 | 8 | 8 | 0 | 17 |
+| WP4 deep RL recipes and follow-ups | 2 | 6 | 3 | 6 | 17 |
+| WP5 boosting, events, graphs, parsing | 8 | 4 | 5 | 0 | 17 |
+| WP6 restoration, speech, perception follow-ups | 4 | 5 | 3 | 4 | 16 |
+| **Total** | **28** | **34** | **29** | **10** | **101** |
+
+Of the 10 Inconclusive items, 9 are long runs pending (10.4.3, 10.4.4, 10.4.14, 10.4.15, 10.4.16, 10.6.11, 10.6.12, 10.6.13 and 10.6.16) and 1 (10.4.12) is a smoke run only. Four other follow-ups also have long runs pending, but their test-budget numbers already decide the hypothesis, or the part of it that a test can reach: 10.3.17 (Negative), 10.4.13 (Mixed), 10.6.10 (Win) and 10.6.14 (Negative).
+
+| Item | Technique | Experiment | Verdict |
+|---|---|---|---|
+| W10 1.1 | Pseudo-labelling, Π-model, Mean Teacher | SemiSupervisedShootout | Negative |
+| W10 1.2 | Virtual adversarial training | SemiSupervisedShootout | Mixed |
+| W10 1.3 | MixMatch | SemiSupervisedShootout | Negative |
+| W10 1.4 | FixMatch | SemiSupervisedShootout | Win |
+| W10 1.5 | FlexMatch, FreeMatch, SoftMatch | SemiSupervisedShootout | Mixed |
+| W10 1.6 | JEPAMatch | SemiSupervisedShootout | Negative |
+| W10 1.7 | GCE, SCE, active–passive losses, JAL | NoisyLabelShootout | Mixed |
+| W10 1.8 | Co-teaching and DivideMix | NoisyLabelShootout | Win |
+| W10 1.9 | Early-learning regularisation | NoisyLabelShootout | Win |
+| W10 1.10 | Transition-matrix loss correction | NoisyLabelShootout | Negative |
+| W10 1.11 | Logit adjustment (additive, balanced softmax, multiplicative) | LongTailShootout | Win |
+| W10 1.12 | LDAM-DRW, cRT, τ-normalisation | LongTailShootout | Mixed |
+| W10 1.13 | uPU, nnPU, Elkan–Noto prior, 2-HNC | WeakLabelShootout | Mixed |
+| W10 1.14 | Data programming and Dawid–Skene | WeakLabelShootout | Win |
+| W10 1.15 | Attention-based multiple-instance learning | WeakLabelShootout | Win |
+| W10 1.16 | PRODEN partial-label learning | WeakLabelShootout | Mixed |
+| W10 1.17 | Learning from label proportions (DLLP) | WeakLabelShootout | Negative |
+| W10 2.1 | MSP, max logit, energy, ODIN | OodShootout | Win |
+| W10 2.2 | Mahalanobis, k-NN, ViM | OodShootout | Win |
+| W10 2.3 | ReAct, ASH, SCALE, AdaSCALE | OodShootout | Negative |
+| W10 2.4 | Outlier exposure | OodShootout | Win |
+| W10 2.5 | OpenMax | OodShootout | Negative |
+| W10 2.6 | SelectiveNet, Deep Gamblers, likelihood-ratio rejection | SelectivePrediction | Mixed |
+| W10 2.7 | Learning to defer | SelectivePrediction | Negative |
+| W10 2.8 | BBSE, MLLS, online Dirichlet-prior estimation | LabelShift | Win |
+| W10 2.9 | DANN and CDAN | DomainAdaptation | Mixed |
+| W10 2.10 | Deep CORAL and MMD | DomainAdaptation | Win |
+| W10 2.11 | SHOT | DomainAdaptation | Mixed |
+| W10 2.12 | MixStyle and SWAD | DomainGeneralization | Negative |
+| W10 2.13 | Last-layer retraining (DFR) | DomainGeneralization | Mixed |
+| W10 2.14 | KLIEP, uLSIF, classifier odds, weighted conformal | DomainGeneralization | Win |
+| W10 2.15 | EATA, SAR, CoTTA | DomainAdaptation | Negative |
+| W10 2.16 | WiSE-FT and LP-FT | DomainGeneralization | Mixed |
+| W10 2.17 | SynthID-Text tournament watermark | WatermarkShootout | Win |
+| W10 3.1 | SimSiam | SelfSupervisedBenchmark | Mixed |
+| W10 3.2 | SwAV | SelfSupervisedBenchmark | Negative |
+| W10 3.3 | MoCo v2 and v3 | SelfSupervisedBenchmark | Negative |
+| W10 3.4 | data2vec and iBOT | SelfSupervisedBenchmark | Negative |
+| W10 3.5 | KoLeo regulariser | SelfSupervisedBenchmark | Mixed |
+| W10 3.6 | LeJEPA (SIGReg) | SelfSupervisedBenchmark | Mixed |
+| W10 3.7 | Supervised contrastive learning | MetricLearningShootout | Mixed |
+| W10 3.8 | Triplet with mining, multi-similarity | MetricLearningShootout | Negative |
+| W10 3.9 | CosFace and ArcFace | MetricLearningShootout | Negative |
+| W10 3.10 | Proxy-NCA and Proxy-Anchor | MetricLearningShootout | Mixed |
+| W10 3.11 | DEC and IDEC | DeepClustering | Negative |
+| W10 3.12 | SCAN and IIC | DeepClustering | Negative |
+| W10 3.13 | Uncertainty weighting, GradNorm, DWA | GradientBalancing | Mixed |
+| W10 3.14 | PCGrad and GradOPS | GradientBalancing | Mixed |
+| W10 3.15 | MGDA-UB, CAGrad, Nash-MTL | GradientBalancing | Win |
+| W10 3.16 | FAMO | GradientBalancing | Mixed |
+| W10 3.17 | CCS with normalisation, prompt ensembles and CRC (follow-up) | LatentKnowledge | Negative |
+| W10 4.1 | TD3+BC | OfflineRlComparison | Win |
+| W10 4.2 | CrossQ | ModernOffPolicy | Mixed |
+| W10 4.3 | BRO | ModernOffPolicy | Inconclusive (long run pending) |
+| W10 4.4 | SimbaV2 | ModernOffPolicy | Inconclusive (long run pending) |
+| W10 4.5 | PQN | ValueBasedRecipes | Negative |
+| W10 4.6 | MR.Q | ModernOffPolicy, ValueBasedRecipes | Mixed |
+| W10 4.7 | TD7 | ModernOffPolicy | Win |
+| W10 4.8 | SPR and BBF | ValueBasedRecipes | Mixed |
+| W10 4.9 | DrQ and DrQ-v2 | ValueBasedRecipes | Mixed |
+| W10 4.10 | ReDo, plasticity injection, resets | PlasticityAndScale | Mixed |
+| W10 4.11 | Multi-skip residuals with Kron | PlasticityAndScale | Negative |
+| W10 4.12 | EfficientZero | ValueBasedRecipes | Inconclusive |
+| W10 4.13 | GAIL with GP and absorbing states, AIRL, IQ-Learn (follow-up) | GoalsImitationAndTeams | Mixed |
+| W10 4.14 | Continuous control at a fair budget (follow-up) | ModernOffPolicy | Inconclusive (long run pending) |
+| W10 4.15 | Reward ensembles and WARM with stronger proxies (follow-up) | RewardOveroptimization | Inconclusive (long run pending) |
+| W10 4.16 | VinePPO, PRIME, Step-DPO at a larger budget (follow-up) | ProcessSupervision | Inconclusive (long run pending) |
+| W10 4.17 | Value-based scaling and TD-overfitting | PlasticityAndScale | Negative |
+| W10 5.1 | LightGBM: GOSS, EFB, leaf-wise growth | BoostingShootout | Win |
+| W10 5.2 | CatBoost: ordered boosting and target statistics | BoostingShootout | Negative |
+| W10 5.3 | NGBoost | BoostingShootout | Mixed |
+| W10 5.4 | Explainable boosting machines | BoostingShootout | Win |
+| W10 5.5 | PFN-Boost | BoostingShootout | Mixed |
+| W10 5.6 | Quantile regression forests | BoostingShootout | Negative |
+| W10 5.7 | Hawkes processes with flexible kernels | PointProcessShootout | Win |
+| W10 5.8 | RMTPP, neural Hawkes, transformer Hawkes | PointProcessShootout | Win |
+| W10 5.9 | Intensity-free point processes | PointProcessShootout | Negative |
+| W10 5.10 | GRU-D, ODE-RNN, latent ODE, mTAN | IrregularSeriesShootout | Negative |
+| W10 5.11 | BRITS, SAITS, CSDI | IrregularSeriesShootout | Negative |
+| W10 5.12 | TGN against EdgeBank, probe suite | TemporalGraphShootout | Mixed |
+| W10 5.13 | R-GCN and CompGCN | RelationalGraphs | Win |
+| W10 5.14 | Neural Bellman–Ford networks | RelationalGraphs | Win |
+| W10 5.15 | Poincaré and Lorentz embeddings | RelationalGraphs | Win |
+| W10 5.16 | Biaffine dependency parsing with MST decoding | ParsingShootout | Win |
+| W10 5.17 | Span-based chart parsing | ParsingShootout | Mixed |
+| W10 6.1 | SRCNN, ESPCN, EDSR, SPAN | RestorationShootout | Win |
+| W10 6.2 | DnCNN and FFDNet | RestorationShootout | Mixed |
+| W10 6.3 | Noise2Noise, Neighbor2Neighbor, zero-shot N2N, Median2Median | RestorationShootout | Mixed |
+| W10 6.4 | Plug-and-play and unrolled deblurring | RestorationShootout | Negative |
+| W10 6.5 | x-vectors with AAM-softmax, GE2E | SpeakerShootout | Win |
+| W10 6.6 | Voice activity detection | SpeechFrontEnds | Mixed |
+| W10 6.7 | Speech enhancement | SpeechFrontEnds | Mixed |
+| W10 6.8 | Speaker diarisation (clustering vs EEND) | SpeakerShootout | Mixed |
+| W10 6.9 | FlexiViT | VisionShootout | Negative |
+| W10 6.10 | DETR with query selection (follow-up) | DetectionShootout | Win |
+| W10 6.11 | Donut with reading pretraining (follow-up) | DocumentParsing | Inconclusive (long run pending) |
+| W10 6.12 | Two-stage VQA bridges with LoRA (follow-up) | FusionShootout | Inconclusive (long run pending) |
+| W10 6.13 | Transfusion with VAE latents and U-Net patches (follow-up) | FusionShootout | Inconclusive (long run pending) |
+| W10 6.14 | BigNAS in-place distillation (follow-up) | EdgeDeployment | Negative |
+| W10 6.15 | V-shape schedules and an exact ZB-H2 scheduler (follow-up) | ParallelismShootout | Win |
+| W10 6.16 | GAN vocoder with mel-loss warm-up (follow-up) | AudioGeneration | Inconclusive (long run pending) |
+
+---
+
+## Wave 10 WP1: semi-supervised learning, noisy labels, long tails, weak and bag-level labels
+
+New packages: `experimental.semisup`, `experimental.labels` and `experiments.labels`. A new generator, `experimental.data.LabelCorruption`, leaves `ToyTasks`, `ShapeImages` and `TabularStressSuite` unchanged, and `experimental.interp.AttentionRollout` gains a public `minCutSourceSide` (its `maxFlow` is unchanged). Unless a row says otherwise, the task is the 8×8 `ToyTasks` digits (10 classes, 1,000 training rows) with the same MLP, Adam and seed 1. The numbers come from the builder's last run of all 18 of its test classes, which took 4 to 17 s each on the loaded machine. After that run, four classes over 10 s were split into smaller ones. Of the new classes only DivideMixShootoutTest has been run; the others carry over assertions whose numbers were already measured, and they compile (R-wave10).
+
+### SemiSupervisedShootout (W10 1.1: pseudo-labelling, Π-model and Mean Teacher, 1.2: VAT, 1.3: MixMatch, 1.4: FixMatch, 1.5: FlexMatch, FreeMatch and SoftMatch, 1.6: JEPAMatch)
+Sources: R-wave10. Theme: labels. Tests: SemiSupervisedShootoutTest, ThresholdedSemiSupervisedTest, ImbalancedPoolSemiSupervisedTest, JepaMatchShootoutTest, SemiSupervisedTabularTest, SemiSupervisedBlocksTest. Blocks: `ConsistencyTraining`, `VirtualAdversarial`, `MixMatch`, `FixMatch` (with a pluggable `Mask`), `AdaptiveThreshold` (FLEX, FREE and SOFT modes), `JepaMatch`, `SoftTargets`. 4 labels per class, 400 steps, balanced test accuracy. The main baseline is supervised training with augmentation.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Pseudo-label; Π-model; Mean Teacher | Balanced accuracy | 0.537; 0.570; 0.567 | Supervised + augmentation: 0.567. Supervised, plain: 0.387. Oracle (all labels): 0.847 | Negative | Negative: none of the three beats augmented supervised training, and pseudo-labelling falls below it. |
+| VAT on digits; on spirals (20 labels per class); on TabularStressSuite | Accuracy | 0.303; 0.989; 0.585 | Digits: supervised + augmentation 0.567. Spirals: supervised 0.955, Mean Teacher 0.966, Π-model 0.994, oracle 0.993. Tabular: supervised 0.625, oracle 0.658 | Mixed | VAT works where the cluster assumption holds (spirals) and fails on digits. On the tabular suite, where it was expected to win, it loses; that suite is too hard to separate any methods. |
+| MixMatch | Balanced accuracy | 0.540 | Supervised + augmentation: 0.567. Mean Teacher: 0.567 | Negative | Negative: below both. The sharpening ablation was not reported. |
+| FixMatch, τ = 0.95; τ = 0.7 | Balanced accuracy | 0.643; 0.653 | Supervised + augmentation: 0.567 | Win | The strongest family at 4 labels per class, level with FreeMatch. At τ = 0.95 only 4% of unlabelled rows pass the threshold, at pseudo-label precision 0.85. On the imbalanced pool (ratio 10) it scores 0.607 with a worst class of 0.267, as predicted for rare classes. |
+| FlexMatch; FreeMatch; SoftMatch | Balanced accuracy (worst class) | 0.620 (0.200); 0.653 (0.433); 0.623 | FixMatch, τ = 0.95: 0.643 | Mixed | FreeMatch ties FixMatch. FlexMatch never leaves its warm-up at 400 steps: its thresholds stay near 0, so it keeps every row at pseudo-label precision 0.27. On the imbalanced pool FlexMatch is worse than FixMatch, 0.533 (worst class 0.200) against 0.607 (0.267). Convergence speed was not measured. |
+| JEPAMatch (SIGReg); FlexMatch + VICReg | Balanced accuracy | 0.457; 0.533 | FlexMatch: 0.620 | Negative | Negative: both latent regularisers lower accuracy. |
+
+Item verdicts: 1.1 Negative, 1.2 Mixed, 1.3 Negative, 1.4 Win, 1.5 Mixed, 1.6 Negative.
+
+Not done: the entropy-based `ActiveLearner` baseline is built but not run in the tests; no ShapeImages rows; FreeMatch's self-adaptive fairness term and SoftMatch's uniform alignment are left out; `JepaMatch.sigreg` is a local Epps–Pulley copy, to be swapped for WP3's `experimental.ssl.Sigreg`.
+
+### NoisyLabelShootout (W10 1.7: noise-robust losses, 1.8: co-teaching and DivideMix, 1.9: early-learning regularisation, 1.10: transition-matrix correction)
+Sources: R-wave10. Theme: labels. Tests: RobustLossShootoutTest, SampleSelectionShootoutTest, DivideMixShootoutTest, TransitionCorrectionShootoutTest, LabelBlocksTest. Blocks: `RobustLosses` (GCE, SCE, NCE+RCE, JAL as NCE+AMSE, MAE, focal), `SampleSelection` (co-teaching schedule and small-loss pick, co-teaching+ disagreement, GMM clean probability, DivideMix label refinement), `EarlyLearningRegularizer`, `TransitionCorrection` (forward and backward correction, percentile-anchor and mean-anchor estimators, T-revision). 40% label noise.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GCE; SCE; NCE+RCE; JAL; MAE, 40% symmetric noise | Final accuracy (share of flipped labels memorised) | GCE 0.550 (0.45). SCE 0.597. NCE+RCE 0.570 (0.36). JAL 0.583 (0.39). MAE 0.567 | CE: 0.567 (0.94). Label smoothing: 0.563. Focal: 0.520 | Mixed | The robust losses memorise far fewer flipped labels but gain at most 0.03 accuracy at this budget. CE does not collapse at 40% noise. |
+| NCE+RCE; JAL, 40% pair-flip noise | Final accuracy | 0.477; 0.497 | CE: 0.527 | Negative | Negative: both lose to CE, although JAL beats the active–passive loss, as predicted. |
+| Co-teaching; co-teaching+; DivideMix (2 networks + MixMatch) | Final accuracy (selection precision / recall) | 0.637 (0.84 / 0.87); 0.583; 0.727 (0.93 / 0.79) | Best robust loss (SCE): 0.597. CE: 0.567. EL2N pruning (`DataPruner`): 0.653 (0.79 / 0.81) | Win | Co-teaching beats every robust loss and DivideMix is best overall. EL2N's selection is less precise. |
+| ELR | Final accuracy; flipped examples predicted correctly | 0.683; 49% | CE: 0.567; 3%. CE with early stopping on a noisy validation split: 0.503. Co-teaching: 0.637 | Win | One network beats co-teaching. It recovers 49% of the flipped examples, short of the hypothesised 80%. |
+| Forward correction with estimated T; backward; T-revision, 40% pair-flip | Final accuracy | 0.517; 0.433; 0.510 | CE: 0.527. Forward with the true T: 0.733 | Negative | Negative: the estimated T (mean absolute error 0.063, diagonal about 0.7 against a true 0.6) throws the whole gain away. Under 40% instance-dependent noise, forward correction with estimated T does help (0.637 against 0.547 for CE), the reverse of the hypothesis. |
+
+Item verdicts: 1.7 Mixed, 1.8 Win, 1.9 Win, 1.10 Negative.
+
+Not done: no 60% noise rows were reported; JAL uses a = 10 rather than the paper's a = 30; DivideMix's compute cost was not measured.
+
+### LongTailShootout (W10 1.11: logit adjustment, 1.12: LDAM-DRW and classifier re-training)
+Sources: R-wave10. Theme: labels. Test: LongTailShootoutTest. Blocks: `LogitAdjustment` (post-hoc additive, adjusted loss and balanced softmax, multiplicative on cosine scores, grid tuning), `MarginAndDecoupling` (LDAM, DRW, class-balanced sampling, cRT, τ-normalisation). Imbalance ratio 100.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Post-hoc additive (τ = 1.0); logit-adjusted loss (= balanced softmax); post-hoc multiplicative (γ = 0.6) | Balanced accuracy (tail accuracy) | 0.617 (0.244); 0.623 (0.278); 0.607 | CE: 0.563 (0.100). Reweight: 0.580. Oversample: 0.593. Focal: 0.533 | Win | Every adjustment beats CE and reweighting, loss-time adjustment is best, and the additive and multiplicative post-hoc forms are within 0.01, as predicted. Over oversampling the gain is 0.014–0.030, under the hypothesised 3 points for two of the three. |
+| LDAM; LDAM-DRW; cRT; τ-norm | Balanced accuracy | 0.580; 0.607; 0.550; 0.567 | CE: 0.563 | Mixed | LDAM-DRW gains 0.044 over CE; the decoupled classifiers cRT and τ-norm do not beat CE. Tail accuracy was not reported for these rows. |
+
+Item verdicts: 1.11 Win, 1.12 Mixed. The multiplicative form (n^−γ on cosine logits, γ around 0.5) was checked against the paper's PDF.
+
+### WeakLabelShootout (W10 1.13: PU learning, 1.14: labelling functions, 1.15: attention MIL, 1.16: PRODEN, 1.17: label proportions)
+Sources: R-wave10. Theme: labels. Tests: PositiveUnlabelledTest, LabelModelShootoutTest, AttentionMilShootoutTest, MilSetBaselinesTest, PartialLabelShootoutTest, LabelProportionShootoutTest. Blocks: `PositiveUnlabeled` (biased PN, uPU, nnPU, Elkan–Noto prior, 2-HNC), `LabelModel` (majority vote, Dawid–Skene, data programming with an optional correlated pair, triplet matrix completion, IRT weighting through `IrtEvaluator`), `AttentionMil` (a core `Layer` with a `LayerSpec`, same contract as `SetEncoder`), `PartialLabels` (PRODEN, uniform, CC), `LabelProportions` (DLLP loss, OT pseudo-labels through `EntropicTransport.sinkhorn`, mean map).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| uPU; nnPU; nnPU with the Elkan–Noto prior; 2-HNC (transductive), even vs odd digits, 10% of positives labelled | Test accuracy | 0.517 (risk estimate −0.449); 0.683; 0.500; 0.530 | PN oracle: 0.937. Biased PN: 0.667. Isolation Forest: 0.593. Deep SVDD: 0.540 | Mixed | uPU's risk goes negative and nnPU fixes it, but nnPU stays 0.25 below PN, not within 3 points. The estimated prior is 0.27 against a true 0.48. 2-HNC suffers from pixel-space neighbour graphs on shifted digits. |
+| Data programming with the correlated pair; matrix completion; Dawid–Skene; plain data programming; IRT, duplicated weak function | Accuracy on covered rows (accuracy-estimation error) | 0.891 (0.015); 0.846 (0.027); 0.798; 0.808; 0.785 | Majority vote: 0.836. End model on 5 gold labels per class: 0.347 | Win | Modelling the correlated pair beats majority vote by 0.055. Without it, Dawid–Skene and data programming are misled by the duplicate and lose to the vote. The end model trained on the label model's labels scores 0.830. When the duplicate is a strong function, every method scores 0.90–0.92. |
+| Gated attention; plain attention, 200 bags | Bag AUC (instance AUC) | 0.910 (0.922); 0.719 (0.643) | Mean pooling: 0.797. Max: 0.856. Deep Sets: 0.829. Set Transformer: 0.557. Instance-level oracle: 0.983 | Win | Gated attention wins and finds the key instance (instance AUC above 0.9), as predicted; ungated attention is worse than mean pooling. |
+| PRODEN, 3 distractors on average; with biased distractors | Test accuracy | 0.730; 0.730 | Supervised: 0.877. CC: 0.713. Uniform: 0.580. Single-candidate rows only: 0.510. GCE on a random candidate: 0.447 | Mixed | PRODEN beats every partial-label baseline but is 0.15 below supervised, not within 3 points. Biased distractors did not hurt it. |
+| DLLP; DLLP + OT pseudo-labels, random bags of 8 | Test accuracy | 0.687; 0.667 | Supervised: 0.880. Bag-majority labels: 0.327. Mean map: 0.427 | Negative | Negative: DLLP beats the naive baselines but is far from supervised, OT does not help, and at bag size 128 every method collapses to 0.13–0.21. |
+
+Item verdicts: 1.13 Mixed, 1.14 Win, 1.15 Win, 1.16 Mixed, 1.17 Negative.
+
+Not done: 2-HNC is built from the abstract only (a parametric degree-penalised min cut, two stages, prior matching), so the paper's parametrisation may differ; the biased-PN baseline uses a local prior-matched threshold, not `Calibration`'s.
+
+---
+
+## Wave 10 WP2: OOD detection, selective prediction, label shift, domain adaptation and generalisation, watermarking
+
+New packages: `experimental.ood`, `experimental.shift` and `experiments.shift`. Also new: the generator `experimental.data.ShiftSuites` (shapes and digits in 7 styles, near- and far-OOD sets, priors, backgrounds, two moons and Shimodaira covariate shift), `experimental.llm.TournamentWatermark` and `experiments.language.WatermarkShootout`. `CausalAndFairness.colouredShapes` becomes a public accessor with its sampling unchanged. All 13 WP2 test classes passed when last run, each in 10 s or less (R-wave10).
+
+### OodShootout: post-hoc scores (W10 2.1: MSP, max logit, energy and ODIN, 2.2: Mahalanobis, k-NN and ViM, 2.3: activation shaping)
+Sources: R-wave10. Theme: shift. Test: OodShootoutTest. Blocks: `ood.LogitScores`, `ood.FeatureScores`, `ood.TiedGaussian`, `ood.FeatureClassifier`, `ood.ActivationShaping`, `ood.OodMetrics`. Task: shapes, in-distribution accuracy 0.910.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Max logit; energy; ODIN | AUROC, near / far OOD | 0.829 / 0.577; 0.829 / 0.578; 0.826 / 0.532 | MSP: 0.804 / 0.536 | Win | Energy beats MSP by 0.025 near and 0.042 far, inside the predicted 2–5 points. ODIN helps near OOD, not far OOD as predicted. |
+| k-NN; ViM; Mahalanobis | AUROC, near / far | 0.839 / 0.704; 0.836 / 0.645; 0.588 / 0.668 | Energy: 0.829 / 0.578. GMM on pixels: 0.759 / 0.985 | Win | k-NN and ViM edge out every logit score near OOD (by 0.01, within noise) and clearly beat them far. Mahalanobis is brittle near OOD, as predicted. A pixel-space GMM wins far OOD outright. |
+| ReAct; SCALE; ASH-P, ASH-B, ASH-S; AdaSCALE-A, AdaSCALE-L | AUROC, near / far | ReAct 0.832 / 0.589. SCALE 0.793 / 0.525. ASH-P 0.765 / 0.537 (accuracy falls to 0.853), ASH-B 0.746 / 0.511, ASH-S 0.687 / 0.477. AdaSCALE-A 0.683 / 0.561, AdaSCALE-L 0.687 / 0.559 | Energy: 0.829 / 0.578 | Negative | Negative: only ReAct beats energy, and only slightly; SCALE, ASH and AdaSCALE all lower it on this toy. |
+
+Item verdicts: 2.1 Win, 2.2 Win, 2.3 Negative.
+
+Not done: the ensemble and `UncertaintyBenchmark` baselines (DUQ, SNGP and others) are reported only in `main()`.
+
+### OodShootout: outlier exposure and open-set recognition (W10 2.4: outlier exposure, 2.5: OpenMax)
+Sources: R-wave10. Theme: shift. Test: OodTrainingTest. Blocks: `ood.OutlierExposure`, `ood.OpenMax`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| OE with a uniform target; OE with the energy loss | Far AUROC (energy score) / accuracy | 0.881 / 0.923; 0.883 / 0.890 | Plain training: 0.580 / 0.898. Mixup: 0.729 / 0.928 | Win | The largest far-OOD gain in the WP, as predicted. The energy form drops near AUROC to 0.652. |
+| OpenMax, well-trained (closed-set accuracy 0.908); briefly trained | AUROC; open-set accuracy | 0.730; 0.545. Brief: AUROC 0.660 | Max logit: 0.778; 0.556. Brief: 0.682. Conformal: AUROC 0.553 | Negative | Negative: OpenMax never beats max logit, not even at the short budget where it was expected to. The well-trained result matches Vaze et al. |
+
+Item verdicts: 2.4 Win, 2.5 Negative.
+
+### SelectivePrediction (W10 2.6: SelectiveNet, Deep Gamblers and likelihood-ratio rejection, 2.7: learning to defer)
+Sources: R-wave10. Theme: shift. Test: SelectivePredictionTest. Blocks: `ood.SelectiveClassifier` (SelectiveNet, Deep Gamblers, Δ-MDS and Δ-KNN), `ood.LearningToDefer`. The classifier's accuracy is 0.622.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Δ-KNN + RLog; Δ-MDS + RLog; SelectiveNet; Deep Gamblers | AURC in distribution / shifted (lower is better) | 0.1865 / 0.4972; 0.1973 / 0.4829; 0.3267 / 0.5278; 0.2452 / 0.5753 | Softmax response: 0.1885 / 0.4949. MC dropout: 0.2033 / 0.5496. Ensemble ×3: 0.1245 / 0.4372 | Mixed | Softmax response is hard to beat, as in the literature, and the trained rejectors are clearly worse. Δ-MDS degrades least under shift, by a small margin. The 3-member ensemble beats everything at 3x the cost. |
+| Softmax surrogate; one-vs-all, deferral budget 0.4 | System accuracy (ECE of the expert-correctness estimate) | 0.471 (0.220); 0.455 (0.140) | Confidence threshold: 0.487. Two-stage: 0.492. Classifier alone: 0.388. Expert alone: 0.519 | Negative | Negative: both learned rules lose to thresholding, and none of the rules beats the expert alone. One-vs-all is better calibrated, as predicted. |
+
+Item verdicts: 2.6 Mixed, 2.7 Negative.
+
+### LabelShift (W10 2.8: BBSE, MLLS and online Dirichlet-prior estimation)
+Sources: R-wave10. Theme: shift. Test: LabelShiftTest. Block: `shift.LabelShiftEstimator`. Mean over five shifts.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| BBSE; RLLS; MLLS-TS; MLLS-BCTS; MAP-Dirichlet | Weight MSE; accuracy | 0.098; 0.765. 0.044; 0.768. 0.027; 0.768. 0.037; 0.766. 0.032; 0.769 | No correction: 1.456; 0.682. Oracle weights: 0; 0.768. BN statistics / TENT: accuracy 0.430 | Win | Calibrated MLLS estimates the weights 3.6x better than BBSE, and every correction recovers the oracle gain. Test-time BN adaptation hurts badly, as in wave 8. |
+| Online FMAPLS-style tracking, drifting stream | Prior error; accuracy | 0.058; 0.660 | MLLS refit on each batch: 0.104; 0.618. No correction: accuracy 0.650 | Win | The online estimator tracks the drift better than per-batch refitting, at a fraction of the cost. |
+
+Not done: FMAPLS uses a fixed Dirichlet α instead of estimating it (only the paper's abstract was available).
+
+### DomainAdaptation (W10 2.9: DANN and CDAN, 2.10: CORAL and MMD, 2.11: SHOT, 2.15: EATA, SAR and CoTTA)
+Sources: R-wave10. Theme: shift. Tests: DomainAdaptationTest, DomainAdaptationMoonsTest, ContinualAdaptationTest. Blocks: `shift.GradientReversal`, `shift.AdversarialAdaptation` (DANN, CDAN, CDAN-E), `shift.DiscrepancyAdaptation` (CORAL, MMD), `shift.SourceFreeAdaptation` (SHOT), `shift.RobustTestTimeAdaptation` (EATA, SAR, CoTTA). Tasks: shapes to textured shapes, and rotated two moons.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DANN; CDAN; CDAN-E | Target accuracy, shapes → textured / moons | 0.406 / 0.956; 0.568 (earlier run; not run in the shapes test) / 0.938; 0.478 / 0.832 | Source only: 0.238 / 0.928. Oracle: 0.618 / 0.998 | Mixed | DANN closes 44% and 40% of the gap, inside the predicted 30–60%. CDAN does better on shapes but worse on moons, and CDAN-E falls below source-only on moons. |
+| MMD; CORAL | Same | 0.612 / 0.934; 0.518 / 0.930 | Source only: 0.238 / 0.928. DANN: 0.406 / 0.956. AdaBN: 0.530 / 0.764. TENT: 0.530 / 0.772 | Win | On shapes MMD almost reaches the oracle and CORAL beats DANN. On moons both are level with source-only, so MMD's predicted gain there does not show. |
+| SHOT | Same | 0.254 / 0.998 | TENT: 0.530 / 0.772. DANN: 0.406 / 0.956 | Mixed | Matches the oracle on moons without source data, but fails on shapes, where it barely beats source-only. |
+| EATA; SAR; CoTTA, continual corruption stream | Accuracy | 0.549 (EATA adapts on 28% of samples); 0.549; 0.565 | No adaptation: 0.265. BN statistics: 0.550. TENT: 0.549 | Negative | Negative: TENT did not degrade over the stream, so the robust methods had nothing to fix and tie it. On single-class batches every adapter falls to about 0.21, below no adaptation (0.336), and SAR never resets. |
+
+Item verdicts: 2.9 Mixed, 2.10 Win, 2.11 Mixed, 2.15 Negative.
+
+Not done: the DIGITS_FONT task runs only in `main()`; TabularStressSuite is not covered; GradientReversal, the Weibull fit, MixStyle and DensityRatio have no unit tests of their own (the experiment tests exercise them).
+
+### DomainGeneralization (W10 2.12: MixStyle and SWAD, 2.13: DFR, 2.14: density-ratio correction, 2.16: WiSE-FT and LP-FT)
+Sources: R-wave10. Theme: shift. Tests: DomainGeneralizationTest, SpuriousCorrelationTest, CovariateShiftTest, RobustFineTuningTest. Blocks: `shift.MixStyle`, `shift.Swad`, `shift.LastLayerRetraining`, `shift.DensityRatio` (uLSIF, KLIEP, classifier odds, weighted conformal), `shift.RobustFineTuning`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| MixStyle; V-REx, TEXTURED held out, 180 steps; SWAD, 300 steps | Held-out domain accuracy | 0.330; 0.448; 0.337 | ERM: 0.340 at 180 steps, 0.38 at 300 | Negative | Negative: MixStyle and SWAD do not beat ERM, and V-REx, expected to stay below ERM, is the best row. |
+| DFR, coloured bars; backgrounds | Average / worst-group accuracy | 0.601 / 0.478; 0.697 / 0.604 | ERM: 0.600 / 0.243; 0.633 / 0.272. GroupDRO: 0.644 / 0.384; 0.808 / 0.688 | Mixed | DFR doubles ERM's worst group on both tasks and beats GroupDRO on bars, but not on backgrounds. No JTT row was reported. |
+| uLSIF; KLIEP; classifier odds; clipped uLSIF | Target MSE, dimension 1 / 5 | 0.095 / 0.179; 0.095 / 0.200; 0.096 / 0.202; 5-D only: 0.167 | No weighting: 0.387 / 1.897. Oracle weights: 0.095 / 0.211 | Win | Weighting removes most of the shift error, and uLSIF is the best estimator in 5 dimensions, as predicted. |
+| Weighted split conformal, target 0.90 | Coverage (set size) | 0.905 (1.44) | Plain split conformal: 0.792 (1.02). Oracle weights: 0.907 | Win | Weighting restores nominal coverage where plain conformal under-covers. |
+| LP-FT; WiSE-FT (α = 0.5); WiSE-(LP-FT) | In-distribution / shifted accuracy | 0.745 / 0.287; 0.505 / 0.275; 0.645 / 0.290 | Full fine-tuning: 0.600 / 0.253. Linear probe: 0.483 / 0.283. Soup of 3: 0.368 / 0.210 | Mixed | LP-FT is best on both measures, as predicted. WiSE-FT beats full fine-tuning on the shifted domain but not the linear-probe endpoint. All shifted gains are small (chance is 0.167). |
+
+Item verdicts: 2.12 Negative, 2.13 Mixed, 2.14 Win, 2.16 Mixed.
+
+Not done: SWAD and the full leave-one-out grid run only in `main()`, as do the JEM baselines; `DomainGeneralization.pretrain` is a local InfoNCE pretrainer, because `SelfSupervisedBenchmark.pretrainEncoder` belonged to WP3.
+
+### WatermarkShootout (W10 2.17: SynthID-Text tournament sampling)
+Sources: R-wave10. Theme: language. Tests: WatermarkShootoutTest, TournamentWatermarkTest. Block: `experimental.llm.TournamentWatermark`, a closed-form `LogitsProcessor` plus an explicit tournament sampler. The closed form matches the explicit 2³ tournament to within 0.002 of the empirical frequencies, and averaging over keys reproduces the LM's distribution. Task: `WindowLm` on `SyntheticCorpus` topic streams, T = 1.0.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Tournament watermark | TPR at 1% FPR: 25 tokens / 50 tokens / with 20% edits; judge log-likelihood | 0.43 / 0.91 / 0.35; −1.62 | Green list δ = 2: 0.32 / 0.45 / 0.23; −2.08. δ = 1: 0.06 / 0.11 / 0.06; −1.93. Unwatermarked: 0.00 / 0.02; −1.77 | Win | Twice as detectable as the strongest green list at 50 tokens, with no loss on the judge. Distinct-2 falls from 0.134 to 0.109, because the key per context is fixed. |
+
+Not done: `WindowLm` sampling has no `LogitsProcessor` hook, so `WatermarkShootout.generate` is a local batched sampler.
+
+---
+
+## Wave 10 WP3: self-supervised follow-ups and LeJEPA, metric learning, deep clustering, multi-task balancing
+
+New packages: `experimental.ssl`, `experimental.metric`, `experimental.multitask`, `experiments.metric` and `experiments.multitask`, plus new classes in `experimental.ml`, `experimental.interp`, `experiments.selfsupervised` and `experiments.interp`. The slowest class, LatentKnowledgeFollowUpTest, takes about 15.5 s, over the 10 s target. All numbers are seed 1 (R-wave10).
+
+### SelfSupervisedBenchmark (W10 3.1: SimSiam, 3.2: SwAV, 3.3: MoCo, 3.4: data2vec and iBOT, 3.5: KoLeo, 3.6: LeJEPA)
+Sources: R-wave10. Theme: selfsupervised. Tests: SslBlocksTest, SimSiamTest, SwappedPredictionTest, MomentumContrastTest, MaskedFeaturePredictionTest, KoLeoTest, LeJepaTest. Blocks: `experimental.ssl.Sigreg`, `LeJepa`, `KoLeo`, `SimSiam`, `SwappedPrediction`, `MomentumContrast`, `MaskedFeaturePrediction`. `SelfSupervisedBenchmark` gains an `Extra` enum, `Options`, `report`, `run`, `pretrainEncoder` and `main`; the refactored `runJoint` keeps the old numbers (SimCLR 0.560, BYOL 0.424). 150 steps unless noted. Numbers are linear probe / kNN / effective rank; a random encoder probes at 0.341.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SimSiam; without stop-gradient; without predictor | Probe / kNN / rank | 0.417 / 0.646 / 8.2; 0.445 / 0.484 / 5.7; 0.417 / 0.427 / 3.8 | BYOL: 0.424 / 0.622 / 7.5. SimCLR: 0.560 / 0.729 | Mixed | SimSiam matches BYOL without a momentum encoder, and both ablations lose kNN accuracy and rank, but neither fully collapses. Both trail SimCLR. |
+| SwAV; with multi-crop | Probe / kNN (cluster purity) | 0.409 / 0.534 (0.385); 0.411 / 0.508 (0.344) | SimCLR: 0.560 / 0.729. DINO: 0.448 / 0.508 | Negative | Negative: SwAV does not beat SimCLR at small batch, and multi-crop adds nothing. |
+| MoCo v2; v3, 200 steps, batch 16 | Probe / kNN | 0.477 / 0.641; 0.448 / 0.620 | SimCLR at batch 16: 0.510 / 0.677 | Negative | Negative: SimCLR stays ahead at batch 16, so the queue does not pay off here. |
+| data2vec; iBOT, patch transformer, 80 / 100 steps | Probe | 0.404 / 0.435; 0.365 / 0.354 | MAE: 0.568 / 0.589 | Negative | Negative: both lose to MAE at the same budget. No iBOT-vs-DINO comparison was reported. |
+| KoLeo on DINO; on SimSiam | Probe / kNN / rank (uniformity) | 0.456 / 0.708 / 20.7 (−1.77); 0.370 / 0.573 / 27.4 | DINO: 0.448 / 0.508 / 6.4 (−0.19). SimSiam: 0.417 / 0.646 / 8.2 | Mixed | On DINO a clear gain: kNN +0.20 and three times the rank, with the probe unchanged. On SimSiam the rank rises but accuracy falls. |
+| LeJEPA, MLP, 32 slices; 128 slices; on patches, 60 steps | Probe / kNN / rank | 0.451 / 0.755 / 20.9; probe 0.518; probe 0.323 | SimCLR: 0.560 / 0.729. I-JEPA-lite on patches: 0.380. VICReg regulariser in place of SIGReg: 0.281, rank 2.0 (collapsed) | Mixed | The best kNN on the MLP with no EMA teacher, and the VICReg variant collapses, as predicted. It loses to I-JEPA-lite on patches, and its probe trails SimCLR. The loss–probe correlation was not reported. |
+
+Item verdicts: 3.1 Mixed, 3.2 Negative, 3.3 Negative, 3.4 Negative, 3.5 Mixed, 3.6 Mixed.
+
+Not done: the data2vec audio row on SpokenDigitRecognition.
+
+### MetricLearningShootout (W10 3.7: SupCon, 3.8: pair losses with mining, 3.9: CosFace and ArcFace, 3.10: proxy losses)
+Sources: R-wave10. Theme: metric. Tests: MetricBlocksTest, SupervisedContrastiveTest, PairLossesTest, MarginSoftmaxTest, ProxyLossesTest. Blocks: `experimental.metric.SupervisedContrastive`, `PairLosses`, `MarginSoftmax` (implements `Loss` and exposes `parameters()`), `ProxyLosses`, `RetrievalMetrics`. Task: `DigitGlyphs`, trained on classes 0–5 and tested on unseen classes 6–9, 600 steps. ToyTasks digits were dropped because an untrained encoder already reached R@1 0.90 on them. Numbers are unseen-class R@1 / NMI / EER.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SupCon; SupCon + KoLeo | Unseen R@1 / NMI / EER (seen R@1) | 0.563 / 0.375 / 0.315 (0.550); 0.556 / 0.352 / 0.325 (0.606) | Cross-entropy: 0.625 / 0.358 / 0.338 (0.672). SimCLR: 0.581 / 0.027 / 0.463. Prototypical: 0.475 / 0.277 / 0.394. Untrained: 0.494 / 0.035 / 0.492 (0.400) | Mixed | SupCon edges cross-entropy on NMI and EER but loses on R@1, for seen and unseen classes. |
+| Contrastive; triplet with random / semi-hard / hard mining; multi-similarity | Unseen R@1 | 0.569; 0.500 / 0.494 / 0.456; 0.513 | Cross-entropy: 0.625 | Negative | Negative: semi-hard mining does not beat random triplets, hard mining collapses, and no pair loss reaches cross-entropy. |
+| Normalised softmax; CosFace; ArcFace; sub-center ArcFace | Unseen R@1 / EER | 0.594 / 0.356; 0.531 / 0.331; 0.531 / 0.348; 0.531 / 0.395 | SupCon: 0.563 / 0.315 | Negative | Negative: the margins improve EER over plain normalised softmax by at most 0.025 and lower R@1, and SupCon has the better EER. |
+| Proxy-NCA; Proxy-NCA++; Proxy-Anchor | Unseen R@1 / EER | 0.550 / 0.308; 0.600 / 0.350; 0.569 / 0.418 | Multi-similarity: 0.513. Contrastive: 0.569. Cross-entropy: 0.625 | Mixed | The proxy losses tie or beat the pair losses, and Proxy-Anchor is at its final R@1 by step 25 (0.506 / 0.538 / 0.525 / 0.525 at 25 / 50 / 100 / 200 steps, against 0.500 / 0.469 / 0.506 / 0.481 for multi-similarity). But it barely leaves the untrained level (0.494) and has the worst EER. |
+
+Item verdicts: 3.7 Mixed, 3.8 Negative, 3.9 Negative, 3.10 Mixed. No metric loss beats plain cross-entropy on unseen classes in this small setting.
+
+Not done: the RelationalKdLoss baseline; the ShiftSuites corruption check (a seen-class check with heavier flips is used instead).
+
+### DeepClustering (W10 3.11: DEC and IDEC, 3.12: SCAN and IIC)
+Sources: R-wave10. Theme: metric. Test: DeepClusteringTest. Blocks: `experimental.ml.ClusteringMetrics` (Hungarian accuracy, NMI, ARI), `DeepEmbeddedClustering` (DEC and IDEC), `NeighbourClustering` (IIC and SCAN). Task: digits, 40 per class.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DEC; IDEC | Accuracy / NMI | 0.265 / 0.203; 0.268 | k-means on autoencoder latents: 0.270. On raw inputs: 0.260 / 0.225. GMM: 0.255. Spectral: 0.265 | Negative | Negative: no gain over k-means on the same latents. |
+| IIC; SCAN; SCAN + self-labelling, on SimCLR features after 100 steps | Accuracy / NMI | 0.315 / 0.268; 0.295; 0.293 | k-means on the same features: 0.270. Spectral: 0.285. Neighbour purity: 0.326 | Negative | Negative: SCAN gains 0.025, not 5 points, and at 150 steps k-means on the same features (0.350) beats SCAN (0.330). IIC is the best row. |
+
+Item verdicts: 3.11 Negative, 3.12 Negative.
+
+Not done: the DirichletProcessMixture row.
+
+### GradientBalancing (W10 3.13: uncertainty weighting, GradNorm and DWA, 3.14: PCGrad and GradOPS, 3.15: MGDA, CAGrad and Nash-MTL, 3.16: FAMO)
+Sources: R-wave10. Theme: multitask. Tests: MultitaskBlocksTest, LossWeightingTest, GradientSurgeryTest, ParetoDescentTest, FamoTest. Blocks: `experimental.multitask.TaskGradients`, `GradientSurgery` (PCGrad, GradVac, GradOPS), `ParetoDescent` (MGDA, CAGrad, Nash-MTL), `LossWeighting` (equal, uncertainty, GradNorm, DWA), `Famo`. 250 steps. Numbers are Δm against single-task training (closer to 0 is better). Tasks: SCALES (a loss-scale mismatch), DIGITS, CLICKS and a two-task toy surface.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Uncertainty; GradNorm; DWA | Δm, SCALES / DIGITS | −33.3% / −7.6%; −34.1% / −9.6%; −40.0% / −8.3% | Equal weights: −41.8% / −8.8% | Mixed | With a scale mismatch every weighting beats equal weights, as predicted; on DIGITS only uncertainty and DWA do, by about a point. On CLICKS everything is within noise (equal −0.2%, uncertainty −0.2%, MMoE +0.1%, MMoE + uncertainty +0.1%), so MMoE and weighting gains do not add up. |
+| PCGrad; GradOPS | Starts reaching the Pareto set (of 5); Δm, DIGITS | 4; 4. −7.2%; −9.2% | Equal: 3; −8.8%. GradVac: −9.1% | Mixed | Both reach the front more often on the toy (they are identical there, as the paper predicts for two tasks and α = 0), but only PCGrad gains on DIGITS. The task gradients conflict on about 25% of steps. The 4-task order-dependence test was not run. |
+| Nash-MTL; CAGrad; MGDA; MGDA-UB | Δm, DIGITS | −3.5%; −6.0%; −51.7%; −75.4% | Equal: −8.8% | Win | As predicted: Nash-MTL and CAGrad are the best two, and MGDA badly underweights the classification task. Nash-MTL is also strong on SCALES (−25.2%). On the toy surface MGDA reaches the Pareto set from all 5 starts, CAGrad and Nash-MTL from 3. |
+| FAMO | Δm, SCALES / DIGITS; ms per step | −22.9% / −6.3%; 3.07 | Nash-MTL: −25.2% / −3.5%; 5.48. Equal: ms per step 1.46 | Mixed | Best of all on SCALES, but 2.8 points behind Nash-MTL on DIGITS and twice the cost of equal weighting, not equal cost. |
+
+Item verdicts: 3.13 Mixed, 3.14 Mixed, 3.15 Win, 3.16 Mixed.
+
+Not done: core has no simplex QP solver, so MGDA and CAGrad use a Frank–Wolfe workaround.
+
+### LatentKnowledge follow-up (W10 3.17: CCS with normalisation, prompt ensembles and CRC, follow-up)
+Sources: R-wave10. Theme: interp. Test: LatentKnowledgeFollowUpTest. Block: `ContrastConsistentSearch` gains per-template normalisation, a templated `fit`, `credence`, `ensembleAccuracy` and `crc` (wave 9 defaults unchanged); `LatentKnowledge` gains `followUp` and a `main` Run. 300 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CCS; CRC, one template | Accuracy on truth | 0.540; 0.550 | Random direction: 0.550. Supervised probe: 0.700. Zero-shot: 0.830. Sycophantic: 0.580 | Negative | Negative: normalisation does not lift CCS above a random direction, though the model knows the answer. |
+| CCS with a distractor feature present | Accuracy on truth / on the distractor | 0.550 / 1.000 | | Negative | CCS follows the distractor exactly, as Farquhar et al. predict. |
+| Four templates: pooled; per-template normalisation; ensemble; CRC | Accuracy on truth | 0.523; 0.535; 0.540; 0.550 | Supervised: 0.673. Zero-shot: 0.808 | Negative | Negative: neither normalisation nor prompt ensembles help. |
+
+Item verdict: Negative. The test-budget numbers settle the follow-up: the model answers zero-shot at 0.83, and CCS and CRC stay at the random level. The 8-template rows and the long `main()` Run were not executed.
+
+---
+
+## Wave 10 WP4: deep RL recipes, plasticity and scaling, RL and post-training follow-ups
+
+New package `experimental.deeprl` (LearningCurveHarness, ContinuousMountainCar, PixelObservations, ModernSac, CrossQ, Bro, SimbaV2, LapReplayBuffer, Td7, MrQ, SelfPredictive, DrQ, Pqn, EfficientZero, Plasticity, MultiSkipNetwork, ValueScalingStudy). The no-long-runs rule hits this WP hardest: the permission system refused the builder's background queue of experiment mains, and no `main()` ran at full budget (ModernOffPolicy, ValueBasedRecipes, PlasticityAndScale, OfflineRlComparison, GoalsImitationAndTeams, RewardOveroptimization and ProcessSupervision). Every number below comes from a test-scale run or a short probe with one seed. Budgets were cut in the Bro, FairBudget, Fujimoto, PQN, MrQ and Depth tests and the Pixel test was split in two (10.4 s and 3.1 s); the trimmed classes were not re-timed. ImitationFollowUpTest takes 10.5 s. Encoders are MLPs, not conv nets, because conv was too slow on CPU (R-wave10).
+
+### OfflineRlComparison on Pendulum (W10 4.1: TD3+BC)
+Sources: R-wave10. Theme: control. Test: OfflineRlTd3BcTest. Block: `experimental.rl.Td3Bc`; `OfflineRlComparison.pendulum` with a `PendulumData` enum, `pendulumController` and `pendulumData` (existing rows unchanged). Data: four Pendulum datasets (random, medium, medium-replay, expert) from a hand-made energy-pumping plus PD controller. Scores are normalised returns: 0 is random, 1 is the noise-free controller. Probe: 20 episodes, 3,000 gradient steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| TD3+BC | Normalised return, random / medium / medium-replay / expert (wall clock on random) | −0.03 / 0.28 / 0.11 / 0.97 (11 s) | Data: 0.13 / 0.40 / 0.30 / 1.06. BC: 0.07 / 0.24 / 0.09 / 0.49 (1.9 s). IQL, 5 torque levels: 0.02 / −0.04 / 0.26 / 0.23 (5.5 s). CQL, 5 torque levels: 0.08 / −0.02 / −0.03 / 0.59 (2.8 s). FQL: 0.01 / 0.29 / 0.09 / 0.12 (25 s). TD3+BC with α = 0: −0.06 / 0.27 / 0.09 / 1.00 | Win | Best on expert data, level with the best on medium, and behind CQL on random data, as predicted. It is not cheaper than CQL here (11 s against 2.8 s). On mixed data no method improves on the data at this budget. |
+
+Not done: the `main` Run (50 episodes, 20k steps); Decision Transformer is left out because it is discrete-only.
+
+### ModernOffPolicy (W10 4.2: CrossQ, 4.3: BRO, 4.4: SimbaV2, 4.6: MR.Q, 4.7: TD7, 4.14: continuous control at a fair budget, follow-up)
+Sources: R-wave10. Theme: control. Tests: ModernOffPolicyCrossQTest, ModernOffPolicyBroTest, ModernOffPolicySimbaV2Test, ModernOffPolicyFujimotoTest, ModernOffPolicyFairBudgetTest, LearningCurveHarnessTest. Blocks: `experimental.deeprl.ModernSac` (core `Sac` is final and has no hooks), `CrossQ`, `Bro`, `SimbaV2`, `Td7`, `LapReplayBuffer`, `MrQ`, `LearningCurveHarness`. Probe: Pendulum, 5k steps, one seed.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CrossQ (Adam β1 = 0.5, lr 1e-3), 5k steps | Return | −287 | Core SAC: −343. ModernSac: −214. CrossQ with default Adam: −1,055 | Mixed | Beats core SAC without a target network, but only with the paper's β1 = 0.5, and trails every other modern recipe. |
+| CrossQ, 600-step test | Return | −1,479 | SAC: −1,577. SAC with naive BN in the critic: −1,261. DroQ: −1,324. REDQ (about 4x CrossQ's updates per step): −775 | Negative | Negative at this budget: CrossQ does not match DroQ, and naive BN does not diverge. |
+| BRO (width 32); SimbaV2, 5k steps | Return | −202; −239 | Core SAC: −343. ModernSac: −214 | Inconclusive (long run pending) | Both beat core SAC, but no more than SAC with modern defaults. The width and update-ratio sweeps that the hypotheses are about exist only in `main()`. |
+| TD7, 5k steps | Return | −217 | TD3: −839. Core SAC: −343 | Win | Far ahead of TD3. The SALE and checkpoint ablations were not reported. |
+| MR.Q, 5k steps | Return | −215 | TD3: −839. Core SAC: −343. BRO: −202 | Mixed | Mid-table on the only continuous task reported; the discrete pixel rows (ValueBasedRecipes) ran at sanity budgets only, so "never the worst across tasks" is untested. |
+| Fair-budget harness, 400 steps | Kendall τ of rankings; P(SAC > random) | 0.73; 1.00 | | Inconclusive (long run pending) | Only sanity budgets ran. The 5k / 20k / 50k curves with IQM and bootstrap intervals are the `main()` Run. The one-seed 5k probe above fits "modern recipes lead at 5k" (ModernSac −214 against core SAC −343). |
+
+Item verdicts: 4.2 Mixed, 4.3 Inconclusive (long run pending), 4.4 Inconclusive (long run pending), 4.6 Mixed, 4.7 Win, 4.14 Inconclusive (long run pending).
+
+Not done: no continuous MountainCar numbers were reported (the environment exists as `ContinuousMountainCar`).
+
+### ValueBasedRecipes (W10 4.5: PQN, 4.6: MR.Q discrete, 4.8: SPR and BBF, 4.9: DrQ and DrQ-v2, 4.12: EfficientZero)
+Sources: R-wave10. Theme: control. Tests: ValueBasedRecipesPqnTest, ValueBasedRecipesPixelTest, ValueBasedRecipesPixelPendulumTest, ValueBasedRecipesMrQTest, ValueBasedRecipesModelBasedTest. Blocks: `experimental.deeprl.Pqn`, `SelfPredictive`, `DrQ`, `MrQ`, `EfficientZero`, `PixelObservations`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PQN; without LayerNorm; with λ = 0, CartPole 2k steps | Return | 75; 33; 104 | DQN: 137. Rainbow: 200. PPO: 144 | Negative | Negative: PQN trails DQN here and at the earlier 3k-step setting (161 against 178). Removing LayerNorm hurts, as predicted. Wall-clock per step was not reported. |
+| SPR; DrQ; BBF without resets; BBF with resets, pixel grid, 400–800 steps | Return | 0.94; 0.94; 0.94; −0.25 | DQN at replay ratio 2: 0.94. Core DQN, Rainbow, Dreamer: −0.25 | Mixed | SPR and DrQ beat Rainbow, but so does plain DQN at replay ratio 2, so neither the encoder gain nor the augmentation gain is isolated. BBF's resets hurt instead of helping. |
+| DrQ-v2-style SAC, pixel pendulum, 200 steps | Return | −1,354 | SAC: −1,403 | Inconclusive | Smoke-level budget; the gap is within noise. The DrQ-v2 row runs on SAC, not DDPG. |
+| EfficientZero; MR.Q discrete | | Sanity budgets only; no numbers reported | MuZero-lite | Inconclusive | Smoke-level runs. EfficientZero's reanalysis uses the prediction network's value, not a full MCTS. |
+
+Item verdicts: 4.5 Negative, 4.8 Mixed, 4.9 Mixed, 4.12 Inconclusive (4.6 is under ModernOffPolicy).
+
+### PlasticityAndScale (W10 4.10: ReDo, plasticity injection and resets, 4.11: multi-skip residuals and Kron, 4.17: value-based scaling and TD-overfitting)
+Sources: R-wave10. Theme: control. Tests: PlasticityAndScaleTest, PlasticityAndScaleSwitchTest, PlasticityAndScaleDepthTest (its method is renamed `depthStudyReportsGradientSpread`), PlasticityAndScaleScalingTest. Blocks: `experimental.deeprl.Plasticity`, `MultiSkipNetwork`, `ValueScalingStudy`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ReDo; RESET_LAST; SHRINK_PERTURB; injection; BBF resets, CartPole 500 steps, replay ratio 2 | Return | 191; 103; 140; 26; 28 | No intervention: 175 | Mixed | ReDo cuts the dormant share from 0.125 to 0.000 without changing the network's output and gains a little. The resets and injection, expected to be cheap fixes, hurt. |
+| The same variants after a task switch | Return | RESET_LAST 0.98; every other variant −0.20 | No intervention: −0.20 | Win | Only resetting the last layer recovers after the switch; ReDo does not. |
+| Multi-skip network | Gradient spread across layers | 13.0 | Plain MLP: 6.1 | Negative | Negative: the spread is higher, against the hypothesis. Return against depth and the Kron combination were not reported. |
+| Passive narrow critic on a wide critic's targets | Held-out TD error | 0.484 | The same narrow critic on its own targets: 0.181. The wide critic: 0.098 | Negative | Negative: better targets do not let the narrow critic fit well. The width × batch-size grid is a `main()` Run, and no numbers from the test's corner of it were reported. |
+
+Item verdicts: 4.10 Mixed, 4.11 Negative, 4.17 Negative. The multi-skip merge is additive; the paper does not specify it.
+
+### GoalsImitationAndTeams follow-up (W10 4.13: GAIL with gradient penalty and absorbing states, AIRL and IQ-Learn, follow-up)
+Sources: R-wave10. Theme: control. Test: ImitationFollowUpTest. Block: `experimental.rl.AdversarialImitation` (GAIL with gradient penalty and DAC absorbing states; AIRL with f = g(s) + γh(s′) − h(s); IQ-Learn with a χ² regulariser and the value-form objective). Methods: `imitationFollowUp`, `imitationFollowUpCartPole` and `imitationTransfer` (wave 1 rows unchanged).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GAIL + GP + absorbing; AIRL; IQ-Learn; GAIL + GP without absorbing, CartPole, 1 demonstration, 30–50k steps | Return | 193–200; 180–190; 74–83; 27–47 | Expert: 200. BC: 181. Wave 1 GAIL: 20–45. Random: 18 | Win | The absorbing state is the fix: regularised GAIL beats BC from one demonstration. IQ-Learn falls well below BC. |
+| The same methods on the grid, 20k steps | Return | GAIL + GP + absorbing: 0.29–0.34. Nearly every other method: 0.92 | Expert: 0.92 | Negative | Negative: on the grid the absorbing-state GAIL is the one method that fails. |
+| Rewards re-solved on a grid with every move rotated | Return | AIRL without absorbing states: 0.92. GAIL: −0.20. IQ-Learn: −0.20 | Re-solving the true reward: 0.92. Copied expert policy: −0.20 | Win | AIRL's reward transfers and GAIL's does not, as predicted. With absorbing states, AIRL's g cannot be re-solved even on the training grid, because the learned absorbing value is below the values on the expert's path. |
+
+Item verdict: Mixed. The test-budget numbers already settle this follow-up. Not reported: the 5- and 20-demonstration rows and the MaxEntIrl baseline.
+
+### RewardOveroptimization strongProxies (W10 4.15: reward-model ensembles and WARM with stronger proxies, follow-up)
+Sources: R-wave10. Theme: alignment. Test: StrongProxiesTest (8.4 s). Blocks: new options with defaults unchanged: `RewardEnsemble.trainMembers` (independent or shared start), `WeightAveragedReward.fineTune` (from a trained shared start on bootstrap subsets) and `WeightAveragedReward.copy`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Proxy reward models, test corner (200 pairs, 40 reward-model steps) | Preference accuracy | 0.55–0.60 | Target: 0.70. Wave 9 single proxy: 0.586 | Inconclusive (long run pending) | The test corner does not reach the 0.7 accuracy the hypothesis needs. The 1x / 4x / 8x Run (600 base pairs, 160 steps) was not executed. |
+
+### ProcessSupervision largerBudget (W10 4.16: VinePPO, PRIME and Step-DPO at a larger budget, follow-up)
+Sources: R-wave10. Theme: reasoning. Test: ProcessSupervisionLargerBudgetTest (3.3 s). Blocks: new options with defaults unchanged: `MonteCarloValuePpo.rollouts` and `startCheckpoint`, `ImplicitProcessReward.epochs`, `StepPreferenceBuilder.temperature`; new `ProcessSupervision` overloads of `vine`, `prime` and `stepDpo` (their defaults reproduce wave 9), plus `heldOutSetup` and `largerBudget`. `main` uses StepChainTask(3, 4, 9) with 1,600 problems.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Start model, test corner (100 SFT steps) | Held-out accuracy | 0.10 | Required start: above 0.5 | Inconclusive (long run pending) | The test only checks that the pipeline runs; at 0.10 held-out accuracy its numbers mean nothing. |
+
+---
+
+## Wave 10 WP5: boosting, point processes, irregular series, temporal and relational graphs, parsing
+
+New packages: `experimental.boost`, `experimental.events`, `experimental.parse`, `experiments.events` and `experiments.parsing`, with new generators `experimental.data.EventStreams`, `IrregularSeries`, `TemporalGraphs` and `ToyTreebank`. Every WP5 test class passed in about 10 s or less when last run (R-wave10).
+
+### BoostingShootout (W10 5.1: LightGBM, 5.2: CatBoost, 5.3: NGBoost, 5.4: EBM, 5.5: PFN-Boost, 5.6: quantile regression forests)
+Sources: R-wave10. Theme: classic. Tests: BoostingShootoutLightGbmTest, BoostingShootoutCategoricalTest, BoostingShootoutProbabilisticTest, BoostingShootoutInterpretableTest, BoostingShootoutPriorBoostTest. Blocks: `experimental.boost.LightBoost`, `OrderedBoosting`, `NaturalGradientBoosting`, `QuantileForest`, `ExplainableBoosting`, `PriorBoost`, `BoostLosses`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GOSS; leaf-wise, 8 / 32 leaves; level-wise, 2,000 rows | AUC (fit time) | 0.896 (69 ms); 0.919 / 0.903 (129 ms); 0.907 | Core GBT: 0.906 (306 ms). Random forest: 0.822 | Win | GOSS stays within 0.01 of full-data accuracy at under a quarter of the time. Leaf-wise growth with 8 leaves is best, and 32 leaves overfits slightly. |
+| EFB, sparse data | AUC (fit time) | 0.915 with 6 bundles (154 ms) | No bundling, 240 columns: 0.915 (269 ms). Core GBT: 0.875 (915 ms) | Win | The same accuracy 1.7x faster than without bundling, less than the hypothesised several-fold. |
+| Ordered boosting; with feature combinations | Test log loss / train–test gap | 0.535 / 0.164; 0.498 / 0.307 | Plain boosting: 0.534 / 0.164. Leaky target encoding: 0.705 / 0.487. Out-of-fold encoding: 0.554. One-hot: 0.520. RF + out-of-fold: 0.579 | Negative | Negative: ordered boosting equals plain boosting and does not beat one-hot. Leaky target encoding overfits badly, as predicted, and feature combinations give the best loss. |
+| NGBoost, Normal; ordinary gradient; CRPS scoring; Laplace | NLL / CRPS / 90% coverage | 0.727 / 0.283 / 0.834; NLL 0.738; 0.737; 0.753 | Quantile forest: CRPS 0.335, coverage 0.936 | Mixed | NGBoost beats the forest on CRPS but under-covers. The ordinary gradient is only slightly worse, not unstable. No quantile-GBT or deep-ensemble row was reported. |
+| EBM | Accuracy; shape correlation; rank of the planted pairs | 0.880; 0.910; 1 and 2 | GBT: 0.879. GAM: 0.712. NAM: 0.653. Logistic: 0.591 | Win | Matches GBT, beats NAM by 0.23, and ranks both planted pairs first. |
+| PFN-Boost, 30 / 300 rows | Accuracy | 0.652 / 0.726 | GBT: 0.652 / 0.721. PFN alone: 0.530 / 0.656. Stacking: 0.607 / 0.749 | Mixed | Ties GBT at both sizes and beats the PFN; stacking wins at 300 rows. With only two sizes there is no "in between" to test. |
+| Quantile regression forest, bimodal target | CRPS | 0.510 | NGBoost: 0.488 | Negative | Negative: the forest does not beat NGBoost on the bimodal variant. No CQR row was reported. |
+
+Item verdicts: 5.1 Win, 5.2 Negative, 5.3 Mixed, 5.4 Win, 5.5 Mixed, 5.6 Negative.
+
+Not done: no PriorBoost rows in `TabularShootout` (covered by `BoostingShootout.priorBoost`). Core `GradientBoostedTrees` has no base-margin input, and its loss objectives are private.
+
+### PointProcessShootout (W10 5.7: Hawkes processes with flexible kernels, 5.8: neural TPPs, 5.9: intensity-free TPP)
+Sources: R-wave10. Theme: events. Tests: PointProcessShootoutTest, PointProcessShootoutDelayedTest, PointProcessShootoutInhibitoryTest, IntensityFreeTppTest. Blocks: `experimental.events.HawkesProcess` (EM, and EMS for spline kernels), `NeuralPointProcess` (RMTPP, continuous-time / neural Hawkes, transformer Hawkes), `IntensityFreeTpp`. Data: `experimental.data.EventStreams`. Log-likelihood per event (higher is better).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Spline-kernel Hawkes (EMS), delayed-kernel stream | Log-likelihood per event | −1.087 (KS 0.012) | Truth: −1.066. Exponential Hawkes: −1.139 | Win | The spline kernel closes most of the exponential kernel's gap. On its own stream exponential EM is at the truth (−0.555 against −0.554); on the inhibitory stream Hawkes stays at about −1.09 against a truth of −0.837, as predicted. |
+| Continuous-time (neural Hawkes); RMTPP; THP, exponential / inhibitory stream | Log-likelihood per event | −0.614 / −0.888; −0.635 / −0.956; −0.759 / – | Exponential Hawkes EM: −0.555 / about −1.09. Spline: −0.559 on the exponential stream. Poisson: −0.839. Weibull: −0.704 | Win | The 2026 finding reproduces at toy scale: the neural models win on inhibition and do not beat Hawkes on Hawkes-generated data. |
+| Log-normal mixture (intensity-free), exponential stream | Log-likelihood per event; events sampled per second | −0.659; 600–5,000 | Exponential Hawkes: −0.555. Continuous-time: −0.614. RMTPP: −0.635. Thinning: 1,100–160,000 events per second | Negative | Negative: a worse NLL than the intensity models, and slower sampling, because it re-encodes the prefix at every step. |
+
+Item verdicts: 5.7 Win, 5.8 Win, 5.9 Negative.
+
+### IrregularSeriesShootout (W10 5.10: GRU-D, ODE-RNN, latent ODE and mTAN, 5.11: BRITS, SAITS and CSDI)
+Sources: R-wave10. Theme: events. Tests: IrregularSeriesReconstructionTest, IrregularSeriesClassificationTest, IrregularSeriesImputationTest. Blocks: `experimental.events.IrregularSequenceModels` (GRU-D, ODE-RNN and latent ODE on `OdeSolver`, mTAN), `IrregularBatch`, `TimeSeriesImputer` (BRITS, SAITS, CSDI). Data: `experimental.data.IrregularSeries` (seasonal, chaotic and linear-Gaussian dynamics; MAR, MNAR and block missingness).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GRU-D; ODE-RNN; mTAN; latent ODE, seasonal, 60% missing at random | Interpolation / extrapolation MSE | 0.431 / 0.720; 0.586 / 0.789; 0.701 / 0.823; 0.751 / 0.808 | Linear interpolation: 0.399 / 1.612. Forward-fill GRU: 0.507 / 0.797. Linear interpolation + DLinear: extrapolation 0.666 | Negative | Negative: GRU-D is the best learned model, but linear interpolation beats every model on interpolation, and the latent ODE, expected to win there, is last. |
+| mTAN; GRU-D, CBF with 60% missing | Accuracy | 0.767; 0.600 | Forward-fill GRU: 0.933. Neural CDE: 0.844 | Negative | Negative: the forward-fill GRU wins, where mTAN was expected to. |
+| BRITS; SAITS; CSDI (20 diffusion steps, 5 samples), seasonal, 50% block missing | MAE (CRPS) | 0.589; 0.724; 0.868 (0.672) | Gaussian process: 0.403 (0.279). Linear interpolation: 0.692. Latent ODE: 0.714. Mean: 0.790. Kalman smoother: 0.941 (0.656) | Negative | Negative: a Gaussian process is best, SAITS does not beat BRITS, and the undertrained CSDI is near last. |
+
+Item verdicts: 5.10 Negative, 5.11 Negative.
+
+Not done: the `LiquidCell` baseline and the downstream forecaster trained on imputed data. The Kalman smoother is a local missing-aware local-linear-trend RTS smoother, because `StateSpaceFilter.kalman` cannot take missing observations; no linear-Gaussian-series row was reported.
+
+### TemporalGraphShootout (W10 5.12: TGN against EdgeBank, with a probe suite)
+Sources: R-wave10. Theme: graphs. Test: TemporalGraphShootoutTest. Block: `experimental.graph.TemporalGraphModels` (EdgeBank unlimited and windowed, TGN with GRU memory and TGAT attention, GraphMixer, a HyperEvent-style relational encoder). Data: `experimental.data.TemporalGraphs` (six probe streams). The experiment is named `TemporalGraphShootout`, not `TemporalGraphs` as planned, to avoid a clash with the data class; the static-GCN baseline uses `GcnLayer`. 12 epochs, 40 nodes.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| HyperEvent; TGN; GraphMixer; static GCN, repeated-edge stream | MRR, random / historical negatives | 0.836 / 0.592; 0.394 / 0.369; 0.508 / 0.438; 0.657 / 0.533 | EdgeBank: 0.855 / 0.549 | Mixed | As predicted, EdgeBank beats every learned model under random negatives and drops under historical ones, where HyperEvent passes it. TGN is the weakest model. |
+| The same models, recency stream | MRR, random / historical negatives | 0.673 / 0.499; 0.289 / 0.272; 0.310 / 0.313; 0.359 / 0.308 | EdgeBank: 0.595 / 0.238. Windowed EdgeBank: 0.695 / 0.378 | Mixed | HyperEvent wins under historical negatives; TGN and GraphMixer stay near chance. |
+
+Item verdict: Mixed. The probe suite behaves as predicted, but TGN loses to EdgeBank everywhere at this budget.
+
+Not done: the SASRec / `ClickLogs` bipartite case; only two of the six probe streams were reported.
+
+### RelationalGraphs (W10 5.13: R-GCN and CompGCN, 5.14: NBFNet, 5.15: hyperbolic embeddings)
+Sources: R-wave10. Theme: graphs. Tests: RelationalGraphsLinkTest, RelationalGraphsNodeTest, RelationalGraphsHierarchyTest. Blocks: `experimental.graph.RelationalGcn` (R-GCN basis and block, CompGCN sub / mult / corr), `BellmanFordNetwork` (NBFNet with a gradient path read-out), `HyperbolicEmbedding` (Poincaré, Lorentz). The link test was rerun on the report day (6.3 s).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CompGCN-mult; R-GCN basis, transductive link prediction | MRR | 0.863; 0.749 | ComplEx: 0.887. Common neighbours: 0.371 | Win | Shallow embeddings win transductively, as predicted. |
+| R-GCN; CompGCN, relation-pattern node classification | Accuracy | 1.000; 1.000 | Untyped GCN: 0.929 | Win | Relation types solve the task. |
+| NBFNet, transductive / inductive | MRR | 1.000 / 1.000 | Inductive: R-GCN basis 0.439, common neighbours 0.382, CompGCN 0.15–0.26 | Win | The only model that keeps its accuracy on unseen entities. Its top paths match the planted rules in only 0.2 of cases (0.5 at an earlier, larger budget), so the rule read-out part of the hypothesis fails. |
+| Poincaré, 2-D; Lorentz, 2-D | Mean rank (lower is better) | 1.80; 1.65 | Euclidean 2-D: 4.39. Euclidean 10-D: 2.59. node2vec 10-D: 7.76 | Win | Two hyperbolic dimensions beat ten Euclidean ones. Lorentz is slightly better than Poincaré; training stability was not measured. |
+
+Item verdicts: 5.13 Win, 5.14 Win, 5.15 Win.
+
+Not done: the `SyntheticGraphs` homogeneous link-prediction case and the `GraphReasoning` CLRS Bellman–Ford baseline.
+
+### ParsingShootout (W10 5.16: biaffine dependency parsing, 5.17: span-based chart parsing)
+Sources: R-wave10. Theme: parsing. Tests: ParsingShootoutDependencyTest, ParsingShootoutConstituencyTest, TreeDecoderTest. Blocks: `experimental.parse.BiaffineParser` (greedy, Eisner and Chu–Liu–Edmonds decoders, each with a single root child), `ChartParser` (BiLSTM or factored content/position attention encoder; CKY; margin and tree-CRF losses via inside–outside), the package-private `SentenceEncoder`; data `experimental.data.ToyTreebank`; baseline `TreebankPcfg`. TreeDecoderTest checks CLE and Eisner against brute force and that the inside–outside marginals sum to 2n − 1. 300 training sentences of length up to 12; test sentences up to 18.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Biaffine + Eisner; + CLE; greedy | UAS / LAS / share of well-formed trees / PP accuracy / UAS on long sentences | 0.925 / 0.918 / 1.0 / 0.875 / 0.853; 0.880 / 0.875 / 1.0; UAS 0.873 (0.913 well-formed) | BiLSTM-CRF offsets: 0.892 (0.713 trees). Pointer network: 0.786 (0.80 trees). Right-branching: 0.425 | Win | Beats the tagging baseline by 0.033 UAS and always outputs trees; Eisner decoding adds 0.05 over greedy. |
+| Chart parser, BiLSTM, margin loss; tree-CRF loss; factored attention | F1 / exact match / PP / F1 on long sentences | 0.987 / 0.913 / 0.982 / 0.983; 0.960 / 0.750 / 0.804; F1 0.894 | Treebank PCFG: 0.979 / 0.813 / PP 0.768. Right-branching: 0.270 | Mixed | The chart parser beats the PCFG, most on PP attachment, which the PCFG cannot get without lexical preferences. Negative part: the tree-CRF loss, expected to win slightly, loses to the margin loss. |
+
+Item verdicts: 5.16 Win, 5.17 Mixed.
+
+Not done: the seq2seq baselines (`TransformerSeq2Seq` and `Seq2SeqAttention` on linearised trees and head sequences) were skipped for time, so the seq2seq comparisons in both hypotheses are untested.
+
+---
+
+## Wave 10 WP6: image restoration, speech analysis, perception and systems follow-ups
+
+New packages: `experimental.restore`, `experimental.speech`, `experiments.restoration` and `experiments.speech`, with data generators in `experimental.data`. Most test classes pass in about 10 s. Two are longer: SpeakerDiarizationTest took 19.8 s at its last run, before its budget was lowered from 50 to 30 steps (not run since), and VqaTwoStageTest takes 28 s, about 15 s of it in the shared wave 9 `VqaFixture` setup. The long `main()` budgets of 10.6.10 to 10.6.14 and the 2k–20k-step vocoder training of 10.6.16 were written but not run (R-wave10).
+
+### RestorationShootout (W10 6.1: super-resolution, 6.2: DnCNN and FFDNet, 6.3: self-supervised denoising, 6.4: plug-and-play deblurring)
+Sources: R-wave10. Theme: restoration. Tests: SuperResolutionShootoutTest, SupervisedDenoisingTest, SelfSupervisedDenoisingTest, DeblurringTest, RestoreBlocksTest. Blocks: `SuperResolution` (SRCNN, ESPCN, EDSR, SPAN), `Denoisers` (DnCNN, FFDNet, NLM, median, Gaussian), `SelfSupervisedDenoising`, `PlugAndPlay` (Wiener, HQS, ADMM, Richardson–Lucy, TV, `Unrolled`). PSNR in dB.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ESPCN (1,868 parameters); EDSR (16,980), scenes ×2, 120 steps | PSNR | 25.46; 25.61 | Bicubic: 25.26. Nearest: 24.08 | Win | EDSR is best at equal steps, and ESPCN needs 3.5x fewer multiply-adds than SRCNN (117,760 against 415,744 on 8×8). Both gains over bicubic are small (0.2–0.35 dB). |
+| DnCNN; FFDNet, σ = 25 / spatially varying noise | PSNR | 24.64 / 23.40; 21.65 / 20.82 | NLM: 24.55 / 21.78. Gaussian: 19.94 / 19.59 | Mixed | DnCNN ties NLM on uniform noise and wins on varying noise. FFDNet, expected to win there with its noise map, is weak at this budget. |
+| Noise2Noise; Neighbor2Neighbor; zero-shot N2N, i.i.d. noise | PSNR | 23.28; 22.65; 22.94 | Supervised: 23.34. Median: 21.46 | Win | N2N is within 0.06 dB of supervised, as predicted, and Neighbor2Neighbor loses 0.7 dB. |
+| Median2Median, correlated noise | PSNR | 18.76 | Median filter: 20.03 | Negative | Negative: M2M falls below the filter it was expected to beat. |
+| PnP-HQS, 200 steps, Gaussian / motion / unseen motion kernel | PSNR | 19.84 / 21.81 / 21.55 | Wiener: 21.41 / 22.75 / 22.59. Blurred input: 18.98 / 21.00 / 19.43 | Negative | Negative: Wiener wins on all three kernels. An earlier 300-step run had PnP ahead on both motion kernels (23.29 against 22.65, and 23.06 against 22.63). |
+
+Item verdicts: 6.1 Win, 6.2 Mixed, 6.3 Mixed, 6.4 Negative.
+
+Not reported: SPAN's and SRCNN's PSNR, the OCR check on ×4 glyphs, and the TV, ADMM and unrolled deblurring rows.
+
+### SpeakerShootout (W10 6.5: x-vectors with AAM-softmax and GE2E, 6.8: diarisation)
+Sources: R-wave10. Theme: speech. Tests: SpeakerVerificationTest, SpeakerDiarizationTest. Blocks: `SpeakerEmbedding` (TDNN x-vector, AAM-softmax, GE2E, `Plda`, EER, minDCF), `Diarization` (AHC, eigengap spectral clustering, `Eend` with permutation-invariant training). Data: the richer voice generator `experimental.data.SpeakerVoices`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| x-vector + AAM; GE2E | EER (with PLDA) | 0.222 (0.227); 0.192 (0.146) | Mean MFCC: 0.342. GMM-UBM: 0.333 | Win | Both cut the EER by a third or more. GE2E with PLDA is best, not the x-vector as predicted. |
+| x-vector spectral clustering; with the oracle speaker count; EEND | Diarisation error rate | 0.626; 0.358; 0.547 | One-speaker baseline: 0.626. MFCC spectral: 0.598 | Mixed | The eigengap estimates one speaker, so clustering ties the baseline: the predicted weak point. With the true count, clustering is best. No overlap sweep was reported. |
+
+Item verdicts: 6.5 Win, 6.8 Mixed.
+
+Not done: `SpeakerEmbedding` keeps a local AAM copy (WP3's `MarginSoftmax` was not on main yet); the digit-encoder baseline exists only in `main()` and the options.
+
+### SpeechFrontEnds (W10 6.6: voice activity detection, 6.7: speech enhancement)
+Sources: R-wave10. Theme: speech. Tests: VoiceActivityDetectionTest, SpeechEnhancementTest, SpeechBlocksTest. Blocks: `VoiceActivity` (energy, Sohn, Sohn + HMM hangover, `Crnn`), `Enhancement` (spectral subtraction, Wiener / MMSE-STSA, `MaskNet` with a magnitude or complex mask).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Sohn; Sohn + HMM; CRNN, white noise / babble at 0 dB | F1 | 0.578 / 0.562; 0.830 / 0.624; 0.910 / 0.718 | Energy: 0.012 / 0.759 | Mixed | In white noise the CRNN is best and energy fails; in babble, energy beats every other detector. |
+| MLP mask; CRNN complex mask, white noise at 0 dB, 30 steps | SI-SNR improvement (dB) | 2.40; 6.07 | Spectral subtraction: 8.39. MMSE-STSA: 7.08. Ideal ratio mask: 13.52 | Mixed | The classic methods beat the learned masks at 30 steps. At 60 steps the CRNN magnitude mask reaches 9.70 dB, so complex and magnitude masks were not compared at matched steps. |
+
+Item verdicts: 6.6 Mixed, 6.7 Mixed.
+
+Not done: the VAD keyword-spotter baseline; the enhancement digit error rate exists only in `main()` and the options.
+
+### VisionShootout flexiViT (W10 6.9: FlexiViT)
+Sources: R-wave10. Theme: vision. Test: FlexiVitTest. Block: `experimental.vision.FlexiblePatchEmbedding`. 16 px images, 150 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| FlexiViT at patch 2 / 4 / 8 | Accuracy | 0.316 / 0.313 / 0.273 | Separate ViTs on a third of the budget each: 0.168 / 0.230 / 0.148. One patch-4 ViT at full budget: 0.695 at patch 4. That ViT resized, naively and by pseudo-inverse: 0.160 at patch 2; 0.238 and 0.184 at patch 8 | Negative | Negative: one FlexiViT beats three split-budget ViTs but is 0.38 below a single ViT at its own size, not within 1–2 points. Resizing a fixed ViT collapses away from patch 4, as predicted. |
+
+Not done: the `ElasticSupernet` CNN-analogue baseline.
+
+### DetectionShootout detrFollowUp (W10 6.10: DETR with two-stage query selection, follow-up)
+Sources: R-wave10. Theme: vision. Test: DetrQuerySelectionTest. Block: `SetPredictionDetector.Options.querySelection` and `withQuerySelection` (defaults unchanged).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DETR + query selection, scenes | mAP@0.5 at 250 / 500 steps | 0.141 / 0.303 | DETR: 0.000 / 0.002 | Win | Leaves mAP 0 within a few hundred steps, as predicted; this part is settled at the test budget. The 5k-step curve against CenterNet and the H-DETR combination are pending in `main()`. |
+
+Not reported: the `GlyphDocuments` layout rows.
+
+### DocumentParsing donutFollowUp (W10 6.11: Donut with reading pretraining, follow-up)
+Sources: R-wave10. Theme: document. Test: DonutReadingPretrainingTest. Block: `ImageToMarkup.pretrainReading`, `fineTune`, `checkpoint` and `restore`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Donut with 150 reading steps on 200 pages, 300 steps in total | Field F1 (reading CER after pretraining) | 0.104 (0.662) | The same total steps without pretraining: 0.031. Wave 9 OCR + rules: 0.838 | Inconclusive (long run pending) | Pretraining lifts F1 off zero, but only to 0.104; whether it approaches the OCR pipelines needs the 3k-step curve. That 300-step run took 212 s, so the test is now a smoke run. |
+
+### FusionShootout follow-ups (W10 6.12: two-stage VQA bridges, 6.13: latent Transfusion, follow-ups)
+Sources: R-wave10. Theme: multimodal. Tests: VqaTwoStageTest, LatentTransfusionTest. Blocks: `experimental.multimodal.TwoStageBridgeTrainer` (LmMode FROZEN, LORA or FULL), `ConvVae`, `TransfusionModel.UNetPatches`, `forwardMacs`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Projector with LoRA, 100 alignment + 150 QA steps | VQA accuracy; alignment accuracy on occupied slots; LM text loss | 0.640; 0.018; 1.094 | Answer prior: about 0.65. Wave 9 projector: 0.650. Frozen LM text loss: 1.116 | Inconclusive (long run pending) | Still at the answer prior, and stage 1 barely aligns (0.018), so the test budget does not test the recipe. The 4x budget is in `main()`. |
+| Latent Transfusion (VAE + U-Net patches), at the MACs of 300 pixel-model steps | Caption / generation accuracy | 0.333 / 0.133 | Wave 9 pixel model: 0.133 / 0.067. VQ tokens: 0.567 / 0.433 | Inconclusive (long run pending) | Better than the pixel model, but still far below VQ tokens at this small compute budget. VAE reconstruction MSE is 0.037. |
+
+Item verdicts: 6.12 Inconclusive (long run pending), 6.13 Inconclusive (long run pending).
+
+Not done: 6.12's LoRA covers only the output head plus per-block residual adapters, because the core `TransformerBlock` does not expose its projections; 6.13 does not use `ToyImages`, which lives in `experiments.generative`.
+
+### EdgeDeployment onceForAllFollowUp (W10 6.14: BigNAS in-place distillation, follow-up)
+Sources: R-wave10. Theme: edge. Test: BigNasInplaceDistillationTest. Block: `ElasticSupernet.Schedule.INPLACE_DISTILLATION` and `smallest()`. 300 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| BigNAS in-place distillation | Accuracy, largest / smallest subnet | 0.520 / 0.465 | Progressive shrinking: 0.915 / 0.780. Random sampling: 0.860 / 0.830. From scratch: 0.935 / 0.915 | Negative | Negative: distilling early from a weak teacher hurts, so in-place distillation does not get there sooner than progressive shrinking; the test budget settles that part. Progressive shrinking at 300 steps is far better than wave 9's 0.625 / 0.330 at 160. The predictor's Kendall τ rises from 0.412 (24 points) to 0.481 (60 points); the 200-point fit and the 640- and 2,560-step budgets are pending. |
+
+### ParallelismShootout pipelineMemoryFollowUp (W10 6.15: V-shape schedules and an exact scheduler, follow-up)
+Sources: R-wave10. Theme: parallel. Test: PipelineMemoryFollowUpTest. Blocks: `experimental.parallel.MemoryAwareScheduler`, `BuildingBlockSchedules`, a V-shape option on `PipelineSchedule.placed`. p = 4, m = 8, fixed costs.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Exact branch and bound at ZB-H2 memory; greedy at the same memory | Bubble (peak activation memory) | 0.177 (7); 0.232 (7) | ZB-H1: 0.203 (4). ZB-H2: 0.203 (7). 1F1B: 0.280 (4) | Win | The exact scheduler lets ZB-H2's extra memory beat ZB-H1, though the bubble does not reach near 0. |
+| V-ZB / V-Half; V-Min | Bubble (peak activation memory) | 0.208 (2); 0.501 (1.5) | 1F1B: 0.280 (4) | Win | V-ZB and V-Half beat 1F1B's bubble at half its memory, as predicted. All new schedules ran on threads with gradient error 7e-9. |
+
+Item verdict: Win. The V-shape offsets come from a grid search, not the paper's closed form; the measured thread bubbles are dominated by noise; no sweep of V-Min's bubble over m was reported.
+
+### AudioGeneration vocoderFollowUp (W10 6.16: GAN vocoder with mel-loss warm-up, follow-up)
+Sources: R-wave10. Theme: audio. Test: VocoderWarmupTest. Blocks: `GanVocoder.melWarmup`, `save`, `load` and `trainedSteps`; `DiffusionVocoder.save` and `load`; `AudioGeneration.vocoderFollowUp` and a `tts(..., vocoder, name)` overload.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GAN vocoder, 20-step smoke run | Judge digit error | 1.0–1.67 | Griffin–Lim (32 iterations): 0.000 | Inconclusive (long run pending) | Smoke run only; the checkpoint round trip is verified. The 2k–20k-step training and the re-vocoding of 9.5.11 and 9.5.12 are the `main()` Run. |
+
+---
+
 ## Highlights
 
 The ten most interesting findings, chosen for effect size and for what they show:
@@ -4445,6 +5077,23 @@ The ten most interesting wave 9 findings (R-wave9, mostly one seed):
 10. **Patch-based inference cuts peak memory 3.4x exactly.** Peak memory falls from 49,152 B to 14,336 B for 35% more multiply-adds, and at the same memory full resolution scores 0.665 against 0.360 at half resolution (edge).
 
 Honourable mentions: Git Re-Basin cuts the loss barrier from 1.121 to 0.127 and lifts merged accuracy from 0.514 to 0.948 (interp). Quantisation-aware scaling makes int8 sparse on-device training work: 0.700 against 0.305 without it (edge). mSPRT holds the A/A false-positive rate at 0.005 where daily peeking gives 0.255 (causal). DeepSurv reaches C-index 0.775 against 0.585 for Cox on nonlinear risk (survival). Clustered standard errors cover 0.95 against 0.75 for i.i.d. ones (evaluation). Mixed negatives triple in-batch Recall@20, 0.369 against 0.115 (recsys). DINO-WM plans to the goal 0.83 of the time in frozen features against 0.17 in pixels (world). Edge-level circuit discovery recovers the planted circuit at AUC 1.0 against 0.93 for node patching (interp). Execution traces double execution-prediction accuracy, 0.300 against 0.156 (code). FSQ uses 0.91 of a 2^10 codebook against 0.64 for VQ (audio).
+
+### Wave 10
+
+The ten most interesting wave 10 findings (R-wave10, one seed at test budgets):
+
+1. **Bellman–Ford message passing generalises to new entities.** NBFNet keeps link-prediction MRR at 1.000 on an inductive split, against 0.439 for R-GCN and 0.382 for common neighbours (graphs).
+2. **Tournament sampling makes a stronger watermark.** At 50 tokens the SynthID-style watermark is detected 0.91 of the time at 1% FPR, against 0.45 for a green list with δ = 2, with a better judge log-likelihood (−1.62 against −2.08) (language).
+3. **Density-ratio weighting fixes covariate shift.** In 5 dimensions uLSIF cuts target MSE from 1.897 to 0.179 (oracle weights 0.211), and weighted conformal restores 0.905 coverage where split conformal gives 0.792 (shift).
+4. **Absorbing states make GAIL work.** From one CartPole demonstration, GAIL with a gradient penalty and absorbing states reaches 193–200, against 20–45 for wave 1's GAIL and 181 for behaviour cloning; AIRL's reward transfers to rotated dynamics where GAIL's does not (control).
+5. **Query selection gets DETR off zero.** On scenes DETR with two-stage query selection reaches mAP 0.303 at 500 steps, against 0.002 for plain DETR (vision).
+6. **Outlier exposure is the biggest OOD gain.** Far-OOD AUROC rises from 0.580 to 0.881, against 0.729 for mixup and 0.704 for k-NN, the best post-hoc feature score (shift).
+7. **DivideMix and co-teaching beat robust losses on noisy labels.** At 40% symmetric noise DivideMix reaches 0.727 and co-teaching 0.637, against 0.567 for cross-entropy and at most 0.597 for any robust loss (labels).
+8. **MMD adaptation nearly reaches the oracle.** On shapes to textured shapes MMD scores 0.612 against 0.238 source-only and 0.618 for a target-trained oracle; DANN reaches 0.406 (shift).
+9. **Gated attention finds the key instance.** Gated attention MIL reaches bag AUC 0.910 and instance AUC 0.922, against 0.797 for mean pooling and 0.856 for max pooling (labels).
+10. **Structured decoders parse well and always give trees.** Biaffine + Eisner reaches UAS 0.925 against 0.873 greedy and 0.892 for offset tagging; the chart parser reaches F1 0.987 and PP accuracy 0.982, against 0.979 and 0.768 for a treebank PCFG (parsing).
+
+Honourable mentions: calibrated MLLS estimates label-shift weights at MSE 0.027 against 0.098 for BBSE (shift). TD3+BC scores 0.97 on expert Pendulum data against 0.59 for CQL and 0.23 for IQL (control). V-ZB pipelines cut the bubble to 0.208 at half of 1F1B's memory, against 0.280 (parallel). Spline-kernel Hawkes fits a delayed kernel at −1.087 per event against −1.139 for the exponential kernel and −1.066 for the truth, and neural TPPs win only on inhibition, reproducing the 2026 re-evaluation (events). Two hyperbolic dimensions rank a hierarchy at 1.65 against 2.59 for ten Euclidean ones (graphs). KoLeo lifts DINO's kNN accuracy from 0.508 to 0.708 (selfsupervised). GE2E with PLDA cuts speaker-verification EER to 0.146 from 0.342 for mean MFCCs (speech). ELR predicts 49% of flipped labels correctly against 3% for cross-entropy (labels). EBM matches GBT (0.880 against 0.879) and beats NAM (0.653) while ranking both planted pairs first (classic). Nash-MTL gives the best multitask Δm on digits, −3.5% against −8.8% for equal weights (multitask).
 
 ## Negative or null results
 
@@ -4703,5 +5352,44 @@ Wave 9 (R-wave9):
 | sciml | OperatorLearning, Transolver and LANO | 0.45–0.72 vs 0.19–0.21 for FNO | FNO leads everywhere, also with half the grid dropped. |
 | edge | EdgeDeployment, once-for-all | Largest / smallest 0.625 / 0.330 vs 0.860 / 0.570 from scratch | Progressive shrinking loses at 160 steps. |
 | edge | EdgeDeployment, DS-CNN keyword spotter | 0.917 vs 0.975 for a plain CNN | The depthwise-separable design is not best at this size. |
+
+Wave 10 (R-wave10, one seed at test budgets; long `main()` Runs not executed):
+
+| Theme | Experiment | Result | What it means |
+|---|---|---|---|
+| labels | SemiSupervisedShootout, pseudo-labelling, Π-model and Mean Teacher | 0.537, 0.570 and 0.567 vs 0.567 for augmented supervised training | Consistency training adds nothing over augmentation at 4 labels per class. |
+| labels | SemiSupervisedShootout, MixMatch | 0.540 vs 0.567 | Below augmented supervised training. |
+| labels | SemiSupervisedShootout, VAT on digits | 0.303 vs 0.567 | VAT needs the cluster assumption; it works on spirals (0.989). |
+| labels | SemiSupervisedShootout, JEPAMatch | 0.457 vs 0.620 for FlexMatch | The SIGReg regulariser lowers accuracy. |
+| labels | NoisyLabelShootout, robust losses under pair-flip noise | NCE+RCE 0.477 and JAL 0.497 vs 0.527 for CE | The robust losses lose to CE on asymmetric noise. |
+| labels | NoisyLabelShootout, forward correction with estimated T | 0.517 vs 0.527 for CE and 0.733 with the true T | The T estimate throws the whole gain away. |
+| labels | WeakLabelShootout, DLLP | 0.687 vs 0.880 supervised at bag size 8; 0.13–0.21 for every method at 128 | No graceful degradation, and OT pseudo-labels do not help. |
+| shift | OodShootout, ASH, SCALE and AdaSCALE | Near AUROC 0.683–0.793 vs 0.829 for energy | Activation shaping hurts on this toy; only ReAct (0.832) helps. |
+| shift | OodShootout, OpenMax | AUROC 0.730 vs 0.778 for max logit; 0.660 vs 0.682 briefly trained | OpenMax never beats max logit. |
+| shift | SelectivePrediction, learning to defer | 0.471 and 0.455 vs 0.487 for a confidence threshold | The learned deferral rules lose to thresholding. |
+| shift | DomainAdaptation, SHOT on shapes | 0.254 vs 0.238 source-only and 0.530 for TENT | Source-free adaptation fails on the appearance shift (it matches the oracle on moons). |
+| shift | DomainAdaptation, EATA, SAR and CoTTA | 0.549–0.565 vs 0.549 for TENT; about 0.21 on single-class batches vs 0.336 without adaptation | TENT did not degrade, and every adapter breaks on single-class batches. |
+| shift | DomainGeneralization, MixStyle and SWAD | 0.330 and 0.337 vs 0.340 and 0.38 for ERM | Neither beats ERM; V-REx (0.448) is best. |
+| selfsupervised | SelfSupervisedBenchmark, SwAV and MoCo | Probe 0.409 and 0.477 vs 0.560 and 0.510 for SimCLR | No gain over SimCLR at small batch. |
+| selfsupervised | SelfSupervisedBenchmark, data2vec and iBOT | Probe 0.404 and 0.365 vs 0.568 for MAE at 80 steps | Teacher-feature targets lose to pixels here. |
+| metric | MetricLearningShootout, pair losses and angular margins | Unseen R@1 0.456–0.569 and 0.531 vs 0.625 for cross-entropy | No metric loss beats plain cross-entropy on unseen classes; semi-hard mining does not beat random triplets. |
+| metric | DeepClustering, DEC, IDEC and SCAN | 0.265–0.330 vs 0.270–0.350 for k-means on the same features | Deep clustering gives no gain over k-means. |
+| interp | LatentKnowledge follow-up, CCS with normalisation and ensembles | 0.523–0.550 vs 0.550 for a random direction and 0.830 zero-shot | Wave 9's negative stands; CCS follows a distractor perfectly (1.000). |
+| control | ValueBasedRecipes, PQN | CartPole 75 vs 137 for DQN at 2k steps; 161 vs 178 at 3k | No gain over DQN per environment step. |
+| control | PlasticityAndScale, multi-skip residuals | Gradient spread 13.0 vs 6.1 for a plain MLP | Against the hypothesis. |
+| control | PlasticityAndScale, passive critic | Held-out TD error 0.484 on a wide critic's targets vs 0.181 on its own | Better targets do not help the narrow critic. |
+| control | ModernOffPolicy, CrossQ at 600 steps | −1,479 vs −1,324 for DroQ and −1,261 for SAC with naive BN | Does not match DroQ, and naive BN does not diverge at this budget. |
+| classic | BoostingShootout, ordered boosting | Log loss 0.535 vs 0.534 plain and 0.520 one-hot | Ordered boosting gives nothing here; feature combinations do (0.498). |
+| classic | BoostingShootout, quantile forest on a bimodal target | CRPS 0.510 vs 0.488 for NGBoost | The forest does not win where it was expected to. |
+| events | PointProcessShootout, intensity-free TPP | NLL −0.659 vs −0.555; 600–5,000 vs up to 160,000 events/s for thinning | Neither better nor faster. |
+| events | IrregularSeriesShootout, latent ODE and mTAN | Interpolation MSE 0.751 vs 0.399 linear; classification 0.767 vs 0.933 forward-fill GRU | Simple baselines win at 60% missingness. |
+| events | IrregularSeriesShootout, SAITS and CSDI | MAE 0.724 and 0.868 vs 0.589 BRITS and 0.403 for a Gaussian process | The deep imputers lose at test budget. |
+| parsing | ParsingShootout, tree-CRF loss | F1 0.960 vs 0.987 for the margin loss | The CRF loss was expected to win slightly. |
+| restoration | RestorationShootout, PnP-HQS deblurring | 19.84–21.81 dB vs 21.41–22.75 dB for Wiener at 200 steps | Wiener wins on every kernel; PnP led on motion kernels in an earlier 300-step run. |
+| restoration | RestorationShootout, Median2Median on correlated noise | 18.76 dB vs 20.03 dB for a median filter | Fails the case it was designed for. |
+| vision | VisionShootout, FlexiViT | 0.313 at patch 4 vs 0.695 for a dedicated patch-4 ViT | Far from "within 1–2 points" at 150 steps. |
+| edge | EdgeDeployment, BigNAS in-place distillation | 0.520 / 0.465 vs 0.915 / 0.780 for progressive shrinking at 300 steps | Distilling early from a weak teacher hurts. |
+| multimodal | FusionShootout, two-stage VQA bridge (test budget; long run pending) | 0.640 vs an answer prior of about 0.65; alignment accuracy 0.018 | Stage 1 barely aligns at 100 steps. |
+| multimodal | FusionShootout, latent Transfusion (test budget; long run pending) | Generation 0.133 vs 0.433 for VQ tokens | Better than wave 9's pixel model, still far behind. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.

@@ -8,7 +8,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.SplittableRandom;
 import java.util.function.BiFunction;
+import java.util.function.IntFunction;
 
 /**
  * A conservative combination of several reward models against reward over-optimization
@@ -96,6 +98,38 @@ public final class RewardEnsemble implements GrpoTrainer.Reward {
             }
             return model.score(seqs).value().toArray();
         };
+    }
+
+    /**
+     * Trains ensemble members with the Bradley-Terry loss (W10 4.15). With a shared start, each
+     * member is a copy of {@code sharedStart} fine-tuned on its own data order, as Coste et al.
+     * fine-tune one pretrained model with different seeds; without one, each member starts from
+     * {@code init}'s own initialization. The label budget is whatever {@code chosen} holds.
+     *
+     * @param init builds member {@code m}'s untrained model
+     * @param sharedStart the trained shared start, or null for independent initializations
+     * @param chosen the preferred sequences
+     * @param rejected the other sequences
+     * @param members how many members
+     * @param steps optimizer steps per member
+     * @param batch pairs per step
+     * @param learningRate the Adam learning rate
+     * @param seed the seed of the data orders
+     * @return the trained members
+     */
+    public static List<RewardModel> trainMembers(IntFunction<RewardModel> init, RewardModel sharedStart,
+            int[][] chosen, int[][] rejected, int members, int steps, int batch, float learningRate, long seed) {
+        List<RewardModel> out = new ArrayList<>();
+        SplittableRandom random = new SplittableRandom(seed);
+        for (int m = 0; m < members; m++) {
+            RewardModel rm = init.apply(m);
+            if (sharedStart != null) {
+                WeightAveragedReward.copy(sharedStart, rm);
+            }
+            WeightAveragedReward.train(rm, chosen, rejected, steps, batch, learningRate, random.split());
+            out.add(rm);
+        }
+        return out;
     }
 
     /** @return the number of members */

@@ -60,14 +60,14 @@ public final class LocalSpeech {
     private final Supplier<List<Path>> places;
     private final Path saved;
     private final Map<Path, Found> seen = new ConcurrentHashMap<>();
-    private final Object speaking = new Object();
-    private final Object listening = new Object();
-    private TextToSpeech voice;
-    private Path voicePath;
-    private SpeechToText ears;
-    private Path earsPath;
-    private String voiceOn;
-    private String earsOn;
+    private final GpuSlot speaking;
+    private final GpuSlot listening;
+    private volatile TextToSpeech voice;
+    private volatile Path voicePath;
+    private volatile SpeechToText ears;
+    private volatile Path earsPath;
+    private volatile String voiceOn;
+    private volatile String earsOn;
     private final LocalDevice where;
 
     LocalSpeech(Supplier<List<Path>> places) {
@@ -96,6 +96,8 @@ public final class LocalSpeech {
         this.places = places;
         this.saved = saved;
         this.where = where;
+        this.speaking = new GpuSlot("speech", where.residency());
+        this.listening = new GpuSlot("transcribe", where.residency());
     }
 
     /**
@@ -268,10 +270,13 @@ public final class LocalSpeech {
         Path dir = Files.createDirectories(savedDir(id));
         Files.write(dir.resolve(name + ".wav"), wav);
         Files.writeString(dir.resolve(name + ".txt"), transcript.strip());
-        synchronized (speaking) {
+        speaking.lock();
+        try {
             if (voice instanceof F5Speech f5 && p.equals(voicePath)) {
                 f5.addVoice(name, a, transcript.strip());
             }
+        } finally {
+            speaking.unlock();
         }
     }
 
@@ -292,13 +297,15 @@ public final class LocalSpeech {
         if (!gone) {
             throw new IllegalArgumentException("no saved voice named " + name);
         }
-        synchronized (speaking) {
+        speaking.lock();
+        try {
             // a loaded model keeps the voice it was given: load it again without it
             if (voice != null && voicePath != null && voicePath.equals(find().get(id))) {
-                voice.close();
-                voice = null;
-                voicePath = null;
+                speaking.forget();
+                letVoice();
             }
+        } finally {
+            speaking.unlock();
         }
     }
 
@@ -412,7 +419,8 @@ public final class LocalSpeech {
      * @throws IOException if the model cannot be loaded
      */
     Media speak(String id, String text, String voiceId, double speed, BooleanSupplier stop) throws IOException {
-        synchronized (speaking) {
+        speaking.lock();
+        try {
             TextToSpeech tts = loadVoice(id);
             io.github.zzuegg.brainiac.audio.SpeechOptions o = io.github.zzuegg.brainiac.audio.SpeechOptions.defaults()
                     .speed((float) speed).cancelled(stop);
@@ -422,6 +430,8 @@ public final class LocalSpeech {
             }
             Audio a = tts.synthesize(text, o, null);
             return new Media(Wav.encode(a), "audio/wav");
+        } finally {
+            speaking.unlock();
         }
     }
 
@@ -431,20 +441,30 @@ public final class LocalSpeech {
         if (voice != null && p.equals(voicePath) && d.name().equals(voiceOn)) {
             return voice;
         }
-        if (voice != null) {
-            voice.close();
-            voice = null;
-        }
-        voiceOn = d.name();
-        voice = SpeechModels.textToSpeech(p, d, dtype(d, family(p)));
-        voicePath = p;
-        if (voice instanceof F5Speech f5) {
-            for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
-                f5.addVoice(e.getKey(), Wav.read(savedDir(id).resolve(e.getKey() + ".wav")), e.getValue());
+        return speaking.load(id, p, d, () -> false, () -> {
+            TextToSpeech t = SpeechModels.textToSpeech(p, d, dtype(d, family(p)));
+            voice = t;
+            voiceOn = d.name();
+            voicePath = p;
+            if (t instanceof F5Speech f5) {
+                for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
+                    f5.addVoice(e.getKey(), Wav.read(savedDir(id).resolve(e.getKey() + ".wav")), e.getValue());
+                }
             }
+            LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to speak on " + d);
+            return t;
+        }, this::letVoice);
+    }
+
+    // lets the speaking model go; its slot is held
+    private void letVoice() {
+        TextToSpeech t = voice;
+        voice = null;
+        voicePath = null;
+        voiceOn = null;
+        if (t != null) {
+            t.close();
         }
-        LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to speak on " + d);
-        return voice;
     }
 
     /**
@@ -456,10 +476,13 @@ public final class LocalSpeech {
     Map<String, Object> listeningOptions(String id) {
         Map<String, Object> m = new LinkedHashMap<>();
         try {
-            synchronized (listening) {
+            listening.lock();
+            try {
                 SpeechToText stt = loadEars(id);
                 m.put("languages", stt.languages());
                 m.put("translate", stt.canTranslate());
+            } finally {
+                listening.unlock();
             }
         } catch (IOException | RuntimeException e) {
             m.put("languages", List.of());
@@ -484,7 +507,8 @@ public final class LocalSpeech {
     Transcription transcribe(String id, byte[] wav, Listening l, Consumer<Transcription.Segment> onSegment,
             BooleanSupplier stop) throws IOException {
         Audio audio = Wav.decode(wav);
-        synchronized (listening) {
+        listening.lock();
+        try {
             SpeechToText stt = loadEars(id);
             TranscriptionOptions o = TranscriptionOptions.defaults()
                     .language(l.language() == null || l.language().isBlank() ? null : l.language().toLowerCase(Locale.ROOT))
@@ -494,6 +518,8 @@ public final class LocalSpeech {
                 o = o.prompt(l.prompt());
             }
             return stt.transcribe(audio, o, onSegment);
+        } finally {
+            listening.unlock();
         }
     }
 
@@ -503,14 +529,24 @@ public final class LocalSpeech {
         if (ears != null && p.equals(earsPath) && d.name().equals(earsOn)) {
             return ears;
         }
-        if (ears != null) {
-            ears.close();
-            ears = null;
+        return listening.load(id, p, d, () -> false, () -> {
+            SpeechToText t = SpeechModels.speechToText(p, d, dtype(d));
+            ears = t;
+            earsOn = d.name();
+            earsPath = p;
+            LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to transcribe on " + d);
+            return t;
+        }, this::letEars);
+    }
+
+    // lets the transcribing model go; its slot is held
+    private void letEars() {
+        SpeechToText t = ears;
+        ears = null;
+        earsPath = null;
+        earsOn = null;
+        if (t != null) {
+            t.close();
         }
-        earsOn = d.name();
-        ears = SpeechModels.speechToText(p, d, dtype(d));
-        earsPath = p;
-        LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to transcribe on " + d);
-        return ears;
     }
 }

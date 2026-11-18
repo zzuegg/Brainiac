@@ -169,10 +169,11 @@ public final class LatentKnowledge {
             prompts.add(s.prefix());
         }
         float[] logits = Var.noGrad(() -> m.forward(prompts.toArray(new int[0][])).logits()).value().toArray();
+        int vocab = m.settings().vocab();
         int len = prompts.get(0).length;
         int hit = 0;
         for (int i = 0; i < st.size(); i++) {
-            int off = ((i + 1) * len - 1) * VOCAB;
+            int off = ((i + 1) * len - 1) * vocab;
             boolean saysYes = logits[off + YES] > logits[off + NO];
             hit += saysYes == truth[i] ? 1 : 0;
         }
@@ -277,5 +278,262 @@ public final class LatentKnowledge {
         return new Scores(ccs.accuracy(plain.pos(), plain.neg(), plain.truth()),
                 ccs.accuracy(syc.pos(), syc.neg(), syc.truth()), supPlain, supSyc, plain.zeroShot(), syc.zeroShot(),
                 pca, rnd, dTruth, dFeature);
+    }
+
+    // ------------------------------------------------------------------ wave 10 follow-up (10.3.17)
+
+    private static final int MARK = 20;
+    private static final int TEMPLATES = 8;
+
+    /**
+     * Renders a statement prefix in prompt template {@code k} (0-7): the operands in the given
+     * or swapped order ({@code k % 2}) and a template marker token at one of four positions
+     * ({@code k / 2}); truth and length are unchanged.
+     */
+    private static int[] render(int[] prefix, int k) {
+        int head = prefix.length - 5;
+        int a = prefix[head];
+        int b = prefix[head + 2];
+        int c = prefix[head + 4];
+        int[] body = k % 2 == 0 ? new int[] {a, PLUS, b, EQ, c} : new int[] {b, PLUS, a, EQ, c};
+        int pos = switch (k / 2) {
+            case 0 -> 0;
+            case 1 -> 1;
+            case 2 -> 3;
+            default -> 2;
+        };
+        int[] out = new int[prefix.length + 1];
+        System.arraycopy(prefix, 0, out, 0, head);
+        int o = head;
+        for (int i = 0; i < 5; i++) {
+            if (i == pos) {
+                out[o++] = MARK + k;
+            }
+            out[o++] = body[i];
+        }
+        return out;
+    }
+
+    private static Statement templated(Statement s, int k) {
+        return new Statement(render(s.prefix(), k), s.truth(), s.sycophantAnswer());
+    }
+
+    /**
+     * Trains the judge on statements rendered in random prompt templates (the follow-up's
+     * model; wave 9's {@link #train} is unchanged).
+     *
+     * @param steps Adam steps of 32 statements plus 16 verdicts
+     * @param templates how many templates the training statements use, 1 to 8
+     * @param seed the seed
+     * @return the model
+     */
+    public static HookedDecoder trainTemplated(int steps, int templates, long seed) {
+        HookedDecoder m = HookedDecoder.create(HookedDecoder.Settings.tiny(MARK + TEMPLATES), seed);
+        Optimizer opt = Optimizer.adam(3e-3f);
+        SplittableRandom r = new SplittableRandom(seed + 1);
+        for (int s = 0; s < steps; s++) {
+            int[][] plain = new int[16][];
+            int[][] user = new int[16][];
+            int[][] verdictIn = new int[16][];
+            float[] verdict = new float[16];
+            for (int i = 0; i < 16; i++) {
+                Statement p = templated(statement(r, -1), r.nextInt(templates));
+                plain[i] = append(p.prefix(), p.sycophantAnswer() ? YES : NO);
+                Statement u = templated(statement(r, r.nextInt(9)), r.nextInt(templates));
+                user[i] = append(u.prefix(), u.sycophantAnswer() ? YES : NO);
+                Statement v = templated(statement(r, -1), r.nextInt(templates));
+                boolean yes = r.nextBoolean();
+                verdictIn[i] = append(v.prefix(), yes ? YES : NO);
+                verdict[i] = yes == v.truth() ? RIGHT : WRONG;
+            }
+            int len = verdictIn[0].length;
+            Var last = m.forward(verdictIn, null, null, true).logits().slice(1, len - 1, len)
+                    .reshape(16, MARK + TEMPLATES);
+            Var loss = m.loss(plain, true).add(m.loss(user, true))
+                    .add(Functional.crossEntropy(last, Tensor.of(Shape.of(16), verdict)));
+            loss.backward();
+            opt.step(m.parameters());
+        }
+        return m;
+    }
+
+    /**
+     * One row of the follow-up, for one number of prompt templates. Accuracies are sign-free;
+     * per-template numbers are averaged over the templates.
+     *
+     * @param templates the number of templates pooled
+     * @param ccsPooled wave 9's CCS (one normalisation for the pooled set), plain test statements
+     * @param ccsPerTemplate CCS with per-template normalisation
+     * @param ccsEnsemble the same with credences averaged over the templates
+     * @param crcEnsemble CRC with per-template normalisation, averaged over templates
+     * @param supervised the supervised probe on pair differences (upper bound)
+     * @param zeroShot the model's own answers
+     * @param random a random direction
+     * @param ccsSycophantic per-template CCS ensemble on the sycophantic split
+     * @param distractorTruth per-template CCS fitted with the distractor: truth accuracy
+     * @param distractorFeature the same CCS: agreement with the distractor feature
+     * @param crcDistractorTruth CRC with the distractor: truth accuracy
+     * @param crcDistractorFeature CRC with the distractor: agreement with the distractor
+     */
+    public record FollowUpRow(int templates, double ccsPooled, double ccsPerTemplate, double ccsEnsemble,
+            double crcEnsemble, double supervised, double zeroShot, double random, double ccsSycophantic,
+            double distractorTruth, double distractorFeature, double crcDistractorTruth,
+            double crcDistractorFeature) {
+
+        @Override
+        public String toString() {
+            return String.format("T=%d CCS pooled %.3f per-template %.3f ensemble %.3f | CRC %.3f | supervised %.3f"
+                    + " zero-shot %.3f random %.3f | sycophantic CCS %.3f | distractor CCS truth %.3f feature %.3f,"
+                    + " CRC truth %.3f feature %.3f", templates, ccsPooled, ccsPerTemplate, ccsEnsemble, crcEnsemble,
+                    supervised, zeroShot, random, ccsSycophantic, distractorTruth, distractorFeature,
+                    crcDistractorTruth, crcDistractorFeature);
+        }
+    }
+
+    /** Pairs of the same statements under templates 0..t-1, stacked, with their template ids. */
+    private record Templated(Pairs[] perTemplate, Pairs pooled, int[] template) {
+    }
+
+    private static Templated templatedPairs(HookedDecoder m, List<Statement> st, int t, boolean distractor,
+            SplittableRandom r) {
+        Pairs[] per = new Pairs[t];
+        Pairs pooled = null;
+        int[] template = new int[st.size() * t];
+        for (int k = 0; k < t; k++) {
+            List<Statement> rendered = new ArrayList<>();
+            for (Statement s : st) {
+                rendered.add(templated(s, k));
+            }
+            per[k] = pairs(m, rendered, distractor, r);
+            pooled = pooled == null ? per[k] : concat(pooled, per[k]);
+            java.util.Arrays.fill(template, k * st.size(), (k + 1) * st.size(), k);
+        }
+        return new Templated(per, pooled, template);
+    }
+
+    private static int[] constant(int n, int k) {
+        int[] t = new int[n];
+        java.util.Arrays.fill(t, k);
+        return t;
+    }
+
+    /**
+     * Wave 10 item 10.3.17: CCS with per-template normalisation, prompt ensembles and CRC,
+     * against wave 9's pooled CCS, the supervised probe, zero-shot answers and a random
+     * direction, with sycophantic and distractor splits.
+     *
+     * @param trainSteps judge training steps (wave 9 used 450; the follow-up's Run uses 4x)
+     * @param templateCounts the template counts to compare, each at most 8
+     * @param seed the seed
+     * @return one row per template count
+     */
+    public static List<FollowUpRow> followUp(int trainSteps, int[] templateCounts, long seed) {
+        return followUp(trainSteps, templateCounts, 150, seed);
+    }
+
+    /**
+     * The follow-up with a chosen number of statements per split.
+     *
+     * @param trainSteps judge training steps
+     * @param templateCounts the template counts to compare, each at most 8
+     * @param statements statements per split (fit and test, plain and sycophantic)
+     * @param seed the seed
+     * @return one row per template count
+     */
+    public static List<FollowUpRow> followUp(int trainSteps, int[] templateCounts, int statements, long seed) {
+        int maxT = 1;
+        for (int t : templateCounts) {
+            maxT = Math.max(maxT, t);
+        }
+        HookedDecoder m = trainTemplated(trainSteps, maxT, seed);
+        List<FollowUpRow> rows = new ArrayList<>();
+        for (int t : templateCounts) {
+            SplittableRandom r = new SplittableRandom(seed + 2);
+            List<Statement> fitPlain = new ArrayList<>();
+            List<Statement> fitSyc = new ArrayList<>();
+            List<Statement> testPlain = new ArrayList<>();
+            List<Statement> testSyc = new ArrayList<>();
+            for (int i = 0; i < statements; i++) {
+                fitPlain.add(statement(r, -1));
+                fitSyc.add(sycophantic(r));
+                testPlain.add(statement(r, -1));
+                testSyc.add(sycophantic(r));
+            }
+            Templated fp = templatedPairs(m, fitPlain, t, false, r);
+            Templated fs = templatedPairs(m, fitSyc, t, false, r);
+            Pairs fit = concat(fp.pooled(), fs.pooled());
+            int[] fitTemplate = new int[fp.template().length + fs.template().length];
+            System.arraycopy(fp.template(), 0, fitTemplate, 0, fp.template().length);
+            System.arraycopy(fs.template(), 0, fitTemplate, fp.template().length, fs.template().length);
+            Templated plain = templatedPairs(m, testPlain, t, false, r);
+            Templated syc = templatedPairs(m, testSyc, t, false, r);
+            ContrastConsistentSearch pooledCcs = ContrastConsistentSearch.fit(fit.pos(), fit.neg(), 3, 250, seed + 3);
+            ContrastConsistentSearch ccs = ContrastConsistentSearch.fit(fit.pos(), fit.neg(), fitTemplate, 3, 250,
+                    seed + 3);
+            ContrastConsistentSearch.Crc crc = ContrastConsistentSearch.crc(fit.pos(), fit.neg(), fitTemplate);
+            LinearProbe sup = LinearProbe.fit(differences(fit), ints(fit.truth()), 2, 300, 0.05, 1e-4);
+            double pooledAcc = 0;
+            double perAcc = 0;
+            double supAcc = 0;
+            double zero = 0;
+            double[][] ccsCred = new double[t][];
+            double[][] crcCred = new double[t][];
+            double[][] sycCred = new double[t][];
+            for (int k = 0; k < t; k++) {
+                Pairs p = plain.perTemplate()[k];
+                int[] tk = constant(p.truth().length, k);
+                pooledAcc += pooledCcs.accuracy(p.pos(), p.neg(), p.truth()) / t;
+                ccsCred[k] = ccs.credences(p.pos(), p.neg(), tk);
+                perAcc += ContrastConsistentSearch.signFreeAccuracy(ccsCred[k], p.truth()) / t;
+                crcCred[k] = crc.credences(p.pos(), p.neg(), tk);
+                supAcc += sup.accuracy(differences(p), ints(p.truth())) / t;
+                zero += p.zeroShot() / t;
+                Pairs q = syc.perTemplate()[k];
+                sycCred[k] = ccs.credences(q.pos(), q.neg(), constant(q.truth().length, k));
+            }
+            Pairs p0 = plain.perTemplate()[0];
+            double rnd = ContrastConsistentSearch.randomDirection(p0.pos(), p0.neg(), p0.truth(), seed + 4);
+            // distractor split: fit per-template CCS and CRC on distractor pairs of the plain statements
+            SplittableRandom rd = new SplittableRandom(seed + 50);
+            Templated dFit = templatedPairs(m, fitPlain, t, true, rd);
+            Templated dTest = templatedPairs(m, testPlain, t, true, rd);
+            ContrastConsistentSearch dCcs = ContrastConsistentSearch.fit(dFit.pooled().pos(), dFit.pooled().neg(),
+                    dFit.template(), 3, 300, seed + 60);
+            ContrastConsistentSearch.Crc dCrc = ContrastConsistentSearch.crc(dFit.pooled().pos(), dFit.pooled().neg(),
+                    dFit.template());
+            double dTruth = 0;
+            double dFeature = 0;
+            double cTruth = 0;
+            double cFeature = 0;
+            for (int k = 0; k < t; k++) {
+                Pairs p = dTest.perTemplate()[k];
+                int[] tk = constant(p.truth().length, k);
+                double[] c1 = dCcs.credences(p.pos(), p.neg(), tk);
+                double[] c2 = dCrc.credences(p.pos(), p.neg(), tk);
+                dTruth += ContrastConsistentSearch.signFreeAccuracy(c1, p.truth()) / t;
+                dFeature += ContrastConsistentSearch.signFreeAccuracy(c1, p.distractorOnYes()) / t;
+                cTruth += ContrastConsistentSearch.signFreeAccuracy(c2, p.truth()) / t;
+                cFeature += ContrastConsistentSearch.signFreeAccuracy(c2, p.distractorOnYes()) / t;
+            }
+            rows.add(new FollowUpRow(t, pooledAcc, perAcc, ContrastConsistentSearch.ensembleAccuracy(ccsCred,
+                    p0.truth()), ContrastConsistentSearch.ensembleAccuracy(crcCred, p0.truth()), supAcc, zero, rnd,
+                    ContrastConsistentSearch.ensembleAccuracy(sycCred, syc.perTemplate()[0].truth()), dTruth,
+                    dFeature, cTruth, cFeature));
+        }
+        return rows;
+    }
+
+    /**
+     * The follow-up's Run: the judge trained 4x longer than wave 9 (1800 steps) on 8 templates,
+     * compared with 1, 4 and 8 templates pooled, for three seeds.
+     *
+     * @param args unused
+     */
+    public static void main(String[] args) {
+        for (long seed = 1; seed <= 3; seed++) {
+            for (FollowUpRow row : followUp(1800, new int[] {1, 4, 8}, seed)) {
+                System.out.println("seed " + seed + " " + row);
+            }
+        }
     }
 }
