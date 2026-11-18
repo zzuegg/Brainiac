@@ -42,6 +42,7 @@ final class LocalProvider implements ChatProvider {
     private Loaded loaded;
     private volatile LocalImages images;
     private volatile LocalSpeech speech;
+    private final LocalTexts texts;
 
     record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
             Set<Integer> stops, VisionLanguageModel vision) {
@@ -66,6 +67,11 @@ final class LocalProvider implements ChatProvider {
                 LOG.log(System.Logger.Level.WARNING, "cannot read " + placesFile, e);
             }
         }
+        texts = new LocalTexts(() -> {
+            List<Path> places = new ArrayList<>(this.folders);
+            places.addAll(added());
+            return places;
+        }, device);
     }
 
     /**
@@ -147,7 +153,7 @@ final class LocalProvider implements ChatProvider {
     @Override
     public boolean ready() {
         return !find().isEmpty() || (images != null && !images.models().isEmpty())
-                || (speech != null && !speech.models().isEmpty());
+                || (speech != null && !speech.models().isEmpty()) || !texts.models().isEmpty();
     }
 
     @Override
@@ -212,6 +218,15 @@ final class LocalProvider implements ChatProvider {
         return speech;
     }
 
+    /**
+     * Returns the text-to-text models' side: BART, Marian and T5.
+     *
+     * @return the text-to-text models
+     */
+    LocalTexts texts() {
+        return texts;
+    }
+
     @Override
     public boolean takesGrammar() {
         return true;
@@ -271,6 +286,7 @@ final class LocalProvider implements ChatProvider {
         if (speech != null) {
             out.addAll(speech.models());
         }
+        out.addAll(texts.models());
         return out;
     }
 

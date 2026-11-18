@@ -161,6 +161,24 @@ public final class StudioTools {
         return answer.toString();
     }
 
+    /**
+     * Summarizes or translates with a text-to-text model.
+     *
+     * @param text the input
+     * @param model the model key
+     * @param task the model's task
+     * @return {@code {model, text, task}}
+     */
+    @Tools.Tool(name = "rewrite_text", value = "Summarizes, translates or otherwise rewrites a text with a BART, Marian "
+            + "or T5 model on this PC. list_models shows them with the media 'rewrite'.")
+    @Acts("runs a text-to-text model on this PC")
+    public Map<String, Object> rewriteText(@Tools.Param("the text") String text,
+            @Tools.Param("a model from list_models with the media 'rewrite', or 'auto'") Optional<String> model,
+            @Tools.Param("one of the model's tasks, such as 'summarization' or 'translation_en_to_de'") Optional<String> task) {
+        ChatService.Rewritten r = call(() -> chat.rewrite(model.orElse(ChatService.AUTO), text, task.orElse(""), 0));
+        return Map.of("model", r.model(), "text", r.text(), "task", r.task());
+    }
+
     // ---------------------------------------------------------------- Hugging Face
 
     /**
