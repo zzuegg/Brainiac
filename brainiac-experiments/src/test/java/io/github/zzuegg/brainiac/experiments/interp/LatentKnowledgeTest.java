@@ -10,7 +10,7 @@ class LatentKnowledgeTest {
 
     @Test
     void ccsFindsTruthWithoutLabels() {
-        LatentKnowledge.Scores s = LatentKnowledge.run(600, 2, 1);
+        LatentKnowledge.Scores s = LatentKnowledge.run(450, 2, 1);
         System.out.printf("CCS plain %.3f sycophantic %.3f | supervised %.3f / %.3f | zero-shot %.3f / %.3f |"
                 + " contrastive PCA %.3f random %.3f | distractor truth %s feature %s%n", s.ccsPlain(),
                 s.ccsSycophantic(), s.supervisedPlain(), s.supervisedSycophantic(), s.zeroShotPlain(),

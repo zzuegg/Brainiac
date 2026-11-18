@@ -4,6 +4,9 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.interp.ContrastConsistentSearch;
 import io.github.zzuegg.brainiac.experimental.llm.HookedDecoder;
 import io.github.zzuegg.brainiac.experimental.nn.LinearProbe;
+import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.util.ArrayList;
@@ -18,7 +21,10 @@ import java.util.SplittableRandom;
  * prefixed by a user claim {@code USER u}, and there the model is taught to agree with the
  * user (answer YES exactly when {@code c = u}): it is sycophantic. On the
  * <em>sycophantic split</em> the user always claims a wrong sum, so the model's outputs are
- * wrong for every statement, although the truth may still be computed inside.
+ * wrong for every statement, although the truth may still be computed inside. Plain
+ * statements completed with a random answer are also followed by a RIGHT/WRONG verdict
+ * token (scored at that position only), standing in for the pretraining that makes a large
+ * model track whether a completed statement is true.
  *
  * <p>For each statement both completions ({@code ... YES} and {@code ... NO}) are run and the
  * residual stream at the last position after block 1 is read. {@link ContrastConsistentSearch}
@@ -40,7 +46,9 @@ public final class LatentKnowledge {
     private static final int D1 = 15;
     private static final int D2 = 16;
     private static final int BOS = 17;
-    private static final int VOCAB = 18;
+    private static final int RIGHT = 18;
+    private static final int WRONG = 19;
+    private static final int VOCAB = 20;
     private static final int LAYER = 1;
 
     private LatentKnowledge() {
@@ -95,11 +103,32 @@ public final class LatentKnowledge {
                 Statement u = statement(r, r.nextInt(9));
                 user[i] = append(u.prefix(), u.sycophantAnswer() ? YES : NO);
             }
-            Var loss = m.loss(plain, true).add(m.loss(user, true));
+            Var loss = m.loss(plain, true).add(m.loss(user, true)).add(verdictLoss(m, r));
             loss.backward();
             opt.step(m.parameters());
         }
         return m;
+    }
+
+    /**
+     * The loss of a verdict after a completed plain statement: given {@code a + b = c ANSWER},
+     * predict RIGHT when the answer is the truth and WRONG otherwise. Only the last position is
+     * scored, so the answer head is not taught to answer at random. This gives the answer
+     * position a reason to carry the truth of the completed statement, as next-token
+     * pretraining does in large models.
+     */
+    private static Var verdictLoss(HookedDecoder m, SplittableRandom r) {
+        int[][] in = new int[16][];
+        float[] verdict = new float[16];
+        for (int i = 0; i < 16; i++) {
+            Statement p = statement(r, -1);
+            boolean yes = r.nextBoolean();
+            in[i] = append(p.prefix(), yes ? YES : NO);
+            verdict[i] = yes == p.truth() ? RIGHT : WRONG;
+        }
+        int len = in[0].length;
+        Var last = m.forward(in, null, null, true).logits().slice(1, len - 1, len).reshape(16, VOCAB);
+        return Functional.crossEntropy(last, Tensor.of(Shape.of(16), verdict));
     }
 
     /** Hidden states of the last position after block {@link #LAYER}. */

@@ -17,7 +17,9 @@ import java.util.SplittableRandom;
  * Line OCR without character segmentation: a convolutional-recurrent network trained with
  * CTC (CRNN, Shi et al., TPAMI 2017). Two 3x3 convolutions turn a text-line image
  * {@code [batch, 1, height, width]} into one feature vector per pixel column, a projection
- * and a bidirectional GRU (core {@link Recurrent}) add left and right context, and a linear
+ * and a bidirectional GRU (core {@link Recurrent}, with a residual connection around it: without
+ * one, training sat on the all-blank CTC plateau for the whole toy budget) add left and right
+ * context, and a linear
  * layer emits per-column class scores (class 0 is the CTC blank), trained with
  * {@link CtcLoss} so the alignment between columns and characters is never labelled.
  *
@@ -114,7 +116,8 @@ public final class LineRecognizer implements Layer {
         Var cols = h.permute(0, 3, 1, 2).reshape(b, w, 16 * height).matmul(project).add(projectB).relu();
         Var seq;
         if (encoder == Encoder.BIGRU) {
-            seq = rnn.forward(cols, training);
+            // residual around the GRU: without it CTC sits on the all-blank plateau for hundreds of steps
+            seq = rnn.forward(cols, training).add(cols);
         } else {
             seq = cols.add(Functional.sinusoidal(w, hidden, 10000f, cols.value().device()));
             for (Layer blk : blocks) {

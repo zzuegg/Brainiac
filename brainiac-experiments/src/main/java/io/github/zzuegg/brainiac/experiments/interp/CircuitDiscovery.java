@@ -31,9 +31,10 @@ import java.util.SplittableRandom;
  * <p><b>Alignment</b> ({@link #alignment}): an MLP (40-48-48-10) learns the tens digit of
  * the sum of two two-digit numbers, which needs the carry from the ones digits. Distributed
  * alignment search ({@link AlignmentSearch}) looks for a k-dimensional subspace of the
- * second hidden layer that holds the carry, scored by interchange-intervention accuracy
- * (IIA) on base/source pairs whose carries differ, so the counterfactual tens digit differs
- * from the base's. Baselines: a {@link LinearProbe} direction for the carry, the top
+ * first hidden layer (where the carry is computed; the second already encodes the output
+ * digit, and no subspace there moves the answer) that holds the carry, scored by
+ * interchange-intervention accuracy (IIA) on base/source pairs whose carries differ, so the
+ * counterfactual tens digit differs from the base's (an intervention without effect scores 0). Baselines: a {@link LinearProbe} direction for the carry, the top
  * principal components of the layer, and the best single neuron.
  */
 public final class CircuitDiscovery {
@@ -249,7 +250,7 @@ public final class CircuitDiscovery {
     }
 
     /**
-     * The alignment comparison on the second hidden layer.
+     * The alignment comparison on the first hidden layer.
      *
      * @param trainSteps adder training steps
      * @param dasSteps DAS training steps per subspace size
@@ -259,7 +260,7 @@ public final class CircuitDiscovery {
     public static AlignmentScores alignment(int trainSteps, int dasSteps, long seed) {
         Model m = trainAdder(trainSteps, seed);
         double acc = accuracy(m, seed + 2);
-        int step = 1;
+        int step = 0;
         AlignmentSearch.Interchange test = interchange(400, seed + 3);
         double[] das = new double[2];
         for (int k = 1; k <= 2; k++) {

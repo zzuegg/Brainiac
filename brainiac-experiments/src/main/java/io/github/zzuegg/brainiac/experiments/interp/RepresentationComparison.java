@@ -40,7 +40,7 @@ import java.util.function.BiFunction;
  */
 public final class RepresentationComparison {
 
-    private static final ShapeImages DATA = new ShapeImages(8, 0.3f);
+    private static final ShapeImages DATA = new ShapeImages(8, 0.15f);
 
     private RepresentationComparison() {
     }

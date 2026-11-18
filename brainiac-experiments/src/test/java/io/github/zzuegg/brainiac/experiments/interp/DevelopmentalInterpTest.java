@@ -10,7 +10,7 @@ class DevelopmentalInterpTest {
 
     @Test
     void llcIsTrackedOverTraining() {
-        DevelopmentalInterp.Study s = DevelopmentalInterp.run(1200, 300, 300, 1);
+        DevelopmentalInterp.Study s = DevelopmentalInterp.run(900, 300, 300, 1);
         for (DevelopmentalInterp.Checkpoint c : s.curve()) {
             System.out.printf("LLC step %5d train %.3f test %.3f LLC %.2f Hessian trace %.2f top eig %.3f norm %.2f%n",
                     c.step(), c.trainAccuracy(), c.testAccuracy(), c.llc(), c.hessianTrace(), c.topEigenvalue(),

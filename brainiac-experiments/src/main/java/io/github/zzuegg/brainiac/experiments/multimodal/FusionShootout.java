@@ -26,29 +26,33 @@ import java.util.SplittableRandom;
  * Wave 9 items 9.4.15 to 9.4.17: connecting modalities.
  *
  * <p><b>Bridges to a frozen LM</b> ({@link #vqa}, 9.4.15): questions about 16x16
- * {@link ShapeScenes} (1-3 glyphs of six classes): {@code HOW MANY <shape>},
- * {@code IS THERE <shape>} and {@code WHAT LEFT OF <shape>}. A {@link FusionDecoder} LM is
- * pretrained on the question/answer text alone (so it learns the format and the answer
- * priors) and frozen, and a {@link VisionTransformer} is pretrained on single-glyph
- * classification and frozen. Rows: the frozen LM alone (language prior), the LLaVA-style
- * {@link PatchProjector} (16 visual prefix tokens), the {@link QueryTransformer} (4 query
+ * {@link ShapeScenes} (1-3 glyphs of six classes): {@code HOW <shape>} (how many),
+ * {@code IS <shape>} (is there one) and {@code LEFT <shape>} (the shape nearest to its
+ * left), half of them about a shape that is present. A {@link FusionDecoder} LM is
+ * pretrained on these questions alone, after 16 PAD tokens, and after a 16-slot text
+ * description of the scene (slot {@code p} holds the shape whose centre lies in 4x4 patch
+ * {@code p}), so that, like a pretrained LLM, it already reads scenes described in words;
+ * then it is frozen. A {@link VisionTransformer} is pretrained on single-glyph
+ * classification and frozen. Rows: the frozen LM alone (language prior), the frozen LM
+ * reading the true description (the ceiling a bridge could reach), the LLaVA-style
+ * {@link PatchProjector} (16 visual prefix tokens), the {@link QueryTransformer} (16 query
  * tokens, after a contrastive stage against the LM's embedding of the scene's shape list),
  * the Flamingo-style {@link GatedCrossAttentionAdapter} (resampler and tanh-gated
- * cross-attention after every LM block), and early fusion from scratch (raw pixel patches
- * projected into a fresh decoder, everything trained). Reported: accuracy per question kind,
- * trainable parameters, and the text-only loss of the answering LM afterwards (does fusion
- * damage the LM?).
+ * cross-attention after every LM block, behind 16 PAD tokens), and early fusion from
+ * scratch (raw pixel patches projected into a fresh decoder, everything trained). Reported:
+ * accuracy per question kind, trainable parameters, and the text-only loss of the answering
+ * LM afterwards (does fusion damage the LM?).
  *
  * <p><b>Transfusion</b> ({@link #generation}, 9.4.16): {@link DigitGlyphs} 8x8 digits as
- * 16 patches of 2x2 pixels; one {@link TransfusionModel} trained on captioning (image, then
- * the digit token) and generation (digit token, then the image by diffusion) against two
+ * 16 patches of 2x2 pixels; one {@link TransfusionModel} trained on captioning (a lightly noised image, then
+ * the digit token, scored by the text loss only) and generation (digit token, then the image by diffusion) against two
  * Transfusion models trained on one direction each with half the steps, and against the
  * VQ-token early fusion of {@link EarlyFusion} (one model on both directions, and two
  * separate ones). Reported: caption accuracy, the share of generated images whose nearest
  * clean rendering shows the requested digit, and the mean squared distance to it.
  *
  * <p><b>Bottleneck fusion</b> ({@link #audioVisual}, 9.4.17): a digit seen ({@link DigitGlyphs}
- * with 25% flipped pixels, 16 tokens of 2x2) and heard ({@link TalkingDigits} band energies with
+ * with flipped pixels, 16 tokens of 2x2) and heard ({@link TalkingDigits} band energies with
  * added noise, 12 frames), each modality noisy enough that neither alone is perfect.
  * {@link BottleneckFusion} with bottleneck tokens, full early fusion and late fusion, each with
  * and without modality dropout, and the unimodal models; accuracy with both modalities and
@@ -62,30 +66,26 @@ public final class FusionShootout {
     // ------------------------------------------------------------------ 9.4.15 bridges
 
     private static final ShapeScenes SCENES = new ShapeScenes(16, 0.1f, 2);
-    private static final int PAD = 0;
     private static final int Q = 1;
-    private static final int A = 2;
     private static final int HOW = 3;
-    private static final int MANY = 4;
     private static final int IS = 5;
-    private static final int THERE = 6;
-    private static final int WHAT = 7;
     private static final int LEFT = 8;
-    private static final int OF = 9;
     private static final int SHAPE0 = 10;
     private static final int COUNT0 = SHAPE0 + ShapeScenes.CLASSES;
     private static final int YES = COUNT0 + 6;
     private static final int NO = YES + 1;
     private static final int NONE = NO + 1;
     private static final int VOCAB = NONE + 1;
-    private static final int TEXT = 6;
+    private static final int TEXT = 2;
     private static final int DIM = 32;
-    private static final int[] PREFIXES = {0, 4, 16};
+    private static final int SLOTS = 16;
 
     /** The bridges of 9.4.15. */
     public enum Bridge {
         /** The frozen LM without the image. */
         TEXT_ONLY,
+        /** The frozen LM reading the true 16-slot scene description: the ceiling for the bridges. */
+        DESCRIPTION,
         /** A two-layer MLP from patch features to LM input embeddings. */
         PROJECTOR,
         /** Learned queries cross-attending to the patches. */
@@ -139,7 +139,7 @@ public final class FusionShootout {
 
         /** @return the frozen LM's text-only loss on held-out questions */
         public double textLoss() {
-            return FusionShootout.textLoss(lm, PREFIXES[0], seed + 7);
+            return FusionShootout.textLoss(lm, seed + 7);
         }
     }
 
@@ -175,14 +175,15 @@ public final class FusionShootout {
                     best = i;
                 }
             }
-            return new Question(2, new int[] {Q, WHAT, LEFT, OF, SHAPE0 + c, A},
+            return new Question(2, new int[] {LEFT, SHAPE0 + c},
                     best < 0 ? NONE : SHAPE0 + s.classes()[best]);
         }
-        int c = r.nextInt(ShapeScenes.CLASSES);
+        // half the questions ask about a shape that is present, so the prior is not the answer
+        int c = r.nextBoolean() ? s.classes()[r.nextInt(s.count())] : r.nextInt(ShapeScenes.CLASSES);
         if (kind == 1) {
-            return new Question(1, new int[] {Q, PAD, IS, THERE, SHAPE0 + c, A}, count[c] > 0 ? YES : NO);
+            return new Question(1, new int[] {IS, SHAPE0 + c}, count[c] > 0 ? YES : NO);
         }
-        return new Question(0, new int[] {Q, PAD, HOW, MANY, SHAPE0 + c, A}, COUNT0 + Math.min(5, count[c]));
+        return new Question(0, new int[] {HOW, SHAPE0 + c}, COUNT0 + Math.min(5, count[c]));
     }
 
     /** Text embeddings after {@code prefix} pad embeddings. */
@@ -194,6 +195,20 @@ public final class FusionShootout {
         return lm.embed(ids);
     }
 
+    /**
+     * The scene as {@link #SLOTS} words, one per 4x4 patch: the shape token of the glyph
+     * whose box centre lies in that patch, else PAD. The text the LM is pretrained to read.
+     */
+    private static int[] description(ShapeScenes.Scene s) {
+        int[] slots = new int[SLOTS];
+        for (int i = 0; i < s.count(); i++) {
+            int cx = Math.min(3, (int) ((s.boxes()[4 * i] + s.boxes()[4 * i + 2]) / 2 / 4));
+            int cy = Math.min(3, (int) ((s.boxes()[4 * i + 1] + s.boxes()[4 * i + 3]) / 2 / 4));
+            slots[cy * 4 + cx] = SHAPE0 + s.classes()[i];
+        }
+        return slots;
+    }
+
     private static int[][] answerTargets(int b, int length, int[] answers) {
         int[][] t = new int[b][length];
         for (int i = 0; i < b; i++) {
@@ -203,28 +218,36 @@ public final class FusionShootout {
         return t;
     }
 
-    /** Questions about random scenes, as text without images. */
-    private static Var textOnlyLoss(FusionDecoder lm, int prefix, int n, SplittableRandom r, boolean training) {
+    /**
+     * Questions about random scenes as text: {@code mode} 0 the question alone, 1 after
+     * {@link #SLOTS} PAD tokens, 2 after the scene's {@link #description}.
+     */
+    private static Var textOnlyLoss(FusionDecoder lm, int mode, int n, SplittableRandom r, boolean training) {
         ShapeScenes.Scene[] s = SCENES.scenes(n, 1, 3, ShapeScenes.Layout.SPARSE, r.nextLong());
-        int[][] text = new int[n][];
+        int prefix = mode == 0 ? 0 : SLOTS;
+        int[][] ids = new int[n][prefix + TEXT];
         int[] ans = new int[n];
         for (int i = 0; i < n; i++) {
             Question q = question(s[i], r);
-            text[i] = q.text();
+            if (mode == 2) {
+                System.arraycopy(description(s[i]), 0, ids[i], 0, SLOTS);
+            }
+            System.arraycopy(q.text(), 0, ids[i], prefix, TEXT);
             ans[i] = q.answer();
         }
-        Var logits = lm.logits(padded(lm, text, prefix), null, null, training);
+        Var logits = lm.logits(lm.embed(ids), null, null, training);
         return FusionDecoder.loss(logits, answerTargets(n, prefix + TEXT, ans));
     }
 
-    private static double textLoss(FusionDecoder lm, int prefix, long seed) {
-        return Var.noGrad(() -> textOnlyLoss(lm, prefix, 256, new SplittableRandom(seed), false)).value().item();
+    private static double textLoss(FusionDecoder lm, long seed) {
+        return Var.noGrad(() -> textOnlyLoss(lm, 0, 256, new SplittableRandom(seed), false)).value().item();
     }
 
     /**
      * Pretrains and freezes the LM and the vision encoder, and draws the scenes.
      *
-     * @param lmSteps LM steps of 32 text-only questions (pad prefixes of 0, 4 or 16 tokens)
+     * @param lmSteps LM steps of 32 text questions (in turn: alone, after 16 PAD tokens, after the
+     *     16-slot scene description)
      * @param visionSteps ViT steps of 32 single-glyph scenes
      * @param trainScenes scenes for bridge training
      * @param testScenes held-out scenes
@@ -236,7 +259,7 @@ public final class FusionShootout {
         FusionDecoder lm = new FusionDecoder(VOCAB, DIM, 2, 4, 32, seed + 1);
         Optimizer opt = Optimizer.adam(3e-3f);
         for (int s = 0; s < lmSteps; s++) {
-            textOnlyLoss(lm, PREFIXES[s % PREFIXES.length], 32, r, true).backward();
+            textOnlyLoss(lm, s % 4 < 2 ? 2 : s % 4 - 2, 32, r, true).backward();
             opt.step(lm.parameters());
         }
         VisionTransformer vit = VisionTransformer.of(4, DIM, 2, 4).classToken(false).classes(ShapeScenes.CLASSES)
@@ -258,7 +281,7 @@ public final class FusionShootout {
 
     /** A trained bridge: answer logits at the last position. */
     private interface Answerer {
-        Var logits(Tensor patches, Tensor pixels, int[][] text, boolean training);
+        Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training);
 
         List<Var> trainable();
     }
@@ -302,8 +325,24 @@ public final class FusionShootout {
         return switch (b) {
             case TEXT_ONLY -> new Answerer() {
                 @Override
-                public Var logits(Tensor patches, Tensor pixels, int[][] text, boolean training) {
+                public Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training) {
                     return lm.logits(lm.embed(text), null, null, training);
+                }
+
+                @Override
+                public List<Var> trainable() {
+                    return List.of();
+                }
+            };
+            case DESCRIPTION -> new Answerer() {
+                @Override
+                public Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training) {
+                    int[][] ids = new int[text.length][];
+                    for (int i = 0; i < text.length; i++) {
+                        ids[i] = Arrays.copyOf(scenes[i], SLOTS + text[i].length);
+                        System.arraycopy(text[i], 0, ids[i], SLOTS, text[i].length);
+                    }
+                    return lm.logits(lm.embed(ids), null, null, training);
                 }
 
                 @Override
@@ -315,7 +354,7 @@ public final class FusionShootout {
                 PatchProjector proj = new PatchProjector(DIM, DIM, true, seed);
                 yield new Answerer() {
                     @Override
-                    public Var logits(Tensor patches, Tensor pixels, int[][] text, boolean training) {
+                    public Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training) {
                         return lm.logits(Var.concat(1, proj.forward(Var.of(patches)), lm.embed(text)), null, null,
                                 training);
                     }
@@ -329,7 +368,7 @@ public final class FusionShootout {
             case QFORMER -> {
                 yield new Answerer() {
                     @Override
-                    public Var logits(Tensor patches, Tensor pixels, int[][] text, boolean training) {
+                    public Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training) {
                         return lm.logits(Var.concat(1, qf.prefix(Var.of(patches)), lm.embed(text)), null, null,
                                 training);
                     }
@@ -344,8 +383,9 @@ public final class FusionShootout {
                 GatedCrossAttentionAdapter g = new GatedCrossAttentionAdapter(DIM, DIM, 8, 1, lm.layers(), 1, 4, seed);
                 yield new Answerer() {
                     @Override
-                    public Var logits(Tensor patches, Tensor pixels, int[][] text, boolean training) {
-                        return lm.logits(lm.embed(text), null, g.hook(g.resample(Var.of(patches))), training);
+                    public Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training) {
+                        return lm.logits(padded(lm, text, SLOTS), null, g.hook(g.resample(Var.of(patches))),
+                                training);
                     }
 
                     @Override
@@ -359,7 +399,7 @@ public final class FusionShootout {
                 PatchProjector proj = new PatchProjector(16, DIM, false, seed + 1);
                 yield new Answerer() {
                     @Override
-                    public Var logits(Tensor patches, Tensor pixels, int[][] text, boolean training) {
+                    public Var logits(Tensor patches, Tensor pixels, int[][] scenes, int[][] text, boolean training) {
                         if (pixels == null) {
                             return fresh.logits(fresh.embed(text), null, null, training);
                         }
@@ -389,13 +429,13 @@ public final class FusionShootout {
      */
     public static VqaScores vqa(VqaSetup setup, Bridge bridge, int steps, long seed) {
         long start = System.currentTimeMillis();
-        QueryTransformer qf = bridge == Bridge.QFORMER ? new QueryTransformer(DIM, DIM, DIM, DIM, 4, 2, 4, seed) : null;
+        QueryTransformer qf = bridge == Bridge.QFORMER ? new QueryTransformer(DIM, DIM, DIM, DIM, SLOTS, 1, 4, seed) : null;
         Answerer a = bridge(bridge, setup, qf, seed);
         SplittableRandom r = new SplittableRandom(seed + 1);
         Optimizer opt = Optimizer.adam(3e-3f);
         int n = setup.train.length;
         if (qf != null) {
-            qformerContrastive(setup, qf, steps, r);
+            qformerContrastive(setup, qf, steps / 3, r);
         }
         if (!a.trainable().isEmpty()) {
             for (int s = 0; s < steps; s++) {
@@ -407,7 +447,7 @@ public final class FusionShootout {
                     text[i] = q.text();
                     ans[i] = q.answer();
                 }
-                Var logits = a.logits(rows(setup.trainFeatures, idx), pixels(setup.train, idx), text, true);
+                Var logits = a.logits(rows(setup.trainFeatures, idx), pixels(setup.train, idx), null, text, true);
                 FusionDecoder.loss(logits, answerTargets(idx.length, logits.shape().dim(1), ans)).backward();
                 opt.step(a.trainable());
                 setup.lm.zeroGrad();
@@ -423,13 +463,15 @@ public final class FusionShootout {
                 idx[i] = from + i;
             }
             int[][] text = new int[idx.length][];
+            int[][] described = new int[idx.length][];
             Question[] qs = new Question[idx.length];
             for (int i = 0; i < idx.length; i++) {
                 qs[i] = question(test[idx[i]], tr);
                 text[i] = qs[i].text();
+                described[i] = description(test[idx[i]]);
             }
-            Tensor logits = Var.noGrad(() -> a.logits(rows(setup.testFeatures, idx), pixels(test, idx), text, false))
-                    .value();
+            Tensor logits = Var.noGrad(() -> a.logits(rows(setup.testFeatures, idx), pixels(test, idx), described,
+                    text, false)).value();
             int len = logits.shape().dim(1);
             float[] l = logits.toArray();
             for (int i = 0; i < idx.length; i++) {
@@ -452,7 +494,7 @@ public final class FusionShootout {
                 text[i] = q.text();
                 ans[i] = q.answer();
             }
-            Var logits = bridge == Bridge.EARLY_FUSION ? a.logits(null, null, text, false)
+            Var logits = bridge == Bridge.EARLY_FUSION ? a.logits(null, null, null, text, false)
                     : setup.lm.logits(setup.lm.embed(text), null, null, false);
             return FusionDecoder.loss(logits, answerTargets(s.length, TEXT, ans));
         }).value().item();
@@ -609,6 +651,29 @@ public final class FusionShootout {
         return new double[] {(double) hit / gen.length, dist};
     }
 
+    /** The captioning-and-generation arrangements of 9.4.16. */
+    public enum Arrangement {
+        /** One Transfusion model trained on both directions. */
+        TRANSFUSION_SHARED("Transfusion (one model, both directions)"),
+        /** A Transfusion captioner and a Transfusion generator, half the steps each. */
+        TRANSFUSION_SEPARATE("Transfusion (separate captioner and generator)"),
+        /** One VQ-token early-fusion decoder trained on both directions. */
+        VQ_SHARED("VQ-token early fusion (one model)"),
+        /** A VQ-token captioner and generator, half the steps each. */
+        VQ_SEPARATE("VQ-token early fusion (separate models)");
+
+        private final String label;
+
+        Arrangement(String label) {
+            this.label = label;
+        }
+
+        /** @return the row label */
+        public String label() {
+            return label;
+        }
+    }
+
     /**
      * Captioning and generation at equal steps of 32 sequences: one Transfusion model on both
      * directions (16 + 16 per step), two Transfusion models on one direction each (half the
@@ -620,51 +685,75 @@ public final class FusionShootout {
      * @return the four rows
      */
     public static List<GenerationScores> generation(int steps, int perDigit, long seed) {
-        List<Integer> labels = new ArrayList<>();
-        List<float[]> renders = renders(labels);
         List<GenerationScores> out = new ArrayList<>();
-        long start = System.currentTimeMillis();
-        SplittableRandom r = new SplittableRandom(seed);
-        TransfusionModel both = transfusion(seed);
-        Optimizer opt = Optimizer.adam(2e-3f);
-        for (int s = 0; s < steps; s++) {
-            both.loss(captionBatch(renders, labels, 16, r), 1f, r)
-                    .add(both.loss(generationBatch(renders, labels, 16, r), 1f, r)).backward();
-            opt.step(both.parameters());
+        for (Arrangement a : Arrangement.values()) {
+            out.add(generation(a, steps, perDigit, seed));
         }
-        double[] g = generationAccuracy(both, renders, labels, perDigit, seed + 1);
-        out.add(new GenerationScores("Transfusion (one model, both directions)",
-                captionAccuracy(both, renders, labels), g[0], g[1], count(both.parameters()),
-                System.currentTimeMillis() - start));
-        start = System.currentTimeMillis();
-        TransfusionModel cap = transfusion(seed + 2);
-        TransfusionModel gen = transfusion(seed + 3);
-        Optimizer oc = Optimizer.adam(2e-3f);
-        Optimizer og = Optimizer.adam(2e-3f);
-        for (int s = 0; s < steps / 2; s++) {
-            cap.loss(captionBatch(renders, labels, 32, r), 1f, r).backward();
-            oc.step(cap.parameters());
-            gen.loss(generationBatch(renders, labels, 32, r), 1f, r).backward();
-            og.step(gen.parameters());
-        }
-        g = generationAccuracy(gen, renders, labels, perDigit, seed + 1);
-        out.add(new GenerationScores("Transfusion (separate captioner and generator)",
-                captionAccuracy(cap, renders, labels), g[0], g[1],
-                count(cap.parameters()) + count(gen.parameters()), System.currentTimeMillis() - start));
-        start = System.currentTimeMillis();
-        EarlyFusion ef = EarlyFusion.create(seed);
-        HookedDecoder vq = ef.train(EarlyFusion.Mode.BOTH, steps, seed + 4);
-        g = ef.generationAccuracy(vq, perDigit, seed + 1);
-        out.add(new GenerationScores("VQ-token early fusion (one model)", ef.captionAccuracy(vq), g[0], g[1],
-                count(vq.parameters()), System.currentTimeMillis() - start));
-        start = System.currentTimeMillis();
-        HookedDecoder vqCap = ef.train(EarlyFusion.Mode.CAPTION, steps / 2, seed + 5);
-        HookedDecoder vqGen = ef.train(EarlyFusion.Mode.GENERATE, steps / 2, seed + 6);
-        g = ef.generationAccuracy(vqGen, perDigit, seed + 1);
-        out.add(new GenerationScores("VQ-token early fusion (separate models)", ef.captionAccuracy(vqCap), g[0], g[1],
-                count(vqCap.parameters()) + count(vqGen.parameters()), System.currentTimeMillis() - start));
         return out;
     }
+
+    /**
+     * One arrangement of {@link #generation(int, int, long)}.
+     *
+     * @param arrangement the arrangement
+     * @param steps its total steps of 32 sequences
+     * @param perDigit generated samples per digit
+     * @param seed the seed
+     * @return the row
+     */
+    public static GenerationScores generation(Arrangement arrangement, int steps, int perDigit, long seed) {
+        List<Integer> labels = new ArrayList<>();
+        List<float[]> renders = renders(labels);
+        long start = System.currentTimeMillis();
+        SplittableRandom r = new SplittableRandom(seed);
+        switch (arrangement) {
+            case TRANSFUSION_SHARED -> {
+                TransfusionModel both = transfusion(seed);
+                Optimizer opt = Optimizer.adam(TRANSFUSION_LR);
+                for (int s = 0; s < steps; s++) {
+                    both.loss(captionBatch(renders, labels, 16, r), 0f, r)
+                            .add(both.loss(generationBatch(renders, labels, 16, r), 1f, r)).backward();
+                    opt.step(both.parameters());
+                }
+                double[] g = generationAccuracy(both, renders, labels, perDigit, seed + 1);
+                return new GenerationScores(arrangement.label(), captionAccuracy(both, renders, labels), g[0], g[1],
+                        count(both.parameters()), System.currentTimeMillis() - start);
+            }
+            case TRANSFUSION_SEPARATE -> {
+                TransfusionModel cap = transfusion(seed + 2);
+                TransfusionModel gen = transfusion(seed + 3);
+                Optimizer oc = Optimizer.adam(TRANSFUSION_LR);
+                Optimizer og = Optimizer.adam(TRANSFUSION_LR);
+                for (int s = 0; s < steps / 2; s++) {
+                    cap.loss(captionBatch(renders, labels, 32, r), 0f, r).backward();
+                    oc.step(cap.parameters());
+                    gen.loss(generationBatch(renders, labels, 32, r), 1f, r).backward();
+                    og.step(gen.parameters());
+                }
+                double[] g = generationAccuracy(gen, renders, labels, perDigit, seed + 1);
+                return new GenerationScores(arrangement.label(), captionAccuracy(cap, renders, labels), g[0], g[1],
+                        count(cap.parameters()) + count(gen.parameters()), System.currentTimeMillis() - start);
+            }
+            case VQ_SHARED -> {
+                EarlyFusion ef = EarlyFusion.create(seed);
+                HookedDecoder vq = ef.train(EarlyFusion.Mode.BOTH, steps, seed + 4);
+                double[] g = ef.generationAccuracy(vq, perDigit, seed + 1);
+                return new GenerationScores(arrangement.label(), ef.captionAccuracy(vq), g[0], g[1],
+                        count(vq.parameters()), System.currentTimeMillis() - start);
+            }
+            default -> {
+                EarlyFusion ef = EarlyFusion.create(seed);
+                HookedDecoder vqCap = ef.train(EarlyFusion.Mode.CAPTION, steps / 2, seed + 5);
+                HookedDecoder vqGen = ef.train(EarlyFusion.Mode.GENERATE, steps / 2, seed + 6);
+                double[] g = ef.generationAccuracy(vqGen, perDigit, seed + 1);
+                return new GenerationScores(arrangement.label(), ef.captionAccuracy(vqCap), g[0], g[1],
+                        count(vqCap.parameters()) + count(vqGen.parameters()), System.currentTimeMillis() - start);
+            }
+        }
+    }
+
+    /** The Transfusion models' Adam learning rate. */
+    private static final float TRANSFUSION_LR = 4e-3f;
 
     // ------------------------------------------------------------------ 9.4.17 bottleneck fusion
 
@@ -716,9 +805,13 @@ public final class FusionShootout {
     }
 
     private static BottleneckFusion fusion(BottleneckFusion.Mode mode, long seed) {
-        return new BottleneckFusion(new int[] {16, FRAMES}, new int[] {4, TalkingDigits.BANDS}, DIM, 4, 2, 4,
+        return new BottleneckFusion(new int[] {16, FRAMES}, new int[] {4, TalkingDigits.BANDS}, DIM, 2, 1, 2,
                 DigitGlyphs.CLASSES, mode, seed);
     }
+
+    /** Training and test examples of the audio-visual comparison. */
+    private static final int AV_TRAIN = 600;
+    private static final int AV_TEST = 300;
 
     /**
      * The audio-visual comparison.
@@ -731,19 +824,38 @@ public final class FusionShootout {
      *     the image-only and audio-only models
      */
     public static List<AvScores> audioVisual(int steps, double flip, double audioNoise, long seed) {
-        SplittableRandom r = new SplittableRandom(seed);
-        AvData train = avData(1500, flip, audioNoise, r);
-        AvData test = avData(400, flip, audioNoise, r);
         List<AvScores> out = new ArrayList<>();
-        BottleneckFusion.Mode[] modes = {BottleneckFusion.Mode.BOTTLENECK, BottleneckFusion.Mode.EARLY,
-            BottleneckFusion.Mode.LATE};
-        for (BottleneckFusion.Mode mode : modes) {
+        for (BottleneckFusion.Mode mode : BottleneckFusion.Mode.values()) {
+            out.addAll(audioVisual(mode, steps, flip, audioNoise, seed));
+        }
+        out.addAll(audioVisual(null, steps, flip, audioNoise, seed));
+        return out;
+    }
+
+    /**
+     * Part of the audio-visual comparison on the same data.
+     *
+     * @param mode the fusion, trained without and with modality dropout (0.5); null for the
+     *     image-only and audio-only models
+     * @param steps Adam steps of 32 examples per model
+     * @param flip the image pixel flip probability
+     * @param audioNoise the standard deviation of noise added to the waveform
+     * @param seed the seed
+     * @return two rows
+     */
+    public static List<AvScores> audioVisual(BottleneckFusion.Mode mode, int steps, double flip, double audioNoise,
+            long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        AvData train = avData(AV_TRAIN, flip, audioNoise, r);
+        AvData test = avData(AV_TEST, flip, audioNoise, r);
+        List<AvScores> out = new ArrayList<>();
+        if (mode != null) {
             for (double dropout : new double[] {0, 0.5}) {
                 BottleneckFusion m = fusion(mode, seed + 1);
-                Optimizer opt = Optimizer.adam(2e-3f);
+                Optimizer opt = Optimizer.adam(AV_LR);
                 SplittableRandom tr = new SplittableRandom(seed + 2);
                 for (int s = 0; s < steps; s++) {
-                    AvData b = train.rows(tr.ints(32, 0, 1500).toArray());
+                    AvData b = train.rows(tr.ints(32, 0, AV_TRAIN).toArray());
                     m.loss(b.inputs(), b.labels(), dropout, tr).backward();
                     opt.step(m.parameters());
                 }
@@ -753,14 +865,15 @@ public final class FusionShootout {
                         m.accuracy(test.inputs(), test.labels(), new boolean[] {true, false}),
                         m.accuracy(test.inputs(), test.labels(), new boolean[] {false, true}), m.macs()));
             }
+            return out;
         }
         for (int keep = 0; keep < 2; keep++) {
             boolean[] present = {keep == 0, keep == 1};
             BottleneckFusion m = fusion(BottleneckFusion.Mode.LATE, seed + 5 + keep);
-            Optimizer opt = Optimizer.adam(2e-3f);
+            Optimizer opt = Optimizer.adam(AV_LR);
             SplittableRandom tr = new SplittableRandom(seed + 2);
             for (int s = 0; s < steps; s++) {
-                AvData b = train.rows(tr.ints(32, 0, 1500).toArray());
+                AvData b = train.rows(tr.ints(32, 0, AV_TRAIN).toArray());
                 Functional.crossEntropy(m.logits(b.inputs(), present, true), b.labels()).backward();
                 opt.step(m.parameters());
                 m.parameters().forEach(Var::zeroGrad);
@@ -771,4 +884,7 @@ public final class FusionShootout {
         }
         return out;
     }
+
+    /** The audio-visual models' Adam learning rate. */
+    private static final float AV_LR = 4e-3f;
 }
