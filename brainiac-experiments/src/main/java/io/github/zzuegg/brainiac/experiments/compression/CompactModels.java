@@ -8,6 +8,8 @@ import io.github.zzuegg.brainiac.experimental.compress.HessianAwareBitAllocation
 import io.github.zzuegg.brainiac.experimental.compress.PactActivation;
 import io.github.zzuegg.brainiac.experimental.compress.TensorDecomposition;
 import io.github.zzuegg.brainiac.experimental.compress.TensorTrainDense;
+import io.github.zzuegg.brainiac.experimental.compress.TokenMerging;
+import io.github.zzuegg.brainiac.experimental.data.ShapeImages;
 import io.github.zzuegg.brainiac.experimental.kernels.KernelTimer;
 import io.github.zzuegg.brainiac.experimental.nn.LowRankDense;
 import io.github.zzuegg.brainiac.experimental.tensor.ThinSvd;
@@ -49,7 +51,8 @@ import java.util.function.UnaryOperator;
  * <li>{@link #quantizationAware} (8.5.11): PACT and DoReFa against LSQ and fixed-range clipping
  *     for 2 to 4-bit weights and activations;</li>
  * <li>{@link #denseDecompositions} and {@link #convDecompositions} (8.5.12): tensor-train and
- *     CP/Tucker-2 decompositions of layers against the matrix SVD at equal parameters.</li>
+ *     CP/Tucker-2 decompositions of layers against the matrix SVD at equal parameters;</li>
+ * <li>{@link #tokenMerging} (8.5.13): ToMe against class-attention token pruning on a small ViT.</li>
  * </ul>
  */
 public final class CompactModels {
@@ -358,6 +361,69 @@ public final class CompactModels {
         float max = Math.max(1e-8f, w.value().abs().max().item());
         Tensor q = w.value().mul(qp / max).round().mul(max / qp);
         return Functional.straightThrough(Var.of(q), w);
+    }
+
+    // ------------------------------------------------------------------ 8.5.13
+
+    /**
+     * ToMe token merging against class-attention token pruning on a small ViT (8x8 shapes,
+     * 2x2 patches, 17 tokens with the class token, 3 blocks), trained on fresh batches of 32.
+     *
+     * @param perLayer the tokens removed per block to try
+     * @param steps training steps of the dense ViT
+     * @param fineTune fine-tuning steps of the reduced ViTs at the largest {@code r}
+     * @param seed the seed
+     * @return dense, then merge and prune at each {@code r} (training-free), then both after
+     *     fine-tuning; {@code metric} is test accuracy, {@code cost} multiply-adds per image,
+     *     {@code millis} the forward time of the test set
+     */
+    public static List<CompactRow> tokenMerging(int[] perLayer, int steps, int fineTune, long seed) {
+        ShapeImages images = new ShapeImages(8, 0.1f);
+        Tensor[] test = images.generate(128, seed + 1);
+        TokenMerging vit = new TokenMerging(1, 8, 2, 32, 3, 4, ShapeImages.CLASSES, seed);
+        trainVit(vit, images, steps, 0.003f, seed);
+        List<CompactRow> rows = new ArrayList<>();
+        rows.add(vitRow("dense", vit, test));
+        int last = perLayer[perLayer.length - 1];
+        for (int r : perLayer) {
+            rows.add(vitRow("tome r=" + r, vit.reduce(TokenMerging.Mode.MERGE, r), test));
+            rows.add(vitRow("prune r=" + r, vit.reduce(TokenMerging.Mode.PRUNE, r), test));
+        }
+        for (TokenMerging.Mode m : List.of(TokenMerging.Mode.MERGE, TokenMerging.Mode.PRUNE)) {
+            TokenMerging tuned = vit.copy().reduce(m, last);
+            trainVit(tuned, images, fineTune, 0.001f, seed + 7);
+            rows.add(vitRow((m == TokenMerging.Mode.MERGE ? "tome" : "prune") + " r=" + last + " +ft", tuned, test));
+        }
+        vit.reduce(TokenMerging.Mode.NONE, 0);
+        return rows;
+    }
+
+    private static void trainVit(TokenMerging vit, ShapeImages images, int steps, float lr, long seed) {
+        Optimizer opt = Optimizer.adam(lr);
+        List<Var> params = vit.parameters();
+        for (int s = 0; s < steps; s++) {
+            Tensor[] data = images.generate(32, seed * 7919 + s + 11);
+            Functional.crossEntropy(vit.forward(Var.of(data[0])), data[1]).backward();
+            opt.step(params);
+        }
+    }
+
+    private static CompactRow vitRow(String name, TokenMerging vit, Tensor[] test) {
+        double ms = KernelTimer.millis(() -> Var.noGrad(() -> vit.forward(Var.of(test[0])).value().toArray()), 2, 5);
+        float[] l = Var.noGrad(() -> vit.forward(Var.of(test[0])).value()).toArray();
+        float[] ids = test[1].toArray();
+        int k = ShapeImages.CLASSES;
+        int correct = 0;
+        for (int i = 0; i < ids.length; i++) {
+            int best = 0;
+            for (int c = 1; c < k; c++) {
+                if (l[i * k + c] > l[i * k + best]) {
+                    best = c;
+                }
+            }
+            correct += best == (int) ids[i] ? 1 : 0;
+        }
+        return new CompactRow(name, correct / (double) ids.length, vit.macs(), 0, ms);
     }
 
     // ------------------------------------------------------------------ 8.5.12
