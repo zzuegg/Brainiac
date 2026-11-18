@@ -101,6 +101,22 @@ public final class Model {
     }
 
     /**
+     * Writes the model as an ONNX graph (opset 17, float32, any batch size) for onnxruntime,
+     * DirectML, mobile runtimes or {@link io.github.zzuegg.brainiac.nn.onnx.OnnxModel}. The
+     * input is named {@code input} with shape {@code [batch, inputShape...]}, the output
+     * {@code output}; inference behaviour is exported (dropout off, batch norm with its
+     * running statistics).
+     *
+     * @param path the {@code .onnx} file to write; replaced if it exists
+     * @throws IOException if the file cannot be written
+     * @throws UnsupportedOperationException if a layer has no ONNX form, such as recurrent
+     *     layers, attention or learnable activations
+     */
+    public void exportOnnx(Path path) throws IOException {
+        OnnxExport.write(this, path);
+    }
+
+    /**
      * An independent copy of this model, structure, weights and buffers, on a device: such
      * as a CPU copy of a GPU model for work too small to keep the GPU busy. Custom layers
      * and activations must be registered, as for {@link #save(Path)}.
