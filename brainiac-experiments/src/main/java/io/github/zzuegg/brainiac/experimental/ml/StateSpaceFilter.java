@@ -6,8 +6,8 @@ import java.util.SplittableRandom;
  * Bayesian filtering in state-space models {@code x_t = f(x_t-1) + w}, {@code y_t = h(x_t) + v}:
  * <ul>
  *   <li>{@link #kalman}: the Kalman filter for linear-Gaussian models, with the
- *       Rauch-Tung-Striebel smoother (its {@code smooth} flag) and the exact log-likelihood
- *       from the innovations (Welch and Bishop,
+ *       Rauch-Tung-Striebel smoother (its {@code smooth} flag), missing ({@code NaN})
+ *       observations, and the exact log-likelihood from the innovations (Welch and Bishop,
  *       <a href="https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf">An introduction to
  *       the Kalman filter</a>);</li>
  *   <li>{@link #extendedKalman}: the extended Kalman filter, which linearises {@code f} and
@@ -163,11 +163,30 @@ public final class StateSpaceFilter {
         return new Object[] {next, symmetric(p), ll};
     }
 
+    private static int[] observed(double[] y) {
+        int k = 0;
+        for (double v : y) {
+            k += Double.isNaN(v) ? 0 : 1;
+        }
+        int[] out = new int[k];
+        k = 0;
+        for (int i = 0; i < y.length; i++) {
+            if (!Double.isNaN(y[i])) {
+                out[k++] = i;
+            }
+        }
+        return out;
+    }
+
     /**
-     * The Kalman filter, and optionally the RTS smoother.
+     * The Kalman filter, and optionally the RTS smoother. Missing observations are allowed:
+     * {@code NaN} entries of {@code ys[t]} are skipped by using only the observed rows of
+     * {@code h} and {@code r}, and a step with nothing observed has no measurement update (the
+     * log-likelihood then covers the observed entries only). Without {@code NaN} the filter is
+     * unchanged.
      *
      * @param model the linear-Gaussian model
-     * @param ys observations {@code [T][m]}
+     * @param ys observations {@code [T][m]}, {@code NaN} where missing
      * @param smooth whether to run the backward smoothing pass
      * @return filtered (or smoothed) estimates and the log-likelihood
      */
@@ -188,10 +207,29 @@ public final class StateSpaceFilter {
             }
             predMeans[t] = mean;
             predCovs[t] = cov;
-            Object[] u = update(mean, cov, ys[t], mv(model.h(), mean), model.h(), model.r());
-            mean = (double[]) u[0];
-            cov = (double[][]) u[1];
-            ll += (double) u[2];
+            int[] seen = observed(ys[t]);
+            if (seen.length == ys[t].length) {
+                Object[] u = update(mean, cov, ys[t], mv(model.h(), mean), model.h(), model.r());
+                mean = (double[]) u[0];
+                cov = (double[][]) u[1];
+                ll += (double) u[2];
+            } else if (seen.length > 0) {
+                // only the observed rows of h and r (wave 11, 11.3.14)
+                double[][] hs = new double[seen.length][];
+                double[][] rs = new double[seen.length][seen.length];
+                double[] yv = new double[seen.length];
+                for (int a = 0; a < seen.length; a++) {
+                    hs[a] = model.h()[seen[a]];
+                    yv[a] = ys[t][seen[a]];
+                    for (int b = 0; b < seen.length; b++) {
+                        rs[a][b] = model.r()[seen[a]][seen[b]];
+                    }
+                }
+                Object[] u = update(mean, cov, yv, mv(hs, mean), hs, rs);
+                mean = (double[]) u[0];
+                cov = (double[][]) u[1];
+                ll += (double) u[2];
+            }
             means[t] = mean;
             covs[t] = cov;
         }

@@ -1,6 +1,8 @@
 package io.github.zzuegg.brainiac.experiments.safety;
 
 import io.github.zzuegg.brainiac.data.Dataset;
+import io.github.zzuegg.brainiac.experimental.dpmech.CorrelatedNoise;
+import io.github.zzuegg.brainiac.experimental.dpmech.DpFtrl;
 import io.github.zzuegg.brainiac.experimental.train.DpSgd;
 import io.github.zzuegg.brainiac.experimental.train.MachineUnlearning;
 import io.github.zzuegg.brainiac.experimental.train.OneRunAudit;
@@ -32,6 +34,9 @@ import java.util.SplittableRandom;
  * after NPO unlearning of the canaries it was trained on. With {@code 2k} guesses the
  * bound cannot exceed what {@code 2k} right answers refute (about 2.1 for 40 guesses at
  * {@code β = 0.05}), so it shows a gap, not the true {@code ε}.
+ *
+ * <p>{@link #dpFtrl} (wave 11, 11.1.15): {@link DpFtrl} with tree, banded and BLT
+ * {@link CorrelatedNoise} against DP-SGD with and without amplification by sampling.
  *
  * <p>Abadi et al. 2016, <a href="https://arxiv.org/abs/1607.00133">arXiv:1607.00133</a>;
  * Steinke, Nasr and Jagielski 2023, <a href="https://arxiv.org/abs/2305.08846">arXiv:2305.08846</a>.
@@ -189,5 +194,60 @@ public final class PrivateTraining {
             y[i][d.y()[i]] = 1;
         }
         return Dataset.of(d.x(), y);
+    }
+
+    /**
+     * One wave 11 (11.1.15) correlated-noise training row.
+     *
+     * @param method the training: DP-SGD with Poisson sampling, DP-SGD without amplification,
+     *     or DP-FTRL with tree, banded or BLT noise
+     * @param targetEpsilon the budget
+     * @param noiseMultiplier the noise multiplier
+     * @param epsilon the accountant's {@code ε}
+     * @param accuracy test accuracy
+     * @param state noise values kept per coordinate
+     */
+    public record Ftrl(String method, double targetEpsilon, double noiseMultiplier, double epsilon, double accuracy,
+            int state) {
+    }
+
+    /**
+     * DP-FTRL with correlated noise against DP-SGD, all at the same budget, steps, batch size
+     * and step size. Each example takes part once per epoch ({@code k = epochs}
+     * participations, one epoch apart).
+     *
+     * @param epsilon the budget
+     * @param perClass training glyphs per class
+     * @param epochs epochs
+     * @param batch the batch size (the expected batch for Poisson sampling)
+     * @param seed the seed
+     * @return DPSGD_AMPLIFIED, DPSGD_UNAMPLIFIED, then DP-FTRL with TREE, BANDED_MF and BLT
+     */
+    public static List<Ftrl> dpFtrl(double epsilon, int perClass, int epochs, int batch, long seed) {
+        ToyTasks.Data trainData = ToyTasks.digits(CLASSES, perClass, SIDE, 0.05, seed, seed + 1);
+        Dataset train = dataset(trainData);
+        Dataset test = dataset(ToyTasks.digits(CLASSES, 50, SIDE, 0.05, seed, seed + 2));
+        int perEpoch = train.size() / batch;
+        int steps = DpFtrl.steps(train.size(), batch, epochs);
+        List<Ftrl> out = new ArrayList<>();
+        double q = batch / (double) train.size();
+        double sigmaAmp = RdpAccountant.noiseMultiplierFor(epsilon, q, steps, DELTA);
+        Model amp = model(seed);
+        DpSgd dp = DpSgd.of(amp, Loss.CROSS_ENTROPY).clipNorm(1).noiseMultiplier(sigmaAmp).learningRate(LR)
+                .samplingRate(q).seed(seed).train(train, steps);
+        out.add(new Ftrl("DPSGD_AMPLIFIED", epsilon, sigmaAmp, dp.epsilon(DELTA), MachineUnlearning.accuracy(amp, test),
+                0));
+        double sigma = RdpAccountant.noiseMultiplierFor(epsilon, 1, 1, DELTA);
+        List<CorrelatedNoise> mechs = List.of(CorrelatedNoise.independent(steps), CorrelatedNoise.tree(steps),
+                CorrelatedNoise.banded(steps, Math.max(2, Math.min(16, perEpoch)), epochs, perEpoch, 300),
+                CorrelatedNoise.blt(steps, 3, epochs, perEpoch, 400));
+        for (CorrelatedNoise n : mechs) {
+            Model m = model(seed);
+            DpFtrl f = DpFtrl.of(m, Loss.CROSS_ENTROPY).noise(n).clipNorm(1).noiseMultiplier(sigma).learningRate(LR)
+                    .batchSize(batch).seed(seed).train(train, epochs);
+            String name = n.kind() == CorrelatedNoise.Kind.INDEPENDENT ? "DPSGD_UNAMPLIFIED" : "DPFTRL_" + n.kind();
+            out.add(new Ftrl(name, epsilon, sigma, f.epsilon(DELTA), MachineUnlearning.accuracy(m, test), n.state()));
+        }
+        return out;
     }
 }

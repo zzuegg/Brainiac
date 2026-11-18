@@ -205,8 +205,35 @@ public final class GraphReasoning {
         return right / (double) total;
     }
 
-    /** WalkSAT: flip a variable of a random unsatisfied clause, greedily or at random. */
-    static boolean[] walkSat(RandomSatFormulas.Formula f, int flips, SplittableRandom r) {
+    /**
+     * WalkSAT: start from a random assignment; repeatedly pick a random unsatisfied clause
+     * and flip one of its variables, with probability 1/2 a random one, else the one that
+     * leaves the fewest clauses unsatisfied.
+     *
+     * @param f the formula
+     * @param flips the flip budget
+     * @param r the source
+     * @return a satisfying assignment ({@code [v]} for {@code v = 1..n}), or {@code null}
+     */
+    public static boolean[] walkSat(RandomSatFormulas.Formula f, int flips, SplittableRandom r) {
+        return walkSat(f, flips, r, new int[1]);
+    }
+
+    /**
+     * {@link #walkSat(RandomSatFormulas.Formula, int, SplittableRandom)}, reporting the flips
+     * it took.
+     *
+     * @param f the formula
+     * @param flips the flip budget
+     * @param r the source
+     * @return the flips until the formula was satisfied, or -1 if the budget ran out
+     */
+    public static int walkSatFlips(RandomSatFormulas.Formula f, int flips, SplittableRandom r) {
+        int[] used = new int[1];
+        return walkSat(f, flips, r, used) != null ? used[0] : -1;
+    }
+
+    private static boolean[] walkSat(RandomSatFormulas.Formula f, int flips, SplittableRandom r, int[] used) {
         int n = f.variables();
         boolean[] a = new boolean[n + 1];
         for (int v = 1; v <= n; v++) {
@@ -224,6 +251,7 @@ public final class GraphReasoning {
                 }
             }
             if (unsat.isEmpty()) {
+                used[0] = s;
                 return a;
             }
             int[] c = unsat.get(r.nextInt(unsat.size()));
@@ -253,6 +281,7 @@ public final class GraphReasoning {
             }
             a[pick] = !a[pick];
         }
+        used[0] = flips;
         return RandomSatFormulas.satisfies(f.clauses(), a) ? a : null;
     }
 

@@ -2,7 +2,9 @@ package io.github.zzuegg.brainiac.experimental.deeprl;
 
 import io.github.zzuegg.brainiac.experimental.rl.KeyDoorGrid;
 import io.github.zzuegg.brainiac.rl.Environment;
+import io.github.zzuegg.brainiac.rl.CartPole;
 import io.github.zzuegg.brainiac.rl.GridWorld;
+import io.github.zzuegg.brainiac.rl.MountainCar;
 import io.github.zzuegg.brainiac.rl.Pendulum;
 import io.github.zzuegg.brainiac.rl.Space;
 
@@ -22,6 +24,11 @@ import java.util.SplittableRandom;
  *   <li>{@link #keyDoor}: a {@link KeyDoorGrid}'s three channels (agent, key, door) upscaled.</li>
  *   <li>{@link #pendulum}: a {@link Pendulum}'s rod drawn on a square canvas, with the previous
  *       frame as a second channel so the speed can be read off the image.</li>
+ *   <li>{@link #cartPole}: a {@link CartPole}'s cart and pole (wave 11, item 11.6.17), with the
+ *       previous frame as a second channel (two stacked frames), since a single image shows
+ *       neither velocity.</li>
+ *   <li>{@link #mountainCar}: a {@link MountainCar}'s track and car, also with the previous
+ *       frame stacked.</li>
  * </ul>
  */
 public final class PixelObservations implements Environment {
@@ -119,6 +126,93 @@ public final class PixelObservations implements Environment {
             rod(img, 1, size, p[0], p[1]);
             return img;
         }, 2, size, size);
+    }
+
+    /**
+     * A cart-pole drawn on a square canvas: the track as a line near the bottom, the cart as a
+     * small block at its position ({@code x} in {@code [-2.4, 2.4]} across the width) and the
+     * pole as a line at its angle; the previous frame is the second channel.
+     *
+     * @param env the cart-pole
+     * @param size the canvas side in pixels (32 in the experiments)
+     * @return the pixel environment
+     */
+    public static PixelObservations cartPole(CartPole env, int size) {
+        return new PixelObservations(env, (obs, prev) -> {
+            float[] img = new float[2 * size * size];
+            cart(img, 0, size, obs[0], obs[2]);
+            float[] p = prev == null ? obs : prev;
+            cart(img, 1, size, p[0], p[2]);
+            return img;
+        }, 2, size, size);
+    }
+
+    private static void cart(float[] img, int channel, int size, float x, float theta) {
+        int base = channel * size * size;
+        int ground = size - 4;
+        for (int i = 0; i < size; i++) {
+            img[base + ground * size + i] = 0.3f;
+        }
+        double cx = (x + 2.4) / 4.8 * (size - 1);
+        int left = (int) Math.round(cx) - 2;
+        for (int yy = ground - 2; yy < ground; yy++) {
+            for (int xx = left; xx < left + 5; xx++) {
+                if (xx >= 0 && xx < size && yy >= 0) {
+                    img[base + yy * size + xx] = 1;
+                }
+            }
+        }
+        double len = size * 0.45;
+        for (int k = 0; k <= 2 * size; k++) {
+            double t = k / (2.0 * size);
+            int px = (int) Math.round(cx + t * len * Math.sin(theta));
+            int py = (int) Math.round(ground - 2 - t * len * Math.cos(theta));
+            if (px >= 0 && px < size && py >= 0 && py < size) {
+                img[base + py * size + px] = 1;
+            }
+        }
+    }
+
+    /**
+     * A mountain car drawn on a square canvas: the track {@code y = sin(3 x)} for {@code x} in
+     * {@code [-1.2, 0.6]} as a dim curve, the car as a bright block on it; the previous frame is
+     * the second channel.
+     *
+     * @param env the mountain car
+     * @param size the canvas side in pixels
+     * @return the pixel environment
+     */
+    public static PixelObservations mountainCar(MountainCar env, int size) {
+        return new PixelObservations(env, (obs, prev) -> {
+            float[] img = new float[2 * size * size];
+            track(img, 0, size, obs[0]);
+            float[] p = prev == null ? obs : prev;
+            track(img, 1, size, p[0]);
+            return img;
+        }, 2, size, size);
+    }
+
+    private static void track(float[] img, int channel, int size, float position) {
+        int base = channel * size * size;
+        for (int i = 0; i < size; i++) {
+            double x = -1.2 + 1.8 * i / (size - 1);
+            int y = height(size, x);
+            img[base + y * size + i] = 0.3f;
+        }
+        int cx = (int) Math.round((position + 1.2) / 1.8 * (size - 1));
+        int cy = height(size, position);
+        for (int yy = cy - 2; yy <= cy; yy++) {
+            for (int xx = cx - 1; xx <= cx + 1; xx++) {
+                if (xx >= 0 && xx < size && yy >= 0 && yy < size) {
+                    img[base + yy * size + xx] = 1;
+                }
+            }
+        }
+    }
+
+    private static int height(int size, double x) {
+        double y = (Math.sin(3 * x) + 1) / 2;
+        return (int) Math.max(0, Math.min(size - 1, Math.round((size - 1) * (1 - y))));
     }
 
     private static void rod(float[] img, int channel, int size, float cos, float sin) {
