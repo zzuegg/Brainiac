@@ -111,7 +111,7 @@ public final class VisionEncoder {
         // CLIP and SigLIP with their text towers, or their image towers alone (as in LLaVA)
         boolean pair = type.equals("clip") || type.equals("siglip");
         boolean towers = kind == Kind.CLIP || kind == Kind.SIGLIP;
-        Map<String, Object> vc = pair ? Json.object(config.get("vision_config")) : config;
+        Map<String, Object> vc = towers ? defaults(pair ? config.get("vision_config") : config, kind, false) : config;
         String vp = towers ? "vision_model." : kind == Kind.VIT && w.contains("vit.embeddings.cls_token") ? "vit." : "";
         Function<String, Tensor> t = name -> w.tensor(name, device, dtype);
         patch = (int) Json.integer(vc, "patch_size", 16);
@@ -176,7 +176,7 @@ public final class VisionEncoder {
         }
         labels = List.copyOf(names);
         if (pair) {
-            Map<String, Object> tc = Json.object(config.get("text_config"));
+            Map<String, Object> tc = defaults(config.get("text_config"), kind, true);
             text = tower(w, t, tc, "text_model.", false);
             tokens = t.apply("text_model.embeddings.token_embedding.weight");
             textPositions = t.apply("text_model.embeddings.position_embedding.weight");
@@ -204,12 +204,35 @@ public final class VisionEncoder {
         preprocessor = new ImagePreprocessor(processor, imageSize);
     }
 
+    /**
+     * Fills in what transformers' CLIP and SigLIP configs leave out because it equals their
+     * defaults: many hub configs list only the values that differ.
+     */
+    private static Map<String, Object> defaults(Object section, Kind kind, boolean text) {
+        Map<String, Object> m = new java.util.HashMap<>(section == null ? Map.of() : Json.object(section));
+        Map<String, Object> d;
+        if (kind == Kind.CLIP) {
+            d = text ? Map.of("hidden_size", 512, "intermediate_size", 2048, "num_hidden_layers", 12,
+                    "num_attention_heads", 8, "max_position_embeddings", 77, "eos_token_id", 49407, "pad_token_id", 1)
+                    : Map.of("hidden_size", 768, "intermediate_size", 3072, "num_hidden_layers", 12,
+                    "num_attention_heads", 12, "image_size", 224, "patch_size", 32);
+        } else {
+            d = text ? Map.of("hidden_size", 768, "intermediate_size", 3072, "num_hidden_layers", 12,
+                    "num_attention_heads", 12, "max_position_embeddings", 64, "eos_token_id", 1, "pad_token_id", 1)
+                    : Map.of("hidden_size", 768, "intermediate_size", 3072, "num_hidden_layers", 12,
+                    "num_attention_heads", 12, "image_size", 224, "patch_size", 16);
+        }
+        d.forEach(m::putIfAbsent);
+        return m;
+    }
+
     private Tower tower(WeightSource w, Function<String, Tensor> t, Map<String, Object> c, String prefix,
             boolean vitNames) {
         int n = (int) Json.integer(c, "num_hidden_layers");
         int heads = (int) Json.integer(c, "num_attention_heads");
         float eps = (float) Json.number(c, "layer_norm_eps", kind == Kind.CLIP ? 1e-5 : kind == Kind.VIT ? 1e-12 : 1e-6);
-        String act = Json.string(c, "hidden_act", kind == Kind.CLIP ? "quick_gelu" : "gelu");
+        String act = Json.string(c, "hidden_act",
+                kind == Kind.CLIP ? "quick_gelu" : kind == Kind.SIGLIP ? "gelu_pytorch_tanh" : "gelu");
         List<Block> blocks = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             if (vitNames) {
@@ -550,7 +573,7 @@ public final class VisionEncoder {
         List<int[]> encoded = new ArrayList<>();
         int longest = 1;
         for (String s : texts) {
-            int[] e = tokenizer.encode(s);
+            int[] e = tokenizer.encode(s, true);   // with the start and end tokens the pooling looks for
             if (e.length > textLength) {
                 e = Arrays.copyOf(e, textLength);
                 if (kind == Kind.CLIP) {

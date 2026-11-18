@@ -1,6 +1,7 @@
 """Writes the PyTorch checkpoint fixtures; run from this folder with torch and safetensors installed.
 
 model.bin: torch.save of a state dict with views, offsets, several dtypes and a Parameter.
+model-legacy.bin: the same, in the format before PyTorch 1.6 (pickles, then raw storages).
 expected.safetensors: the same tensors, contiguous, to compare against.
 sharded/: a module's state_dict (which pickles its _metadata) split like Hugging Face's
 pytorch_model-0000N-of-00002.bin with pytorch_model.bin.index.json.
@@ -23,6 +24,7 @@ sd["d.scalar"] = torch.tensor(2.5)
 sd["e.flag"] = torch.tensor([True, False, True])
 sd["f.param"] = torch.nn.Parameter(torch.randn(3))
 torch.save(sd, os.path.join(out, "model.bin"))
+torch.save(sd, os.path.join(out, "model-legacy.bin"), _use_new_zipfile_serialization=False)
 save_file({k: v.detach().contiguous() for k, v in sd.items()}, os.path.join(out, "expected.safetensors"))
 
 net = torch.nn.Sequential(torch.nn.Linear(5, 4), torch.nn.LayerNorm(4))

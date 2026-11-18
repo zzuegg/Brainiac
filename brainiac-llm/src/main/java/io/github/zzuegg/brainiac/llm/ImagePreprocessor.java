@@ -31,6 +31,11 @@ final class ImagePreprocessor {
     ImagePreprocessor(Map<String, Object> c, int imageSize) {
         resize = !Boolean.FALSE.equals(c.get("do_resize"));
         Map<String, Object> size = c.get("size") instanceof Map<?, ?> m ? Json.object(m) : Map.of();
+        crop = Boolean.TRUE.equals(c.get("do_center_crop"));
+        if (c.get("size") instanceof Number n) {
+            // older configs give one number: the shortest edge when a crop follows (CLIP), else a square
+            size = crop ? Map.of("shortest_edge", n) : Map.of("height", n, "width", n);
+        }
         if (size.containsKey("shortest_edge")) {
             shortest = (int) Json.integer(size, "shortest_edge");
             height = width = -1;
@@ -40,8 +45,8 @@ final class ImagePreprocessor {
             width = (int) Json.integer(size, "width", imageSize);
         }
         resample = (int) Json.integer(c, "resample", 3);
-        crop = Boolean.TRUE.equals(c.get("do_center_crop"));
-        Map<String, Object> cs = c.get("crop_size") instanceof Map<?, ?> m ? Json.object(m) : Map.of();
+        Map<String, Object> cs = c.get("crop_size") instanceof Map<?, ?> m ? Json.object(m)
+                : c.get("crop_size") instanceof Number n ? Map.of("height", n, "width", n) : Map.of();
         cropHeight = (int) Json.integer(cs, "height", imageSize);
         cropWidth = (int) Json.integer(cs, "width", imageSize);
         rescale = !Boolean.FALSE.equals(c.get("do_rescale"));
