@@ -974,6 +974,13 @@ server, no dependencies) and the page is plain HTML, CSS and JavaScript.
 ./gradlew :brainiac-studio:run --args="--data D:/BrainiacData"   # keep everything there
 ```
 
+On Windows, `studio.bat` updates the checkout to the newest `main` and starts the studio,
+opening the page once it answers. It never touches local work: with uncommitted changes, another
+branch checked out or commits not on GitHub it warns and starts the version that is there. Copied
+anywhere outside a checkout, it keeps its own clone in `Brainiac-main` next to itself.
+`BRAINIAC_HEAP` sets the Java heap (default half the PC's memory, through
+`-PstudioJvmArgs`, which also takes any other JVM options).
+
 Everything the studio keeps goes to one **data folder**: `--data <folder>`, or else
 `$BRAINIAC_STUDIO_DATA`, or else `~/.brainiac/studio`. The layout menu shows which one is in use.
 
