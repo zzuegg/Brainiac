@@ -44,4 +44,28 @@ class OptimizeTest {
         assertEquals(Optimize.Status.UNBOUNDED, Optimize.linearProgram(new double[] {-1, 0},
                 new double[][] {{-1, 1}}, new double[] {1}, null, null).status());
     }
+
+    @Test
+    void cmaEsSolvesRosenbrockAndARotatedEllipsoid() {
+        Optimize.Minimum r = Optimize.cmaEs(x -> {
+            double s = 0;
+            for (int i = 0; i + 1 < x.length; i++) {
+                s += 100 * Math.pow(x[i + 1] - x[i] * x[i], 2) + Math.pow(1 - x[i], 2);
+            }
+            return s;
+        }, new double[5], 0.5, 3000, 1e-12, 1);
+        assertArrayEquals(new double[] {1, 1, 1, 1, 1}, r.x(), 1e-4);
+        // badly scaled and rotated: f = sum 10^(6 i/(n-1)) (sum_j<=i x_j)^2
+        Optimize.Minimum e = Optimize.cmaEs(x -> {
+            double s = 0;
+            double prefix = 0;
+            for (int i = 0; i < x.length; i++) {
+                prefix += x[i] - 2;
+                s += Math.pow(10, 6.0 * i / (x.length - 1)) * prefix * prefix;
+            }
+            return s;
+        }, new double[6], 1, 3000, 1e-14, 2);
+        assertTrue(e.converged(), e.toString());
+        assertArrayEquals(new double[] {2, 2, 2, 2, 2, 2}, e.x(), 1e-4);
+    }
 }

@@ -317,4 +317,154 @@ public final class Optimize {
         }
         return m;
     }
+
+    /**
+     * Minimizes by CMA-ES (Hansen's covariance matrix adaptation evolution strategy, with the
+     * default weights and learning rates), which handles rugged, badly scaled and non-separable
+     * functions without gradients. Each generation samples {@code 4 + 3 ln n} points.
+     *
+     * @param f the function
+     * @param x0 the starting mean
+     * @param sigma the starting step size, about a third of the search range
+     * @param maxGenerations the most generations
+     * @param tolerance stop when the step size times the largest axis falls below this, or the
+     *     generation's values spread less than this
+     * @param seed the random seed
+     * @return the best point seen
+     */
+    public static Minimum cmaEs(ToDoubleFunction<double[]> f, double[] x0, double sigma, int maxGenerations,
+            double tolerance, long seed) {
+        int n = x0.length;
+        if (n == 0 || !(sigma > 0)) {
+            throw new IllegalArgumentException("give a starting point and a positive step size");
+        }
+        java.util.SplittableRandom rng = new java.util.SplittableRandom(seed);
+        int lambda = 4 + (int) Math.floor(3 * Math.log(n));
+        int mu = lambda / 2;
+        double[] w = new double[mu];
+        double wsum = 0;
+        for (int i = 0; i < mu; i++) {
+            w[i] = Math.log(mu + 0.5) - Math.log(i + 1);
+            wsum += w[i];
+        }
+        double w2 = 0;
+        for (int i = 0; i < mu; i++) {
+            w[i] /= wsum;
+            w2 += w[i] * w[i];
+        }
+        double mueff = 1 / w2;
+        double cc = (4 + mueff / n) / (n + 4 + 2 * mueff / n);
+        double cs = (mueff + 2) / (n + mueff + 5);
+        double c1 = 2 / ((n + 1.3) * (n + 1.3) + mueff);
+        double cmu = Math.min(1 - c1, 2 * (mueff - 2 + 1 / mueff) / ((n + 2) * (n + 2) + mueff));
+        double damps = 1 + 2 * Math.max(0, Math.sqrt((mueff - 1) / (n + 1)) - 1) + cs;
+        double chiN = Math.sqrt(n) * (1 - 1.0 / (4 * n) + 1.0 / (21.0 * n * n));
+
+        double[] mean = x0.clone();
+        double[] pc = new double[n];
+        double[] ps = new double[n];
+        double[][] c = Matrices.identity(n);
+        double[][] b = Matrices.identity(n);
+        double[] d = new double[n];
+        Arrays.fill(d, 1);
+        double[] best = x0.clone();
+        double bestValue = f.applyAsDouble(x0);
+        int eigenEvery = Math.max(1, (int) (lambda / ((c1 + cmu) * n * 10)));
+        double[][] z = new double[lambda][n];
+        double[][] y = new double[lambda][n];
+        double[][] x = new double[lambda][n];
+        double[] values = new double[lambda];
+        Integer[] order = new Integer[lambda];
+        int g = 0;
+        boolean converged = false;
+        while (g < maxGenerations) {
+            g++;
+            for (int k = 0; k < lambda; k++) {
+                for (int i = 0; i < n; i++) {
+                    z[k][i] = gaussian(rng);
+                }
+                for (int i = 0; i < n; i++) {
+                    double s = 0;
+                    for (int j = 0; j < n; j++) {
+                        s += b[i][j] * d[j] * z[k][j];
+                    }
+                    y[k][i] = s;
+                    x[k][i] = mean[i] + sigma * s;
+                }
+                values[k] = f.applyAsDouble(x[k]);
+                order[k] = k;
+                if (values[k] < bestValue) {
+                    bestValue = values[k];
+                    best = x[k].clone();
+                }
+            }
+            Arrays.sort(order, (p, q) -> Double.compare(values[p], values[q]));
+            double[] yw = new double[n];
+            for (int r = 0; r < mu; r++) {
+                for (int i = 0; i < n; i++) {
+                    yw[i] += w[r] * y[order[r]][i];
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                mean[i] += sigma * yw[i];
+            }
+            // C^(-1/2) yw = B D^-1 B^T yw
+            double[] t = new double[n];
+            for (int j = 0; j < n; j++) {
+                double s = 0;
+                for (int i = 0; i < n; i++) {
+                    s += b[i][j] * yw[i];
+                }
+                t[j] = s / d[j];
+            }
+            double psNorm = 0;
+            for (int i = 0; i < n; i++) {
+                double s = 0;
+                for (int j = 0; j < n; j++) {
+                    s += b[i][j] * t[j];
+                }
+                ps[i] = (1 - cs) * ps[i] + Math.sqrt(cs * (2 - cs) * mueff) * s;
+                psNorm += ps[i] * ps[i];
+            }
+            psNorm = Math.sqrt(psNorm);
+            boolean hsig = psNorm / Math.sqrt(1 - Math.pow(1 - cs, 2.0 * g)) / chiN < 1.4 + 2.0 / (n + 1);
+            for (int i = 0; i < n; i++) {
+                pc[i] = (1 - cc) * pc[i] + (hsig ? Math.sqrt(cc * (2 - cc) * mueff) * yw[i] : 0);
+            }
+            double delta = hsig ? 0 : cc * (2 - cc);
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j <= i; j++) {
+                    double rankMu = 0;
+                    for (int r = 0; r < mu; r++) {
+                        rankMu += w[r] * y[order[r]][i] * y[order[r]][j];
+                    }
+                    double v = (1 - c1 - cmu) * c[i][j] + c1 * (pc[i] * pc[j] + delta * c[i][j]) + cmu * rankMu;
+                    c[i][j] = v;
+                    c[j][i] = v;
+                }
+            }
+            sigma *= Math.exp(Math.min(1, (cs / damps) * (psNorm / chiN - 1)));
+            if (g % eigenEvery == 0) {
+                Matrices.SymmetricEigen e = Matrices.symmetricEigen(c);
+                for (int i = 0; i < n; i++) {
+                    d[i] = Math.sqrt(Math.max(e.values()[i], 1e-300));
+                    for (int j = 0; j < n; j++) {
+                        b[i][j] = e.vectors()[i][j];
+                    }
+                }
+            }
+            double maxD = Arrays.stream(d).max().orElse(1);
+            double spread = values[order[lambda - 1]] - values[order[0]];
+            if (sigma * maxD < tolerance || (g > 1 && spread < tolerance && sigma * maxD < Math.sqrt(tolerance))) {
+                converged = true;
+                break;
+            }
+        }
+        return new Minimum(best, bestValue, g, converged);
+    }
+
+    private static double gaussian(java.util.SplittableRandom rng) {
+        double u = 1 - rng.nextDouble();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rng.nextDouble());
+    }
 }
