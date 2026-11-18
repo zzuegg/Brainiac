@@ -11,8 +11,12 @@ import java.util.stream.Collectors;
 class TomographyTest {
 
     static String line(Map<String, double[]> m) {
+        return line(m, "%.2f");
+    }
+
+    static String line(Map<String, double[]> m, String format) {
         return m.entrySet().stream()
-                .map(e -> e.getKey() + " " + Arrays.stream(e.getValue()).mapToObj(v -> String.format("%.2f", v))
+                .map(e -> e.getKey() + " " + Arrays.stream(e.getValue()).mapToObj(v -> String.format(format, v))
                         .collect(Collectors.joining("/")))
                 .collect(Collectors.joining("; "));
     }
