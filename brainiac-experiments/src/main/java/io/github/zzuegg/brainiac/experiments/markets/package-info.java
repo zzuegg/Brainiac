@@ -1,7 +1,5 @@
 /**
- * Market experiments on simulated paths: volatility forecasting and VaR, deep hedging against
- * Black-Scholes delta hedging under transaction costs, learned auctions against Myerson and
- * second-price auctions, and online portfolio selection against the best constant-rebalanced
- * portfolio in hindsight.
+ * Market experiments (wave 12, items 12.4.15-12.4.18): volatility forecasting and deep hedging,
+ * learned mechanism design, and online portfolio selection.
  */
 package io.github.zzuegg.brainiac.experiments.markets;

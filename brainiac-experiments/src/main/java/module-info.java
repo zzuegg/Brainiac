@@ -43,7 +43,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.kernels;
     exports io.github.zzuegg.brainiac.experimental.labels;
     exports io.github.zzuegg.brainiac.experimental.llm;
-//TMP    exports io.github.zzuegg.brainiac.experimental.markets;
+    exports io.github.zzuegg.brainiac.experimental.markets;
     exports io.github.zzuegg.brainiac.experimental.marl;
     exports io.github.zzuegg.brainiac.experimental.metric;
     exports io.github.zzuegg.brainiac.experimental.ml;
@@ -111,7 +111,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.labels;
     exports io.github.zzuegg.brainiac.experiments.language;
     exports io.github.zzuegg.brainiac.experiments.learning;
-//TMP    exports io.github.zzuegg.brainiac.experiments.markets;
+    exports io.github.zzuegg.brainiac.experiments.markets;
     exports io.github.zzuegg.brainiac.experiments.memory;
     exports io.github.zzuegg.brainiac.experiments.metric;
     exports io.github.zzuegg.brainiac.experiments.multiagent;
