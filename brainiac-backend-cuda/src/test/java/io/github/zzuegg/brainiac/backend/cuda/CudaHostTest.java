@@ -86,7 +86,10 @@ class CudaHostTest {
         assertTrue(Binder.version(linux, "libnvrtc.so.13") > Binder.version(linux, "libnvrtc.so.12.9.86"));
         Pattern windows = Pattern.compile("nvrtc64_(\\d+)_0\\.dll");
         assertTrue(Binder.version(windows, "nvrtc64_130_0.dll") > Binder.version(windows, "nvrtc64_120_0.dll"));
-        assertFalse(Binder.toolkitFolders().isEmpty());
+        // without a CUDA toolkit (Windows has no default folder to try) the list may be empty
+        for (java.nio.file.Path folder : Binder.toolkitFolders()) {
+            assertTrue(folder.isAbsolute() || folder.getRoot() == null, folder.toString());
+        }
     }
 
     /** Kernels compile in parts, each at first use; every name the backend launches has its part. */
