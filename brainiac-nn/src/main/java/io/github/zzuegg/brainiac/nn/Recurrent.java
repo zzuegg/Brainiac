@@ -429,6 +429,90 @@ public final class Recurrent implements Layer {
         };
     }
 
+    /**
+     * A recurrent layer's state between steps.
+     *
+     * @param h the hidden state {@code [batch, units]}
+     * @param c the LSTM cell {@code [batch, units]}, or null for other cells
+     */
+    public record State(Var h, Var c) {
+    }
+
+    /**
+     * The state before the first step: the learned initial state if there is one, else zeros.
+     *
+     * @param batch the batch size
+     * @return the state
+     */
+    public State initialState(int batch) {
+        Direction d = directions[0];
+        Shape s = Shape.of(batch, settings.units());
+        Var h0 = d.h0 != null ? d.h0.expand(s) : Var.of(Tensor.zeros(s, d.wx.value().device()));
+        Var c0 = settings.cell() != Cell.LSTM ? null
+                : d.c0 != null ? d.c0.expand(s) : Var.of(Tensor.zeros(s, d.wx.value().device()));
+        return new State(h0, c0);
+    }
+
+    /**
+     * Runs one step of the cell, as the layer does at each step of a sequence: for decoding,
+     * models that feed their output back, or control loops. Only for one direction.
+     *
+     * @param x the step's input {@code [batch, inputs]}
+     * @param state the state after the previous step, from {@link #initialState} or a step
+     * @return the state after this step; its {@code h} is the step's output
+     */
+    public State step(Var x, State state) {
+        if (directions.length != 1) {
+            throw new IllegalStateException("a bidirectional layer has no single step");
+        }
+        Direction d = directions[0];
+        int h = settings.units();
+        Var xp = x.matmul(d.wx);
+        if (d.b != null) {
+            xp = xp.add(d.b);
+        }
+        ActivationOp act = settings.activation();
+        ActivationOp gate = settings.recurrentActivation();
+        Var prev = state.h();
+        return switch (settings.cell()) {
+            case RNN -> new State(xp.add(prev.matmul(d.wh)).activation(act, 0), null);
+            case LSTM -> {
+                Var z = xp.add(prev.matmul(d.wh));
+                Var i = z.slice(1, 0, h).activation(gate, 0);
+                Var f = z.slice(1, h, 2 * h).activation(gate, 0);
+                Var g = z.slice(1, 2 * h, 3 * h).activation(act, 0);
+                Var o = z.slice(1, 3 * h, 4 * h).activation(gate, 0);
+                Var c = f.mul(state.c()).add(i.mul(g));
+                yield new State(o.mul(c.activation(act, 0)), c);
+            }
+            case GRU -> {
+                Var xr = xp.slice(1, 0, h);
+                Var xu = xp.slice(1, h, 2 * h);
+                Var xn = xp.slice(1, 2 * h, 3 * h);
+                Var r;
+                Var u;
+                Var zn;
+                if (settings.resetAfter()) {
+                    Var hw = prev.matmul(d.wh);
+                    r = xr.add(hw.slice(1, 0, h)).activation(gate, 0);
+                    u = xu.add(hw.slice(1, h, 2 * h)).activation(gate, 0);
+                    Var hn = hw.slice(1, 2 * h, 3 * h);
+                    if (d.bhn != null) {
+                        hn = hn.add(d.bhn);
+                    }
+                    zn = xn.add(r.mul(hn));
+                } else {
+                    Var ru = prev.matmul(d.wh.slice(1, 0, 2 * h));
+                    r = xr.add(ru.slice(1, 0, h)).activation(gate, 0);
+                    u = xu.add(ru.slice(1, h, 2 * h)).activation(gate, 0);
+                    zn = xn.add(r.mul(prev).matmul(d.wh.slice(1, 2 * h, 3 * h)));
+                }
+                Var n = zn.activation(act, 0);
+                yield new State(n.add(u.mul(prev.sub(n))), null);
+            }
+        };
+    }
+
     /** Runs one direction; the result is in processing order. */
     private Var run(Direction d, Var input, boolean reversed) {
         int n = input.shape().dim(0);
