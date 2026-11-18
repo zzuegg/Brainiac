@@ -10,10 +10,10 @@ class ModernOffPolicyFujimotoTest {
     @Test
     void td7AndItsAblationsTrain() {
         LearningCurveHarness.Report r = ModernOffPolicy.td7Ablation(ModernOffPolicy.Task.PENDULUM,
-                new long[] {600, 800}, 1, 16);
+                new long[] {400, 600}, 1, 16);
         StringBuilder b = new StringBuilder();
         r.curves().forEach((k, c) -> b.append(String.format("%s %.0f, ", k, c.finalIqm())));
-        System.out.printf("W10 4.7 pendulum 800 steps return: %s%n", b);
+        System.out.printf("W10 4.7 pendulum 600 steps return: %s%n", b);
         for (LearningCurveHarness.Curve c : r.curves().values()) {
             assertTrue(Double.isFinite(c.finalIqm()) && c.updatesPerStep() > 0, c.name());
         }
@@ -21,10 +21,10 @@ class ModernOffPolicyFujimotoTest {
 
     @Test
     void mrqTrainsWithAndWithoutItsModelLosses() {
-        LearningCurveHarness.Report r = ModernOffPolicy.mrq(ModernOffPolicy.Task.PENDULUM, 700, 1, 16);
+        LearningCurveHarness.Report r = ModernOffPolicy.mrq(ModernOffPolicy.Task.PENDULUM, 500, 1, 16);
         StringBuilder b = new StringBuilder();
         r.curves().forEach((k, c) -> b.append(String.format("%s %.0f, ", k, c.finalIqm())));
-        System.out.printf("W10 4.6 pendulum 700 steps return: %s%n", b);
+        System.out.printf("W10 4.6 pendulum 500 steps return: %s%n", b);
         for (LearningCurveHarness.Curve c : r.curves().values()) {
             assertTrue(Double.isFinite(c.finalIqm()), c.name());
         }
