@@ -41,8 +41,11 @@ import java.util.function.Function;
  *
  * float[] out = model.predict(1, 0);
  * }</pre>
+ *
+ * <p>A model is also a {@link Layer}, so it can be used where a layer or a forward function is
+ * expected, such as inside another model's custom layer or by code that takes layers.
  */
-public final class Model {
+public final class Model implements Layer {
 
     private final Shape inputShape;
     private final Shape outputShape;
@@ -643,6 +646,26 @@ public final class Model {
     /** @return the shape of one output sample */
     public Shape outputShape() {
         return outputShape;
+    }
+
+    /**
+     * As a layer: the output shape for an input of this model's input shape.
+     *
+     * @param input the shape of one input sample
+     * @return the shape of one output sample
+     * @throws IllegalArgumentException if the input does not fit this model
+     */
+    @Override
+    public Shape outputShape(Shape input) {
+        if (!input.equals(inputShape) && input.size() != inputShape.size()) {
+            throw new IllegalArgumentException(this + " takes " + inputShape + ", not " + input);
+        }
+        return outputShape;
+    }
+
+    @Override
+    public int outputSize(int inputSize) {
+        return outputSize();
     }
 
     /** Whether every step is a layer applied to the previous step's output. */

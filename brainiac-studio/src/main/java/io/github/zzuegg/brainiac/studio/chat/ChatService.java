@@ -1141,6 +1141,56 @@ public final class ChatService {
     }
 
     /**
+     * Turns a text into another with a text-to-text model on this PC (BART, Marian, T5): a
+     * summary, a translation, or what one of the model's tasks asks for.
+     *
+     * @param model the model's key ({@code local/bart-large-cnn}), or {@code auto} for the first
+     * @param text the input
+     * @param task one of the model's tasks, or blank for none
+     * @param maxTokens the most tokens to write, or 0 for the task's own limit
+     * @return the answer and the model that wrote it
+     * @throws IOException if there is no such model or it cannot be loaded
+     */
+    public Rewritten rewrite(String model, String text, String task, int maxTokens) throws IOException {
+        LocalTexts texts = local().texts();
+        String id;
+        if (model == null || model.isBlank() || AUTO.equals(model)) {
+            id = texts.models().stream().map(ModelInfo::id).findFirst().orElseThrow(() -> new IOException(
+                    "no text-to-text model is available: put a BART, Marian or T5 model in a model folder"));
+        } else if (model.startsWith("local/")) {
+            id = model.substring("local/".length());
+        } else {
+            throw new IllegalArgumentException("only BART, Marian and T5 models on this PC rewrite texts");
+        }
+        LocalTexts.Rewritten r = texts.rewrite(id, text, task, maxTokens);
+        return new Rewritten("local/" + id, r.text(), r.task());
+    }
+
+    /**
+     * Lists the tasks of a local text-to-text model.
+     *
+     * @param model the model's key
+     * @return the tasks, maybe none
+     * @throws IOException if there is no such model
+     */
+    public List<LocalTexts.Task> rewriteTasks(String model) throws IOException {
+        if (model == null || !model.startsWith("local/")) {
+            throw new IllegalArgumentException("only BART, Marian and T5 models on this PC rewrite texts");
+        }
+        return local().texts().tasks(model.substring("local/".length()));
+    }
+
+    /**
+     * What a text-to-text model wrote.
+     *
+     * @param model the model's key
+     * @param text the answer
+     * @param task the task it did, or an empty string
+     */
+    public record Rewritten(String model, String text, String task) {
+    }
+
+    /**
      * Describes a local transcribing model for the page: the languages it knows and whether it
      * translates. This loads the model.
      *

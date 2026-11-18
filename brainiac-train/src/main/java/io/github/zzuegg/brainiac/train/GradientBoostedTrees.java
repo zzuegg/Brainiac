@@ -18,7 +18,16 @@ public final class GradientBoostedTrees {
         /** Squared error; predictions are values. */
         REGRESSION,
         /** Logistic loss on 0/1 targets; {@link #predict} gives probabilities. */
-        BINARY
+        BINARY;
+
+        /**
+         * Returns this objective as a {@link Loss}, to wrap or to reuse its derivatives.
+         *
+         * @return the loss
+         */
+        public Loss loss() {
+            return GradientBoostedTrees.loss(this);
+        }
     }
 
     /**
@@ -212,7 +221,60 @@ public final class GradientBoostedTrees {
      * @return the trained ensemble
      */
     public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, Loss loss, Settings s) {
+        return fit(x, y, weights, null, loss, s);
+    }
+
+    /**
+     * Trains trees that start from a given raw score per row, as XGBoost's {@code base_margin}:
+     * the trees learn a correction to an earlier model's scores, or to an offset such as a
+     * log exposure. The ensemble's own starting score is then 0, so add the row's margin to
+     * {@link #raw} (or pass it to {@link #predict(double[], double)}) when predicting.
+     *
+     * @param x rows of features
+     * @param y one target per row
+     * @param weights one non-negative weight per row, or {@code null} for all 1
+     * @param margin one starting raw score per row, or {@code null} for {@link Loss#base}
+     * @param loss the loss
+     * @param s the settings
+     * @return the trained ensemble
+     */
+    public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, double[] margin, Loss loss,
+            Settings s) {
+        return fit(x, y, weights, margin, loss, s, null);
+    }
+
+    /**
+     * Trains trees whose predictions are monotone in some features, as XGBoost's
+     * {@code monotone_constraints}: {@code +1} for a feature whose increase never lowers the raw
+     * score, {@code -1} for one whose increase never raises it, {@code 0} for no constraint. A
+     * split on a constrained feature is kept only when its two leaves are in order, and the
+     * leaves below it are bounded by their midpoint.
+     *
+     * @param x rows of features
+     * @param y one target per row
+     * @param weights one non-negative weight per row, or {@code null} for all 1
+     * @param margin one starting raw score per row, or {@code null} for {@link Loss#base}
+     * @param loss the loss
+     * @param s the settings
+     * @param monotone one of -1, 0 or +1 per feature, or {@code null} for none
+     * @return the trained ensemble
+     */
+    public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, double[] margin, Loss loss,
+            Settings s, int[] monotone) {
         int n = x.length;
+        if (monotone != null) {
+            if (n > 0 && monotone.length != x[0].length) {
+                throw new IllegalArgumentException(x[0].length + " features and " + monotone.length + " constraints");
+            }
+            for (int c : monotone) {
+                if (c < -1 || c > 1) {
+                    throw new IllegalArgumentException("a monotone constraint is -1, 0 or 1, not " + c);
+                }
+            }
+        }
+        if (margin != null && margin.length != n) {
+            throw new IllegalArgumentException(n + " rows and " + margin.length + " margins");
+        }
         if (weights != null) {
             if (weights.length != n) {
                 throw new IllegalArgumentException(n + " rows and " + weights.length + " weights");
@@ -227,13 +289,15 @@ public final class GradientBoostedTrees {
             throw new IllegalArgumentException(n + " rows and " + y.length + " targets");
         }
         int features = x[0].length;
-        double base = loss.base(y);
+        double base = margin == null ? loss.base(y) : 0;
         double[][] thresholds = new double[features][];
         for (int f = 0; f < features; f++) {
             thresholds[f] = thresholds(x, f, s.bins());
         }
-        double[] raw = new double[n];
-        Arrays.fill(raw, base);
+        double[] raw = margin == null ? new double[n] : margin.clone();
+        if (margin == null) {
+            Arrays.fill(raw, base);
+        }
         double[] g = new double[n];
         double[] h = new double[n];
         double[] importance = new double[features];
@@ -248,8 +312,8 @@ public final class GradientBoostedTrees {
                 }
             }
             int[] rows = sampleRows(n, s.subsample(), random);
-            Builder b = new Builder(x, g, h, thresholds, s, importance);
-            b.build(rows, 0);
+            Builder b = new Builder(x, g, h, thresholds, s, importance, monotone);
+            b.build(rows, 0, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY);
             Tree tree = b.tree();
             trees.add(tree);
             for (int i = 0; i < n; i++) {
@@ -297,8 +361,11 @@ public final class GradientBoostedTrees {
         final double[] importance;
         final List<int[]> nodes = new ArrayList<>();   // feature, left, right
         final List<double[]> values = new ArrayList<>();   // threshold, value
+        final int[] monotone;
 
-        Builder(double[][] x, double[] g, double[] h, double[][] thresholds, Settings s, double[] importance) {
+        Builder(double[][] x, double[] g, double[] h, double[][] thresholds, Settings s, double[] importance,
+                int[] monotone) {
+            this.monotone = monotone;
             this.x = x;
             this.g = g;
             this.h = h;
@@ -307,7 +374,17 @@ public final class GradientBoostedTrees {
             this.importance = importance;
         }
 
-        int build(int[] rows, int depth) {
+        // the leaf value -G / (H + lambda), kept within the bounds a monotone split set
+        double weight(double gs, double hs, double lo, double hi) {
+            return Math.clamp(-gs / (hs + s.lambda()), lo, hi);
+        }
+
+        // the loss reduction of a leaf at weight w: -(2 G w + (H + lambda) w^2), G^2 / (H + lambda) at the optimum
+        double score(double gs, double hs, double w) {
+            return -(2 * gs * w + (hs + s.lambda()) * w * w);
+        }
+
+        int build(int[] rows, int depth, double lo, double hi) {
             int id = nodes.size();
             nodes.add(new int[] {-1, -1, -1});
             double gs = 0;
@@ -316,11 +393,13 @@ public final class GradientBoostedTrees {
                 gs += g[r];
                 hs += h[r];
             }
-            values.add(new double[] {0, -gs / (hs + s.lambda())});
+            double own = weight(gs, hs, lo, hi);
+            values.add(new double[] {0, own});
             if (depth >= s.depth() || rows.length < 2) {
                 return id;
             }
-            double parent = gs * gs / (hs + s.lambda());
+            double parent = score(gs, hs, own);
+            boolean bounded = monotone != null || lo > Double.NEGATIVE_INFINITY || hi < Double.POSITIVE_INFINITY;
             double bestGain = 1e-12;
             int bestF = -1;
             double bestT = 0;
@@ -347,7 +426,18 @@ public final class GradientBoostedTrees {
                     if (hl < s.minChildWeight() || hr < s.minChildWeight()) {
                         continue;
                     }
-                    double gain = gl * gl / (hl + s.lambda()) + gr * gr / (hr + s.lambda()) - parent;
+                    double gain;
+                    if (bounded) {
+                        double wl = weight(gl, hl, lo, hi);
+                        double wr = weight(gr, hr, lo, hi);
+                        int c = monotone == null ? 0 : monotone[f];
+                        if (c != 0 && c * (wr - wl) < 0) {
+                            continue;   // the leaves would be out of order
+                        }
+                        gain = score(gl, hl, wl) + score(gr, hr, wr) - parent;
+                    } else {
+                        gain = gl * gl / (hl + s.lambda()) + gr * gr / (hr + s.lambda()) - parent;
+                    }
                     if (gain > bestGain) {
                         bestGain = gain;
                         bestF = f;
@@ -363,8 +453,29 @@ public final class GradientBoostedTrees {
             double t = bestT;
             int[] left = Arrays.stream(rows).filter(r -> x[r][f] < t).toArray();
             int[] right = Arrays.stream(rows).filter(r -> x[r][f] >= t).toArray();
-            int l = build(left, depth + 1);
-            int r = build(right, depth + 1);
+            double leftLo = lo;
+            double leftHi = hi;
+            double rightLo = lo;
+            double rightHi = hi;
+            int c = monotone == null ? 0 : monotone[f];
+            if (c != 0) {
+                double gl = 0;
+                double hl = 0;
+                for (int row : left) {
+                    gl += g[row];
+                    hl += h[row];
+                }
+                double mid = (weight(gl, hl, lo, hi) + weight(gs - gl, hs - hl, lo, hi)) / 2;
+                if (c > 0) {
+                    leftHi = Math.min(hi, mid);
+                    rightLo = Math.max(lo, mid);
+                } else {
+                    leftLo = Math.max(lo, mid);
+                    rightHi = Math.min(hi, mid);
+                }
+            }
+            int l = build(left, depth + 1, leftLo, leftHi);
+            int r = build(right, depth + 1, rightLo, rightHi);
             nodes.set(id, new int[] {f, l, r});
             values.get(id)[0] = t;
             return id;
@@ -394,6 +505,17 @@ public final class GradientBoostedTrees {
      */
     public double predict(double[] x) {
         return loss.link(raw(x));
+    }
+
+    /**
+     * Predicts for a row that starts from a margin, as trained with one.
+     *
+     * @param x one row of features
+     * @param margin the row's starting raw score
+     * @return the loss's link of the margin plus the trees' score
+     */
+    public double predict(double[] x, double margin) {
+        return loss.link(margin + raw(x));
     }
 
     /**

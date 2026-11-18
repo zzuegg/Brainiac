@@ -255,4 +255,133 @@ public final class Special {
         }
         return x;
     }
+
+    /**
+     * The regularized lower incomplete gamma function {@code P(a, x)}, the CDF of a gamma
+     * distribution with shape {@code a} and scale 1.
+     *
+     * @param a the shape, positive
+     * @param x the argument, at least 0
+     * @return {@code P(a, x)} in [0, 1]
+     */
+    public static double gammaP(double a, double x) {
+        if (!(a > 0) || !(x >= 0)) {
+            throw new IllegalArgumentException("gammaP needs a > 0 and x >= 0, got " + a + ", " + x);
+        }
+        if (x == 0) {
+            return 0;
+        }
+        return x < a + 1 ? gammaSeries(a, x) : 1 - gammaFraction(a, x);
+    }
+
+    /**
+     * The regularized upper incomplete gamma function {@code Q(a, x) = 1 - P(a, x)}, kept
+     * accurate where it is tiny.
+     *
+     * @param a the shape, positive
+     * @param x the argument, at least 0
+     * @return {@code Q(a, x)} in [0, 1]
+     */
+    public static double gammaQ(double a, double x) {
+        if (!(a > 0) || !(x >= 0)) {
+            throw new IllegalArgumentException("gammaQ needs a > 0 and x >= 0, got " + a + ", " + x);
+        }
+        if (x == 0) {
+            return 1;
+        }
+        return x < a + 1 ? 1 - gammaSeries(a, x) : gammaFraction(a, x);
+    }
+
+    private static double gammaSeries(double a, double x) {
+        double term = 1 / a;
+        double sum = term;
+        for (int n = 1; n < 10_000; n++) {
+            term *= x / (a + n);
+            sum += term;
+            if (Math.abs(term) < Math.abs(sum) * 1e-16) {
+                break;
+            }
+        }
+        return sum * Math.exp(-x + a * Math.log(x) - lgamma(a));
+    }
+
+    // Q(a, x) by Lentz's continued fraction
+    private static double gammaFraction(double a, double x) {
+        double tiny = 1e-300;
+        double b = x + 1 - a;
+        double c = 1 / tiny;
+        double d = 1 / b;
+        double h = d;
+        for (int i = 1; i < 10_000; i++) {
+            double an = -i * (i - a);
+            b += 2;
+            d = an * d + b;
+            d = Math.abs(d) < tiny ? tiny : d;
+            c = b + an / c;
+            c = Math.abs(c) < tiny ? tiny : c;
+            d = 1 / d;
+            double delta = d * c;
+            h *= delta;
+            if (Math.abs(delta - 1) < 1e-16) {
+                break;
+            }
+        }
+        return Math.exp(-x + a * Math.log(x) - lgamma(a)) * h;
+    }
+
+    /**
+     * The regularized incomplete beta function {@code I_x(a, b)}, the CDF of a beta
+     * distribution.
+     *
+     * @param a the first shape, positive
+     * @param b the second shape, positive
+     * @param x the argument, in [0, 1]
+     * @return {@code I_x(a, b)} in [0, 1]
+     */
+    public static double betaI(double a, double b, double x) {
+        if (!(a > 0) || !(b > 0) || !(x >= 0 && x <= 1)) {
+            throw new IllegalArgumentException("betaI needs a, b > 0 and x in [0, 1], got " + a + ", " + b + ", " + x);
+        }
+        if (x == 0 || x == 1) {
+            return x;
+        }
+        double front = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log1p(-x));
+        // the continued fraction converges fast below the mean; use the symmetry above it
+        return x < (a + 1) / (a + b + 2) ? front * betaFraction(a, b, x) / a
+                : 1 - front * betaFraction(b, a, 1 - x) / b;
+    }
+
+    private static double betaFraction(double a, double b, double x) {
+        double tiny = 1e-300;
+        double qab = a + b;
+        double qap = a + 1;
+        double qam = a - 1;
+        double c = 1;
+        double d = 1 - qab * x / qap;
+        d = Math.abs(d) < tiny ? tiny : d;
+        d = 1 / d;
+        double h = d;
+        for (int m = 1; m < 10_000; m++) {
+            int m2 = 2 * m;
+            double aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+            d = 1 + aa * d;
+            d = Math.abs(d) < tiny ? tiny : d;
+            c = 1 + aa / c;
+            c = Math.abs(c) < tiny ? tiny : c;
+            d = 1 / d;
+            h *= d * c;
+            aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+            d = 1 + aa * d;
+            d = Math.abs(d) < tiny ? tiny : d;
+            c = 1 + aa / c;
+            c = Math.abs(c) < tiny ? tiny : c;
+            d = 1 / d;
+            double delta = d * c;
+            h *= delta;
+            if (Math.abs(delta - 1) < 1e-16) {
+                break;
+            }
+        }
+        return h;
+    }
 }

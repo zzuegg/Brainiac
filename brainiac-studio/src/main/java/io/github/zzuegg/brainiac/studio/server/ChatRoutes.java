@@ -271,6 +271,18 @@ final class ChatRoutes {
         server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
                 chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/transcribe", this::transcribe);
+        server.post("/api/rewrite", this::rewrite);
+        server.post("/api/rewrite/options", ex -> {
+            try {
+                List<Map<String, Object>> tasks = new java.util.ArrayList<>();
+                for (var t : chat.rewriteTasks(Json.string(Exchanges.body(ex, 8192), "model", ""))) {
+                    tasks.add(Map.of("name", t.name(), "prefix", t.prefix(), "maxTokens", t.maxTokens()));
+                }
+                Exchanges.json(ex, 200, Map.of("tasks", tasks));
+            } catch (IOException e) {
+                Exchanges.error(ex, 404, String.valueOf(e.getMessage()));
+            }
+        });
         server.post("/api/speech/voice", this::voice);
         server.post("/api/transcribe/options", ex -> Exchanges.json(ex, 200,
                 chat.transcribeOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
@@ -657,6 +669,26 @@ final class ChatRoutes {
         } catch (IOException closed) {
             // the page stopped reading
         }
+    }
+
+    // one text into another with a BART, Marian or T5 model on this PC
+    private void rewrite(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 1024 * 1024);
+        long start = System.nanoTime();
+        ChatService.Rewritten r;
+        try {
+            r = chat.rewrite(Json.string(body, "model", ChatService.AUTO), Json.string(body, "text", ""),
+                    Json.string(body, "task", ""), (int) Json.integer(body, "maxTokens", 0));
+        } catch (IOException e) {
+            Exchanges.error(ex, 404, String.valueOf(e.getMessage()));
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("model", r.model());
+        out.put("text", r.text());
+        out.put("task", r.task());
+        out.put("seconds", (System.nanoTime() - start) / 1e9);
+        Exchanges.json(ex, 200, out);
     }
 
     private void speech(HttpExchange ex) throws IOException {
