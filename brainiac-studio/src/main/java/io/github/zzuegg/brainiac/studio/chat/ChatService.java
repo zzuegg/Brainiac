@@ -154,6 +154,15 @@ public final class ChatService {
     }
 
     /**
+     * Returns the folder generated pictures, audio and clips are saved in.
+     *
+     * @return the folder
+     */
+    public Path outputs() {
+        return outputs.toAbsolutePath();
+    }
+
+    /**
      * Returns the log of every call, kept next to the outputs folder in {@code usage.jsonl}.
      *
      * @return the log
@@ -855,6 +864,33 @@ public final class ChatService {
     public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
             Float temperature, Sampler sampler, Format format, Consumer<ModelInfo> route, ChatListener listener)
             throws IOException, InterruptedException {
+        return chat(model, system, messages, maxTokens, key, temperature, sampler, format, List.of(), route, listener);
+    }
+
+    /**
+     * Sends a conversation to a model that may call tools. Providers that take tools natively get
+     * them in the request and write their calls back as Hermes {@code <tool_call>} text; every
+     * other model is told about the tools in its instructions, in the same format, so the caller
+     * reads calls the same way whichever model answers.
+     *
+     * @param model a model key or {@value #AUTO}
+     * @param system instructions
+     * @param messages the conversation, tool calls and answers kept as Hermes text
+     * @param maxTokens the longest answer
+     * @param key the API key's name, or null
+     * @param temperature the temperature, or null
+     * @param sampler how to pick words
+     * @param format the answer's form
+     * @param tools {@code {name, description, parameters}} each; empty for none
+     * @param route told which model answers
+     * @param listener hears the answer
+     * @return how it ended
+     * @throws IOException if the model fails
+     * @throws InterruptedException if interrupted
+     */
+    public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
+            Float temperature, Sampler sampler, Format format, List<Map<String, Object>> tools,
+            Consumer<ModelInfo> route, ChatListener listener) throws IOException, InterruptedException {
         return routed("text", resolve(model, "text"), target -> {
             ChatProvider p = provider(target.provider());
             if ("grammar".equals(format.kind()) && !p.takesGrammar()) {
@@ -864,12 +900,17 @@ public final class ChatService {
             // a JSON answer is asked for in words too: some providers can only be asked
             String instructions = format.kind().equals("json") && !system.toLowerCase(java.util.Locale.ROOT).contains("json")
                     ? (system.isBlank() ? "" : system.strip() + "\n\n") + Format.JSON_HINT : system;
+            boolean nativeTools = !tools.isEmpty() && p.nativeTools(target.id());
+            if (!tools.isEmpty() && !nativeTools) {
+                instructions = (instructions.isBlank() ? "" : instructions.strip() + "\n\n") + ToolCalls.instructions(tools);
+            }
+            String told = instructions;
             route.accept(target);
             // reasoning models that think in plain text: their <think> block goes to the thinking
             ThinkSplitter split = new ThinkSplitter(listener, false);
             return logged(target, "chat", () -> {
-                ChatResult r = p.chat(new ChatRequest(target.id(), instructions, messages, maxTokens, key, temperature, sampler,
-                        format), split);
+                ChatResult r = p.chat(new ChatRequest(target.id(), told, messages, maxTokens, key, temperature, sampler,
+                        format, nativeTools ? tools : List.of()), split);
                 split.finish();
                 return r;
             }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
@@ -1226,6 +1267,27 @@ public final class ChatService {
             files.add(f);
         }
         return files;
+    }
+
+    /**
+     * Whether a task would leave this PC: a provider's API or another machine, which may cost
+     * money. Nothing is started to find out; a model that cannot be found counts as paid.
+     *
+     * @param model a model key or {@value #AUTO}
+     * @param medium {@code text}, {@code image}, {@code speech}, {@code transcribe} or {@code video}
+     * @return true unless a model on this PC would do it
+     */
+    public boolean paid(String model, String medium) {
+        try {
+            Route r = AUTO.equals(model) ? routeFor(medium) : null;
+            if (r != null && r.fallback() != null && r.fallback().startsWith("vast:")) {
+                return true;   // a full GPU sends it to a rented machine
+            }
+            ModelInfo t = resolveAny(model == null || model.isBlank() ? AUTO : model, medium);
+            return !provider(t.provider()).local();
+        } catch (IOException | RuntimeException e) {
+            return true;
+        }
     }
 
     private ModelInfo resolve(String model, String medium) throws IOException {

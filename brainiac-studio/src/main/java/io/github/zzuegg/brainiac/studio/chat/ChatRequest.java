@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.studio.chat;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -15,9 +16,28 @@ import java.util.Objects;
  *        or null for the model's own default; providers whose API rejects it leave it out
  * @param sampler top-p, top-k and the repeat penalty, each left to the model when not set
  * @param format the form the answer must have: free text, JSON, JSON of a schema, or a grammar
+ * @param tools tools the model may call, as {@code {name, description, parameters}}, sent natively to
+ *        providers that {@linkplain ChatProvider#nativeTools take them}; empty for none
  */
 public record ChatRequest(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
-        Float temperature, Sampler sampler, Format format) {
+        Float temperature, Sampler sampler, Format format, List<Map<String, Object>> tools) {
+
+    /**
+     * Creates a request with no tools.
+     *
+     * @param model the provider's own model id
+     * @param system instructions
+     * @param messages the conversation
+     * @param maxTokens the longest answer
+     * @param key the API key's name, or null
+     * @param temperature the temperature, or null for the model's own
+     * @param sampler how to pick words
+     * @param format the answer's form
+     */
+    public ChatRequest(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
+            Float temperature, Sampler sampler, Format format) {
+        this(model, system, messages, maxTokens, key, temperature, sampler, format, List.of());
+    }
 
     /**
      * A request answered in free text.
@@ -69,6 +89,7 @@ public record ChatRequest(String model, String system, List<ChatMessage> message
         system = system == null ? "" : system;
         sampler = sampler == null ? Sampler.NONE : sampler;
         format = format == null ? Format.NONE : format;
+        tools = tools == null ? List.of() : List.copyOf(tools);
         messages = List.copyOf(messages);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role())) {
             throw new IllegalArgumentException("the conversation must end with a user message");

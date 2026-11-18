@@ -142,14 +142,36 @@ class CompatibleProvider extends RemoteProvider {
         if (!request.system().isBlank()) {
             messages.add(Map.of("role", "system", "content", request.system()));
         }
-        for (ChatMessage m : request.messages()) {
+        boolean tools = !request.tools().isEmpty();
+        for (ToolCalls.Turn t : tools ? ToolCalls.turns(request.messages()) : plain(request.messages())) {
+            ChatMessage m = t.source();
+            if (!t.calls().isEmpty()) {
+                List<Object> calls = new ArrayList<>();
+                for (ToolCalls.Call c : t.calls()) {
+                    calls.add(Map.of("id", c.id(), "type", "function", "function",
+                            Map.of("name", c.name(), "arguments", Json.write(c.arguments()))));
+                }
+                Map<String, Object> a = new LinkedHashMap<>();
+                a.put("role", "assistant");
+                a.put("content", t.text().isEmpty() ? null : t.text());
+                a.put("tool_calls", calls);
+                messages.add(a);
+                continue;
+            }
+            for (ToolCalls.Result r : t.results()) {
+                messages.add(Map.of("role", "tool", "tool_call_id", r.id(), "content", r.text()));
+            }
+            if (!t.results().isEmpty() && t.text().isEmpty() && m.images().isEmpty()) {
+                continue;
+            }
+            String text = t.results().isEmpty() ? m.text() : t.text();
             if (m.images().isEmpty()) {
-                messages.add(Map.of("role", m.role(), "content", m.text()));
+                messages.add(Map.of("role", m.role(), "content", text));
                 continue;
             }
             List<Object> parts = new ArrayList<>();
-            if (!m.text().isBlank()) {
-                parts.add(Map.of("type", "text", "text", m.text()));
+            if (!text.isBlank()) {
+                parts.add(Map.of("type", "text", "text", text));
             }
             for (Media image : m.images()) {
                 parts.add(Map.of("type", "image_url", "image_url",
@@ -184,6 +206,10 @@ class CompatibleProvider extends RemoteProvider {
         if (preset.usageOption()) {
             body.put("stream_options", Map.of("include_usage", true));
         }
+        if (tools) {
+            body.put("tools", request.tools().stream().map(ToolCalls::openAi).toList());
+        }
+        Map<Integer, ToolCalls.Pending> pending = new java.util.TreeMap<>();
         long[] usage = {-1, -1};
         String[] stop = {"end"};
         stream(uri("chat/completions"), key, body, (event, data) -> {
@@ -199,6 +225,21 @@ class CompatibleProvider extends RemoteProvider {
                 Map<String, Object> delta = obj(choice.get("delta"));
                 if (delta.get("content") instanceof String s && !s.isEmpty()) {
                     listener.text(s);
+                }
+                for (Object tc : arr(delta.get("tool_calls"))) {
+                    Map<String, Object> d = obj(tc);
+                    ToolCalls.Pending p = pending.computeIfAbsent((int) Math.max(0, num(d.get("index"))),
+                            k -> new ToolCalls.Pending());
+                    if (d.get("id") instanceof String id) {
+                        p.id = id;
+                    }
+                    Map<String, Object> f = obj(d.get("function"));
+                    if (f.get("name") instanceof String n && !n.isEmpty()) {
+                        p.name = n;
+                    }
+                    if (f.get("arguments") instanceof String a) {
+                        p.arguments.append(a);
+                    }
                 }
                 if (delta.get("refusal") instanceof String s && !s.isEmpty()) {
                     listener.text(s);
@@ -224,7 +265,24 @@ class CompatibleProvider extends RemoteProvider {
             }
             return true;
         });
-        return new ChatResult(stop[0], usage[0], usage[1]);
+        for (ToolCalls.Pending p : pending.values()) {
+            String call = p.hermes();
+            if (!call.isEmpty()) {
+                listener.text("\n" + call);
+            }
+        }
+        return new ChatResult(stop[0].equals("tool_calls") ? "end" : stop[0], usage[0], usage[1]);
+    }
+
+    // a conversation read as plain messages, with no tool turns
+    static List<ToolCalls.Turn> plain(List<ChatMessage> messages) {
+        return messages.stream().map(m -> new ToolCalls.Turn(m.role(), m.text(), List.of(), List.of(), m)).toList();
+    }
+
+    @Override
+    public boolean nativeTools(String model) {
+        // Hugging Face routes to many hosts, and not all of them take tools
+        return !preset.id().equals("huggingface");
     }
 
 
