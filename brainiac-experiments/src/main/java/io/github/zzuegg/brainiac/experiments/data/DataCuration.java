@@ -993,8 +993,9 @@ public final class DataCuration {
     }
 
     /**
-     * Estimates the skill graph by probe runs from a briefly pretrained common start (every
-     * skill mixed, so that probes measure transfer rather than output formatting).
+     * Estimates the skill graph by leave-one-out probe runs ({@link SkillGraphSampler#estimateByAblation})
+     * from a briefly pretrained common start: each probe trains on the uniform mixture of every
+     * skill but one, and a reference probe on all of them.
      *
      * @param warmup steps of uniform training before the probes
      * @param probeSteps steps of each probe
@@ -1009,23 +1010,27 @@ public final class DataCuration {
             trainSkill(start, opt, SkillTasks.sample(SkillTasks.Skill.values()[s % SKILLS], 32, r));
         }
         SkillTasks.Batch[] val = skillValidation(seed + 2);
-        double[] initial = skillLosses(start, val);
         List<Tensor> snapshot = new ArrayList<>();
         for (Var p : start.parameters()) {
             snapshot.add(p.value().add(0f));
         }
-        double[][] a = SkillGraphSampler.estimate(SKILLS, initial, i -> {
+        IntFunction<double[]> probeWithout = i -> {
             SimpleMlp probe = skillModel(seed);
             for (int k = 0; k < snapshot.size(); k++) {
                 probe.parameters().get(k).assign(snapshot.get(k));
             }
             Optimizer po = Optimizer.adam(3e-3f);
-            SplittableRandom pr = new SplittableRandom(seed + 10 + i);
-            for (int s = 0; s < probeSteps; s++) {
-                trainSkill(probe, po, SkillTasks.sample(SkillTasks.Skill.values()[i], 32, pr));
+            SplittableRandom pr = new SplittableRandom(seed + 10);
+            int s = 0;
+            for (int step = 0; s < probeSteps; step++) {
+                if (step % SKILLS != i) {
+                    trainSkill(probe, po, SkillTasks.sample(SkillTasks.Skill.values()[step % SKILLS], 32, pr));
+                    s++;
+                }
             }
             return skillLosses(probe, val);
-        });
+        };
+        double[][] a = SkillGraphSampler.estimateByAblation(SKILLS, probeWithout.apply(-1), probeWithout);
         boolean[][] found = SkillGraphSampler.edges(a, 0.3);
         boolean[][] truth = SkillTasks.prerequisites();
         int rec = 0;

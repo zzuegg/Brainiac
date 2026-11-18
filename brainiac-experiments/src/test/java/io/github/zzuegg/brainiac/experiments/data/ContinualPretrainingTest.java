@@ -27,6 +27,9 @@ class ContinualPretrainingTest {
                 retrain.lossB(), 0.5 * (replay.lossA() + replay.lossB() - retrain.lossA() - retrain.lossB()),
                 rewarm.lossA());
         assertTrue(replay.lossA() < rewarm.lossA(), "replay limits forgetting of A");
+        assertTrue(replay.gapDepth() < rewarm.gapDepth(), "replay makes the rise of the A loss shallower");
+        assertTrue(runs.get(ContinualPretraining.Method.CONSTANT).gapDepth() < rewarm.gapDepth(),
+                "re-warming to a high rate forgets more");
         assertTrue(Double.isFinite(replay.lossB()) && replay.lossB() < 3.0);
     }
 

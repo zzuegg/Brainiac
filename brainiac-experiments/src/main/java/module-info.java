@@ -31,6 +31,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.robust;
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.serving;
+    exports io.github.zzuegg.brainiac.experimental.synth;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;

@@ -14,6 +14,9 @@ import java.util.random.RandomGenerator;
  *       train on skill {@code i} alone and record each skill's loss drop; {@code A_ij} is the
  *       drop of skill {@code j} after training on {@code i}, clipped at zero and scaled so each
  *       column's diagonal is 1;</li>
+ *   <li>{@link #estimateByAblation}: the same graph from leave-one-out runs, which avoids the
+ *       interference of training on one skill alone: {@code A_ij} is how much higher skill
+ *       {@code j}'s loss ends when skill {@code i} is left out of an otherwise uniform mixture;</li>
  *   <li>the online sampler: mirror descent with skill weights
  *       {@code p_i ∝ exp(η Σ_τ Σ_{j ∈ targets} A_ij L_j(τ))}, so a skill's weight rises with the
  *       remaining loss of the target skills it helps.</li>
@@ -58,6 +61,31 @@ public final class SkillGraphSampler {
             double[] after = probe.apply(i);
             for (int j = 0; j < skills; j++) {
                 a[i][j] = Math.max(0, initial[j] - after[j]);
+            }
+        }
+        for (int j = 0; j < skills; j++) {
+            double d = a[j][j];
+            for (int i = 0; i < skills; i++) {
+                a[i][j] = d > 0 ? a[i][j] / d : a[i][j];
+            }
+        }
+        return a;
+    }
+
+    /**
+     * Estimates the skill graph by leaving skills out of a uniform mixture.
+     *
+     * @param skills the number of skills
+     * @param all every skill's loss after a probe run on all skills
+     * @param without trains a probe on every skill but {@code i} and returns every skill's loss
+     * @return {@code A_ij}, clipped at zero, each column scaled so its diagonal is 1
+     */
+    public static double[][] estimateByAblation(int skills, double[] all, IntFunction<double[]> without) {
+        double[][] a = new double[skills][skills];
+        for (int i = 0; i < skills; i++) {
+            double[] w = without.apply(i);
+            for (int j = 0; j < skills; j++) {
+                a[i][j] = Math.max(0, w[j] - all[j]);
             }
         }
         for (int j = 0; j < skills; j++) {

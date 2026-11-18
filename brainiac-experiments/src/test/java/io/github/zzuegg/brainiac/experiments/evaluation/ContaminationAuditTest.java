@@ -21,6 +21,8 @@ class ContaminationAuditTest {
         System.out.printf("set-level contamination, Spearman with the rate: KDS %.2f, Min-K%%++ %.2f, Min-K%% %.2f, "
                 + "-loss %.2f%n", rho[0], rho[1], rho[2], rho[3]);
         assertTrue(rho[3] > 0.5, "planting lowers the benchmark loss");
+        assertTrue(Math.abs(rho[0]) > 0.8, "KDS is monotone in the rate (on this toy with the sign reversed: "
+                + "fine-tuning moves the memorised samples more)");
     }
 
     @Test

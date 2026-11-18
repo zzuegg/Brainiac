@@ -32,8 +32,9 @@ import java.util.function.Supplier;
  *   <li>{@link Method#RETRAIN}: from scratch on A ∪ B for the pretraining plus continual budget
  *       (the compute upper bound).</li>
  * </ul>
- * The stability gap is tracked on the mean of the A and B losses
- * ({@link ContinualPretrainer.GapTracker}).
+ * The stability gap is tracked on the held-out A loss, every 10 steps
+ * ({@link ContinualPretrainer.GapTracker}): its peak rise above the value at the switch, and how
+ * much of that rise has been recovered by the end.
  */
 @SuppressWarnings("exports")   // experimental.* gets exported when the lead integrates it
 public final class ContinualPretraining {
@@ -63,15 +64,17 @@ public final class ContinualPretraining {
      * @param method the recipe
      * @param lossA final held-out loss on A
      * @param lossB final held-out loss on B
-     * @param gapDepth the largest rise of the mean loss above its value at the start
-     * @param gapLength steps until the mean loss is back at its start (-1 never, 0 no dip)
+     * @param gapDepth the largest rise of the A loss above its value at the switch to B
+     * @param gapRecovery how much of that rise is gone at the end (peak minus final A loss)
+     * @param gapLength steps until the A loss is back at its start (-1 never, 0 no rise)
      * @param steps training steps spent (pretraining plus continual)
      */
-    public record Run(Method method, double lossA, double lossB, double gapDepth, long gapLength, int steps) {
+    public record Run(Method method, double lossA, double lossB, double gapDepth, double gapRecovery, long gapLength,
+            int steps) {
         @Override
         public String toString() {
-            return String.format("%s: A %.4f, B %.4f, gap depth %.4f, length %d, %d steps", method, lossA, lossB,
-                    gapDepth, gapLength, steps);
+            return String.format("%s: A %.4f, B %.4f, gap depth %.4f, recovered %.4f, length %d, %d steps", method,
+                    lossA, lossB, gapDepth, gapRecovery, gapLength, steps);
         }
     }
 
@@ -132,7 +135,7 @@ public final class ContinualPretraining {
                 opt.learningRate(sched.rate(s, peak));
                 step(lm, opt, a, b, BATCH / 2, r, null);
             }
-            return new Run(method, lm.loss(heldA), lm.loss(heldB), 0, 0, total);
+            return new Run(method, lm.loss(heldA), lm.loss(heldB), 0, 0, 0, total);
         }
         Optimizer opt = Optimizer.adam(peak);
         LearningRateSchedule pre = LearningRateSchedule.warmup(pretrainSteps / 20, LearningRateSchedule.cosine(
@@ -170,17 +173,18 @@ public final class ContinualPretraining {
                 : ContinualPretrainer.rewarmRedecay(continualSteps / 10, continualSteps, min);
         double replay = method == Method.REWARM_REPLAY || method == Method.REWARM_REPLAY_SUBSET ? 0.05 : 0;
         ContinualPretrainer.GapTracker gap = new ContinualPretrainer.GapTracker();
-        gap.record(0, 0.5 * (lm.loss(heldA) + lm.loss(heldB)));
+        gap.record(0, lm.loss(heldA));
         ElasticWeightConsolidation penalty = ewc;
         for (int s = 1; s <= continualSteps; s++) {
             opt.learningRate(cont.rate(s, peak));
             int fromA = ContinualPretrainer.replayCount(BATCH, replay, r);
             step(lm, opt, a, newData, fromA, r, penalty == null ? null : penalty::penalty);
             if (s % 10 == 0) {
-                gap.record(s, 0.5 * (lm.loss(heldA) + lm.loss(heldB)));
+                gap.record(s, lm.loss(heldA));
             }
         }
-        return new Run(method, lm.loss(heldA), lm.loss(heldB), gap.depth(), gap.length(),
+        return new Run(method, lm.loss(heldA), lm.loss(heldB), gap.depth(), gap.start() + gap.depth() - gap.last(),
+                gap.length(),
                 pretrainSteps + continualSteps);
     }
 }
