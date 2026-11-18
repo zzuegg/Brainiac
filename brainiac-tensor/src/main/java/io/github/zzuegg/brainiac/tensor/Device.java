@@ -21,6 +21,9 @@ import java.util.ServiceLoader;
  * Device gpu = Device.gpu();        // fails clearly when no GPU backend is installed
  * Device.setDefault(Device.best()); // GPU if there is one, else CPU
  * }</pre>
+ *
+ * <p>With several GPU backends (Vulkan and CUDA on an NVIDIA card), {@link #gpu()} and
+ * {@link #best()} take Vulkan unless {@code -Dbrainiac.gpu=cuda} asks for another.
  */
 public final class Device {
 
@@ -178,10 +181,23 @@ public final class Device {
             for (Backend b : ServiceLoader.load(Backend.class)) {
                 if (b.isAvailable()) {
                     devices.add(new Device(b));
+                    for (Backend sibling : b.siblings()) {
+                        if (sibling.isAvailable()) {
+                            devices.add(new Device(sibling));
+                        }
+                    }
                 }
             }
-            devices.sort(Comparator.comparing(Device::kind));
+            // CPUs first; among GPUs the backend named by -Dbrainiac.gpu (such as "cuda"), then
+            // vulkan, then the rest in the order the service loader found them
+            String preferred = System.getProperty("brainiac.gpu", "vulkan").toLowerCase(java.util.Locale.ROOT);
+            devices.sort(Comparator.comparing(Device::kind).thenComparingInt(d -> d.kind() == Kind.GPU
+                    ? rank(d.name().toLowerCase(java.util.Locale.ROOT), preferred) : 0));
             return List.copyOf(devices);
+        }
+
+        private static int rank(String name, String preferred) {
+            return name.startsWith(preferred) ? 0 : name.startsWith("vulkan") ? 1 : 2;
         }
     }
 }

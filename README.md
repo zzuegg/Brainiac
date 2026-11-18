@@ -30,6 +30,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-tensor` | Shapes, tensors (float32, float64, float16, bfloat16), tensor math, and the `Backend` SPI |
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
 | `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
+| `brainiac-backend-cuda` | Optional NVIDIA GPU backend: the CUDA driver, NVRTC and cuBLAS called through the Foreign Function and Memory API (no dependencies) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers (Adam/AdamW, Lion, Adafactor, Muon, parameter groups), training loops, checkpoints, EMA, metrics, listeners, `Plasticity` |
@@ -1066,6 +1067,37 @@ On an RX 9070 XT: the MLP trains 2 epochs of MNIST in 1.7 s; a 4096 x 4096 matmu
 transformer on Shakespeare trains 3 epochs in 10.7 s; Qwen2.5-0.5B loads in 0.7 s and generates about 165 tokens/s
 in float16. (An OpenCL backend existed until it was retired in favour of this one, which
 was faster on every measure.)
+
+`brainiac-backend-cuda` is a second GPU backend, for NVIDIA cards only. It calls NVIDIA's
+libraries directly through Java's Foreign Function and Memory API, with no JNI and no
+bindings library: the CUDA driver API (`nvcuda.dll`, `libcuda.so.1`, part of the display
+driver), NVRTC to compile its kernels (`kernels.cu`) for the card at first use (cached in
+`~/.cache/brainiac/cuda`), and cuBLAS for matrix products when it is installed (otherwise a
+kernel of its own). NVRTC and cuBLAS come with the CUDA toolkit 11.2 or later, or NVIDIA's
+`cuda` runtime container images; they are looked for on the `PATH`/`LD_LIBRARY_PATH`, in
+`CUDA_PATH`/`CUDA_HOME` and in the usual install folders. Run with
+`--enable-native-access=io.github.zzuegg.brainiac.backend.cuda` (or `ALL-UNNAMED`). With both
+backends on an NVIDIA card, `Device.gpu()` and `Device.best()` take Vulkan unless
+`-Dbrainiac.gpu=cuda`; `-PtestDevice=cuda` runs the model tests there. It covers every required
+operation plus batched products, convolution windows, gather and scatter, RMSNorm, fused
+attention (forward, backward and with a bias, heads up to 256, long key ranges split across
+the device and combined), packed weights kept packed on the card (products of up to 16 rows read
+the levels directly), float16/bfloat16 products of a few rows in a kernel of its own, and
+Fourier transforms of power-of-two lengths up to 2048. Each GPU of the machine is a device
+(`cuda`, `cuda:1`, ...); `DataParallel` over several of them sums the gradients with
+`Tensor.sumAcross`, which uses NCCL's all-reduce (`libnccl.so.2`, Linux) between CUDA GPUs and
+the host otherwise. System properties:
+`brainiac.cuda.device` (index), `brainiac.cuda.memory` (MB budget), `brainiac.cuda.debug`
+(`true` waits after every kernel, copy and product so an error names the operation that
+caused it, and compiles with line information for `compute-sanitizer`), `brainiac.cuda.critical`
+(`true` links the per-operation driver and cuBLAS calls as critical downcalls, which cost
+less per call), `brainiac.cuda.tf32` (`true` lets float32 products use TensorFloat-32),
+`brainiac.cuda.driver`/`nvrtc`/`cublas` (library files; `cublas=none` turns cuBLAS off),
+`brainiac.cuda.cache`, `brainiac.cuda.statistics`, `brainiac.cuda.devices` (`one`: only the first
+GPU), `brainiac.cuda.nccl` (library file, `none` to sum on the host), `brainiac.cuda.fusedAttention`
+and `brainiac.cuda.fewRows` (`false` turns those kernels off). `CudaBackend.status()` names the
+device and the libraries found, or why there is none; without an NVIDIA driver the backend
+reports itself unavailable and its device tests are skipped (`-Pbench` prints product speeds).
 
 Tensors and models come in four number formats:
 

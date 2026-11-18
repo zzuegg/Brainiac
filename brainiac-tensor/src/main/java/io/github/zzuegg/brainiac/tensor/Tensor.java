@@ -601,6 +601,58 @@ public final class Tensor {
     }
 
     /**
+     * Sums tensors that live on different devices, such as the gradients of data-parallel
+     * training, and gives each device the sum: element {@code i} of the result is the sum on
+     * the device of {@code tensors.get(i)}. Devices that can exchange values directly (CUDA
+     * GPUs with NCCL) do so; otherwise the values are summed on the host.
+     *
+     * @param tensors one tensor per device, all of one shape and type, on different devices
+     * @return the sum on each tensor's device, in the same order
+     */
+    public static java.util.List<Tensor> sumAcross(java.util.List<Tensor> tensors) {
+        if (tensors.isEmpty()) {
+            return java.util.List.of();
+        }
+        Tensor first = tensors.get(0);
+        java.util.Set<Device> seen = new java.util.HashSet<>();
+        for (Tensor t : tensors) {
+            if (!t.shape.equals(first.shape) || t.dtype() != first.dtype()) {
+                throw new IllegalArgumentException("sumAcross needs one shape and type: " + t.shape + " " + t.dtype()
+                        + " and " + first.shape + " " + first.dtype());
+            }
+            if (!seen.add(t.device)) {
+                throw new IllegalArgumentException("sumAcross needs different devices, " + t.device + " repeats");
+            }
+        }
+        if (tensors.size() == 1) {
+            return java.util.List.of(first);
+        }
+        java.util.List<Backend> group = new java.util.ArrayList<>();
+        java.util.List<Storage> storages = new java.util.ArrayList<>();
+        for (Tensor t : tensors) {
+            group.add(t.backend());
+            storages.add(t.storage());
+        }
+        java.util.List<Storage> sums = group.get(0).allReduceSum(group, storages);
+        java.util.List<Tensor> out = new java.util.ArrayList<>();
+        if (sums != null) {
+            for (int i = 0; i < tensors.size(); i++) {
+                out.add(new Tensor(first.shape, tensors.get(i).device, sums.get(i)));
+            }
+            return out;
+        }
+        Device cpu = Device.cpu();
+        Tensor sum = first.to(cpu);
+        for (int i = 1; i < tensors.size(); i++) {
+            sum = sum.add(tensors.get(i).to(cpu));
+        }
+        for (Tensor t : tensors) {
+            out.add(sum.to(t.device));
+        }
+        return out;
+    }
+
+    /**
      * Says that this tensor's values will not be used again, so a device can reuse its memory
      * at once instead of when the tensor is garbage collected. The tensor, its views (such as
      * reshapes) and results computed from it but not yet computed (see {@link #evaluate})
