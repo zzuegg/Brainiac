@@ -14,7 +14,7 @@ import java.util.function.Function;
  * A Gaussian forecast with exact prediction intervals, and the shared machinery of the
  * linear-Gaussian state-space forecasters ({@link ExponentialSmoothing}, {@link Arima}): the
  * exact likelihood from {@link StateSpaceFilter#kalman}, maximised over a few unconstrained
- * parameters by {@link Lbfgs#fullBatch} (central finite-difference gradients, since the
+ * parameters by {@link Lbfgs#fullBatch} (forward finite-difference gradients, since the
  * parameter count is tiny), the small-sample corrected AIC, and the {@code h}-step predictive
  * distribution by propagating the filtered state.
  *
@@ -98,12 +98,10 @@ public record StateSpaceForecast(double[] mean, double[] variance) {
             }
             float[] g = new float[x.length];
             for (int i = 0; i < x.length; i++) {
-                double e = 1e-3 * Math.max(1, Math.abs(x[i]));
+                double e = 1e-4 * Math.max(1, Math.abs(x[i]));
                 double[] up = x.clone();
-                double[] dn = x.clone();
                 up[i] += e;
-                dn[i] -= e;
-                g[i] = (float) ((nll.apply(up) - nll.apply(dn)) / (2 * e));
+                g[i] = (float) ((nll.apply(up) - f) / e);
             }
             theta.setGrad(Tensor.of(Shape.of(x.length), g));
             return (float) f;

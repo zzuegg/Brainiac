@@ -14,7 +14,10 @@ import io.github.zzuegg.brainiac.experimental.ml.StateSpaceFilter;
  * and the prediction intervals include the integration. AR and MA coefficients are kept
  * stationary and invertible by mapping unconstrained values through {@code tanh} partial
  * autocorrelations (Jones 1980); they are fitted by L-BFGS, and {@link #select} picks the
- * orders by AICc.
+ * orders by AICc. An optional seasonal MA(1) factor {@code (1 + Theta B^m)} multiplies the MA
+ * polynomial, which with one seasonal difference gives Box and Jenkins's airline model
+ * ARIMA(0,1,1)(0,1,1)_m; without it a seasonally differenced white-noise season leaves an
+ * over-differenced, non-invertible error that no low-order ARMA can absorb.
  */
 public final class Arima {
 
@@ -23,6 +26,7 @@ public final class Arima {
     private final int q;
     private final int season;
     private final int seasonalD;
+    private final int seasonalQ;
     private final double[] ar;
     private final double[] ma;
     private final double mean;
@@ -30,16 +34,18 @@ public final class Arima {
     private final double logLikelihood;
     private final int observations;
 
-    private Arima(int p, int d, int q, int season, int seasonalD, double[] u, double[] y) {
+    private Arima(int p, int d, int q, int season, int seasonalD, int seasonalQ, double[] u, double[] y) {
         this.p = p;
         this.d = d;
         this.q = q;
         this.season = season;
         this.seasonalD = seasonalD;
+        this.seasonalQ = seasonalQ;
         this.ar = pacfToCoefficients(u, 0, p);
-        this.ma = maCoefficients(u, p, q);
-        this.mean = d + seasonalD == 0 ? u[p + q] : 0;
-        this.sigma = Math.exp(u[p + q + 1]);
+        this.ma = fullMa(u, p, q, seasonalQ, season);
+        int k = p + q + seasonalQ;
+        this.mean = d + seasonalD == 0 ? u[k] : 0;
+        this.sigma = Math.exp(u[k + 1]);
         this.logLikelihood = loglik(y, ar, ma, mean, sigma);
         this.observations = y.length;
     }
@@ -70,6 +76,22 @@ public final class Arima {
             c[i] = -c[i];
         }
         return c;
+    }
+
+    /** The MA coefficients of {@code (1 + theta(B)) (1 + Theta B^m)^Q} after the leading 1. */
+    private static double[] fullMa(double[] u, int p, int q, int seasonalQ, int season) {
+        double[] theta = maCoefficients(u, p, q);
+        if (seasonalQ == 0) {
+            return theta;
+        }
+        double[] poly = new double[q + 1];
+        poly[0] = 1;
+        System.arraycopy(theta, 0, poly, 1, q);
+        double[] s = new double[season + 1];
+        s[0] = 1;
+        s[season] = -Math.tanh(u[p + q]);
+        double[] full = multiply(poly, s);
+        return java.util.Arrays.copyOfRange(full, 1, full.length);
     }
 
     /** The differencing polynomial: {@code y_t = sum_i delta_i y_t-i + w_t}. */
@@ -199,6 +221,25 @@ public final class Arima {
      * @return the fitted model
      */
     public static Arima fit(double[] y, int p, int d, int q, int season, int seasonalD, int iterations) {
+        return fit(y, p, d, q, season, seasonalD, 0, iterations);
+    }
+
+    /**
+     * Fits a seasonal ARIMA(p, d, q)(0, D, Q)_m with {@code Q} at most 1.
+     *
+     * @param y the series
+     * @param p the AR order
+     * @param d the differencing order
+     * @param q the MA order
+     * @param season the seasonal period {@code m}
+     * @param seasonalD the seasonal differencing order (0 or 1)
+     * @param seasonalQ the seasonal MA order (0 or 1)
+     * @param iterations L-BFGS iterations
+     * @return the fitted model
+     */
+    public static Arima fit(double[] y, int p, int d, int q, int season, int seasonalD, int seasonalQ,
+            int iterations) {
+        int k = p + q + seasonalQ;
         double mu = 0;
         for (double v : y) {
             mu += v / y.length;
@@ -207,14 +248,17 @@ public final class Arima {
         for (double v : y) {
             var += (v - mu) * (v - mu) / y.length;
         }
-        double[] u0 = new double[p + q + 2];
-        u0[p + q] = mu;
-        u0[p + q + 1] = Math.log(Math.sqrt(var) * 0.5 + 1e-6);
-        Arima shape = new Arima(p, d, q, season, seasonalD, u0, y);
+        double[] u0 = new double[k + 2];
+        if (seasonalQ > 0) {
+            u0[p + q] = 0.5;
+        }
+        u0[k] = mu;
+        u0[k + 1] = Math.log(Math.sqrt(var) * 0.5 + 1e-6);
+        Arima shape = new Arima(p, d, q, season, seasonalD, seasonalQ, u0, y);
         boolean hasMean = d + seasonalD == 0;
         double[] u = StateSpaceForecast.maximise(v -> shape.loglik(y, pacfToCoefficients(v, 0, p),
-                maCoefficients(v, p, q), hasMean ? v[p + q] : 0, Math.exp(v[p + q + 1])), u0, iterations);
-        return new Arima(p, d, q, season, seasonalD, u, y);
+                fullMa(v, p, q, seasonalQ, season), hasMean ? v[k] : 0, Math.exp(v[k + 1])), u0, iterations);
+        return new Arima(p, d, q, season, seasonalD, seasonalQ, u, y);
     }
 
     /**
@@ -231,13 +275,34 @@ public final class Arima {
      * @return the selected model
      */
     public static Arima select(double[] y, int maxP, int maxQ, int season, int seasonalD, int iterations) {
+        return select(y, maxP, maxQ, season, seasonalD, 0, iterations);
+    }
+
+    /**
+     * Fits every {@code p <= maxP}, {@code q <= maxQ}, {@code d} in {0, 1} and seasonal MA
+     * order up to {@code maxSeasonalQ} with the given seasonal differencing, keeping the
+     * lowest AICc.
+     *
+     * @param y the series
+     * @param maxP the largest AR order
+     * @param maxQ the largest MA order
+     * @param season the seasonal period
+     * @param seasonalD the seasonal differencing order (0 or 1)
+     * @param maxSeasonalQ the largest seasonal MA order (0 or 1)
+     * @param iterations L-BFGS iterations per fit
+     * @return the selected model
+     */
+    public static Arima select(double[] y, int maxP, int maxQ, int season, int seasonalD, int maxSeasonalQ,
+            int iterations) {
         Arima best = null;
         for (int dd = 0; dd <= 1; dd++) {
             for (int pp = 0; pp <= maxP; pp++) {
                 for (int qq = 0; qq <= maxQ; qq++) {
-                    Arima a = fit(y, pp, dd, qq, season, seasonalD, iterations);
-                    if (best == null || a.aicc() < best.aicc()) {
-                        best = a;
+                    for (int sq = 0; sq <= maxSeasonalQ; sq++) {
+                        Arima a = fit(y, pp, dd, qq, season, seasonalD, sq, iterations);
+                        if (best == null || a.aicc() < best.aicc()) {
+                            best = a;
+                        }
                     }
                 }
             }
@@ -280,7 +345,7 @@ public final class Arima {
 
     /** @return the small-sample corrected AIC */
     public double aicc() {
-        int k = p + q + 1 + (d + seasonalD == 0 ? 1 : 0);
+        int k = p + q + seasonalQ + 1 + (d + seasonalD == 0 ? 1 : 0);
         return StateSpaceForecast.aicc(logLikelihood, k, observations - lagCount());
     }
 
@@ -301,7 +366,7 @@ public final class Arima {
 
     @Override
     public String toString() {
-        return "ARIMA(" + p + "," + d + "," + q + ")" + (seasonalD > 0 ? "(0," + seasonalD + ",0)_" + season : "")
+        return "ARIMA(" + p + "," + d + "," + q + ")" + (seasonalD + seasonalQ > 0 ? "(0," + seasonalD + "," + seasonalQ + ")_" + season : "")
                 + String.format(" sigma=%.3f", sigma);
     }
 }

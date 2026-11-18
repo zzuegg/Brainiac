@@ -208,9 +208,20 @@ public final class ScatteringTransform {
      * @param signals 1-D: {@code [n][length]}; 2-D: {@code [n][side * side]} row-major squares
      * @param side the image side for 2-D input (ignored for 1-D)
      * @param average whether to average over the whole signal (otherwise sample every {@code 2^J})
-     * @return {@code [n][paths * positions]}, positions being 1 when averaging
+     * @return {@code [n][paths * positions]}, positions being 1 when averaging (computed in
+     *     chunks of 8 signals to bound memory)
      */
     public double[][] transform(float[][] signals, int side, boolean average) {
+        int chunk = 8;
+        if (signals.length > chunk) {
+            double[][] out = new double[signals.length][];
+            for (int s = 0; s < signals.length; s += chunk) {
+                double[][] part = transform(java.util.Arrays.copyOfRange(signals, s, Math.min(signals.length,
+                        s + chunk)), side, average);
+                System.arraycopy(part, 0, out, s, part.length);
+            }
+            return out;
+        }
         int n = signals.length;
         int cells = dims == 1 ? size : size * size;
         float[] x = new float[n * cells];

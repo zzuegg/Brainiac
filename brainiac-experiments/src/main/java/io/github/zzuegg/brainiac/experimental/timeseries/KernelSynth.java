@@ -10,9 +10,10 @@ import java.util.SplittableRandom;
 /**
  * KernelSynth (Ansari et al., Chronos, 2024, <a href="https://arxiv.org/abs/2403.07815">arXiv:2403.07815</a>):
  * synthetic training series drawn from Gaussian-process priors whose kernels are random
- * compositions. Up to {@code maxTerms} kernels are drawn from a bank (RBF at several
- * length-scales, periodic at several periods, linear trends, rational quadratic, constant and
- * white noise, all as {@link KernelFunction}s over time) and combined by random sums and
+ * compositions. Up to {@code maxTerms} kernels are drawn from a bank (RBF at length-scales
+ * 0.1, 0.3 and 1 of the series length, periodic at periods 4-52 steps, a linear trend,
+ * rational quadratic, constant and white noise at two levels, all as {@link KernelFunction}s
+ * over time; the paper's bank in steps rather than on {@code [0, 1]}) and combined by random sums and
  * products; a series is one draw from the zero-mean GP through a Cholesky factor of the Gram
  * matrix ({@link MlMatrices#cholesky}). The variety of compositions covers trends,
  * seasonality, smooth and rough noise, so a model trained only on it can forecast unseen real
@@ -31,7 +32,7 @@ public final class KernelSynth {
      */
     public KernelSynth(int length, int maxTerms) {
         this.maxTerms = maxTerms;
-        for (double l : new double[] {0.02, 0.05, 0.1, 0.3}) {
+        for (double l : new double[] {0.1, 0.3, 1.0}) {
             double gamma = 1 / (2 * l * l * length * length);
             bank.add(KernelFunction.rbf(gamma));
         }
@@ -45,6 +46,7 @@ public final class KernelSynth {
         });
         bank.add((a, b) -> 1.0);                                                       // constant
         bank.add((a, b) -> a[0] == b[0] ? 0.1 : 0);                                    // white noise
+        bank.add((a, b) -> a[0] == b[0] ? 1.0 : 0);
     }
 
     /**
@@ -109,5 +111,59 @@ public final class KernelSynth {
             y[i] = (float) s;
         }
         return y;
+    }
+
+    /**
+     * Draws a group for in-context covariate training (the Chronos-2 recipe of synthetic
+     * multivariate groups, here simple and explicit): covariates are KernelSynth draws, random
+     * step functions or sparse 0/1 events, and the target is a KernelSynth draw plus a random
+     * linear combination of the covariates (each weight zero with probability 0.2).
+     *
+     * @param length steps
+     * @param covariates the number of covariates
+     * @param random the source
+     * @return {@code [1 + covariates][length]}, the target first
+     */
+    public float[][] sampleGroup(int length, int covariates, SplittableRandom random) {
+        float[][] g = new float[1 + covariates][];
+        float[] target = sample(length, random);
+        double sd = 0;
+        for (float v : target) {
+            sd += v * v;
+        }
+        sd = Math.sqrt(sd / length) + 0.1;
+        for (int j = 1; j <= covariates; j++) {
+            float[] c = new float[length];
+            switch (random.nextInt(3)) {
+                case 0 -> c = sample(length, random);
+                case 1 -> {
+                    double level = random.nextDouble(-1, 1);
+                    int next = 10 + random.nextInt(50);
+                    for (int t = 0; t < length; t++) {
+                        if (t == next) {
+                            level = random.nextDouble(-1, 1);
+                            next += 10 + random.nextInt(50);
+                        }
+                        c[t] = (float) level;
+                    }
+                }
+                default -> {
+                    int next = random.nextInt(30);
+                    for (int t = 0; t < length; t++) {
+                        if (t == next) {
+                            c[t] = 1;
+                            next += 8 + random.nextInt(30);
+                        }
+                    }
+                }
+            }
+            double beta = random.nextDouble() < 0.2 ? 0 : random.nextDouble(-2, 2) * sd;
+            for (int t = 0; t < length; t++) {
+                target[t] += (float) (beta * c[t]);
+            }
+            g[j] = c;
+        }
+        g[0] = target;
+        return g;
     }
 }
