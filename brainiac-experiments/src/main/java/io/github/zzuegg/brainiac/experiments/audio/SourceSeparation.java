@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.ml.ComponentAnalysis;
 import io.github.zzuegg.brainiac.experimental.nn.ConvTasNet;
 import io.github.zzuegg.brainiac.experimental.nn.PermutationInvariantLoss;
+import io.github.zzuegg.brainiac.experimental.timeseries.DualPathRnn;
 import io.github.zzuegg.brainiac.nn.Signal;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -122,6 +123,25 @@ public final class SourceSeparation {
         }
     }
 
+    /** DPRNN as a {@link Separator}: window 16, 32 filters, width 32, chunks of 16 frames, two blocks. */
+    static final class Dprnn implements Separator {
+        private final DualPathRnn net;
+
+        Dprnn(long seed) {
+            net = new DualPathRnn(16, 32, 32, 16, 2, 2, SAMPLES, new SplittableRandom(seed));
+        }
+
+        @Override
+        public Var separate(Var mixtures) {
+            return net.forward(mixtures, true);
+        }
+
+        @Override
+        public List<Var> parameters() {
+            return net.parameters();
+        }
+    }
+
     /** Conv-TasNet as a {@link Separator}. */
     static final class TasNet implements Separator {
         private final ConvTasNet net;
@@ -180,7 +200,9 @@ public final class SourceSeparation {
         /** FastICA on two microphones. */
         FASTICA("FastICA (2 mics)"),
         /** The ideal ratio mask (oracle). */
-        IDEAL_RATIO_MASK("ideal ratio mask");
+        IDEAL_RATIO_MASK("ideal ratio mask"),
+        /** Dual-path RNN ({@link DualPathRnn}) on the Conv-TasNet encoder and decoder (wave 8, 8.2.18). */
+        DPRNN("DPRNN");
 
         private final String label;
 
@@ -240,7 +262,11 @@ public final class SourceSeparation {
                 out[mi] = classical(method, tests, micPairs, seed);
                 continue;
             }
-            Separator sep = method == Method.CONV_TASNET ? new TasNet(seed) : new StftMask(96, seed);
+            Separator sep = switch (method) {
+                case CONV_TASNET -> new TasNet(seed);
+                case DPRNN -> new Dprnn(seed);
+                default -> new StftMask(96, seed);
+            };
             Optimizer opt = Optimizer.adam(LEARNING_RATE);
             SplittableRandom br = new SplittableRandom(seed + 5);
             for (int step = 0; step < steps; step++) {
@@ -324,5 +350,23 @@ public final class SourceSeparation {
             }
             return out;
         });
+    }
+
+    /**
+     * The learning curve of 8.2.18: each trained separator is retrained from scratch at every
+     * budget (the {@link #run} task and test sets), so the wave 7 comparison at 150 steps is
+     * repeated at larger budgets.
+     *
+     * @param budgets training steps, for example {150, 600, 1500}
+     * @param seed the seed
+     * @param methods the trained separators
+     * @return per budget, the scores in the order of {@code methods}
+     */
+    public static java.util.Map<Integer, Score[]> learningCurve(int[] budgets, long seed, Method... methods) {
+        java.util.Map<Integer, Score[]> out = new java.util.LinkedHashMap<>();
+        for (int steps : budgets) {
+            out.put(steps, run(steps, seed, methods));
+        }
+        return out;
     }
 }
