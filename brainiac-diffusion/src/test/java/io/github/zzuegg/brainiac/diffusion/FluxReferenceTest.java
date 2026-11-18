@@ -121,4 +121,20 @@ class FluxReferenceTest {
             }
         }
     }
+
+    @Test
+    void loadPicksTypeAndWeightsForTheDevice() throws Exception {
+        Path schnell = dir.resolve("flux_schnell");
+        assertEquals(DType.FLOAT32, ImageGenerator.dtype(schnell, Device.cpu()));
+        assertEquals(Flux.Options.full(), Flux.Options.fitting(schnell, Device.cpu(), DType.FLOAT32));
+        MemoryFit.Params t = MemoryFit.params(schnell.resolve("transformer"), "diffusion_pytorch_model", false);
+        assertTrue(t.matrices() > 0 && t.other() > 0);
+        assertTrue(t.bytes(DType.BFLOAT16, 4) < t.bytes(DType.BFLOAT16, 8));
+        assertTrue(t.bytes(DType.BFLOAT16, 8) < t.bytes(DType.BFLOAT16, 0));
+        // tiny models fit any device, so the most precise choice wins
+        try (ImageGenerator g = ImageGenerator.load(schnell, DEVICE, DType.FLOAT32)) {
+            assertEquals("FLUX_SCHNELL", g.family());
+            assertEquals(0, ((Flux) g).options().transformerBits());
+        }
+    }
 }

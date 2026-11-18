@@ -24,7 +24,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.SplittableRandom;
 import java.util.concurrent.CancellationException;
-import java.util.stream.Stream;
 
 /**
  * Text-to-image generation with Black Forest Labs' Flux.1 models (dev and schnell), from a
@@ -42,7 +41,8 @@ import java.util.stream.Stream;
  * <p>Flux has no negative prompt and samples with Euler steps only; dev takes the guidance
  * scale as an input (no classifier-free guidance, so one pass per step), schnell ignores it.
  * In full precision the transformer takes about 24 GB and T5-XXL about 9.5 GB;
- * {@link Options#bits} stores their weights in 8 or 4 bits.
+ * {@link Options#bits} stores their weights in 8 or 4 bits, and {@link Options#fitting} picks the
+ * most precise that fit a device ({@link ImageGenerator#load(Path, Device)} uses it).
  */
 public final class Flux implements ImageGenerator {
 
@@ -91,7 +91,61 @@ public final class Flux implements ImageGenerator {
         public static Options bits(int transformer, int textEncoder) {
             return new Options(transformer, textEncoder, 512);
         }
+
+        /**
+         * The most precise weights that leave room to generate at 1024 pixels on a device,
+         * estimated from the files' headers: full, then T5 in 8 bits, both in 8 bits, the
+         * transformer in 8 and T5 in 4, the transformer in 4 and T5 in 8, both in 4. On a
+         * device that does not count its memory (the CPU), full.
+         *
+         * @param path a diffusers Flux folder
+         * @param device where it will run
+         * @param dtype the load type
+         * @return the options, 512 text tokens
+         * @throws IOException if the headers cannot be read
+         * @throws IllegalArgumentException if even 4-bit weights do not fit
+         */
+        public static Options fitting(Path path, Device device, DType dtype) throws IOException {
+            if (MemoryFit.free(device).isEmpty()) {
+                return full();
+            }
+            long free = MemoryFit.free(device).getAsLong();
+            Sizes sizes = Sizes.of(path);
+            for (int[] b : CHOICES) {
+                if (sizes.bytes(dtype, b[0], b[1]) + WORKING <= free) {
+                    return bits(b[0], b[1]);
+                }
+            }
+            // short of the comfortable room, still try the smallest weights if they leave the minimum
+            MemoryFit.require("Flux (" + path.getFileName() + ")", sizes.bytes(dtype, 4, 4), device,
+                    "even with both networks in 4 bits");
+            return bits(4, 4);
+        }
     }
+
+    /** The parameters of a Flux folder's networks, from the headers. */
+    private record Sizes(MemoryFit.Params transformer, MemoryFit.Params t5, MemoryFit.Params clip,
+            MemoryFit.Params vae) {
+
+        static Sizes of(Path path) throws IOException {
+            return new Sizes(MemoryFit.params(path.resolve("transformer"), "diffusion_pytorch_model", false),
+                    MemoryFit.params(path.resolve("text_encoder_2"), "model", false),
+                    MemoryFit.params(path.resolve("text_encoder"), "model", false),
+                    MemoryFit.params(path.resolve("vae"), "diffusion_pytorch_model", false));
+        }
+
+        /** @return the device bytes of all the weights, the decoder in float32 */
+        long bytes(DType dtype, int transformerBits, int t5Bits) {
+            return transformer.bytes(dtype, transformerBits) + t5.bytes(dtype, t5Bits) + clip.bytes(dtype, 0)
+                    + vae.bytes(DType.FLOAT32, 0);
+        }
+    }
+
+    /** Weight precisions from best to smallest: {transformer bits, T5 bits}. */
+    private static final int[][] CHOICES = {{0, 0}, {0, 8}, {8, 8}, {8, 4}, {4, 8}, {4, 4}};
+
+    /** Room for activations at 1024 pixels: the transformer's 4608 tokens, T5's states and the decoder. */
+    static final long WORKING = 3L << 30;
 
     private final Kind kind;
     private final Device device;
@@ -179,6 +233,8 @@ public final class Flux implements ImageGenerator {
         if (!device.supports(dtype)) {
             throw new IllegalArgumentException(device + " cannot hold " + dtype + " values");
         }
+        MemoryFit.require("Flux (" + path.getFileName() + ")", Sizes.of(path).bytes(dtype, options.transformerBits(),
+                options.textEncoderBits()), device, "Options.fitting picks weights that fit");
         List<WeightSource> sources = new ArrayList<>();
         List<Tensor> all = new ArrayList<>();
         try {
@@ -211,20 +267,7 @@ public final class Flux implements ImageGenerator {
     /** Opens a component's weights: one file, a sharded index, or the first {@code .safetensors}. */
     private static Weights weights(Path dir, String base, List<WeightSource> sources, Device device, DType dtype,
             List<Tensor> all) throws IOException {
-        Path file = null;
-        for (String name : new String[] {base + ".safetensors", base + ".safetensors.index.json"}) {
-            if (Files.isRegularFile(dir.resolve(name))) {
-                file = dir.resolve(name);
-                break;
-            }
-        }
-        if (file == null) {
-            try (Stream<Path> files = Files.list(dir)) {
-                file = files.filter(p -> p.getFileName().toString().endsWith(".safetensors")).sorted().findFirst()
-                        .orElseThrow(() -> new IOException("no .safetensors weights in " + dir));
-            }
-        }
-        WeightSource source = WeightSource.open(file);
+        WeightSource source = WeightSource.open(MemoryFit.weightFile(dir, base, false));
         sources.add(source);
         return new Weights(source, "", device, dtype, all);
     }

@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.SplittableRandom;
 import java.util.concurrent.CancellationException;
-import java.util.stream.Stream;
 
 /**
  * Text-to-image generation with a pretrained Stable Diffusion model (1.x, 2.x or XL).
@@ -139,6 +138,9 @@ public final class StableDiffusion implements ImageGenerator {
         if (!device.supports(dtype)) {
             throw new IllegalArgumentException(device + " cannot hold " + dtype + " values");
         }
+        if (Files.isDirectory(path) || Files.isRegularFile(path)) {
+            requireFits(path, device, dtype);
+        }
         if (Files.isDirectory(path)) {
             return loadDiffusers(path, device, dtype);
         }
@@ -204,24 +206,28 @@ public final class StableDiffusion implements ImageGenerator {
     /** Opens a diffusers component's weights, preferring full precision files over {@code fp16} variants. */
     private static Weights weights(Path dir, String base, List<WeightSource> sources, Device device, DType dtype,
             List<Tensor> all) throws IOException {
-        Path file = null;
-        for (String name : new String[] {base + ".safetensors", base + ".safetensors.index.json",
-                base + ".fp16.safetensors", base + ".fp16.safetensors.index.json"}) {
-            if (Files.isRegularFile(dir.resolve(name))) {
-                file = dir.resolve(name);
-                break;
-            }
-        }
-        if (file == null) {
-            try (Stream<Path> files = Files.list(dir)) {
-                file = files.filter(p -> p.getFileName().toString().endsWith(".safetensors")).sorted().findFirst()
-                        .orElseThrow(() -> new IOException("no .safetensors weights in " + dir
-                                + " (PyTorch .bin files are not supported)"));
-            }
-        }
-        WeightSource source = WeightSource.open(file);
+        WeightSource source = WeightSource.open(MemoryFit.weightFile(dir, base, true));
         sources.add(source);
         return new Weights(source, "", device, dtype, all);
+    }
+
+    /** Fails before loading if the weights cannot fit the device, estimated from the headers. */
+    private static void requireFits(Path path, Device device, DType dtype) throws IOException {
+        long bytes;
+        if (Files.isDirectory(path)) {
+            bytes = MemoryFit.params(path.resolve("text_encoder"), "model", true).bytes(dtype, 0)
+                    + MemoryFit.params(path.resolve("text_encoder_2"), "model", true).bytes(dtype, 0)
+                    + MemoryFit.params(path.resolve("unet"), "diffusion_pytorch_model", true).bytes(dtype, 0)
+                    + MemoryFit.params(path.resolve("vae"), "diffusion_pytorch_model", true).bytes(DType.FLOAT32, 0);
+        } else {
+            try {
+                bytes = MemoryFit.params(path).bytes(dtype, 0);
+            } catch (RuntimeException e) {
+                return; // not a readable checkpoint: loading says why
+            }
+        }
+        MemoryFit.require("Stable Diffusion (" + path.getFileName() + ")", bytes, device,
+                dtype.bytes() > 2 ? "a 16-bit type halves it" : "");
     }
 
     private static void release(List<Tensor> all, List<WeightSource> sources) {

@@ -542,7 +542,8 @@ the SD 1.x and SDXL pipelines (`brainiac-diffusion/src/test/python` makes the fi
 `Flux` runs Black Forest Labs' FLUX.1 dev and schnell from a diffusers folder: a multimodal
 diffusion transformer sampled by flow matching, conditioned on T5-XXL and CLIP. In bfloat16 the
 transformer takes about 24 GB and T5 about 9.5 GB; `Flux.Options.bits(8, 8)` stores both in
-8 bits (4 bits quarters them), so it fits smaller GPUs.
+8 bits (4 bits quarters them), so it fits smaller GPUs. `Flux.Options.fitting(path, device,
+dtype)` picks the most precise weights that leave room to generate on a device.
 
 ```java
 try (Flux flux = Flux.load(Path.of("models/FLUX.1-schnell"), Device.best(), DType.BFLOAT16,
@@ -555,8 +556,12 @@ try (Flux flux = Flux.load(Path.of("models/FLUX.1-schnell"), Device.best(), DTyp
 - Schnell makes an image in 1 to 4 steps. Dev takes 20 to 50 steps and a guidance scale
   (about 3.5) that is an input to the model, so each step is one pass.
 - Flux has no negative prompt and always steps with Euler.
-- `ImageGenerator.load(path, device, dtype)` loads either family behind one interface, and
-  `defaults()` gives each model's steps and guidance.
+- `ImageGenerator.load(path, device)` loads either family behind one interface. It picks the
+  type (float32 on the CPU, bfloat16 for Flux and float16 for Stable Diffusion on a GPU) and
+  quantizes Flux as far as the device's memory needs. A model that cannot fit fails before
+  loading, with a message that says how much it needs. `detect(path)` names the family
+  without loading, and `defaults()` gives each model's steps and guidance and whether it uses
+  a negative prompt or a sampler choice.
 - The transformer, T5, the tokenizer and whole dev and schnell runs were checked against
   diffusers and transformers on small random models (`flux_fixtures.py`).
 

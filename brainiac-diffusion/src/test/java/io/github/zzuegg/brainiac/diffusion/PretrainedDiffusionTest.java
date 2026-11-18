@@ -40,12 +40,15 @@ class PretrainedDiffusionTest {
             }
             boolean flux = family.get().startsWith("FLUX");
             long t0 = System.nanoTime();
-            // Flux overflows in float16; -PtestFluxBits=8,4 stores the transformer and T5 in fewer bits
-            String[] bits = System.getProperty("brainiac.test.fluxBits", "0,0").split(",");
-            try (ImageGenerator model = flux
-                    ? Flux.load(p, device, dtype == DType.FLOAT32 ? dtype : DType.BFLOAT16,
-                            Flux.Options.bits(Integer.parseInt(bits[0].trim()), Integer.parseInt(bits[1].trim())))
-                    : StableDiffusion.load(p, device, dtype)) {
+            // Flux overflows in float16; -PtestFluxBits=8,4 stores the transformer and T5 in fewer
+            // bits, by default as few as the device's memory needs
+            String bits = System.getProperty("brainiac.test.fluxBits", "auto");
+            DType fluxType = dtype == DType.FLOAT32 ? dtype : DType.BFLOAT16;
+            device.resetPeakMemory();
+            try (ImageGenerator model = !flux ? StableDiffusion.load(p, device, dtype)
+                    : bits.equals("auto") ? ImageGenerator.load(p, device, fluxType)
+                    : Flux.load(p, device, fluxType, Flux.Options.bits(Integer.parseInt(bits.split(",")[0].trim()),
+                            Integer.parseInt(bits.split(",")[1].trim())))) {
                 long t1 = System.nanoTime();
                 ImageGenerator.Defaults d = model.defaults();
                 ImageRequest r = ImageRequest.of("a photo of a red fox sitting in fresh snow, golden hour, detailed fur")
@@ -65,8 +68,10 @@ class PretrainedDiffusionTest {
                 assertTrue(std > 10, "the image is almost flat (std " + std + ")");
                 Path file = out.resolve(p.getFileName().toString().replace(".safetensors", "") + ".png");
                 Files.write(file, img.png());
-                System.out.printf("%s: %s, loaded in %.1f s, %d steps + decode in %.1f s -> %s%n", p.getFileName(),
-                        model, (t1 - t0) / 1e9, d.steps(), (t2 - t1) / 1e9, file.toAbsolutePath());
+                System.out.printf("%s: %s%s, loaded in %.1f s, %d steps + decode in %.1f s, peak %s -> %s%n",
+                        p.getFileName(), model, model instanceof Flux f ? " " + f.options() : "", (t1 - t0) / 1e9,
+                        d.steps(), (t2 - t1) / 1e9, device.memory().map(m -> MemoryFit.gb(m.peak())).orElse("n/a"),
+                        file.toAbsolutePath());
                 ran++;
             }
         }

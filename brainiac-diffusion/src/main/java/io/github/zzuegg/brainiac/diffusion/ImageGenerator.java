@@ -15,7 +15,7 @@ import java.util.concurrent.CancellationException;
  * {@link #load} picks the right one for a folder or file.
  *
  * <pre>{@code
- * try (ImageGenerator model = ImageGenerator.load(Path.of("FLUX.1-schnell"), Device.best(), DType.BFLOAT16)) {
+ * try (ImageGenerator model = ImageGenerator.load(Path.of("FLUX.1-schnell"), Device.best())) {
  *     ImageGenerator.Defaults d = model.defaults();
  *     List<GeneratedImage> images = model.generate(ImageRequest.of("a red fox in fresh snow")
  *             .steps(d.steps()).guidance(d.guidance()).build(), Progress.NONE);
@@ -52,7 +52,25 @@ public interface ImageGenerator extends AutoCloseable {
     }
 
     /**
-     * Loads a model of any supported family, with each family's default options.
+     * Loads a model of any supported family in the type that suits it and the device: float32
+     * on the CPU; on a GPU bfloat16 for Flux (it overflows in float16) and float16 for Stable
+     * Diffusion. Flux's weights are quantized as far as the device's memory needs (see
+     * {@link Flux.Options#fitting}).
+     *
+     * @param path a diffusers folder or a single {@code .safetensors} checkpoint
+     * @param device where to run it
+     * @return the model
+     * @throws IOException if the files cannot be read
+     * @throws IllegalArgumentException if they are not a model this library can run, or it
+     *     cannot fit the device's memory (the message says how much it needs)
+     */
+    static ImageGenerator load(Path path, Device device) throws IOException {
+        return load(path, device, dtype(path, device));
+    }
+
+    /**
+     * Loads a model of any supported family in a given type. Flux's weights are quantized as
+     * far as the device's memory needs (see {@link Flux.Options#fitting}).
      *
      * @param path a diffusers folder or a single {@code .safetensors} checkpoint
      * @param device where to run it
@@ -60,13 +78,34 @@ public interface ImageGenerator extends AutoCloseable {
      *     on a GPU (Flux needs bfloat16 there), {@link DType#FLOAT32} on the CPU
      * @return the model
      * @throws IOException if the files cannot be read
-     * @throws IllegalArgumentException if they are not a model this library can run
+     * @throws IllegalArgumentException if they are not a model this library can run, or it
+     *     cannot fit the device's memory
      */
     static ImageGenerator load(Path path, Device device, DType dtype) throws IOException {
         if (Files.isDirectory(path) && Flux.detect(path).isPresent()) {
-            return Flux.load(path, device, dtype);
+            return Flux.load(path, device, dtype, Flux.Options.fitting(path, device, dtype));
         }
         return StableDiffusion.load(path, device, dtype);
+    }
+
+    /**
+     * The type {@link #load(Path, Device)} picks for a model on a device.
+     *
+     * @param path the model
+     * @param device the device
+     * @return the type
+     */
+    static DType dtype(Path path, Device device) {
+        if (device.kind() == Device.Kind.CPU) {
+            return DType.FLOAT32;
+        }
+        boolean flux = Files.isDirectory(path) && Flux.detect(path).isPresent();
+        for (DType t : flux ? new DType[] {DType.BFLOAT16} : new DType[] {DType.FLOAT16, DType.BFLOAT16}) {
+            if (device.supports(t)) {
+                return t;
+            }
+        }
+        return DType.FLOAT32;
     }
 
     /**
