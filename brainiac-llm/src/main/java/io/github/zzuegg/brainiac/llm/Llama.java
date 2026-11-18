@@ -492,8 +492,11 @@ public final class Llama implements LanguageModel {
         return order;
     }
 
-    /** The ids of the step {@link #next(State, Tensor)} reads, still on the device, or null. */
-    private Tensor deviceTokens;
+    /**
+     * The ids of the step {@link #next(State, Tensor)} reads, still on the device, or null; per
+     * thread, as a batching server's thread and another may decode with one model at once.
+     */
+    private final ThreadLocal<Tensor> deviceTokens = new ThreadLocal<>();
 
     private static Tensor indices(int[] ids, Device device) {
         float[] f = new float[ids.length];
@@ -1502,11 +1505,11 @@ public final class Llama implements LanguageModel {
         if (insert != null || tokens.size() != batch || !tokens.device().equals(device)) {
             return LanguageModel.super.next(state, tokens, padding);
         }
-        deviceTokens = tokens.reshape(batch);
+        deviceTokens.set(tokens.reshape(batch));
         try {
             return read(state, new int[batch][1], padding, false);
         } finally {
-            deviceTokens = null;
+            deviceTokens.remove();
         }
     }
 
@@ -1794,7 +1797,8 @@ public final class Llama implements LanguageModel {
                 }
             }
         }
-        Tensor ids = deviceTokens != null && insert == null ? deviceTokens : indices(lookup, device);
+        Tensor onDevice = deviceTokens.get();
+        Tensor ids = onDevice != null && insert == null ? onDevice : indices(lookup, device);
         Var x = base(embed).gather(0, ids).reshape(batch, steps, config.hidden());
         if (e.scaleEmbeddings()) {
             // as Gemma: the factor rounded to the model's type first
