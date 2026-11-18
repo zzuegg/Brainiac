@@ -18,12 +18,14 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.audio;
     exports io.github.zzuegg.brainiac.experimental.autograd;
     exports io.github.zzuegg.brainiac.experimental.bandit;
+    exports io.github.zzuegg.brainiac.experimental.bio;
     exports io.github.zzuegg.brainiac.experimental.boost;
     exports io.github.zzuegg.brainiac.experimental.calibrate;
     exports io.github.zzuegg.brainiac.experimental.code;
     exports io.github.zzuegg.brainiac.experimental.codec;
     exports io.github.zzuegg.brainiac.experimental.causal;
     exports io.github.zzuegg.brainiac.experimental.combopt;
+    exports io.github.zzuegg.brainiac.experimental.comms;
     exports io.github.zzuegg.brainiac.experimental.circuits;
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
@@ -43,6 +45,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.kernels;
     exports io.github.zzuegg.brainiac.experimental.labels;
     exports io.github.zzuegg.brainiac.experimental.llm;
+    exports io.github.zzuegg.brainiac.experimental.markets;
     exports io.github.zzuegg.brainiac.experimental.marl;
     exports io.github.zzuegg.brainiac.experimental.metric;
     exports io.github.zzuegg.brainiac.experimental.ml;
@@ -68,6 +71,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.semisup;
     exports io.github.zzuegg.brainiac.experimental.serving;
     exports io.github.zzuegg.brainiac.experimental.shift;
+    exports io.github.zzuegg.brainiac.experimental.signal;
     exports io.github.zzuegg.brainiac.experimental.sketch;
     exports io.github.zzuegg.brainiac.experimental.ssl;
     exports io.github.zzuegg.brainiac.experimental.speech;
@@ -88,11 +92,13 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.attention;
     exports io.github.zzuegg.brainiac.experiments.audio;
     exports io.github.zzuegg.brainiac.experiments.bandits;
+    exports io.github.zzuegg.brainiac.experiments.biology;
     exports io.github.zzuegg.brainiac.experiments.causal;
     exports io.github.zzuegg.brainiac.experiments.classic;
     exports io.github.zzuegg.brainiac.experiments.code;
     exports io.github.zzuegg.brainiac.experiments.coding;
     exports io.github.zzuegg.brainiac.experiments.combinatorial;
+    exports io.github.zzuegg.brainiac.experiments.communications;
     exports io.github.zzuegg.brainiac.experiments.compression;
     exports io.github.zzuegg.brainiac.experiments.context;
     exports io.github.zzuegg.brainiac.experiments.control;
@@ -112,6 +118,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.labels;
     exports io.github.zzuegg.brainiac.experiments.language;
     exports io.github.zzuegg.brainiac.experiments.learning;
+    exports io.github.zzuegg.brainiac.experiments.markets;
     exports io.github.zzuegg.brainiac.experiments.memory;
     exports io.github.zzuegg.brainiac.experiments.metric;
     exports io.github.zzuegg.brainiac.experiments.multiagent;
