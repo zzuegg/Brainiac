@@ -30,7 +30,11 @@ public final class AsyncTraining {
     private AsyncTraining() {
     }
 
-    /** Sparse logistic regression on one-hot click features (one weight per category plus a bias). */
+    /**
+     * Sparse logistic regression on one-hot click features plus the crossed pair of the first two
+     * fields (the clicks' signal is mostly that interaction, which a purely linear model cannot
+     * see), one weight per active feature plus a bias.
+     */
     static final class SparseLogistic implements AsyncSgd.Problem {
         final int[][] active;
         final float[] label;
@@ -43,17 +47,18 @@ public final class AsyncTraining {
             float[] x = t.features().toArray();
             float[] y = t.labels().toArray();
             int width = fields * categories;
-            this.dim = width + 1;
+            this.dim = width + categories * categories + 1;
             int n = rows + rows / 4;
             int[][] act = new int[n][];
             for (int i = 0; i < n; i++) {
-                int[] a = new int[fields];
+                int[] a = new int[fields + 1];
                 int k = 0;
                 for (int j = 0; j < width; j++) {
                     if (x[i * width + j] != 0) {
                         a[k++] = j;
                     }
                 }
+                a[k++] = width + a[0] * categories + (a[1] - categories);
                 act[i] = java.util.Arrays.copyOf(a, k);
             }
             this.active = java.util.Arrays.copyOf(act, rows);

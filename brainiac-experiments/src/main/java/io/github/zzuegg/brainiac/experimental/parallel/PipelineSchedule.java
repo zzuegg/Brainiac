@@ -430,6 +430,9 @@ public final class PipelineSchedule {
             if (idle > 100 * p) {
                 throw new IllegalStateException(name + ": no device can make progress");
             }
+            // every device has waited in turn without progress: the in-flight limits would deadlock
+            // (all devices full of forwards whose backwards wait on each other), so let one exceed its limit
+            boolean relax = idle > 4 * p;
             int d = 0;
             for (int i = 1; i < p; i++) {
                 if (free[i] < free[d]) {
@@ -442,6 +445,7 @@ public final class PipelineSchedule {
             double bestBReady = Double.POSITIVE_INFINITY;
             Op bestF = null;
             double bestFReady = Double.POSITIVE_INFINITY;
+            boolean backwardOutstanding = false;
             for (int mb = 0; mb < microBatches; mb++) {
                 int dir = shape.direction(mb);
                 int stage = dir == 0 ? d : p - 1 - d;
@@ -454,6 +458,8 @@ public final class PipelineSchedule {
                         bestF = f;
                     }
                 } else if (!end.containsKey(b)) {
+                    // a backward waiting on a later stage (ready time still unknown) frees memory later
+                    backwardOutstanding = true;
                     double r = ready(shape, b, end, cost);
                     if (r < bestBReady) {
                         bestBReady = r;
@@ -464,7 +470,7 @@ public final class PipelineSchedule {
             Op run = null;
             if (bestB != null && bestBReady <= t) {
                 run = bestB;
-            } else if (bestF != null && bestFReady <= t && inFlight[d] < limit[d]) {
+            } else if (bestF != null && bestFReady <= t && (relax || inFlight[d] < limit[d])) {
                 run = bestF;
             } else if (!pendingW.get(d).isEmpty()) {
                 run = pendingW.get(d).removeFirst();
@@ -474,7 +480,7 @@ public final class PipelineSchedule {
                 if (bestB != null && bestBReady > t) {
                     wake = Math.min(wake, bestBReady);
                 }
-                if (bestF != null && bestFReady > t && inFlight[d] < limit[d]) {
+                if (bestF != null && bestFReady > t && (relax || inFlight[d] < limit[d])) {
                     wake = Math.min(wake, bestFReady);
                 }
                 for (int i = 0; i < p; i++) {
@@ -483,7 +489,8 @@ public final class PipelineSchedule {
                     }
                 }
                 if (wake == Double.POSITIVE_INFINITY) {
-                    if (inFlight[d] >= limit[d] && bestF != null && bestB == null) {
+                    if (inFlight[d] >= limit[d] && bestF != null && !backwardOutstanding
+                            && pendingW.get(d).isEmpty()) {
                         throw new IllegalStateException(name + ": deadlock, in-flight limit too small");
                     }
                     // waits on something not yet scheduled anywhere: let the others move first

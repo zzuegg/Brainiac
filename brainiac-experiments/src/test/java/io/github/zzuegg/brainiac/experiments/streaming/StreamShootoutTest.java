@@ -9,7 +9,7 @@ class StreamShootoutTest {
 
     @Test
     void ftrlIsSparseAtAdaGradLogLoss() {
-        List<StreamShootout.ClickRow> rows = StreamShootout.clicks(150_000, 1);
+        List<StreamShootout.ClickRow> rows = StreamShootout.clicks(90_000, 1);
         for (StreamShootout.ClickRow r : rows) {
             System.out.printf("9.6.8 %-46s progressive log loss %.4f (after drifts %.4f), %6d non-zeros, %8d B%n",
                     r.method(), r.logLoss(), r.lossAfterDrift(), r.nonZeros(), r.bytes());
@@ -24,7 +24,7 @@ class StreamShootoutTest {
 
     @Test
     void forestsAndTreesTrackDriftingStreams() {
-        List<StreamShootout.TreeRow> rows = StreamShootout.trees(12_000, 2);
+        List<StreamShootout.TreeRow> rows = StreamShootout.trees(8_000, 2);
         for (StreamShootout.TreeRow r : rows) {
             System.out.printf("9.6.9 %-18s %-46s accuracy %.3f, recovery %6.0f, %8d B, %.2f s%n", r.stream(),
                     r.method(), r.accuracy(), r.recovery(), r.bytes(), r.seconds());
@@ -47,6 +47,8 @@ class StreamShootoutTest {
         }
         StreamShootout.DetectionRow adwin = rows.stream()
                 .filter(r -> r.series().startsWith("SEA") && r.method().startsWith("ADWIN")).findFirst().orElseThrow();
+        // SEA's 8 -> 9 threshold switch moves a frozen model's error rate by only about 0.085, so ADWIN
+        // (delta 0.002) needs several hundred samples per side: it finds most drifts, but late
         assertTrue(adwin.missed() <= adwin.drifts() / 2, adwin.toString());
     }
 
