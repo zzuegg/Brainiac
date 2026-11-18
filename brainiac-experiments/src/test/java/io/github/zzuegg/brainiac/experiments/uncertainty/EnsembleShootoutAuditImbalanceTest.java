@@ -11,7 +11,7 @@ class EnsembleShootoutAuditImbalanceTest {
     @Test
     void ensembleZooUnderImbalance() {
         for (double[] cfg : new double[][] {{0, 10}}) {
-            List<EnsembleShootout.AuditRow> rows = EnsembleShootout.audit(cfg[0], cfg[1], 400, 1);
+            List<EnsembleShootout.AuditRow> rows = EnsembleShootout.audit(cfg[0], cfg[1], 200, 1);
             StringBuilder b = new StringBuilder("11.4.16 " + rows.getFirst().setting()
                     + " acc/NLL(TS)/far AUROC/dis/NLL gap+-se:");
             rows.forEach(r -> b.append(String.format(" %s %.3f/%.3f/%.3f/%.3f/%+.3f+-%.3f;", r.method(), r.accuracy(),
