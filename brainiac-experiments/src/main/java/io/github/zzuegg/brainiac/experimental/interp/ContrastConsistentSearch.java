@@ -24,7 +24,15 @@ import java.util.SplittableRandom;
  * <p>{@link #contrastivePca} is the paper's unsupervised baseline: the top principal
  * component of the normalised differences {@code x+ - x-}.
  *
- * <p>Paper: <a href="https://arxiv.org/abs/2212.03827">arXiv:2212.03827</a>.
+ * <p>Wave 10 follow-up (item 10.3.17): with several prompt templates pooled, the
+ * {@linkplain #fit(float[][], float[][], int[], int, int, long) per-template fit} normalises each
+ * template's states by that template's own statistics; {@link #ensembleAccuracy} averages a
+ * statement's credences over templates; and {@link #crc} is contrastive representation
+ * clustering, the paper's simpler alternative, fitted on one set and applied to another. The
+ * original methods and their defaults are unchanged.
+ *
+ * <p>Papers: <a href="https://arxiv.org/abs/2212.03827">arXiv:2212.03827</a>; Farquhar et al.,
+ * <a href="https://arxiv.org/abs/2312.10029">arXiv:2312.10029</a>.
  */
 public final class ContrastConsistentSearch {
 
@@ -32,12 +40,14 @@ public final class ContrastConsistentSearch {
     private final double bias;
     private final double[][] norm;
     private final double loss;
+    private final double[][][] templateNorm;
 
-    private ContrastConsistentSearch(double[] w, double bias, double[][] norm, double loss) {
+    private ContrastConsistentSearch(double[] w, double bias, double[][] norm, double loss, double[][][] templateNorm) {
         this.w = w;
         this.bias = bias;
         this.norm = norm;
         this.loss = loss;
+        this.templateNorm = templateNorm;
     }
 
     /** The per-set normalisation: {mean+, std+, mean-, std-}. */
@@ -93,6 +103,13 @@ public final class ContrastConsistentSearch {
             xp[i] = normalise(pos[i], s, true);
             xn[i] = normalise(neg[i], s, false);
         }
+        return search(xp, xn, d, restarts, epochs, seed, s, null);
+    }
+
+    /** Adam restarts on normalised pairs; keeps the lowest CCS loss. */
+    private static ContrastConsistentSearch search(double[][] xp, double[][] xn, int d, int restarts, int epochs,
+            long seed, double[][] s, double[][][] templateNorm) {
+        int n = xp.length;
         SplittableRandom r = new SplittableRandom(seed);
         ContrastConsistentSearch best = null;
         for (int restart = 0; restart < restarts; restart++) {
@@ -129,7 +146,7 @@ public final class ContrastConsistentSearch {
             double l = loss(w, xp, xn);
             if (best == null || l < best.loss) {
                 double[] wd = java.util.Arrays.copyOf(w, d);
-                best = new ContrastConsistentSearch(wd, w[d], s, l);
+                best = new ContrastConsistentSearch(wd, w[d], s, l, templateNorm);
             }
         }
         return best;
@@ -251,5 +268,207 @@ public final class ContrastConsistentSearch {
         }
         double a = (double) hit / pos.length;
         return Math.max(a, 1 - a);
+    }
+
+    // ------------------------------------------------------------------ wave 10 follow-up (10.3.17)
+
+    /** Per-template normalisation statistics, {@code [templates][4][d]}. */
+    private static double[][][] templateStatistics(float[][] pos, float[][] neg, int[] template) {
+        int t = 0;
+        for (int k : template) {
+            t = Math.max(t, k + 1);
+        }
+        double[][][] out = new double[t][][];
+        for (int k = 0; k < t; k++) {
+            int count = 0;
+            for (int v : template) {
+                count += v == k ? 1 : 0;
+            }
+            if (count == 0) {
+                continue;
+            }
+            float[][] p = new float[count][];
+            float[][] q = new float[count][];
+            int c = 0;
+            for (int i = 0; i < template.length; i++) {
+                if (template[i] == k) {
+                    p[c] = pos[i];
+                    q[c++] = neg[i];
+                }
+            }
+            out[k] = statistics(p, q);
+        }
+        return out;
+    }
+
+    private double[][] statsFor(int template) {
+        return templateNorm != null && template < templateNorm.length && templateNorm[template] != null
+                ? templateNorm[template] : norm;
+    }
+
+    /**
+     * CCS with per-template normalisation (Burns et al.'s recipe when several prompt templates
+     * are pooled): each template's "yes" and "no" hidden states are normalised by that
+     * template's own mean and standard deviation, which removes template-specific offsets as
+     * well as the answer-token direction.
+     *
+     * @param pos hidden states of the "yes" completions {@code [n][d]}
+     * @param neg hidden states of the "no" completions, same order
+     * @param template the template of every row, {@code 0..T-1}
+     * @param restarts random restarts
+     * @param epochs full-batch Adam steps per restart
+     * @param seed the seed
+     * @return the probe with the lowest CCS loss
+     */
+    public static ContrastConsistentSearch fit(float[][] pos, float[][] neg, int[] template, int restarts, int epochs,
+            long seed) {
+        double[][][] ts = templateStatistics(pos, neg, template);
+        int n = pos.length;
+        double[][] xp = new double[n][];
+        double[][] xn = new double[n][];
+        for (int i = 0; i < n; i++) {
+            xp[i] = normalise(pos[i], ts[template[i]], true);
+            xn[i] = normalise(neg[i], ts[template[i]], false);
+        }
+        return search(xp, xn, pos[0].length, restarts, epochs, seed, statistics(pos, neg), ts);
+    }
+
+    /**
+     * The credence with a template's normalisation (the pooled one if the template is unknown
+     * or the probe was fitted without templates).
+     *
+     * @param pos the "yes" hidden state
+     * @param neg the "no" hidden state
+     * @param template the template
+     * @return {@code (p(x+) + 1 - p(x-)) / 2}
+     */
+    public double credence(float[] pos, float[] neg, int template) {
+        double[][] s = statsFor(template);
+        double pp = InterpMath.sigmoid(dot(w, normalise(pos, s, true)) + bias);
+        double pn = InterpMath.sigmoid(dot(w, normalise(neg, s, false)) + bias);
+        return (pp + 1 - pn) / 2;
+    }
+
+    /**
+     * Credences of many pairs.
+     *
+     * @param pos "yes" states
+     * @param neg "no" states
+     * @param template each row's template
+     * @return one credence per row
+     */
+    public double[] credences(float[][] pos, float[][] neg, int[] template) {
+        double[] c = new double[pos.length];
+        for (int i = 0; i < pos.length; i++) {
+            c[i] = credence(pos[i], neg[i], template[i]);
+        }
+        return c;
+    }
+
+    /**
+     * Sign-free accuracy of credences against labels.
+     *
+     * @param credence one credence per statement
+     * @param truth the labels
+     * @return {@code max(acc, 1 - acc)} of {@code credence > 1/2}
+     */
+    public static double signFreeAccuracy(double[] credence, boolean[] truth) {
+        int hit = 0;
+        for (int i = 0; i < truth.length; i++) {
+            hit += (credence[i] > 0.5) == truth[i] ? 1 : 0;
+        }
+        double a = (double) hit / truth.length;
+        return Math.max(a, 1 - a);
+    }
+
+    /**
+     * The prompt-ensemble accuracy: each statement's credences under several templates are
+     * averaged before thresholding.
+     *
+     * @param credences {@code [templates][statements]}
+     * @param truth the labels
+     * @return the sign-free accuracy of the averaged credence
+     */
+    public static double ensembleAccuracy(double[][] credences, boolean[] truth) {
+        double[] mean = new double[truth.length];
+        for (double[] c : credences) {
+            for (int i = 0; i < truth.length; i++) {
+                mean[i] += c[i] / credences.length;
+            }
+        }
+        return signFreeAccuracy(mean, truth);
+    }
+
+    /**
+     * Contrastive representation clustering (CRC, Burns et al.): the top principal component
+     * of the per-template normalised differences {@code x+ - x-}, fitted on one set and applied
+     * to others; the credence is {@code sigmoid} of the projection.
+     *
+     * @param direction the unit principal direction {@code [d]}
+     * @param center the mean normalised difference
+     * @param templateNorm per-template statistics
+     */
+    public record Crc(double[] direction, double[] center, double[][][] templateNorm) {
+
+        /**
+         * @param pos the "yes" state
+         * @param neg the "no" state
+         * @param template its template
+         * @return {@code sigmoid(u . (diff - center))}
+         */
+        public double credence(float[] pos, float[] neg, int template) {
+            double[][] s = templateNorm[Math.min(template, templateNorm.length - 1)];
+            double[] a = normalise(pos, s, true);
+            double[] b = normalise(neg, s, false);
+            double proj = 0;
+            for (int j = 0; j < a.length; j++) {
+                proj += (a[j] - b[j] - center[j]) * direction[j];
+            }
+            return InterpMath.sigmoid(proj);
+        }
+
+        /**
+         * @param pos "yes" states
+         * @param neg "no" states
+         * @param template each row's template
+         * @return one credence per row
+         */
+        public double[] credences(float[][] pos, float[][] neg, int[] template) {
+            double[] c = new double[pos.length];
+            for (int i = 0; i < pos.length; i++) {
+                c[i] = credence(pos[i], neg[i], template[i]);
+            }
+            return c;
+        }
+    }
+
+    /**
+     * Fits CRC with per-template normalisation.
+     *
+     * @param pos "yes" states
+     * @param neg "no" states
+     * @param template each row's template
+     * @return the fitted direction
+     */
+    public static Crc crc(float[][] pos, float[][] neg, int[] template) {
+        double[][][] ts = templateStatistics(pos, neg, template);
+        int n = pos.length;
+        double[][] diff = new double[n][];
+        for (int i = 0; i < n; i++) {
+            double[] a = normalise(pos[i], ts[template[i]], true);
+            double[] b = normalise(neg[i], ts[template[i]], false);
+            for (int j = 0; j < a.length; j++) {
+                a[j] -= b[j];
+            }
+            diff[i] = a;
+        }
+        double[] center = InterpMath.mean(diff);
+        double[][] c = InterpMath.centre(diff);
+        double[][] v = io.github.zzuegg.brainiac.experimental.tensor.ThinSvd.of(c).v();
+        double[] u = new double[center.length];
+        for (int j = 0; j < u.length; j++) {
+            u[j] = v[j][0];
+        }
+        return new Crc(u, center, ts);
     }
 }

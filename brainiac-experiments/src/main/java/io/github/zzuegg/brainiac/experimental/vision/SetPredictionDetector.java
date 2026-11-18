@@ -57,6 +57,14 @@ public final class SetPredictionDetector implements Layer {
      *       layer (the anchor is detached between layers).</li>
      *   <li>{@code auxiliaryLosses} applies the matching loss to every decoder layer's
      *       output, not only the last.</li>
+     *   <li>{@code querySelection} is two-stage query selection (two-stage Deformable DETR, Zhu
+     *       et al., ICLR 2021; RT-DETR, Zhao et al., CVPR 2024): every memory token predicts a
+     *       class and a box (relative to its cell) with encoder heads trained by their own
+     *       Hungarian loss, and the top-{@code queries} tokens by best real-class score become
+     *       the decoder queries: their features are the query contents and their boxes
+     *       (detached) the reference anchors, refined layer by layer as with
+     *       {@code anchorQueries}. The decoder therefore starts near the objects instead of from
+     *       learned constants. Hybrid queries, if any, are selected the same way.</li>
      * </ul>
      *
      * <p>Options cannot be combined with denoising queries.
@@ -65,8 +73,10 @@ public final class SetPredictionDetector implements Layer {
      * @param hybridRepeat how often each ground-truth box is repeated for them
      * @param anchorQueries whether queries are refined anchor boxes
      * @param auxiliaryLosses whether every layer is supervised
+     * @param querySelection whether the decoder queries are the top-scoring encoder tokens
      */
-    public record Options(int hybridQueries, int hybridRepeat, boolean anchorQueries, boolean auxiliaryLosses) {
+    public record Options(int hybridQueries, int hybridRepeat, boolean anchorQueries, boolean auxiliaryLosses,
+            boolean querySelection) {
 
         /**
          * Checks the options.
@@ -75,6 +85,7 @@ public final class SetPredictionDetector implements Layer {
          * @param hybridRepeat repeats
          * @param anchorQueries anchor queries
          * @param auxiliaryLosses per-layer losses
+         * @param querySelection two-stage query selection
          */
         public Options {
             if (hybridQueries < 0 || hybridQueries > 0 && hybridRepeat < 1) {
@@ -82,14 +93,36 @@ public final class SetPredictionDetector implements Layer {
             }
         }
 
+        /**
+         * The wave 9 options, without query selection.
+         *
+         * @param hybridQueries one-to-many queries
+         * @param hybridRepeat repeats
+         * @param anchorQueries anchor queries
+         * @param auxiliaryLosses per-layer losses
+         */
+        public Options(int hybridQueries, int hybridRepeat, boolean anchorQueries, boolean auxiliaryLosses) {
+            this(hybridQueries, hybridRepeat, anchorQueries, auxiliaryLosses, false);
+        }
+
         /** @return everything off */
         public static Options none() {
-            return new Options(0, 0, false, false);
+            return new Options(0, 0, false, false, false);
+        }
+
+        /**
+         * These options with two-stage query selection switched on or off.
+         *
+         * @param on whether to select queries from the encoder
+         * @return the options
+         */
+        public Options withQuerySelection(boolean on) {
+            return new Options(hybridQueries, hybridRepeat, anchorQueries, auxiliaryLosses, on);
         }
 
         /** @return whether any option is on */
         public boolean active() {
-            return hybridQueries > 0 || anchorQueries || auxiliaryLosses;
+            return hybridQueries > 0 || anchorQueries || auxiliaryLosses || querySelection;
         }
     }
 
@@ -124,6 +157,14 @@ public final class SetPredictionDetector implements Layer {
     private final Var posB1;
     private final Var posW2;
     private final Var posB2;
+    private final Var encCls;
+    private final Var encClsB;
+    private final Var encBox1;
+    private final Var encBox1b;
+    private final Var encBox2;
+    private final Var encBox2b;
+    private final Var encNormGain;
+    private final Var encNormBias;
 
     /**
      * Creates the detector.
@@ -194,9 +235,10 @@ public final class SetPredictionDetector implements Layer {
         this.options = options;
         this.hybridEmbed = options.hybridQueries() > 0
                 ? Var.param(Tensor.normal(Shape.of(1, options.hybridQueries(), dim), 0, 1f, random)) : null;
-        if (options.anchorQueries()) {
+        if (options.anchorQueries() || options.querySelection()) {
             int total = queries + options.hybridQueries();
-            this.anchorEmbed = Var.param(Tensor.normal(Shape.of(1, total, 4), 0, 1f, random));
+            this.anchorEmbed = options.anchorQueries()
+                    ? Var.param(Tensor.normal(Shape.of(1, total, 4), 0, 1f, random)) : null;
             this.posW1 = matrix(random, 8 * SINE_FREQUENCIES, dim);
             this.posB1 = VisionOps.zeros(dim);
             this.posW2 = matrix(random, dim, dim);
@@ -208,6 +250,92 @@ public final class SetPredictionDetector implements Layer {
             this.posW2 = null;
             this.posB2 = null;
         }
+        if (options.querySelection()) {
+            this.encCls = matrix(random, dim, classes + 1);
+            this.encClsB = VisionOps.zeros(classes + 1);
+            this.encBox1 = matrix(random, dim, dim);
+            this.encBox1b = VisionOps.zeros(dim);
+            this.encBox2 = Var.param(Tensor.normal(Shape.of(dim, 4), 0, 0.01f, random));
+            this.encBox2b = VisionOps.zeros(4);
+            this.encNormGain = ones(dim);
+            this.encNormBias = VisionOps.zeros(dim);
+        } else {
+            this.encCls = null;
+            this.encClsB = null;
+            this.encBox1 = null;
+            this.encBox1b = null;
+            this.encBox2 = null;
+            this.encBox2b = null;
+            this.encNormGain = null;
+            this.encNormBias = null;
+        }
+    }
+
+    /** The reference boxes of the memory tokens: each cell's centre, a fixed size, in logit space. */
+    private Tensor tokenReferences(int b, int gh, int gw) {
+        float[] r = new float[b * gh * gw * 4];
+        for (int i = 0; i < b; i++) {
+            for (int y = 0; y < gh; y++) {
+                for (int x = 0; x < gw; x++) {
+                    int o = ((i * gh + y) * gw + x) * 4;
+                    r[o] = logit((x + 0.5f) / gw);
+                    r[o + 1] = logit((y + 0.5f) / gh);
+                    r[o + 2] = logit(0.2f);
+                    r[o + 3] = logit(0.2f);
+                }
+            }
+        }
+        return Tensor.of(Shape.of(b, gh * gw, 4), r);
+    }
+
+    private static float logit(float p) {
+        return (float) Math.log(p / (1 - p));
+    }
+
+    /** Encoder predictions of every memory token: {@code [b, tokens, classes + 5]}. */
+    private Var encoderOutput(Var memory) {
+        int b = memory.shape().dim(0);
+        int g = side / 4;
+        Var h = norm(memory, encNormGain, encNormBias);
+        Var logits = h.matmul(encCls).add(encClsB);
+        Var box = h.matmul(encBox1).add(encBox1b).relu().matmul(encBox2).add(encBox2b)
+                .add(tokenReferences(b, g, g)).sigmoid();
+        return Var.concat(2, logits, box);
+    }
+
+    /**
+     * Two-stage query selection: the {@code k} memory tokens with the best real-class score.
+     *
+     * @return {contents [b, k, dim], anchors [b, k, 4] (detached)}
+     */
+    private Var[] selectQueries(Var memory, Var encoder, int k) {
+        int b = memory.shape().dim(0);
+        int t = memory.shape().dim(1);
+        float[] o = encoder.value().toArray();
+        int stride = classes + 5;
+        float[] idx = new float[b * k];
+        for (int i = 0; i < b; i++) {
+            double[] score = new double[t];
+            Integer[] order = new Integer[t];
+            for (int q = 0; q < t; q++) {
+                double[] p = softmax(o, (i * t + q) * stride, classes + 1);
+                double best = 0;
+                for (int c = 0; c < classes; c++) {
+                    best = Math.max(best, p[c]);
+                }
+                score[q] = best;
+                order[q] = q;
+            }
+            java.util.Arrays.sort(order, (x, y) -> Double.compare(score[y], score[x]));
+            for (int j = 0; j < k; j++) {
+                idx[i * k + j] = i * t + order[j];
+            }
+        }
+        Tensor index = Tensor.of(Shape.of(b * k), idx);
+        Var contents = memory.reshape(b * t, dim).gather(0, index).reshape(b, k, dim);
+        Var anchors = encoder.reshape(b * t, stride).slice(1, classes + 1, classes + 5).detach().gather(0, index)
+                .reshape(b, k, 4);
+        return new Var[] {contents, anchors};
     }
 
     private static Var matrix(RandomGenerator r, int in, int out) {
@@ -274,6 +402,12 @@ public final class SetPredictionDetector implements Layer {
     public Var forward(Var images) {
         int b = images.shape().dim(0);
         Var x = queryEmbed.expand(Shape.of(b, queries, dim));
+        if (options.querySelection()) {
+            Var mem = memory(images);
+            Var[] sel = selectQueries(mem, encoderOutput(mem), queries);
+            List<Var> outs = decodeLayers(mem, sel[0], null, sel[1]);
+            return outs.get(outs.size() - 1);
+        }
         if (options.anchorQueries()) {
             Var anchors = anchorEmbed.slice(1, 0, queries).sigmoid().expand(Shape.of(b, queries, 4));
             List<Var> outs = decodeLayers(memory(images), x, null, anchors);
@@ -424,8 +558,20 @@ public final class SetPredictionDetector implements Layer {
             mask = Tensor.of(Shape.of(1, 1, total, total), bias);
         }
         Var anchors = options.anchorQueries() ? anchorEmbed.sigmoid().expand(Shape.of(b, total, 4)) : null;
-        List<Var> outs = decodeLayers(mem, x, mask, anchors);
         Var loss = null;
+        if (options.querySelection()) {
+            Var enc = encoderOutput(mem);
+            loss = matchLoss(enc, boxes, labels, 1);
+            Var[] sel = selectQueries(mem, enc, queries);
+            x = sel[0];
+            anchors = sel[1];
+            if (hq > 0) {
+                Var[] hyb = selectQueries(mem, enc, hq);
+                x = Var.concat(1, x, hyb[0]);
+                anchors = Var.concat(1, anchors, hyb[1]);
+            }
+        }
+        List<Var> outs = decodeLayers(mem, x, mask, anchors);
         int from = options.auxiliaryLosses() ? 0 : outs.size() - 1;
         for (int l = from; l < outs.size(); l++) {
             Var out = outs.get(l);
@@ -644,13 +790,17 @@ public final class SetPredictionDetector implements Layer {
         long perLayer = (long) queries * dim * 3 * dim + (long) queries * queries * dim * 2 + (long) queries * dim * dim
                 + (long) queries * dim * dim + (long) t * dim * 2 * dim + (long) queries * t * dim * 2
                 + (long) queries * dim * dim + (long) queries * dim * 4 * dim;
-        return m + layers.size() * perLayer + (long) queries * dim * (classes + 1 + dim + 4);
+        long encoder = options.querySelection() ? (long) t * dim * (classes + 1 + dim + 4) : 0;
+        return m + layers.size() * perLayer + (long) queries * dim * (classes + 1 + dim + 4) + encoder;
     }
 
     @Override
     public List<Var> parameters() {
         List<Var> p = new ArrayList<>(backbone.parameters());
-        p.addAll(List.of(project, projectBias, positions, queryEmbed));
+        p.addAll(List.of(project, projectBias, positions));
+        if (!options.querySelection()) {
+            p.add(queryEmbed); // selected queries replace the learned constants
+        }
         if (denoising) {
             p.add(dnBox);
             p.add(dnLabel);
@@ -659,11 +809,17 @@ public final class SetPredictionDetector implements Layer {
             p.addAll(List.of(l));
         }
         p.addAll(List.of(clsW, clsB, box1, box1b, box2, box2b));
-        if (hybridEmbed != null) {
+        if (hybridEmbed != null && !options.querySelection()) {
             p.add(hybridEmbed);
         }
         if (anchorEmbed != null) {
-            p.addAll(List.of(anchorEmbed, posW1, posB1, posW2, posB2));
+            p.add(anchorEmbed);
+        }
+        if (posW1 != null) {
+            p.addAll(List.of(posW1, posB1, posW2, posB2));
+        }
+        if (encCls != null) {
+            p.addAll(List.of(encCls, encClsB, encBox1, encBox1b, encBox2, encBox2b, encNormGain, encNormBias));
         }
         return p;
     }
@@ -671,6 +827,6 @@ public final class SetPredictionDetector implements Layer {
     @Override
     public String toString() {
         return "SetPredictionDetector(" + queries + " queries, " + layers.size() + " layers"
-                + (denoising ? ", denoising" : "") + ")";
+                + (denoising ? ", denoising" : "") + (options.querySelection() ? ", query selection" : "") + ")";
     }
 }

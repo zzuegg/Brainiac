@@ -29,7 +29,8 @@ import java.util.SplittableRandom;
  * patch execution and operator reordering, once-for-all supernets with a budgeted subnet search,
  * on-device training under a memory budget, and keyword spotting at microcontroller budgets. Every
  * model reports accuracy against model bytes, multiply-adds counted from the layer graph, and
- * peak activation memory.
+ * peak activation memory. Wave 10 (10.6.14, {@link #onceForAllFollowUp}) adds BigNAS in-place
+ * distillation, longer budgets and a predictor fitted on more subnets.
  */
 public final class EdgeDeployment {
 
@@ -878,5 +879,131 @@ public final class EdgeDeployment {
         rows.add(new KeywordRow("unconstrained", "MFCC + DTW (" + templates + " templates/class)", stored, 0, false,
                 0, ok / (double) te.waves().size(), Double.NaN));
         return rows;
+    }
+
+    // ------------------------------------------------------------------ 10.6.14 BigNAS
+
+    /**
+     * One supernet training method at one budget.
+     *
+     * @param method the method
+     * @param steps training steps (each from-scratch subnet gets as many)
+     * @param largest accuracy of the largest subnet
+     * @param smallest accuracy of the smallest subnet
+     * @param sampled mean accuracy of the sampled deployment subnets (the MAC range)
+     */
+    public record OfaFollowUpRow(String method, int steps, double largest, double smallest, double sampled) {
+
+        @Override
+        public String toString() {
+            return String.format("%s @%d: largest %.3f smallest %.3f sampled %.3f", method, steps, largest, smallest,
+                    sampled);
+        }
+    }
+
+    /**
+     * Results of 10.6.14.
+     *
+     * @param rows every method at every budget
+     * @param tauFew Kendall tau of the predictor fitted on 24 subnets (wave 9's count)
+     * @param tauMany Kendall tau of the predictor fitted on {@code points} subnets
+     * @param points the larger fit set
+     */
+    public record OfaFollowUp(List<OfaFollowUpRow> rows, double tauFew, double tauMany, int points) {
+    }
+
+    /**
+     * Wave 10 item 10.6.14: BigNAS in-place distillation
+     * ({@link ElasticSupernet.Schedule#INPLACE_DISTILLATION}) against wave 9's progressive
+     * shrinking, largest-only and random sampling, and against the largest and smallest
+     * subnets trained from scratch, at each budget; the accuracy predictor of
+     * {@link SubnetSearch} is fitted on the in-place supernet (largest budget) with 24 and with
+     * {@code points} measured subnets and scored by Kendall tau on 40 held-out subnets. Note
+     * that an in-place step runs four subnets, the others one. Wave 9's rows are unchanged.
+     *
+     * @param budgets training steps per budget
+     * @param deployments random subnets sampled for the mean accuracy
+     * @param points predictor fit points
+     * @param seed the seed
+     * @return the results
+     */
+    public static OfaFollowUp onceForAllFollowUp(int[] budgets, int deployments, int points, long seed) {
+        Tensor[] tr = shapes(8, NOISE, 512, all(6), seed);
+        Tensor[] va = shapes(8, NOISE, 120, all(6), seed + 2);
+        Tensor[] te = shapes(8, NOISE, 200, all(6), seed + 1);
+        ElasticSupernet probe = supernet(seed);
+        ElasticSupernet.Config big = probe.largest();
+        ElasticSupernet.Config small = probe.smallest(KERNELS, DEPTHS, EXPANDS);
+        SplittableRandom dr = new SplittableRandom(seed + 3);
+        List<ElasticSupernet.Config> deploy = new ArrayList<>();
+        for (int i = 0; i < deployments; i++) {
+            deploy.add(probe.sample(dr, KERNELS, DEPTHS, EXPANDS));
+        }
+        List<OfaFollowUpRow> rows = new ArrayList<>();
+        ElasticSupernet last = null;
+        String[] names = {"BigNAS in-place distillation", "OFA progressive shrinking + KD", "largest only",
+            "random sampling"};
+        ElasticSupernet.Schedule[] schedules = {ElasticSupernet.Schedule.INPLACE_DISTILLATION,
+            ElasticSupernet.Schedule.PROGRESSIVE, ElasticSupernet.Schedule.LARGEST, ElasticSupernet.Schedule.RANDOM};
+        for (int steps : budgets) {
+            for (int k = 0; k < schedules.length; k++) {
+                ElasticSupernet net = supernet(seed);
+                net.train(tr[0], tr[1], steps, schedules[k], KERNELS, DEPTHS, EXPANDS, seed);
+                double mean = 0;
+                for (ElasticSupernet.Config c : deploy) {
+                    mean += net.accuracy(c, te[0], te[1]) / deploy.size();
+                }
+                rows.add(new OfaFollowUpRow(names[k], steps, net.accuracy(big, te[0], te[1]),
+                        net.accuracy(small, te[0], te[1]), mean));
+                if (k == 0) {
+                    last = net;
+                }
+            }
+            ElasticSupernet bigScratch = supernet(seed);
+            bigScratch.trainFixed(tr[0], tr[1], steps, big, seed);
+            ElasticSupernet smallScratch = supernet(seed);
+            smallScratch.trainFixed(tr[0], tr[1], steps, small, seed);
+            rows.add(new OfaFollowUpRow("from scratch (largest / smallest)", steps,
+                    bigScratch.accuracy(big, te[0], te[1]), smallScratch.accuracy(small, te[0], te[1]), Double.NaN));
+        }
+        ElasticSupernet net = last;
+        SplittableRandom pr = new SplittableRandom(seed + 4);
+        List<ElasticSupernet.Config> fit = new ArrayList<>();
+        double[] acc = new double[points];
+        for (int i = 0; i < points; i++) {
+            ElasticSupernet.Config c = net.sample(pr, KERNELS, DEPTHS, EXPANDS);
+            fit.add(c);
+            acc[i] = net.accuracy(c, va[0], va[1]);
+        }
+        double[] pred = new double[40];
+        double[] meas = new double[40];
+        List<ElasticSupernet.Config> held = new ArrayList<>();
+        for (int i = 0; i < pred.length; i++) {
+            ElasticSupernet.Config c = net.sample(pr, KERNELS, DEPTHS, EXPANDS);
+            held.add(c);
+            meas[i] = net.accuracy(c, va[0], va[1]);
+        }
+        double[] taus = new double[2];
+        int[] sizes = {Math.min(24, points), points};
+        for (int j = 0; j < 2; j++) {
+            SubnetSearch search = new SubnetSearch(net, KERNELS, DEPTHS, EXPANDS, seed);
+            search.fit(fit.subList(0, sizes[j]), Arrays.copyOf(acc, sizes[j]), 400);
+            for (int i = 0; i < pred.length; i++) {
+                pred[i] = search.predict(held.get(i));
+            }
+            taus[j] = SubnetSearch.kendallTau(pred, meas);
+        }
+        return new OfaFollowUp(rows, taus[0], taus[1], points);
+    }
+
+    /**
+     * The long 10.6.14 Run: 640 and 2,560 steps, 200 predictor points.
+     *
+     * @param args ignored
+     */
+    public static void main(String[] args) {
+        OfaFollowUp f = onceForAllFollowUp(new int[] {160, 640, 2560}, 12, 200, 1);
+        f.rows().forEach(System.out::println);
+        System.out.printf("predictor tau: 24 points %.3f, %d points %.3f%n", f.tauFew(), f.points(), f.tauMany());
     }
 }

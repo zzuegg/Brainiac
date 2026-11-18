@@ -8,12 +8,14 @@ import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.nn.TransformerBlock;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.SplittableRandom;
+import java.util.function.IntFunction;
 
 /**
  * OCR-free document parsing in the style of Donut (Kim et al., ECCV 2022): instead of
@@ -24,7 +26,9 @@ import java.util.SplittableRandom;
  * {@code <NAME> B O B <TOTAL> 4 2 <eos>}. Training runs in two phases on the same decoder:
  * first "pseudo-OCR" reading (emit all the page's text in reading order), then the parsing
  * task. There is no OCR engine, so no OCR error to propagate, but the model must learn to
- * read.
+ * read. {@link #pretrainReading} runs the reading phase as a separate stage (the paper's
+ * SynthDoG pretraining) and {@link #checkpoint} / {@link #restore} let one pretrained model
+ * seed several fine-tuning runs.
  *
  * <p>Token id 0 is end-of-sequence; targets are padded with -1; the decoder's
  * begin-of-sequence id is {@code vocab}.
@@ -32,6 +36,30 @@ import java.util.SplittableRandom;
  * <p>Paper: <a href="https://arxiv.org/abs/2111.15664">arXiv:2111.15664</a>.
  */
 public final class ImageToMarkup {
+
+    /**
+     * A training batch.
+     *
+     * @param images {@code [batch, 1, height, width]}
+     * @param targets per page its token ids, ending with end-of-sequence
+     */
+    public record Batch(Tensor images, int[][] targets) {
+
+        /**
+         * Copies the targets.
+         *
+         * @param images the pages
+         * @param targets the token ids
+         */
+        public Batch {
+            targets = targets.clone();
+        }
+
+        @Override
+        public int[][] targets() {
+            return targets.clone();
+        }
+    }
 
     private final int vocab;
     private final PatchEmbedding patches;
@@ -143,6 +171,85 @@ public final class ImageToMarkup {
             }
             return res;
         });
+    }
+
+    /**
+     * The reading-pretraining stage: trains the whole model to emit each page's full text in
+     * reading order (the caller's targets), before any parsing.
+     *
+     * @param steps optimiser steps
+     * @param batches the batch of each step (targets need not be padded)
+     * @param optimizer the optimiser
+     * @return the mean loss of the last tenth of the steps
+     */
+    public double pretrainReading(int steps, IntFunction<Batch> batches, Optimizer optimizer) {
+        return fineTune(steps, batches, optimizer);
+    }
+
+    /**
+     * Trains on the caller's targets (parsing, or anything else).
+     *
+     * @param steps optimiser steps
+     * @param batches the batch of each step (targets need not be padded)
+     * @param optimizer the optimiser
+     * @return the mean loss of the last tenth of the steps
+     */
+    public double fineTune(int steps, IntFunction<Batch> batches, Optimizer optimizer) {
+        double tail = 0;
+        int counted = 0;
+        for (int s = 0; s < steps; s++) {
+            Batch b = batches.apply(s);
+            Var loss = loss(b.images(), padded(b.targets()));
+            if (s >= steps - Math.max(1, steps / 10)) {
+                tail += loss.value().item();
+                counted++;
+            }
+            loss.backward();
+            optimizer.step(parameters());
+        }
+        return counted == 0 ? Double.NaN : tail / counted;
+    }
+
+    private static int[][] padded(int[][] rows) {
+        int len = 0;
+        for (int[] r : rows) {
+            len = Math.max(len, r.length);
+        }
+        int[][] out = new int[rows.length][len];
+        for (int i = 0; i < rows.length; i++) {
+            java.util.Arrays.fill(out[i], -1);
+            System.arraycopy(rows[i], 0, out[i], 0, rows[i].length);
+        }
+        return out;
+    }
+
+    /**
+     * A copy of every trainable value, for {@link #restore}.
+     *
+     * @return the values in {@link #parameters()} order
+     */
+    public List<Tensor> checkpoint() {
+        List<Tensor> out = new ArrayList<>();
+        for (Var v : parameters()) {
+            out.add(Tensor.of(v.value().shape(), v.value().toArray()));
+        }
+        return out;
+    }
+
+    /**
+     * Loads values saved by {@link #checkpoint} of a model of the same configuration.
+     *
+     * @param values the values
+     */
+    public void restore(List<Tensor> values) {
+        List<Var> params = parameters();
+        if (params.size() != values.size()) {
+            throw new IllegalArgumentException("checkpoint has " + values.size() + " values, model " + params.size());
+        }
+        for (int i = 0; i < params.size(); i++) {
+            Tensor t = values.get(i);
+            params.get(i).assign(Tensor.of(t.shape(), t.toArray()));
+        }
     }
 
     /** @return the trainable values (patch embedding, encoder, decoder) */

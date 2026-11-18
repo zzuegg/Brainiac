@@ -47,6 +47,8 @@ public final class GanVocoder {
     private int[] periods = {2, 3, 5, 7, 11};
     private int scales = 3;
     private boolean adversarial = true;
+    private int warmup;
+    private int trained;
     private final Optimizer generatorOptimizer = Optimizer.adam(2e-3f);
     private final Optimizer discriminatorOptimizer = Optimizer.adam(2e-3f);
 
@@ -208,6 +210,49 @@ public final class GanVocoder {
     }
 
     /**
+     * Mel-loss warm-up: the first {@code steps} calls of {@link #step} train the generator on
+     * the mel-spectrogram L1 loss alone, then the discriminators switch on (0, the default, is
+     * wave 9's behaviour).
+     *
+     * @param steps warm-up steps
+     * @return this vocoder
+     */
+    public GanVocoder melWarmup(int steps) {
+        this.warmup = steps;
+        return this;
+    }
+
+    /** @return the training steps taken (including those of a loaded checkpoint) */
+    public int trainedSteps() {
+        return trained;
+    }
+
+    /**
+     * Saves the generator and discriminator weights and the step counter (not the optimiser
+     * state).
+     *
+     * @param file the file
+     */
+    public void save(java.nio.file.Path file) {
+        List<Var> all = new ArrayList<>(generatorParameters());
+        all.addAll(discriminatorParameters());
+        ParameterFiles.write(file, all, trained);
+    }
+
+    /**
+     * Loads weights saved by {@link #save} from a vocoder of the same configuration.
+     *
+     * @param file the file
+     * @return this vocoder
+     */
+    public GanVocoder load(java.nio.file.Path file) {
+        List<Var> all = new ArrayList<>(generatorParameters());
+        all.addAll(discriminatorParameters());
+        trained = ParameterFiles.read(file, all);
+        return this;
+    }
+
+    /**
      * The generator.
      *
      * @param logMel {@code [batch, frames, mels]}
@@ -246,8 +291,8 @@ public final class GanVocoder {
     }
 
     /**
-     * One training step on waveform crops: a discriminator step (when adversarial), then a
-     * generator step.
+     * One training step on waveform crops: a discriminator step (when adversarial and past the
+     * {@link #melWarmup}), then a generator step.
      *
      * @param crops {@code [batch][samples]}, samples a multiple of the hop
      * @return {discriminator loss, generator adversarial + feature loss, mel L1 loss}
@@ -261,7 +306,9 @@ public final class GanVocoder {
         List<Var> dParams = discriminatorParameters();
         float dLoss = 0;
         Var gAdv = null;
-        if (adversarial && !discriminators.isEmpty()) {
+        boolean adv = adversarial && trained >= warmup;
+        trained++;
+        if (adv && !discriminators.isEmpty()) {
             Var fakeDetached = Var.of(fake.value());
             Var d = null;
             for (Discriminator disc : discriminators) {
