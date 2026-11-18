@@ -112,6 +112,16 @@ public interface ChatProvider {
     }
 
     /**
+     * Describes a video model's usual settings and sizes, for the page.
+     *
+     * @param model the model's id within this provider
+     * @return {@code {kind, input, label, steps, guidance, fps, sizes}}, or null if it is not known
+     */
+    default java.util.Map<String, Object> videoOptions(String model) {
+        return null;
+    }
+
+    /**
      * Makes a video clip with one of this provider's video models, step by step. This PC does
      * ({@link LocalProvider}); a worker host can too.
      *

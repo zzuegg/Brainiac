@@ -49,7 +49,37 @@ class HostMediaTest {
         public List<ModelInfo> models() {
             return List.of(new ModelInfo("local", "sd-tiny", "SD tiny", List.of("image"), 0, "diffusers"),
                     new ModelInfo("local", "kokoro", "Kokoro", List.of("speech"), 0, "onnx"),
-                    new ModelInfo("local", "whisper-tiny", "Whisper tiny", List.of("transcribe"), 0, "safetensors"));
+                    new ModelInfo("local", "whisper-tiny", "Whisper tiny", List.of("transcribe"), 0, "safetensors"),
+                    new ModelInfo("local", "wan-tiny", "Wan tiny", List.of("video"), 0, "diffusers"));
+        }
+
+        @Override
+        public boolean makesVideo() {
+            return true;
+        }
+
+        @Override
+        public Map<String, Object> videoOptions(String model) {
+            return model.equals("wan-tiny") ? Map.of("kind", "WAN", "input", "TEXT_OR_IMAGE", "steps", 30, "fps", 16) : null;
+        }
+
+        @Override
+        public io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip video(String model, String prompt,
+                io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings,
+                io.github.zzuegg.brainiac.studio.chat.LocalVideos.Listener listener) throws IOException {
+            asked.add(List.of(model, prompt, settings));
+            if (model.equals("missing")) {
+                throw new IOException("no video model named missing");
+            }
+            for (int i = 1; i <= settings.steps(); i++) {
+                if (!listener.step(i, settings.steps())) {
+                    throw new CancellationException("stopped");
+                }
+            }
+            byte[] first = settings.start() == null ? new byte[0] : settings.start().data();
+            return new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip(
+                    new Media(new byte[] {(byte) 0x89, 'P', 'N', 'G', (byte) first.length}, "image/apng"),
+                    settings.seed(), 832, 480, 33, 16);
         }
 
         @Override
@@ -172,6 +202,49 @@ class HostMediaTest {
                 assertEquals(List.of("whisper-tiny", 64, new LocalSpeech.Listening("en", false, true, "names")),
                         maker.asked.getLast());
             }
+        }
+    }
+
+    @Test
+    void aHostMakesAVideoClipForTheStudio() throws Exception {
+        Maker maker = new Maker();
+        try (WorkerServer worker = WorkerServer.start(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), lab,
+                maker, TOKEN);
+             TrainingService t = new TrainingService(studio)) {
+            Hosts.Host h = t.hosts().add("lab", "127.0.0.1:" + worker.port(), TOKEN);
+            ChatService chat = new ChatService(new Keys(studio.resolve("keys.properties"), Map.of()), List.of(),
+                    studio.resolve("outputs"));
+            chat.hosts(() -> t.hosts().list().stream()
+                    .map(x -> (ChatProvider) new HostProvider(x, t.hosts().client(x))).toList());
+            String key = "host-" + h.id() + "/wan-tiny";
+
+            Map<String, Object> wan = Json.array(chat.describe(true).get("models")).stream().map(Json::object)
+                    .filter(m -> key.equals(m.get("key"))).findFirst().orElseThrow();
+            assertEquals(true, wan.get("makesVideo"));
+            assertEquals("TEXT_OR_IMAGE", chat.videoOptions(key).get("input"));
+            assertEquals(Map.of(), chat.videoOptions("host-" + h.id() + "/sd-tiny"));
+
+            // the settings and the first frame cross over, every step is heard, the clip comes back and is saved
+            List<Integer> steps = new ArrayList<>();
+            var settings = new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings("blurry", "9:16", true, 2, 4, 5.5,
+                    7, 0, 0, new Media(new byte[] {1, 2, 3}, "image/png"));
+            ChatService.Filmed filmed = chat.video(key, "a fox runs", settings, (step, total) -> steps.add(step),
+                    m -> assertEquals(key, m.key()));
+            assertEquals(List.of(1, 2, 3, 4), steps);
+            assertEquals(7, filmed.clip().seed());
+            assertEquals(33, filmed.clip().frames());
+            assertEquals(16, filmed.clip().fps());
+            assertEquals(3, filmed.clip().media().data()[4], "the first frame reached the worker");
+            assertTrue(java.nio.file.Files.size(filmed.file()) > 0);
+            var got = (io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings) ((List<?>) maker.asked.getLast()).get(2);
+            assertEquals("9:16", got.aspect());
+            assertEquals("blurry", got.negativePrompt());
+            assertTrue(got.small());
+            assertEquals(5.5, got.guidance());
+
+            IOException missing = assertThrows(IOException.class, () -> chat.video("host-" + h.id() + "/missing",
+                    "a fox", settings, (step, total) -> true, m -> { }));
+            assertTrue(missing.getMessage().contains("missing"), missing.getMessage());
         }
     }
 }

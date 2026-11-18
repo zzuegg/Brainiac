@@ -89,6 +89,23 @@ public final class HostProvider implements ChatProvider {
     }
 
     @Override
+    public boolean makesVideo() {
+        return true;
+    }
+
+    @Override
+    public java.util.Map<String, Object> videoOptions(String model) {
+        return client.videoOptions(model);
+    }
+
+    @Override
+    public io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip video(String model, String prompt,
+            io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings,
+            io.github.zzuegg.brainiac.studio.chat.LocalVideos.Listener listener) throws IOException {
+        return client.video(model, prompt, settings, listener);
+    }
+
+    @Override
     public java.util.Map<String, Object> voiceOptions(String model) {
         java.util.Map<String, Object> told = client.voiceOptions(model);
         if (told == null) {

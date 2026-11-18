@@ -1427,6 +1427,7 @@
       ${devs.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${run && run.device === d.name && run.samplesPerSecond ? fmtCount(run.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
       <div class="host-foot"><span class="muted">${run ? `${esc(run.name)} · epoch ${run.epoch + (run.state === "running" ? 1 : 0)} of ${run.epochs}` : "Ready for a run."}</span></div>
     </div>`;
+    const lent = h => (h.lend || []).includes("huggingface");
     const remote = T.hosts.map(h => {
       const st = !h.online ? ["c-bad", "offline", "bad"] : h.active ? ["c-text", "training", "accent"] : ["c-ok", "idle", "ok"];
       const tr = h.training;
@@ -1435,7 +1436,9 @@
           <span class="mono faint" title="Token ${esc(h.token)}">${esc(h.url.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</span>
           <button class="iconbtn sm" data-host-remove="${esc(h.id)}" aria-label="Forget ${esc(h.name)}" title="${T.removing === h.id ? "Click again to forget it" : "Forget this host"}">${T.removing === h.id ? icon("check") : icon("trash")}</button></div>
         ${(h.devices || []).map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${tr && tr.samplesPerSecond && d.kind === "gpu" ? fmtCount(tr.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
-        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span></div>
+        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span><span class="grow"></span>
+          ${h.lendable ? `<button class="btn sm ${lent(h) ? "serving" : ""}" data-host-lend="${esc(h.id)}" aria-pressed="${lent(h)}" ${T.lending === h.id ? "disabled" : ""} title="${lent(h) ? "This host holds your Hugging Face token in its memory, for gated models. It was sent sealed, is not written to its disk or log, and is gone when its worker stops. Click to take it back." : "Lend this host your Hugging Face token, so it can download gated models. It is sent sealed, held in the worker's memory only, and never written to its disk or log. Whoever controls the machine could still read its memory, so lend it only to machines you trust."}">${icon("lock")}${lent(h) ? "Holds your HF token" : "Lend HF token"}</button>` : ""}</div>
+        ${T.lendError && T.lendError.id === h.id ? `<div class="flag bad">${icon("alert")}<span>${esc(T.lendError.text)}</span></div>` : ""}
       </div>`;
     }).join("");
     const add = T.addingHost ? `<form class="host add-form" id="host-form" autocomplete="off">
@@ -2023,6 +2026,14 @@
       } catch (err) { T.hostError = String(err.message || err).replace(/^\/api\/hosts: /, ""); }
       finally { T.hostBusy = false; renderHosts(T.addingHost ? "#host-token" : null); }
     });
+    $$("[data-host-lend]").forEach(b => b.addEventListener("click", async () => {
+      const id = b.dataset.hostLend, h = T.hosts.find(x => x.id === id);
+      if (!h || T.lending) return;
+      T.lending = id; T.lendError = null; renderHosts();
+      try { T.hosts = (await postJson("/api/hosts/secret", { host: id, name: "huggingface", lend: !(h.lend || []).includes("huggingface") })).hosts || T.hosts; T.hostsAt = Date.now(); }
+      catch (err) { T.lendError = { id, text: String(err.message || err).replace(/^\/api\/hosts\/secret: /, "") }; }
+      T.lending = null; renderHosts();
+    }));
     $$("[data-host-remove]").forEach(b => b.addEventListener("click", async () => {
       const id = b.dataset.hostRemove;
       if (T.removing !== id) { T.removing = id; renderHosts(); setTimeout(() => { if (T.removing === id) { T.removing = null; renderHosts(); } }, 4000); return; }

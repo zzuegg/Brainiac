@@ -206,6 +206,11 @@ final class LocalProvider implements ChatProvider {
     }
 
     @Override
+    public Map<String, Object> videoOptions(String model) {
+        return videos == null ? null : videos.describe(model).orElse(null);
+    }
+
+    @Override
     public LocalVideos.Clip video(String model, String prompt, LocalVideos.Settings settings,
             LocalVideos.Listener listener) throws IOException {
         if (videos == null) {

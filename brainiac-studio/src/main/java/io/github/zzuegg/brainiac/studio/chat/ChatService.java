@@ -573,9 +573,21 @@ public final class ChatService {
         LocalProvider local = new LocalProvider(folders);
         local.speakToo(voices);
         local.drawToo(io.github.zzuegg.brainiac.io.HuggingFaceHub::standard);
+        local.filmToo();
         return local;
     }
 
+
+    /**
+     * Returns the key this studio would use for a provider, to lend it to a worker host.
+     *
+     * @param provider the provider id, such as {@code huggingface}
+     * @return the first of its keys, if it has one
+     */
+    public java.util.Optional<String> secret(String provider) {
+        List<Keys.Entry> list = keys.list(provider);
+        return list.isEmpty() ? java.util.Optional.empty() : keys.get(provider, list.getFirst().label());
+    }
 
     /**
      * Returns the Hugging Face Hub client that finds and downloads models into this PC's
@@ -992,9 +1004,11 @@ public final class ChatService {
      */
     public Map<String, Object> videoOptions(String model) {
         Map<String, Object> out = new LinkedHashMap<>();
-        LocalVideos videos = local().videos();
-        if (videos != null && model != null && model.startsWith("local/")) {
-            videos.describe(model.substring("local/".length())).ifPresent(out::putAll);
+        int slash = model == null ? -1 : model.indexOf('/');
+        if (slash > 0) {
+            // this PC's model, or a worker host's, which is asked
+            providers().stream().filter(p -> p.id().equals(model.substring(0, slash)) && p.makesVideo()).findFirst()
+                    .map(p -> p.videoOptions(model.substring(slash + 1))).ifPresent(out::putAll);
         }
         return out;
     }
