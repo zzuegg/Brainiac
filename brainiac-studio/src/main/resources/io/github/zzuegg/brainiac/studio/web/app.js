@@ -1835,6 +1835,7 @@
         <div class="rental-head"><span class="dot ${active && r.stage !== "ready" ? "pulse" : ""}" style="--c:var(--${tone})"></span><b title="${esc(r.gpu)}">${esc(r.gpu)}</b><span class="grow"></span>
           <span class="mono tnum" title="Cost so far at ${usd(r.pricePerHour)} an hour">${usd(r.cost)}</span>${btn}</div>
         <div class="faint rental-sub"><span class="chip plain">${esc(RENT_STAGE[r.stage] || r.stage)}</span>${active && r.stage !== "destroying" ? `<span>${usd(r.pricePerHour)}/h · destroyed in ${fmtHours(hoursLeft(r))}${r.instance ? ` · #${r.instance}` : ""}</span>` : ""}</div>
+        ${r.leftover ? `<div class="faint" style="font-size:12px">Left running when the studio last stopped without closing${r.instance ? ` (#${r.instance})` : ""}, so it was destroyed when the studio started.</div>` : ""}
         ${r.last ? `<div class="mono faint rental-log" title="${esc(r.last)}">${esc(r.last)}</div>` : ""}
         ${r.error ? `<div class="flag bad">${icon("alert")}<span>${esc(r.error)}</span></div>` : ""}
       </div>`;

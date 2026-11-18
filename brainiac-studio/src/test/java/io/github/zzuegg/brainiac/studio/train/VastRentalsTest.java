@@ -69,6 +69,12 @@ class VastRentalsTest {
         }
 
         volatile boolean noVulkan;
+        volatile boolean gone;
+
+        @Override
+        public boolean exists(long id) {
+            return !gone;
+        }
 
         @Override
         public boolean usable(VastInstance i, Path log) {
@@ -127,8 +133,9 @@ class VastRentalsTest {
     private static Map<String, Object> await(VastRentals v, Predicate<Map<String, Object>> done) throws InterruptedException {
         long end = System.nanoTime() + Duration.ofSeconds(20).toNanos();
         while (System.nanoTime() < end) {
-            Map<String, Object> r = v.list().getFirst();
-            if (done.test(r)) {
+            List<Map<String, Object>> all = v.list();
+            Map<String, Object> r = all.isEmpty() ? null : all.getFirst();
+            if (r != null && done.test(r)) {
                 return r;
             }
             Thread.sleep(50);
@@ -242,5 +249,37 @@ class VastRentalsTest {
         v.close();
         assertEquals(List.of(9000L, 9001L), f.destroyed, "closing the studio destroys what it rented");
         assertTrue(hosts.list().isEmpty());
+    }
+
+    @Test
+    void aMachineAKilledStudioLeftRentedIsDestroyedWhenTheStudioStartsAgain() throws Exception {
+        Fake f = new Fake();
+        Hosts hosts = new Hosts(studio.resolve("hosts.properties"));
+        VastRentals killed = new VastRentals(hosts, f, studio, null, bad());
+        killed.rent(offer(1, 0.36), 0.36, 2);
+        await(killed, x -> stage(x, "ready"));
+        assertTrue(Files.readString(studio.resolve("rented.txt")).startsWith("9000|0.36|"));
+        // the studio is killed here: nothing closes it, and 9000 keeps billing
+        try (VastRentals next = new VastRentals(hosts, f, studio, null, bad())) {
+            assertTrue(next.list().isEmpty(), "nothing is destroyed before the studio is up");
+            next.recover();
+            await(next, x -> stage(x, "destroyed"));
+            assertEquals(List.of(9000L), f.destroyed);
+            assertEquals(true, next.list().getFirst().get("leftover"));
+            assertEquals("", Files.readString(studio.resolve("rented.txt")).strip());
+        }
+        // one that is already gone is only forgotten
+        Files.writeString(studio.resolve("rented.txt"), "4242|0.5|1|RTX 4090\n");
+        f.gone = true;
+        try (VastRentals next = new VastRentals(hosts, f, studio, null, bad())) {
+            next.recover();
+            for (int i = 0; i < 100 && !Files.readString(studio.resolve("rented.txt")).isBlank(); i++) {
+                Thread.sleep(20);
+            }
+            assertEquals("", Files.readString(studio.resolve("rented.txt")).strip());
+            assertEquals(List.of(9000L), f.destroyed);
+            assertTrue(next.list().isEmpty());
+        }
+        killed.close();
     }
 }

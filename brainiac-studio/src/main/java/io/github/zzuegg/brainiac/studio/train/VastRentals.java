@@ -37,7 +37,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Nothing is rented without the price the user saw and agreed to: {@link #rent} takes that
  * price and refuses when the offer now costs more. A rented machine is destroyed when the user
  * says so, when the hours they chose are up, when setting it up fails, and when the studio
- * closes, so it never runs on unseen.
+ * closes, so it never runs on unseen. Each rented instance is also written down, so a studio that
+ * was killed before it could destroy its machines destroys them the next time it starts
+ * ({@link #recover}).
  */
 public final class VastRentals implements AutoCloseable {
 
@@ -119,6 +121,17 @@ public final class VastRentals implements AutoCloseable {
          * @throws IOException if Vast.ai refuses
          */
         void destroy(long id) throws IOException;
+
+        /**
+         * Says whether the account still has an instance.
+         *
+         * @param id the instance
+         * @return false if it is gone
+         * @throws IOException if Vast.ai cannot be asked
+         */
+        default boolean exists(long id) throws IOException {
+            return true;
+        }
     }
 
     /** The connection to a worker on a rented machine. */
@@ -147,8 +160,9 @@ public final class VastRentals implements AutoCloseable {
         final VastOffer offer;
         final String gpu;
         final double pricePerHour;
-        final long started = System.currentTimeMillis();
+        final long started;
         final long until;
+        final boolean leftover;
         final Deque<String> log = new ArrayDeque<>();
         volatile long instance;
         volatile VastInstance running;
@@ -167,6 +181,20 @@ public final class VastRentals implements AutoCloseable {
             this.gpu = offer.gpus() > 1 ? offer.gpus() + "× " + offer.gpuName() : offer.gpuName();
             this.pricePerHour = pricePerHour;
             this.until = until;
+            this.started = System.currentTimeMillis();
+            this.leftover = false;
+        }
+
+        // a machine an earlier studio rented and did not get to destroy
+        Rental(String key, long instance, String gpu, double pricePerHour, long started) {
+            this.key = key;
+            this.offer = null;
+            this.gpu = gpu;
+            this.pricePerHour = pricePerHour;
+            this.started = started;
+            this.until = started;
+            this.instance = instance;
+            this.leftover = true;
         }
 
         boolean active() {
@@ -192,7 +220,10 @@ public final class VastRentals implements AutoCloseable {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("key", key);
             m.put("instance", instance == 0 ? null : instance);
-            m.put("offer", offer.id());
+            m.put("offer", offer == null ? null : offer.id());
+            if (leftover) {
+                m.put("leftover", true);
+            }
             m.put("gpu", gpu);
             m.put("pricePerHour", pricePerHour);
             m.put("stage", stage);
@@ -217,6 +248,7 @@ public final class VastRentals implements AutoCloseable {
     private final Hosts hosts;
     private final Machines machines;
     private final Path logs;
+    private final Path ledger;
     private final String unavailable;
     private final VastBadHosts bad;
     private final Map<String, Rental> rentals = new ConcurrentHashMap<>();
@@ -245,6 +277,7 @@ public final class VastRentals implements AutoCloseable {
         this.hosts = hosts;
         this.machines = machines;
         this.logs = logs;
+        this.ledger = logs.resolve("rented.txt");
         this.unavailable = unavailable;
         this.watchdog = Thread.ofVirtual().name("studio-vast-watchdog").start(this::watch);
     }
@@ -325,6 +358,11 @@ public final class VastRentals implements AutoCloseable {
             @Override
             public void destroy(long id) throws IOException {
                 client.get().destroy(id);
+            }
+
+            @Override
+            public boolean exists(long id) throws IOException {
+                return client.get().instances().stream().anyMatch(i -> i.id() == id);
             }
         };
     }
@@ -447,6 +485,7 @@ public final class VastRentals implements AutoCloseable {
             }
             try {
                 r.instance = machines.rent(r.offer.id());
+                remember(r);
             } finally {
                 r.asking = false;
             }
@@ -582,6 +621,9 @@ public final class VastRentals implements AutoCloseable {
                 }
             }
         }
+        if (destroyed && r.instance != 0) {
+            forget(r.instance);
+        }
         synchronized (r) {
             r.ended = System.currentTimeMillis();
             if (!destroyed) {
@@ -593,6 +635,84 @@ public final class VastRentals implements AutoCloseable {
                 r.error = error + "; the machine was destroyed";
             } else {
                 r.stage = "destroyed";
+            }
+        }
+    }
+
+    /**
+     * Destroys the machines an earlier studio rented and did not get to destroy, because it was
+     * killed or the PC went down. They cannot be used any more (their worker's token went with
+     * that studio) and would bill until someone noticed. Called once the studio is up; each shows
+     * in {@link #list} as it goes.
+     */
+    public void recover() {
+        for (String line : ledgerLines()) {
+            String[] f = line.split("\\|", 4);
+            try {
+                Rental r = new Rental("r" + counter.incrementAndGet(), Long.parseLong(f[0]), f[3],
+                        Double.parseDouble(f[1]), Long.parseLong(f[2]));
+                if (rentals.values().stream().anyMatch(x -> x.instance == r.instance)) {
+                    continue;
+                }
+                Thread.ofVirtual().name("studio-vast-leftover-" + r.instance).start(() -> {
+                    try {
+                        if (!machines.exists(r.instance)) {
+                            forget(r.instance);   // it went some other way
+                            return;
+                        }
+                    } catch (IOException | RuntimeException e) {
+                        // cannot tell, so it is destroyed
+                    }
+                    LOG.log(System.Logger.Level.WARNING, "instance " + r.instance
+                            + " was left running by an earlier studio; destroying it");
+                    rentals.put(r.key, r);
+                    if (claim(r)) {
+                        finish(r, null);
+                    }
+                });
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "cannot read a line of " + ledger + ": " + line);
+            }
+        }
+    }
+
+    // the instances rented and not yet destroyed, one a line: id|price|started|gpu
+    private List<String> ledgerLines() {
+        synchronized (ledger) {
+            try {
+                return Files.isRegularFile(ledger) ? Files.readAllLines(ledger).stream().filter(l -> !l.isBlank()).toList()
+                        : List.of();
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.WARNING, "cannot read " + ledger, e);
+                return List.of();
+            }
+        }
+    }
+
+    private void remember(Rental r) {
+        synchronized (ledger) {
+            try {
+                Files.createDirectories(logs);
+                List<String> lines = new ArrayList<>(ledgerLines());
+                lines.add(r.instance + "|" + r.pricePerHour + "|" + r.started + "|" + r.gpu.replace('\n', ' '));
+                Files.write(ledger, lines);
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.WARNING, "cannot write " + ledger
+                        + "; if the studio is killed, instance " + r.instance + " is not destroyed when it starts again", e);
+            }
+        }
+    }
+
+    private void forget(long instance) {
+        synchronized (ledger) {
+            try {
+                List<String> lines = ledgerLines();
+                List<String> kept = lines.stream().filter(l -> !l.startsWith(instance + "|")).toList();
+                if (kept.size() != lines.size()) {
+                    Files.write(ledger, kept);
+                }
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.WARNING, "cannot write " + ledger, e);
             }
         }
     }
