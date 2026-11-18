@@ -32,6 +32,8 @@ final class Weights {
     final DType dtype;
     final List<Tensor> all;
     private final Set<Var> filled;
+    /** Bits per weight of projection matrices, or 0 to keep them in {@link #dtype}. */
+    private final int bits;
 
     Weights(WeightSource source, String prefix, Device device, DType dtype) {
         this(source, prefix, device, dtype, new ArrayList<>());
@@ -39,11 +41,11 @@ final class Weights {
 
     Weights(WeightSource source, String prefix, Device device, DType dtype, List<Tensor> all) {
         this(source, prefix, UnaryOperator.identity(), device, dtype, all,
-                Collections.newSetFromMap(new IdentityHashMap<>()));
+                Collections.newSetFromMap(new IdentityHashMap<>()), 0);
     }
 
     private Weights(WeightSource source, String prefix, UnaryOperator<String> rename, Device device, DType dtype,
-            List<Tensor> all, Set<Var> filled) {
+            List<Tensor> all, Set<Var> filled, int bits) {
         this.source = source;
         this.prefix = prefix;
         this.rename = rename;
@@ -51,16 +53,29 @@ final class Weights {
         this.dtype = dtype;
         this.all = all;
         this.filled = filled;
+        this.bits = bits;
     }
 
     /** The same file seen under {@code prefix + more}. */
     Weights at(String more) {
-        return new Weights(source, prefix + more, rename, device, dtype, all, filled);
+        return new Weights(source, prefix + more, rename, device, dtype, all, filled, bits);
     }
 
     /** The same file with names translated before they are looked up (for other checkpoint layouts). */
     Weights renamed(UnaryOperator<String> names) {
-        return new Weights(source, prefix, names, device, dtype, all, filled);
+        return new Weights(source, prefix, names, device, dtype, all, filled, bits);
+    }
+
+    /**
+     * The same file with projection matrices ({@link #matrix}, {@link #dense}) stored as
+     * {@code bits}-bit levels with a scale per output and group of inputs, which multiply in
+     * the model's type; 0 keeps them in the model's type.
+     */
+    Weights quantized(int bits) {
+        if (bits != 0 && (bits < 2 || bits > 8)) {
+            throw new IllegalArgumentException("weights quantize to 2 to 8 bits, got " + bits);
+        }
+        return new Weights(source, prefix, rename, device, dtype, all, filled, bits);
     }
 
     private String full(String name) {
@@ -130,7 +145,20 @@ final class Weights {
         Tensor w = get(name);
         // a 1x1 convolution used as a projection is the same matrix; the reshape shares memory
         Tensor m = w.rank() == 4 ? w.reshape(w.shape().dim(0), w.shape().dim(1)) : w;
-        set(parameter, m.transpose(), w);
+        if (bits == 0) {
+            set(parameter, m.transpose(), w);
+            return;
+        }
+        Tensor t = m.transpose();
+        Tensor f = t.to(DType.FLOAT32);
+        Tensor.evaluate(List.of(f));
+        if (t != f) {
+            t.release();
+        }
+        w.release();
+        int rows = f.shape().dim(0);
+        int group = bits <= 4 ? 32 : 64;
+        set(parameter, f.quantized(bits, rows % group == 0 ? group : rows), f);
     }
 
     /** Rows {@code [start, end)} of a fused {@code [out, in]} projection, transposed. */
