@@ -972,6 +972,29 @@ public final class Var {
         return activation(ActivationOp.RELU, 0);
     }
 
+    /** @return {@code x * sigmoid(x)} for each value (SiLU, also called swish) */
+    public Var silu() {
+        return activation(ActivationOp.SILU, 0);
+    }
+
+    /** @return the exact (erf) GELU of each value */
+    public Var gelu() {
+        return activation(ActivationOp.GELU, 0);
+    }
+
+    /** @return {@code x * tanh(softplus(x))} for each value */
+    public Var mish() {
+        return activation(ActivationOp.MISH, 0);
+    }
+
+    /**
+     * @param slope the slope below 0
+     * @return {@code x} above 0, else {@code slope * x}
+     */
+    public Var leakyRelu(float slope) {
+        return activation(ActivationOp.LEAKY_RELU, slope);
+    }
+
     /**
      * Applies an activation function with a fused kernel: one pass forward and one pass
      * backward, instead of a chain of simpler operations.

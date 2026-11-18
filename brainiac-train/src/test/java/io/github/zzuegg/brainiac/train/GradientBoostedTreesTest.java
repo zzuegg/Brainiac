@@ -143,4 +143,28 @@ class GradientBoostedTreesTest {
             assertEquals(copies.predict(x[i]), weighted.predict(x[i]), 1e-9);
         }
     }
+
+    @Test
+    void aMarginOfTheBaseGivesTheSameTreesAndObjectivesAreLosses() {
+        SplittableRandom r = new SplittableRandom(11);
+        int n = 200;
+        double[][] x = new double[n][2];
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) {
+            x[i][0] = r.nextDouble(-1, 1);
+            x[i][1] = r.nextDouble(-1, 1);
+            y[i] = r.nextDouble() < 1 / (1 + Math.exp(-3 * x[i][0] * x[i][1])) ? 1 : 0;
+        }
+        GradientBoostedTrees.Loss binary = GradientBoostedTrees.Objective.BINARY.loss();
+        GradientBoostedTrees.Settings s = GradientBoostedTrees.Settings.defaults().withTrees(20);
+        GradientBoostedTrees plain = GradientBoostedTrees.fit(x, y, binary, s);
+        double base = binary.base(y);
+        double[] margin = new double[n];
+        java.util.Arrays.fill(margin, base);
+        GradientBoostedTrees shifted = GradientBoostedTrees.fit(x, y, null, margin, binary, s);
+        for (int i = 0; i < n; i++) {
+            assertEquals(plain.predict(x[i]), shifted.predict(x[i], base), 1e-12);
+            assertEquals(plain.raw(x[i]), base + shifted.raw(x[i]), 1e-12);
+        }
+    }
 }

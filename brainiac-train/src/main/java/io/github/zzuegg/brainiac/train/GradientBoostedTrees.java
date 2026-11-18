@@ -18,7 +18,16 @@ public final class GradientBoostedTrees {
         /** Squared error; predictions are values. */
         REGRESSION,
         /** Logistic loss on 0/1 targets; {@link #predict} gives probabilities. */
-        BINARY
+        BINARY;
+
+        /**
+         * Returns this objective as a {@link Loss}, to wrap or to reuse its derivatives.
+         *
+         * @return the loss
+         */
+        public Loss loss() {
+            return GradientBoostedTrees.loss(this);
+        }
     }
 
     /**
@@ -212,7 +221,29 @@ public final class GradientBoostedTrees {
      * @return the trained ensemble
      */
     public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, Loss loss, Settings s) {
+        return fit(x, y, weights, null, loss, s);
+    }
+
+    /**
+     * Trains trees that start from a given raw score per row, as XGBoost's {@code base_margin}:
+     * the trees learn a correction to an earlier model's scores, or to an offset such as a
+     * log exposure. The ensemble's own starting score is then 0, so add the row's margin to
+     * {@link #raw} (or pass it to {@link #predict(double[], double)}) when predicting.
+     *
+     * @param x rows of features
+     * @param y one target per row
+     * @param weights one non-negative weight per row, or {@code null} for all 1
+     * @param margin one starting raw score per row, or {@code null} for {@link Loss#base}
+     * @param loss the loss
+     * @param s the settings
+     * @return the trained ensemble
+     */
+    public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, double[] margin, Loss loss,
+            Settings s) {
         int n = x.length;
+        if (margin != null && margin.length != n) {
+            throw new IllegalArgumentException(n + " rows and " + margin.length + " margins");
+        }
         if (weights != null) {
             if (weights.length != n) {
                 throw new IllegalArgumentException(n + " rows and " + weights.length + " weights");
@@ -227,13 +258,15 @@ public final class GradientBoostedTrees {
             throw new IllegalArgumentException(n + " rows and " + y.length + " targets");
         }
         int features = x[0].length;
-        double base = loss.base(y);
+        double base = margin == null ? loss.base(y) : 0;
         double[][] thresholds = new double[features][];
         for (int f = 0; f < features; f++) {
             thresholds[f] = thresholds(x, f, s.bins());
         }
-        double[] raw = new double[n];
-        Arrays.fill(raw, base);
+        double[] raw = margin == null ? new double[n] : margin.clone();
+        if (margin == null) {
+            Arrays.fill(raw, base);
+        }
         double[] g = new double[n];
         double[] h = new double[n];
         double[] importance = new double[features];
@@ -394,6 +427,17 @@ public final class GradientBoostedTrees {
      */
     public double predict(double[] x) {
         return loss.link(raw(x));
+    }
+
+    /**
+     * Predicts for a row that starts from a margin, as trained with one.
+     *
+     * @param x one row of features
+     * @param margin the row's starting raw score
+     * @return the loss's link of the margin plus the trees' score
+     */
+    public double predict(double[] x, double margin) {
+        return loss.link(margin + raw(x));
     }
 
     /**

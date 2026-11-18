@@ -38,6 +38,10 @@ class GradCheckOpsTest {
         Tensor p = positive(5, 2, 3);
         return Stream.of(
                 op("add", v -> v.get(0).add(v.get(1)).square().sum(), a, b),
+                op("silu", v -> v.get(0).silu().sum(), a),
+                op("gelu", v -> v.get(0).gelu().sum(), a),
+                op("mish", v -> v.get(0).mish().sum(), a),
+                op("leaky relu", v -> v.get(0).leakyRelu(0.1f).sum(), p.mul(-1)),
                 op("tril", v -> v.get(0).tril(0).square().sum(), rand(11, 3, 3)),
                 op("triu", v -> v.get(0).triu(1).square().sum(), rand(12, 2, 3, 4)),
                 op("trace", v -> v.get(0).trace().square().sum(), rand(13, 2, 3, 3)),
