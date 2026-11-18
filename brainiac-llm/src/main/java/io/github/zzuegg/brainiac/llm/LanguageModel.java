@@ -64,12 +64,24 @@ public interface LanguageModel {
      * @return float32 logits {@code [batch, vocab]}
      */
     default Tensor next(State state, Tensor tokens) {
+        return next(state, tokens, null);
+    }
+
+    /**
+     * As {@link #next(State, Tensor)}, with some sequences' tokens marked as padding.
+     *
+     * @param state what was read before; updated
+     * @param tokens {@code [batch]} token ids, whole numbers
+     * @param padding {@code [batch][1]}, {@code true} where the token is padding, or {@code null}
+     * @return float32 logits {@code [batch, vocab]}
+     */
+    default Tensor next(State state, Tensor tokens, boolean[][] padding) {
         float[] ids = tokens.toArray();
         int[][] one = new int[ids.length][1];
         for (int b = 0; b < ids.length; b++) {
             one[b][0] = (int) ids[b];
         }
-        return next(state, one, null);
+        return next(state, one, padding);
     }
 
     /** @return whether {@link #next(State, Tensor)} works without reading the tokens back */
