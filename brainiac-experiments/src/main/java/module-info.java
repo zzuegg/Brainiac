@@ -17,12 +17,14 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.anomaly;
     exports io.github.zzuegg.brainiac.experimental.audio;
     exports io.github.zzuegg.brainiac.experimental.autograd;
+    exports io.github.zzuegg.brainiac.experimental.boost;
     exports io.github.zzuegg.brainiac.experimental.code;
     exports io.github.zzuegg.brainiac.experimental.causal;
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
     exports io.github.zzuegg.brainiac.experimental.deeprl;
     exports io.github.zzuegg.brainiac.experimental.edge;
+    exports io.github.zzuegg.brainiac.experimental.events;
     exports io.github.zzuegg.brainiac.experimental.eval;
     exports io.github.zzuegg.brainiac.experimental.document;
     exports io.github.zzuegg.brainiac.experimental.evolve;
@@ -39,6 +41,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.ood;
     exports io.github.zzuegg.brainiac.experimental.parallel;
+    exports io.github.zzuegg.brainiac.experimental.parse;
     exports io.github.zzuegg.brainiac.experimental.privacy;
     exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.rl;
@@ -70,6 +73,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.data;
     exports io.github.zzuegg.brainiac.experiments.edge;
     exports io.github.zzuegg.brainiac.experiments.evaluation;
+    exports io.github.zzuegg.brainiac.experiments.events;
     exports io.github.zzuegg.brainiac.experiments.document;
     exports io.github.zzuegg.brainiac.experiments.evolution;
     exports io.github.zzuegg.brainiac.experiments.exotic;
@@ -88,6 +92,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.numerics;
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.parallel;
+    exports io.github.zzuegg.brainiac.experiments.parsing;
     exports io.github.zzuegg.brainiac.experiments.privacy;
     exports io.github.zzuegg.brainiac.experiments.probabilistic;
     exports io.github.zzuegg.brainiac.experiments.reasoning;
