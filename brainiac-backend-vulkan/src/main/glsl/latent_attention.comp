@@ -1,0 +1,117 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+// Multi-head latent attention over cached latents (Backend.latentAttention, DeepSeek), for
+// inference: one work group per query row, taking the keys 256 at a time as attention.comp
+// does. Every query head reads the batch's one head of latents c, which are the keys (with
+// the rotary keys r adding to the scores) and also the values, so the output stays in latent
+// space: softmax(scale (qc c^T + qr r^T) + bias) c. Each invocation scores one key of a
+// block and keeps output components tid and tid + 256 (latents of up to 512, as DeepSeek's),
+// rescaled online as the running maximum grows. Computed in float32 whatever the format.
+layout(local_size_x = GROUP) in;
+layout(push_constant) uniform P {
+    In qc; In qr; In c; In r; Buf z; In bias;
+    uint heads; uint tq; uint tk; uint dc; uint dr; float scale; uint rows;
+    uint sb; uint sh; uint si; uint sj;
+} p;
+// the query: latent part first (up to 2 GROUP), rotary part after it (up to GROUP)
+shared float qs[3 * GROUP];
+shared float weights[GROUP];
+shared float red[GROUP];
+
+float reduceMax(float x, uint tid) {
+    red[tid] = x;
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red[tid] = max(red[tid], red[tid + s]);
+        }
+        barrier();
+    }
+    float res = red[0];
+    barrier();
+    return res;
+}
+
+float reduceSum(float x, uint tid) {
+    red[tid] = x;
+    barrier();
+    for (uint s = GROUP / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            red[tid] += red[tid + s];
+        }
+        barrier();
+    }
+    float res = red[0];
+    barrier();
+    return res;
+}
+
+void main() {
+    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (row >= p.rows) return;   // whole work groups: barriers stay uniform
+    uint tid = gl_LocalInvocationID.x;
+    uint i = row % p.tq;
+    uint h = (row / p.tq) % p.heads;
+    uint b = row / (p.tq * p.heads);
+    uint cBase = b * p.tk * p.dc;
+    uint rBase = b * p.tk * p.dr;
+    for (uint d = tid; d < p.dc; d += GROUP) {
+        qs[d] = float(LOAD(p.qc, row * p.dc + d));
+    }
+    if (tid < p.dr) {
+        qs[2 * GROUP + tid] = float(LOAD(p.qr, row * p.dr + tid));
+    }
+    barrier();
+    uint biasRow = b * p.sb + h * p.sh + i * p.si;
+    float m = uintBitsToFloat(0xff800000u);
+    float l = 0;
+    float o0 = 0;
+    float o1 = 0;
+    for (uint c = 0; c < p.tk; c += GROUP) {
+        uint j = c + tid;
+        float s = uintBitsToFloat(0xff800000u);
+        if (j < p.tk) {
+            float dot = 0;
+            uint cr = cBase + j * p.dc;
+            for (uint d = 0; d < p.dc; d++) {
+                dot = fma(qs[d], float(LOAD(p.c, cr + d)), dot);
+            }
+            uint rr = rBase + j * p.dr;
+            for (uint d = 0; d < p.dr; d++) {
+                dot = fma(qs[2 * GROUP + d], float(LOAD(p.r, rr + d)), dot);
+            }
+            s = dot * p.scale + float(LOAD(p.bias, biasRow + j * p.sj));
+        }
+        float mNew = max(m, reduceMax(s, tid));
+        // a block masked to -inf throughout (a float16 bias cannot hold -1e9) adds nothing
+        float w = j < p.tk && !isinf(s) ? exp(s - mNew) : 0.0;
+        weights[tid] = w;
+        float alpha = m == mNew ? 1.0 : exp(m - mNew);
+        l = l * alpha + reduceSum(w, tid);   // its barriers also publish weights
+        uint n = min(uint(GROUP), p.tk - c);
+        uint vr = cBase + c * p.dc;
+        if (tid < p.dc) {
+            float acc = o0 * alpha;
+            for (uint jj = 0; jj < n; jj++) {
+                acc = fma(weights[jj], float(LOAD(p.c, vr + jj * p.dc + tid)), acc);
+            }
+            o0 = acc;
+        }
+        if (tid + GROUP < p.dc) {
+            float acc = o1 * alpha;
+            for (uint jj = 0; jj < n; jj++) {
+                acc = fma(weights[jj], float(LOAD(p.c, vr + jj * p.dc + tid + GROUP)), acc);
+            }
+            o1 = acc;
+        }
+        m = mNew;
+        barrier();   // weights are rewritten by the next block
+    }
+    if (tid < p.dc) {
+        STORE(p.z, row * p.dc + tid, ACC(l > 0 ? o0 / l : 0.0));
+    }
+    if (tid + GROUP < p.dc) {
+        STORE(p.z, row * p.dc + tid + GROUP, ACC(l > 0 ? o1 / l : 0.0));
+    }
+}

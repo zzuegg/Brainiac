@@ -89,7 +89,16 @@ abstract class RemoteProvider implements ChatProvider {
 
     @Override
     public boolean ready() {
-        return keys.has(id());
+        return keys.has(id()) || keyless();
+    }
+
+    /**
+     * Whether the provider answers without a key, as a server on this PC does.
+     *
+     * @return true if calls go out without a key when none is saved
+     */
+    boolean keyless() {
+        return false;
     }
 
     /** Lists the models one key can use. */
@@ -104,6 +113,9 @@ abstract class RemoteProvider implements ChatProvider {
         Map<String, ModelInfo> all = new LinkedHashMap<>();
         IOException first = null;
         List<Keys.Entry> entries = keys.list(id());
+        if (entries.isEmpty() && keyless()) {
+            return models("");
+        }
         for (Keys.Entry e : entries) {
             try {
                 for (ModelInfo m : models(keys.get(id(), e.label()).orElseThrow())) {
@@ -163,6 +175,9 @@ abstract class RemoteProvider implements ChatProvider {
             labels.add(label);
         } else {
             keys.list(id()).forEach(e -> labels.add(e.label()));
+        }
+        if (labels.isEmpty() && keyless()) {
+            return call.call("");
         }
         if (labels.isEmpty()) {
             throw new IOException("no API key for " + name() + ": add one under Models, Providers");

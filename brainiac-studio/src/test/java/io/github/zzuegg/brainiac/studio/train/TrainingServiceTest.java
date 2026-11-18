@@ -87,7 +87,8 @@ class TrainingServiceTest {
             assertTrue(want >= 0 && want < 3, sample.toString());
             Json.write(sample);
 
-            Map<String, Object> own = t.predict(Json.object(Json.parse("{\"model\": \"tiny\", \"values\": [0.5, -0.25]}")));
+            Map<String, Object> own = t.predict(Json.object(Json.parse("{\"model\": \"tiny\", \"values\": [0.5, -0.25], \"full\": true}")));
+            assertEquals(List.of(0.5, -0.25), own.get("input"));
             assertEquals(2, Json.array(own.get("input")).size());
             assertFalse(own.containsKey("expected"));
             double sum = Json.array(own.get("output")).stream().mapToDouble(v -> ((Number) v).doubleValue()).sum();

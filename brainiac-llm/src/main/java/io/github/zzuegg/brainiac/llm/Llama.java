@@ -105,15 +105,33 @@ public final class Llama implements LanguageModel {
      * ({@link Fused}); the q/k and post norms are null where the family has none.
      */
     private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
-            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts) {
+            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts, Latent latent) {
+    }
+
+    /**
+     * A block's latent attention (DeepSeek): the query's down projection, norm and up
+     * projection (null where the block's {@code q} projects directly), the key and value
+     * latent with the shared rotary key, its norm, and the latent's up projection to each
+     * head's key and value.
+     */
+    private record Latent(Linear qA, Var qANorm, Linear qB, Linear kvA, Var kvANorm, Linear kvB) {
+    }
+
+    /** The latent attention's projections, by Hugging Face module name below {@code self_attn.}. */
+    private static List<String> latentNames(LlamaConfig c) {
+        return c.extras().mla().qRank() > 0
+                ? List.of("self_attn.q_a_proj", "self_attn.q_b_proj", "self_attn.kv_a_proj_with_mqa",
+                        "self_attn.kv_b_proj", "self_attn.o_proj")
+                : List.of("self_attn.q_proj", "self_attn.kv_a_proj_with_mqa", "self_attn.kv_b_proj", "self_attn.o_proj");
     }
 
     /**
      * A block's mixture of experts: the router, each expert's gate, up and down projections,
-     * and an optional shared expert with its sigmoid gate.
+     * an optional shared expert with (Qwen 2) or without (DeepSeek) its sigmoid gate, and the
+     * per-expert bias that DeepSeek-V3 adds to the scores it picks by.
      */
     private record Experts(Linear router, Linear[] gate, Linear[] up, Linear[] down, Linear sharedGate,
-            Linear sharedUp, Linear sharedDown, Linear sharedScale) {
+            Linear sharedUp, Linear sharedDown, Linear sharedScale, Var choiceBias) {
     }
 
     /** The module prefix of a block's experts, and its names for gate, up and down. */
@@ -123,11 +141,22 @@ public final class Llama implements LanguageModel {
                 : new String[] {"mlp.", "gate_proj", "up_proj", "down_proj"};
     }
 
-    private static Experts experts(LlamaConfig c, Map<String, Linear> linears, String p) {
+    /** The shared expert's module: DeepSeek's {@code shared_experts} or Qwen 2's {@code shared_expert}. */
+    private static String sharedName(LlamaConfig c) {
+        return c.extras().moe().routing().sharedGated() ? "mlp.shared_expert." : "mlp.shared_experts.";
+    }
+
+    /** The selection bias of a block's router (DeepSeek-V3), by Hugging Face name. */
+    private static String choiceBiasName(int layer) {
+        return "model.layers." + layer + ".mlp.gate.e_score_correction_bias";
+    }
+
+    private static Experts experts(LlamaConfig c, Map<String, Linear> linears, Map<String, Var> named, int layer) {
         LlamaConfig.Moe moe = c.extras().moe();
-        if (!moe.present()) {
+        if (!moe.in(layer)) {
             return null;
         }
+        String p = "model.layers." + layer + ".";
         String[] n = expertNames(c);
         Linear[] gate = new Linear[moe.experts()];
         Linear[] up = new Linear[moe.experts()];
@@ -139,11 +168,13 @@ public final class Llama implements LanguageModel {
             down[e] = linears.get(x + n[3]);
         }
         boolean shared = moe.sharedFfn() > 0;
+        String sh = p + sharedName(c);
         return new Experts(linears.get(p + n[0] + "gate"), gate, up, down,
-                shared ? linears.get(p + "mlp.shared_expert.gate_proj") : null,
-                shared ? linears.get(p + "mlp.shared_expert.up_proj") : null,
-                shared ? linears.get(p + "mlp.shared_expert.down_proj") : null,
-                shared ? linears.get(p + "mlp.shared_expert_gate") : null);
+                shared ? linears.get(sh + "gate_proj") : null,
+                shared ? linears.get(sh + "up_proj") : null,
+                shared ? linears.get(sh + "down_proj") : null,
+                shared && moe.routing().sharedGated() ? linears.get(p + "mlp.shared_expert_gate") : null,
+                moe.routing().sigmoid() ? need(named, choiceBiasName(layer)) : null);
     }
 
     private final LlamaConfig config;
@@ -179,7 +210,7 @@ public final class Llama implements LanguageModel {
         this.config = config;
         this.device = device;
         this.dtype = dtype;
-        this.rope = new Rope(config.rope());
+        this.rope = new Rope(config.rope(), config.extras().mla().interleaved());
         LlamaConfig.Extras e = config.extras();
         this.localRope = e.localTheta() > 0 ? new Rope(new Rope.Settings(config.rope().dim(), e.localTheta(),
                 "default", 1, 1, 4, config.rope().originalMaxPositions(), null)) : null;
@@ -203,11 +234,24 @@ public final class Llama implements LanguageModel {
                     e.qkNorm() ? need(named, p + "self_attn.q_norm.weight") : null,
                     e.qkNorm() ? need(named, p + "self_attn.k_norm.weight") : null,
                     post ? need(named, p + "post_attention_layernorm.weight") : null,
-                    post ? need(named, p + "post_feedforward_layernorm.weight") : null, experts(config, linears, p)));
+                    post ? need(named, p + "post_feedforward_layernorm.weight") : null,
+                    experts(config, linears, named, i), latent(config, linears, named, i)));
             if (e.fused()) {
                 fused[i] = new Fused(linears.get(p + "self_attn.qkv_proj"), linears.get(p + "mlp.gate_up_proj"));
             }
         }
+    }
+
+    private static Latent latent(LlamaConfig c, Map<String, Linear> linears, Map<String, Var> named, int layer) {
+        LlamaConfig.Mla mla = c.extras().mla();
+        if (!mla.present()) {
+            return null;
+        }
+        String p = "model.layers." + layer + ".self_attn.";
+        boolean low = mla.qRank() > 0;
+        return new Latent(low ? linears.get(p + "q_a_proj") : null, low ? need(named, p + "q_a_layernorm.weight") : null,
+                low ? linears.get(p + "q_b_proj") : null, linears.get(p + "kv_a_proj_with_mqa"),
+                need(named, p + "kv_a_layernorm.weight"), linears.get(p + "kv_b_proj"));
     }
 
     /** The norm weights of block {@code i}, by Hugging Face name. */
@@ -222,7 +266,28 @@ public final class Llama implements LanguageModel {
             names.add(p + "self_attn.q_norm.weight");
             names.add(p + "self_attn.k_norm.weight");
         }
+        if (c.extras().mla().present()) {
+            if (c.extras().mla().qRank() > 0) {
+                names.add(p + "self_attn.q_a_layernorm.weight");
+            }
+            names.add(p + "self_attn.kv_a_layernorm.weight");
+        }
         return names;
+    }
+
+    /** The size of a norm weight: the hidden size, a head's, or a latent's. */
+    private static int normSize(LlamaConfig c, String name) {
+        return name.endsWith("q_a_layernorm.weight") ? c.extras().mla().qRank()
+                : name.endsWith("kv_a_layernorm.weight") ? c.extras().mla().kvRank()
+                : name.contains("self_attn.") ? c.headDim() : c.hidden();
+    }
+
+    /**
+     * The epsilon of a norm: DeepSeek's latent norms use 1e-6 whatever the model's (as its
+     * code builds them), the others the model's.
+     */
+    private float epsOf(boolean latent) {
+        return latent ? 1e-6f : config.rmsEps();
     }
 
     private static Var need(Map<String, Var> named, String name) {
@@ -242,8 +307,12 @@ public final class Llama implements LanguageModel {
                     ? List.of("self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj")
                     : List.of("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
                             "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"));
+            if (c.extras().mla().present()) {
+                modules.removeIf(m -> m.startsWith("self_attn."));
+                modules.addAll(0, latentNames(c));
+            }
             LlamaConfig.Moe moe = c.extras().moe();
-            if (moe.present()) {
+            if (moe.in(i)) {
                 modules.removeIf(m -> m.startsWith("mlp."));
                 String[] n = expertNames(c);
                 modules.add(n[0] + "gate");
@@ -253,8 +322,11 @@ public final class Llama implements LanguageModel {
                     }
                 }
                 if (moe.sharedFfn() > 0) {
-                    modules.addAll(List.of("mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj",
-                            "mlp.shared_expert.down_proj", "mlp.shared_expert_gate"));
+                    String sh = sharedName(c);
+                    modules.addAll(List.of(sh + "gate_proj", sh + "up_proj", sh + "down_proj"));
+                    if (moe.routing().sharedGated()) {
+                        modules.add("mlp.shared_expert_gate");
+                    }
                 }
             }
             for (String s : modules) {
@@ -334,6 +406,12 @@ public final class Llama implements LanguageModel {
             Var w = Var.param(inOut(weights.tensor(l + ".weight", device, dtype)));
             named.put(l + ".weight", w);
             linears.put(l, new Linear(w, bias));
+        }
+        for (int i = 0; i < config.layers(); i++) {
+            if (config.extras().moe().in(i) && config.extras().moe().routing().sigmoid()) {
+                // picks experts on the host, in float32: not a weight that learns
+                named.put(choiceBiasName(i), Var.of(weights.tensor(choiceBiasName(i), device, DType.FLOAT32)));
+            }
         }
         return new Llama(config, device, dtype, named, linears);
     }
@@ -416,8 +494,8 @@ public final class Llama implements LanguageModel {
         Map<String, Linear> linears = new LinkedHashMap<>();
         named.put("model.embed_tokens.weight", Var.param(gguf.tensor("token_embd.weight", device, dtype)));
         named.put("model.norm.weight", Var.param(gguf.tensor("output_norm.weight", device, dtype)));
-        Map<String, String> parts = ggufParts(config);
         for (int i = 0; i < config.layers(); i++) {
+            Map<String, String> parts = ggufParts(config, i);
             String p = "model.layers." + i + ".";
             String g = "blk." + i + ".";
             for (Map.Entry<String, String> n : ggufNorms(config).entrySet()) {
@@ -436,8 +514,15 @@ public final class Llama implements LanguageModel {
                 }
                 linears.put(l, linear(gguf, g + e.getValue() + ".weight", l, order, device, dtype, named, bias));
             }
+            if (extras.mla().present()) {
+                linears.put(p + "self_attn.kv_b_proj", latentUp(gguf, g, p + "self_attn.kv_b_proj", config, device,
+                        dtype, named));
+            }
             LlamaConfig.Moe moe = extras.moe();
-            if (moe.present()) {
+            if (moe.in(i)) {
+                if (moe.routing().sigmoid()) {
+                    named.put(choiceBiasName(i), Var.of(gguf.tensor(g + "exp_probs_b.bias", device, DType.FLOAT32)));
+                }
                 String[] n = expertNames(config);
                 String[] stored = {"ffn_gate", "ffn_up", "ffn_down"};
                 linears.put(p + n[0] + "gate", linear(gguf, g + "ffn_gate_inp.weight", p + n[0] + "gate", null, device,
@@ -461,10 +546,10 @@ public final class Llama implements LanguageModel {
                     }
                 }
                 if (moe.sharedFfn() > 0) {
-                    String[] hf = {"mlp.shared_expert.gate_proj", "mlp.shared_expert.up_proj",
-                            "mlp.shared_expert.down_proj", "mlp.shared_expert_gate"};
+                    String sh = sharedName(config);
+                    String[] hf = {sh + "gate_proj", sh + "up_proj", sh + "down_proj", "mlp.shared_expert_gate"};
                     String[] gg = {"ffn_gate_shexp", "ffn_up_shexp", "ffn_down_shexp", "ffn_gate_inp_shexp"};
-                    for (int k = 0; k < 4; k++) {
+                    for (int k = 0; k < (moe.routing().sharedGated() ? 4 : 3); k++) {
                         Tensor shapeCheck = null;
                         String w = g + gg[k] + ".weight";
                         if (k == 3 && gguf.shape(w).rank() == 1) {
@@ -486,10 +571,47 @@ public final class Llama implements LanguageModel {
         return new Llama(config, device, dtype, named, linears);
     }
 
+    /**
+     * The latent's up projection to each head's key and value, {@code kv_b_proj}, always as
+     * floats: the absorbed attention splits it per head. Files since llama.cpp's absorbed
+     * attention hold it split and the key part transposed, as {@code attn_k_b} {@code [heads,
+     * kvRank, nope]} and {@code attn_v_b} {@code [heads, valueDim, kvRank]}.
+     */
+    private static Linear latentUp(Gguf gguf, String g, String hfName, LlamaConfig c, Device device, DType dtype,
+            Map<String, Var> named) {
+        LlamaConfig.Mla mla = c.extras().mla();
+        Tensor w;
+        if (gguf.contains(g + "attn_kv_b.weight")) {
+            w = gguf.tensor(g + "attn_kv_b.weight", device, dtype);
+        } else {
+            int heads = c.heads();
+            Tensor kb = gguf.tensor(g + "attn_k_b.weight", device, DType.FLOAT32)
+                    .reshape(heads, mla.kvRank(), mla.nope()).permute(0, 2, 1);
+            Tensor vb = gguf.tensor(g + "attn_v_b.weight", device, DType.FLOAT32)
+                    .reshape(heads, mla.valueDim(), mla.kvRank());
+            w = Tensor.concat(1, kb, vb).reshape(heads * (mla.nope() + mla.valueDim()), mla.kvRank()).to(dtype);
+            Tensor.evaluate(List.of(w));
+            kb.release();
+            vb.release();
+        }
+        Var v = Var.param(inOut(w));
+        named.put(hfName + ".weight", v);
+        return new Linear(v, null);
+    }
+
     /** Block projections: Hugging Face module name to llama.cpp's. */
-    private static Map<String, String> ggufParts(LlamaConfig c) {
+    private static Map<String, String> ggufParts(LlamaConfig c, int layer) {
         Map<String, String> parts = new LinkedHashMap<>();
-        if (c.extras().fused()) {
+        if (c.extras().mla().present()) {
+            if (c.extras().mla().qRank() > 0) {
+                parts.put("self_attn.q_a_proj", "attn_q_a");
+                parts.put("self_attn.q_b_proj", "attn_q_b");
+            } else {
+                parts.put("self_attn.q_proj", "attn_q");
+            }
+            parts.put("self_attn.kv_a_proj_with_mqa", "attn_kv_a_mqa");
+            // kv_b_proj: see latentUp
+        } else if (c.extras().fused()) {
             parts.put("self_attn.qkv_proj", "attn_qkv");
         } else {
             parts.put("self_attn.q_proj", "attn_q");
@@ -504,7 +626,7 @@ public final class Llama implements LanguageModel {
             parts.put("mlp.up_proj", "ffn_up");
         }
         parts.put("mlp.down_proj", "ffn_down");
-        if (c.extras().moe().present()) {
+        if (c.extras().moe().in(layer)) {
             parts.keySet().removeIf(k -> k.startsWith("mlp."));
         }
         return parts;
@@ -524,6 +646,12 @@ public final class Llama implements LanguageModel {
         if (c.extras().qkNorm()) {
             norms.put("self_attn.q_norm", "attn_q_norm");
             norms.put("self_attn.k_norm", "attn_k_norm");
+        }
+        if (c.extras().mla().present()) {
+            if (c.extras().mla().qRank() > 0) {
+                norms.put("self_attn.q_a_layernorm", "attn_q_a_norm");
+            }
+            norms.put("self_attn.kv_a_layernorm", "attn_kv_a_norm");
         }
         return norms;
     }
@@ -593,10 +721,14 @@ public final class Llama implements LanguageModel {
         named.put("model.norm.weight", Var.param(Tensor.ones(Shape.of(config.hidden())).to(device).to(dtype)));
         for (int i = 0; i < config.layers(); i++) {
             for (String n : normNames(config, i)) {
-                int size = n.contains("self_attn.") ? config.headDim() : config.hidden();
-                named.put(n, Var.param(Tensor.ones(Shape.of(size)).to(device).to(dtype)));
+                named.put(n, Var.param(Tensor.ones(Shape.of(normSize(config, n))).to(device).to(dtype)));
+            }
+            if (config.extras().moe().in(i) && config.extras().moe().routing().sigmoid()) {
+                named.put(choiceBiasName(i), Var.of(Tensor.zeros(Shape.of(config.extras().moe().experts()),
+                        DType.FLOAT32, device)));
             }
         }
+        LlamaConfig.Mla mla = config.extras().mla();
         int qOut = config.heads() * config.headDim();
         int kvOut = config.kvHeads() * config.headDim();
         // residual projections scaled down by depth, as GPT-2 does
@@ -604,9 +736,15 @@ public final class Llama implements LanguageModel {
         for (String l : linearNames(config)) {
             LlamaConfig.Moe moe = config.extras().moe();
             boolean expert = l.contains(".experts.");
-            boolean shared = l.contains(".shared_expert.");
+            boolean shared = l.contains(".shared_expert.") || l.contains(".shared_experts.");
             int ffn = expert ? moe.ffn() : shared ? moe.sharedFfn() : config.intermediate();
-            int[] shape = l.endsWith(".gate") ? new int[] {moe.experts(), config.hidden()}
+            int perHead = mla.nope() + mla.valueDim();
+            int[] shape = l.endsWith("q_a_proj") ? new int[] {mla.qRank(), config.hidden()}
+                    : l.endsWith("q_b_proj") ? new int[] {qOut, mla.qRank()}
+                    : l.endsWith("kv_a_proj_with_mqa") ? new int[] {mla.cached(), config.hidden()}
+                    : l.endsWith("kv_b_proj") ? new int[] {config.heads() * perHead, mla.kvRank()}
+                    : l.endsWith("o_proj") && mla.present() ? new int[] {config.hidden(), config.heads() * mla.valueDim()}
+                    : l.endsWith(".gate") ? new int[] {moe.experts(), config.hidden()}
                     : l.endsWith("shared_expert_gate") ? new int[] {1, config.hidden()}
                     : expert || shared ? (l.endsWith("down_proj") || l.endsWith("w2") ? new int[] {config.hidden(), ffn}
                             : new int[] {ffn, config.hidden()})
@@ -666,6 +804,8 @@ public final class Llama implements LanguageModel {
             for (Map.Entry<String, Var> e : List.copyOf(named.entrySet())) {
                 if (e.getKey().startsWith(prefix) && e.getKey().contains("norm")) {
                     named.put(e.getKey(), moved(e.getValue(), target, dtype));
+                } else if (e.getKey().startsWith(prefix) && e.getKey().endsWith("e_score_correction_bias")) {
+                    named.put(e.getKey(), moved(e.getValue(), target, DType.FLOAT32));
                 }
             }
             for (Map.Entry<String, Linear> e : linears.entrySet()) {
@@ -680,7 +820,12 @@ public final class Llama implements LanguageModel {
                     named.get(prefix + "self_attn.q_norm.weight"), named.get(prefix + "self_attn.k_norm.weight"),
                     config.extras().postNorms() ? named.get(prefix + "post_attention_layernorm.weight") : null,
                     config.extras().postNorms() ? named.get(prefix + "post_feedforward_layernorm.weight") : null,
-                    b.experts));
+                    b.experts == null ? null : new Experts(b.experts.router, b.experts.gate, b.experts.up,
+                            b.experts.down, b.experts.sharedGate, b.experts.sharedUp, b.experts.sharedDown,
+                            b.experts.sharedScale, named.get(choiceBiasName(i))),
+                    b.latent == null ? null : new Latent(b.latent.qA,
+                            named.get(prefix + "self_attn.q_a_layernorm.weight"), b.latent.qB, b.latent.kvA,
+                            named.get(prefix + "self_attn.kv_a_layernorm.weight"), b.latent.kvB)));
         }
         headDevice = target;
         headType = dtype;
@@ -775,7 +920,7 @@ public final class Llama implements LanguageModel {
 
     /** @return the trainable weights */
     public List<Var> parameters() {
-        return List.copyOf(named.values());
+        return named.values().stream().filter(Var::requiresGrad).toList();
     }
 
     /** {@code -Dbrainiac.llm.fusedNorm=false}: RMSNorm from separate operations while decoding too. */
@@ -799,14 +944,18 @@ public final class Llama implements LanguageModel {
     }
 
     private Var rmsNorm(Var x, Var weight, boolean decoding) {
+        return rmsNorm(x, weight, decoding, config.rmsEps());
+    }
+
+    private Var rmsNorm(Var x, Var weight, boolean decoding, float eps) {
         if (decoding && FUSED_NORM && x.value().hasRmsNorm()) {
             // no gradients while decoding: one kernel instead of a reduction and its chains
-            return Var.of(x.value().rmsNorm(weight.value(), config.rmsEps()));
+            return Var.of(x.value().rmsNorm(weight.value(), eps));
         }
         weight = base(weight);
         Var x32 = x.to(DType.FLOAT32);
         int last = x.shape().rank() - 1;
-        Var y = x32.div(x32.square().mean(last, true).add(config.rmsEps()).sqrt());
+        Var y = x32.div(x32.square().mean(last, true).add(eps).sqrt());
         return y.to(x.dtype()).mul(weight);
     }
 
@@ -843,8 +992,11 @@ public final class Llama implements LanguageModel {
             return length;
         }
 
-        /** Makes room for {@code steps} more, keeping what is cached. */
-        void reserve(int steps, int kvHeads, int headDim, java.util.function.IntFunction<DType> types,
+        /**
+         * Makes room for {@code steps} more, keeping what is cached. Latent attention keeps the
+         * latent as its keys and the shared rotary key as its values, one head of each.
+         */
+        void reserve(int steps, int kvHeads, int keyDim, int valueDim, java.util.function.IntFunction<DType> types,
                 java.util.function.IntFunction<Device> devices) {
             int need = length + steps;
             if (need <= capacity) {
@@ -852,12 +1004,14 @@ public final class Llama implements LanguageModel {
             }
             int grown = Math.max(need, Math.max(64, 2 * capacity));
             int batch = next.length;
-            Shape shape = Shape.of(batch, kvHeads, grown, headDim);
+            Shape shape = Shape.of(batch, kvHeads, grown, keyDim);
+            Shape valueShape = Shape.of(batch, kvHeads, grown, valueDim);
             for (int l = 0; l < keys.length; l++) {
                 DType dtype = types.apply(l);
                 Device device = devices.apply(l);
                 Tensor k = quantized ? Tensor.quantizedRows(shape, dtype, device) : Tensor.zeros(shape, dtype, device);
-                Tensor v = quantized ? Tensor.quantizedRows(shape, dtype, device) : Tensor.zeros(shape, dtype, device);
+                Tensor v = quantized ? Tensor.quantizedRows(valueShape, dtype, device)
+                        : Tensor.zeros(valueShape, dtype, device);
                 Tensor.evaluate(List.of(k, v));
                 if (length > 0) {
                     k.write(2, 0, keys[l].slice(2, 0, length));
@@ -973,10 +1127,11 @@ public final class Llama implements LanguageModel {
                 int cap = Math.max(len, Math.max(capacity, o.capacity));
                 for (int l = 0; l < keys.length; l++) {
                     Tensor like = capacity > 0 ? keys[l] : o.keys[l];   // this layer's device and type
+                    Tensor likeValues = capacity > 0 ? values[l] : o.values[l];
                     c.keys[l] = Tensor.concat(0, padded(keys[l], next.length, length, len, cap, like),
                             padded(o.keys[l], o.next.length, o.length, len, cap, like));
-                    c.values[l] = Tensor.concat(0, padded(values[l], next.length, length, len, cap, like),
-                            padded(o.values[l], o.next.length, o.length, len, cap, like));
+                    c.values[l] = Tensor.concat(0, padded(values[l], next.length, length, len, cap, likeValues),
+                            padded(o.values[l], o.next.length, o.length, len, cap, likeValues));
                 }
                 Tensor.evaluate(java.util.Arrays.asList(c.keys));
                 Tensor.evaluate(java.util.Arrays.asList(c.values));
@@ -1039,7 +1194,19 @@ public final class Llama implements LanguageModel {
 
     @Override
     public State newState(int batch) {
-        return new Cache(config.layers(), batch, quantizedCache);
+        return new Cache(config.layers(), batch, quantizedCache && !config.extras().mla().present());
+    }
+
+    /** The cache's heads, key size and value size: latent attention keeps one latent and one rotary key. */
+    private int[] cacheShape() {
+        LlamaConfig.Mla mla = config.extras().mla();
+        return mla.present() ? new int[] {1, mla.kvRank(), mla.rope()}
+                : new int[] {config.kvHeads(), config.headDim(), config.headDim()};
+    }
+
+    private void reserve(Cache cache, int steps) {
+        int[] s = cacheShape();
+        cache.reserve(steps, s[0], s[1], s[2], this::typeOf, this::deviceOf);
     }
 
     private volatile boolean quantizedCache;
@@ -1109,7 +1276,7 @@ public final class Llama implements LanguageModel {
             throw new IllegalArgumentException("sinks must be at least 0 and window at least 1, got " + sinks + ", "
                     + window);
         }
-        Cache c = new Cache(config.layers(), batch, quantizedCache);
+        Cache c = new Cache(config.layers(), batch, quantizedCache && !config.extras().mla().present());
         c.sinks = sinks;
         c.window = window;
         return c;
@@ -1189,9 +1356,11 @@ public final class Llama implements LanguageModel {
                 }
             }
             if (length > 0) {
-                c.reserve(length, config.kvHeads(), config.headDim(), this::typeOf, this::deviceOf);
+                reserve(c, length);
+                int[] cs = cacheShape();
                 for (int l = 0; l < blocks.size(); l++) {
-                    if (!st.shape("keys." + l).equals(Shape.of(next.size(), config.kvHeads(), length, config.headDim()))) {
+                    if (!st.shape("keys." + l).equals(Shape.of(next.size(), cs[0], length, cs[1]))
+                            || !st.shape("values." + l).equals(Shape.of(next.size(), cs[0], length, cs[2]))) {
                         throw new IllegalArgumentException(file + " does not fit this model's keys");
                     }
                     c.keys[l].write(2, 0, st.tensor("keys." + l, deviceOf(l), typeOf(l)));
@@ -1749,7 +1918,7 @@ public final class Llama implements LanguageModel {
         if (batch != cache.next.length) {
             throw new IllegalArgumentException("the state holds " + cache.next.length + " sequences, got " + batch);
         }
-        cache.reserve(steps, config.kvHeads(), config.headDim(), this::typeOf, this::deviceOf);
+        reserve(cache, steps);
         int[][] positions = new int[batch][steps];
         boolean[][] keysPad = new boolean[batch][];
         for (int b = 0; b < batch; b++) {
@@ -1986,6 +2155,10 @@ public final class Llama implements LanguageModel {
         x = xh[0];
         Var h = xh[1];
         Fused f = fused == null ? null : fused[l];
+        if (blk.latent != null) {
+            Var attn = latentAttention(l, blk, h, positions, cache, masks[l], decoding);
+            return feedForward(blk, f, x, attn, decoding, defer);
+        }
         Var qOut;
         Var kOut;
         Var vOut;
@@ -2033,9 +2206,15 @@ public final class Llama implements LanguageModel {
         if (blk.postAttnNorm != null) {
             attn = rmsNorm(attn, blk.postAttnNorm, decoding);
         }
-        xh = addNorm(x, attn, blk.ffnNorm, decoding);
+        return feedForward(blk, f, x, attn, decoding, defer);
+    }
+
+    /** The rest of a block: the attention's output added, then the feed-forward network or experts. */
+    private Var[] feedForward(Block blk, Fused f, Var x, Var attn, boolean decoding, boolean defer) {
+        LlamaConfig.Extras e = config.extras();
+        Var[] xh = addNorm(x, attn, blk.ffnNorm, decoding);
         x = xh[0];
-        h = xh[1];
+        Var h = xh[1];
         // both products first: the activation and the product then run as one chain
         if (blk.experts != null) {
             Var ffnOut = experts(blk.experts, h);
@@ -2061,6 +2240,101 @@ public final class Llama implements LanguageModel {
             ffnOut = rmsNorm(ffnOut, blk.postFfnNorm, decoding);
         }
         return defer ? new Var[] {x, ffnOut} : new Var[] {x.add(ffnOut), null};
+    }
+
+    /**
+     * DeepSeek's multi-head latent attention over {@code h} {@code [batch, steps, hidden]},
+     * through the output projection. Each step's keys and values come from one latent of
+     * {@code kvRank} features plus {@code rope} rotated features shared by every head.
+     *
+     * <p>Without a state (training, scoring) the latent is expanded to every head's key and
+     * value, as transformers computes it. With a state the cache keeps only the latent and the
+     * rotary key, and the latent's up projection moves to the queries and the output
+     * instead ("absorbed", as DeepSeek serves it): a query's non-rotary part becomes {@code
+     * q W_UK} in latent space, attention runs over the cached latents themselves, and its
+     * output leaves latent space through {@code W_UV}. The cache then holds {@code kvRank +
+     * rope} numbers per step for all heads together, rather than {@code 2 heads headDim}.
+     */
+    private Var latentAttention(int l, Block blk, Var h, int[][] positions, Cache cache, Tensor mask,
+            boolean decoding) {
+        LlamaConfig.Mla mla = config.extras().mla();
+        Latent lat = blk.latent;
+        int batch = h.shape().dim(0);
+        int steps = h.shape().dim(1);
+        int heads = config.heads();
+        int nope = mla.nope();
+        int qk = nope + mla.rope();
+        int kr = mla.kvRank();
+        float scale = config.extras().queryScale() > 0 ? config.extras().queryScale() : (float) (1 / Math.sqrt(qk));
+        if (multiPositions != null) {
+            throw new IllegalStateException("latent attention with 3D positions");
+        }
+        Var q = lat.qA == null ? blk.q.apply(h)
+                : lat.qB.apply(rmsNorm(lat.qA.apply(h), lat.qANorm, decoding, epsOf(true)));
+        q = q.reshape(batch, steps, heads, qk).permute(0, 2, 1, 3);   // [batch, heads, steps, qk]
+        Var qNope = q.slice(-1, 0, nope);
+        Var qRope = rope.apply(q.slice(-1, nope, qk), positions);
+        Var kv = lat.kvA.apply(h);   // [batch, steps, kvRank + rope]
+        Var latent = rmsNorm(kv.slice(-1, 0, kr), lat.kvANorm, decoding, epsOf(true)).reshape(batch, 1, steps, kr);
+        Var kRope = rope.apply(kv.slice(-1, kr, kr + mla.rope()).reshape(batch, 1, steps, mla.rope()), positions);
+        Var a;
+        if (cache == null) {
+            Var up = lat.kvB.apply(latent.reshape(batch, steps, kr)).reshape(batch, steps, heads, nope + mla.valueDim())
+                    .permute(0, 2, 1, 3);
+            Var kNope = up.slice(-1, 0, nope);
+            Var v = up.slice(-1, nope, nope + mla.valueDim());
+            // every head's key: its own non-rotary part, then the rotary part all heads share
+            Var k = Var.concat(-1, kNope, kRope.expand(Shape.of(batch, heads, steps, mla.rope())));
+            Var qq = Var.concat(-1, qNope, qRope);
+            a = mask != null ? Functional.attention(qq, k, v, mask, scale, 0, null)
+                    : Functional.attention(qq, k, v, steps > 1, scale);
+        } else {
+            cache.keys[l].write(2, cache.length, latent.value());
+            cache.values[l].write(2, cache.length, kRope.value());
+            Tensor[] w = absorbed(l, lat);
+            Var qLatent = Var.of(qNope.value()).matmul(Var.of(w[0]));   // [batch, heads, steps, kvRank]
+            Var c = Var.of(cache.keys[l]);
+            Var out = Functional.latentAttention(qLatent, Var.of(qRope.value()), c, Var.of(cache.values[l]), mask,
+                    scale);
+            a = out.matmul(Var.of(w[1]));   // [batch, heads, steps, valueDim]
+        }
+        a = a.permute(0, 2, 1, 3).reshape(batch, steps, heads * mla.valueDim());
+        return blk.o.apply(a);
+    }
+
+    /** Per block, the latent up projection it was split from and its two halves per head. */
+    private final Map<Integer, Tensor[]> absorbed = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Block {@code l}'s latent up projection split per head into {@code W_UK} {@code [1,
+     * heads, nope, kvRank]} (for the queries) and {@code W_UV} {@code [1, heads, kvRank,
+     * valueDim]} (for the output), made again whenever the weight or its adapter changes.
+     */
+    private Tensor[] absorbed(int l, Latent lat) {
+        Linear kvB = lat.kvB;
+        Tensor[] have = absorbed.get(l);
+        Tensor source = kvB.weight.value();
+        Tensor adapter = kvB.loraB == null ? null : kvB.loraB.value();
+        if (have != null && have[0] == source && have[1] == adapter) {
+            return new Tensor[] {have[2], have[3]};
+        }
+        LlamaConfig.Mla mla = config.extras().mla();
+        int heads = config.heads();
+        int nope = mla.nope();
+        Tensor w = plain(source);   // [kvRank, heads * (nope + valueDim)]
+        if (kvB.loraA != null) {
+            w = w.add(kvB.loraA.value().matmul(kvB.loraB.value()).mul(kvB.loraScale).to(w.dtype()));
+        }
+        Tensor[] split = Functional.absorbLatentUp(w, heads, nope, mla.valueDim());
+        Tensor uk = split[0];
+        Tensor uv = split[1];
+        Tensor.evaluate(List.of(uk, uv));
+        if (have != null) {
+            have[2].release();
+            have[3].release();
+        }
+        absorbed.put(l, new Tensor[] {source, adapter, uk, uv});
+        return new Tensor[] {uk, uv};
     }
 
     /** The values block {@code l} learns: its weights unless frozen, and its adapters. */
@@ -2098,12 +2372,13 @@ public final class Llama implements LanguageModel {
     }
 
     /**
-     * A mixture of experts over {@code h} {@code [batch, steps, hidden]}: the router's softmax
-     * picks each token's experts on the host, each expert runs once on its tokens, and a
+     * A mixture of experts over {@code h} {@code [batch, steps, hidden]}: the router's scores
+     * pick each token's experts on the host, each expert runs once on its tokens, and a
      * gather sums every token's outputs. The weights stay differentiable.
      */
     private Var experts(Experts m, Var h) {
         LlamaConfig.Moe moe = config.extras().moe();
+        LlamaConfig.Routing routing = moe.routing();
         int[] s = h.shape().toArray();
         int n = s[0] * s[1];
         int hidden = config.hidden();
@@ -2111,7 +2386,8 @@ public final class Llama implements LanguageModel {
         int k = moe.perToken();
         Device dev = h.value().device();
         Var flat = h.reshape(n, hidden);
-        Var probs = Activation.SOFTMAX.forward(m.router().apply(flat).to(DType.FLOAT32));   // [n, experts]
+        Var logits = m.router().apply(flat).to(DType.FLOAT32);
+        Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
         // experts kept elsewhere (on the CPU, see loadExpertsOnCpu) run there, in float32, on
         // a copy of the tokens; the shared expert stays here and is queued first
         Device home = m.gate()[0].weight().value().device();
@@ -2120,22 +2396,8 @@ public final class Llama implements LanguageModel {
         if (split && m.sharedGate() != null) {
             shared = sharedExpert(m, flat);
         }
-        float[] p = probs.value().toArray();
-        // each token's experts, largest weight first
-        int[] chosen = new int[n * k];
-        for (int t = 0; t < n; t++) {
-            boolean[] taken = new boolean[count];
-            for (int j = 0; j < k; j++) {
-                int best = -1;
-                for (int e = 0; e < count; e++) {
-                    if (!taken[e] && (best < 0 || p[t * count + e] > p[t * count + best])) {
-                        best = e;
-                    }
-                }
-                taken[best] = true;
-                chosen[t * k + j] = best;
-            }
-        }
+        int[] chosen = Functional.chooseExperts(probs.value().toArray(),
+                m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n, count, k, groups(routing));
         int[] picked = new int[n * k];
         for (int i = 0; i < picked.length; i++) {
             picked[i] = i / k * count + chosen[i];
@@ -2143,46 +2405,25 @@ public final class Llama implements LanguageModel {
         Var weights = probs.reshape(n * count).gather(0, indices(picked, dev));   // [n * k]
         if (moe.normalize()) {
             Var w2 = weights.reshape(n, k);
-            weights = w2.div(w2.sum(1, true)).reshape(n * k);
+            // DeepSeek adds 1e-20 against a zero sum of sigmoids; a softmax's never is
+            weights = w2.div(routing.sigmoid() ? w2.sum(1, true).add(1e-20f) : w2.sum(1, true)).reshape(n * k);
+        }
+        if (routing.scale() != 1) {
+            weights = weights.mul(routing.scale());
         }
         Var src = flat;
-        Device at = dev;
         if (split) {
             prefetch(m, chosen);
             src = flat.to(home).to(DType.FLOAT32);
             weights = weights.to(home);
-            at = home;
         }
-        // the rows of each expert, in expert order; then where each (token, slot) landed
-        List<Var> outs = new ArrayList<>();
-        int[] place = new int[n * k];
-        int rows = 0;
+        List<java.util.function.Function<Var, Var>> nets = new ArrayList<>();
         for (int e = 0; e < count; e++) {
-            List<Integer> slots = new ArrayList<>();
-            for (int i = 0; i < chosen.length; i++) {
-                if (chosen[i] == e) {
-                    slots.add(i);
-                }
-            }
-            if (slots.isEmpty()) {
-                continue;
-            }
-            int[] tokens = new int[slots.size()];
-            int[] slotIds = new int[slots.size()];
-            for (int i = 0; i < tokens.length; i++) {
-                slotIds[i] = slots.get(i);
-                tokens[i] = slotIds[i] / k;
-                place[slotIds[i]] = rows + i;
-            }
-            rows += tokens.length;
-            Var xe = src.gather(0, indices(tokens, at));
-            Var y = m.down()[e].apply(m.gate()[e].apply(xe).activation(config.extras().activation(), 0)
-                    .mul(m.up()[e].apply(xe)));
-            Var w = weights.gather(0, indices(slotIds, at)).reshape(tokens.length, 1).to(y.dtype());
-            outs.add(y.mul(w));
+            int at = e;
+            nets.add(xe -> m.down()[at].apply(m.gate()[at].apply(xe).activation(config.extras().activation(), 0)
+                    .mul(m.up()[at].apply(xe))));
         }
-        Var all = outs.size() == 1 ? outs.getFirst() : Var.concat(0, outs.toArray(Var[]::new));
-        Var out = all.gather(0, indices(place, at)).reshape(n, k, hidden).sum(1, false);
+        Var out = Functional.routedExperts(src, chosen, weights, k, nets);
         if (split) {
             out = out.to(dev).to(h.dtype());
         }
@@ -2196,7 +2437,8 @@ public final class Llama implements LanguageModel {
     private Var sharedExpert(Experts m, Var flat) {
         Var shared = m.sharedDown().apply(m.sharedGate().apply(flat).activation(config.extras().activation(), 0)
                 .mul(m.sharedUp().apply(flat)));
-        return shared.mul(m.sharedScale().apply(flat).activation(ActivationOp.SIGMOID, 0));
+        return m.sharedScale() == null ? shared
+                : shared.mul(m.sharedScale().apply(flat).activation(ActivationOp.SIGMOID, 0));
     }
 
     /** Reads the chosen experts' weights from disk at once where they are mapped and not all in memory. */
@@ -2214,6 +2456,13 @@ public final class Llama implements LanguageModel {
             }
         }
         GgmlBlocks.loadAll(used);
+    }
+
+    /** The routing's expert groups as the core routing takes them. */
+    static Functional.ExpertGroups groups(LlamaConfig.Routing routing) {
+        return routing.groups() > 1 && routing.topGroups() < routing.groups()
+                ? new Functional.ExpertGroups(routing.groups(), routing.topGroups(), routing.sigmoid())
+                : Functional.ExpertGroups.NONE;
     }
 
     /** Rotates the first {@code rotary} features of each head; the rest pass (partial rotary, Phi). */
@@ -2515,7 +2764,7 @@ public final class Llama implements LanguageModel {
             Block b = blocks.get(i);
             String p = "model.layers." + i + ".";
             Fused f = fused[i] == null ? new Fused(null, null) : fused[i];
-            Linear qkv = f.qkv() != null ? f.qkv()
+            Linear qkv = f.qkv() != null || b.latent != null ? f.qkv()   // latent attention has no k and v
                     : join(p + "self_attn.", List.of("q_proj", "k_proj", "v_proj"), "qkv_proj",
                             List.of(b.q, b.k, b.v));
             Linear gateUp = f.gateUp() != null || b.gate == null ? f.gateUp()   // experts have no single gate
@@ -2689,6 +2938,10 @@ public final class Llama implements LanguageModel {
         if (fused != null && !config.extras().fused()) {
             throw new IllegalStateException("a model with fused projections cannot be saved");
         }
+        if (config.extras().mla().present()) {
+            throw new UnsupportedOperationException("DeepSeek models cannot be written as GGUF yet; llama.cpp's "
+                    + "convert_hf_to_gguf.py converts a folder saved with save");
+        }
         String a = switch (config.architecture()) {
             case "qwen2", "qwen3", "phi3", "gemma", "gemma2" -> config.architecture();
             case "gemma3_text" -> "gemma3";
@@ -2783,8 +3036,8 @@ public final class Llama implements LanguageModel {
             t.put("output.weight", plain(lmHead.weight.value()).transpose());
         }
         boolean permuted = a.equals("llama");
-        Map<String, String> parts = ggufParts(config);
         for (int i = 0; i < config.layers(); i++) {
+            Map<String, String> parts = ggufParts(config, i);
             String p = "model.layers." + i + ".";
             String g = "blk." + i + ".";
             for (Map.Entry<String, String> n : ggufNorms(config).entrySet()) {

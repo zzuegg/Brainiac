@@ -95,23 +95,43 @@ final class AnthropicProvider extends RemoteProvider {
             body.put("system", request.system());
         }
         List<Object> messages = new ArrayList<>();
-        for (ChatMessage m : request.messages()) {
-            if (m.images().isEmpty()) {
-                messages.add(Map.of("role", m.role(), "content", m.text()));
+        boolean tools = !request.tools().isEmpty();
+        for (ToolCalls.Turn t : tools ? ToolCalls.turns(request.messages()) : CompatibleProvider.plain(request.messages())) {
+            ChatMessage m = t.source();
+            List<Object> parts = new ArrayList<>();
+            if (!t.calls().isEmpty()) {
+                if (!t.text().isEmpty()) {
+                    parts.add(Map.of("type", "text", "text", t.text()));
+                }
+                for (ToolCalls.Call c : t.calls()) {
+                    parts.add(Map.of("type", "tool_use", "id", c.id(), "name", c.name(), "input", c.arguments()));
+                }
+                messages.add(Map.of("role", "assistant", "content", parts));
                 continue;
             }
-            List<Object> parts = new ArrayList<>();
+            for (ToolCalls.Result r : t.results()) {
+                parts.add(Map.of("type", "tool_result", "tool_use_id", r.id(), "content", r.text()));
+            }
+            String text = t.results().isEmpty() ? m.text() : t.text();
+            if (parts.isEmpty() && m.images().isEmpty()) {
+                messages.add(Map.of("role", m.role(), "content", text));
+                continue;
+            }
             for (Media image : m.images()) {
                 parts.add(Map.of("type", "image", "source", Map.of("type", "base64", "media_type", image.mime(),
                         "data", ChatMessage.base64(image))));
             }
-            if (!m.text().isBlank()) {
-                parts.add(Map.of("type", "text", "text", m.text()));
+            if (!text.isBlank()) {
+                parts.add(Map.of("type", "text", "text", text));
             }
             messages.add(Map.of("role", m.role(), "content", parts));
         }
         body.put("messages", messages);
-        if (listed ? adaptive.contains(request.model()) : ADAPTIVE.matcher(request.model()).matches()) {
+        if (tools) {
+            body.put("tools", request.tools().stream().map(ToolCalls::anthropic).toList());
+        }
+        // thinking with tools needs its signed blocks sent back, which a conversation kept as text has not
+        if (!tools && (listed ? adaptive.contains(request.model()) : ADAPTIVE.matcher(request.model()).matches())) {
             // the default display leaves thinking blocks empty; the chat shows a summary instead
             body.put("thinking", Map.of("type", "adaptive", "display", "summarized"));
         }
@@ -127,14 +147,37 @@ final class AnthropicProvider extends RemoteProvider {
         }
         long[] usage = {-1, -1};
         String[] stop = {"end"};
+        ToolCalls.Pending[] call = {null};
         stream(uri("v1/messages"), key, body, headers, (event, data) -> {
             Map<String, Object> e = Json.object(Json.parse(data));
             switch (Json.string(e, "type", event)) {
+                case "content_block_start" -> {
+                    Map<String, Object> b = obj(e.get("content_block"));
+                    if ("tool_use".equals(Json.string(b, "type", ""))) {
+                        call[0] = new ToolCalls.Pending();
+                        call[0].id = Json.string(b, "id", null);
+                        call[0].name = Json.string(b, "name", null);
+                    }
+                }
+                case "content_block_stop" -> {
+                    if (call[0] != null) {
+                        String h = call[0].hermes();
+                        call[0] = null;
+                        if (!h.isEmpty()) {
+                            listener.text("\n" + h);
+                        }
+                    }
+                }
                 case "message_start" -> usage[0] = num(obj(obj(e.get("message")).get("usage")).get("input_tokens"));
                 case "content_block_delta" -> {
                     Map<String, Object> d = obj(e.get("delta"));
                     switch (Json.string(d, "type", "")) {
                         case "text_delta" -> listener.text(Json.string(d, "text", ""));
+                        case "input_json_delta" -> {
+                            if (call[0] != null) {
+                                call[0].arguments.append(Json.string(d, "partial_json", ""));
+                            }
+                        }
                         case "thinking_delta" -> {
                             String t = Json.string(d, "thinking", "");
                             if (!t.isEmpty()) {
@@ -165,7 +208,7 @@ final class AnthropicProvider extends RemoteProvider {
 
     private static String stopReason(String r) {
         return switch (r) {
-            case "end_turn", "stop_sequence" -> "end";
+            case "end_turn", "stop_sequence", "tool_use" -> "end";
             case "max_tokens" -> "length";
             default -> r;
         };
@@ -177,5 +220,10 @@ final class AnthropicProvider extends RemoteProvider {
         } catch (DateTimeParseException e) {
             return 0;
         }
+    }
+
+    @Override
+    public boolean nativeTools(String model) {
+        return true;
     }
 }

@@ -82,6 +82,8 @@ public final class Rope {
     }
 
     private final Settings settings;
+    /** Whether rotated pairs are neighbours ({@code x0, x1}) rather than halves. */
+    private final boolean interleaved;
     private double[] inv;
     /** The factor on cos and sin: yarn's attention scaling, otherwise 1. */
     private final float magnitude;
@@ -94,6 +96,19 @@ public final class Rope {
      * @param s the settings
      */
     public Rope(Settings s) {
+        this(s, false);
+    }
+
+    /**
+     * Computes the frequencies, for features that pair up as halves or as neighbours.
+     *
+     * @param s the settings
+     * @param interleaved whether feature {@code 2i} and {@code 2i + 1} rotate together (as
+     *     DeepSeek's weights and llama.cpp's "normal" rotation hold them) rather than {@code i}
+     *     and {@code i + dim / 2}
+     */
+    public Rope(Settings s, boolean interleaved) {
+        this.interleaved = interleaved;
         this.settings = s;
         this.inv = frequencies(s, s.theta());
         double m = 1;
@@ -222,8 +237,8 @@ public final class Rope {
         DType type = x.value().dtype();
         Tensor[] cached = last;
         if (cached != null && lastPositions == positions && cached[0].dtype() == type
-                && cached[0].device().equals(device) && cached[0].shape().equals(Shape.of(batch, 1, steps, 2, half))) {
-            return rotate(x, cached[0], cached[1], half);   // every block of one step: the same angles
+                && cached[0].device().equals(device) && cached[0].shape().equals(angles(batch, steps, half))) {
+            return rotate(x, cached[0], cached[1], half, interleaved);   // every block of one step: the same angles
         }
         // per position, both halves: cos and cos, and -sin and sin
         float[] cos = new float[batch * steps * d];
@@ -233,22 +248,18 @@ public final class Rope {
                 int row = (b * steps + t) * d;
                 for (int i = 0; i < half; i++) {
                     float angle = (float) positions[b][t] * (float) inv[i];
-                    float cs = (float) Math.cos(angle) * magnitude;
-                    float sn = (float) Math.sin(angle) * magnitude;
-                    cos[row + i] = cs;
-                    cos[row + half + i] = cs;
-                    sin[row + i] = -sn;
-                    sin[row + half + i] = sn;
+                    put(cos, sin, row, i, half, (float) Math.cos(angle) * magnitude,
+                            (float) Math.sin(angle) * magnitude);
                 }
             }
         }
-        Tensor c = Tensor.of(Shape.of(batch, 1, steps, 2, half), cos, device).to(type);
-        Tensor sn = Tensor.of(Shape.of(batch, 1, steps, 2, half), sin, device).to(type);
+        Tensor c = Tensor.of(angles(batch, steps, half), cos, device).to(type);
+        Tensor sn = Tensor.of(angles(batch, steps, half), sin, device).to(type);
         Tensor.evaluate(List.of(c, sn));
         last = new Tensor[] {c, sn};
         lastPositions = positions;
         lastMulti = null;
-        return rotate(x, c, sn, half);
+        return rotate(x, c, sn, half, interleaved);
     }
 
     /**
@@ -270,8 +281,8 @@ public final class Rope {
         DType type = x.value().dtype();
         Tensor[] cached = last;
         if (cached != null && lastMulti == positions && cached[0].dtype() == type
-                && cached[0].device().equals(device) && cached[0].shape().equals(Shape.of(batch, 1, steps, 2, half))) {
-            return rotate(x, cached[0], cached[1], half);
+                && cached[0].device().equals(device) && cached[0].shape().equals(angles(batch, steps, half))) {
+            return rotate(x, cached[0], cached[1], half, interleaved);
         }
         int[] sectionOf = new int[half];
         for (int i = 0, sec = 0, upto = sections[0]; i < half; i++) {
@@ -287,25 +298,36 @@ public final class Rope {
                 int row = (b * steps + t) * d;
                 for (int i = 0; i < half; i++) {
                     float angle = (float) positions[sectionOf[i]][b][t] * (float) inv[i];
-                    float cs = (float) Math.cos(angle) * magnitude;
-                    float sn = (float) Math.sin(angle) * magnitude;
-                    cos[row + i] = cs;
-                    cos[row + half + i] = cs;
-                    sin[row + i] = -sn;
-                    sin[row + half + i] = sn;
+                    put(cos, sin, row, i, half, (float) Math.cos(angle) * magnitude,
+                            (float) Math.sin(angle) * magnitude);
                 }
             }
         }
-        Tensor c = Tensor.of(Shape.of(batch, 1, steps, 2, half), cos, device).to(type);
-        Tensor sn = Tensor.of(Shape.of(batch, 1, steps, 2, half), sin, device).to(type);
+        Tensor c = Tensor.of(angles(batch, steps, half), cos, device).to(type);
+        Tensor sn = Tensor.of(angles(batch, steps, half), sin, device).to(type);
         Tensor.evaluate(List.of(c, sn));
         last = new Tensor[] {c, sn};
         lastPositions = null;
         lastMulti = positions;
-        return rotate(x, c, sn, half);
+        return rotate(x, c, sn, half, interleaved);
     }
 
     private int[][][] lastMulti;
+
+    /** The shape of the angle tables: per step, the two halves or the pairs. */
+    private Shape angles(int batch, int steps, int half) {
+        return interleaved ? Shape.of(batch, 1, steps, half, 2) : Shape.of(batch, 1, steps, 2, half);
+    }
+
+    /** Pair {@code i}'s cos and sin in a step's row: {@code cos, cos} and {@code -sin, sin}. */
+    private void put(float[] cos, float[] sin, int row, int i, int half, float cs, float sn) {
+        int a = interleaved ? row + 2 * i : row + i;
+        int b = interleaved ? a + 1 : row + half + i;
+        cos[a] = cs;
+        cos[b] = cs;
+        sin[a] = -sn;
+        sin[b] = sn;
+    }
 
     /** The angles of the last call, which the next call with the same positions array reuses. */
     private Tensor[] last;
@@ -313,11 +335,12 @@ public final class Rope {
 
     /**
      * {@code [x1, x2] -> [x1 cos - x2 sin, x2 cos + x1 sin]} as {@code x * c + flip(x) * s} over
-     * the two halves: element-wise only, so a GPU computes it in one pass.
+     * the two halves (or within each pair, interleaved): element-wise only, so a GPU computes
+     * it in one pass.
      */
-    private static Var rotate(Var x, Tensor c, Tensor sn, int half) {
+    private static Var rotate(Var x, Tensor c, Tensor sn, int half, boolean interleaved) {
         int[] s = x.shape().toArray();
-        Var y = x.reshape(s[0], s[1], s[2], 2, half);
-        return y.mul(c).add(y.flip(3).mul(sn)).reshape(s);
+        Var y = interleaved ? x.reshape(s[0], s[1], s[2], half, 2) : x.reshape(s[0], s[1], s[2], 2, half);
+        return y.mul(c).add(y.flip(interleaved ? 4 : 3).mul(sn)).reshape(s);
     }
 }
