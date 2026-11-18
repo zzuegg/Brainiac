@@ -245,7 +245,7 @@ public final class VulkanBackend implements Backend {
     private void loadTuning(boolean force) {
         java.nio.file.Path file = Tuning.file(vk.deviceKey);
         Tuning kept = force ? null : Tuning.load(file);
-        if (kept != null) {
+        if (kept != null && (kept.complete || vk.softwareDevice)) {
             tuning = kept;
             tuningNote = "tuned (" + file + ")";
             return;
@@ -1974,7 +1974,9 @@ public final class VulkanBackend implements Backend {
         VkStorage z = vs(out);
         eager(vs(a), z);
         VkStorage x = as(vs(a), z.dtype);
-        int columnGroups = ceil(n, 128);
+        // one row, sixteen columns per invocation from 16-byte loads, where the tuning chose it
+        boolean wide = m == 1 && n % 16 == 0 && ((p.layout() >> 8) & 15) == 0 && tuning.get("packedWide") != 0;
+        int columnGroups = ceil(n, wide ? 512 : 128);
         // enough pieces to fill the device, of at least PACKED_PIECE rows each, as matvec does:
         // with 256 a 896-wide model ran only 28 work groups and decoded at half f16's speed
         int pieces = Math.max(1, Math.min(ceil(k, (int) tuning.get("packedPiece")),
@@ -1988,7 +1990,8 @@ public final class VulkanBackend implements Backend {
         push.putLong(z.address()).putLong(split.partsAddress()).putLong(counters.address()).putInt(m).putInt(k)
                 .putInt(n).putInt(p.group()).putInt(p.layout()).putInt(chunk).putInt(pieces).putInt(split.counter())
                 .putInt(p.perSuper()).putFloat(p.shift());
-        vk.dispatch(shader("matmul_packed" + rows, z.dtype), columnGroups, 1, pieces, split.writes(z), p.reads(x));
+        vk.dispatch(shader(wide ? "matmul_packed_wide" : "matmul_packed" + rows, z.dtype), columnGroups, 1, pieces,
+                split.writes(z), p.reads(x));
         split.release();
         done(x, vs(a));
     }
