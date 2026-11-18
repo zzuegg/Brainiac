@@ -32,12 +32,23 @@ layout(push_constant) uniform P {
     uint m; uint k; uint n; uint group; uint flags; uint chunk; uint pieces; uint counter; uint perSuper; float shift;
 } p;
 shared ACC4 sums[SLICES][QUADS];
+// a's values for this piece's rows, read once by the whole work group instead of once per
+// invocation and row (with 4-bit levels, two loads of a for every load of levels)
+#define STAGED 4096
+#if !defined(TYPE_F64)
+shared float xs[STAGED];
+#endif
 shared int table[16];
 #include "packed_layout.glsl"
 
 // adds row r's levels l of the four columns, times each row of a, to part (and a to sum)
+#if defined(TYPE_F64)
+#define AT(i, r) ACC(LOAD(p.a, rowOf[i] + (r)))
+#else
+#define AT(i, r) (staged ? ACC(xs[(i) * len + (r) - from]) : ACC(LOAD(p.a, rowOf[i] + (r))))
+#endif
 #define ACCUMULATE(r, l) { ACC4 lv = (l); for (uint i = 0; i < ROWS; i++) { \
-    ACC x = ACC(LOAD(p.a, rowOf[i] + (r))); part[i] = fma(ACC4(x), lv, part[i]); sum[i] += x; } }
+    ACC x = AT(i, r); part[i] = fma(ACC4(x), lv, part[i]); sum[i] += x; } }
 
 // the levels of columns c .. c + 3 at row r (columns past n read as 0)
 ACC4 levels(uint r, uint c, bool words) {
@@ -124,6 +135,19 @@ void main() {
     if (mode == 3u && quad < 16 && slice == 0) {
         table[quad] = tableAt(quad);
     }
+    uint len = to - from;
+#if defined(TYPE_F64)
+    bool staged = false;
+#else
+    bool staged = ROWS * len <= STAGED;
+    if (staged) {
+        for (uint i = 0; i < ROWS; i++) {
+            for (uint t = slice * QUADS + quad; t < len; t += QUADS * SLICES) {
+                xs[i * len + t] = float(LOAD(p.a, rowOf[i] + from + t));
+            }
+        }
+    }
+#endif
     barrier();
     if (c < p.n) {
         uint r = start;
