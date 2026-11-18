@@ -99,4 +99,27 @@ class LocalVideosTest {
         assertFalse(new LocalVideos.Settings("", "1:1", false, 1, 1, 1, 1).small());
         assertThrows(IllegalArgumentException.class, () -> new LocalVideos.Settings("", "1:1", false, 1, 1, 1, 1, 64, 0));
     }
+
+    @Test
+    void anImageToVideoModelNeedsAStartPicture() throws Exception {
+        copy(Path.of("../brainiac-diffusion/src/test/resources/tiny/wan_i2v22"), data.resolve("models/tiny-i2v"));
+        ChatService chat = ChatService.at(new Keys(data.resolve("keys.properties"), Map.of()),
+                List.of(data.resolve("models")), Map.of(), data.resolve("outputs"));
+        assertEquals("IMAGE", chat.videoOptions("local/tiny-i2v").get("input"));
+        LocalVideos.Settings none = new LocalVideos.Settings("", "1:1", false, 0.25, 1, 1, 3, 32, 32);
+        IOException e = assertThrows(IOException.class, () -> chat.video("local/tiny-i2v", "a lighthouse", none,
+                (s, t) -> true, x -> { }));
+        assertTrue(e.getMessage().contains("start picture"), e.getMessage());
+
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(40, 30,
+                java.awt.image.BufferedImage.TYPE_INT_RGB);
+        img.setRGB(5, 5, 0xff8800);
+        java.io.ByteArrayOutputStream png = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(img, "png", png);
+        LocalVideos.Settings start = new LocalVideos.Settings("", "1:1", false, 0.25, 1, 1, 3, 32, 32,
+                new Media(png.toByteArray(), "image/png"));
+        ChatService.Filmed f = chat.video("local/tiny-i2v", "a lighthouse", start, (s, t) -> true, x -> { });
+        assertEquals(32, f.clip().width());
+        assertEquals(5, f.clip().frames());
+    }
 }

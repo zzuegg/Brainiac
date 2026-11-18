@@ -50,7 +50,8 @@ import java.util.Map;
  *       model's usual steps and guidance.
  *   <li>{@code POST /api/video} with {@code {"model": "local/wan2.1-t2v-1.3b", "prompt": "...",
  *       "negativePrompt": "", "aspect": "16:9", "small": false, "seconds": 2, "steps": 30,
- *       "guidance": 5, "seed": 42}} (optionally {@code "width"} and {@code "height"} of its own)
+ *       "guidance": 5, "seed": 42}} (optionally {@code "width"} and {@code "height"} of its own, and
+ *       {@code "image"}, a {@code data:} URL of the first frame for image-to-video models)
  *       makes a clip with a Wan model, as a server-sent event stream:
  *       {@code route}, {@code step} ({@code {step, total}}), one {@code video} ({@code {mime, data,
  *       file, seed, width, height, frames, fps}}, an animated PNG), then {@code done} or
@@ -395,11 +396,25 @@ final class ChatRoutes {
     }
 
     private void video(HttpExchange ex) throws IOException {
-        Map<String, Object> body = Exchanges.body(ex, 256 * 1024);
+        Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
         String model = Json.string(body, "model", ChatService.AUTO);
         String prompt = Json.string(body, "prompt", "");
         if (prompt.isBlank()) {
             throw new Exchanges.BadRequest("describe the video first");
+        }
+        io.github.zzuegg.brainiac.studio.chat.Media picture = null;
+        String image = Json.string(body, "image", "");
+        if (!image.isBlank()) {
+            // a data: URL from the page, or plain base64
+            int comma = image.indexOf(',');
+            String mime = image.startsWith("data:") && comma > 0
+                    ? image.substring(5, comma).replace(";base64", "") : "image/png";
+            try {
+                picture = new io.github.zzuegg.brainiac.studio.chat.Media(
+                        java.util.Base64.getDecoder().decode(image.substring(comma + 1).strip()), mime);
+            } catch (IllegalArgumentException e) {
+                throw new Exchanges.BadRequest("the start picture is not base64");
+            }
         }
         long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
         io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings;
@@ -408,7 +423,7 @@ final class ChatRoutes {
                     Json.string(body, "negativePrompt", ""), Json.string(body, "aspect", "16:9"),
                     Boolean.TRUE.equals(body.get("small")), Json.number(body, "seconds", 2),
                     (int) Json.integer(body, "steps", 30), Json.number(body, "guidance", 5), seed,
-                    (int) Json.integer(body, "width", 0), (int) Json.integer(body, "height", 0));
+                    (int) Json.integer(body, "width", 0), (int) Json.integer(body, "height", 0), picture);
         } catch (IllegalArgumentException e) {
             throw new Exchanges.BadRequest(e.getMessage());
         }

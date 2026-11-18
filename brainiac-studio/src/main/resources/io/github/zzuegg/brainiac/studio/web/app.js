@@ -3349,7 +3349,7 @@
   const VID = {
     mode: store.get("createMode", "pictures"), model: store.get("vidModel", "auto"), aspect: store.get("vidAspect", "16:9"),
     seconds: store.get("vidSeconds", 2), small: store.get("vidSmall", false), prompt: "", neg: "", seed: "",
-    steps: {}, guidance: {}, opts: {}, clips: [], making: null, stop: null,
+    steps: {}, guidance: {}, opts: {}, clips: [], making: null, stop: null, start: null,
   };
   // only models the studio can make clips with (a cloud's listed video models cannot yet)
   const videoModels = () => mediaModels("video").filter(m => m.makesVideo);
@@ -3399,6 +3399,10 @@
         <div class="field"><label for="vid-model">Model</label>${mediaPicker("vid-model", "video", VID.model, videoModels())}</div>
         ${m ? `<div class="flag ok-note">${icon("lock")}<div><b>${m.provider === "local" ? "Makes the clip on this PC." : `Runs on ${esc(providerName(m.provider))}.`}</b> ${m.provider === "local" ? "Nothing is sent anywhere." : ""}${o.label ? ` <span class="muted">${esc(o.label)}</span>` : ""}</div></div>` : ""}
         <div class="prompt-box"><textarea id="vid-prompt" aria-label="Prompt" placeholder="What should the video show? Say what moves, and how the camera moves.">${esc(VID.prompt)}</textarea></div>
+        ${o.input === "IMAGE" || o.input === "TEXT_OR_IMAGE" ? `<div class="field"><label for="vid-start">Start picture${o.input === "IMAGE" ? "" : ` <span class="muted">optional</span>`}</label>
+          ${VID.start ? `<div class="vstart"><img src="${VID.start}" alt="Start picture"><button class="iconbtn sm" id="vid-start-clear" type="button" aria-label="Remove the start picture" title="Remove">${icon("x")}</button></div>` : ""}
+          <input class="input" type="file" id="vid-start" accept="image/png,image/jpeg">
+          <span class="muted" style="font-size:12px">The clip begins with this picture, cut to the clip's shape.</span></div>` : ""}
         <div class="field"><label>Aspect</label>
           <div class="ratio">${ratios.map(([l, w, h]) => `<button data-vaspect="${l}" aria-pressed="${VID.aspect === l}"><i style="width:${w}px;height:${h}px"></i>${l}</button>`).join("")}</div></div>
         <div class="field"><label>Length</label><div class="seg" style="width:100%">${[1, 2, 3, 5].map(n => `<button data-vseconds="${n}" aria-pressed="${VID.seconds === n}" style="flex:1">${n} s</button>`).join("")}</div></div>
@@ -3412,11 +3416,11 @@
         </div>
         ${size ? `<p class="muted" style="font-size:12px;margin:0">${size[0]}×${size[1]}, ${frames} frames at ${fps} fps. A clip takes minutes; shorter, smaller clips and fewer steps are quicker.</p>` : ""}
         ${VID.making && VID.stop ? `<button class="btn" id="vid-stop" style="height:40px;justify-content:center">${icon("stop")}Stop</button>`
-          : `<button class="btn primary" id="vid-go" style="height:40px;justify-content:center" ${!m || VID.making ? "disabled" : ""}>${icon("wand")}${VID.making ? "Making…" : "Make video"} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>`}
+          : `<button class="btn primary" id="vid-go" style="height:40px;justify-content:center" ${!m || VID.making || (o.input === "IMAGE" && !VID.start) ? "disabled" : ""}>${icon("wand")}${VID.making ? "Making…" : "Make video"} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>`}
       </aside>
       <section class="gallery" aria-label="Videos">
         ${!models.length ? `<div class="empty"><div class="flag">${icon("flask")}<div><b>No video model yet.</b>
-          ${L.info ? "Put a Wan 2.1 or 2.2 text-to-video model in a model folder: a diffusers folder, or a folder with ComfyUI's transformer, VAE and umT5 files plus umT5's tokenizer.json." : "Looking for models…"}
+          ${L.info ? "Put a Wan 2.1 or 2.2 model in a model folder: a diffusers folder, or a folder with ComfyUI's transformer, VAE and umT5 files plus umT5's tokenizer.json (and clip_vision_h.safetensors for Wan 2.1 image-to-video)." : "Looking for models…"}
           <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>` : ""}
         ${VID.making ? `<div id="vmaking">${makingHtml()}</div>` : ""}
         ${VID.clips.map((c, ci) => `
@@ -3451,6 +3455,7 @@
     const body = { model: m.key, prompt, negativePrompt: VID.neg, aspect: VID.aspect, small: VID.small, seconds: VID.seconds,
       steps: VID.steps[m.key] ?? o.steps ?? 30, guidance: VID.guidance[m.key] ?? o.guidance ?? 5 };
     if (seed != null) body.seed = seed;
+    if (VID.start && (o.input === "IMAGE" || o.input === "TEXT_OR_IMAGE")) body.image = VID.start;
     const ctrl = new AbortController();
     VID.stop = ctrl;
     VID.making = { prompt, model: m.name, aspect: VID.aspect, step: 0, total: 0 };
@@ -3484,6 +3489,14 @@
     $("#vid-prompt")?.addEventListener("input", e => { VID.prompt = e.target.value; });
     $("#vid-prompt")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") makeVideo(); });
     $("#vid-go")?.addEventListener("click", makeVideo);
+    $("#vid-start")?.addEventListener("change", e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { keepVideoFields(); VID.start = r.result; render(); };
+      r.readAsDataURL(f);
+    });
+    $("#vid-start-clear")?.addEventListener("click", () => { keepVideoFields(); VID.start = null; render(); });
     $("#vid-stop")?.addEventListener("click", () => VID.stop?.abort());
     $("#vid-seed-dice")?.addEventListener("click", () => { VID.seed = ""; const f = $("#vid-seed"); if (f) { f.value = ""; f.focus(); } });
     ["#vid-neg", "#vid-seed", "#vid-steps", "#vid-guidance"].forEach(id => $(id)?.addEventListener("change", keepVideoFields));

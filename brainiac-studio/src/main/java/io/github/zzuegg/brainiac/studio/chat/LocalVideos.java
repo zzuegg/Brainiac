@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.studio.chat;
 
+import io.github.zzuegg.brainiac.diffusion.GeneratedImage;
 import io.github.zzuegg.brainiac.diffusion.GeneratedVideo;
 import io.github.zzuegg.brainiac.diffusion.VideoRequest;
 import io.github.zzuegg.brainiac.diffusion.Wan;
@@ -47,9 +48,10 @@ public final class LocalVideos {
      * @param seed the seed
      * @param width a width of its own, or 0 for the aspect's; rounded to the model's grid
      * @param height a height of its own, or 0 for the aspect's
+     * @param start the first frame (a PNG or JPEG) for image-to-video models, or {@code null}
      */
     public record Settings(String negativePrompt, String aspect, boolean small, double seconds, int steps,
-            double guidance, long seed, int width, int height) {
+            double guidance, long seed, int width, int height, Media start) {
 
         /** Checks the settings. */
         public Settings {
@@ -82,7 +84,25 @@ public final class LocalVideos {
          */
         public Settings(String negativePrompt, String aspect, boolean small, double seconds, int steps,
                 double guidance, long seed) {
-            this(negativePrompt, aspect, small, seconds, steps, guidance, seed, 0, 0);
+            this(negativePrompt, aspect, small, seconds, steps, guidance, seed, 0, 0, null);
+        }
+
+        /**
+         * Settings without a first frame.
+         *
+         * @param negativePrompt what the clip should not show
+         * @param aspect the shape
+         * @param small whether at half the side
+         * @param seconds how long
+         * @param steps denoising steps
+         * @param guidance the guidance
+         * @param seed the seed
+         * @param width a width of its own, or 0
+         * @param height a height of its own, or 0
+         */
+        public Settings(String negativePrompt, String aspect, boolean small, double seconds, int steps,
+                double guidance, long seed, int width, int height) {
+            this(negativePrompt, aspect, small, seconds, steps, guidance, seed, width, height, null);
         }
 
         /**
@@ -136,7 +156,7 @@ public final class LocalVideos {
     public record Clip(Media media, long seed, int width, int height, int frames, int fps) {
     }
 
-    private record Found(FileTime modified, boolean wan, boolean large) {
+    private record Found(FileTime modified, boolean wan, boolean large, Wan.Input input) {
     }
 
     private final Supplier<List<Path>> places;
@@ -220,23 +240,25 @@ public final class LocalVideos {
         try {
             t = Files.getLastModifiedTime(p);
         } catch (IOException e) {
-            return new Found(null, false, false);
+            return new Found(null, false, false, Wan.Input.TEXT);
         }
         Found f = seen.get(p);
         if (f == null || !f.modified().equals(t)) {
             boolean wan = false;
             boolean large = false;
+            Wan.Input input = Wan.Input.TEXT;
             // a diffusers folder says what it is; a folder of single files must hold safetensors
             if (Files.isRegularFile(p.resolve("model_index.json")) || hasWeights(p)) {
                 try {
                     Wan.Files files = Wan.Files.find(p);
                     wan = true;
                     large = large(files);
+                    input = Wan.inputOf(files);
                 } catch (IOException | RuntimeException e) {
                     wan = false;
                 }
             }
-            f = new Found(t, wan, large);
+            f = new Found(t, wan, large, input);
             seen.put(p, f);
         }
         return f;
@@ -283,11 +305,38 @@ public final class LocalVideos {
         if (path == null) {
             throw new IOException("no video model named " + id + " on this PC");
         }
+        Wan.Input input = check(path).input();
+        if (input == Wan.Input.IMAGE && s.start() == null) {
+            throw new IOException(id + " makes videos from a picture: choose a start picture");
+        }
+        if (input == Wan.Input.TEXT && s.start() != null) {
+            throw new IOException(id + " makes videos from text only: remove the start picture or choose an"
+                    + " image-to-video model");
+        }
+        GeneratedImage start = s.start() == null ? null : picture(s.start());
         Wan model = load(path);
         VideoRequest request = s.request(prompt, check(path).large(), model.fps());
-        GeneratedVideo video = model.generate(request, (step, total, preview) -> listener.step(step, total));
+        GeneratedVideo video = model.generate(request, start, (step, total, preview) -> listener.step(step, total));
         return new Clip(new Media(video.apng(), "image/png"), video.seed(), video.width(), video.height(),
                 video.frames().size(), video.fps());
+    }
+
+    /** A PNG or JPEG as 8-bit RGB. */
+    static GeneratedImage picture(Media m) throws IOException {
+        java.awt.image.BufferedImage b = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(m.data()));
+        if (b == null) {
+            throw new IOException("the start picture is not a PNG, JPEG, GIF or BMP image");
+        }
+        int w = b.getWidth();
+        int h = b.getHeight();
+        int[] argb = b.getRGB(0, 0, w, h, null, 0, w);
+        byte[] rgb = new byte[w * h * 3];
+        for (int i = 0; i < argb.length; i++) {
+            rgb[i * 3] = (byte) (argb[i] >> 16);
+            rgb[i * 3 + 1] = (byte) (argb[i] >> 8);
+            rgb[i * 3 + 2] = (byte) argb[i];
+        }
+        return new GeneratedImage(w, h, rgb, -1);
     }
 
     private Wan load(Path path) throws IOException {
@@ -322,6 +371,8 @@ public final class LocalVideos {
         boolean large = check(p).large();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("kind", large ? "WAN22_5B" : "WAN");
+        // TEXT, TEXT_OR_IMAGE (a start picture is optional) or IMAGE (one is needed)
+        m.put("input", String.valueOf(check(p).input()));
         m.put("label", label(large));
         m.put("steps", large ? 40 : 30);
         m.put("guidance", 5.0);

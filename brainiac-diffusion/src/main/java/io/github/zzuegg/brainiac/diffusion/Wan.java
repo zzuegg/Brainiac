@@ -717,6 +717,28 @@ public final class Wan implements AutoCloseable {
         }
     }
 
+    /**
+     * Says what a model generates from, from its files' headers, without loading it.
+     *
+     * @param files the model's parts
+     * @return {@link Input#IMAGE} for an image-to-video transformer, {@link Input#TEXT_OR_IMAGE}
+     *     with Wan 2.2's 16x autoencoder, else {@link Input#TEXT}
+     */
+    public static Input inputOf(Files files) {
+        WanTransformer.Settings t;
+        try (WeightSource s = WeightSource.open(files.transformers().get(0))) {
+            t = WanPretrained.transformerSettings(s, WanPretrained.transformerNames(s), files.transformerConfig());
+        }
+        if (t.inChannels() != t.outChannels()) {
+            return Input.IMAGE;
+        }
+        try (WeightSource s = WeightSource.open(files.vae())) {
+            String prefix = WanPretrained.diffusersVae(s) ? "" : WanPretrained.vaePrefix(s);
+            return WanPretrained.vaeSettings(s, prefix, files.vaeConfig()).residual() ? Input.TEXT_OR_IMAGE
+                    : Input.TEXT;
+        }
+    }
+
     /** What a transformer of this shape generates from, checking that its parts are there. */
     private static Input input(WanTransformer.Settings t, WanVae.Settings vae, Files files) {
         int z = vae.latentChannels();
