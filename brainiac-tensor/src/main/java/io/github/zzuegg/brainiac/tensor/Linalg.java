@@ -565,6 +565,41 @@ public final class Linalg {
     }
 
     /**
+     * Squared Euclidean distances between two sets of points, from one matrix product
+     * ({@code |a|^2 + |b|^2 - 2 a b^T}) so it runs on the tensors' device; tiny negative
+     * results of rounding are clamped to 0.
+     *
+     * @param a points {@code [..., n, d]}
+     * @param b points {@code [..., m, d]}, with the same leading dimensions
+     * @return the distances {@code [..., n, m]}
+     */
+    public static Tensor squaredDistances(Tensor a, Tensor b) {
+        int r = a.shape().rank();
+        if (r < 2 || b.shape().rank() != r || a.shape().dim(-1) != b.shape().dim(-1)) {
+            throw new IllegalArgumentException("needs points [..., n, d] and [..., m, d], got " + a.shape() + " and "
+                    + b.shape());
+        }
+        Tensor aa = a.square().sum(r - 1, true);                    // [..., n, 1]
+        Tensor bb = b.square().sum(r - 1, true).transpose();        // [..., 1, m]
+        return aa.add(bb).sub(a.matmul(b.transpose()).mul(2f)).maximum(0f);
+    }
+
+    /**
+     * The {@code k} nearest keys of each query by Euclidean distance, nearest first, for a
+     * batch of point sets at once.
+     *
+     * @param queries points {@code [..., n, d]}
+     * @param keys points {@code [..., m, d]}
+     * @param k how many neighbours, at most {@code m}
+     * @return {@code {distances, indices}}, each {@code [..., n, k]}; the indices are floats
+     *     as {@link Tensor#topk} gives them
+     */
+    public static Tensor[] nearestNeighbours(Tensor queries, Tensor keys, int k) {
+        Tensor[] top = squaredDistances(queries, keys).neg().topk(k);
+        return new Tensor[] {top[0].neg().maximum(0f).sqrt(), top[1]};
+    }
+
+    /**
      * The inverses of square matrices.
      *
      * @param a matrices {@code [..., n, n]}
