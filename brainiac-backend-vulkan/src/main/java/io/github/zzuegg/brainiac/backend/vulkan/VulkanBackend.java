@@ -114,22 +114,7 @@ public final class VulkanBackend implements Backend {
                 boolean statistics = Boolean.getBoolean("brainiac.vulkan.statistics");
                 boolean teardown = !"false".equals(System.getProperty("brainiac.vulkan.teardown"));
                 if (statistics || teardown) {
-                    VkContext context = vk;
-                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                        synchronized (VulkanBackend.this) {
-                            if (statistics && vk == context && context.dispatches > 0) {
-                                System.err.println(name() + ": " + statistics());
-                            }
-                            if (teardown && vk == context) {
-                                vk = null;   // later calls fail plainly instead of using a destroyed device
-                                try {
-                                    context.shutdown();
-                                } catch (RuntimeException | LinkageError e) {
-                                    // exiting anyway
-                                }
-                            }
-                        }
-                    }, "vulkan-exit"));
+                    atExit(this, statistics, teardown);
                 }
                 String mode = System.getProperty("brainiac.vulkan.tune", "auto");
                 if (!mode.equals("false") && !mode.equals("off")) {
@@ -142,6 +127,64 @@ public final class VulkanBackend implements Backend {
             }
         }
         return vk != null;
+    }
+
+    /** The backends to tear down at exit, in the order they started. */
+    private static final List<VulkanBackend> EXITING = new java.util.ArrayList<>();
+
+    /**
+     * Registers a backend for the one exit hook. That hook prints statistics, then destroys
+     * every device (each after freeing what was made on it) and only then the instances, one
+     * after another: hooks run concurrently, and drivers whose libraries every instance shares
+     * (NVIDIA's) crashed when one context's instance went while another's device was live.
+     */
+    private static void atExit(VulkanBackend backend, boolean statistics, boolean teardown) {
+        synchronized (EXITING) {
+            if (EXITING.isEmpty()) {
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> exit(statistics, teardown), "vulkan-exit"));
+            }
+            EXITING.add(backend);
+        }
+    }
+
+    private static void exit(boolean statistics, boolean teardown) {
+        List<VkContext> contexts = new java.util.ArrayList<>();
+        List<VulkanBackend> backends;
+        synchronized (EXITING) {
+            backends = List.copyOf(EXITING);
+        }
+        for (VulkanBackend b : backends) {
+            b.prefetcher.shutdownNow();
+            synchronized (b) {
+                VkContext context = b.vk;
+                if (context == null) {
+                    continue;
+                }
+                if (statistics && context.dispatches > 0) {
+                    System.err.println(b.name() + ": " + b.statistics());
+                }
+                if (teardown) {
+                    b.vk = null;   // later calls fail plainly instead of using a destroyed device
+                    contexts.add(context);
+                }
+            }
+        }
+        List<VkContext> destroyed = new java.util.ArrayList<>();
+        for (VkContext c : contexts) {
+            try {
+                c.destroyDevice();
+                destroyed.add(c);
+            } catch (RuntimeException | LinkageError e) {
+                // exiting anyway; its instance stays, as it may still hold the device
+            }
+        }
+        for (VkContext c : destroyed) {
+            try {
+                c.destroyInstance();
+            } catch (RuntimeException | LinkageError e) {
+                // exiting anyway
+            }
+        }
     }
 
     /**
