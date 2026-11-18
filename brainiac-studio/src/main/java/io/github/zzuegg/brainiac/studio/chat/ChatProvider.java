@@ -102,6 +102,34 @@ public interface ChatProvider {
     }
 
     /**
+     * Returns whether {@link #video} works here: listed video models of other providers (such
+     * as a cloud's) are shown but cannot make clips through the studio yet.
+     *
+     * @return true if this provider makes clips
+     */
+    default boolean makesVideo() {
+        return false;
+    }
+
+    /**
+     * Makes a video clip with one of this provider's video models, step by step. This PC does
+     * ({@link LocalProvider}); a worker host can too.
+     *
+     * @param model the model's id within this provider
+     * @param prompt what the clip shows
+     * @param settings the clip's shape, length and sampling
+     * @param listener hears each step and can stop the clip
+     * @return the clip
+     * @throws IOException if the model cannot be loaded or the provider fails
+     * @throws InterruptedException if interrupted while waiting
+     * @throws java.util.concurrent.CancellationException if the listener stopped it
+     */
+    default LocalVideos.Clip video(String model, String prompt, LocalVideos.Settings settings,
+            LocalVideos.Listener listener) throws IOException, InterruptedException {
+        throw new IOException(name() + " does not make videos");
+    }
+
+    /**
      * Draws pictures with one of this provider's image models.
      *
      * @param model the model's id

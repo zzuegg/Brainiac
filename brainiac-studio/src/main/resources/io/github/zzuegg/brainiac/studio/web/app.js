@@ -3184,9 +3184,9 @@ reason ::= [a-z ]+`;
   const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium) && m.shown !== false);
   const pickedModel = (sel, medium) => modelByKey(sel === "auto" ? L.info?.auto?.[medium] : sel);
 
-  function mediaPicker(id, medium, sel) {
+  function mediaPicker(id, medium, sel, list = mediaModels(medium)) {
     const groups = {};
-    mediaModels(medium).forEach(m => (groups[m.provider] ||= []).push(m));
+    list.forEach(m => (groups[m.provider] ||= []).push(m));
     const auto = L.info?.auto?.[medium] ? modelByKey(L.info.auto[medium]) : null;
     return `<select class="input" id="${id}" aria-label="Model">
       <option value="auto" ${sel === "auto" ? "selected" : ""}>Auto${auto ? " · " + esc(auto.name) : ""}</option>
@@ -3277,13 +3277,14 @@ reason ::= [a-z ]+`;
   }
 
   function liveCreateView() {
+    if (VID.mode === "video") return liveVideoView();
     const m = pickedModel(G.imgModel, "image");
     const local = onMachine(m);
     const ratios = [["1:1", 14, 14], ["4:3", 16, 12], ["16:9", 18, 10], ["3:4", 12, 16], ["9:16", 10, 18]];
     return `
     <div class="create">
       <aside class="side" aria-label="Image settings">
-        <div style="display:flex;align-items:center;gap:8px"><span class="h2">Images</span><span class="grow"></span>${m ? `<span class="chip c-image">${esc(m.name)}</span>` : ""}</div>
+        <div style="display:flex;align-items:center;gap:8px"><span class="h2">Images</span>${createSwitch()}<span class="grow"></span>${m ? `<span class="chip c-image">${esc(m.name)}</span>` : ""}</div>
         <div class="field"><label for="img-model">Model</label>${mediaPicker("img-model", "image", G.imgModel)}</div>
         ${local ? "" : remoteNote(m, "The prompt")}
         <div class="prompt-box"><textarea id="img-prompt" aria-label="Prompt" placeholder="What should the picture show?">${esc(G.prompt)}</textarea></div>
@@ -3383,6 +3384,11 @@ reason ::= [a-z ]+`;
   }
 
   function bindLiveCreate() {
+    $$("[data-cmode]").forEach(b => b.addEventListener("click", () => {
+      if (VID.mode === "video") keepVideoFields(); else keepCreateFields();
+      VID.mode = b.dataset.cmode; store.set("createMode", VID.mode); render();
+    }));
+    if (VID.mode === "video") return bindLiveVideo();
     $("#img-model")?.addEventListener("change", e => { keepCreateFields(); G.imgModel = e.target.value; store.set("imgModel", G.imgModel); render(); });
     $$("[data-aspect]").forEach(b => b.addEventListener("click", () => { keepCreateFields(); G.aspect = b.dataset.aspect; store.set("aspect", G.aspect); render(); }));
     $$("[data-count]").forEach(b => b.addEventListener("click", () => { keepCreateFields(); G.count = +b.dataset.count; store.set("imgCount", G.count); render(); }));
@@ -3398,6 +3404,171 @@ reason ::= [a-z ]+`;
       keepCreateFields(); G.prompt = G.batches[+bi].prompt; G.seed = seed; render(); $("#img-prompt").focus();
     }));
     $$("[data-reuse]").forEach(b => b.addEventListener("click", () => { G.prompt = G.batches[+b.dataset.reuse].prompt; render(); $("#img-prompt").focus(); }));
+    $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
+  // ---------- video, on the Images screen ----------
+  // Clips are made by a Wan model on this PC (or a worker host), shown as animated PNGs and saved
+  // to the outputs folder. Making one takes minutes, so the step and a stop button stay in view.
+  const VID = {
+    mode: store.get("createMode", "pictures"), model: store.get("vidModel", "auto"), aspect: store.get("vidAspect", "16:9"),
+    seconds: store.get("vidSeconds", 2), small: store.get("vidSmall", false), prompt: "", neg: "", seed: "",
+    steps: {}, guidance: {}, opts: {}, clips: [], making: null, stop: null, start: null,
+  };
+  // only models the studio can make clips with (a cloud's listed video models cannot yet)
+  const videoModels = () => mediaModels("video").filter(m => m.makesVideo);
+  const createSwitch = () => `<div class="seg vo-mode" role="group" aria-label="What to make"><button data-cmode="pictures" aria-pressed="${VID.mode !== "video"}">Pictures</button><button data-cmode="video" aria-pressed="${VID.mode === "video"}">Video</button></div>`;
+
+  // a video model's usual steps, guidance, frame rate and sizes, asked for once
+  function videoOpts(m) {
+    if (!m) return {};
+    const o = VID.opts[m.key];
+    if (!o) {
+      VID.opts[m.key] = { loading: true };
+      postJson("/api/video/options", { model: m.key }).then(j => { VID.opts[m.key] = j; if (state.view === "create" && VID.mode === "video") renderCreateSide(); })
+        .catch(() => { VID.opts[m.key] = {}; });
+      return {};
+    }
+    return o.loading ? {} : o;
+  }
+  function keepVideoFields() {
+    const m = pickedModel(VID.model, "video");
+    if ($("#vid-prompt")) VID.prompt = $("#vid-prompt").value;
+    if ($("#vid-neg")) VID.neg = $("#vid-neg").value;
+    if ($("#vid-seed")) VID.seed = $("#vid-seed").value.trim();
+    const edited = el => el && el.value !== el.defaultValue;
+    if (m && edited($("#vid-steps"))) VID.steps[m.key] = +$("#vid-steps").value || undefined;
+    if (m && edited($("#vid-guidance"))) { const g = parseFloat($("#vid-guidance").value); VID.guidance[m.key] = isNaN(g) ? undefined : g; }
+  }
+  // the size a clip will have, as the studio picks it
+  function videoSize(o) {
+    const wh = o.sizes?.[VID.aspect];
+    if (!wh) return null;
+    const grid = o.kind === "WAN22_5B" ? 32 : 16;
+    return VID.small ? wh.map(v => Math.max(grid, Math.round(v / 2 / grid) * grid)) : wh;
+  }
+
+  function liveVideoView() {
+    const models = videoModels();
+    const m = pickedModel(VID.model, "video");
+    const o = videoOpts(m);
+    const ratios = [["16:9", 18, 10], ["9:16", 10, 18], ["1:1", 14, 14], ["4:3", 16, 12], ["3:4", 12, 16]];
+    const steps = m ? VID.steps[m.key] ?? o.steps ?? 30 : 30, guidance = m ? VID.guidance[m.key] ?? o.guidance ?? 5 : 5;
+    const size = videoSize(o), fps = o.fps || 16;
+    const frames = 1 + 4 * Math.round(VID.seconds * fps / 4);
+    return `
+    <div class="create">
+      <aside class="side" aria-label="Video settings">
+        <div style="display:flex;align-items:center;gap:8px"><span class="h2">Images</span>${createSwitch()}<span class="grow"></span>${m ? `<span class="chip c-image">${esc(m.name)}</span>` : ""}</div>
+        <div class="field"><label for="vid-model">Model</label>${mediaPicker("vid-model", "video", VID.model, videoModels())}</div>
+        ${m ? `<div class="flag ok-note">${icon("lock")}<div><b>${m.provider === "local" ? "Makes the clip on this PC." : `Runs on ${esc(providerName(m.provider))}.`}</b> ${m.provider === "local" ? "Nothing is sent anywhere." : ""}${o.label ? ` <span class="muted">${esc(o.label)}</span>` : ""}</div></div>` : ""}
+        <div class="prompt-box"><textarea id="vid-prompt" aria-label="Prompt" placeholder="What should the video show? Say what moves, and how the camera moves.">${esc(VID.prompt)}</textarea></div>
+        ${o.input === "IMAGE" || o.input === "TEXT_OR_IMAGE" ? `<div class="field"><label for="vid-start">Start picture${o.input === "IMAGE" ? "" : ` <span class="muted">optional</span>`}</label>
+          ${VID.start ? `<div class="vstart"><img src="${VID.start}" alt="Start picture"><button class="iconbtn sm" id="vid-start-clear" type="button" aria-label="Remove the start picture" title="Remove">${icon("x")}</button></div>` : ""}
+          <input class="input" type="file" id="vid-start" accept="image/png,image/jpeg">
+          <span class="muted" style="font-size:12px">The clip begins with this picture, cut to the clip's shape.</span></div>` : ""}
+        <div class="field"><label>Aspect</label>
+          <div class="ratio">${ratios.map(([l, w, h]) => `<button data-vaspect="${l}" aria-pressed="${VID.aspect === l}"><i style="width:${w}px;height:${h}px"></i>${l}</button>`).join("")}</div></div>
+        <div class="field"><label>Length</label><div class="seg" style="width:100%">${[1, 2, 3, 5].map(n => `<button data-vseconds="${n}" aria-pressed="${VID.seconds === n}" style="flex:1">${n} s</button>`).join("")}</div></div>
+        <label class="check"><input type="checkbox" id="vid-small" ${VID.small ? "checked" : ""}> Half size, about four times faster</label>
+        <div class="field"><label for="vid-neg">Leave out</label><input class="input" id="vid-neg" placeholder="Wan's own list: blur, static frames, text…" value="${esc(VID.neg)}"></div>
+        <div class="img-grid">
+          <div class="field"><label for="vid-steps">Steps</label><input class="input mono" id="vid-steps" type="number" min="1" max="100" value="${steps}"></div>
+          <div class="field"><label for="vid-guidance" title="How closely to follow the prompt">Guidance</label><input class="input mono" id="vid-guidance" type="number" min="0" max="20" step="0.5" value="${guidance}"></div>
+          <div class="field"><label for="vid-seed">Seed</label><div class="seed-row"><input class="input mono" id="vid-seed" inputmode="numeric" placeholder="random" value="${esc(VID.seed)}">
+            <button class="iconbtn sm" id="vid-seed-dice" type="button" aria-label="Random seed" title="Random seed each time">${icon("retry")}</button></div></div>
+        </div>
+        ${size ? `<p class="muted" style="font-size:12px;margin:0">${size[0]}×${size[1]}, ${frames} frames at ${fps} fps. A clip takes minutes; shorter, smaller clips and fewer steps are quicker.</p>` : ""}
+        ${VID.making && VID.stop ? `<button class="btn" id="vid-stop" style="height:40px;justify-content:center">${icon("stop")}Stop</button>`
+          : `<button class="btn primary" id="vid-go" style="height:40px;justify-content:center" ${!m || VID.making || (o.input === "IMAGE" && !VID.start) ? "disabled" : ""}>${icon("wand")}${VID.making ? "Making…" : "Make video"} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>`}
+      </aside>
+      <section class="gallery" aria-label="Videos">
+        ${!models.length ? `<div class="empty"><div class="flag">${icon("flask")}<div><b>No video model yet.</b>
+          ${L.info ? "Put a Wan 2.1 or 2.2 model in a model folder: a diffusers folder, or a folder with ComfyUI's transformer, VAE and umT5 files plus umT5's tokenizer.json (and clip_vision_h.safetensors for Wan 2.1 image-to-video)." : "Looking for models…"}
+          <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>` : ""}
+        ${VID.making ? `<div id="vmaking">${makingHtml()}</div>` : ""}
+        ${VID.clips.map((c, ci) => `
+          <div>
+            <div class="batch-head"><span class="p">${esc(c.prompt)}</span><span class="mono muted">${esc(c.model)}${c.width ? ` · ${c.width}×${c.height} · ${c.frames} frames` : ""}${c.seconds ? ` · ${c.seconds < 120 ? c.seconds.toFixed(0) + " s" : clock(c.seconds)}` : ""}</span></div>
+            ${c.error ? `<div class="flag bad">${icon("flask")}<div><b>${c.stopped ? "Stopped." : "No video."}</b> ${c.stopped ? "" : esc(c.error)}</div></div>` : ""}
+            ${c.url ? `<div class="batch"><div class="tile" title="Saved as ${esc(c.file)} · seed ${c.seed}"><img src="${c.url}" alt="${esc(c.prompt)}" style="aspect-ratio:${c.width} / ${c.height}">
+              <span class="step">seed ${c.seed}</span>
+              <div class="ov"><a href="${c.url}" download="${esc(fileName(c.file))}">Save</a><button data-vreuse="${ci}">Reuse prompt</button><button data-vreseed="${ci}">Reuse seed</button></div></div></div>` : ""}
+          </div>`).join("")}
+        ${models.length && !VID.clips.length && !VID.making ? `<div class="empty"><div class="h2">Describe a video</div><div class="muted">Clips play here as animated pictures and are saved in the studio's outputs folder.</div></div>` : ""}
+      </section>
+    </div>`;
+  }
+
+  function makingHtml() {
+    const d = VID.making;
+    const pct = d.total ? Math.round(100 * d.step / d.total) : 0;
+    const left = d.total && d.step ? (performance.now() - d.first) / 1000 / Math.max(1, d.step - 1) * (d.total - d.step) : 0;
+    return `<div class="batch-head"><span class="eyebrow">Making</span><span class="p">${esc(d.prompt)}</span><span class="mono muted">${esc(d.model)}${d.total ? ` · step ${d.step} of ${d.total}${d.step > 1 ? ` · about ${clock(left)} left` : ""}` : " · loading the model…"}</span></div>
+      ${d.total ? `<div class="draw-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>` : ""}
+      <div class="batch"><div class="tile wait" style="aspect-ratio:${ratioCss(d.aspect)}"></div></div>`;
+  }
+
+  async function makeVideo() {
+    const m = pickedModel(VID.model, "video");
+    keepVideoFields();
+    const prompt = VID.prompt.trim();
+    if (!m || !prompt || VID.making) return;
+    const o = VID.opts[m.key] || {};
+    const seed = VID.seed === "" ? null : Math.max(0, Math.floor(+VID.seed) || 0);
+    const body = { model: m.key, prompt, negativePrompt: VID.neg, aspect: VID.aspect, small: VID.small, seconds: VID.seconds,
+      steps: VID.steps[m.key] ?? o.steps ?? 30, guidance: VID.guidance[m.key] ?? o.guidance ?? 5 };
+    if (seed != null) body.seed = seed;
+    if (VID.start && (o.input === "IMAGE" || o.input === "TEXT_OR_IMAGE")) body.image = VID.start;
+    const ctrl = new AbortController();
+    VID.stop = ctrl;
+    VID.making = { prompt, model: m.name, aspect: VID.aspect, step: 0, total: 0 };
+    const clip = { prompt, model: m.name };
+    render();
+    try {
+      const r = await fetch("/api/video", { method: "POST", signal: ctrl.signal,
+        headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await readEvents(r, (event, d) => {
+        if (event === "route") { clip.model = VID.making.model = d.name; clip.seed = d.seed; }
+        else if (event === "step") { if (d.step === 1) VID.making.first = performance.now(); VID.making.step = d.step; VID.making.total = d.total; }
+        else if (event === "video") Object.assign(clip, { url: blobUrl(d), file: d.file, seed: d.seed, width: d.width, height: d.height, frames: d.frames });
+        else if (event === "done") clip.seconds = d.seconds;
+        else if (event === "error") { clip.error = d.message; clip.stopped = d.message === "stopped"; }
+        const box = $("#vmaking");
+        if (box && VID.making) box.innerHTML = makingHtml();
+      });
+    } catch (e) {
+      if (e.name === "AbortError") { clip.error = "stopped"; clip.stopped = true; } else clip.error = e.message;
+    }
+    VID.clips.unshift(clip);
+    VID.making = null; VID.stop = null;
+    if (state.view === "create") render();
+  }
+
+  function bindLiveVideo() {
+    $("#vid-model")?.addEventListener("change", e => { keepVideoFields(); VID.model = e.target.value; store.set("vidModel", VID.model); render(); });
+    $$("[data-vaspect]").forEach(b => b.addEventListener("click", () => { keepVideoFields(); VID.aspect = b.dataset.vaspect; store.set("vidAspect", VID.aspect); render(); }));
+    $$("[data-vseconds]").forEach(b => b.addEventListener("click", () => { keepVideoFields(); VID.seconds = +b.dataset.vseconds; store.set("vidSeconds", VID.seconds); render(); }));
+    $("#vid-small")?.addEventListener("change", e => { keepVideoFields(); VID.small = e.target.checked; store.set("vidSmall", VID.small); render(); });
+    $("#vid-prompt")?.addEventListener("input", e => { VID.prompt = e.target.value; });
+    $("#vid-prompt")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") makeVideo(); });
+    $("#vid-go")?.addEventListener("click", makeVideo);
+    $("#vid-start")?.addEventListener("change", e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { keepVideoFields(); VID.start = r.result; render(); };
+      r.readAsDataURL(f);
+    });
+    $("#vid-start-clear")?.addEventListener("click", () => { keepVideoFields(); VID.start = null; render(); });
+    $("#vid-stop")?.addEventListener("click", () => VID.stop?.abort());
+    $("#vid-seed-dice")?.addEventListener("click", () => { VID.seed = ""; const f = $("#vid-seed"); if (f) { f.value = ""; f.focus(); } });
+    ["#vid-neg", "#vid-seed", "#vid-steps", "#vid-guidance"].forEach(id => $(id)?.addEventListener("change", keepVideoFields));
+    $$("[data-vreuse]").forEach(b => b.addEventListener("click", () => { VID.prompt = VID.clips[+b.dataset.vreuse].prompt; render(); $("#vid-prompt").focus(); }));
+    $$("[data-vreseed]").forEach(b => b.addEventListener("click", () => {
+      const c = VID.clips[+b.dataset.vreseed];
+      keepVideoFields(); VID.prompt = c.prompt; VID.seed = String(c.seed ?? ""); render(); $("#vid-prompt").focus();
+    }));
     $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
   }
 
