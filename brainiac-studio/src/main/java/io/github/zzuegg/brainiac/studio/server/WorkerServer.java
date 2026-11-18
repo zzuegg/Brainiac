@@ -51,8 +51,9 @@ import java.util.zip.ZipInputStream;
  *   <li>{@code GET /worker/runs?id=<id>}, {@code POST /worker/stop {id}} and
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
  *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
- *       {@code downloads} folder; {@code POST /worker/draw}, {@code /worker/speak} and {@code /worker/transcribe} use its
- *       image and speech models, answering as event streams; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
+ *       {@code downloads} folder; {@code POST /worker/draw}, {@code /worker/video}, {@code /worker/speak} and
+ *       {@code /worker/transcribe} use its image, video and speech models, answering as event streams
+ *       ({@code POST /worker/video/options {model}} gives a video model's usual settings); {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
  *       (a message may carry {@code images: [{type, data}]} for a model that looks at pictures)
  *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
  *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
@@ -273,6 +274,11 @@ public final class WorkerServer implements AutoCloseable {
                 chat(ex, Exchanges.body(ex, 32 << 20));
             } else if (path.equals("/worker/draw") && method.equals("POST")) {
                 draw(ex, Exchanges.body(ex, MAX_BODY));
+            } else if (path.equals("/worker/video") && method.equals("POST")) {
+                video(ex, Exchanges.body(ex, 32 << 20));
+            } else if (path.equals("/worker/video/options") && method.equals("POST")) {
+                Map<String, Object> options = models.videoOptions(modelId(Exchanges.body(ex, MAX_BODY)));
+                Exchanges.json(ex, 200, options == null ? Map.of() : options);
             } else if (path.equals("/worker/speak") && method.equals("POST")) {
                 speak(ex, Exchanges.body(ex, MAX_BODY));
             } else if (path.equals("/worker/transcribe") && method.equals("POST")) {
@@ -472,6 +478,49 @@ public final class WorkerServer implements AutoCloseable {
                 event(out, "image", m);
             }
             return Map.of("pictures", pictures.size());
+        });
+    }
+
+    private void video(HttpExchange ex, Map<String, Object> body) throws IOException {
+        String prompt = Json.string(body, "prompt", "");
+        if (prompt.isBlank()) {
+            throw new IllegalArgumentException("describe the video first");
+        }
+        io.github.zzuegg.brainiac.studio.chat.Media start = null;
+        if (body.get("start") instanceof Map<?, ?> given) {
+            Map<String, Object> picture = Json.object(given);
+            start = new io.github.zzuegg.brainiac.studio.chat.Media(
+                    java.util.Base64.getDecoder().decode(Json.string(picture, "data", "")),
+                    Json.string(picture, "type", "image/png"));
+        }
+        long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
+        io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings =
+                new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings(Json.string(body, "negativePrompt", ""),
+                        Json.string(body, "aspect", "16:9"), Boolean.TRUE.equals(body.get("small")),
+                        Json.number(body, "seconds", 2), (int) Json.integer(body, "steps", 30),
+                        Json.number(body, "guidance", 5), seed, (int) Json.integer(body, "width", 0),
+                        (int) Json.integer(body, "height", 0), start);
+        String model = modelId(body);
+        stream(ex, (out, gone) -> {
+            io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip clip = models.video(model, prompt, settings,
+                    (step, total) -> {
+                        try {
+                            event(out, "step", Map.of("step", step, "total", total));
+                        } catch (IOException e) {
+                            gone[0] = true;   // the studio went away: stop the clip
+                        }
+                        return !gone[0];
+                    });
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("mime", clip.media().mime());
+            m.put("data", java.util.Base64.getEncoder().encodeToString(clip.media().data()));
+            m.put("seed", clip.seed());
+            m.put("width", clip.width());
+            m.put("height", clip.height());
+            m.put("frames", clip.frames());
+            m.put("fps", clip.fps());
+            event(out, "video", m);
+            return Map.of("frames", clip.frames());
         });
     }
 
