@@ -38,6 +38,10 @@ import java.util.Map;
  *   <li>{@code GET /api/quantize} gives the sizes a smaller copy of a chat model can have and the
  *       copy being made; {@code POST /api/quantize} with {@code {"model": "local/qwen", "size":
  *       "Q4_K_M"}} starts one: a quantized GGUF file next to the original.
+ *   <li>{@code GET /api/finetune} tells how teaching a chat model with LoRA is going; {@code POST
+ *       /api/finetune} with {@code {"model": "local/qwen", "name": "support", "data": "<JSON
+ *       lines>", "rank": 8, "alpha": 16, "epochs": 3, "learningRate": 0.0002, "length": 512,
+ *       "rows": 1}} starts it, and with {@code {"stop": true}} stops it after the current step.
  *   <li>{@code POST /api/images} with {@code {"model": "auto", "prompt": "...", "aspect": "16:9",
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
@@ -153,6 +157,31 @@ final class ChatRoutes {
                 Exchanges.json(ex, 200, chat.quantizer().start(model, Json.string(body, "size", "Q4_K_M")));
             } catch (IOException | IllegalArgumentException e) {
                 // no such model or size, the copy is there already, or one is being made: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
+        server.get("/api/finetune", ex -> Exchanges.json(ex, 200, chat.fineTune().state()));
+        server.post("/api/finetune", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            if (Boolean.TRUE.equals(body.get("stop"))) {
+                chat.fineTune().stop();
+                Exchanges.json(ex, 200, chat.fineTune().state());
+                return;
+            }
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                int rank = (int) Json.integer(body, "rank", 8);
+                Exchanges.json(ex, 200, chat.fineTune().start(model, Json.string(body, "name", ""),
+                        Json.string(body, "data", ""),
+                        new io.github.zzuegg.brainiac.studio.chat.LocalFineTune.Settings(rank,
+                                (float) Json.number(body, "alpha", 2.0 * rank), (int) Json.integer(body, "epochs", 3),
+                                (float) Json.number(body, "learningRate", 2e-4), (int) Json.integer(body, "length", 512),
+                                (int) Json.integer(body, "rows", 1))));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model, a bad setting or name, or another run: the caller's to fix
                 throw new Exchanges.BadRequest(e.getMessage());
             }
         });

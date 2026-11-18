@@ -2091,11 +2091,12 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() && SV.open ? servePanel() : ""}
       ${isLive() && QZ.open ? quantPanel() : ""}
+      ${isLive() && FT.open ? tunePanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
@@ -4079,6 +4080,107 @@ reason ::= [a-z ]+`;
   const SV = { open: false, state: null, model: "", port: 8080, network: false, busy: false, error: null, loaded: false };
   const serveModels = () => chatModels().filter(m => m.provider === "local");
 
+  // Fine-tuning: a chat model on this PC learns from the user's examples with LoRA adapters.
+  const FT = { open: false, state: null, model: "", name: "", data: "", file: "", lines: 0, rank: 8, epochs: 3, lr: 0.0002, length: 512, rows: 1, busy: false, error: null, loaded: false, timer: null };
+  const tuneBusy = () => ["loading", "training", "saving"].includes(FT.state?.job?.state);
+  // the loss over the steps so far, scaled to its own range
+  function lossCurve(points, w = 520, h = 64) {
+    const top = Math.max(...points.map(p => p[1])), low = Math.min(...points.map(p => p[1]), 0);
+    const first = points[0][0], span = Math.max(1, points[points.length - 1][0] - first);
+    const x = s => 2 + (s - first) / span * (w - 4), y = v => h - 3 - (v - low) / Math.max(1e-9, top - low) * (h - 6);
+    const d = points.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+    return `<svg class="tune-svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Loss from ${points[0][1].toFixed(3)} to ${points[points.length - 1][1].toFixed(3)}"><path d="${d} L${(w - 2).toFixed(1)},${h} L2,${h} Z" fill="var(--accent)" opacity=".12"/><path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+  }
+  function tuneStatus() {
+    const j = FT.state?.job;
+    if (!j) return "";
+    const pts = j.losses || [];
+    const curve = pts.length > 1 ? `<div class="tune-curve">${lossCurve(pts)}<span class="mono tnum">loss ${(+pts[0][1]).toFixed(3)} at the start, ${(+j.loss).toFixed(3)} now</span></div>` : "";
+    const where = `<span class="faint">${j.adapter ? "Adapter: " + esc(j.adapter) : ""}</span>`;
+    if (j.state === "failed") return `<div class="flag bad">${icon("alert")}<span>Teaching ${esc(j.model)} failed: ${esc(j.error || "it failed")}</span></div>`;
+    if (j.state === "done" || j.state === "stopped") {
+      return `${curve}<div class="flag ${j.adapter ? "ok-note" : ""}">${icon(j.adapter ? "check" : "stop")}<span>${j.state === "stopped" ? `Stopped after ${j.step} of ${j.steps} steps. ` : ""}${j.mergedName ? `<b>${esc(j.mergedName)}</b> is in the model list now: ${esc(j.model)} with what it learned from ${j.examples} examples. ` : j.adapter ? "" : "Nothing was learned yet, so nothing was saved. "}${esc(j.note || "")} ${where}</span></div>`;
+    }
+    const pct = j.steps ? Math.round(100 * j.step / j.steps) : 0;
+    return `<div class="tune-run"><div class="tune-bar"><i style="width:${pct}%"></i></div>
+        <span class="mono tnum">${j.state === "loading" ? "reading the model and " + (j.examples || "the") + " examples" : j.state === "saving" ? "saving" : `step ${j.step} of ${j.steps}`} · ${Math.round(j.seconds)} s</span>
+        <button type="button" class="btn sm" id="tune-stop" ${j.state === "training" ? "" : "disabled"}>${icon("stop")}Stop and keep it</button></div>${curve}`;
+  }
+  function tunePanel() {
+    const models = quantModels();
+    const sel = models.some(m => m.id === FT.model) ? FT.model : (models[0]?.id || "");
+    const num = (id, label, k, attrs, hint) => `<label class="tune-num" title="${esc(hint)}">${label}<input class="input mono" id="${id}" data-tune="${k}" type="number" ${attrs} value="${esc(FT[k])}"></label>`;
+    return `<form class="placebox servebox tunebox" id="tune-form" autocomplete="off">
+      <div class="place-head"><div><b>Teach a model from your examples</b> <span class="muted">LoRA trains small adapters on a chat model of this PC while its own weights stay as they are. You get the adapter, as Hugging Face PEFT reads it, and a copy of the model with it merged in, next to the original. Examples are JSON lines: <code>{"messages": [...]}</code> conversations, or <code>{"prompt": "...", "completion": "..."}</code>. Only the replies are learned.</span></div>
+        <button type="button" class="iconbtn sm" id="tune-close" aria-label="Close">${icon("x")}</button></div>
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="tune-model" aria-label="Model to teach">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <input class="input" id="tune-name" aria-label="Name of what it learns" placeholder="Name, such as support" maxlength="40" value="${esc(FT.name)}" style="flex:0 1 220px">
+        <label class="btn" for="tune-file">${icon("plus")}${FT.file ? esc(FT.file) + " · " + FT.lines + " examples" : "Choose examples (.jsonl)"}</label><input type="file" id="tune-file" accept=".jsonl,.json,.txt,application/json" hidden>
+      </div>
+      <div class="tune-nums">
+        ${num("tune-rank", "Rank", "rank", 'min="1" max="256" step="1"', "The adapters' size. 8 or 16 suits most tasks; more learns more and takes more memory.")}
+        ${num("tune-epochs", "Epochs", "epochs", 'min="1" max="100" step="1"', "How often every example is seen.")}
+        ${num("tune-lr", "Learning rate", "lr", 'min="0.000001" max="1" step="any"', "The step size. 0.0002 is the usual start.")}
+        ${num("tune-length", "Longest example", "length", 'min="16" max="8192" step="16"', "In tokens. Longer examples are cut; memory grows with it.")}
+        ${num("tune-rows", "Rows a step", "rows", 'min="1" max="64" step="1"', "Examples are packed into rows of the longest example; more rows a step is steadier and takes more memory.")}
+        <span class="grow"></span>
+        <button class="btn primary" type="submit" ${FT.busy || tuneBusy() ? "disabled" : ""}>${icon("train")}${tuneBusy() ? "Teaching…" : "Start teaching"}</button>
+      </div>`
+      : `<div class="muted">No chat model on this PC that can be taught yet. Download one from Hugging Face or add a folder first.</div>`}
+      <div id="tune-status">${tuneStatus()}</div>
+      ${FT.error ? `<div class="flag bad">${icon("alert")}<span>${esc(FT.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadTune() {
+    const was = tuneBusy();
+    try { FT.state = await api("/api/finetune"); } catch (e) { console.warn("cannot read the fine-tuning state", e); }
+    clearTimeout(FT.timer);
+    if (tuneBusy()) FT.timer = setTimeout(loadTune, 1200);
+    else if (was) await loadModels(true);   // the merged copy is a model now
+    if (state.view !== "library") return;
+    // while it runs, only the status is redrawn, so the form keeps its focus
+    const box = $("#tune-status");
+    if (box && tuneBusy() && was) { box.innerHTML = tuneStatus(); bindTuneStop(); } else render();
+  }
+  function bindTuneStop() {
+    $("#tune-stop")?.addEventListener("click", async () => {
+      try { FT.state = await postJson("/api/finetune", { stop: true }); } catch (err) { FT.error = err.message || String(err); }
+      if (state.view === "library") render();
+    });
+  }
+  function bindTune() {
+    $("#tune-open")?.addEventListener("click", () => { FT.open = !FT.open; FT.error = null; render(); });
+    $("#tune-close")?.addEventListener("click", () => { FT.open = false; FT.error = null; render(); });
+    $("#tune-model")?.addEventListener("change", e => { FT.model = e.target.value; });
+    $("#tune-name")?.addEventListener("input", e => { FT.name = e.target.value; });
+    $$("[data-tune]").forEach(t => t.addEventListener("input", () => { FT[t.dataset.tune] = t.value; }));
+    $("#tune-file")?.addEventListener("change", async e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      FT.error = f.size > 24e6 ? "This file is over 24 MB: teach from a smaller set of examples." : null;
+      if (!FT.error) { FT.data = await f.text(); FT.file = f.name; FT.lines = FT.data.split(/\r?\n/).filter(l => l.trim()).length; }
+      render();
+    });
+    bindTuneStop();
+    $("#tune-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const model = $("#tune-model")?.value;
+      if (!model || FT.busy || tuneBusy()) return;
+      if (!FT.data) { FT.error = "Choose a file of examples first."; render(); return; }
+      if (!/^[A-Za-z0-9._-]{1,40}$/.test(FT.name.trim())) { FT.error = "Name it with up to 40 letters, digits, dots, dashes or underscores."; render(); return; }
+      FT.busy = true; FT.error = null; render();
+      const rank = Math.round(+FT.rank) || 8;
+      try { FT.state = await postJson("/api/finetune", { model, name: FT.name.trim(), data: FT.data, rank, alpha: 2 * rank, epochs: Math.round(+FT.epochs) || 3, learningRate: +FT.lr || 0.0002, length: Math.round(+FT.length) || 512, rows: Math.round(+FT.rows) || 1 }); }
+      catch (err) { FT.error = err.message || String(err); }
+      FT.busy = false;
+      clearTimeout(FT.timer);
+      if (tuneBusy()) FT.timer = setTimeout(loadTune, 800);
+      if (state.view === "library") render();
+    });
+    if (!FT.loaded) { FT.loaded = true; loadTune(); }
+  }
+
   // Quantizing: a smaller copy of one of this PC's chat models, written next to it as a GGUF file.
   const QZ = { open: false, state: null, model: "", size: "Q4_K_M", busy: false, error: null, loaded: false, timer: null };
   const quantBusy = () => ["loading", "writing"].includes(QZ.state?.job?.state);
@@ -4495,6 +4597,7 @@ reason ::= [a-z ]+`;
     bindPlace();
     bindServe();
     bindQuant();
+    bindTune();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {

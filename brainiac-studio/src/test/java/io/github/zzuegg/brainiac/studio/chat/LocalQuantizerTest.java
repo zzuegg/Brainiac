@@ -27,9 +27,12 @@ class LocalQuantizerTest {
         return Json.object(q.state().get("job"));
     }
 
-    @Test
-    void aSmallerCopyIsWrittenNextToTheModelAndAnswers() throws Exception {
-        Path dir = Files.createDirectories(models.resolve("tiny-llama"));
+    /**
+     * Puts a tiny Llama with a byte-level BPE tokenizer of single letters, the kind a GGUF file can
+     * carry, into a model folder.
+     */
+    static Path tinyLlama(Path models, String name) throws IOException {
+        Path dir = Files.createDirectories(models.resolve(name));
         for (String f : List.of("config.json", "model.safetensors")) {
             Files.copy(LLAMA.resolve(f), dir.resolve(f));
         }
@@ -51,6 +54,12 @@ class LocalQuantizerTest {
                 "model", Map.of("type", "BPE", "vocab", vocab, "merges", List.of(), "unk_token", "<unk>"),
                 "pre_tokenizer", Map.of("type", "ByteLevel", "add_prefix_space", false),
                 "decoder", Map.of("type", "ByteLevel"))));
+        return dir;
+    }
+
+    @Test
+    void aSmallerCopyIsWrittenNextToTheModelAndAnswers() throws Exception {
+        Path dir = tinyLlama(models, "tiny-llama");
         LocalVisionTest.tinyLlava(models, "tiny-eyes", null);
 
         LocalProvider local = (LocalProvider) ChatService.localModels(List.of(models));
