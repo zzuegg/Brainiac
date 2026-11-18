@@ -67,10 +67,12 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.sketch;
     exports io.github.zzuegg.brainiac.experimental.ssl;
     exports io.github.zzuegg.brainiac.experimental.speech;
+    exports io.github.zzuegg.brainiac.experimental.stats;
     exports io.github.zzuegg.brainiac.experimental.survival;
     exports io.github.zzuegg.brainiac.experimental.stream;
     exports io.github.zzuegg.brainiac.experimental.synth;
     exports io.github.zzuegg.brainiac.experimental.tensor;
+    exports io.github.zzuegg.brainiac.experimental.testing;
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
     exports io.github.zzuegg.brainiac.experimental.vision;
@@ -129,6 +131,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.serving;
     exports io.github.zzuegg.brainiac.experiments.shift;
     exports io.github.zzuegg.brainiac.experiments.speech;
+    exports io.github.zzuegg.brainiac.experiments.statistics;
     exports io.github.zzuegg.brainiac.experiments.survival;
     exports io.github.zzuegg.brainiac.experiments.streaming;
     exports io.github.zzuegg.brainiac.experiments.synthesis;
