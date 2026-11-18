@@ -33,7 +33,6 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.multimodal;
     exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
-    exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.parallel;
     exports io.github.zzuegg.brainiac.experimental.privacy;
     exports io.github.zzuegg.brainiac.experimental.recsys;
