@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.experimental.data.ArraySignals;
 import io.github.zzuegg.brainiac.experimental.sensing.ArrayProcessing;
 import io.github.zzuegg.brainiac.experimental.sensing.ArrayProcessing.Covariance;
 import io.github.zzuegg.brainiac.experimental.sensing.ArrayProcessing.Method;
+import io.github.zzuegg.brainiac.experimental.sensing.SubspaceNet;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -140,8 +141,8 @@ public final class DirectionFinding {
             return x.matmul(w1).add(b1).tanh().matmul(w2).add(b2).tanh().matmul(w3).add(b3);
         }
 
-        void fit(int sensors, int snapshots, double snrLo, double snrHi, double minSep, double span, int steps,
-                int batch, SplittableRandom r) {
+        void fit(int sensors, int snapshots, double snrLo, double snrHi, double minSep, double span, boolean coherent,
+                int steps, int batch, SplittableRandom r) {
             Optimizer opt = Optimizer.adam(3e-3f);
             int in = sensors * sensors;
             for (int s = 0; s < steps; s++) {
@@ -151,7 +152,7 @@ public final class DirectionFinding {
                     double[] ang = randomAngles(k, minSep, span, r);
                     double snr = snrLo + (snrHi - snrLo) * r.nextDouble();
                     float[] f = features(ArrayProcessing.covariance(
-                            ArraySignals.ula(sensors, ang, snapshots, snr, false, 0, r)));
+                            ArraySignals.ula(sensors, ang, snapshots, snr, coherent, 0, r)));
                     System.arraycopy(f, 0, x, b * in, in);
                     for (int j = 0; j < k; j++) {
                         y[b * k + j] = (float) (ang[j] / 90);
@@ -194,7 +195,7 @@ public final class DirectionFinding {
         double[] snrs = {-5, 0, 10, 20};
         int k = 2;
         DirectMlp mlp = new DirectMlp(sensors * sensors, 64, k, r);
-        mlp.fit(sensors, snapshots, 0, 20, 10, 50, mlpSteps, 32, r);
+        mlp.fit(sensors, snapshots, 0, 20, 10, 50, false, mlpSteps, 32, r);
         String[] rmseNames = {"FFT periodogram", "DELAY_AND_SUM", "MVDR", "MUSIC", "ROOT_MUSIC", "ESPRIT",
             "direct MLP (trained 0..20 dB)", "CRB"};
         for (String n : rmseNames) {
@@ -265,6 +266,102 @@ public final class DirectionFinding {
         for (int i = 0; i < special.length; i++) {
             out.put(special[i], new double[] {Math.sqrt(acc[i])});
         }
+        return out;
+    }
+
+    /**
+     * The learned table (13.4.15): SubspaceNet with coherent sources and few snapshots against
+     * MUSIC on the sample covariance, forward-backward spatially smoothed MUSIC, root-MUSIC and
+     * ESPRIT, the direct MLP trained on the same data and the (uncorrelated-source) CRB; and the
+     * near-field DCD-MUSIC with a sample or learned covariance against 2-D MUSIC.
+     *
+     * @param sensors {@code M}
+     * @param snapshots {@code T}
+     * @param steps the training steps of each learned model
+     * @param trials the test trials per cell
+     * @param seed the seed
+     * @return "far / method" to {RMSE deg at 10 dB, at 0 dB (outside the 5-15 dB training range), at 10 dB with
+     *     0.1 miscalibration}; "near / method" to {angle RMSE deg, range RMSE wavelengths}; "parameters" to
+     *     {SubspaceNet, direct MLP}
+     */
+    public static Map<String, double[]> learned(int sensors, int snapshots, int steps, int trials, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        int k = 2;
+        SubspaceNet net = new SubspaceNet(sensors, k, 3, 64, SubspaceNet.Geometry.FAR_FIELD, seed + 1);
+        net.fit(rr -> {
+            double[] ang = randomAngles(k, 10, 50, rr);
+            return new SubspaceNet.Example(ArraySignals.ula(sensors, ang, snapshots, 5 + 10 * rr.nextDouble(), true, 0,
+                    rr), ang, null);
+        }, steps, 16, 3e-3f, seed + 2);
+        DirectMlp mlp = new DirectMlp(sensors * sensors, 64, k, r);
+        mlp.fit(sensors, snapshots, 5, 15, 10, 50, true, steps, 32, r);
+        String[] names = {"SubspaceNet + MUSIC", "SubspaceNet + root-MUSIC", "MUSIC (sample covariance)",
+            "MUSIC + FB spatial smoothing", "root-MUSIC + FB spatial smoothing", "ESPRIT + FB spatial smoothing",
+            "direct MLP (same data)", "CRB (uncorrelated sources)"};
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (String n : names) {
+            out.put("far / " + n, new double[3]);
+        }
+        double[][] conditions = {{10, 0}, {0, 0}, {10, 0.1}};
+        for (int c = 0; c < conditions.length; c++) {
+            for (int t = 0; t < trials; t++) {
+                double[] ang = randomAngles(k, 10, 50, r);
+                ArraySignals.Snapshots x = ArraySignals.ula(sensors, ang, snapshots, conditions[c][0], true,
+                        conditions[c][1], r);
+                Covariance sample = ArrayProcessing.covariance(x);
+                Covariance smooth = ArrayProcessing.spatialSmoothing(sample, sensors - 2, true);
+                Covariance learned = net.surrogate(x);
+                double[][] est = {ArrayProcessing.estimate(Method.MUSIC, learned, k),
+                    ArrayProcessing.estimate(Method.ROOT_MUSIC, learned, k),
+                    ArrayProcessing.estimate(Method.MUSIC, sample, k), ArrayProcessing.estimate(Method.MUSIC, smooth, k),
+                    ArrayProcessing.estimate(Method.ROOT_MUSIC, smooth, k),
+                    ArrayProcessing.estimate(Method.ESPRIT, smooth, k), mlp.estimate(sample)};
+                for (int m = 0; m < est.length; m++) {
+                    out.get("far / " + names[m])[c] += squaredError(est[m], ang) / trials;
+                }
+                double[] crb = ArrayProcessing.crb(sensors, ang, conditions[c][0], snapshots);
+                out.get("far / " + names[names.length - 1])[c] += (crb[0] * crb[0] + crb[1] * crb[1]) / 2 / trials;
+            }
+        }
+        for (String n : names) {
+            double[] row = out.get("far / " + n);
+            for (int i = 0; i < row.length; i++) {
+                row[i] = Math.sqrt(row[i]);
+            }
+        }
+        double lo = 2;
+        double hi = 8;
+        SubspaceNet near = new SubspaceNet(sensors, k, 3, 64, SubspaceNet.Geometry.NEAR_FIELD, seed + 3);
+        near.fit(rr -> {
+            double[] ang = randomAngles(k, 10, 40, rr);
+            double[] rng = {lo + (hi - lo) * rr.nextDouble(), lo + (hi - lo) * rr.nextDouble()};
+            return new SubspaceNet.Example(ArraySignals.nearField(sensors, ang, rng, snapshots, 10, rr), ang, rng);
+        }, steps, 16, 3e-3f, seed + 4);
+        String[] nearNames = {"DCD-MUSIC (sample covariance)", "DCD-MUSIC (SubspaceNet covariance)",
+            "2-D MUSIC (sample covariance)"};
+        for (String n : nearNames) {
+            out.put("near / " + n, new double[2]);
+        }
+        for (int t = 0; t < trials; t++) {
+            double[] ang = randomAngles(k, 10, 40, r);
+            double[] rng = {lo + (hi - lo) * r.nextDouble(), lo + (hi - lo) * r.nextDouble()};
+            ArraySignals.Snapshots x = ArraySignals.nearField(sensors, ang, rng, snapshots, 10, r);
+            Covariance sample = ArrayProcessing.covariance(x);
+            double[][][] est = {SubspaceNet.dcdMusic(sample, k, lo, hi), SubspaceNet.dcdMusic(near.surrogate(x), k, lo,
+                hi), SubspaceNet.music2d(sample, k, lo, hi)};
+            for (int m = 0; m < est.length; m++) {
+                double[] row = out.get("near / " + nearNames[m]);
+                row[0] += squaredError(est[m][0], ang) / trials;
+                double[] rt = est[m][1].length == k ? est[m][1] : new double[] {(lo + hi) / 2, (lo + hi) / 2};
+                row[1] += ((rt[0] - rng[0]) * (rt[0] - rng[0]) + (rt[1] - rng[1]) * (rt[1] - rng[1])) / 2 / trials;
+            }
+        }
+        for (String n : nearNames) {
+            double[] row = out.get("near / " + n);
+            row[0] = Math.sqrt(row[0]);
+            row[1] = Math.sqrt(row[1]);
+        }
+        out.put("parameters", new double[] {net.parameterCount(), sensors * sensors * 64 + 64 * 64 + 64 * k + 128 + k});
         return out;
     }
 }

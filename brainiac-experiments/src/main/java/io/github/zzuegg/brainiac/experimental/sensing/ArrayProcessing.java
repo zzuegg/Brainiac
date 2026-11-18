@@ -278,6 +278,38 @@ public final class ArrayProcessing {
     }
 
     /**
+     * The MUSIC pseudo-spectrum {@code |a|^2 / (a^H E_n E_n^H a)} for arbitrary steering vectors
+     * (near-field or calibrated arrays).
+     *
+     * @param r the covariance
+     * @param sources {@code K}
+     * @param steeringRe the steering vectors' real parts {@code [points][M]}
+     * @param steeringIm their imaginary parts
+     * @return the spectrum per steering vector
+     */
+    public static double[] music(Covariance r, int sources, double[][] steeringRe, double[][] steeringIm) {
+        int m = r.size();
+        double[][][] p = signalProjector(r, sources);
+        double[][] qre = new double[m][m];
+        double[][] qim = new double[m][m];
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < m; j++) {
+                qre[i][j] = (i == j ? 1 : 0) - p[0][i][j];
+                qim[i][j] = -p[1][i][j];
+            }
+        }
+        double[] out = new double[steeringRe.length];
+        for (int g = 0; g < out.length; g++) {
+            double n2 = 0;
+            for (int i = 0; i < m; i++) {
+                n2 += steeringRe[g][i] * steeringRe[g][i] + steeringIm[g][i] * steeringIm[g][i];
+            }
+            out[g] = n2 / Math.max(quadratic(qre, qim, steeringRe[g], steeringIm[g]), 1e-12);
+        }
+        return out;
+    }
+
+    /**
      * The {@code K} highest local maxima of a spectrum, refined by parabolic interpolation.
      *
      * @param spectrum the values
