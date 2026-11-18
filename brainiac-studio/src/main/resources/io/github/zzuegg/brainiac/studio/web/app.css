@@ -1248,6 +1248,8 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .try-row { display: flex; gap: 6px; align-items: center; }
 .try-row .input { flex: 1; min-width: 0; height: 30px; }
 .try-result { display: grid; gap: 6px; }
+.try-pic { width: 96px; image-rendering: pixelated; border: 1px solid var(--line-soft); border-radius: 6px; background: #000; }
+.try-invert { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
 .try-answer { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 15px; }
 .try-bars { display: grid; gap: 4px; font-size: 12.5px; }
 .try-bars > div { display: grid; grid-template-columns: minmax(60px, 34%) minmax(0, 1fr) auto; gap: 8px; align-items: center; }

@@ -1642,6 +1642,7 @@
     const t = T.tries[r.id] || {}, res = t.result, id = esc(r.id);
     const m = (T.models || []).find(x => x.name === r.output);
     const size = m?.input ? m.input.reduce((a, b) => a * b, 1) : null;
+    const pic = pictureShape(m?.input);
     let shown = "";
     if (res) {
       const name = i => res.classes ? res.classes[i] : "output " + i;
@@ -1650,6 +1651,7 @@
       const top = res.output.map((v, i) => ({ v, i })).filter(x => x.v != null).sort((a, b) => b.v - a.v).slice(0, 5);
       const span = Math.max(1e-9, ...top.map(x => Math.abs(x.v)));
       shown = `<div class="try-result">
+        ${pic && res.input?.length === res.inputSize ? `<img class="try-pic" alt="What the model was given" src="${pictureOf(res.input, pic)}" style="aspect-ratio:${pic.w}/${pic.h}">` : ""}
         ${res.index != null ? `<div class="faint mono" style="font-size:11.5px">sample ${(res.index + 1).toLocaleString()} of ${res.samples.toLocaleString()} · ${res.input.slice(0, 6).map(fmtNum).join(", ")}${res.inputSize > 6 ? ", … " + res.inputSize + " values" : ""}</div>` : ""}
         <div class="try-answer">${one ? `<b class="mono">${fmtNum(res.output[0])}</b>` : `<b>${esc(res.label ?? name(res.best))}</b>`}
           ${right === true ? `<span class="chip c-ok">${icon("check")}right</span>` : right === false ? `<span class="chip c-bad">should be ${esc(res.expectedLabel ?? name(res.expectedBest))}</span>`
@@ -1661,12 +1663,62 @@
       <div class="try-row"><button class="btn sm" data-try-sample="${id}" ${t.busy ? "disabled" : ""}>${icon("play")}${res && res.index != null ? "Another sample" : "A sample of its data"}</button></div>
       <form class="try-row" data-try-own="${id}" autocomplete="off"><input class="input mono" data-try-values="${id}" value="${esc(t.values || "")}" placeholder="or your own ${size ? size.toLocaleString() + " " : ""}values, comma separated" spellcheck="false" aria-label="Your own input values">
         <button class="btn sm" type="submit" ${t.busy ? "disabled" : ""}>Run</button></form>
+      ${pic ? `<div class="try-row"><label class="btn sm" title="The picture is scaled to ${pic.w} by ${pic.h}${pic.c === 1 ? " and made grey" : ""}, as the model takes it">${icon("image")}A picture<input type="file" accept="image/*" data-try-picture="${id}" hidden></label>
+        <label class="muted try-invert" title="For a model trained on light shapes on a dark ground, such as MNIST digits, when your picture is dark on light"><input type="checkbox" data-try-invert="${id}" ${t.invert ? "checked" : ""}> Invert</label></div>` : ""}
       ${t.error ? `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(t.error)}</span></div>` : ""}${shown}</div>`;
+  }
+  // The picture a model's input is, if it is one: channels first, as picture data is loaded here.
+  // A flat input counts when it is a square, as the input of a plain network on MNIST is.
+  function pictureShape(shape) {
+    if (!shape) return null;
+    const s = shape.map(Number);
+    if (s.length === 3 && (s[0] === 1 || s[0] === 3) && s[1] >= 4 && s[2] >= 4 && s[1] <= 128 && s[2] <= 128) return { c: s[0], h: s[1], w: s[2] };
+    if (s.length === 2 && s[0] >= 8 && s[1] >= 8 && s[0] <= 128 && s[1] <= 128) return { c: 1, h: s[0], w: s[1] };
+    if (s.length === 1 && s[0] >= 64 && s[0] <= 16384 && Number.isInteger(Math.sqrt(s[0]))) return { c: 1, h: Math.sqrt(s[0]), w: Math.sqrt(s[0]) };
+    return null;
+  }
+  // an image file as the model's input values: scaled to its size, 0 to 1, one plane per channel
+  async function pictureValues(file, pic, invert) {
+    const bmp = await createImageBitmap(file);
+    const cv = document.createElement("canvas"); cv.width = pic.w; cv.height = pic.h;
+    const cx = cv.getContext("2d"); cx.fillStyle = "#fff"; cx.fillRect(0, 0, pic.w, pic.h);
+    cx.drawImage(bmp, 0, 0, pic.w, pic.h);
+    const px = cx.getImageData(0, 0, pic.w, pic.h).data, n = pic.w * pic.h, out = new Array(pic.c * n);
+    for (let i = 0; i < n; i++) {
+      const r = px[4 * i] / 255, g = px[4 * i + 1] / 255, b = px[4 * i + 2] / 255;
+      if (pic.c === 1) { const v = 0.299 * r + 0.587 * g + 0.114 * b; out[i] = invert ? 1 - v : v; }
+      else { out[i] = invert ? 1 - r : r; out[n + i] = invert ? 1 - g : g; out[2 * n + i] = invert ? 1 - b : b; }
+    }
+    return out.map(v => Math.round(v * 1000) / 1000);
+  }
+  // input values as a picture again, to show what the model was given
+  function pictureOf(values, pic) {
+    const cv = document.createElement("canvas"); cv.width = pic.w; cv.height = pic.h;
+    const cx = cv.getContext("2d"), img = cx.createImageData(pic.w, pic.h), n = pic.w * pic.h;
+    let lo = Infinity, hi = -Infinity;
+    for (const v of values) if (v != null) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    // data scaled 0 to 1 shows as it is; anything else is stretched to fit
+    if (lo >= 0 && hi <= 1) { lo = 0; hi = 1; }
+    const at = i => Math.round(255 * ((values[i] ?? lo) - lo) / Math.max(1e-9, hi - lo));
+    for (let i = 0; i < n; i++) {
+      img.data[4 * i] = at(i); img.data[4 * i + 1] = at(pic.c === 3 ? n + i : i); img.data[4 * i + 2] = at(pic.c === 3 ? 2 * n + i : i); img.data[4 * i + 3] = 255;
+    }
+    cx.putImageData(img, 0, 0);
+    return cv.toDataURL();
+  }
+  async function tryPicture(r, file) {
+    const t = T.tries[r.id] ||= {};
+    const pic = pictureShape((T.models || []).find(x => x.name === r.output)?.input);
+    if (t.busy || !pic || !file) return;
+    t.busy = true; t.error = null; renderTrainLive(true);
+    try { t.result = await postJson("/api/train/predict", { model: r.output, values: await pictureValues(file, pic, !!t.invert), full: true }); }
+    catch (e) { t.error = /decode|bitmap/i.test(String(e)) ? "This file is not a picture the browser can read." : String(e.message || e); t.result = null; }
+    t.busy = false; renderTrainLive(true);
   }
   async function tryModel(r, own) {
     const t = T.tries[r.id] ||= {};
     if (t.busy) return;
-    const body = { model: r.output };
+    const body = { model: r.output, full: true };
     if (own) {
       const vals = String(t.values || "").split(/[\s,;]+/).filter(Boolean).map(Number);
       if (!vals.length || vals.some(v => !isFinite(v))) { t.error = "Type numbers, separated by commas."; renderTrainLive(true); return; }
@@ -2051,6 +2103,8 @@
     $$("[data-tstop]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/stop", { id: b.dataset.tstop }).catch(() => {}); pollRuns(false); }));
     $$("[data-tdel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/delete", { id: b.dataset.tdel }).catch(() => {}); if (T.sel === b.dataset.tdel) T.sel = null; pollRuns(false); }));
     $$("[data-try-values]").forEach(el => el.addEventListener("input", () => { (T.tries[el.dataset.tryValues] ||= {}).values = el.value; }));
+    $$("[data-try-picture]").forEach(el => el.addEventListener("change", () => { const r = T.runs.find(x => x.id === el.dataset.tryPicture); if (r && el.files[0]) tryPicture(r, el.files[0]); }));
+    $$("[data-try-invert]").forEach(el => el.addEventListener("change", () => { (T.tries[el.dataset.tryInvert] ||= {}).invert = el.checked; }));
     $$("[data-try-sample]").forEach(b => b.addEventListener("click", () => { const r = T.runs.find(x => x.id === b.dataset.trySample); if (r) tryModel(r, false); }));
     $$("[data-try-own]").forEach(f => f.addEventListener("submit", e => { e.preventDefault(); const r = T.runs.find(x => x.id === f.dataset.tryOwn); if (r) tryModel(r, true); }));
     $$("[data-tagain]").forEach(b => b.addEventListener("click", () => {
