@@ -1,0 +1,49 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// One compare-exchange pass of a bitonic sort over rows of width entries (a power of two):
+// stage k, distance j. The order is total, so the result is stable: NaN is the largest value,
+// equal values keep their index order, and the padding (index >= len) goes last.
+layout(push_constant) uniform P { Buf key; Floats idx; uint total; uint width; uint j; uint k; uint len; uint desc; } p;
+
+bool before(ACC ka, float ia, ACC kb, float ib) {
+    bool padA = ia >= float(p.len);
+    bool padB = ib >= float(p.len);
+    if (padA || padB) {
+        return padB && (!padA || ia < ib);
+    }
+    bool nanA = isnan(ka);
+    bool nanB = isnan(kb);
+    if (nanA != nanB) {
+        return p.desc != 0 ? nanA : nanB;
+    }
+    if (!nanA && ka != kb) {
+        return p.desc != 0 ? ka > kb : ka < kb;
+    }
+    return ia < ib;
+}
+
+void main() {
+    uint t = gid();
+    if (t >= p.total) return;
+    uint half_ = p.width / 2;
+    uint r = t / half_;
+    uint q = t % half_;
+    uint i = (q / p.j) * 2 * p.j + q % p.j;
+    uint l = i + p.j;
+    uint a = r * p.width + i;
+    uint b = r * p.width + l;
+    ACC ka = LOAD(p.key, a);
+    ACC kb = LOAD(p.key, b);
+    float ia = p.idx.v[a];
+    float ib = p.idx.v[b];
+    bool up = (i & p.k) == 0;
+    if (up ? before(kb, ib, ka, ia) : before(ka, ia, kb, ib)) {
+        T tk = p.key.v[a];
+        p.key.v[a] = p.key.v[b];
+        p.key.v[b] = tk;
+        p.idx.v[a] = ib;
+        p.idx.v[b] = ia;
+    }
+}

@@ -251,15 +251,22 @@ public final class Benchmark {
     // ---- datasets
 
     /**
-     * Reads JSON lines.
+     * Reads a dataset file: JSON lines, or Parquet (as Hugging Face publishes datasets) when
+     * the name ends in {@code .parquet}.
      *
-     * @param file one JSON object per line
+     * @param file one JSON object per line, or a Parquet file
      * @param reader turns an object into an example, such as {@link #mmlu}
      * @return the examples
      * @throws IOException if the file cannot be read
      */
     public static List<Example> load(Path file, Function<Map<String, Object>, Example> reader) throws IOException {
         List<Example> out = new ArrayList<>();
+        if (file.getFileName().toString().endsWith(".parquet")) {
+            for (Map<String, Object> row : io.github.zzuegg.brainiac.io.Parquet.read(file)) {
+                out.add(reader.apply(row));
+            }
+            return out;
+        }
         for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
             if (!line.isBlank()) {
                 out.add(reader.apply(Json.object(Json.parse(line))));

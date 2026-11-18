@@ -191,7 +191,7 @@ public final class SafeTensors implements WeightSource {
     }
 
     /** The tensor type a stored format is identical to, or null. */
-    private static DType direct(String format) {
+    static DType direct(String format) {
         return switch (format) {
             case "F64" -> DType.FLOAT64;
             case "F32" -> DType.FLOAT32;
@@ -218,18 +218,23 @@ public final class SafeTensors implements WeightSource {
         Objects.requireNonNull(device, "device");
         Objects.requireNonNull(dtype, "dtype");
         Entry e = entry(name);
-        DType stored = direct(e.format);
+        return read(raw(name), e.format, e.shape, device, dtype);
+    }
+
+    /** Makes a tensor of row-major values stored in a safetensors format. */
+    static Tensor read(MemorySegment raw, String format, Shape shape, Device device, DType dtype) {
+        DType stored = direct(format);
         if (stored != null) {
             if (stored == dtype || !device.supports(stored)) {
                 if (stored == dtype) {
-                    return Tensor.of(e.shape, raw(name), stored, device);
+                    return Tensor.of(shape, raw, stored, device);
                 }
                 // the device cannot hold the stored type: convert on the host
-                return Tensor.of(e.shape, RawValues.decode(raw(name), stored, e.shape.size()), dtype, device);
+                return Tensor.of(shape, RawValues.decode(raw, stored, shape.size()), dtype, device);
             }
-            return Tensor.of(e.shape, raw(name), stored, device).to(dtype);
+            return Tensor.of(shape, raw, stored, device).to(dtype);
         }
-        return Tensor.of(e.shape, decode(e.format, raw(name), e.shape.size()), dtype, device);
+        return Tensor.of(shape, decode(format, raw, shape.size()), dtype, device);
     }
 
     /** Decodes a format with no tensor type of its own into doubles. */

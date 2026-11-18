@@ -469,6 +469,57 @@ public final class Var {
         return postOrder;
     }
 
+    /** The gradients of a {@linkplain #custom custom operation}'s inputs. */
+    @FunctionalInterface
+    public interface Gradient {
+
+        /**
+         * Computes the inputs' gradients.
+         *
+         * @param inputs the inputs' values
+         * @param output the operation's value
+         * @param grad the gradient of the output
+         * @return one gradient per input, of its shape; {@code null} for an input with none
+         */
+        Tensor[] apply(Tensor[] inputs, Tensor output, Tensor grad);
+    }
+
+    /**
+     * An operation defined by the caller, such as a {@link io.github.zzuegg.brainiac.tensor.Kernel}
+     * run with {@link Tensor#custom}: its value from {@code forward}, its inputs' gradients
+     * from {@code gradient}.
+     *
+     * @param forward computes the value from the inputs' values
+     * @param gradient computes the inputs' gradients
+     * @param inputs the inputs
+     * @return the result
+     */
+    public static Var custom(java.util.function.Function<Tensor[], Tensor> forward, Gradient gradient,
+            Var... inputs) {
+        Tensor[] values = new Tensor[inputs.length];
+        for (int i = 0; i < inputs.length; i++) {
+            values[i] = inputs[i].value;
+        }
+        Tensor out = forward.apply(values.clone());
+        Var[] in = inputs.clone();
+        return op(out, in, g -> {
+            Tensor[] grads = gradient.apply(values.clone(), out, g);
+            if (grads.length != in.length) {
+                throw new IllegalStateException("a custom gradient gave " + grads.length + " gradients for "
+                        + in.length + " inputs");
+            }
+            for (int i = 0; i < grads.length; i++) {
+                if (grads[i] == null) {
+                    grads[i] = Tensor.zeros(values[i].shape(), values[i].dtype(), values[i].device());
+                } else if (!grads[i].shape().equals(values[i].shape())) {
+                    throw new IllegalStateException("a custom gradient for input " + i + " has shape "
+                            + grads[i].shape() + ", the input " + values[i].shape());
+                }
+            }
+            return grads;
+        });
+    }
+
     private static Var op(Tensor out, Var[] inputs, Backward backward) {
         return op(out, inputs, backward, null);
     }
@@ -1188,6 +1239,30 @@ public final class Var {
             picked[i] = mul(one).sum(last, true);
         }
         return k == 1 ? picked[0] : concat(last, picked);
+    }
+
+    /**
+     * Sorts along one axis (see {@link Tensor#sort}); the gradient goes back to where each
+     * value came from.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param descending largest first instead of smallest first
+     * @return the sorted values
+     */
+    public Var sort(int axis, boolean descending) {
+        int rank = shape().rank();
+        int a = axis < 0 ? axis + rank : axis;
+        Tensor indices = value.argsort(a, descending);
+        if (a == rank - 1) {
+            return takeAlong(indices);
+        }
+        int[] swap = new int[rank];
+        for (int i = 0; i < rank; i++) {
+            swap[i] = i;
+        }
+        swap[a] = rank - 1;
+        swap[rank - 1] = a;
+        return permute(swap).takeAlong(indices.permute(swap)).permute(swap);
     }
 
     /**
