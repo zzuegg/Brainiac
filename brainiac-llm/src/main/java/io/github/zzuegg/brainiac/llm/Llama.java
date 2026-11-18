@@ -2372,9 +2372,10 @@ public final class Llama implements LanguageModel {
             w[i] = parts.get(i).weight.value();
             bias[i] = biased ? parts.get(i).bias.value() : null;
         }
-        Tensor joinedWeight = Tensor.concat(1, w);
-        if (packed && !joinedWeight.isPacked()) {
-            joinedWeight.release();   // different formats (a k-quant mix): joined only as floats
+        // packed weights in different formats (a k-quant mix) are not joined: as floats they
+        // would only take memory, and computing them took twice the weights' memory at once
+        Tensor joinedWeight = packed ? Tensor.concatPacked(w) : Tensor.concat(1, w);
+        if (joinedWeight == null) {
             return null;
         }
         Var weight = Var.param(joinedWeight);

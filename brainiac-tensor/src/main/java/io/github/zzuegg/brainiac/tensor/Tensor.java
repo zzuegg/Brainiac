@@ -1056,20 +1056,10 @@ public final class Tensor {
             total += d[a];
         }
         dims[a] = total;
-        if (a == 1 && dims.length == 2 && first.storage instanceof PackedStorage && !first.isQuantizedRows()) {
-            PackedMatrix[] host = new PackedMatrix[parts.length];
-            boolean all = true;
-            for (int i = 0; i < parts.length && all; i++) {
-                all = parts[i].storage instanceof PackedStorage p && !parts[i].isQuantizedRows();
-                if (all) {
-                    host[i] = parts[i].backend().unpackToHost((PackedStorage) parts[i].storage);
-                    all = host[i].bits() == host[0].bits() && host[i].group() == host[0].group()
-                            && host[i].nibbles() == host[0].nibbles()
-                            && host[i].hasOffsets() == host[0].hasOffsets();
-                }
-            }
-            if (all) {
-                return packed(PackedMatrix.concatColumns(host), first.device);
+        if (a == 1 && dims.length == 2) {
+            Tensor joined = concatPacked(parts);
+            if (joined != null) {
+                return joined;
             }
         }
         DType type = first.dtype();
@@ -1086,6 +1076,32 @@ public final class Tensor {
             offset += t.shape.dim(a) * outStrides[a];
         }
         return new Tensor(outShape, first.device, out);
+    }
+
+    /**
+     * Joins {@linkplain #packed packed} matrices side by side into one packed matrix, as
+     * {@code concat(1, parts)} does when it can, without ever computing their values: null if
+     * they are not all packed with the same bits, group and level layout.
+     *
+     * @param parts {@code [rows, cols_i]} matrices on one device
+     * @return the joined {@code [rows, sum of cols_i]} matrix, or null
+     */
+    public static Tensor concatPacked(Tensor... parts) {
+        Tensor first = parts[0];
+        PackedMatrix[] host = new PackedMatrix[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            Tensor t = parts[i];
+            if (!(t.storage instanceof PackedStorage p) || t.isQuantizedRows() || t.shape.rank() != 2
+                    || !t.device.equals(first.device) || t.shape.dim(0) != first.shape.dim(0)) {
+                return null;
+            }
+            host[i] = t.backend().unpackToHost(p);
+            if (host[i].bits() != host[0].bits() || host[i].group() != host[0].group()
+                    || host[i].nibbles() != host[0].nibbles() || host[i].hasOffsets() != host[0].hasOffsets()) {
+                return null;
+            }
+        }
+        return packed(PackedMatrix.concatColumns(host), first.device);
     }
 
     /**
