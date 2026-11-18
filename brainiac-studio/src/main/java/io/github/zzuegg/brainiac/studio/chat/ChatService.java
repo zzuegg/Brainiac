@@ -321,6 +321,7 @@ public final class ChatService {
             folders.add(downloads);
         }
         LocalProvider local = new LocalProvider(folders, outputs.resolveSibling("local-models.txt"));
+        local.speakToo();
         ps.add(local);
         ps.add(new AnthropicProvider(keys, bases.getOrDefault("anthropic", AnthropicProvider.BASE)));
         ps.add(new OpenAiProvider(keys, bases.getOrDefault("openai", Preset.OPENAI.base())));
@@ -524,6 +525,8 @@ public final class ChatService {
                     j.put("shown", shown(x));
                     if (x.media().contains("speech") && p instanceof RemoteProvider r) {
                         j.put("speech", r.speechOptions(x.id()).toJson());
+                    } else if (x.media().contains("speech") && p instanceof LocalProvider lp && lp.speech() != null) {
+                        j.put("speech", lp.speech().options(x.id()).toJson());
                     }
                     models.add(j);
                 }
@@ -678,10 +681,71 @@ public final class ChatService {
     public Generated speech(String model, String text, String voice, double speed, String instructions, String format,
             String key) throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "speech");
+        if (provider(target.provider()) instanceof LocalProvider lp && lp.speech() != null) {
+            Media wav = logged(target, "speech", () -> lp.speech().speak(target.id(), text, voice, speed, () -> false),
+                    r -> new long[] {-1, -1, text.length()});
+            return new Generated(target, List.of(wav), save(List.of(wav), "speech"));
+        }
         SpeechRequest request = new SpeechRequest(target.id(), text, voice, speed, instructions, format, key);
         Media audio = logged(target, "speech", () -> remote(target).speech(request),
                 r -> new long[] {-1, -1, text.length()});
         return new Generated(target, List.of(audio), save(List.of(audio), "speech"));
+    }
+
+    /**
+     * What was written down from a recording.
+     *
+     * @param model the model that listened
+     * @param transcription the text, its language and its segments
+     */
+    public record Transcribed(ModelInfo model, io.github.zzuegg.brainiac.audio.Transcription transcription) {
+    }
+
+    /**
+     * Writes down what is said in a recording, with a speech model on this PC.
+     *
+     * @param model a local transcribing model's key ({@code local/whisper-base}) or {@value #AUTO}
+     * @param wav the recording, as WAV (any rate; it is resampled)
+     * @param listening the language, whether to translate to English, and timestamps
+     * @param onSegment hears each piece as it is written down
+     * @param route told which model listens, before it starts
+     * @param stop says when to stop
+     * @return what was said
+     * @throws IOException if there is no such model or it cannot be loaded
+     * @throws InterruptedException if interrupted
+     * @throws java.util.concurrent.CancellationException if stopped
+     */
+    public Transcribed transcribe(String model, byte[] wav, LocalSpeech.Listening listening,
+            Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment, Consumer<ModelInfo> route,
+            java.util.function.BooleanSupplier stop) throws IOException, InterruptedException {
+        LocalSpeech speech = local().speech();
+        // only this PC transcribes here, so Auto means its first transcribing model
+        ModelInfo target = AUTO.equals(model) && speech != null
+                ? speech.models().stream().filter(m -> m.media().contains("transcribe")).findFirst()
+                        .orElseThrow(() -> new IOException("no transcribing model is available: put a Whisper model in a model folder"))
+                : resolve(model, "transcribe");
+        if (!(provider(target.provider()) instanceof LocalProvider) || speech == null) {
+            throw new IllegalArgumentException(target.key() + " does not transcribe on this PC");
+        }
+        route.accept(target);
+        return logged(target, "transcribe",
+                () -> new Transcribed(target, speech.transcribe(target.id(), wav, listening, onSegment, stop)),
+                r -> new long[] {-1, -1, Math.round(r.transcription().seconds())});
+    }
+
+    /**
+     * Describes a local transcribing model for the page: the languages it knows and whether it
+     * translates. This loads the model.
+     *
+     * @param model the model's key
+     * @return {@code {languages, translate}}
+     */
+    public Map<String, Object> transcribeOptions(String model) {
+        LocalSpeech speech = local().speech();
+        if (speech == null || model == null || !model.startsWith("local/")) {
+            return Map.of("languages", List.of(), "translate", false);
+        }
+        return speech.listeningOptions(model.substring("local/".length()));
     }
 
     private RemoteProvider remote(ModelInfo m) {
@@ -714,9 +778,11 @@ public final class ChatService {
             if (target == null) {
                 throw new IOException(switch (medium) {
                     case "text" -> "no chat model is available: put a model in a model folder or add an API key";
-                    case "image" -> "no image model is available: put a Stable Diffusion model in a model folder"
+                    case "image" -> "no image model is available: put a Stable Diffusion or FLUX.1 model in a model folder"
                             + " or add an OpenAI or Google API key";
-                    default -> "no speech model is available: add an OpenAI or Google API key";
+                    case "transcribe" -> "no transcribing model is available: put a Whisper model in a model folder";
+                    default -> "no speech model is available: put a Kokoro or VITS (MMS-TTS) model in a model folder"
+                            + " or add an OpenAI or Google API key";
                 });
             }
         } else {
