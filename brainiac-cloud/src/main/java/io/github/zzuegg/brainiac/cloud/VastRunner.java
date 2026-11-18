@@ -127,6 +127,86 @@ public final class VastRunner {
      * @throws InterruptedException if interrupted
      */
     public void ship(VastInstance i) throws IOException, InterruptedException {
+        ship(i, true);
+    }
+
+    /**
+     * Puts the checkout's {@code HEAD} commit at {@link #REMOTE_DIR}. With {@code fetch}, and when
+     * that commit is on the GitHub remote {@code origin}, the instance fetches it from GitHub
+     * itself, which takes seconds where an upload from a home connection takes minutes; if that
+     * fails (a private repository, no network to GitHub), the commit is uploaded as before.
+     * Uncommitted changes are never sent.
+     *
+     * @param i the instance
+     * @param fetch try fetching from GitHub first
+     * @throws IOException if git fails or every upload failed
+     * @throws InterruptedException if interrupted
+     */
+    public void ship(VastInstance i, boolean fetch) throws IOException, InterruptedException {
+        if (fetch) {
+            String why = fetchFromGitHub(i);
+            if (why == null) {
+                return;
+            }
+            System.out.println("  " + why + "; uploading the checkout instead");
+        }
+        upload(i);
+    }
+
+    /**
+     * Has the instance fetch {@code HEAD} from GitHub.
+     *
+     * @return null when it worked, else why not
+     */
+    private String fetchFromGitHub(VastInstance i) throws IOException, InterruptedException {
+        String sha = git("rev-parse", "HEAD");
+        String origin = git("remote", "get-url", "origin");
+        String url = sha == null || origin == null ? null : githubHttps(origin);
+        if (url == null) {
+            return "no GitHub remote 'origin'";
+        }
+        String on = git("branch", "-r", "--contains", sha);
+        if (on == null || on.isBlank()) {
+            return "commit " + sha.substring(0, 8) + " is not pushed to origin";
+        }
+        long t = System.nanoTime();
+        String script = "set -e; export GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive; "
+                + "command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates >/dev/null; }; "
+                + "rm -rf " + REMOTE_DIR + " && git init -q " + REMOTE_DIR + " && cd " + REMOTE_DIR
+                + " && timeout 300 git fetch -q --depth 1 " + quote(url) + " " + sha + " && git checkout -q FETCH_HEAD"
+                + " && test \"$(git rev-parse HEAD)\" = " + sha;
+        // as a script on ssh's input, so no local shell (cmd.exe included) re-quotes it
+        Process p = new ProcessBuilder(ssh(i, List.of(), "bash -s")).redirectErrorStream(true).start();
+        try (OutputStream in = p.getOutputStream()) {
+            in.write((script + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+        if (p.waitFor() != 0) {
+            String last = out.isEmpty() ? "" : out.lines().reduce((a, b) -> b).orElse("");
+            return "fetching from GitHub failed" + (last.isEmpty() ? "" : " (" + last + ")");
+        }
+        System.out.printf(java.util.Locale.ROOT, "  fetched %s from GitHub in %.0f s%n", sha.substring(0, 8), (System.nanoTime() - t) / 1e9);
+        return null;
+    }
+
+    /** {@code https://github.com/OWNER/REPO.git} for a GitHub remote URL (https or ssh), else null. */
+    static String githubHttps(String remote) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^(?:https://(?:[^@/]+@)?github\\.com/|git@github\\.com:|ssh://git@github\\.com/)([\\w.-]+)/([\\w.-]+?)(?:\\.git)?/?$")
+                .matcher(remote.strip());
+        return m.matches() ? "https://github.com/" + m.group(1) + "/" + m.group(2) + ".git" : null;
+    }
+
+    /** Runs git in the checkout; its trimmed output, or null when it fails. */
+    private String git(String... args) throws IOException, InterruptedException {
+        List<String> c = new ArrayList<>(List.of("git"));
+        c.addAll(List.of(args));
+        Process p = new ProcessBuilder(c).directory(repo.toFile()).redirectErrorStream(true).start();
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+        return p.waitFor() == 0 ? out : null;
+    }
+
+    private void upload(VastInstance i) throws IOException, InterruptedException {
         Path tar = Files.createTempFile("brainiac-src", ".tar");
         try {
             Process git = new ProcessBuilder("git", "archive", "--format=tar", "-o", tar.toString(), "HEAD")
@@ -178,12 +258,33 @@ public final class VastRunner {
      * @throws InterruptedException if interrupted
      */
     public int run(VastInstance i, String job, List<String> args, Path log) throws IOException, InterruptedException {
-        // the command goes in as a script on ssh's input, so no shell (cmd.exe included) re-quotes it
+        return run(i, job, args, log, VastSecrets.NONE);
+    }
+
+    /**
+     * Runs a {@code setup.sh} job with secrets in its environment. The secrets go over the SSH
+     * connection's input after the command, one line each, and the remote shell reads them into
+     * exported variables: they are on no command line, in no file on the instance and in none
+     * of Vast's instance fields. Their values are masked in the output and the log.
+     *
+     * @param i the instance
+     * @param job {@code check}, {@code smoke}, {@code tests}, {@code bench} or {@code run}
+     * @param args the job's arguments (for {@code run}, the command)
+     * @param log a file that gets a copy of the output, or null
+     * @param secrets the environment variables to set for the job only
+     * @return the job's exit code: 0 when it worked, 2 when the machine cannot run Brainiac
+     * @throws IOException if ssh cannot be started
+     * @throws InterruptedException if interrupted
+     */
+    public int run(VastInstance i, String job, List<String> args, Path log, VastSecrets secrets)
+            throws IOException, InterruptedException {
+        // the command goes in as a script on ssh's input, so no shell (cmd.exe included) re-quotes it;
+        // bash reads that script a line at a time, so each read takes the next line: a secret
         Process p = new ProcessBuilder(ssh(i, List.of(), "bash -s")).redirectErrorStream(true).start();
         try (OutputStream in = p.getOutputStream()) {
-            in.write((remote(job, args) + "\n").getBytes(StandardCharsets.UTF_8));
+            in.write((secrets.readPrefix() + remote(job, args) + "\n" + secrets.valueLines()).getBytes(StandardCharsets.UTF_8));
         }
-        copy(p.getInputStream(), log);
+        copy(p.getInputStream(), log, secrets);
         return p.waitFor();
     }
 
@@ -200,12 +301,30 @@ public final class VastRunner {
      * @throws IOException if ssh cannot be started
      */
     public Process startWorker(VastInstance i, String token, int localPort, List<String> args) throws IOException {
+        return startWorker(i, token, localPort, args, VastSecrets.NONE);
+    }
+
+    /**
+     * Starts a studio worker with secrets in its environment, sent like the token; see
+     * {@link #run(VastInstance, String, List, Path, VastSecrets)}. The caller masks the output with
+     * {@link VastSecrets#mask}.
+     *
+     * @param i the instance
+     * @param token the worker's bearer token, at least 32 characters
+     * @param localPort the port on this machine
+     * @param args more {@code setup.sh worker} arguments
+     * @param secrets more environment variables for the worker
+     * @return the ssh process; the worker and the tunnel stop when it is destroyed
+     * @throws IOException if ssh cannot be started
+     */
+    public Process startWorker(VastInstance i, String token, int localPort, List<String> args, VastSecrets secrets)
+            throws IOException {
         if (token == null || token.length() < 32) {
             throw new IllegalArgumentException("a worker token has at least 32 characters");
         }
         // bash reads its script from the pipe a line at a time, so read takes the next line: the token
         String script = "IFS= read -r BRAINIAC_WORKER_TOKEN && export BRAINIAC_WORKER_TOKEN BRAINIAC_WORKER_UNTIL_EOF=1 && "
-                + remote("worker", args) + "\n" + token + "\n";
+                + secrets.readPrefix() + remote("worker", args) + "\n" + token + "\n" + secrets.valueLines();
         Process p = new ProcessBuilder(ssh(i, List.of("-L", localPort + ":127.0.0.1:7870", "-o", "ExitOnForwardFailure=yes"),
                 "bash -s")).redirectErrorStream(true).start();
         // left open on purpose: the worker stops when this input ends, so it stops with this process
@@ -238,6 +357,54 @@ public final class VastRunner {
      * @throws IOException if the log cannot be written
      */
     public static void copy(InputStream in, Path log) throws IOException {
+        copy(in, log, VastSecrets.NONE);
+    }
+
+    /**
+     * Copies a process's output like {@link #copy(InputStream, Path)}, with the secrets' values
+     * masked. Masking works a line at a time (a line ends at {@code \n} or {@code \r}), so a value
+     * split over two reads is still found.
+     *
+     * @param in the output to copy
+     * @param log the log file, or null
+     * @param secrets the values to hide
+     * @throws IOException if the log cannot be written
+     */
+    public static void copy(InputStream in, Path log, VastSecrets secrets) throws IOException {
+        if (secrets.isEmpty()) {
+            copyRaw(in, log);
+            return;
+        }
+        OutputStream file = log == null ? OutputStream.nullOutputStream() : Files.newOutputStream(log);
+        try (in; file) {
+            java.io.ByteArrayOutputStream line = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                for (int k = 0; k < n; k++) {
+                    line.write(buf[k]);
+                    if (buf[k] == '\n' || buf[k] == '\r') {
+                        emit(line, file, secrets);
+                    }
+                }
+            }
+            emit(line, file, secrets);
+        }
+    }
+
+    private static void emit(java.io.ByteArrayOutputStream line, OutputStream file, VastSecrets secrets) throws IOException {
+        if (line.size() == 0) {
+            return;
+        }
+        byte[] b = secrets.mask(line.toString(StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8);
+        line.reset();
+        System.out.write(b, 0, b.length);
+        System.out.flush();
+        file.write(b);
+        file.flush();
+    }
+
+    private static void copyRaw(InputStream in, Path log) throws IOException {
         OutputStream file = log == null ? OutputStream.nullOutputStream() : Files.newOutputStream(log);
         try (in; file) {
             byte[] buf = new byte[8192];

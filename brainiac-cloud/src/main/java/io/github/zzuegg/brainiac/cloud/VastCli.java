@@ -35,6 +35,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code --yes} is given. The instance is destroyed when the job ends, fails, runs past
  * {@code --max-minutes} or the launcher is stopped with Ctrl+C; {@code --keep} keeps it, and
  * {@code --instance ID} runs on one that is already rented.
+ *
+ * <p>A host that does not come up, or whose SSH login does not work within {@code --ssh-minutes}
+ * (3 by default), is destroyed and remembered like one without a Vulkan driver; with
+ * {@code --cheapest} the next offer is rented. The instance fetches the commit from GitHub when
+ * it is pushed there, else this checkout is uploaded ({@code --upload} always uploads).
+ * {@code --secret NAME} passes a secret such as {@code HF_TOKEN} to the job; see {@link VastSecrets}.
  */
 public final class VastCli {
 
@@ -61,6 +67,10 @@ public final class VastCli {
         List<Long> skipped = new ArrayList<>();
         int minDriver;
         VastBadHosts bad;
+        int sshMinutes = 3;
+        boolean upload;
+        List<String> secretSpecs = new ArrayList<>();
+        VastSecrets secrets = VastSecrets.NONE;
     }
 
     /** The driver's major version, such as 595 for 595.91.07; 0 when unknown. */
@@ -114,9 +124,13 @@ public final class VastCli {
                 usage: vast offers [--gpu NAME,NAME] [--max-price DOLLARS] [--gpus N] [--min-gpu-ram GB] [--min-driver MAJOR] [--limit N]
                        vast run (--offer ID | --cheapest | --instance ID) [--job check|smoke|tests|bench|run]
                                 [--image IMAGE] [--disk GB] [--max-minutes N] [--keep] [--yes] [--identity KEY]
+                                [--ssh-minutes N] [--upload] [--secret NAME[=PROVIDER]]...
                                 [-- ARGS for the job, e.g. the command for --job run]
                        vast worker (--offer ID | --cheapest | --instance ID) [--local-port 7870]
-                                [--models DIR] [--keep] [--yes]
+                                [--models DIR] [--keep] [--yes] [--ssh-minutes N] [--upload] [--secret NAME[=PROVIDER]]...
+
+                --secret HF_TOKEN   sends this machine's Hugging Face token (environment, studio key or
+                                    huggingface-cli login) to the job over SSH; never to disk or a log
                        vast instances
                        vast destroy ID... | --all""");
     }
@@ -143,6 +157,9 @@ public final class VastCli {
                 case "--local-port" -> o.localPort = Integer.parseInt(args[++i]);
                 case "--models" -> o.jobArgs.addAll(List.of("--models", args[++i]));
                 case "--identity" -> o.identity = Path.of(args[++i]);
+                case "--ssh-minutes" -> o.sshMinutes = Integer.parseInt(args[++i]);
+                case "--upload" -> o.upload = true;
+                case "--secret" -> o.secretSpecs.add(args[++i]);
                 case "--yes" -> o.yes = true;
                 case "--keep" -> o.keep = true;
                 case "--all" -> o.all = true;
@@ -196,9 +213,19 @@ public final class VastCli {
     private static final int MAX_HOSTS = 3;
 
     private static int rentAndRun(VastClient vast, Options o) throws Exception {
+        try {
+            // before anything is rented: a missing secret should not cost money
+            o.secrets = VastSecrets.resolve(o.secretSpecs);
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            return 1;
+        }
+        if (!o.secrets.isEmpty()) {
+            System.out.println("Secrets for the job (values hidden): " + String.join(", ", o.secrets.names()));
+        }
         if (o.instance >= 0) {
             o.keep = true;
-            return runOn(vast, o, o.instance, vast.instance(o.instance).dollarsPerHour(), null);
+            return runOn(vast, o, o.instance, vast.instance(o.instance).dollarsPerHour(), null, new String[1]);
         }
         VastBadHosts bad = VastBadHosts.load();
         o.bad = bad;
@@ -210,11 +237,13 @@ public final class VastCli {
             if (bad.contains(offer)) {
                 System.out.println("Note: machine " + offer.machineId() + " failed the Vulkan check before (" + VastBadHosts.DEFAULT_FILE + ").");
             }
-            if (!o.yes && !confirm("Rent " + offer + "?\nBilling runs until the instance is destroyed. [y/N] ")) {
+            String what = isUnlisted(offer) ? "offer #" + offer.id() + " (not in the current search listing; its price is shown once rented)"
+                    : offer.toString();
+            if (!o.yes && !confirm("Rent " + what + "?\nBilling runs until the instance is destroyed. [y/N] ")) {
                 System.out.println("Nothing rented.");
                 return 1;
             }
-            System.out.println("Renting " + offer);
+            System.out.println("Renting " + what);
             long id = -1;
             for (int tries = 0; ; tries++) {
                 try {
@@ -223,6 +252,10 @@ public final class VastCli {
                 } catch (IOException e) {
                     // an offer can stay listed after it is gone: with --cheapest, take the next one
                     // (each still within --max-price and the other limits the user gave)
+                    if (!o.cheapest && e.getMessage().contains("no_such_ask")) {
+                        System.out.println("Offer " + offer.id() + " is gone (Vast: no_such_ask); run 'offers' again or use --cheapest.");
+                        return 1;
+                    }
                     if (!o.cheapest || tries >= 4 || !e.getMessage().contains("no_such_ask")) {
                         throw e;
                     }
@@ -236,16 +269,27 @@ public final class VastCli {
                 }
             }
             System.out.println("Rented instance " + id + (o.keep ? " (--keep: destroy it yourself when done)" : ""));
-            int code = runOn(vast, o, id, offer.dollarsPerHour(), offer);
+            double price = offer.dollarsPerHour();
+            if (isUnlisted(offer)) {
+                try {
+                    VastInstance rented = vast.instance(id);
+                    price = rented.dollarsPerHour();
+                    System.out.printf(Locale.ROOT, "  instance %d: %s at $%.3f/h%n", id, rented.gpuName(), price);
+                } catch (IOException e) {
+                    System.out.println("  could not read the instance's price yet: " + e.getMessage());
+                }
+            }
+            String[] reason = new String[1];
+            int code = runOn(vast, o, id, price, offer, reason);
             if (code != BAD_HOST) {
                 return code;
             }
             // the instance is destroyed by now (unless --keep)
-            bad.add(offer, "setup.sh check failed: no usable NVIDIA Vulkan driver");
-            System.out.println("Machine " + offer.machineId() + " has no usable NVIDIA Vulkan driver; it is skipped from now on ("
-                    + VastBadHosts.DEFAULT_FILE + ").");
-            if (!o.cheapest || o.keep || host >= MAX_HOSTS) {
-                System.out.println(o.cheapest && !o.keep ? "Gave up after " + host + " hosts." : "Pick another offer, or use --cheapest.");
+            bad.add(offer, reason[0]);
+            System.out.println("Machine " + (offer.machineId() == 0 ? "of offer " + offer.id() : offer.machineId()) + ": " + reason[0]
+                    + (offer.machineId() == 0 ? "." : "; it is skipped from now on (" + VastBadHosts.DEFAULT_FILE + ")."));
+            if (!o.cheapest || host >= MAX_HOSTS) {
+                System.out.println(o.cheapest ? "Gave up after " + host + " hosts." : "Pick another offer, or use --cheapest.");
                 return 2;
             }
             o.skipped.add(offer.id());
@@ -253,15 +297,24 @@ public final class VastCli {
         }
     }
 
-    /** {@link #runOn}'s result when the host failed {@code setup.sh check}. */
+    /**
+     * {@link #runOn}'s result when the host is unusable: it failed {@code setup.sh check}, never
+     * came up, or its SSH login did not work in time.
+     */
     private static final int BAD_HOST = -2;
+
+    /** An offer given with {@code --offer} that the search did not list: only its id is known. */
+    private static boolean isUnlisted(VastOffer f) {
+        return Double.isNaN(f.dollarsPerHour());
+    }
 
     /**
      * Runs the job on a rented instance and destroys it afterwards, unless {@code --keep}.
      *
-     * @return the job's exit code, or {@link #BAD_HOST} when the Vulkan check failed
+     * @param reason gets why, when the result is {@link #BAD_HOST}
+     * @return the job's exit code, or {@link #BAD_HOST} when the host is unusable
      */
-    private static int runOn(VastClient vast, Options o, long id, double price, VastOffer offer) throws Exception {
+    private static int runOn(VastClient vast, Options o, long id, double price, VastOffer offer, String[] reason) throws Exception {
         boolean worker = o.command.equals("worker");
         long started = System.nanoTime();
         AtomicBoolean destroyed = new AtomicBoolean(o.keep);
@@ -295,10 +348,26 @@ public final class VastCli {
             }
         });
         try {
-            VastInstance ready = vast.awaitReady(id, Duration.ofMinutes(20));
+            VastInstance ready;
             VastRunner runner = new VastRunner(Path.of("").toAbsolutePath(), o.identity);
-            System.out.println("Instance " + id + " is running; waiting for SSH at " + ready.sshHost() + ":" + ready.sshPort());
-            runner.awaitSsh(ready, Duration.ofMinutes(5));
+            try {
+                ready = vast.awaitReady(id, Duration.ofMinutes(20));
+                System.out.println("Instance " + id + " is running; waiting for SSH at " + ready.sshHost() + ":" + ready.sshPort()
+                        + " (up to " + o.sshMinutes + " minutes)");
+                runner.awaitSsh(ready, Duration.ofMinutes(o.sshMinutes));
+            } catch (IOException e) {
+                // a host that never starts, rejects the key or whose SSH proxy is dead: billing for
+                // nothing, so it is given up on (and destroyed in finally) instead of waited for
+                System.out.println(e.getMessage());
+                if (offer == null) {
+                    return 1;
+                }
+                reason[0] = e.getMessage().contains("over SSH") ? "SSH login failed within " + o.sshMinutes + " minutes"
+                        : "the instance did not start";
+                // an unusable host is destroyed even with --keep
+                destroyed.set(false);
+                return BAD_HOST;
+            }
             String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
             Path dir = Path.of("build", "vast");
             Files.createDirectories(dir);
@@ -309,21 +378,26 @@ public final class VastCli {
                 System.out.println();
                 System.out.println(check == 2 ? "This machine cannot run Brainiac (see BRAINIAC_SETUP above)."
                         : "The Vulkan check failed (exit " + check + ").");
-                return check == 2 && offer != null ? BAD_HOST : check;
+                reason[0] = "setup.sh check failed: no usable NVIDIA Vulkan driver";
+                if (check == 2 && offer != null) {
+                    destroyed.set(false);
+                    return BAD_HOST;
+                }
+                return check;
             }
             if (!worker && o.job.equals("check")) {
                 return 0;
             }
             System.out.printf(Locale.ROOT, "Vulkan works after %.1f minutes. Copying this checkout (HEAD) to the instance%n",
                     (System.nanoTime() - started) / 6e10);
-            runner.ship(ready);
+            runner.ship(ready, !o.upload);
             System.out.printf(Locale.ROOT, "Copied after %.1f minutes; starting job %s%n", (System.nanoTime() - started) / 6e10,
                     worker ? "worker" : o.job);
             if (worker) {
                 return worker(runner, ready, o);
             }
             Path log = dir.resolve("instance-" + id + "-" + o.job + "-" + stamp + ".log");
-            int code = runner.run(ready, o.job, o.jobArgs, log);
+            int code = runner.run(ready, o.job, o.jobArgs, log, o.secrets);
             System.out.println();
             System.out.println(code == 0 ? "Job " + o.job + " finished." : code == 2
                     ? "This machine cannot run Brainiac (see BRAINIAC_SETUP above)." : "Job " + o.job + " failed (exit " + code + ").");
@@ -344,7 +418,7 @@ public final class VastCli {
         byte[] bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);
         String token = HexFormat.of().formatHex(bytes);
-        Process p = runner.startWorker(ready, token, o.localPort, o.jobArgs);
+        Process p = runner.startWorker(ready, token, o.localPort, o.jobArgs, o.secrets);
         // Ctrl+C: stop the worker on the instance too (a kept instance would keep it running)
         Thread stop = new Thread(() -> {
             p.destroy();
@@ -358,7 +432,7 @@ public final class VastCli {
         try (BufferedReader out = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = out.readLine()) != null) {
-                System.out.println(line);
+                System.out.println(o.secrets.mask(line));
                 if (line.startsWith("BRAINIAC_WORKER ready")) {
                     System.out.println();
                     System.out.println("The worker is reachable through the SSH tunnel. In the studio, Training -> Add a host:");
@@ -382,14 +456,17 @@ public final class VastCli {
 
     private static VastOffer pick(VastClient vast, Options o) throws IOException {
         if (o.offer >= 0) {
-            // look the offer up again for its current price
-            for (VastOffer f : vast.offers(o.query.withLimit(500).withMaxPrice(0))) {
-                if (f.id() == o.offer) {
-                    return f;
+            // look the offer up again for its current price; Vast returns a different subset of
+            // the matching offers on each search, so a live offer can be missing from one listing
+            for (int search = 0; search < 3; search++) {
+                for (VastOffer f : vast.offers(o.query.withLimit(1000).withMaxPrice(0))) {
+                    if (f.id() == o.offer) {
+                        return f;
+                    }
                 }
             }
-            System.out.println("Offer " + o.offer + " is gone or does not match the search; run 'offers' again.");
-            return null;
+            // not listed is not gone: renting it tells (Vast answers no_such_ask for a gone offer)
+            return unlisted(o.offer);
         }
         if (o.cheapest) {
             List<VastOffer> list = new ArrayList<>(vast.offers(o.query));
@@ -402,6 +479,11 @@ public final class VastCli {
         }
         System.out.println("Give --offer ID (from 'offers'), --cheapest, or --instance ID.");
         return null;
+    }
+
+    /** An offer known only by its id: price unknown (NaN), machine unknown (0). */
+    static VastOffer unlisted(long id) {
+        return new VastOffer(id, "?", 1, 0, Double.NaN, 0, "?", "?", 0, 0, 0, false, 0);
     }
 
     private static boolean confirm(String question) throws IOException {
