@@ -58,6 +58,35 @@ class PretrainedAudioTest {
             assertEquals(text.split("[.!?](\\s|$)").length, chunks.size());
             assertTrue(speech.seconds() > 1.5 && speech.seconds() < 10, "seconds " + speech.seconds());
         }
+        checkTranscripts(models, model, speech, text);
+    }
+
+    @Test
+    void f5ClonesAKokoroVoice() throws Exception {
+        Path models = models();
+        Path kokoro = models.resolve("kokoro-82m");
+        Path f5 = models.resolve("f5-tts");
+        Assumptions.assumeTrue(Files.isDirectory(kokoro) && Files.isDirectory(f5), "no kokoro-82m and f5-tts");
+        String refText = "Some call me nature, others call me mother nature.";
+        Audio reference;
+        try (TextToSpeech t = SpeechModels.textToSpeech(kokoro, TestDevice.get(), DType.FLOAT32)) {
+            reference = t.synthesize(refText, SpeechOptions.defaults().voice("bf_emma"), null);
+        }
+        String text = "The weather is nice today. Let us go for a walk in the park.";
+        Audio speech;
+        try (TextToSpeech t = SpeechModels.textToSpeech(f5, TestDevice.get(), DType.FLOAT32)) {
+            assertTrue(t.canClone());
+            long t0 = System.nanoTime();
+            List<Audio> chunks = new ArrayList<>();
+            speech = t.synthesize(text, SpeechOptions.defaults().seed(1).reference(reference, refText), chunks::add);
+            System.out.printf("f5-tts: %.2f s of speech in %.2f s, %d chunks%n", speech.seconds(),
+                    (System.nanoTime() - t0) / 1e9, chunks.size());
+            assertTrue(speech.seconds() > 1.5 && speech.seconds() < 10, "seconds " + speech.seconds());
+        }
+        checkTranscripts(models, "f5-tts", speech, text);
+    }
+
+    private static void checkTranscripts(Path models, String model, Audio speech, String text) throws Exception {
         Wav.write(speech, Path.of(System.getProperty("java.io.tmpdir"), "brainiac-" + model + ".wav"));
         try (var dirs = Files.list(models)) {
             for (Path dir : dirs.filter(Whisper::isWhisper).sorted().toList()) {

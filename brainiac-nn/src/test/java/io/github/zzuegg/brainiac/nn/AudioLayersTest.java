@@ -143,4 +143,72 @@ class AudioLayersTest {
             assertEquals(-logDet[i], invDet[i], 1e-3, "inverse log-det, element " + i);
         }
     }
+
+    @Test
+    void convNeXtAndDitBlocksBuildTrainAndRoundTrip() throws Exception {
+        Node in = Node.input(6, 10);                                   // [channels, frames]
+        Node cond = in.globalAvgPool().dense(5, Activation.TANH);
+        Node x = in.add(ConvNeXt1d.of(7, 2, true, 0))
+                .add(ConvNeXt1d.of(5, 3, false, 0.5f))
+                .layer(new Permute(1, 0))                              // [frames, channels]
+                .merge(DitBlock.of(3), cond)
+                .merge(DitBlock.of(new DitBlock.Settings(1, DitBlock.Rotary.HALF, 100f, Activation.GELU, 1e-5f), 1),
+                        cond)
+                .flatten()
+                .dense(2);
+        Model m = Model.graph(in, x).seed(7).build();
+        Tensor batch = Tensor.uniform(Shape.of(2, 6, 10), -1, 1, new SplittableRandom(2));
+        Tensor out = m.predict(batch);
+        assertEquals(Shape.of(2, 2), out.shape());
+        m.forward(Var.of(batch), true).sum().backward();
+        for (Var p : m.parameters()) {
+            assertTrue(p.grad() != null, "no gradient for a parameter of shape " + p.shape());
+        }
+        Path file = dir.resolve("dit.brainiac");
+        m.save(file);
+        Model loaded = Model.load(file);
+        assertEquals(m.summary(), loaded.summary());
+        assertArrayEquals(out.toArray(), loaded.predict(batch).toArray(), 1e-5f);
+    }
+
+    @Test
+    void interleavedRotaryIsHalfRotaryOnReorderedFeatures() {
+        Tensor x = Tensor.uniform(Shape.of(2, 5, 8), -1, 1, new SplittableRandom(3));
+        float[] got = Functional.rotaryInterleaved(Var.of(x), 100f, 2).value().toArray();
+        // move pairs (0,1),(2,3).. to (0,4),(1,5).., rotate, move back
+        float[] v = x.toArray();
+        float[] half = new float[v.length];
+        for (int r = 0; r < 10; r++) {
+            for (int i = 0; i < 4; i++) {
+                half[r * 8 + i] = v[r * 8 + 2 * i];
+                half[r * 8 + 4 + i] = v[r * 8 + 2 * i + 1];
+            }
+        }
+        float[] rot = Functional.rotary(Var.of(Tensor.of(Shape.of(2, 5, 8), half)), 100f, 2).value().toArray();
+        for (int r = 0; r < 10; r++) {
+            for (int i = 0; i < 4; i++) {
+                assertEquals(rot[r * 8 + i], got[r * 8 + 2 * i], 1e-5f);
+                assertEquals(rot[r * 8 + 4 + i], got[r * 8 + 2 * i + 1], 1e-5f);
+            }
+        }
+    }
+
+    @Test
+    void sameIstftGivesHopSamplesPerFrame() {
+        int nFft = 16;
+        int hop = 4;
+        float[] wave = new float[64];
+        for (int i = 0; i < wave.length; i++) {
+            wave[i] = (float) Math.sin(i * 0.3) * 0.5f;
+        }
+        Var spec = Signal.stft(Var.of(Tensor.of(Shape.of(1, 64), wave)), nFft, hop);   // 17 frames
+        Var back = Signal.istftSame(spec, nFft, hop);
+        assertEquals(Shape.of(1, 17 * hop), back.shape());
+        // centred frames shifted by (nFft - hop) / 2 relative to the plain inverse
+        float[] b = back.value().toArray();
+        int shift = nFft / 2 - (nFft - hop) / 2;
+        for (int i = 8; i < 56; i++) {
+            assertEquals(wave[i], b[i + shift], 1e-4f, "sample " + i);
+        }
+    }
 }
