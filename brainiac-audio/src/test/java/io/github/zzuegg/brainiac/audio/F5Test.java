@@ -94,6 +94,14 @@ class F5Test {
     }
 
     @Test
+    void aFolderOfModelsIsNotAnF5Model() {
+        Path f5 = WhisperTest.resource("f5");
+        assertTrue(F5Speech.isF5(f5));
+        // the fixtures folder holds f5/ and vocos/ side by side: a collection, not a model
+        org.junit.jupiter.api.Assertions.assertFalse(F5Speech.isF5(f5.getParent()));
+    }
+
+    @Test
     void cloningIsOfferedAndNeedsAReference() {
         try (F5Speech tts = load()) {
             assertTrue(tts.canClone());

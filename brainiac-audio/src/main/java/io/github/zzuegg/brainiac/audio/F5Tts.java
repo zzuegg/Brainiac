@@ -208,7 +208,8 @@ public final class F5Tts implements AutoCloseable {
 
     /**
      * Whether a folder holds an F5-TTS checkpoint (directly or in one subfolder) and its
-     * {@code vocab.txt}.
+     * {@code vocab.txt}. A folder that also holds a Vocos vocoder folder is a collection of
+     * models rather than an F5 model, so its subfolders are not searched.
      *
      * @param dir a folder
      * @return the folder with the checkpoint, or {@code null}
@@ -218,7 +219,11 @@ public final class F5Tts implements AutoCloseable {
             return dir;
         }
         try (var subs = Files.list(dir)) {
-            return subs.filter(Files::isDirectory).sorted().filter(d -> checkpoint(d) != null).findFirst().orElse(null);
+            List<Path> dirs = subs.filter(Files::isDirectory).sorted().toList();
+            if (dirs.stream().anyMatch(Vocos::isVocos)) {
+                return null;
+            }
+            return dirs.stream().filter(d -> checkpoint(d) != null).findFirst().orElse(null);
         } catch (IOException e) {
             return null;
         }
