@@ -303,6 +303,11 @@ public final class Var {
         return value.dtype();
     }
 
+    /** @return where the value lives */
+    public io.github.zzuegg.brainiac.tensor.Device device() {
+        return value.device();
+    }
+
     /**
      * Returns the same value cut off from the graph: no gradient flows back through it.
      *
@@ -953,6 +958,31 @@ public final class Var {
                 g -> new Var[] {g.mul(square().neg().exp().mul(c))});
     }
 
+    /**
+     * {@code ln |Gamma(x)|} of each value; see {@link io.github.zzuegg.brainiac.tensor.Special}.
+     * Its gradient is the digamma function; differentiating that again gives the trigamma.
+     *
+     * @return the log gamma of each value
+     */
+    public Var lgamma() {
+        Tensor x = value;
+        return unary(io.github.zzuegg.brainiac.tensor.Special.lgamma(x),
+                g -> new Tensor[] {g.mul(io.github.zzuegg.brainiac.tensor.Special.digamma(x))},
+                g -> new Var[] {g.mul(digamma())});
+    }
+
+    /**
+     * The digamma function of each value, the derivative of {@link #lgamma()}.
+     *
+     * @return the digamma of each value
+     */
+    public Var digamma() {
+        Tensor x = value;
+        Tensor tri = io.github.zzuegg.brainiac.tensor.Special.trigamma(x);
+        return unary(io.github.zzuegg.brainiac.tensor.Special.digamma(x), g -> new Tensor[] {g.mul(tri)},
+                g -> new Var[] {g.mul(Var.of(tri))});
+    }
+
     /** @return the sine of each value, in radians */
     public Var sin() {
         Tensor x = value;
@@ -1379,7 +1409,7 @@ public final class Var {
     /**
      * Returns the same values in a new shape.
      *
-     * @param dims the new dimensions
+     * @param dims the new dimensions; one may be {@code -1}, inferred from the size
      * @return the reshaped value
      */
     public Var reshape(int... dims) {

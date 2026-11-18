@@ -124,4 +124,81 @@ class LinalgTest {
         Tensor gram = a.transpose().matmul(a).add(Linalg.identity(4, DType.FLOAT64, a.device()).mul(0.5f));
         close(a.transpose().matmul(b), gram.matmul(ridge), 1e-10);
     }
+
+    @Test
+    void logDeterminants() {
+        Tensor a = Tensor.of(Shape.of(2, 2, 2), new double[] {2, 1, 1, 3, 0, 1, 1, 0}, DType.FLOAT64,
+                Device.getDefault());
+        Tensor[] sl = Linalg.slogdet(a);
+        assertArrayEquals(new double[] {1, -1}, sl[0].toDoubleArray());
+        assertEquals(Math.log(5), sl[1].toDoubleArray()[0], 1e-12);
+        assertEquals(0, sl[1].toDoubleArray()[1], 1e-12);
+        Tensor singular = Tensor.of(Shape.of(2, 2), new double[] {1, 2, 2, 4}, DType.FLOAT64, Device.getDefault());
+        assertEquals(0, Linalg.slogdet(singular)[0].item());
+        // 60 x 60 with determinant 1e300 overflows as a product but not as a log
+        Tensor big = Linalg.identity(60, DType.FLOAT64, Device.getDefault()).mul(1e5f);
+        assertEquals(60 * Math.log(1e5), Linalg.slogdet(big)[1].toDoubleArray()[0], 1e-6);
+        Tensor p = spd(3, 5);
+        assertArrayEquals(Linalg.slogdet(p)[1].toDoubleArray(), Linalg.logdetPositiveDefinite(p).toDoubleArray(),
+                1e-9);
+    }
+
+    @Test
+    void linearAssignmentFindsTheCheapestMatching() {
+        Tensor cost = Tensor.of(Shape.of(3, 3), 4, 1, 3, 2, 0, 5, 3, 2, 2);
+        assertArrayEquals(new int[] {1, 0, 2}, Linalg.linearAssignment(cost));
+        // against brute force on random rectangular problems
+        for (int trial = 0; trial < 20; trial++) {
+            Tensor c = Tensor.uniform(Shape.of(4, 6), 0, 1, R);
+            int[] got = Linalg.linearAssignment(c);
+            double[] v = c.toDoubleArray();
+            double best = bruteForce(v, 6, 0, new boolean[6]);
+            double sum = 0;
+            java.util.Set<Integer> cols = new java.util.HashSet<>();
+            for (int r = 0; r < 4; r++) {
+                sum += v[r * 6 + got[r]];
+                cols.add(got[r]);
+            }
+            assertEquals(4, cols.size());
+            assertEquals(best, sum, 1e-9);
+        }
+        assertThrows(IllegalArgumentException.class, () -> Linalg.linearAssignment(Tensor.zeros(Shape.of(3, 2))));
+    }
+
+    private static double bruteForce(double[] c, int m, int row, boolean[] used) {
+        if (row == c.length / m) {
+            return 0;
+        }
+        double best = Double.POSITIVE_INFINITY;
+        for (int j = 0; j < m; j++) {
+            if (!used[j]) {
+                used[j] = true;
+                best = Math.min(best, c[row * m + j] + bruteForce(c, m, row + 1, used));
+                used[j] = false;
+            }
+        }
+        return best;
+    }
+
+    @Test
+    void gammaFunctions() {
+        Tensor x = Tensor.of(Shape.of(4), new double[] {0.5, 10, -0.5, 1}, DType.FLOAT64, Device.getDefault());
+        assertArrayEquals(new double[] {0.5723649429247001, 12.801827480081469, 1.2655121234846454, 0},
+                io.github.zzuegg.brainiac.tensor.Special.lgamma(x).toDoubleArray(), 1e-12);
+        assertArrayEquals(new double[] {-1.9635100260214235, 2.251752589066721, 0.03648997397857652,
+            -0.5772156649015329}, io.github.zzuegg.brainiac.tensor.Special.digamma(x).toDoubleArray(), 1e-12);
+        assertArrayEquals(new double[] {Math.PI * Math.PI / 2, 0.10516633568168575, 8.934802200544704,
+            Math.PI * Math.PI / 6}, io.github.zzuegg.brainiac.tensor.Special.trigamma(x).toDoubleArray(), 1e-8);
+        assertEquals(Double.POSITIVE_INFINITY, io.github.zzuegg.brainiac.tensor.Special.lgamma(-2.0));
+    }
+
+    @Test
+    void reshapeInfersOneDimension() {
+        Tensor t = Tensor.zeros(Shape.of(2, 3, 4));
+        assertEquals(Shape.of(6, 4), t.reshape(-1, 4).shape());
+        assertEquals(Shape.of(24), t.reshape(-1).shape());
+        assertThrows(IllegalArgumentException.class, () -> t.reshape(-1, 5));
+        assertThrows(IllegalArgumentException.class, () -> t.reshape(-1, -1));
+        assertEquals(Shape.of(2, 7, 4), t.shape().withDim(-2, 7));
+    }
 }
