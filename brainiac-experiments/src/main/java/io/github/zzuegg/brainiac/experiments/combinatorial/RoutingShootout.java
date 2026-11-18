@@ -36,7 +36,7 @@ import java.util.function.ToDoubleFunction;
  *   <li>{@link #pomo} (11.2.3): POMO's shared baseline against the rollout baseline at equal
  *       training rollouts, with and without the x8 augmentation, and Sym-NCO on rotated
  *       instances;</li>
- *   <li>{@link #preference} (11.2.4): preference optimisation against POMO's REINFORCE at
+ *   <li>{@link #curve} (11.2.4): preference optimisation against POMO's REINFORCE at
  *       equal rollouts;</li>
  *   <li>{@link #activeSearch} (11.2.5): sampling, full active search and the three EAS
  *       variants at equal per-instance rollouts;</li>

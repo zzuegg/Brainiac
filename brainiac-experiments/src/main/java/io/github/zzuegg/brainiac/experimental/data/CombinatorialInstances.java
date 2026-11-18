@@ -81,7 +81,7 @@ public final class CombinatorialInstances {
      * A packing ILP: maximise {@code c.x} subject to {@code A x <= b}, {@code A >= 0},
      * {@code x} binary.
      *
-     * @param name "knapsack" or "setcover"
+     * @param name "knapsack", "mkp" or "setcover"
      * @param c the objective
      * @param a the constraints {@code [m][n]}
      * @param b the bounds
@@ -490,6 +490,41 @@ public final class CombinatorialInstances {
     }
 
     /**
+     * A multidimensional 0/1 knapsack in the style of Chu and Beasley: {@code m} constraints
+     * with weights 1-100 and capacity half of each row's total, values correlated with the
+     * mean weight (mean weight plus 0-49). The optimum comes from best-bound branch and bound.
+     *
+     * @param n items
+     * @param m constraints
+     * @param seed the seed
+     * @return the ILP with its optimum
+     */
+    public static Ilp multiKnapsack(int n, int m, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double[][] a = new double[m][n];
+        double[] b = new double[m];
+        double[] c = new double[n];
+        for (int i = 0; i < m; i++) {
+            double total = 0;
+            for (int j = 0; j < n; j++) {
+                a[i][j] = 1 + r.nextInt(100);
+                total += a[i][j];
+            }
+            b[i] = Math.floor(total / 2);
+        }
+        for (int j = 0; j < n; j++) {
+            double sum = 0;
+            for (int i = 0; i < m; i++) {
+                sum += a[i][j];
+            }
+            c[j] = Math.round(sum / m + r.nextInt(50));
+        }
+        Ilp raw = new Ilp("mkp", c, a, b, 0, Double.NaN);
+        double opt = BranchAndBound.of(BranchAndBound.Rule.PSEUDOCOST).bestFirst(true).solve(raw).objective();
+        return new Ilp("mkp", c, a, b, 0, opt);
+    }
+
+    /**
      * A random set-cover instance: {@code 2n} elements, each set holding each element with
      * probability 0.15 (every element in at least two sets), integer costs 1-10. Stored as a
      * packing ILP over {@code y = 1 - x}: maximise {@code c.y} with
@@ -531,6 +566,40 @@ public final class CombinatorialInstances {
         Ilp raw = new Ilp("setcover", c, a, b, total, Double.NaN);
         double opt = BranchAndBound.of(BranchAndBound.Rule.PSEUDOCOST).bestFirst(true).solve(raw).objective();
         return new Ilp("setcover", c, a, b, total, opt);
+    }
+
+    /**
+     * A satisfiable uniform random 3-SAT formula: {@code round(ratio n)} clauses of three
+     * distinct variables with random signs, redrawn until {@link RandomSatFormulas#solve}
+     * finds a model (ratio 4.26 is the satisfiability threshold, where the formulas are
+     * hardest).
+     *
+     * @param n variables
+     * @param ratio clauses per variable
+     * @param seed the seed
+     * @return the formula
+     */
+    public static RandomSatFormulas.Formula random3Sat(int n, double ratio, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        int m = (int) Math.round(ratio * n);
+        while (true) {
+            List<int[]> clauses = new ArrayList<>();
+            for (int c = 0; c < m; c++) {
+                int a = 1 + r.nextInt(n);
+                int b;
+                do {
+                    b = 1 + r.nextInt(n);
+                } while (b == a);
+                int d;
+                do {
+                    d = 1 + r.nextInt(n);
+                } while (d == a || d == b);
+                clauses.add(new int[] {r.nextBoolean() ? a : -a, r.nextBoolean() ? b : -b, r.nextBoolean() ? d : -d});
+            }
+            if (RandomSatFormulas.solve(n, clauses) != null) {
+                return new RandomSatFormulas.Formula(n, List.copyOf(clauses), true);
+            }
+        }
     }
 
     private static double gaussian(SplittableRandom r) {
