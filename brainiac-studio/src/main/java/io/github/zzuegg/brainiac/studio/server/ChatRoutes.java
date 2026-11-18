@@ -45,6 +45,11 @@ import java.util.Map;
  *       stops the drawing. Leave {@code seed} out for a random one. {@code POST
  *       /api/images/options} with {@code {"model": "local/sdxl"}} gives the samplers and the
  *       model's usual steps and guidance.
+ *   <li>{@code POST /api/speech/voice} with {@code {"model": "local/f5-tts", "name": "Me", "audio":
+ *       "<base64 WAV>", "transcript": "..."}} keeps a voice made from a recording, for a model that
+ *       clones voices; leave {@code transcript} empty to have a Whisper model write it down. It
+ *       answers {@code {voice, transcript}}. {@code "remove": true} with the model and name forgets
+ *       one.
  *   <li>{@code POST /api/transcribe} with {@code {"model": "auto", "audio": "<base64 WAV>",
  *       "language": "de", "translate": false, "timestamps": true, "prompt": ""}} writes down what is
  *       said with a Whisper model on this PC, as a server-sent event stream: {@code route}, one
@@ -123,6 +128,7 @@ final class ChatRoutes {
         server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
                 chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/transcribe", this::transcribe);
+        server.post("/api/speech/voice", this::voice);
         server.post("/api/transcribe/options", ex -> Exchanges.json(ex, 200,
                 chat.transcribeOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.get("/api/usage", ex -> Exchanges.json(ex, 200, chat.usage().summary(java.time.ZoneId.systemDefault())));
@@ -340,6 +346,32 @@ final class ChatRoutes {
             }
         } catch (IOException closed) {
             // the page stopped reading
+        }
+    }
+
+    private void voice(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 16 * 1024 * 1024);
+        String model = Json.string(body, "model", "");
+        String name = Json.string(body, "name", "").strip();
+        try {
+            if (Boolean.TRUE.equals(body.get("remove"))) {
+                chat.removeVoice(model, name);
+                Exchanges.json(ex, 200, Map.of("removed", name));
+                return;
+            }
+            byte[] wav;
+            try {
+                wav = java.util.Base64.getDecoder().decode(Json.string(body, "audio", ""));
+            } catch (IllegalArgumentException e) {
+                throw new Exchanges.BadRequest("send the recording as base64 WAV in \"audio\"");
+            }
+            String transcript = chat.saveVoice(model, name, wav, Json.string(body, "transcript", ""));
+            Exchanges.json(ex, 200, Map.of("voice", name, "transcript", transcript));
+        } catch (IllegalArgumentException e) {
+            throw new Exchanges.BadRequest(e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted");
         }
     }
 

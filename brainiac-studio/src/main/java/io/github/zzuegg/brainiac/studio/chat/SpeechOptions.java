@@ -14,9 +14,10 @@ import java.util.Map;
  * @param names a readable name for some voices, by id, such as "Heart (American female)"
  * @param mix whether a voice may be a blend, such as {@code af_heart*0.7+am_adam*0.3}
  * @param tags expression tags it understands inside the text, such as {@code laugh}
+ * @param clones whether it speaks in a voice made from a recording
  */
 public record SpeechOptions(List<String> voices, boolean speed, boolean instructions, List<String> formats,
-        Map<String, String> names, boolean mix, List<String> tags) {
+        Map<String, String> names, boolean mix, List<String> tags, boolean clones) {
 
     /** Copies the lists. */
     public SpeechOptions {
@@ -35,7 +36,7 @@ public record SpeechOptions(List<String> voices, boolean speed, boolean instruct
      * @param formats the file formats it can write
      */
     public SpeechOptions(List<String> voices, boolean speed, boolean instructions, List<String> formats) {
-        this(voices, speed, instructions, formats, Map.of(), false, List.of());
+        this(voices, speed, instructions, formats, Map.of(), false, List.of(), false);
     }
 
     Map<String, Object> toJson() {
@@ -50,6 +51,7 @@ public record SpeechOptions(List<String> voices, boolean speed, boolean instruct
         m.put("names", n);
         m.put("mix", mix);
         m.put("tags", tags);
+        m.put("clone", clones);
         return m;
     }
 }

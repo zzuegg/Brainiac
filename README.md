@@ -1100,7 +1100,11 @@ vocabulary, which is fetched once from Hugging Face (about 1.6 MB) into
 folder) or a VITS model (such as `facebook/mms-tts-eng`) in a model folder speaks on the Voice screen
 as a model of This PC, saving WAV files, and Auto picks it. Kokoro lists its 28 English voices by
 name, and **Blend with** mixes a second voice in at the share you pick (sent as
-`"voice": "af_heart*0.70+bm_george*0.30"`). A Whisper model (such as
+`"voice": "af_heart*0.70+bm_george*0.30"`). An Orpheus folder (with SNAC next to it) speaks with
+its 8 voices and offers its expression tags, such as `<laugh>`, as buttons that put them in the
+text. An F5-TTS folder (with the Vocos vocoder next to it) speaks in voices made from recordings:
+under **New voice**, name it, choose or **Record** 3 to 12 seconds of speech and say what is said
+(left empty, a Whisper model writes it down). Such voices are kept in `voices` in the data folder. A Whisper model (such as
 `openai/whisper-base`, with its `tokenizer.json`) writes down what is said: switch the Voice screen
 to **Transcribe**, then drop a recording (any audio or video the browser plays; it is turned into
 16 kHz mono in the browser) or **Record** one with the microphone. The text appears piece by piece,
@@ -1119,6 +1123,8 @@ POST /api/images/draw       {"model":"local/sdxl","prompt":"...","negativePrompt
                             route, step and preview ..., image per picture, done or error
 POST /api/images/options    {"model":"local/sdxl"} -> the samplers and the model's usual steps and guidance
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
+POST /api/speech/voice      {"model":"local/f5-tts","name":"Me","audio":"<base64 WAV>","transcript":""}
+                            keeps a voice made from a recording ("remove": true forgets it)
 POST /api/transcribe        {"model":"auto","audio":"<base64 WAV>","language":"de","translate":false} -> event
                             stream: route, segment ..., done (text, language) or error
 POST /api/transcribe/options {"model":"local/whisper-base"} -> its languages and whether it translates

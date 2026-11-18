@@ -2981,6 +2981,8 @@
     // a second voice mixed in, for models whose voices blend, and how much of the first to keep
     blend: "", blendW: 0.7,
     text: "", takes: [], speaking: false, video: null,
+    // a voice made from a recording, for models that clone (F5-TTS)
+    clone: { name: "", text: "", sample: null, rec: null, busy: false, error: "" },
     // writing down what is said, on this PC
     mode: store.get("voMode", "speak"), trModel: store.get("trModel", "auto"), trLang: store.get("trLang", "auto"),
     trTranslate: false, trTimes: true, trOpts: {}, transcripts: [], listening: null, recorder: null,
@@ -3262,12 +3264,14 @@
   const langName = code => { try { return new Intl.DisplayNames([navigator.language || "en"], { type: "language" }).of(code) || code; } catch (_) { return code; } };
 
   // any audio the browser can play, as 16 kHz mono 16-bit WAV, base64
-  async function toWav16k(blob) {
+  const toWav16k = blob => toWav(blob, 16000);
+
+  async function toWav(blob, rate) {
     const buf = await blob.arrayBuffer();
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     let decoded;
     try { decoded = await ctx.decodeAudioData(buf); } finally { ctx.close?.(); }
-    const rate = 16000, n = Math.max(1, Math.ceil(decoded.duration * rate));
+    const n = Math.max(1, Math.ceil(decoded.duration * rate));
     const off = new OfflineAudioContext(1, n, rate);
     const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
     const pcm = (await off.startRendering()).getChannelData(0);
@@ -3370,6 +3374,7 @@
     <div class="voice">
       <aside class="voices" aria-label="Voices">
         <div class="col-head"><span class="h3">Voices</span><span class="grow"></span><span class="mono faint">${opt.voices.length || ""}</span></div>
+        ${!opt.voices.length && opt.clone ? `<div class="faint pad" style="font-size:13px">No voices yet. This model speaks in a voice made from a recording: add one under <b>New voice</b>.</div>` : ""}
         ${opt.voices.map(v => { const [n, d] = voiceName(v, names); return `
           <div class="vcard ${v === G.voice ? "active" : ""}" data-voice="${esc(v)}" tabindex="0" role="button" aria-pressed="${v === G.voice}">
             <div class="vface" style="background:${hue(v)}">${esc(n[0].toUpperCase())}</div>
@@ -3407,6 +3412,7 @@
           <select class="input" id="vo-blend"><option value="">Nothing, just ${esc(voiceName(G.voice, names)[0])}</option>${opt.voices.filter(v => v !== G.voice).map(v => `<option value="${esc(v)}" ${v === G.blend ? "selected" : ""}>${esc(voiceName(v, names)[0])}${voiceName(v, names)[1] ? " · " + esc(voiceName(v, names)[1]) : ""}</option>`).join("")}</select></div>
         ${G.blend ? `<div class="field"><label for="vo-mix">Mix <output>${mixLabel(names)}</output></label>
           <input type="range" id="vo-mix" min="0.1" max="0.9" step="0.05" value="${G.blendW}" aria-label="How much of ${esc(voiceName(G.voice, names)[0])}"></div>` : ""}` : ""}
+        ${opt.clone ? cloneBox() : ""}
         ${opt.tags?.length ? `<div class="field"><label>Expressions <output>put in the text</output></label><div class="tag-row">${opt.tags.map(t => `<button class="btn ghost sm" data-vo-tag="${esc(t)}">&lt;${esc(t)}&gt;</button>`).join("")}</div></div>` : ""}
         <div class="field"><label for="vo-instr">How to say it ${opt.instructions ? "" : "<output>not offered</output>"}</label>
           <textarea class="input" id="vo-instr" rows="3" placeholder="Calm narrator, a little slower, warm" ${opt.instructions ? "" : "disabled"}>${esc(G.instructions)}</textarea></div>
@@ -3414,6 +3420,64 @@
           : opt.formats.length ? `<div class="field"><label>File <output>${opt.formats[0].toUpperCase()}</output></label></div>` : ""}
       </aside>
     </div>`;
+  }
+
+  // making a voice from a recording: a name, 3 to 12 seconds of speech, and what is said in it
+  function cloneBox() {
+    const c = G.clone;
+    const ready = c.sample && c.name.trim() && !c.busy && !c.rec;
+    return `<div class="field clone-box"><label for="vo-clone-name">New voice <output>from a recording</output></label>
+      <input class="input" id="vo-clone-name" placeholder="Its name, such as Me" maxlength="40" value="${esc(c.name)}">
+      <div class="clone-row">
+        <label class="btn sm ${c.rec || c.busy ? "disabled" : ""}" for="vo-clone-file">${icon("clip")}Choose a recording</label><input type="file" id="vo-clone-file" accept="audio/*,video/*" hidden>
+        <button class="btn sm" id="vo-clone-rec" type="button" ${c.busy ? "disabled" : ""}>${c.rec ? `${icon("stop")}Stop <span class="mono" id="vo-clone-time">0:00</span>` : `${icon("speech")}Record`}</button>
+      </div>
+      <div class="mono faint" style="font-size:12px">${c.sample ? `${esc(c.sample.name)} · ${c.sample.seconds.toFixed(1)} s${c.sample.seconds > 12 ? " (only the first 12 s are used)" : ""}` : "3 to 12 seconds of clear speech works best."}</div>
+      <textarea class="input" id="vo-clone-text" rows="2" placeholder="What is said in it. Left empty, a Whisper model writes it down.">${esc(c.text)}</textarea>
+      <button class="btn primary sm" id="vo-clone-save" type="button" ${ready ? "" : "disabled"}>${c.busy ? "Adding…" : "Add the voice"}</button>
+      ${c.error ? `<div class="flag bad">${icon("flask")}<div>${esc(c.error)}</div></div>` : ""}
+    </div>`;
+  }
+
+  async function cloneSample(blob, name) {
+    try {
+      const w = await toWav(blob, 24000);
+      G.clone.sample = { data: w.data, seconds: w.seconds, name };
+      G.clone.error = w.seconds < 1 ? "The recording is too short: use 3 to 12 seconds of speech." : "";
+    } catch (e) { G.clone.error = "This file could not be read as audio: " + e.message; }
+    if (state.view === "voice") render();
+  }
+
+  async function cloneRecord() {
+    const c = G.clone;
+    if (c.rec) { c.rec.rec.stop(); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { c.error = "The microphone is not available: " + e.message; render(); return; }
+    const chunks = [], rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(c.rec?.tick); c.rec = null;
+      cloneSample(new Blob(chunks, { type: rec.mimeType || "audio/webm" }), "Recording");
+    };
+    c.rec = { rec, at: Date.now(), tick: setInterval(() => { const el = $("#vo-clone-time"); if (el && c.rec) el.textContent = clock((Date.now() - c.rec.at) / 1000); }, 500) };
+    rec.start(1000);
+    render();
+  }
+
+  async function cloneSave() {
+    const c = G.clone, m = pickedModel(G.voModel, "speech");
+    if (!m || !c.sample) return;
+    c.busy = true; c.error = ""; render();
+    try {
+      const j = await postJson("/api/speech/voice", { model: m.key, name: c.name.trim(), audio: c.sample.data, transcript: c.text.trim() });
+      G.voice = j.voice; store.set("voice", G.voice);
+      Object.assign(c, { name: "", text: "", sample: null });
+      await loadModels();
+    } catch (e) { c.error = e.message; }
+    c.busy = false;
+    if (state.view === "voice") render();
   }
 
   // a voice's readable name and description, from "Heart (American female)" or the bare id
@@ -3474,6 +3538,14 @@
       speak(`Hello, I'm ${n}. This is how I sound.`, b.dataset.preview, true, n);
     }));
     $("#vo-blend")?.addEventListener("change", e => { keep(); G.blend = e.target.value; render(); });
+    $("#vo-clone-name")?.addEventListener("input", e => {
+      G.clone.name = e.target.value;
+      const b = $("#vo-clone-save"); if (b) b.disabled = !(G.clone.sample && G.clone.name.trim() && !G.clone.busy && !G.clone.rec);
+    });
+    $("#vo-clone-text")?.addEventListener("input", e => { G.clone.text = e.target.value; });
+    $("#vo-clone-file")?.addEventListener("change", e => { const f = e.target.files[0]; if (f) { keep(); cloneSample(f, f.name); } });
+    $("#vo-clone-rec")?.addEventListener("click", () => { keep(); cloneRecord(); });
+    $("#vo-clone-save")?.addEventListener("click", () => { keep(); cloneSave(); });
     $("#vo-mix")?.addEventListener("input", e => {
       G.blendW = +e.target.value;
       e.target.previousElementSibling.querySelector("output").textContent = mixLabel(pickedModel(G.voModel, "speech")?.speech?.names);
