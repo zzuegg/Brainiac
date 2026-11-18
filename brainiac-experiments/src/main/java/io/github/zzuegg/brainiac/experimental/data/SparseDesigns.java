@@ -166,10 +166,14 @@ public final class SparseDesigns {
             bad[i] = true;
             if (leverage) {
                 for (int j = 0; j < x[i].length; j++) {
-                    x[i][j] = 5 + 0.5 * r.nextGaussian();
+                    x[i][j] = 5 + r.nextGaussian();
                 }
-                // the outlying response follows a wrong slope so the points pull the fit
-                y[i] = -scale * 0.5 * x[i].length * 0.2 + data.sigma() * r.nextGaussian();
+                // the outlying response follows the opposite slope, so the points pull the fit
+                double f = 0;
+                for (int j = 0; j < x[i].length; j++) {
+                    f += x[i][j] * data.beta()[j];
+                }
+                y[i] = -f + data.sigma() * r.nextGaussian();
             } else {
                 y[i] += scale + data.sigma() * r.nextGaussian();
             }
