@@ -1493,6 +1493,20 @@ public final class VulkanBackend implements Backend {
     private VkStorage counters;
     private int nextCounter;
 
+    /** Takes a run of {@code count} counters, all 0, and gives its address. */
+    private long counters(long count) {
+        if (counters == null) {
+            counters = raw(COUNTERS, null);
+            fillNow(counters, 0);
+        }
+        if (nextCounter + count > COUNTERS) {
+            nextCounter = 0;
+        }
+        long at = counters.address() + 4L * nextCounter;
+        nextCounter += (int) count;
+        return at;
+    }
+
     private Pieces pieces(int pieces, int m, int n, int columnGroups, DType type) {
         if (counters == null) {
             counters = raw(COUNTERS, null);
@@ -1645,13 +1659,11 @@ public final class VulkanBackend implements Backend {
             vk.dispatch(shader("attention", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()}, xq.slot(),
                     xk.slot(), xv.slot(), xb.slot());
         } else {
-            push.putInt(parts).putInt(chunk);
-            vk.dispatch(shader("attention_split", z.dtype), rows * parts, pieces.slot(), xq.slot(), xk.slot(),
-                    xv.slot(), xb.slot());
-            vk.push().putLong(pieces.address()).putLong(z.address()).putLong(xl.address()).putInt(parts)
-                    .putInt(shape[6]).putInt((int) rows);
-            vk.dispatch(shader("attention_combine", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()},
-                    pieces.slot());
+            // the last piece of each row to finish joins the row's pieces: one dispatch
+            push.putLong(counters(rows)).putInt(parts).putInt(chunk);   // 128 bytes: the run's own address
+            vk.dispatch(shader("attention_split", z.dtype), rows * parts,
+                    new VkContext.Slot[] {z.slot(), xl.slot(), pieces.slot()}, xq.slot(), xk.slot(), xv.slot(),
+                    xb.slot());
             pieces.release();
         }
         if (bias != null) {

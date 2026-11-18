@@ -7,18 +7,24 @@
 // component d, rescaled online as the running maximum grows (as flash attention does).
 // Computed in float32 whatever the format. An optional bias (masks) is added to the scores.
 // With SPLIT (flash decoding), each row's keys are shared out in pieces of `chunk` among
-// `parts` work groups, which write their unnormalized output, maximum and sum to `part` for
-// attention_combine: a single query row then fills the device rather than one work group.
+// `parts` work groups, which write their unnormalized output, maximum and sum to `part`: a
+// single query row then fills the device rather than one work group. The last piece of a row
+// to finish (a counter per row) joins them, as attention_combine does, and resets the counter.
 layout(local_size_x = GROUP) in;
+#ifdef SPLIT
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer Parts { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer Counters { uint v[]; };
+shared bool lastPiece;
+#endif
 layout(push_constant) uniform P {
     In q; In k; In v; Buf z; Buf lse; In bias;
 #ifdef SPLIT
-    Floats part;
+    Parts part;
 #endif
     uint heads; uint kvHeads; uint tq; uint tk; uint dk; uint dv; float scale; uint causal; uint rows;
     uint hasBias; uint sb; uint sh; uint si; uint sj;
 #ifdef SPLIT
-    uint parts; uint chunk;
+    Counters counters; uint parts; uint chunk;
 #endif
 } p;
 shared float qs[GROUP];
@@ -125,6 +131,40 @@ void main() {
     if (tid == 0) {
         p.part.v[base + p.dv] = m;
         p.part.v[base + p.dv + 1] = l;
+    }
+    memoryBarrierBuffer();
+    barrier();
+    if (tid == 0) {
+        uint done = atomicAdd(p.counters.v[row], 1u);
+        lastPiece = done == p.parts - 1;
+    }
+    barrier();
+    if (!lastPiece) {
+        return;
+    }
+    memoryBarrierBuffer();
+    uint stride = p.dv + 2;
+    uint first0 = row * p.parts * stride;
+    float mx = uintBitsToFloat(0xff800000u);
+    for (uint t = 0; t < p.parts; t++) {
+        mx = max(mx, p.part.v[first0 + t * stride + p.dv]);
+    }
+    float lt = 0;
+    float ot = 0;
+    for (uint t = 0; t < p.parts; t++) {
+        float mi = p.part.v[first0 + t * stride + p.dv];
+        float w = isinf(mi) && mi < 0 ? 0.0 : exp(mi - mx);
+        lt += p.part.v[first0 + t * stride + p.dv + 1] * w;
+        if (tid < p.dv) {
+            ot += p.part.v[first0 + t * stride + tid] * w;
+        }
+    }
+    if (tid < p.dv) {
+        STORE(p.z, row * p.dv + tid, ACC(lt > 0 ? ot / lt : 0.0));
+    }
+    if (tid == 0) {
+        STORE(p.lse, row, ACC(lt > 0 ? mx + log(lt) : uintBitsToFloat(0xff800000u)));
+        p.counters.v[row] = 0u;   // ready for the next attention
     }
 #else
     if (tid < p.dv) {
