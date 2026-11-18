@@ -527,35 +527,23 @@ public final class Gguf implements WeightSource {
         byte[] offsetCodes = shifted && superBlocks ? new byte[in / group * out] : null;
         float[] superOffsets = shifted ? new float[superScales.length] : null;
         int perSuper = superGroup / group;
-        MemorySegment m = raw(name);
-        long rowBytes = (long) in / e.format.block * e.format.bytes;
-        int perTask = 64;
-        // stored rows decoded in parallel, each into one output column
-        java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
-            GgmlQuants.Row row = new GgmlQuants.Row(in, group);
-            for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
-                GgmlQuants.levels(e.format, m.asSlice(o * rowBytes, rowBytes), in, row);
-                int c = column[o];
-                byte[] q = row.levels();
-                for (int r = 0; r < in; r++) {
-                    levels[r * out + c] = (byte) (q[r] - shift);
+        tiles(e, raw(name), out, in, group, (c, r0, len, row) -> {
+            for (int g = 0; g < len / group; g++) {
+                int at = (r0 / group + g) * out + c;
+                if (scaleCodes != null) {
+                    scaleCodes[at] = row.scaleCodes()[g];
                 }
-                for (int g = 0; g < in / group; g++) {
-                    if (scaleCodes != null) {
-                        scaleCodes[g * out + c] = row.scaleCodes()[g];
-                    }
-                    if (offsetCodes != null) {
-                        offsetCodes[g * out + c] = row.offsetCodes()[g];
-                    }
-                    if (g % perSuper == 0) {
-                        superScales[g / perSuper * out + c] = row.d()[g];
-                        if (superOffsets != null) {
-                            superOffsets[g / perSuper * out + c] = row.m()[g];
-                        }
+                if (offsetCodes != null) {
+                    offsetCodes[at] = row.offsetCodes()[g];
+                }
+                if (g % perSuper == 0) {
+                    superScales[(r0 / group + g) / perSuper * out + c] = row.d()[g];
+                    if (superOffsets != null) {
+                        superOffsets[(r0 / group + g) / perSuper * out + c] = row.m()[g];
                     }
                 }
             }
-        });
+        }, levels, column, shift);
         PackedMatrix.Factors factors = new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets,
                 superGroup, shift);
         return Tensor.packed(PackedMatrix.of(levels, factors, in, out, bits, group), device);
@@ -569,29 +557,70 @@ public final class Gguf implements WeightSource {
         byte[] levels = new byte[in * out];
         float[] scales = new float[in / group * out];
         float[] offsets = shifted ? new float[scales.length] : null;
-        MemorySegment m = raw(name);
-        long rowBytes = (long) in / e.format.block * e.format.bytes;
-        int perTask = 64;
-        java.util.stream.IntStream.range(0, Math.ceilDiv(out, perTask)).parallel().forEach(task -> {
-            GgmlQuants.Row row = new GgmlQuants.Row(in, group);
-            for (int o = task * perTask; o < Math.min(out, (task + 1) * perTask); o++) {
-                GgmlQuants.levels(e.format, m.asSlice(o * rowBytes, rowBytes), in, row);
-                int c = column[o];
-                byte[] q = row.levels();
-                for (int r = 0; r < in; r++) {
-                    levels[r * out + c] = (byte) (q[r] - shift);
+        tiles(e, raw(name), out, in, group, (c, r0, len, row) -> {
+            float[] s = row.scales();
+            float[] f = row.offsets();
+            for (int g = 0; g < len / group; g++) {
+                int at = (r0 / group + g) * out + c;
+                scales[at] = s[g];
+                if (shifted) {
+                    offsets[at] = (float) (f[g] + (double) s[g] * shift);
                 }
-                float[] s = row.scales();
-                float[] f = row.offsets();
-                for (int g = 0; g < s.length; g++) {
-                    scales[g * out + c] = s[g];
-                    if (shifted) {
-                        offsets[g * out + c] = (float) (f[g] + (double) s[g] * shift);
-                    }
+            }
+        }, levels, column, shift);
+        return Tensor.packed(PackedMatrix.of(levels, scales, offsets, in, out, bits, group), device);
+    }
+
+    /** Receives the scales of output {@code c} for inputs {@code r0} to {@code r0 + len}, decoded in {@code row}. */
+    private interface TileFactors {
+        void accept(int c, int r0, int len, GgmlQuants.Row row);
+    }
+
+    /** Outputs per tile: 64 levels of an input, one cache line. */
+    private static final int TILE_OUTPUTS = 64;
+    /** Inputs per tile, a multiple of every block size: a tile stays in the cache. */
+    private static final int TILE_INPUTS = 2048;
+
+    /**
+     * Decodes a stored {@code [out, in]} matrix into transposed levels {@code [in, out]}, less
+     * {@code shift}, in tiles of 64 outputs by up to 2048 inputs, in parallel. A tile is
+     * gathered in a small buffer and written an input at a time, 64 adjacent bytes, instead of
+     * one byte every {@code out} bytes; and matrices with few outputs still split into enough
+     * tasks for every core. {@code factors} copies the scales of each row piece.
+     */
+    private static void tiles(Entry e, MemorySegment m, int out, int in, int group, TileFactors factors,
+            byte[] levels, int[] column, int shift) {
+        int[] stored = new int[out];   // the stored row of each output
+        for (int o = 0; o < out; o++) {
+            stored[column[o]] = o;
+        }
+        int block = e.format.block;
+        long rowBytes = (long) in / block * e.format.bytes;
+        int span = Math.max(block, TILE_INPUTS / block * block);
+        int inputTiles = Math.ceilDiv(in, span);
+        int outputTiles = Math.ceilDiv(out, TILE_OUTPUTS);
+        java.util.stream.IntStream.range(0, inputTiles * outputTiles).parallel().forEach(task -> {
+            int c0 = task / inputTiles * TILE_OUTPUTS;
+            int r0 = task % inputTiles * span;
+            int width = Math.min(TILE_OUTPUTS, out - c0);
+            int len = Math.min(span, in - r0);
+            GgmlQuants.Row row = new GgmlQuants.Row(len, group);
+            byte[] tile = new byte[width * len];   // the tile's rows as stored, one after another
+            long from = (long) r0 / block * e.format.bytes;
+            long bytes = (long) len / block * e.format.bytes;
+            for (int t = 0; t < width; t++) {
+                GgmlQuants.levels(e.format, m.asSlice(stored[c0 + t] * rowBytes + from, bytes), len, row);
+                System.arraycopy(row.levels(), 0, tile, t * len, len);
+                factors.accept(c0 + t, r0, len, row);
+            }
+            // transposed: each input's levels of the tile's outputs are adjacent
+            for (int r = 0; r < len; r++) {
+                int at = (r0 + r) * out + c0;
+                for (int t = 0; t < width; t++) {
+                    levels[at + t] = (byte) (tile[t * len + r] - shift);
                 }
             }
         });
-        return Tensor.packed(PackedMatrix.of(levels, scales, offsets, in, out, bits, group), device);
     }
 
     @Override
