@@ -282,8 +282,9 @@ public final class TrainingService implements AutoCloseable {
      * Runs a saved model on one sample, so a model that was built or trained here can be tried:
      * on a sample of a data set (which also says what the right answer is) or on values typed in.
      *
-     * @param request {@code {model, values?: [numbers], data?: a run's data settings, index?}}; with
-     *     {@code data} and no {@code index}, a sample is picked at random
+     * @param request {@code {model, values?: [numbers], data?: a run's data settings, index?, full?}};
+     *     with {@code data} and no {@code index}, a sample is picked at random; with {@code full} the
+     *     whole input comes back, up to the size of a picture, where it is else cut to 64 values
      * @return {@code {input, output, best, label?, expected?, expectedLabel?, index?, samples?}}:
      *     {@code best} is the position of the largest output, {@code label} its class name when the
      *     data has classes
@@ -340,7 +341,7 @@ public final class TrainingService implements AutoCloseable {
                 }
             }
         }
-        out.put("input", floats(input, 64));
+        out.put("input", floats(input, Boolean.TRUE.equals(request.get("full")) ? FULL_INPUT : 64));
         out.put("inputSize", input.length);
         out.put("output", floats(output, 256));
         out.put("outputSize", output.length);
@@ -376,6 +377,9 @@ public final class TrainingService implements AutoCloseable {
     }
 
     // the first values of an array as JSON numbers; what is not a number (an overflow) is sent as null
+    /** The most input values a prediction gives back when asked for all: a 128 by 128 colour picture. */
+    static final int FULL_INPUT = 3 * 128 * 128;
+
     private static List<Object> floats(float[] values, int most) {
         List<Object> out = new ArrayList<>();
         for (int i = 0; i < Math.min(values.length, most); i++) {
