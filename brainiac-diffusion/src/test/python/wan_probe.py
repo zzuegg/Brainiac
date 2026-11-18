@@ -4,7 +4,11 @@
 #   python wan_probe.py sampled <diffusers repo> <inputs.safetensors> [prompt]
 #       runs diffusers' WanPipeline (832x480, 9 frames, 6 steps, seed 42) for its final latents and
 #       the prompt's text states, and stores cases c0..c3: those latents noised to sigma 0.9, 0.6,
-#       0.3 and 0.1 with the matching timesteps, as the sampler meets them
+#       0.3 and 0.1 with the matching timesteps, as the sampler meets them; also its starting noise,
+#       final latents (x0), shift, and three decoded frames as <inputs>.diffusers-<i>.png
+#   ./gradlew :brainiac-examples:run --args="wanprobe pipeline <model folder> inputs.safetensors <out folder>"
+#       samples the same clip from the same noise, prints how far its final latents are from
+#       diffusers', and writes both decoded by Brainiac's VAE as PNG frames
 #   python wan_probe.py reference <diffusers repo or folder> <inputs.safetensors> <ref.safetensors> [f32]
 #       runs diffusers' WanTransformer3DModel in bfloat16 (or float32) and stores every block's output
 #   ./gradlew :brainiac-examples:run --args="wanprobe <model folder> inputs.safetensors ours.safetensors"
@@ -32,17 +36,22 @@ if cmd == "inputs":
                "context": context}, sys.argv[2])
 elif cmd == "sampled":
     from diffusers import WanPipeline
+    from PIL import Image
     prompt = sys.argv[4] if len(sys.argv) > 4 else "a red fox runs through deep snow"
     pipe = WanPipeline.from_pretrained(sys.argv[2], torch_dtype=torch.bfloat16).to("cuda")
+    start = torch.randn(1, 16, 3, 60, 104, generator=torch.Generator().manual_seed(42))
+    run = dict(prompt=prompt, height=480, width=832, num_frames=9, num_inference_steps=6, guidance_scale=5.0)
     with torch.no_grad():
-        x0 = pipe(prompt=prompt, height=480, width=832, num_frames=9, num_inference_steps=6, guidance_scale=5.0,
-                  generator=torch.Generator("cuda").manual_seed(42), output_type="latent").frames.float().cpu()
+        x0 = pipe(**run, latents=start.to("cuda"), output_type="latent").frames.float().cpu()
+        video = pipe(**run, latents=start.to("cuda"), output_type="np").frames[0]
         embeds, _ = pipe.encode_prompt(prompt=prompt, do_classifier_free_guidance=False, max_sequence_length=512,
                                        device="cuda")
+    for i in [0, len(video) // 2, len(video) - 1]:
+        Image.fromarray((video[i] * 255).round().clip(0, 255).astype("uint8")).save(f"{sys.argv[3]}.diffusers-{i}.png")
     context = embeds.float().cpu()
     g = torch.Generator().manual_seed(1)
     noise = torch.randn(x0.shape, generator=g)
-    out = {}
+    out = {"noise": start, "x0": x0, "shift": torch.tensor([float(pipe.scheduler.config.flow_shift)])}
     for i, sigma in enumerate([0.9, 0.6, 0.3, 0.1]):
         out[f"c{i}.latents"] = (1 - sigma) * x0 + sigma * noise
         out[f"c{i}.timestep"] = torch.tensor([sigma * 1000.0])

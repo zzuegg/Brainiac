@@ -1194,6 +1194,44 @@ public final class Wan implements AutoCloseable {
         return Tensor.of(Shape.of(1, n), v, device);
     }
 
+    /**
+     * Samples a text-to-video clip's latents from given noise, without decoding them: for
+     * comparing the sampler and transformer against a reference pipeline.
+     *
+     * @param request the video
+     * @param noise the starting noise {@code [1, z, latentFrames, h / f, w / f]}
+     * @return the final latents, float32, on the sampling device
+     */
+    public Tensor sampleLatents(VideoRequest request, Tensor noise) {
+        if (input == Input.IMAGE) {
+            throw new IllegalArgumentException(this + " is an image-to-video model: it needs a first frame");
+        }
+        boolean guided = request.guidance() > 1 || request.lowNoiseGuidance() > 1;
+        Tensor cond = encode(request.prompt());
+        Tensor uncond = guided ? encode(request.negativePrompt() == null ? DEFAULT_NEGATIVE : request.negativePrompt())
+                : null;
+        try {
+            float shift = request.shift() > 0 ? request.shift() : defaultShift();
+            return denoise(noise, cond, uncond, Conditioning.NONE, request.steps(), request.guidance(),
+                    request.lowNoiseGuidance(), shift, (step, steps, x0) -> true);
+        } finally {
+            cond.release();
+            if (uncond != null) {
+                uncond.release();
+            }
+        }
+    }
+
+    /**
+     * Decodes latents into a video.
+     *
+     * @param latents {@code [1, z, latentFrames, h / f, w / f]}
+     * @return the video
+     */
+    public GeneratedVideo decodeLatents(Tensor latents) {
+        return new GeneratedVideo(decode(latents), fps(), 0);
+    }
+
     /** Decodes latents into frames, one latent frame at a time. */
     List<GeneratedImage> decode(Tensor latents) {
         List<GeneratedImage> frames = new ArrayList<>();
