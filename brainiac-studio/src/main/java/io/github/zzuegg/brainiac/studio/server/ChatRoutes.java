@@ -35,6 +35,10 @@ import java.util.Map;
  *   <li>{@code GET /api/serve} says whether one of this PC's chat models is served to other
  *       programs with the OpenAI API; {@code POST /api/serve} with {@code {"model": "local/qwen",
  *       "port": 8080, "network": false}} starts that, and with {@code {"stop": true}} stops it.
+ *   <li>{@code GET /api/merge} gives the ways chat models can be merged and the merge under way;
+ *       {@code POST /api/merge} with {@code {"way": "ties", "base": "local/qwen", "models":
+ *       ["local/qwen-math", "local/qwen-code"], "weights": [1, 1], "density": 0.5, "name":
+ *       "qwen-both"}} starts one: a new model folder next to the first model.
  *   <li>{@code GET /api/quantize} gives the sizes a smaller copy of a chat model can have and the
  *       copy being made; {@code POST /api/quantize} with {@code {"model": "local/qwen", "size":
  *       "Q4_K_M"}} starts one: a quantized GGUF file next to the original.
@@ -157,6 +161,22 @@ final class ChatRoutes {
                         Boolean.TRUE.equals(body.get("network"))));
             } catch (IOException e) {
                 // no such model, it does not load, or the port is taken: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
+        server.get("/api/merge", ex -> Exchanges.json(ex, 200, chat.merger().state()));
+        server.post("/api/merge", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            java.util.function.UnaryOperator<String> id = m -> m.startsWith("local/") ? m.substring(6) : m;
+            try {
+                Exchanges.json(ex, 200, chat.merger().start(Json.string(body, "way", "linear"),
+                        id.apply(Json.string(body, "base", "")),
+                        Json.array(body.getOrDefault("models", List.of())).stream().map(m -> id.apply(String.valueOf(m))).toList(),
+                        Json.array(body.getOrDefault("weights", List.of())).stream()
+                                .map(x -> x instanceof Number n ? n.doubleValue() : Double.NaN).toList(),
+                        Json.number(body, "balance", 0.5), Json.number(body, "density", 0.5), Json.string(body, "name", "").strip()));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model, a GGUF file, a taken name or another merge: the caller's to fix
                 throw new Exchanges.BadRequest(e.getMessage());
             }
         });

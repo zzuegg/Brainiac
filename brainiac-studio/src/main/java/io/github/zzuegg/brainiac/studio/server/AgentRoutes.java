@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.studio.server;
 
 import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.studio.chat.Format;
 import io.github.zzuegg.brainiac.studio.agent.AgentRuns;
 import io.github.zzuegg.brainiac.studio.agent.StudioTools;
 import java.util.LinkedHashMap;
@@ -17,8 +18,10 @@ import java.util.Map;
  *       without asking.
  *   <li>{@code GET /api/agents}: the runs, newest first, the tools and the limits.
  *   <li>{@code POST /api/agents/get {id}}: one run with every step.
- *   <li>{@code POST /api/agents/start {goal, model?, mode?, maxSteps?, tools?}}: starts an agent;
- *       mode {@code ask} (the default) waits for the user before a tool that acts.
+ *   <li>{@code POST /api/agents/start {goal, model?, mode?, maxSteps?, tools?, format?}}: starts an
+ *       agent; mode {@code ask} (the default) waits for the user before a tool that acts. With a
+ *       {@code format} of {@code {type: "json"}} or {@code {type: "schema", schema}} its final
+ *       answer is JSON, written in a turn of its own.
  *   <li>{@code POST /api/agents/answer {id, allow, note?}}: answers the tool call a run waits on.
  *   <li>{@code POST /api/agents/reply {id, text}}: lets a run that ended go on with another message.
  *   <li>{@code POST /api/agents/stop {id}} and {@code POST /api/agents/delete {id}}.
@@ -64,7 +67,7 @@ final class AgentRoutes {
             List<String> tools = body.get("tools") == null ? null
                     : Json.array(body.get("tools")).stream().map(String::valueOf).toList();
             Exchanges.json(ex, 200, agents.start(Json.string(body, "goal", ""), Json.string(body, "model", "auto"),
-                    Json.string(body, "mode", "ask"), (int) Json.integer(body, "maxSteps", 12), tools));
+                    Json.string(body, "mode", "ask"), (int) Json.integer(body, "maxSteps", 12), tools, Format.of(body)));
         });
         server.post("/api/agents/answer", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);

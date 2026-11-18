@@ -13,6 +13,7 @@ import io.github.zzuegg.brainiac.studio.chat.ChatProvider;
 import io.github.zzuegg.brainiac.studio.chat.ChatRequest;
 import io.github.zzuegg.brainiac.studio.chat.ChatResult;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.chat.Format;
 import io.github.zzuegg.brainiac.studio.chat.Keys;
 import io.github.zzuegg.brainiac.studio.chat.ModelInfo;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
@@ -149,6 +150,32 @@ class AgentRunsTest {
         assertEquals("There are built-in sets such as spirals.", run.get("answer"));
         assertFalse(script.heard.get(1).messages().get(1).text().contains("think"),
                 "the reasoning is not sent back to the model");
+    }
+
+    @Test
+    void anAgentsAnswerCanBeJsonOfASchema() throws Exception {
+        script.turns.add("<tool_call>\n{\"name\": \"list_datasets\", \"arguments\": {}}\n</tool_call>");
+        script.turns.add("Spirals is one of them.");
+        script.turns.add("{\"sets\": [\"spirals\"]}");
+        Format format = Format.of(Map.of("format", Map.of("type", "schema", "schema",
+                Map.of("type", "object", "properties", Map.of("sets", Map.of("type", "array"))))));
+        Map<String, Object> started = agents.start("Which data sets are there?", "script/bot", "auto", 5, null, format);
+        Map<String, Object> run = until((String) started.get("id"), r -> !"running".equals(r.get("state")));
+
+        assertEquals("done", run.get("state"));
+        assertEquals(List.of("goal", "call", "result", "say", "answer"), kinds(run));
+        assertEquals("{\"sets\": [\"spirals\"]}", run.get("answer"));
+        assertEquals("schema", Json.object(run.get("format")).get("type"));
+        // the turns that may call tools are free text; only the last one is held to the schema
+        assertTrue(script.heard.get(0).format().none() && script.heard.get(1).format().none());
+        assertEquals("schema", script.heard.get(2).format().kind());
+        assertEquals(AgentRuns.SHAPE_ASK, script.heard.get(2).messages().getLast().text());
+        // kept with the run, so a reply answers in the same form
+        AgentRuns again = new AgentRuns(chat, new StudioTools(chat, training), data.resolve("agents"));
+        assertEquals("schema", Json.object(again.get((String) started.get("id")).orElseThrow().get("format")).get("type"));
+
+        assertThrows(IllegalArgumentException.class, () -> agents.start("x", "script/bot", "auto", 5, null,
+                Format.of(Map.of("format", Map.of("type", "grammar", "grammar", "root ::= \"a\"")))));
     }
 
     @Test
