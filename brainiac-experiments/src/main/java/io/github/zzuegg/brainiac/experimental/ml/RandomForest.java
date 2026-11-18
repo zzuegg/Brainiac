@@ -12,6 +12,11 @@ import java.util.SplittableRandom;
  * draw one random threshold per candidate feature. The forest averages the trees' class
  * frequencies.
  *
+ * <p>{@link #fitRegression} grows the same trees for a real-valued target (Breiman's regression
+ * forest): splits minimise the summed squared error (variance reduction), leaves hold the mean
+ * and variance of their targets, and {@link #predictValue} averages the leaf means. The
+ * classification path is unchanged.
+ *
  * <p>Why it matters: an ensemble of deep, decorrelated trees is a strong tabular baseline with
  * almost no tuning, and the bootstrap gives a free out-of-bag estimate of the test error.
  */
@@ -63,11 +68,286 @@ public final class RandomForest {
     private final Tree[] trees;
     private final int classes;
     private final double oobError;
+    private final boolean regression;
 
     private RandomForest(Tree[] trees, int classes, double oobError) {
+        this(trees, classes, oobError, false);
+    }
+
+    private RandomForest(Tree[] trees, int classes, double oobError, boolean regression) {
         this.trees = trees;
         this.classes = classes;
         this.oobError = oobError;
+        this.regression = regression;
+    }
+
+    /**
+     * Grows a regression forest: bootstrap (or, for extra trees, the full sample), variance
+     * reduction splits among {@code featuresPerSplit} candidates ({@code 0} means {@code d / 3}
+     * as Breiman suggests for regression), mean leaves.
+     *
+     * @param x the training rows {@code [n][d]}
+     * @param y their targets
+     * @param settings the settings ({@code minLeaf} of about 5 is usual for regression)
+     * @return the forest; {@link #oobError()} is the out-of-bag mean squared error
+     */
+    public static RandomForest fitRegression(double[][] x, double[] y, Settings settings) {
+        int n = x.length;
+        int d = x[0].length;
+        int m = settings.featuresPerSplit() > 0 ? settings.featuresPerSplit() : Math.max(1, d / 3);
+        SplittableRandom random = new SplittableRandom(settings.seed());
+        Tree[] trees = new Tree[settings.trees()];
+        double[] oobSum = new double[n];
+        int[] oobCount = new int[n];
+        for (int t = 0; t < trees.length; t++) {
+            int[] sample = new int[n];
+            boolean[] inBag = new boolean[n];
+            for (int i = 0; i < n; i++) {
+                sample[i] = settings.mode() == Mode.RANDOM_FOREST ? random.nextInt(n) : i;
+                inBag[sample[i]] = true;
+            }
+            RegressionBuilder b = new RegressionBuilder(x, y, settings, m, random.split());
+            b.grow(sample, 0);
+            trees[t] = b.build();
+            if (settings.mode() == Mode.RANDOM_FOREST) {
+                for (int i = 0; i < n; i++) {
+                    if (!inBag[i]) {
+                        oobSum[i] += leaf(trees[t], x[i])[0];
+                        oobCount[i]++;
+                    }
+                }
+            }
+        }
+        double oob = Double.NaN;
+        if (settings.mode() == Mode.RANDOM_FOREST) {
+            double se = 0;
+            int counted = 0;
+            for (int i = 0; i < n; i++) {
+                if (oobCount[i] > 0) {
+                    double e = oobSum[i] / oobCount[i] - y[i];
+                    se += e * e;
+                    counted++;
+                }
+            }
+            oob = counted == 0 ? Double.NaN : se / counted;
+        }
+        return new RandomForest(trees, 1, oob, true);
+    }
+
+    /** Grows one regression tree: leaves store {mean, variance} of their targets. */
+    private static final class RegressionBuilder {
+        private final double[][] x;
+        private final double[] y;
+        private final Settings settings;
+        private final int candidates;
+        private final SplittableRandom random;
+        private int size;
+        private int[] feature = new int[64];
+        private double[] threshold = new double[64];
+        private int[] left = new int[64];
+        private int[] right = new int[64];
+        private double[][] distribution = new double[64][];
+
+        RegressionBuilder(double[][] x, double[] y, Settings settings, int candidates, SplittableRandom random) {
+            this.x = x;
+            this.y = y;
+            this.settings = settings;
+            this.candidates = candidates;
+            this.random = random;
+        }
+
+        private int newNode() {
+            if (size == feature.length) {
+                int cap = size * 2;
+                feature = Arrays.copyOf(feature, cap);
+                threshold = Arrays.copyOf(threshold, cap);
+                left = Arrays.copyOf(left, cap);
+                right = Arrays.copyOf(right, cap);
+                distribution = Arrays.copyOf(distribution, cap);
+            }
+            return size++;
+        }
+
+        int grow(int[] rows, int depth) {
+            int node = newNode();
+            double sum = 0;
+            double sq = 0;
+            for (int r : rows) {
+                sum += y[r];
+                sq += y[r] * y[r];
+            }
+            double mean = sum / rows.length;
+            double sse = Math.max(0, sq - sum * mean);
+            feature[node] = -1;
+            distribution[node] = new double[] {mean, sse / rows.length};
+            if (sse <= 1e-12 || depth >= settings.maxDepth() || rows.length < 2 * settings.minLeaf()) {
+                return node;
+            }
+            int d = x[0].length;
+            int bestFeature = -1;
+            double bestThreshold = 0;
+            double bestSse = sse - 1e-12;
+            int[] order = new int[d];
+            for (int i = 0; i < d; i++) {
+                order[i] = i;
+            }
+            for (int k = 0; k < Math.min(candidates, d); k++) {
+                int j = k + random.nextInt(d - k);
+                int tmp = order[k];
+                order[k] = order[j];
+                order[j] = tmp;
+                int f = order[k];
+                double[] split = settings.mode() == Mode.EXTRA_TREES ? randomSplit(rows, f) : bestSplit(rows, f);
+                if (split != null && split[1] < bestSse) {
+                    bestSse = split[1];
+                    bestFeature = f;
+                    bestThreshold = split[0];
+                }
+            }
+            if (bestFeature < 0) {
+                return node;
+            }
+            int nl = 0;
+            for (int r : rows) {
+                nl += x[r][bestFeature] <= bestThreshold ? 1 : 0;
+            }
+            if (nl < settings.minLeaf() || rows.length - nl < settings.minLeaf()) {
+                return node;
+            }
+            int[] lr = new int[nl];
+            int[] rr = new int[rows.length - nl];
+            int a = 0;
+            int b = 0;
+            for (int r : rows) {
+                if (x[r][bestFeature] <= bestThreshold) {
+                    lr[a++] = r;
+                } else {
+                    rr[b++] = r;
+                }
+            }
+            feature[node] = bestFeature;
+            threshold[node] = bestThreshold;
+            int l = grow(lr, depth + 1);
+            int rgt = grow(rr, depth + 1);
+            left[node] = l;
+            right[node] = rgt;
+            return node;
+        }
+
+        /** The best threshold of one feature: {threshold, summed squared error}, or null. */
+        private double[] bestSplit(int[] rows, int f) {
+            Integer[] idx = new Integer[rows.length];
+            double total = 0;
+            double totalSq = 0;
+            for (int i = 0; i < rows.length; i++) {
+                idx[i] = rows[i];
+                total += y[rows[i]];
+                totalSq += y[rows[i]] * y[rows[i]];
+            }
+            Arrays.sort(idx, (p, q) -> Double.compare(x[p][f], x[q][f]));
+            double ls = 0;
+            double lsq = 0;
+            double best = Double.POSITIVE_INFINITY;
+            double thr = 0;
+            int min = settings.minLeaf();
+            int n = idx.length;
+            for (int i = 0; i < n - 1; i++) {
+                double v = y[idx[i]];
+                ls += v;
+                lsq += v * v;
+                double cur = x[idx[i]][f];
+                double next = x[idx[i + 1]][f];
+                if (cur == next || i + 1 < min || n - i - 1 < min) {
+                    continue;
+                }
+                int nl = i + 1;
+                int nr = n - nl;
+                double rs = total - ls;
+                double sse = lsq - ls * ls / nl + (totalSq - lsq) - rs * rs / nr;
+                if (sse < best) {
+                    best = sse;
+                    thr = (cur + next) / 2;
+                }
+            }
+            return best == Double.POSITIVE_INFINITY ? null : new double[] {thr, best};
+        }
+
+        private double[] randomSplit(int[] rows, int f) {
+            double lo = Double.POSITIVE_INFINITY;
+            double hi = Double.NEGATIVE_INFINITY;
+            for (int r : rows) {
+                lo = Math.min(lo, x[r][f]);
+                hi = Math.max(hi, x[r][f]);
+            }
+            if (!(hi > lo)) {
+                return null;
+            }
+            double thr = lo + random.nextDouble() * (hi - lo);
+            double ls = 0;
+            double lsq = 0;
+            double rs = 0;
+            double rsq = 0;
+            int nl = 0;
+            for (int r : rows) {
+                if (x[r][f] <= thr) {
+                    ls += y[r];
+                    lsq += y[r] * y[r];
+                    nl++;
+                } else {
+                    rs += y[r];
+                    rsq += y[r] * y[r];
+                }
+            }
+            int nr = rows.length - nl;
+            if (nl == 0 || nr == 0) {
+                return null;
+            }
+            return new double[] {thr, lsq - ls * ls / nl + rsq - rs * rs / nr};
+        }
+
+        Tree build() {
+            return new Tree(Arrays.copyOf(feature, size), Arrays.copyOf(threshold, size), Arrays.copyOf(left, size),
+                    Arrays.copyOf(right, size), Arrays.copyOf(distribution, size));
+        }
+    }
+
+    /**
+     * The regression forest's prediction: the mean of the trees' leaf means.
+     *
+     * @param x a row
+     * @return the predicted value
+     * @throws IllegalStateException for a classification forest
+     */
+    public double predictValue(double[] x) {
+        return predictMeanVariance(x)[0];
+    }
+
+    /**
+     * The regression forest's predictive mean and variance: the law of total variance over
+     * the trees, each tree a Gaussian with its leaf's mean and within-leaf variance.
+     *
+     * @param x a row
+     * @return {@code {mean, variance}}
+     * @throws IllegalStateException for a classification forest
+     */
+    public double[] predictMeanVariance(double[] x) {
+        if (!regression) {
+            throw new IllegalStateException("not a regression forest");
+        }
+        double m = 0;
+        double s = 0;
+        for (Tree t : trees) {
+            double[] l = leaf(t, x);
+            m += l[0];
+            s += l[1] + l[0] * l[0];
+        }
+        m /= trees.length;
+        return new double[] {m, Math.max(0, s / trees.length - m * m)};
+    }
+
+    /** @return whether this is a regression forest */
+    public boolean regression() {
+        return regression;
     }
 
     /**
@@ -350,7 +630,7 @@ public final class RandomForest {
         return out;
     }
 
-    /** @return the out-of-bag error rate (NaN for extra trees, which use no bootstrap) */
+    /** @return the out-of-bag error rate, or mean squared error for regression (NaN for extra trees) */
     public double oobError() {
         return oobError;
     }

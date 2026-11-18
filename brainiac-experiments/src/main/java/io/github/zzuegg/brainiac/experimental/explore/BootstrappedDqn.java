@@ -247,6 +247,7 @@ public final class BootstrappedDqn implements Learner {
             }
             Var chosen = pred.mul(hot).sum(1, true);
             Var loss = RlTensors.huber(chosen.sub(y), 1f).mul(Tensor.of(Shape.of(b, 1), m)).sum().div(kept);
+            RlTensors.zeroGrad(nets.get(k).parameters());
             loss.backward();
             RlTensors.clip(nets.get(k).parameters(), 10f);
             optimizers.get(k).step(nets.get(k).parameters());

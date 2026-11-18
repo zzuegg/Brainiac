@@ -3,7 +3,11 @@ package io.github.zzuegg.brainiac.experiments.classic;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.calibrate.Recalibrators;
 import io.github.zzuegg.brainiac.experimental.data.TabularStressSuite;
+import io.github.zzuegg.brainiac.experimental.ml.AffinityPropagation;
+import io.github.zzuegg.brainiac.experimental.ml.AgglomerativeClustering;
+import io.github.zzuegg.brainiac.experimental.ml.ClusteringMetrics;
 import io.github.zzuegg.brainiac.experimental.ml.Dbscan;
+import io.github.zzuegg.brainiac.experimental.ml.DensityClustering;
 import io.github.zzuegg.brainiac.experimental.ml.GaussianMixture;
 import io.github.zzuegg.brainiac.experimental.ml.GaussianProcess;
 import io.github.zzuegg.brainiac.experimental.ml.KMeans;
@@ -12,6 +16,7 @@ import io.github.zzuegg.brainiac.experimental.ml.KernelSvm;
 import io.github.zzuegg.brainiac.experimental.ml.LinearSvm;
 import io.github.zzuegg.brainiac.experimental.ml.MlMatrices;
 import io.github.zzuegg.brainiac.experimental.ml.MlMetrics;
+import io.github.zzuegg.brainiac.experimental.ml.NeighbourEmbedding;
 import io.github.zzuegg.brainiac.experimental.ml.RandomFourierFeatures;
 import io.github.zzuegg.brainiac.experimental.ml.SpectralClustering;
 import io.github.zzuegg.brainiac.experimental.nn.MonotonicLayers;
@@ -48,6 +53,11 @@ import java.util.function.UnaryOperator;
  *   <li>{@link #clustering}: k-means with random and k-means++ seeding, a full-covariance GMM,
  *       spectral clustering and DBSCAN: the adjusted Rand index against the true labels, and
  *       for DBSCAN the recall of planted noise points;</li>
+ *   <li>{@link #densityClustering} (wave 12): HDBSCAN, OPTICS, agglomerative clustering with four
+ *       linkages and affinity propagation against k-means, a GMM, spectral clustering and DBSCAN
+ *       with the best {@code eps} chosen on the labels, on blobs of different densities with
+ *       noise, noisy moons, nested circles, anisotropic blobs and a UMAP embedding of five-class
+ *       digits (400 points each);</li>
  *   <li>{@link #monotonic}: {@link MonotonicLayers} (min-max, lattice, constrained MLP) against
  *       an unconstrained MLP, a neural additive model, gradient-boosted trees and isotonic
  *       regression on a planted monotone target: RMSE in range, RMSE beyond the training range
@@ -361,6 +371,135 @@ public final class ClassicMlShootout {
         }
         if (noise > 0) {
             out.put("DBSCAN noise recall", new Row(caught / (double) noise, 0, noise));
+        }
+        return out;
+    }
+
+    private static Points densityData(String name, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        switch (name) {
+            case "varying densities" -> {
+                double[][] centres = {{0, 0}, {2.2, 0}, {1, 2.6}};
+                double[] spread = {0.1, 0.25, 0.5};
+                int n = 400;
+                double[][] x = new double[n][];
+                int[] y = new int[n];
+                for (int i = 0; i < n; i++) {
+                    if (i < 360) {
+                        int c = i % 3;
+                        y[i] = c;
+                        x[i] = new double[] {centres[c][0] + spread[c] * r.nextGaussian(),
+                            centres[c][1] + spread[c] * r.nextGaussian()};
+                    } else {
+                        y[i] = -1;
+                        x[i] = new double[] {-1.5 + 5 * r.nextDouble(), -1.5 + 5.5 * r.nextDouble()};
+                    }
+                }
+                return new Points(x, y, 3);
+            }
+            case "moons + noise" -> {
+                Points m = moons(360, 0.06, seed);
+                double[][] x = java.util.Arrays.copyOf(m.x(), 400);
+                int[] y = java.util.Arrays.copyOf(m.y(), 400);
+                for (int i = 360; i < 400; i++) {
+                    x[i] = new double[] {-1.5 + 4 * r.nextDouble(), -1 + 2.5 * r.nextDouble()};
+                    y[i] = -1;
+                }
+                return new Points(x, y, 2);
+            }
+            case "circles" -> {
+                return circles(400, 0.05, 0.5, seed);
+            }
+            case "anisotropic" -> {
+                return anisotropic(400, seed);
+            }
+            default -> {
+                ToyTasks.Data d = ToyTasks.digits(5, 80, 8, 0.05, seed);
+                double[][] e = NeighbourEmbedding.umap(MlMatrices.toDouble(d.x()),
+                        NeighbourEmbedding.UmapSettings.defaults(15));
+                return new Points(e, d.y().clone(), 5);
+            }
+        }
+    }
+
+    private static double[] scores(Points p, int[] labels, boolean hasNoise) {
+        int[] y = p.y();
+        int clusters = (int) java.util.Arrays.stream(labels).filter(v -> v >= 0).distinct().count();
+        double precision = Double.NaN;
+        if (hasNoise) {
+            int called = 0;
+            int right = 0;
+            for (int i = 0; i < y.length; i++) {
+                if (labels[i] < 0) {
+                    called++;
+                    right += y[i] < 0 ? 1 : 0;
+                }
+            }
+            precision = called > 0 ? (double) right / called : Double.NaN;
+        }
+        // noise (-1) becomes its own label 0 for the metrics
+        int[] ty = java.util.Arrays.stream(y).map(v -> v + 1).toArray();
+        int[] tl = java.util.Arrays.stream(labels).map(v -> v + 1).toArray();
+        return new double[] {MlMetrics.adjustedRandIndex(ty, tl), ClusteringMetrics.nmi(ty, tl), clusters, precision};
+    }
+
+    /**
+     * Density-based and exemplar clustering (wave 12, item 12.5.18). HDBSCAN uses
+     * {@code minSamples = 5} and {@code minClusterSize} 15 (with 5 and 30 as a sensitivity check);
+     * DBSCAN takes the {@code eps} (with {@code minPts = 5}) that maximises the ARI on the labels,
+     * an optimistic baseline; OPTICS is cut at twice its median reachability; k-means, the GMM,
+     * spectral and agglomerative clustering get the true number of clusters; affinity propagation
+     * uses the median similarity as preference.
+     *
+     * @param datasets data sets from {@code "varying densities"}, {@code "moons + noise"},
+     *     {@code "circles"}, {@code "anisotropic"} and {@code "digits UMAP"}
+     * @param seed the seed
+     * @return {@code "data / method"} to {ARI, NMI, clusters found, precision of the points called
+     *     noise (NaN when none are called or the data has no planted noise)}
+     */
+    public static Map<String, double[]> densityClustering(String[] datasets, long seed) {
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (String name : datasets) {
+            Points p = densityData(name, seed);
+            double[][] x = p.x();
+            int k = p.classes();
+            boolean noise = java.util.Arrays.stream(p.y()).anyMatch(v -> v < 0);
+            String key = name + " / ";
+            out.put(key + "k-means++", scores(p, KMeans.fit(x, k, KMeans.Init.PLUS_PLUS, 3, 100, seed).labels(),
+                    noise));
+            out.put(key + "GMM", scores(p, GaussianMixture.fit(x, k, 100, 1e-6, seed).predict(x), noise));
+            out.put(key + "spectral", scores(p, SpectralClustering.cluster(SpectralClustering.knnAffinity(x, 10), k,
+                    seed), noise));
+            double[] kth = new double[x.length];
+            double[][] d2 = MlMatrices.squaredDistances(x);
+            for (int i = 0; i < x.length; i++) {
+                int[] nn = MlMetrics.nearest(d2[i], i, 5);
+                kth[i] = Math.sqrt(d2[i][nn[4]]);
+            }
+            double[] sorted = kth.clone();
+            java.util.Arrays.sort(sorted);
+            double median = sorted[sorted.length / 2];
+            double[] bestDb = null;
+            for (int g = 0; g < 24; g++) {
+                double eps = median * (0.5 + g * 0.15);
+                double[] sc = scores(p, Dbscan.cluster(x, eps, 5), noise);
+                if (bestDb == null || sc[0] > bestDb[0]) {
+                    bestDb = sc;
+                }
+            }
+            out.put(key + "DBSCAN (oracle eps)", bestDb);
+            DensityClustering.Optics optics = DensityClustering.optics(x, 5);
+            double[] reach = java.util.Arrays.stream(optics.reachability()).filter(Double::isFinite).sorted().toArray();
+            out.put(key + "OPTICS (cut 2x median reach)",
+                    scores(p, optics.extractDbscan(2 * reach[reach.length / 2]), noise));
+            for (int mcs : new int[] {15, 5, 30}) {
+                out.put(key + "HDBSCAN mcs=" + mcs, scores(p, DensityClustering.hdbscan(x, mcs, 5).labels(), noise));
+            }
+            for (AgglomerativeClustering.Linkage l : AgglomerativeClustering.Linkage.values()) {
+                out.put(key + "agglomerative " + l, scores(p, AgglomerativeClustering.cluster(x, k, l), noise));
+            }
+            out.put(key + "affinity propagation", scores(p, AffinityPropagation.cluster(x, Double.NaN, 0.7, 200, 15)
+                    .labels(), noise));
         }
         return out;
     }

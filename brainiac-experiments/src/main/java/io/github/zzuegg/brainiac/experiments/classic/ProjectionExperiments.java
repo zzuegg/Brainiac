@@ -4,7 +4,9 @@ import io.github.zzuegg.brainiac.experimental.data.SeasonalSeries;
 import io.github.zzuegg.brainiac.experimental.data.ShapeImages;
 import io.github.zzuegg.brainiac.experimental.ml.ComponentAnalysis;
 import io.github.zzuegg.brainiac.experimental.ml.KernelFunction;
+import io.github.zzuegg.brainiac.experimental.ml.KernelTests;
 import io.github.zzuegg.brainiac.experimental.ml.LinearSvm;
+import io.github.zzuegg.brainiac.experimental.ml.ManifoldEmbeddings;
 import io.github.zzuegg.brainiac.experimental.ml.MlMatrices;
 import io.github.zzuegg.brainiac.experimental.ml.MlMetrics;
 import io.github.zzuegg.brainiac.experimental.ml.NeighbourEmbedding;
@@ -25,6 +27,10 @@ import java.util.SplittableRandom;
  *       components against one on the two PCA components (test accuracy);</li>
  *   <li>{@link #embeddings}: 2-D maps of MNIST-like digits and {@link ShapeImages} pixels by
  *       PCA, t-SNE and UMAP, scored by trustworthiness (k = 10) and leave-one-out 5-NN accuracy in 2-D.</li>
+ *   <li>{@link #manifolds} (wave 12): the {@link ManifoldEmbeddings} methods against PCA, kernel
+ *       PCA, t-SNE and UMAP on a Swiss roll, an S-curve, a Swiss roll with a hole, two noisy
+ *       concentric spheres and digits, scored by trustworthiness, continuity and the Spearman
+ *       correlation of embedded with intrinsic (or graph-geodesic) distances.</li>
  * </ul>
  */
 public final class ProjectionExperiments {
@@ -187,5 +193,113 @@ public final class ProjectionExperiments {
 
     private static double[] score(double[][] x, double[][] e, int[] y) {
         return new double[] {MlMetrics.trustworthiness(x, e, 10), MlMetrics.knnAccuracy(e, y, 5)};
+    }
+
+    /**
+     * A manifold-learning data set with reference distances for the global score.
+     *
+     * @param x the points
+     * @param reference the intrinsic or graph-geodesic distances {@code [n][n]}
+     */
+    private record Manifold(double[][] x, double[][] reference) {
+    }
+
+    private static double arcLength(double t) {
+        return 0.5 * (t * Math.sqrt(1 + t * t) + Math.log(t + Math.sqrt(1 + t * t)));
+    }
+
+    private static Manifold manifold(String name, int n, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        if (name.equals("digits")) {
+            ToyTasks.Data d = ToyTasks.digits(10, n / 10, 8, 0.1, seed);
+            double[][] x = MlMatrices.toDouble(d.x());
+            return new Manifold(x, ManifoldEmbeddings.geodesicDistances(x, 10));
+        }
+        double[][] x = new double[n][];
+        double[][] intrinsic = new double[n][];
+        int c = 0;
+        while (c < n) {
+            double u = r.nextDouble();
+            double v = r.nextDouble();
+            switch (name) {
+                case "swiss roll", "swiss roll with hole" -> {
+                    if (name.endsWith("hole") && u > 0.4 && u < 0.6 && v > 0.33 && v < 0.67) {
+                        continue;
+                    }
+                    double t = 1.5 * Math.PI * (1 + 2 * u);
+                    x[c] = new double[] {t * Math.cos(t) + 0.05 * r.nextGaussian(), 10 * v + 0.05 * r.nextGaussian(),
+                        t * Math.sin(t) + 0.05 * r.nextGaussian()};
+                    intrinsic[c] = new double[] {arcLength(t), 10 * v};
+                }
+                case "s-curve" -> {
+                    double t = 3 * Math.PI * (u - 0.5);
+                    x[c] = new double[] {Math.sin(t) + 0.02 * r.nextGaussian(), 2 * v + 0.02 * r.nextGaussian(),
+                        Math.signum(t) * (Math.cos(t) - 1) + 0.02 * r.nextGaussian()};
+                    intrinsic[c] = new double[] {t, 2 * v};
+                }
+                default -> {
+                    // two concentric noisy spheres in 3-D
+                    double radius = c % 2 == 0 ? 1 : 2.5;
+                    double[] g = {r.nextGaussian(), r.nextGaussian(), r.nextGaussian()};
+                    double norm = Math.sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                    x[c] = new double[3];
+                    for (int j = 0; j < 3; j++) {
+                        x[c][j] = radius * g[j] / norm + 0.05 * r.nextGaussian();
+                    }
+                }
+            }
+            c++;
+        }
+        if (intrinsic[0] == null) {
+            return new Manifold(x, ManifoldEmbeddings.geodesicDistances(x, 10));
+        }
+        double[][] ref = new double[n][n];
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                ref[i][j] = Math.sqrt(MlMatrices.squaredDistance(intrinsic[i], intrinsic[j]));
+            }
+        }
+        return new Manifold(x, ref);
+    }
+
+    /**
+     * Manifold learning (wave 12, item 12.5.17): spectral embeddings and PaCMAP against PCA,
+     * kernel PCA, t-SNE and UMAP.
+     *
+     * @param n points per data set
+     * @param datasets data sets to run, from {@code "swiss roll"}, {@code "s-curve"},
+     *     {@code "swiss roll with hole"}, {@code "spheres"} and {@code "digits"}
+     * @param seed the seed
+     * @return {@code "data / method"} to {trustworthiness (k = 10), continuity (k = 10), Spearman
+     *     correlation of distances, milliseconds}
+     */
+    public static Map<String, double[]> manifolds(int n, String[] datasets, long seed) {
+        Map<String, double[]> out = new LinkedHashMap<>();
+        int k = 10;
+        for (String name : datasets) {
+            Manifold m = manifold(name, n, seed);
+            double[][] x = m.x();
+            String[] methods = {"PCA", "kernel PCA", "t-SNE", "UMAP", "CLASSICAL_MDS", "ISOMAP", "LLE",
+                "LAPLACIAN_EIGENMAPS", "DIFFUSION_MAPS", "PACMAP"};
+            for (String method : methods) {
+                long t0 = System.nanoTime();
+                double[][] e = switch (method) {
+                    case "PCA" -> ComponentAnalysis.pca(x, 2).transform(x);
+                    case "kernel PCA" -> {
+                        double s = KernelTests.medianDistance(x);
+                        yield ComponentAnalysis.kernelPca(x, KernelFunction.rbf(1 / (2 * s * s)), 2).transform(x);
+                    }
+                    case "t-SNE" -> NeighbourEmbedding.tsne(x, new NeighbourEmbedding.TsneSettings(2, 30, 400, 100, 12,
+                            seed));
+                    case "UMAP" -> NeighbourEmbedding.umap(x, NeighbourEmbedding.UmapSettings.defaults(15));
+                    default -> ManifoldEmbeddings.embed(x, ManifoldEmbeddings.Method.valueOf(method), 2, k, seed);
+                };
+                double ms = (System.nanoTime() - t0) / 1e6;
+                out.put(name + " / " + method, new double[] {MlMetrics.trustworthiness(x, e, k),
+                    ManifoldEmbeddings.continuity(x, e, k), ManifoldEmbeddings.spearman(m.reference(), e, 4000, seed),
+                    ms});
+            }
+        }
+        return out;
     }
 }

@@ -73,4 +73,21 @@ class ClassicMlShootoutTest {
         assertTrue(nz.get("DBSCAN noise recall").score() > 0.7, nz.toString());
         assertTrue(nz.get("DBSCAN").score() > nz.get("k-means++").score(), nz.toString());
     }
+
+    @Test
+    void densityAndExemplarClustering() {
+        Map<String, double[]> r = ClassicMlShootout.densityClustering(
+                new String[] {"varying densities", "moons + noise", "circles", "anisotropic"}, 21);
+        StringBuilder sb = new StringBuilder();
+        r.forEach((k, v) -> sb.append(String.format("%s ARI %.3f NMI %.3f K %.0f noiseP %.2f; ", k, v[0], v[1], v[2],
+                v[3])));
+        System.out.printf("density clustering: %s%n", sb);
+        assertTrue(r.get("varying densities / HDBSCAN mcs=15")[0] > 0.7, sb.toString());
+        assertTrue(r.get("moons + noise / HDBSCAN mcs=15")[0] > r.get("moons + noise / k-means++")[0], sb.toString());
+        assertTrue(r.get("varying densities / agglomerative WARD")[0]
+                > r.get("varying densities / agglomerative SINGLE")[0], sb.toString());
+        assertTrue(r.get("anisotropic / HDBSCAN mcs=15")[0] > r.get("anisotropic / k-means++")[0] + 0.3,
+                sb.toString());
+        assertTrue(r.get("varying densities / HDBSCAN mcs=15")[3] > 0.9, sb.toString());
+    }
 }

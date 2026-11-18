@@ -4,10 +4,64 @@ package io.github.zzuegg.brainiac.experimental.data;
  * Benchmark time series from chaotic dynamical systems, the standard tasks of reservoir
  * computing: the Lorenz-63 attractor (Lorenz, 1963), integrated with fourth-order
  * Runge-Kutta, and the Mackey-Glass delay equation (Mackey and Glass, 1977) as used by
- * Jaeger and Haas, <a href="https://doi.org/10.1126/science.1091277">Science 2004</a>.
+ * Jaeger and Haas, <a href="https://doi.org/10.1126/science.1091277">Science 2004</a>, and
+ * Lorenz-96 (Lorenz, 1996), which wraps {@link io.github.zzuegg.brainiac.experimental.sciml.MechanicalSystems#lorenz96} from sciml.
  */
 public final class ChaoticSeries {
     private ChaoticSeries() {
+    }
+
+    /**
+     * Integrates Lorenz-96 {@code dx_i/dt = (x_i+1 - x_i-2) x_i-1 - x_i + F} with RK4 (substeps
+     * of at most 0.01), starting from {@code x = F} with {@code x_0} nudged by 0.01 and dropping a
+     * transient of 20 time units, then adds Gaussian observation noise.
+     *
+     * @param dims the number of sites {@code n}
+     * @param length the number of samples
+     * @param forcing {@code F}, 8 for the classic chaotic case
+     * @param dt the time between samples
+     * @param noise observation noise as a share of the series' standard deviation (0 for none)
+     * @param seed the noise seed
+     * @return {@code [length][dims]} states
+     */
+    public static double[][] lorenz96(int dims, int length, double forcing, double dt, double noise, long seed) {
+        io.github.zzuegg.brainiac.experimental.sciml.MechanicalSystems.Ode ode =
+                io.github.zzuegg.brainiac.experimental.sciml.MechanicalSystems.lorenz96(dims, forcing);
+        int sub = Math.max(1, (int) Math.ceil(dt / 0.01));
+        double h = dt / sub;
+        double[] x = new double[dims];
+        java.util.Arrays.fill(x, forcing);
+        x[0] += 0.01;
+        int burnIn = (int) Math.ceil(20 / h);
+        for (int i = 0; i < burnIn; i++) {
+            x = io.github.zzuegg.brainiac.experimental.sciml.MechanicalSystems.rk4(ode::derivative, x, h);
+        }
+        double[][] out = new double[length][];
+        for (int t = 0; t < length; t++) {
+            out[t] = x.clone();
+            for (int s = 0; s < sub; s++) {
+                x = io.github.zzuegg.brainiac.experimental.sciml.MechanicalSystems.rk4(ode::derivative, x, h);
+            }
+        }
+        if (noise > 0) {
+            double m = 0;
+            double v = 0;
+            for (double[] row : out) {
+                for (double a : row) {
+                    m += a;
+                    v += a * a;
+                }
+            }
+            int n = length * dims;
+            double sd = Math.sqrt(Math.max(0, v / n - (m / n) * (m / n)));
+            java.util.SplittableRandom r = new java.util.SplittableRandom(seed);
+            for (double[] row : out) {
+                for (int j = 0; j < dims; j++) {
+                    row[j] += noise * sd * r.nextGaussian();
+                }
+            }
+        }
+        return out;
     }
 
     /**

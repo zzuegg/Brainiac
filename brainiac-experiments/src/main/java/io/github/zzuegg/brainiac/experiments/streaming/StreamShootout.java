@@ -2,11 +2,17 @@ package io.github.zzuegg.brainiac.experiments.streaming;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.anomaly.BayesianOnlineChangePoint;
+import io.github.zzuegg.brainiac.experimental.anomaly.Ecod;
 import io.github.zzuegg.brainiac.experimental.anomaly.Pelt;
 import io.github.zzuegg.brainiac.experimental.data.AnomalySeries;
 import io.github.zzuegg.brainiac.experimental.data.DriftingStreams;
 import io.github.zzuegg.brainiac.experimental.data.ShapeImages;
 import io.github.zzuegg.brainiac.experimental.data.SyntheticRecsys;
+import io.github.zzuegg.brainiac.experimental.ml.ClusteringMetrics;
+import io.github.zzuegg.brainiac.experimental.ml.Dbscan;
+import io.github.zzuegg.brainiac.experimental.ml.IsolationForest;
+import io.github.zzuegg.brainiac.experimental.ml.KMeans;
+import io.github.zzuegg.brainiac.experimental.ml.MlMetrics;
 import io.github.zzuegg.brainiac.experimental.ml.RandomForest;
 import io.github.zzuegg.brainiac.experimental.nn.FactorizationMachine;
 import io.github.zzuegg.brainiac.experimental.stream.AdaptiveRandomForest;
@@ -15,10 +21,14 @@ import io.github.zzuegg.brainiac.experimental.stream.CoinBetting;
 import io.github.zzuegg.brainiac.experimental.stream.DriftDetectors;
 import io.github.zzuegg.brainiac.experimental.stream.FtrlProximal;
 import io.github.zzuegg.brainiac.experimental.stream.HoeffdingTree;
+import io.github.zzuegg.brainiac.experimental.stream.MondrianForest;
 import io.github.zzuegg.brainiac.experimental.stream.OnlineClassifier;
 import io.github.zzuegg.brainiac.experimental.stream.OnlineLogistic;
 import io.github.zzuegg.brainiac.experimental.stream.OnlineNaiveBayes;
 import io.github.zzuegg.brainiac.experimental.stream.Prequential;
+import io.github.zzuegg.brainiac.experimental.stream.StreamClustering;
+import io.github.zzuegg.brainiac.experimental.stream.StreamingAnomaly;
+import io.github.zzuegg.brainiac.experimental.stream.StreamingPca;
 import io.github.zzuegg.brainiac.experimental.train.ContinualBackprop;
 import io.github.zzuegg.brainiac.experimental.train.DAdaptation;
 import io.github.zzuegg.brainiac.experimental.train.Prodigy;
@@ -1225,5 +1235,589 @@ public final class StreamShootout {
             }
         }
         return out;
+    }
+
+    // ------------------------------------------------------------------ wave 12 (12.2.1-12.2.4)
+
+    /**
+     * One stream clustering method on one stream.
+     *
+     * @param stream the stream
+     * @param method the method
+     * @param ari the mean windowed adjusted Rand index (noise counts as its own class)
+     * @param summaries the summaries kept at the end (centres, CF entries, micro-clusters or
+     *     window points)
+     * @param pointsPerSecond the throughput, offline steps included
+     */
+    public record ClusterRow(String stream, String method, double ari, int summaries, double pointsPerSecond) {
+    }
+
+    /** A labelled point stream: points and their cluster ({@code -1} for noise). */
+    private record LabelledStream(double[][] x, int[] y) {
+    }
+
+    /**
+     * Gaussian blobs in two dimensions that drift, appear and disappear over four phases, with
+     * 5% uniform noise.
+     */
+    private static LabelledStream evolvingBlobs(int n, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double[][] x = new double[n][];
+        int[] y = new int[n];
+        for (int i = 0; i < n; i++) {
+            double phase = i / (double) n * 4;
+            if (r.nextDouble() < 0.05) {
+                x[i] = new double[] {r.nextDouble(-1, 9), r.nextDouble(-1, 9)};
+                y[i] = -1;
+                continue;
+            }
+            List<double[]> centres = new ArrayList<>();
+            List<Integer> ids = new ArrayList<>();
+            // cluster 0 drifts right, cluster 1 is fixed, cluster 2 appears in phase 1,
+            // cluster 3 disappears after phase 2
+            centres.add(new double[] {1 + phase, 1});
+            ids.add(0);
+            centres.add(new double[] {1, 7});
+            ids.add(1);
+            if (phase >= 1) {
+                centres.add(new double[] {7, 7});
+                ids.add(2);
+            }
+            if (phase < 2.5) {
+                centres.add(new double[] {4, 4});
+                ids.add(3);
+            }
+            int c = r.nextInt(centres.size());
+            x[i] = new double[] {centres.get(c)[0] + 0.35 * r.nextGaussian(), centres.get(c)[1] + 0.35 * r.nextGaussian()};
+            y[i] = ids.get(c);
+        }
+        return new LabelledStream(x, y);
+    }
+
+    /** Two interleaved half moons with 5% noise, shuffled. */
+    private static LabelledStream moons(int n, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double[][] x = new double[n][];
+        int[] y = new int[n];
+        for (int i = 0; i < n; i++) {
+            if (r.nextDouble() < 0.05) {
+                x[i] = new double[] {r.nextDouble(-1.5, 2.5), r.nextDouble(-1, 1.5)};
+                y[i] = -1;
+                continue;
+            }
+            int c = r.nextInt(2);
+            double t = r.nextDouble() * Math.PI;
+            x[i] = c == 0 ? new double[] {Math.cos(t), Math.sin(t)} : new double[] {1 - Math.cos(t), 0.5 - Math.sin(t)};
+            x[i][0] += 0.06 * r.nextGaussian();
+            x[i][1] += 0.06 * r.nextGaussian();
+            y[i] = c;
+        }
+        return new LabelledStream(x, y);
+    }
+
+    /**
+     * 12.2.1: stream clustering (sequential and mini-batch k-means, BIRCH, CluStream, DenStream)
+     * against k-means and DBSCAN refitted on a sliding window, on evolving blobs and on moons.
+     *
+     * @param n points per stream
+     * @param seed the seed
+     * @return one row per stream and method
+     */
+    public static List<ClusterRow> clustering(int n, long seed) {
+        List<ClusterRow> rows = new ArrayList<>();
+        Map<String, LabelledStream> streams = new LinkedHashMap<>();
+        streams.put("evolving blobs", evolvingBlobs(n, seed));
+        streams.put("moons", moons(n / 2, seed + 1));
+        for (Map.Entry<String, LabelledStream> e : streams.entrySet()) {
+            boolean blobs = e.getKey().startsWith("evolving");
+            int k = blobs ? 4 : 2;
+            double eps = blobs ? 0.5 : 0.1;
+            Map<String, Supplier<StreamClustering.Clusterer>> methods = new LinkedHashMap<>();
+            methods.put("sequential k-means", () -> StreamClustering.sequentialKMeans(k, 200));
+            methods.put("mini-batch k-means", () -> StreamClustering.miniBatchKMeans(k, 50, 500));
+            methods.put("BIRCH", () -> StreamClustering.birch(blobs ? 0.4 : 0.1, 8, 80, k));
+            methods.put("CluStream", () -> StreamClustering.cluStream(40, k, 2, 1000));
+            methods.put("DenStream", () -> StreamClustering.denStream(eps, 3, 0.5, 0.001, 3 * eps));
+            for (Map.Entry<String, Supplier<StreamClustering.Clusterer>> m : methods.entrySet()) {
+                rows.add(runClusterer(e.getKey(), m.getKey(), e.getValue(), m.getValue().get()));
+            }
+            rows.add(windowedBatch(e.getKey(), "windowed k-means (batch)", e.getValue(), k, -1));
+            rows.add(windowedBatch(e.getKey(), "windowed DBSCAN (batch)", e.getValue(), k, eps));
+        }
+        return rows;
+    }
+
+    private static final int CLUSTER_WINDOW = 1000;
+    private static final int CLUSTER_EVERY = 500;
+
+    private static ClusterRow runClusterer(String stream, String name, LabelledStream s,
+            StreamClustering.Clusterer c) {
+        long start = System.nanoTime();
+        double ari = 0;
+        int evals = 0;
+        for (int i = 0; i < s.x().length; i++) {
+            c.learn(s.x()[i]);
+            if ((i + 1) % CLUSTER_EVERY == 0 && i + 1 >= CLUSTER_WINDOW) {
+                c.recluster();
+                int[] truth = new int[CLUSTER_EVERY];
+                int[] pred = new int[CLUSTER_EVERY];
+                for (int j = 0; j < CLUSTER_EVERY; j++) {
+                    int p = i + 1 - CLUSTER_EVERY + j;
+                    truth[j] = s.y()[p];
+                    pred[j] = c.assign(s.x()[p]);
+                }
+                ari += ClusteringMetrics.ari(truth, pred);
+                evals++;
+            }
+        }
+        double secs = (System.nanoTime() - start) / 1e9;
+        return new ClusterRow(stream, name, ari / evals, c.summaries(), s.x().length / secs);
+    }
+
+    private static ClusterRow windowedBatch(String stream, String name, LabelledStream s, int k, double eps) {
+        long start = System.nanoTime();
+        double ari = 0;
+        int evals = 0;
+        for (int i = CLUSTER_WINDOW - 1; i < s.x().length; i += CLUSTER_EVERY) {
+            double[][] window = Arrays.copyOfRange(s.x(), i + 1 - CLUSTER_WINDOW, i + 1);
+            int[] labels;
+            if (eps < 0) {
+                labels = KMeans.fit(window, k, KMeans.Init.PLUS_PLUS, 3, 50, 7).predict(window);
+            } else {
+                labels = Dbscan.cluster(window, eps, 5);
+            }
+            int[] truth = Arrays.copyOfRange(s.y(), i + 1 - CLUSTER_EVERY, i + 1);
+            int[] pred = Arrays.copyOfRange(labels, CLUSTER_WINDOW - CLUSTER_EVERY, CLUSTER_WINDOW);
+            ari += ClusteringMetrics.ari(truth, pred);
+            evals++;
+        }
+        double secs = (System.nanoTime() - start) / 1e9;
+        return new ClusterRow(stream, name, ari / evals, CLUSTER_WINDOW, s.x().length / secs);
+    }
+
+    /**
+     * One streaming anomaly detector.
+     *
+     * @param method the method
+     * @param auroc prequential AUROC over the stream after the warm-up
+     * @param auprc prequential average precision after the warm-up
+     * @param aurocAfterDrift AUROC over the half after the drift
+     * @param pointsPerSecond the throughput
+     */
+    public record AnomalyRow(String method, double auroc, double auprc, double aurocAfterDrift,
+            double pointsPerSecond) {
+    }
+
+    /**
+     * 12.2.2: streaming anomaly detection (half-space trees, RRCF, LODA, Online-iForest)
+     * against an isolation forest and ECOD refitted on a sliding window. The stream is a
+     * correlated 4-d Gaussian whose mean jumps halfway, with 2% point anomalies and bursts of
+     * collective anomalies.
+     *
+     * @param n points
+     * @param seed the seed
+     * @return one row per method
+     */
+    public static List<AnomalyRow> anomalies(int n, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        int d = 4;
+        double[][] x = new double[n][d];
+        boolean[] anomaly = new boolean[n];
+        int burstLeft = 0;
+        double[] burstAt = new double[d];
+        for (int i = 0; i < n; i++) {
+            double shift = i >= n / 2 ? 3 : 0;
+            double common = r.nextGaussian();
+            for (int j = 0; j < d; j++) {
+                x[i][j] = shift + 0.8 * common + 0.6 * r.nextGaussian();
+            }
+            if (burstLeft == 0 && r.nextDouble() < 0.0015) {
+                burstLeft = 10;
+                for (int j = 0; j < d; j++) {
+                    burstAt[j] = shift + (j % 2 == 0 ? 2.5 : -2.5);
+                }
+            }
+            if (burstLeft > 0) {
+                for (int j = 0; j < d; j++) {
+                    x[i][j] = burstAt[j] + 0.2 * r.nextGaussian();
+                }
+                anomaly[i] = true;
+                burstLeft--;
+            } else if (r.nextDouble() < 0.01) {
+                int j = r.nextInt(d);
+                x[i][j] += (r.nextBoolean() ? 1 : -1) * (4 + 2 * r.nextDouble());
+                anomaly[i] = true;
+            }
+        }
+        int warm = 512;
+        double[] lo = new double[d];
+        double[] hi = new double[d];
+        Arrays.fill(lo, Double.POSITIVE_INFINITY);
+        Arrays.fill(hi, Double.NEGATIVE_INFINITY);
+        for (int i = 0; i < warm; i++) {
+            for (int j = 0; j < d; j++) {
+                lo[j] = Math.min(lo[j], x[i][j]);
+                hi[j] = Math.max(hi[j], x[i][j]);
+            }
+        }
+        Map<String, StreamingAnomaly.Detector> detectors = new LinkedHashMap<>();
+        detectors.put("half-space trees", StreamingAnomaly.halfSpaceTrees(d, 25, 10, 256, lo, hi, seed));
+        detectors.put("RRCF", StreamingAnomaly.rrcf(30, 256, seed));
+        detectors.put("LODA", StreamingAnomaly.loda(d, 50, 20, 256, 400, seed));
+        detectors.put("Online-iForest", StreamingAnomaly.onlineIsolationForest(32, 512, 16, seed));
+        List<AnomalyRow> rows = new ArrayList<>();
+        for (Map.Entry<String, StreamingAnomaly.Detector> e : detectors.entrySet()) {
+            long start = System.nanoTime();
+            double[] s = new double[n];
+            for (int i = 0; i < n; i++) {
+                s[i] = e.getValue().process(x[i]);
+            }
+            rows.add(anomalyRow(e.getKey(), s, anomaly, warm, n, (System.nanoTime() - start) / 1e9));
+        }
+        for (boolean ecod : new boolean[] {false, true}) {
+            long start = System.nanoTime();
+            double[] s = new double[n];
+            int window = 1024;
+            int every = 512;
+            IsolationForest forest = null;
+            Ecod ecodModel = null;
+            for (int i = warm; i < n; i++) {
+                if (forest == null && ecodModel == null || (i - warm) % every == 0) {
+                    double[][] w = Arrays.copyOfRange(x, Math.max(0, i - window), i);
+                    if (ecod) {
+                        ecodModel = Ecod.fit(w);
+                    } else {
+                        forest = IsolationForest.fit(w, 100, 256, seed + i);
+                    }
+                }
+                s[i] = ecod ? ecodModel.score(new double[][] {x[i]})[0] : forest.score(x[i]);
+            }
+            rows.add(anomalyRow(ecod ? "ECOD (sliding window)" : "isolation forest (retrained every 512)", s,
+                    anomaly, warm, n, (System.nanoTime() - start) / 1e9));
+        }
+        return rows;
+    }
+
+    private static AnomalyRow anomalyRow(String name, double[] s, boolean[] anomaly, int warm, int n, double secs) {
+        double[] sw = Arrays.copyOfRange(s, warm, n);
+        boolean[] aw = Arrays.copyOfRange(anomaly, warm, n);
+        double[] sd = Arrays.copyOfRange(s, n / 2, n);
+        boolean[] ad = Arrays.copyOfRange(anomaly, n / 2, n);
+        return new AnomalyRow(name, MlMetrics.auroc(sw, aw), averagePrecision(sw, aw), MlMetrics.auroc(sd, ad),
+                n / secs);
+    }
+
+    private static double averagePrecision(double[] score, boolean[] positive) {
+        Integer[] idx = new Integer[score.length];
+        for (int i = 0; i < idx.length; i++) {
+            idx[i] = i;
+        }
+        Arrays.sort(idx, (a, b) -> Double.compare(score[b], score[a]));
+        int total = 0;
+        for (boolean p : positive) {
+            total += p ? 1 : 0;
+        }
+        double ap = 0;
+        int hits = 0;
+        for (int k = 0; k < idx.length; k++) {
+            if (positive[idx[k]]) {
+                hits++;
+                ap += hits / (double) (k + 1);
+            }
+        }
+        return total == 0 ? Double.NaN : ap / total;
+    }
+
+    /**
+     * One streaming PCA method.
+     *
+     * @param setting the eigengap setting
+     * @param method the method
+     * @param sinTheta the sine of the largest principal angle to the true subspace at the end
+     * @param sinThetaBatch the same against the batch SVD of all points seen
+     * @param microsPerPoint the time per point
+     */
+    public record SubspaceRow(String setting, String method, double sinTheta, double sinThetaBatch,
+            double microsPerPoint) {
+    }
+
+    /**
+     * 12.2.3: streaming PCA (Oja with QR through the exact Oja term, CCIPCA, Brand's incremental
+     * SVD) against GHA ({@code PlasticityRule.sanger}), Frequent Directions and the batch SVD
+     * oracle, on spiked-covariance streams with a large and a small eigengap.
+     *
+     * @param d the dimension
+     * @param k the subspace size
+     * @param n points
+     * @param seed the seed
+     * @return one row per setting and method
+     */
+    public static List<SubspaceRow> subspaces(int d, int k, int n, long seed) {
+        List<SubspaceRow> rows = new ArrayList<>();
+        for (boolean small : new boolean[] {false, true}) {
+            String setting = small ? "small eigengap" : "large eigengap";
+            SplittableRandom r = new SplittableRandom(seed + (small ? 1 : 0));
+            double[][] basis = new double[d][k];
+            for (double[] row : basis) {
+                for (int j = 0; j < k; j++) {
+                    row[j] = r.nextGaussian();
+                }
+            }
+            StreamingPca.orthonormalise(basis);
+            double[] spikes = new double[k];
+            for (int j = 0; j < k; j++) {
+                spikes[j] = small ? Math.sqrt(1.5 - 0.1 * j) : Math.sqrt(10 - 1.5 * j);
+            }
+            double[][] x = new double[n][d];
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < k; j++) {
+                    double a = spikes[j] * r.nextGaussian();
+                    for (int q = 0; q < d; q++) {
+                        x[i][q] += a * basis[q][j];
+                    }
+                }
+                for (int q = 0; q < d; q++) {
+                    x[i][q] += 0.5 * r.nextGaussian();
+                }
+            }
+            double[][] oracle = topRightVectors(x, k);
+            Map<String, StreamingPca> methods = new LinkedHashMap<>();
+            methods.put("Oja + QR (exact Oja term)", StreamingPca.oja(d, k, 0.005, seed));
+            methods.put("CCIPCA (l = 2)", StreamingPca.ccipca(d, k, 2, seed));
+            methods.put("incremental SVD (f = 1, block 10)", StreamingPca.incrementalSvd(d, k, 1, 10));
+            for (Map.Entry<String, StreamingPca> e : methods.entrySet()) {
+                long start = System.nanoTime();
+                for (double[] row : x) {
+                    e.getValue().add(row);
+                }
+                double[][] b = e.getValue().basis();
+                double us = (System.nanoTime() - start) / 1e3 / n;
+                rows.add(new SubspaceRow(setting, e.getKey(), StreamingPca.sinTheta(b, basis),
+                        StreamingPca.sinTheta(b, oracle), us));
+            }
+            // GHA (Sanger) one point at a time, on centred points
+            long start = System.nanoTime();
+            io.github.zzuegg.brainiac.experimental.train.PlasticityRule gha =
+                    io.github.zzuegg.brainiac.experimental.train.PlasticityRule.sanger(0.005f);
+            Tensor w = Tensor.normal(Shape.of(d, k), 0, 0.1f, new SplittableRandom(seed));
+            double[] mean = new double[d];
+            for (int i = 0; i < n; i++) {
+                float[] c = new float[d];
+                for (int q = 0; q < d; q++) {
+                    mean[q] += (x[i][q] - mean[q]) / (i + 1);
+                    c[q] = (float) (x[i][q] - mean[q]);
+                }
+                Tensor pre = Tensor.of(Shape.of(1, d), c);
+                w = w.add(gha.update(pre, pre.matmul(w), w));
+            }
+            double[][] gb = toMatrix(w, d, k);
+            StreamingPca.orthonormalise(gb);
+            rows.add(new SubspaceRow(setting, "GHA (PlasticityRule.sanger)", StreamingPca.sinTheta(gb, basis),
+                    StreamingPca.sinTheta(gb, oracle), (System.nanoTime() - start) / 1e3 / n));
+            start = System.nanoTime();
+            io.github.zzuegg.brainiac.experimental.sketch.FrequentDirections fd =
+                    new io.github.zzuegg.brainiac.experimental.sketch.FrequentDirections(2 * k, d);
+            for (double[] row : x) {
+                fd.add(row);
+            }
+            double[][] fb = topRightVectors(fd.sketch(), k);
+            rows.add(new SubspaceRow(setting, "Frequent Directions (l = 2k)", StreamingPca.sinTheta(fb, basis),
+                    StreamingPca.sinTheta(fb, oracle), (System.nanoTime() - start) / 1e3 / n));
+            rows.add(new SubspaceRow(setting, "batch SVD of all points (oracle)", StreamingPca.sinTheta(oracle, basis),
+                    0, Double.NaN));
+        }
+        return rows;
+    }
+
+    private static double[][] toMatrix(Tensor t, int rows, int cols) {
+        float[] v = t.toArray();
+        double[][] m = new double[rows][cols];
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                m[i][j] = v[i * cols + j];
+            }
+        }
+        return m;
+    }
+
+    /** The top right singular vectors of centred rows, {@code [d][k]}. */
+    private static double[][] topRightVectors(double[][] rows, int k) {
+        int d = rows[0].length;
+        double[] mean = new double[d];
+        for (double[] r : rows) {
+            for (int j = 0; j < d; j++) {
+                mean[j] += r[j] / rows.length;
+            }
+        }
+        double[][] c = new double[rows.length][d];
+        for (int i = 0; i < rows.length; i++) {
+            for (int j = 0; j < d; j++) {
+                c[i][j] = rows[i][j] - mean[j];
+            }
+        }
+        io.github.zzuegg.brainiac.experimental.tensor.ThinSvd svd = io.github.zzuegg.brainiac.experimental.tensor.ThinSvd
+                .of(c);
+        double[][] v = new double[d][k];
+        for (int j = 0; j < d; j++) {
+            for (int q = 0; q < k; q++) {
+                v[j][q] = svd.v()[j][q];
+            }
+        }
+        StreamingPca.orthonormalise(v);
+        return v;
+    }
+
+    /**
+     * One online forest row.
+     *
+     * @param task the task
+     * @param method the method
+     * @param score prequential accuracy (classification) or RMSE (regression)
+     * @param early the same over the first fifth of the stream
+     * @param seconds wall time, refits included
+     */
+    public record ForestRow(String task, String method, double score, double early, double seconds) {
+    }
+
+    /**
+     * 12.2.4: Mondrian forests against Hoeffding trees, adaptive random forests and batch random
+     * forests refitted at checkpoints (classification on an RBF stream, regression on streamed
+     * Friedman #1 through the new {@code RandomForest.fitRegression}).
+     *
+     * @param n stream length (classification; regression uses {@code n / 2})
+     * @param seed the seed
+     * @return one row per task and method
+     */
+    public static List<ForestRow> forests(int n, long seed) {
+        List<ForestRow> rows = new ArrayList<>();
+        DriftingStreams.Sample[] cls = DriftingStreams.take(
+                DriftingStreams.rbf(4, 10, 3, DriftingStreams.Drift.ABRUPT, new int[0], 1, seed), n);
+        Map<String, Supplier<OnlineClassifier>> learners = new LinkedHashMap<>();
+        learners.put("Mondrian forest (10 trees)", () -> MondrianForest.classifier(10, 4, 3,
+                Double.POSITIVE_INFINITY, 10, seed));
+        learners.put("Hoeffding tree", () -> HoeffdingTree.of(4, 3));
+        learners.put("adaptive random forest (10 trees)", () -> new AdaptiveRandomForest(4, 3, 10, 6, 0.01, 0.001,
+                seed));
+        for (Map.Entry<String, Supplier<OnlineClassifier>> e : learners.entrySet()) {
+            long start = System.nanoTime();
+            Prequential.Result res = Prequential.evaluate(cls, new int[0], e.getValue().get(), n / 5);
+            rows.add(new ForestRow("RBF classification", e.getKey(), res.accuracy(), res.windows()[0],
+                    (System.nanoTime() - start) / 1e9));
+        }
+        {
+            long start = System.nanoTime();
+            int every = Math.max(50, n / 8);
+            RandomForest rf = null;
+            int right = 0;
+            int early = 0;
+            for (int i = 0; i < n; i++) {
+                int pred = rf == null ? 0 : rf.predict(new double[][] {cls[i].x()})[0];
+                boolean ok = pred == cls[i].label();
+                right += ok ? 1 : 0;
+                early += ok && i < n / 5 ? 1 : 0;
+                if ((i + 1) % every == 0) {
+                    double[][] x = new double[i + 1][];
+                    int[] y = new int[i + 1];
+                    for (int j = 0; j <= i; j++) {
+                        x[j] = cls[j].x();
+                        y[j] = cls[j].label();
+                    }
+                    rf = RandomForest.fit(x, y, 3, RandomForest.Settings.defaults(RandomForest.Mode.RANDOM_FOREST)
+                            .withTrees(30));
+                }
+            }
+            rows.add(new ForestRow("RBF classification", "random forest (batch, refit every " + every + ")",
+                    right / (double) n, early / (double) (n / 5), (System.nanoTime() - start) / 1e9));
+        }
+        // regression: Friedman #1 streamed
+        int m = n / 2;
+        SplittableRandom r = new SplittableRandom(seed + 9);
+        double[][] fx = new double[m][5];
+        double[] fy = new double[m];
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < 5; j++) {
+                fx[i][j] = r.nextDouble();
+            }
+            fy[i] = 10 * Math.sin(Math.PI * fx[i][0] * fx[i][1]) + 20 * Math.pow(fx[i][2] - 0.5, 2) + 10 * fx[i][3]
+                    + 5 * fx[i][4] + r.nextGaussian();
+        }
+        {
+            long start = System.nanoTime();
+            MondrianForest mf = MondrianForest.regressor(10, 5, Double.POSITIVE_INFINITY, 0.5, 5, seed);
+            double se = 0;
+            double seEarly = 0;
+            for (int i = 0; i < m; i++) {
+                double p = i == 0 ? 0 : mf.predictMeanVariance(fx[i])[0];
+                double e2 = (p - fy[i]) * (p - fy[i]);
+                se += e2;
+                seEarly += i < m / 5 ? e2 : 0;
+                mf.learnValue(fx[i], fy[i]);
+            }
+            rows.add(new ForestRow("Friedman #1 regression", "Mondrian forest (10 trees)", Math.sqrt(se / m),
+                    Math.sqrt(seEarly / (m / 5)), (System.nanoTime() - start) / 1e9));
+        }
+        {
+            long start = System.nanoTime();
+            int every = Math.max(25, m / 8);
+            RandomForest rf = null;
+            double se = 0;
+            double seEarly = 0;
+            double mean = 0;
+            for (int i = 0; i < m; i++) {
+                double p = rf == null ? mean : rf.predictValue(fx[i]);
+                double e2 = (p - fy[i]) * (p - fy[i]);
+                se += e2;
+                seEarly += i < m / 5 ? e2 : 0;
+                mean += (fy[i] - mean) / (i + 1);
+                if ((i + 1) % every == 0) {
+                    rf = RandomForest.fitRegression(Arrays.copyOf(fx, i + 1), Arrays.copyOf(fy, i + 1),
+                            new RandomForest.Settings(RandomForest.Mode.RANDOM_FOREST, 30, 20, 3, 0, seed));
+                }
+            }
+            rows.add(new ForestRow("Friedman #1 regression", "random forest regression (batch, refit every " + every
+                    + ")", Math.sqrt(se / m), Math.sqrt(seEarly / (m / 5)), (System.nanoTime() - start) / 1e9));
+        }
+        return rows;
+    }
+
+    /**
+     * 12.2.4 uncertainty: the predictive standard deviation inside a gap of the training inputs
+     * divided by the one on the data, for a Mondrian regression forest and a batch random forest
+     * ({@code y = sin(2πx)} with no data in {@code [0.4, 0.6]}).
+     *
+     * @param n training points
+     * @param seed the seed
+     * @return {@code {Mondrian ratio, random forest ratio}}
+     */
+    public static double[] gapUncertainty(int n, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double[][] x = new double[n][1];
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) {
+            double v = r.nextDouble() * 0.8;
+            x[i][0] = v < 0.4 ? v : v + 0.2;
+            y[i] = Math.sin(2 * Math.PI * x[i][0]) + 0.1 * r.nextGaussian();
+        }
+        MondrianForest mf = MondrianForest.regressor(10, 1, Double.POSITIVE_INFINITY, 0.5, 3, seed);
+        for (int i = 0; i < n; i++) {
+            mf.learnValue(x[i], y[i]);
+        }
+        RandomForest rf = RandomForest.fitRegression(x, y, new RandomForest.Settings(RandomForest.Mode.RANDOM_FOREST,
+                50, 20, 3, 1, seed));
+        double[] gap = {0.47, 0.5, 0.53};
+        double[] data = {0.15, 0.25, 0.75, 0.85};
+        double mg = 0;
+        double md = 0;
+        double rg = 0;
+        double rd = 0;
+        for (double g : gap) {
+            mg += Math.sqrt(mf.predictMeanVariance(new double[] {g})[1]) / gap.length;
+            rg += Math.sqrt(rf.predictMeanVariance(new double[] {g})[1]) / gap.length;
+        }
+        for (double v : data) {
+            md += Math.sqrt(mf.predictMeanVariance(new double[] {v})[1]) / data.length;
+            rd += Math.sqrt(rf.predictMeanVariance(new double[] {v})[1]) / data.length;
+        }
+        return new double[] {mg / md, rg / rd};
     }
 }
