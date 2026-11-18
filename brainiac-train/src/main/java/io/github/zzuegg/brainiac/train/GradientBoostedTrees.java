@@ -172,6 +172,21 @@ public final class GradientBoostedTrees {
     }
 
     /**
+     * Trains trees with a weight per row; see {@link #fit(double[][], double[], double[], Loss, Settings)}.
+     *
+     * @param x rows of features
+     * @param y one target per row
+     * @param weights one non-negative weight per row
+     * @param objective the loss
+     * @param s the settings
+     * @return the trained ensemble
+     */
+    public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, Objective objective,
+            Settings s) {
+        return fit(x, y, weights, loss(objective), s);
+    }
+
+    /**
      * Trains trees on a custom loss.
      *
      * @param x rows of features
@@ -181,7 +196,33 @@ public final class GradientBoostedTrees {
      * @return the trained ensemble
      */
     public static GradientBoostedTrees fit(double[][] x, double[] y, Loss loss, Settings s) {
+        return fit(x, y, null, loss, s);
+    }
+
+    /**
+     * Trains trees with a weight per row, as XGBoost's sample weights: each row's
+     * gradient and curvature are scaled by its weight, so a row of weight 2 counts as two
+     * copies of it. The starting score is still {@link Loss#base} of the unweighted targets.
+     *
+     * @param x rows of features
+     * @param y one target per row
+     * @param weights one non-negative weight per row, or {@code null} for all 1
+     * @param loss the loss
+     * @param s the settings
+     * @return the trained ensemble
+     */
+    public static GradientBoostedTrees fit(double[][] x, double[] y, double[] weights, Loss loss, Settings s) {
         int n = x.length;
+        if (weights != null) {
+            if (weights.length != n) {
+                throw new IllegalArgumentException(n + " rows and " + weights.length + " weights");
+            }
+            for (double w : weights) {
+                if (!(w >= 0)) {
+                    throw new IllegalArgumentException("weights must be non-negative, got " + w);
+                }
+            }
+        }
         if (n == 0 || y.length != n) {
             throw new IllegalArgumentException(n + " rows and " + y.length + " targets");
         }
@@ -200,6 +241,12 @@ public final class GradientBoostedTrees {
         SplittableRandom random = new SplittableRandom(s.seed());
         for (int t = 0; t < s.trees(); t++) {
             loss.derivatives(raw, y, g, h);
+            if (weights != null) {
+                for (int i = 0; i < n; i++) {
+                    g[i] *= weights[i];
+                    h[i] *= weights[i];
+                }
+            }
             int[] rows = sampleRows(n, s.subsample(), random);
             Builder b = new Builder(x, g, h, thresholds, s, importance);
             b.build(rows, 0);
