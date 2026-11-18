@@ -2091,9 +2091,10 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
+      ${isLive() && SV.open ? servePanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
@@ -4000,6 +4001,70 @@
 
   // ---------- adding model files and folders from this PC ----------
   const P = { open: false, path: "", list: null, error: null, busy: false, removing: null, note: null };
+
+  // Serving: one of this PC's chat models answers other programs through the OpenAI API, on a port of its own.
+  const SV = { open: false, state: null, model: "", port: 8080, network: false, busy: false, error: null, loaded: false };
+  const serveModels = () => chatModels().filter(m => m.provider === "local");
+  function servePanel() {
+    const s = SV.state, models = serveModels();
+    const head = `<div class="place-head"><div><b>Serve a model to other programs</b> <span class="muted">Editors, scripts and tools that speak the OpenAI API can use a chat model on this PC. It is loaded for the server alone, so serving the model you also chat with here holds it in memory twice.</span></div>
+        <button type="button" class="iconbtn sm" id="serve-close" aria-label="Close">${icon("x")}</button></div>`;
+    if (s?.running) {
+      const auth = s.key ? ` -H "Authorization: Bearer ${s.key}"` : "";
+      const curl = `curl ${s.url}/chat/completions -H "Content-Type: application/json"${auth} -d '{"messages":[{"role":"user","content":"Hello"}]}'`;
+      return `<div class="placebox servebox">${head}
+        <div class="serve-rows">
+          <span class="faint">Model</span><span><b>${esc(s.model)}</b> <span class="chip plain">${esc(s.device)}</span></span>
+          <span class="faint">Base URL</span><span class="serve-copy"><code>${esc(s.url)}</code><button type="button" class="iconbtn sm" data-serve-copy="${esc(s.url)}" aria-label="Copy the URL">${icon("copy")}</button></span>
+          <span class="faint">API key</span><span class="serve-copy">${s.key ? `<code>${esc(s.key)}</code><button type="button" class="iconbtn sm" data-serve-copy="${esc(s.key)}" aria-label="Copy the key">${icon("copy")}</button>` : `<span class="muted">none needed: only programs on this PC can reach it</span>`}</span>
+          <span class="faint">Try it</span><span class="serve-copy"><code class="serve-curl">${esc(curl)}</code><button type="button" class="iconbtn sm" data-serve-copy="${esc(curl)}" aria-label="Copy the command">${icon("copy")}</button></span>
+        </div>
+        ${s.network ? `<div class="flag">${icon("lock")}<span>Open to other computers on your network. Every request needs the key, which changes each time you start serving.</span></div>` : ""}
+        ${SV.error ? `<div class="flag bad">${icon("alert")}<span>${esc(SV.error)}</span></div>` : ""}
+        <div><button type="button" class="btn" id="serve-stop" ${SV.busy ? "disabled" : ""}>${icon("stop")}${SV.busy ? "Stopping…" : "Stop serving"}</button></div>
+      </div>`;
+    }
+    const sel = models.some(m => m.id === SV.model) ? SV.model : (models[0]?.id || "");
+    return `<form class="placebox servebox" id="serve-form" autocomplete="off">${head}
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="serve-model" aria-label="Model to serve">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <label class="serve-port" for="serve-port">Port <input class="input mono" id="serve-port" type="number" min="1024" max="65535" step="1" value="${esc(SV.port)}"></label>
+        <button class="btn primary" type="submit" ${SV.busy ? "disabled" : ""}>${icon("play")}${SV.busy ? "Loading the model…" : "Start serving"}</button></div>
+      <label class="serve-net"><input type="checkbox" id="serve-network" ${SV.network ? "checked" : ""}> Let other computers on my network use it <span class="faint">they need a key the studio makes up for this run</span></label>`
+      : `<div class="muted">No chat model on this PC yet. Download one from Hugging Face or add a folder first.</div>`}
+      ${SV.error ? `<div class="flag bad">${icon("alert")}<span>${esc(SV.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadServe() {
+    try { SV.state = await api("/api/serve"); } catch (e) { console.warn("cannot read the serving state", e); }
+    if (state.view === "library") render();
+  }
+  function bindServe() {
+    $("#serve-open")?.addEventListener("click", () => { SV.open = !SV.open; SV.error = null; render(); });
+    $("#serve-close")?.addEventListener("click", () => { SV.open = false; SV.error = null; render(); });
+    $("#serve-model")?.addEventListener("change", e => { SV.model = e.target.value; });
+    $("#serve-port")?.addEventListener("input", e => { SV.port = e.target.value; });
+    $("#serve-network")?.addEventListener("change", e => { SV.network = e.target.checked; });
+    $$("[data-serve-copy]").forEach(b => b.addEventListener("click", () => navigator.clipboard?.writeText(b.dataset.serveCopy).then(() => { b.innerHTML = icon("check"); setTimeout(() => { b.innerHTML = icon("copy"); }, 1200); })));
+    $("#serve-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const model = $("#serve-model")?.value;
+      if (!model || SV.busy) return;
+      SV.busy = true; SV.error = null; render();
+      try { SV.state = await postJson("/api/serve", { model, port: Math.floor(+SV.port) || 8080, network: SV.network }); }
+      catch (err) { SV.error = err.message || String(err); }
+      SV.busy = false;
+      if (state.view === "library") render();
+    });
+    $("#serve-stop")?.addEventListener("click", async () => {
+      SV.busy = true; SV.error = null; render();
+      try { SV.state = await postJson("/api/serve", { stop: true }); }
+      catch (err) { SV.error = err.message || String(err); }
+      SV.busy = false;
+      if (state.view === "library") render();
+    });
+    if (!SV.loaded) { SV.loaded = true; loadServe(); }
+  }
   function placePanel() {
     const l = P.list;
     const kindChip = k => k === "gguf" ? `<span class="chip c-text">GGUF</span>` : k === "model" ? `<span class="chip c-text">model folder</span>` : "";
@@ -4303,6 +4368,7 @@
     });
     $("#new-model")?.addEventListener("click", newModel);
     bindPlace();
+    bindServe();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {

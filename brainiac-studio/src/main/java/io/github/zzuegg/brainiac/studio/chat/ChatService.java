@@ -306,6 +306,20 @@ public final class ChatService {
         return local().device();
     }
 
+    private LocalServing serving;
+
+    /**
+     * Returns what serves one of this PC's chat models to other programs with the OpenAI API.
+     *
+     * @return it
+     */
+    public synchronized LocalServing serving() {
+        if (serving == null) {
+            serving = new LocalServing(local());
+        }
+        return serving;
+    }
+
     private LocalProvider local() {
         return providers().stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
                 .orElseThrow(() -> new IllegalStateException("no local provider"));
