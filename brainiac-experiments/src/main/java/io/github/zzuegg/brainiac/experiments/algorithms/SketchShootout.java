@@ -9,6 +9,7 @@ import io.github.zzuegg.brainiac.experimental.sketch.FrequencySketches.Frequency
 import io.github.zzuegg.brainiac.experimental.sketch.FrequentDirections;
 import io.github.zzuegg.brainiac.experimental.sketch.HyperLogLog;
 import io.github.zzuegg.brainiac.experimental.sketch.LearnedSketches;
+import io.github.zzuegg.brainiac.experimental.sketch.QuantileSketches;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -18,12 +19,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SplittableRandom;
+import java.util.function.DoubleUnaryOperator;
 import java.util.function.IntToLongFunction;
+import java.util.function.Supplier;
 
 /**
  * Streaming sketches (items 11.2.14 and 11.2.15): frequency estimation, heavy hitters and
  * distinct counts on Zipf streams, learning-augmented frequency sketches with a trained
- * heavy-hitter oracle, and Frequent Directions (plain and learned) on matrix streams.
+ * heavy-hitter oracle, and Frequent Directions (plain and learned) on matrix streams; and
+ * (item 12.2.7) quantile sketches against reservoir sampling and a histogram.
  */
 public final class SketchShootout {
 
@@ -342,5 +346,187 @@ public final class SketchShootout {
             }
         }
         return a;
+    }
+
+    // ------------------------------------------------------------------ 12.2.7 quantiles
+
+    /**
+     * A quantile summary's accuracy on one value stream.
+     *
+     * @param stream the value stream
+     * @param method the summary
+     * @param stored the numbers it stores
+     * @param rank50 the rank error at {@code q = 0.5}, as a fraction of the stream
+     * @param rank90 the rank error at 0.9
+     * @param rank99 the rank error at 0.99
+     * @param rank999 the rank error at 0.999
+     * @param relative999 the relative value error at 0.999
+     */
+    public record QuantileRow(String stream, String method, int stored, double rank50, double rank90, double rank99,
+            double rank999, double relative999) {
+    }
+
+    private static final double[] QS = {0.5, 0.9, 0.99, 0.999};
+
+    private static double[] valueStream(String kind, int n, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double[] v = new double[n];
+        for (int i = 0; i < n; i++) {
+            v[i] = switch (kind) {
+                case "log-normal" -> Math.exp(r.nextGaussian());
+                case "Pareto (1.5)" -> Math.pow(1 - r.nextDouble(), -1 / 1.5);
+                default -> r.nextDouble();
+            };
+        }
+        if (kind.startsWith("sorted")) {
+            Arrays.sort(v);
+        }
+        return v;
+    }
+
+    private static QuantileRow score(String stream, String method, int stored, double[] sorted,
+            DoubleUnaryOperator quantile) {
+        int n = sorted.length;
+        double[] err = new double[QS.length];
+        double relative = 0;
+        for (int i = 0; i < QS.length; i++) {
+            double est = quantile.applyAsDouble(QS[i]);
+            int lo = lowerBound(sorted, est);
+            int hi = upperBound(sorted, est);
+            double target = QS[i] * n;
+            // any rank in [lo, hi] is consistent with the estimate
+            double rank = target < lo ? lo : target > hi ? hi : target;
+            err[i] = Math.abs(rank - target) / n;
+            if (i == QS.length - 1) {
+                double exact = sorted[Math.min(n - 1, (int) Math.ceil(QS[i] * n) - 1)];
+                relative = Math.abs(est - exact) / Math.abs(exact);
+            }
+        }
+        return new QuantileRow(stream, method, stored, err[0], err[1], err[2], err[3], relative);
+    }
+
+    private static int lowerBound(double[] a, double v) {
+        int lo = 0;
+        int hi = a.length;
+        while (lo < hi) {
+            int m = (lo + hi) >>> 1;
+            if (a[m] < v) {
+                lo = m + 1;
+            } else {
+                hi = m;
+            }
+        }
+        return lo;
+    }
+
+    private static int upperBound(double[] a, double v) {
+        int lo = 0;
+        int hi = a.length;
+        while (lo < hi) {
+            int m = (lo + hi) >>> 1;
+            if (a[m] <= v) {
+                lo = m + 1;
+            } else {
+                hi = m;
+            }
+        }
+        return lo;
+    }
+
+    /**
+     * 12.2.7: quantile sketches (Greenwald–Khanna, KLL, t-digest) against reservoir sampling and a
+     * fixed-width histogram of about the same memory, and the exact sort, on uniform, log-normal,
+     * Pareto and sorted (adversarial) value streams; on the log-normal stream each sketch is also
+     * built as 16 partial sketches that are then merged.
+     *
+     * @param n values per stream
+     * @param memory the target number of stored numbers per summary
+     * @param seed the seed
+     * @return one row per stream and method
+     */
+    public static List<QuantileRow> quantiles(int n, int memory, long seed) {
+        List<QuantileRow> rows = new ArrayList<>();
+        String[] kinds = {"uniform", "log-normal", "Pareto (1.5)", "sorted uniform"};
+        double gkEps = 3.0 / memory;
+        int kllK = Math.max(8, memory / 2);
+        double compression = memory / 3.0;
+        for (int s = 0; s < kinds.length; s++) {
+            double[] v = valueStream(kinds[s], n, seed + s);
+            double[] sorted = v.clone();
+            Arrays.sort(sorted);
+            Map<String, Supplier<QuantileSketches.QuantileSketch>> sketches = new LinkedHashMap<>();
+            sketches.put("Greenwald-Khanna", () -> QuantileSketches.greenwaldKhanna(gkEps));
+            sketches.put("KLL", () -> QuantileSketches.kll(kllK, seed));
+            sketches.put("t-digest", () -> QuantileSketches.tDigest(compression));
+            for (Map.Entry<String, Supplier<QuantileSketches.QuantileSketch>> e : sketches.entrySet()) {
+                QuantileSketches.QuantileSketch sk = e.getValue().get();
+                for (double x : v) {
+                    sk.add(x);
+                }
+                rows.add(score(kinds[s], e.getKey(), sk.stored(), sorted, sk::quantile));
+                if (s == 1) {
+                    QuantileSketches.QuantileSketch merged = e.getValue().get();
+                    int chunk = n / 16;
+                    for (int c = 0; c < 16; c++) {
+                        QuantileSketches.QuantileSketch part = e.getValue().get();
+                        for (int i = c * chunk; i < (c == 15 ? n : (c + 1) * chunk); i++) {
+                            part.add(v[i]);
+                        }
+                        merged.merge(part);
+                    }
+                    rows.add(score(kinds[s], e.getKey() + " (16 merged)", merged.stored(), sorted,
+                            merged::quantile));
+                }
+            }
+            // reservoir sample of the same memory (Algorithm R)
+            SplittableRandom r = new SplittableRandom(seed + 77);
+            double[] reservoir = new double[memory];
+            for (int i = 0; i < n; i++) {
+                if (i < memory) {
+                    reservoir[i] = v[i];
+                } else {
+                    long j = r.nextLong(i + 1L);
+                    if (j < memory) {
+                        reservoir[(int) j] = v[i];
+                    }
+                }
+            }
+            double[] res = reservoir.clone();
+            Arrays.sort(res);
+            rows.add(score(kinds[s], "reservoir sample", memory, sorted,
+                    q -> res[Math.min(memory - 1, Math.max(0, (int) Math.ceil(q * memory) - 1))]));
+            // fixed-width histogram over the range of the first 1000 values, clamped
+            double lo = Double.POSITIVE_INFINITY;
+            double hi = Double.NEGATIVE_INFINITY;
+            for (int i = 0; i < Math.min(1000, n); i++) {
+                lo = Math.min(lo, v[i]);
+                hi = Math.max(hi, v[i]);
+            }
+            if (hi <= lo) {
+                hi = lo + 1;
+            }
+            long[] counts = new long[memory];
+            double width = (hi - lo) / memory;
+            for (double x : v) {
+                int b = (int) Math.floor((x - lo) / width);
+                counts[Math.max(0, Math.min(memory - 1, b))]++;
+            }
+            double hlo = lo;
+            rows.add(score(kinds[s], "fixed-width histogram", memory, sorted, q -> {
+                double target = q * n;
+                long acc = 0;
+                for (int b = 0; b < memory; b++) {
+                    if (acc + counts[b] >= target) {
+                        double frac = counts[b] == 0 ? 0 : (target - acc) / counts[b];
+                        return hlo + (b + frac) * width;
+                    }
+                    acc += counts[b];
+                }
+                return hlo + memory * width;
+            }));
+            rows.add(score(kinds[s], "exact sort", n, sorted,
+                    q -> sorted[Math.min(n - 1, Math.max(0, (int) Math.ceil(q * n) - 1))]));
+        }
+        return rows;
     }
 }

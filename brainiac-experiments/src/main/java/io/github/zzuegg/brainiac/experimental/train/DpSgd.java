@@ -142,32 +142,74 @@ public final class DpSgd {
             Var l = loss.compute(model.forward(Var.of(x), true), y);
             List<Var> grads = Var.gradients(l, params, false);
             float[][] g = new float[params.size()][];
-            double norm = 0;
             for (int p = 0; p < g.length; p++) {
                 g[p] = grads.get(p).value().to(DType.FLOAT32).toArray();
-                for (float v : g[p]) {
-                    norm += v * (double) v;
-                }
             }
-            double scale = Math.min(1, clipNorm / Math.max(Math.sqrt(norm), 1e-12));
+            clipPerExample(g, clipNorm);
             for (int p = 0; p < g.length; p++) {
                 for (int j = 0; j < g[p].length; j++) {
-                    sum[p][j] += (float) (g[p][j] * scale);
+                    sum[p][j] += g[p][j];
                 }
             }
         }
         double expected = samplingRate * data.size();
+        double[][] noisy = addNoise(sum, noiseMultiplier, clipNorm, random);
         for (int p = 0; p < params.size(); p++) {
             Var param = params.get(p);
             float[] w = param.value().to(DType.FLOAT32).toArray();
             for (int j = 0; j < w.length; j++) {
-                double noisy = sum[p][j] + random.nextGaussian() * noiseMultiplier * clipNorm;
-                w[j] -= (float) (learningRate * noisy / expected);
+                w[j] -= (float) (learningRate * noisy[p][j] / expected);
             }
             param.assign(Tensor.of(param.shape(), w, param.value().device()).to(param.value().dtype()));
         }
         accountant.step(1);
         return sampled;
+    }
+
+    /**
+     * Scales one example's gradient, in place, to global L2 norm at most {@code clipNorm} (the
+     * per-example clipping of DP-SGD); every entry becomes {@code (float) (g * scale)}.
+     *
+     * @param gradient the example's gradient, one array per parameter
+     * @param clipNorm the bound {@code C}
+     * @return the gradient's norm before clipping
+     */
+    public static double clipPerExample(float[][] gradient, double clipNorm) {
+        double norm = 0;
+        for (float[] g : gradient) {
+            for (float v : g) {
+                norm += v * (double) v;
+            }
+        }
+        norm = Math.sqrt(norm);
+        double scale = Math.min(1, clipNorm / Math.max(norm, 1e-12));
+        for (float[] g : gradient) {
+            for (int j = 0; j < g.length; j++) {
+                g[j] = (float) (g[j] * scale);
+            }
+        }
+        return norm;
+    }
+
+    /**
+     * The Gaussian mechanism on a sum of clipped gradients: {@code sum + N(0, (sigma C)^2)} per entry,
+     * drawn parameter by parameter in order.
+     *
+     * @param sum the summed clipped gradients
+     * @param sigma the noise multiplier
+     * @param clipNorm the clipping bound {@code C}; the standard deviation is {@code sigma * C}
+     * @param random the noise source
+     * @return the noisy sum, in double precision
+     */
+    public static double[][] addNoise(float[][] sum, double sigma, double clipNorm, SplittableRandom random) {
+        double[][] out = new double[sum.length][];
+        for (int p = 0; p < sum.length; p++) {
+            out[p] = new double[sum[p].length];
+            for (int j = 0; j < sum[p].length; j++) {
+                out[p][j] = sum[p][j] + random.nextGaussian() * sigma * clipNorm;
+            }
+        }
+        return out;
     }
 
     /**

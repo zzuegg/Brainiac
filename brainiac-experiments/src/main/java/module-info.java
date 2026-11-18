@@ -21,6 +21,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.boost;
     exports io.github.zzuegg.brainiac.experimental.calibrate;
     exports io.github.zzuegg.brainiac.experimental.code;
+    exports io.github.zzuegg.brainiac.experimental.codec;
     exports io.github.zzuegg.brainiac.experimental.causal;
     exports io.github.zzuegg.brainiac.experimental.combopt;
     exports io.github.zzuegg.brainiac.experimental.circuits;
@@ -50,6 +51,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.nlp;
     exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
+    exports io.github.zzuegg.brainiac.experimental.online;
     exports io.github.zzuegg.brainiac.experimental.ood;
     exports io.github.zzuegg.brainiac.experimental.panel;
     exports io.github.zzuegg.brainiac.experimental.parallel;
@@ -87,6 +89,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.causal;
     exports io.github.zzuegg.brainiac.experiments.classic;
     exports io.github.zzuegg.brainiac.experiments.code;
+    exports io.github.zzuegg.brainiac.experiments.coding;
     exports io.github.zzuegg.brainiac.experiments.combinatorial;
     exports io.github.zzuegg.brainiac.experiments.compression;
     exports io.github.zzuegg.brainiac.experiments.context;
