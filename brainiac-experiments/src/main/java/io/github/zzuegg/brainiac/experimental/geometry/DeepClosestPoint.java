@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experimental.geometry;
 
+import io.github.zzuegg.brainiac.autograd.Decompositions;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.vision.EdgeConv;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -22,8 +23,21 @@ import java.util.SplittableRandom;
  * differentiable with plain autograd ops (in place of DCP's SVD backward). Trained on the
  * rotation and translation errors, it works from large initial rotations where ICP fails;
  * ICP then polishes its estimate.
+ *
+ * <p>{@link Procrustes#SVD} (wave 13, 13.4.17) replaces the power iteration with DCP's own
+ * weighted Kabsch step through core {@link Decompositions#svd}: for {@code S = U Sigma V^T},
+ * {@code R = V diag(1, 1, det(V U^T)) U^T}, with exact SVD gradients. The default stays the power
+ * iteration.
  */
 public final class DeepClosestPoint {
+
+    /** How the rotation is solved from the weighted cross-covariance. */
+    public enum Procrustes {
+        /** Horn's quaternion method by shifted power iteration (wave 12). */
+        HORN_POWER_ITERATION,
+        /** Kabsch through the differentiable SVD with the reflection correction. */
+        SVD
+    }
 
     private final EdgeConv first;
     private final EdgeConv second;
@@ -31,6 +45,18 @@ public final class DeepClosestPoint {
     private final Var wk;
     private final Var wv;
     private final int width;
+    private final Procrustes procrustes;
+
+    /**
+     * Creates an untrained network with the power-iteration Procrustes step.
+     *
+     * @param width the embedding width
+     * @param k the EdgeConv neighbourhood size
+     * @param seed the seed
+     */
+    public DeepClosestPoint(int width, int k, long seed) {
+        this(width, k, seed, Procrustes.HORN_POWER_ITERATION);
+    }
 
     /**
      * Creates an untrained network.
@@ -38,8 +64,10 @@ public final class DeepClosestPoint {
      * @param width the embedding width
      * @param k the EdgeConv neighbourhood size
      * @param seed the seed
+     * @param procrustes the rotation solver
      */
-    public DeepClosestPoint(int width, int k, long seed) {
+    public DeepClosestPoint(int width, int k, long seed, Procrustes procrustes) {
+        this.procrustes = procrustes;
         SplittableRandom r = new SplittableRandom(seed);
         this.first = new EdgeConv(3, width, k, r);
         this.second = new EdgeConv(width, width, k, r);
@@ -95,10 +123,38 @@ public final class DeepClosestPoint {
         Var xc = source.sub(xm);
         Var yc = corr.sub(ym);
         Var s = xc.permute(0, 2, 1).matmul(yc);
-        Var rot = horn(s);
+        Var rot = procrustes == Procrustes.SVD ? kabsch(s) : horn(s);
         int b = source.shape().dim(0);
         Var t = ym.reshape(b, 3).sub(rot.matmul(xm.reshape(b, 3, 1)).reshape(b, 3));
         return new Var[] {rot, t};
+    }
+
+    /** Kabsch: the rotation maximising {@code sum y_i^T R x_i} for {@code S = sum x y^T}, by SVD. */
+    static Var kabsch(Var s) {
+        int b = s.shape().dim(0);
+        Var[] usv = Decompositions.svd(s);
+        Var v = usv[2].permute(0, 2, 1);
+        Var ut = usv[0].permute(0, 2, 1);
+        float[] vv = v.value().toArray();
+        float[] uu = ut.value().toArray();
+        float[] d = new float[b * 9];
+        for (int i = 0; i < b; i++) {
+            double[][] m = new double[3][3];
+            for (int r = 0; r < 3; r++) {
+                for (int c = 0; c < 3; c++) {
+                    for (int k = 0; k < 3; k++) {
+                        m[r][c] += vv[i * 9 + r * 3 + k] * uu[i * 9 + k * 3 + c];
+                    }
+                }
+            }
+            double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+            d[i * 9] = 1;
+            d[i * 9 + 4] = 1;
+            d[i * 9 + 8] = det < 0 ? -1 : 1;
+        }
+        return v.matmul(Var.of(Tensor.of(Shape.of(b, 3, 3), d))).matmul(ut);
     }
 
     private static Var e(Var s, int i, int j) {

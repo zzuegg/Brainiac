@@ -336,6 +336,59 @@ public final class MultiViewGeometry {
         return rows;
     }
 
+    /**
+     * Deep Closest Point with its two Procrustes solvers at the same budget (wave 13, 13.4.17):
+     * wave 12's Horn power iteration against the Kabsch step through core
+     * {@code Decompositions.svd}, alone and polished by ICP, on the {@link #registration} task.
+     *
+     * @param angles the initial rotation angles
+     * @param trials pairs per angle
+     * @param points points per cloud
+     * @param trainSteps training steps for each DCP
+     * @param seed the seed
+     * @return rows
+     */
+    public static List<RegistrationRow> registrationSvd(double[] angles, int trials, int points, int trainSteps,
+            long seed) {
+        DeepClosestPoint.Procrustes[] solvers = DeepClosestPoint.Procrustes.values();
+        DeepClosestPoint[] models = new DeepClosestPoint[solvers.length];
+        for (int s = 0; s < solvers.length; s++) {
+            SplittableRandom tr = new SplittableRandom(seed + 1);
+            models[s] = new DeepClosestPoint(24, 8, seed + 2, solvers[s]);
+            models[s].fit(() -> {
+                GeometryScenes.CloudPair p = GeometryScenes.cloudPair(points, 90 * tr.nextDouble(), 0.01, 1.0, tr);
+                return new double[][][] {p.source(), p.target(), p.rotation(), {p.translation()}};
+            }, trainSteps, 8, 3e-3f);
+        }
+        SplittableRandom r = new SplittableRandom(seed);
+        List<RegistrationRow> rows = new ArrayList<>();
+        for (double angle : angles) {
+            double[][] errs = new double[2 * solvers.length][trials];
+            for (int t = 0; t < trials; t++) {
+                GeometryScenes.CloudPair p = GeometryScenes.cloudPair(points, angle, 0.01, 1.0, r);
+                for (int s = 0; s < solvers.length; s++) {
+                    double[][] d = models[s].estimate(p.source(), p.target());
+                    double[][] rot = rotationOf(d);
+                    errs[2 * s][t] = GeometryLinalg.angleDegrees(rot, p.rotation());
+                    errs[2 * s + 1][t] = GeometryLinalg.angleDegrees(PointRegistration.register(p.source(),
+                            p.target(), PointRegistration.Method.ICP_POINT, rot, d[3], 50, 1).rotation(),
+                            p.rotation());
+                }
+            }
+            for (int m = 0; m < errs.length; m++) {
+                int ok = 0;
+                for (double e : errs[m]) {
+                    ok += e < 5 ? 1 : 0;
+                }
+                double[] sorted = errs[m].clone();
+                Arrays.sort(sorted);
+                String name = "DCP (" + solvers[m / 2] + ")" + (m % 2 == 1 ? " + ICP" : "");
+                rows.add(new RegistrationRow(angle, name, ok / (double) trials, sorted[trials / 2]));
+            }
+        }
+        return rows;
+    }
+
     private static double[] centroidShift(double[][] src, double[][] tgt) {
         double[] a = new double[3];
         for (double[] p : src) {
