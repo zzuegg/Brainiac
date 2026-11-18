@@ -81,6 +81,17 @@ public interface ChatProvider {
     ChatResult chat(ChatRequest request, ChatListener listener) throws IOException, InterruptedException;
 
     /**
+     * Returns whether this provider runs image and speech models on a machine of the user's:
+     * this PC or a worker host. Such models are drawn with step by step, speak and write down
+     * recordings through {@link #draw}, {@link #speak} and {@link #transcribe}.
+     *
+     * @return whether it does
+     */
+    default boolean runsMedia() {
+        return false;
+    }
+
+    /**
      * Returns whether {@link #video} works here: listed video models of other providers (such
      * as a cloud's) are shown but cannot make clips through the studio yet.
      *
@@ -106,5 +117,68 @@ public interface ChatProvider {
     default LocalVideos.Clip video(String model, String prompt, LocalVideos.Settings settings,
             LocalVideos.Listener listener) throws IOException, InterruptedException {
         throw new IOException(name() + " does not make videos");
+    }
+
+    /**
+     * Draws pictures with one of this provider's image models.
+     *
+     * @param model the model's id
+     * @param prompt what to draw
+     * @param settings size, steps, guidance, seed and sampler
+     * @param listener hears each step and can stop the drawing
+     * @return the pictures with their seeds
+     * @throws IOException if it has no such model or the drawing fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    default List<LocalImages.Picture> draw(String model, String prompt, LocalImages.Settings settings,
+            LocalImages.Listener listener) throws IOException, InterruptedException {
+        throw new IOException(name() + " does not draw pictures");
+    }
+
+    /**
+     * Speaks a text with one of this provider's speech models.
+     *
+     * @param model the model's id
+     * @param text what to say
+     * @param voice the voice, or an empty string for the model's own
+     * @param speed 1 for the usual speed
+     * @param stop asked now and then whether to give up
+     * @return the audio, a WAV
+     * @throws IOException if it has no such model or the speaking fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    default Media speak(String model, String text, String voice, double speed, java.util.function.BooleanSupplier stop)
+            throws IOException, InterruptedException {
+        throw new IOException(name() + " does not speak");
+    }
+
+    /**
+     * Writes down a recording with one of this provider's transcribing models.
+     *
+     * @param model the model's id
+     * @param wav the recording, a WAV file
+     * @param listening the language and what else to do
+     * @param onSegment hears each part as it is written down
+     * @param stop asked now and then whether to give up
+     * @return what was said
+     * @throws IOException if it has no such model or the transcribing fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    default io.github.zzuegg.brainiac.audio.Transcription transcribe(String model, byte[] wav,
+            LocalSpeech.Listening listening,
+            java.util.function.Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment,
+            java.util.function.BooleanSupplier stop) throws IOException, InterruptedException {
+        throw new IOException(name() + " does not transcribe");
+    }
+
+    /**
+     * Returns the voices and other choices of one of this provider's speech models, as the page
+     * takes them.
+     *
+     * @param model the model's id
+     * @return them, or null when the model has none to tell
+     */
+    default java.util.Map<String, Object> voiceOptions(String model) {
+        return null;
     }
 }

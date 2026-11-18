@@ -33,6 +33,9 @@ import java.util.TreeSet;
  */
 public final class Generator {
 
+    /** {@code -Dbrainiac.generate.pipeline=false}: greedy decoding waits for each token before the next step. */
+    private static final boolean SERIAL = "false".equals(System.getProperty("brainiac.generate.pipeline"));
+
     private final LanguageModel model;
     private final Tokenizer tokenizer;
 
@@ -424,6 +427,22 @@ public final class Generator {
             Sampling sampling = options.sampling();
             boolean onDevice = options.constraint() == null && sampling.temperature() == 0
                     && sampling.plain() && options.logprobs() < 0;
+            if (onDevice && batch == 1 && model.readsDeviceTokens() && !SERIAL) {
+                // pipelined: the next step is queued from the chosen token still on the device
+                // while that token is read back, so the device need not wait for the host
+                Row r = rows[0];
+                Tensor ids = logits.argmax(-1);
+                for (int step = 0; ; step++) {
+                    java.util.function.Supplier<float[]> chosen = ids.toArrayLater();
+                    boolean more = step + 1 < options.maxNewTokens();
+                    Tensor following = more ? model.next(state, ids).argmax(-1) : null;
+                    if (r.add((int) chosen.get()[0], stops) || !more) {
+                        break;   // a step queued past a stop is dropped with the state
+                    }
+                    ids = following;
+                }
+                active = 0;
+            }
             for (int step = 0; active > 0; step++) {
                 float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;

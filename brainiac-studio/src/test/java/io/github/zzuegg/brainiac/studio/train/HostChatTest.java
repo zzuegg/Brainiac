@@ -38,7 +38,7 @@ class HostChatTest {
     Path lab;
 
     /** A model on the worker that answers in two pieces and remembers what it was asked. */
-    static final class Echo implements ChatProvider {
+    static class Echo implements ChatProvider {
         final List<ChatRequest> heard = new CopyOnWriteArrayList<>();
 
         @Override

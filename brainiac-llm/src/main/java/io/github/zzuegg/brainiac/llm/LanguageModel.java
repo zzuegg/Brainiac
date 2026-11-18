@@ -53,6 +53,30 @@ public interface LanguageModel {
         return Tensor.concat(1, each);
     }
 
+    /**
+     * As {@link #next(State, int[][], boolean[][])} with one new token per sequence given as a
+     * tensor of ids {@code [batch]}, such as an argmax on the device: a model that
+     * {@link #readsDeviceTokens} queues the step without reading them back first. By default
+     * they are read back.
+     *
+     * @param state what was read before; updated
+     * @param tokens {@code [batch]} token ids, whole numbers
+     * @return float32 logits {@code [batch, vocab]}
+     */
+    default Tensor next(State state, Tensor tokens) {
+        float[] ids = tokens.toArray();
+        int[][] one = new int[ids.length][1];
+        for (int b = 0; b < ids.length; b++) {
+            one[b][0] = (int) ids[b];
+        }
+        return next(state, one, null);
+    }
+
+    /** @return whether {@link #next(State, Tensor)} works without reading the tokens back */
+    default boolean readsDeviceTokens() {
+        return false;
+    }
+
     /** What a model has read so far. */
     interface State {
 

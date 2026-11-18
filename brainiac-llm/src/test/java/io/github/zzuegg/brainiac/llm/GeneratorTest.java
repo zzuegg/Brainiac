@@ -58,6 +58,40 @@ class GeneratorTest {
     }
 
     @Test
+    void pipelinedGreedyDecodingMatchesStepByStep() {
+        Llama model = letters(3);
+        Generator gen = new Generator(model, null);
+        int[] prompt = {7, 4, 11, 11, 14};
+        int[] expected = new int[20];
+        LanguageModel.State state = model.newState(1);
+        float[] logits = model.next(state, new int[][] {prompt}, null).toArray();
+        for (int i = 0; i < expected.length; i++) {
+            int best = 0;
+            for (int v = 1; v < logits.length; v++) {
+                if (logits[v] > logits[best]) {
+                    best = v;
+                }
+            }
+            expected[i] = best;
+            logits = model.next(state, new int[][] {{best}}, null).toArray();
+        }
+        state.close();
+        Generator.Output out = gen.generate(new int[][] {prompt},
+                Generator.Options.greedy(expected.length).withStopTokens(Set.of()), null).getFirst();
+        assertArrayEquals(expected, out.tokens());
+        // a stop ends the text there, with the step queued past it dropped
+        int stop = expected[9];
+        int end = 0;
+        while (expected[end] != stop) {
+            end++;
+        }
+        Generator.Output stopped = gen.generate(new int[][] {prompt},
+                Generator.Options.greedy(expected.length).withStopTokens(Set.of(stop)), null).getFirst();
+        assertArrayEquals(java.util.Arrays.copyOf(expected, end), stopped.tokens());
+        assertEquals(Generator.Finish.STOP, stopped.finish());
+    }
+
+    @Test
     void stopTokensEndOneRowAndNotTheOthers() {
         Generator gen = new Generator(letters(2), new CharacterTokenizer(LETTERS));
         int[][] prompts = {{1, 2, 3}, {4, 5}};
