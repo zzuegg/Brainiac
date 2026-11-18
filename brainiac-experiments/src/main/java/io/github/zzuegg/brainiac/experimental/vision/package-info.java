@@ -7,7 +7,10 @@
  * keypoint heads, multi-object tracking (SORT, ByteTrack) and its metrics, video prediction
  * (ConvLSTM, SimVP), neural scene fields (NeRF volume rendering, multiresolution hash
  * encoding, SIREN and signed distance fields), point-cloud networks (PointNet, EdgeConv),
- * group-equivariant convolutions and spatial transformers. Layers implement the core
+ * group-equivariant convolutions and spatial transformers, and classical vision: HOG
+ * descriptors with sliding-window linear SVMs, Viola-Jones Haar cascades, superpixels (SLIC,
+ * Felzenszwalb-Huttenlocher, watershed), graph cuts and other Potts MRF solvers, and Hough
+ * transforms. Layers implement the core
  * {@code Layer} (or {@code MultiInputLayer}) and come with a {@code LayerSpec} where they fit
  * a model builder; losses implement the core {@code Loss}.
  */
