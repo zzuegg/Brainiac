@@ -1240,6 +1240,65 @@ public final class Functional {
     }
 
     /**
+     * As {@link #routedExperts}, for inference: plain tensors, the chosen experts run at the
+     * same time, each on its own thread, and the weighted sum is taken on the host. For
+     * experts that each do little work, such as those of a large mixture decoding one token
+     * on the CPU: run one after another, every small product would spread over all cores
+     * and wait for them on its own, and cores sat idle for most of the time.
+     *
+     * @param x {@code [tokens, features]}, on the experts' device
+     * @param chosen each token's experts {@code [tokens * k]}
+     * @param weights their weights {@code [tokens * k]}
+     * @param k the experts per token
+     * @param experts expert {@code e}'s network, mapping {@code [m, features]} to
+     *     {@code [m, outFeatures]}; called from several threads at once
+     * @return {@code [tokens, outFeatures]}, float32, on {@code x}'s device
+     */
+    public static Tensor routedExpertsAtOnce(Tensor x, int[] chosen, float[] weights, int k,
+            java.util.function.IntFunction<java.util.function.UnaryOperator<Tensor>> experts) {
+        int n = x.shape().dim(0);
+        if (chosen.length != n * k || weights.length != n * k) {
+            throw new IllegalArgumentException(n + " tokens with " + k + " experts each, got " + chosen.length
+                    + " choices and " + weights.length + " weights");
+        }
+        Device device = x.device();
+        // each expert used, with the slots (token * k + j) that chose it
+        java.util.Map<Integer, List<Integer>> slots = new java.util.TreeMap<>();
+        for (int s = 0; s < chosen.length; s++) {
+            slots.computeIfAbsent(chosen[s], e -> new ArrayList<>()).add(s);
+        }
+        List<Integer> used = List.copyOf(slots.keySet());
+        float[][] outs = new float[used.size()][];
+        int[] width = new int[1];
+        java.util.stream.IntStream.range(0, used.size()).parallel().forEach(i -> {
+            List<Integer> mine = slots.get(used.get(i));
+            float[] rows = new float[mine.size()];
+            for (int r = 0; r < rows.length; r++) {
+                rows[r] = mine.get(r) / k;
+            }
+            Tensor xe = n == 1 ? x : x.gather(0, Tensor.of(Shape.of(rows.length), rows, device));
+            Tensor y = experts.apply(used.get(i)).apply(xe);
+            outs[i] = y.to(DType.FLOAT32).toArray();
+            width[0] = y.shape().dim(1);
+        });
+        int out = width[0];
+        float[] sum = new float[n * out];
+        for (int i = 0; i < used.size(); i++) {
+            List<Integer> mine = slots.get(used.get(i));
+            for (int r = 0; r < mine.size(); r++) {
+                int slot = mine.get(r);
+                float w = weights[slot];
+                int to = slot / k * out;
+                int from = r * out;
+                for (int c = 0; c < out; c++) {
+                    sum[to + c] += w * outs[i][from + c];
+                }
+            }
+        }
+        return Tensor.of(Shape.of(n, out), sum, device);
+    }
+
+    /**
      * Sampled softmax cross-entropy (Jean et al., 2015) for very large output layers, such as
      * recommendation catalogues: the logits are computed only for the rows' own classes and
      * {@code negatives} classes drawn uniformly, shared by the batch. Every row's class is a

@@ -1901,6 +1901,12 @@ public final class Llama implements LanguageModel {
     }
 
     private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep, Tensor[] hiddenOut) {
+        // logits come back as tensors: nothing here is differentiated, so no graph is kept
+        return Var.noGrad(() -> readSteps(state, tokens, padding, everyStep, hiddenOut));
+    }
+
+    private Tensor readSteps(State state, int[][] tokens, boolean[][] padding, boolean everyStep,
+            Tensor[] hiddenOut) {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
         int batch = tokens.length;
         int steps = tokens[0].length;
@@ -2424,8 +2430,36 @@ public final class Llama implements LanguageModel {
         if (split && m.sharedGate() != null) {
             shared = sharedExpert(m, flat);
         }
-        int[] chosen = Functional.chooseExperts(probs.value().toArray(),
-                m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n, count, k, groups(routing));
+        float[] p = probs.value().toArray();
+        int[] chosen = Functional.chooseExperts(p, m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n,
+                count, k, groups(routing));
+        if (split && (!Var.gradEnabled() || !flat.requiresGrad())) {
+            // inference: the chosen experts at once on their device, weighed on the host from
+            // the scores already read back
+            float[] w = new float[n * k];
+            for (int t = 0; t < n; t++) {
+                double total = 0;
+                for (int j = 0; j < k; j++) {
+                    w[t * k + j] = p[t * count + chosen[t * k + j]];
+                    total += w[t * k + j];
+                }
+                for (int j = 0; j < k; j++) {
+                    if (moe.normalize()) {
+                        w[t * k + j] = (float) (w[t * k + j] / (routing.sigmoid() ? total + 1e-20 : total));
+                    }
+                    w[t * k + j] *= routing.scale();
+                }
+            }
+            prefetch(m, chosen);
+            Tensor x = flat.value().to(home).to(DType.FLOAT32);
+            Tensor y = Functional.routedExpertsAtOnce(x, chosen, w, k, e -> xe -> apply(m.down()[e],
+                    gated(apply(m.gate()[e], xe), apply(m.up()[e], xe))));
+            Var out = Var.of(y.to(dev).to(h.dtype()));
+            if (m.sharedGate() != null) {
+                out = out.add(shared);
+            }
+            return out.reshape(s[0], s[1], hidden);
+        }
         int[] picked = new int[n * k];
         for (int i = 0; i < picked.length; i++) {
             picked[i] = i / k * count + chosen[i];
@@ -2471,6 +2505,22 @@ public final class Llama implements LanguageModel {
             return up.clamp(-limit, limit).add(1f).mul(g.mul(g.mul(1.702f).sigmoid()));
         }
         return gate.activation(config.extras().activation(), 0).mul(up);
+    }
+
+    /** As {@link #gated(Var, Var)}, on plain tensors. */
+    private Tensor gated(Tensor gate, Tensor up) {
+        float limit = config.extras().moe().swigluLimit();
+        if (limit > 0) {
+            Tensor g = gate.minimum(limit);
+            return up.clamp(-limit, limit).add(1f).mul(g.mul(g.mul(1.702f).sigmoid()));
+        }
+        return gate.activation(config.extras().activation(), 0).mul(up);
+    }
+
+    /** A projection without adapters, on plain tensors. */
+    private static Tensor apply(Linear l, Tensor x) {
+        Tensor y = x.matmul(l.weight.value());
+        return l.bias == null ? y : y.add(l.bias.value());
     }
 
     /** The shared expert's output for {@code flat}, scaled by its sigmoid gate. */
