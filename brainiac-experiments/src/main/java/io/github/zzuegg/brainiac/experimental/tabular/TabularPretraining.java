@@ -132,6 +132,27 @@ public final class TabularPretraining {
         this.headB = Model.sequential().input(hidden).dense(features).seed(seed + 2).build();
     }
 
+    private TabularPretraining(TabularPretraining source) {
+        this.objective = source.objective;
+        this.features = source.features;
+        this.hidden = source.hidden;
+        this.subsets = source.subsets;
+        this.encoder = source.encoder.copy(source.encoder.device());
+        this.headA = source.headA.copy(source.headA.device());
+        this.headB = source.headB.copy(source.headB.device());
+        this.corruptor = source.corruptor;
+    }
+
+    /**
+     * An independent copy (weights copied), so one pretrained encoder can be fine-tuned several
+     * times.
+     *
+     * @return the copy
+     */
+    public TabularPretraining copy() {
+        return new TabularPretraining(this);
+    }
+
     /**
      * Sets the corruption (by default {@link #marginal} on the pretraining rows at rate 0.4).
      *
