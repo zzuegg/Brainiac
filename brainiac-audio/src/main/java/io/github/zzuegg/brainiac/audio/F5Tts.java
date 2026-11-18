@@ -254,7 +254,9 @@ public final class F5Tts implements AutoCloseable {
 
     private static Map<String, Integer> readVocab(Path file) {
         try {
-            String text = Files.readString(file, StandardCharsets.UTF_8);
+            // one character per line; Windows line endings (as a download or git may leave) count
+            // as plain newlines, as Python's text mode reads them
+            String text = Files.readString(file, StandardCharsets.UTF_8).replace("\r\n", "\n");
             Map<String, Integer> v = new HashMap<>();
             int i = 0;
             int start = 0;

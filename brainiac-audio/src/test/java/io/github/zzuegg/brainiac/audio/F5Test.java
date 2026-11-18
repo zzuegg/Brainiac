@@ -98,6 +98,24 @@ class F5Test {
     }
 
     @Test
+    void windowsLineEndingsInTheVocabularyAreRead(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        Path f5 = WhisperTest.resource("f5");
+        try (var files = java.nio.file.Files.list(f5)) {
+            for (Path f : files.toList()) {
+                java.nio.file.Files.copy(f, tmp.resolve(f.getFileName()));
+            }
+        }
+        Path vocab = tmp.resolve("vocab.txt");
+        java.nio.file.Files.writeString(vocab, java.nio.file.Files.readString(vocab).replace("\n", "\r\n"));
+        try (F5Tts unix = F5Tts.load(f5, TestDevice.get(), DType.FLOAT32);
+                F5Tts windows = F5Tts.load(tmp, TestDevice.get(), DType.FLOAT32)) {
+            String text = "Hello there, it's 3.14!";
+            assertEquals(java.util.Arrays.toString(unix.encode(text)), java.util.Arrays.toString(windows.encode(text)));
+            assertTrue(windows.vocab().keySet().containsAll(F5Tts.spell(text)), "all characters known");
+        }
+    }
+
+    @Test
     void aFolderOfModelsIsNotAnF5Model() {
         Path f5 = WhisperTest.resource("f5");
         assertTrue(F5Speech.isF5(f5));
