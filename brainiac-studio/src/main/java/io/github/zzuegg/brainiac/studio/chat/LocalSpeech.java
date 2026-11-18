@@ -335,9 +335,15 @@ public final class LocalSpeech {
         return Device.best();
     }
 
-    // speech models are small, and 16-bit weights are not checked for them yet, so full precision everywhere
+    // most speech models are small and checked only in full precision; Orpheus (3B, released in
+    // bfloat16) runs in bfloat16 on a GPU that has it, since it would take about 12 GB in float32
     private static DType dtype(Device d) {
         return DType.FLOAT32;
+    }
+
+    private static DType dtype(Device d, String family) {
+        return "orpheus".equals(family) && d.kind() == Device.Kind.GPU && d.supports(DType.BFLOAT16) ? DType.BFLOAT16
+                : dtype(d);
     }
 
     /**
@@ -414,7 +420,7 @@ public final class LocalSpeech {
             voice = null;
         }
         Device d = device();
-        voice = SpeechModels.textToSpeech(p, d, dtype(d));
+        voice = SpeechModels.textToSpeech(p, d, dtype(d, family(p)));
         voicePath = p;
         if (voice instanceof F5Speech f5) {
             for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
