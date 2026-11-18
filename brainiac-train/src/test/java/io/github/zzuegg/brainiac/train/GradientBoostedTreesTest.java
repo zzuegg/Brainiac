@@ -67,4 +67,45 @@ class GradientBoostedTreesTest {
                 GradientBoostedTrees.Settings.defaults().withTrees(5));
         assertEquals(2.5, m.predict(new double[] {1}), 1e-9);
     }
+
+    @Test
+    void customPoissonLossLearnsRates() {
+        GradientBoostedTrees.Loss poisson = new GradientBoostedTrees.Loss() {
+            @Override
+            public void derivatives(double[] raw, double[] y, double[] g, double[] h) {
+                for (int i = 0; i < raw.length; i++) {
+                    double rate = Math.exp(raw[i]);
+                    g[i] = rate - y[i];
+                    h[i] = rate;
+                }
+            }
+
+            @Override
+            public double base(double[] y) {
+                return Math.log(java.util.Arrays.stream(y).average().orElse(1));
+            }
+
+            @Override
+            public double link(double raw) {
+                return Math.exp(raw);
+            }
+        };
+        SplittableRandom r = new SplittableRandom(5);
+        int n = 500;
+        double[][] x = new double[n][2];
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) {
+            x[i][0] = r.nextDouble(-2, 2);
+            x[i][1] = r.nextDouble(-2, 2);
+            y[i] = Math.exp(0.8 * x[i][0]);
+        }
+        GradientBoostedTrees m = GradientBoostedTrees.fit(x, y, poisson,
+                GradientBoostedTrees.Settings.defaults().withTrees(200));
+        double worst = 0;
+        for (int i = 0; i < n; i++) {
+            worst = Math.max(worst, Math.abs(m.predict(x[i]) / y[i] - 1));
+            assertEquals(Math.log(m.predict(x[i])), m.raw(x[i]), 1e-9);
+        }
+        assertTrue(worst < 0.15, "largest relative error " + worst);
+    }
 }
