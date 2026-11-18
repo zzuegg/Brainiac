@@ -186,4 +186,21 @@ class VisionLanguageModelTest {
             assertEquals((int) want[i], got[i], "token " + i);
         }
     }
+
+    @Test
+    void qwen2VlMatchesTransformers() {
+        VisionLanguageModel qwen = VisionLanguageModel.load(LlamaTest.resource("vlm-qwen2"), LlamaTest.DEVICE,
+                DType.FLOAT32);
+        QwenVision.Patches theirs = new QwenVision.Patches(Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(48, 96),
+                expected("vlm-qwen2", "pixel_values"), LlamaTest.DEVICE), 6, 8);
+        Tensor features = qwen.qwen().features(theirs);
+        close(expected("vlm-qwen2", "features"), features, 1e-4f, "features");
+        float[] ids = expected("vlm-qwen2", "ids");
+        int[] prompt = new int[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            prompt[i] = (int) ids[i];
+        }
+        close(expected("vlm-qwen2", "logits"), Var.noGrad(() -> qwen.language().forward(new int[][] {prompt},
+                qwen.imageToken(), features, new int[][] {{3, 4}})).value(), 1e-4f, "logits");
+    }
 }

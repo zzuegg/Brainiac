@@ -32,6 +32,12 @@ for name, model in cases.items():
         model.final_logits_bias.copy_(torch.randn_like(model.final_logits_bias))
     model.eval()
     model.save_pretrained(name)
+    if name == "bart":
+        # as facebook/bart-large-cnn: the tied table only under the decoder's name
+        from safetensors.torch import load_file
+        w = load_file(name + "/model.safetensors")
+        w["model.decoder.embed_tokens.weight"] = w.pop("model.shared.weight")
+        save_file(w, name + "/model.safetensors", metadata={"format": "pt"})
     with torch.no_grad():
         enc = model.get_encoder()(input_ids=ids, attention_mask=mask).last_hidden_state
         logits = model(input_ids=ids, attention_mask=mask, decoder_input_ids=dec).logits
