@@ -90,6 +90,7 @@ final class AnthropicProvider extends RemoteProvider {
         body.put("model", request.model());
         body.put("max_tokens", request.maxTokens());
         body.put("stream", true);
+        // no temperature: the current API version rejects sampling parameters
         if (!request.system().isBlank()) {
             body.put("system", request.system());
         }

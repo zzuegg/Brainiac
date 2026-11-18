@@ -97,6 +97,7 @@ public final class StudioServer implements AutoCloseable {
         new AgentRoutes(new AgentRuns(chat, new StudioTools(chat, server.training), chat.folder().resolve("agents")))
                 .register(server);
         http.start();
+        server.rentals.recover();   // machines a killed studio left renting
         return server;
     }
 

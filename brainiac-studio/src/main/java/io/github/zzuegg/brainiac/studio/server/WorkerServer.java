@@ -51,8 +51,12 @@ import java.util.zip.ZipInputStream;
  *   <li>{@code GET /worker/runs?id=<id>}, {@code POST /worker/stop {id}} and
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
  *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
- *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens}}
+ *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
  *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
+ *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
+ *       {@code downloads} folder, with its own connection; {@code GET /worker/hub/downloads} lists
+ *       the downloads and {@code POST /worker/hub/cancel {id}} stops one. Gated models use the
+ *       worker's own Hugging Face token ({@code $HF_TOKEN}); the studio never sends its token.
  * </ul>
  */
 public final class WorkerServer implements AutoCloseable {
@@ -72,6 +76,7 @@ public final class WorkerServer implements AutoCloseable {
     private final TrainingService training;
     private final Path files;
     private final ChatProvider models;
+    private final io.github.zzuegg.brainiac.studio.chat.Hub hub;
 
     private WorkerServer(HttpServer http, ExecutorService executor, String token, Path folder, ChatProvider models) {
         this.http = http;
@@ -80,6 +85,8 @@ public final class WorkerServer implements AutoCloseable {
         this.training = new TrainingService(folder);
         this.files = folder.resolve("files");
         this.models = models;
+        this.hub = new io.github.zzuegg.brainiac.studio.chat.Hub(new Keys(folder.resolve("keys.properties"), System.getenv()),
+                folder.resolve("downloads"), io.github.zzuegg.brainiac.studio.chat.Hub.BASE);
     }
 
     /**
@@ -245,6 +252,19 @@ public final class WorkerServer implements AutoCloseable {
                 Exchanges.json(ex, 200, Map.of("models", list));
             } else if (path.equals("/worker/chat") && method.equals("POST")) {
                 chat(ex, Exchanges.body(ex, 32 << 20));
+            } else if (path.equals("/worker/hub/download") && method.equals("POST")) {
+                Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+                try {
+                    Exchanges.json(ex, 200, hub.download(Json.string(body, "repo", "").strip(), Json.string(body, "option", "")));
+                } catch (IOException e) {
+                    // not there, does not run here, or does not fit on the disk: the caller's to fix
+                    answerError(ex, 400, e.getMessage());
+                }
+            } else if (path.equals("/worker/hub/downloads") && method.equals("GET")) {
+                Exchanges.json(ex, 200, Map.of("downloads", hub.downloads()));
+            } else if (path.equals("/worker/hub/cancel") && method.equals("POST")) {
+                boolean ok = hub.cancel(Json.string(Exchanges.body(ex, MAX_BODY), "id", ""));
+                Exchanges.json(ex, 200, Map.of("ok", ok));
             } else if (path.startsWith("/worker/files/")) {
                 file(ex, path.substring("/worker/files/".length()), q.getOrDefault("name", "data"));
             } else if (path.equals("/worker/runs") && method.equals("POST")) {
@@ -307,7 +327,8 @@ public final class WorkerServer implements AutoCloseable {
             model = model.substring(prefix.length());
         }
         ChatRequest request = new ChatRequest(model, Json.string(body, "system", ""), messages,
-                (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null);
+                (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null,
+                ChatRoutes.temperature(body));
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");
         ex.sendResponseHeaders(200, 0);

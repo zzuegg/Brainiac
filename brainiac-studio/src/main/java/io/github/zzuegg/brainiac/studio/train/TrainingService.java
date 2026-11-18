@@ -278,6 +278,112 @@ public final class TrainingService implements AutoCloseable {
         return out;
     }
 
+    /**
+     * Runs a saved model on one sample, so a model that was built or trained here can be tried:
+     * on a sample of a data set (which also says what the right answer is) or on values typed in.
+     *
+     * @param request {@code {model, values?: [numbers], data?: a run's data settings, index?}}; with
+     *     {@code data} and no {@code index}, a sample is picked at random
+     * @return {@code {input, output, best, label?, expected?, expectedLabel?, index?, samples?}}:
+     *     {@code best} is the position of the largest output, {@code label} its class name when the
+     *     data has classes
+     * @throws IOException if the model or the data cannot be read
+     */
+    public Map<String, Object> predict(Map<String, Object> request) throws IOException {
+        Model model = Model.load(modelFile(request), Device.cpu());
+        Map<String, Object> out = new LinkedHashMap<>();
+        float[] input;
+        float[] target = null;
+        List<String> classes = List.of();
+        if (request.get("data") != null) {
+            Dataset d = data.load(Json.object(request.get("data")));
+            if (d.size() == 0) {
+                throw new IllegalArgumentException("the data has no samples");
+            }
+            if (d.featureCount() != model.inputSize()) {
+                throw new IllegalArgumentException("each sample has " + d.featureCount() + " values, but the model takes "
+                        + model.inputSize());
+            }
+            long asked = Json.integer(request, "index", -1);
+            int index = asked < 0 ? java.util.concurrent.ThreadLocalRandom.current().nextInt(d.size())
+                    : (int) (asked % d.size());
+            input = d.featuresOf(index);
+            classes = d.classes() == null ? List.of() : d.classes();
+            target = d.targetsOf(index);
+            out.put("index", index);
+            out.put("samples", d.size());
+            out.put("expected", floats(target, 256));
+        } else {
+            List<Object> values = Json.array(request.getOrDefault("values", List.of()));
+            if (values.size() != model.inputSize()) {
+                throw new IllegalArgumentException("the model takes " + model.inputSize() + " values ("
+                        + dims(model.inputShape()) + "), and " + values.size() + " were given");
+            }
+            input = new float[values.size()];
+            for (int i = 0; i < input.length; i++) {
+                if (!(values.get(i) instanceof Number n) || !Double.isFinite(n.doubleValue())) {
+                    throw new IllegalArgumentException("value " + (i + 1) + " is not a number");
+                }
+                input[i] = n.floatValue();
+            }
+        }
+        float[] output = model.predict(input);
+        int best = largest(output);
+        if (target != null && output.length > 1) {
+            // the right class: a class number, or the 1 of a one-hot row
+            int want = target.length == 1 ? Math.round(target[0]) : target.length == output.length && oneHot(target)
+                    ? largest(target) : -1;
+            if (want >= 0 && want < output.length) {
+                out.put("expectedBest", want);
+                if (classes.size() == output.length) {
+                    out.put("expectedLabel", classes.get(want));
+                }
+            }
+        }
+        out.put("input", floats(input, 64));
+        out.put("inputSize", input.length);
+        out.put("output", floats(output, 256));
+        out.put("outputSize", output.length);
+        out.put("best", best);
+        if (classes.size() == output.length) {
+            out.put("label", classes.get(best));
+            out.put("classes", classes.size() <= 256 ? classes : classes.subList(0, 256));
+        }
+        return out;
+    }
+
+    // all zeros but a single one
+    private static boolean oneHot(float[] values) {
+        int ones = 0;
+        for (float v : values) {
+            if (v == 1f) {
+                ones++;
+            } else if (v != 0f) {
+                return false;
+            }
+        }
+        return ones == 1;
+    }
+
+    private static int largest(float[] values) {
+        int best = 0;
+        for (int i = 1; i < values.length; i++) {
+            if (values[i] > values[best]) {
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    // the first values of an array as JSON numbers; what is not a number (an overflow) is sent as null
+    private static List<Object> floats(float[] values, int most) {
+        List<Object> out = new ArrayList<>();
+        for (int i = 0; i < Math.min(values.length, most); i++) {
+            out.add(Float.isFinite(values[i]) ? (Object) (double) values[i] : null);
+        }
+        return out;
+    }
+
     /** Null if the data fits the model, otherwise why not. */
     static String fits(Dataset d, List<Object> input, List<Object> output) {
         long in = input.stream().mapToLong(v -> ((Number) v).longValue()).reduce(1, (a, b) -> a * b);

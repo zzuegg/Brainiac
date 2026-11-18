@@ -28,7 +28,7 @@ import java.util.Map;
  *       {@code "first": true} makes it the key tried first. Keys are never sent back, only their
  *       names and last four characters.
  *   <li>{@code POST /api/chat} with {@code {"model": "auto", "system": "...", "messages":
- *       [{"role": "user", "text": "..."}], "maxTokens": 4096, "key": "work"}} (the key's name is
+ *       [{"role": "user", "text": "..."}], "maxTokens": 4096, "temperature": 0.7, "key": "work"}} (the key's name is
  *       optional) answers as a server-sent event
  *       stream: {@code route} (the model chosen), then {@code text} and {@code thinking} pieces,
  *       then {@code done} or {@code error}.
@@ -466,6 +466,23 @@ final class ChatRoutes {
         Exchanges.json(ex, 200, chat.describe(false));
     }
 
+    /**
+     * Reads a request's {@code temperature}.
+     *
+     * @param body the request
+     * @return the temperature, or null when it is left to the model
+     */
+    static Float temperature(Map<String, Object> body) {
+        if (!(body.get("temperature") instanceof Number n)) {
+            return null;
+        }
+        float t = n.floatValue();
+        if (!(t >= 0 && t <= 2)) {
+            throw new Exchanges.BadRequest("temperature must be between 0 and 2");
+        }
+        return t;
+    }
+
     private void chat(HttpExchange ex) throws IOException {
         Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
         String model = Json.string(body, "model", ChatService.AUTO);
@@ -477,6 +494,7 @@ final class ChatRoutes {
             Map<String, Object> m = Json.object(o);
             messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", "")));
         }
+        Float temperature = temperature(body);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role()) || maxTokens < 1) {
             throw new Exchanges.BadRequest("send at least one message, ending with the user's, and maxTokens >= 1");
         }
@@ -489,7 +507,7 @@ final class ChatRoutes {
             Events events = new Events(out);
             long start = System.nanoTime();
             try {
-                ChatResult r = chat.chat(model, system, messages, maxTokens, key, m -> {
+                ChatResult r = chat.chat(model, system, messages, maxTokens, key, temperature, m -> {
                     Map<String, Object> route = new LinkedHashMap<>();
                     route.put("key", m.key());
                     route.put("provider", m.provider());

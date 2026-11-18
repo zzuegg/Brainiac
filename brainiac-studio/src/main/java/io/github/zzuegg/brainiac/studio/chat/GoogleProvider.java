@@ -122,6 +122,9 @@ final class GoogleProvider extends RemoteProvider {
         }
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("maxOutputTokens", request.maxTokens());
+        if (request.temperature() != null) {
+            config.put("temperature", request.temperature());
+        }
         if (request.model().startsWith("gemini-") && version(request.model()) >= 2.5) {
             config.put("thinkingConfig", Map.of("includeThoughts", true));   // summaries of its reasoning
         }
