@@ -96,7 +96,19 @@ final class AnthropicProvider extends RemoteProvider {
         }
         List<Object> messages = new ArrayList<>();
         for (ChatMessage m : request.messages()) {
-            messages.add(Map.of("role", m.role(), "content", m.text()));
+            if (m.images().isEmpty()) {
+                messages.add(Map.of("role", m.role(), "content", m.text()));
+                continue;
+            }
+            List<Object> parts = new ArrayList<>();
+            for (Media image : m.images()) {
+                parts.add(Map.of("type", "image", "source", Map.of("type", "base64", "media_type", image.mime(),
+                        "data", ChatMessage.base64(image))));
+            }
+            if (!m.text().isBlank()) {
+                parts.add(Map.of("type", "text", "text", m.text()));
+            }
+            messages.add(Map.of("role", m.role(), "content", parts));
         }
         body.put("messages", messages);
         if (listed ? adaptive.contains(request.model()) : ADAPTIVE.matcher(request.model()).matches()) {

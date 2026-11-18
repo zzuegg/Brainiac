@@ -112,8 +112,14 @@ final class GoogleProvider extends RemoteProvider {
     ChatResult chat(ChatRequest request, ChatListener listener, String key) throws IOException, InterruptedException {
         List<Object> contents = new ArrayList<>();
         for (ChatMessage m : request.messages()) {
-            contents.add(Map.of("role", m.role().equals("assistant") ? "model" : "user",
-                    "parts", List.of(Map.of("text", m.text()))));
+            List<Object> parts = new ArrayList<>();
+            for (Media image : m.images()) {
+                parts.add(Map.of("inlineData", Map.of("mimeType", image.mime(), "data", ChatMessage.base64(image))));
+            }
+            if (!m.text().isBlank() || parts.isEmpty()) {
+                parts.add(Map.of("text", m.text()));
+            }
+            contents.add(Map.of("role", m.role().equals("assistant") ? "model" : "user", "parts", parts));
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("contents", contents);

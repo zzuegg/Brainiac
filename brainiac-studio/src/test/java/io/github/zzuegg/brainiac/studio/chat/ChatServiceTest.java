@@ -108,6 +108,33 @@ class ChatServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void picturesGoToEachProviderInItsOwnFormAndNotToModelsThatCannotSee() throws Exception {
+        ChatService chat = apis.service(keys(Map.of("ANTHROPIC_API_KEY", "a", "OPENAI_API_KEY", "o",
+                "GEMINI_API_KEY", "g")), List.of(dir));
+        byte[] png = {(byte) 0x89, 'P', 'N', 'G'};
+        String b64 = java.util.Base64.getEncoder().encodeToString(png);
+        List<ChatMessage> shown = List.of(new ChatMessage("user", "What is this?", List.of(new Media(png, "image/png"))));
+
+        chat.chat("anthropic/claude-opus-5-5", "", shown, 50, null, m -> { }, new Heard());
+        Map<String, Object> a = Json.object(Json.array(Json.object(Json.parse(apis.bodies.get("a POST"))).get("messages")).getFirst());
+        List<Object> parts = Json.array(a.get("content"));
+        assertEquals(Map.of("type", "base64", "media_type", "image/png", "data", b64), Json.object(parts.get(0)).get("source"));
+        assertEquals("What is this?", Json.object(parts.get(1)).get("text"));
+
+        chat.chat("openai/gpt-5", "", shown, 50, null, m -> { }, new Heard());
+        Map<String, Object> o = Json.object(Json.array(Json.object(Json.parse(apis.bodies.get("o POST"))).get("messages")).getFirst());
+        assertEquals(Map.of("url", "data:image/png;base64," + b64), Json.object(Json.array(o.get("content")).get(1)).get("image_url"));
+
+        chat.chat("google/gemini-3-pro", "", shown, 50, null, m -> { }, new Heard());
+        Map<String, Object> g = Json.object(Json.array(Json.object(Json.parse(apis.bodies.get("g POST"))).get("contents")).getFirst());
+        assertEquals(Map.of("mimeType", "image/png", "data", b64), Json.object(Json.array(g.get("parts")).get(0)).get("inlineData"));
+
+        assertThrows(IllegalArgumentException.class, () -> new ChatMessage("assistant", "x", List.of(new Media(png, "image/png"))));
+        assertThrows(IllegalArgumentException.class, () -> new ChatMessage("user", "x", List.of(new Media(png, "application/pdf"))));
+    }
+
+    @Test
     void aTemperatureGoesOnlyToModelsThatTakeOne() throws Exception {
         ChatService chat = apis.service(keys(Map.of("ANTHROPIC_API_KEY", "a", "OPENAI_API_KEY", "o",
                 "GEMINI_API_KEY", "g")), List.of());
