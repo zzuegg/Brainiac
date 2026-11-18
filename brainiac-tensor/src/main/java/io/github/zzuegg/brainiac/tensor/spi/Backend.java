@@ -801,6 +801,39 @@ public interface Backend {
     }
 
     /**
+     * Whether {@link #latentAttention} is worth using for these sizes.
+     *
+     * @param shape {@code batch, heads, tq, tk, latent, rope}
+     * @param type the element type
+     * @return whether to use the fused kernel
+     */
+    default boolean hasLatentAttention(int[] shape, DType type) {
+        return false;
+    }
+
+    /**
+     * Multi-head latent attention over cached latents (DeepSeek), for inference, in one pass:
+     * {@code out = softmax(scale (qc c^T + qr r^T) + bias) c}, every query head reading the same
+     * single head of {@code c} and {@code r}. The bias value for batch {@code b}, head
+     * {@code h}, query {@code i} and key {@code j} is at {@code b * strides[0] + h * strides[1] +
+     * i * strides[2] + j * strides[3]}. All arrays are contiguous.
+     *
+     * @param qc the queries' latent part {@code [batch, heads, tq, latent]}
+     * @param qr the queries' rotary part {@code [batch, heads, tq, rope]}
+     * @param c the latents {@code [batch, 1, tk, latent]}
+     * @param r the rotary keys {@code [batch, 1, tk, rope]}
+     * @param shape {@code batch, heads, tq, tk, latent, rope}
+     * @param scale the score scale
+     * @param bias the score bias
+     * @param strides the bias strides
+     * @param out {@code [batch, heads, tq, latent]}
+     */
+    default void latentAttention(Storage qc, Storage qr, Storage c, Storage r, int[] shape, float scale, Storage bias,
+            long[] strides, Storage out) {
+        throw unsupported("fused latent attention");
+    }
+
+    /**
      * Whether {@link #attention(Storage, Storage, Storage, int[], float, boolean, Storage, long[], Storage, Storage)}
      * takes an additive score bias for these sizes, for inference.
      *

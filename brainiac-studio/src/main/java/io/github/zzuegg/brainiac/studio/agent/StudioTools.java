@@ -32,7 +32,7 @@ import java.util.Optional;
  * <p>Tools marked {@link Acts} change something, spend money or use the GPU; an agent running in
  * {@code ask} mode waits for the user's approval before calling them.
  */
-public final class StudioTools {
+public final class StudioTools implements RiskRefiner {
 
     /** Marks a tool that changes something, spends money or keeps the machine busy. */
     @Retention(RetentionPolicy.RUNTIME)
@@ -44,28 +44,118 @@ public final class StudioTools {
     }
 
     /**
-     * A tool with whether it acts.
+     * A tool with its risk.
      *
      * @param tool the tool
-     * @param acts what it does if it acts, else null
+     * @param acts what it does if it does more than read, else null
+     * @param risk the tier of its calls
+     * @param medium the kind of task whose model decides whether a call costs money, or null
+     * @param untrusted whether its results come from outside
+     * @param resultChars the most characters of a result the model sees, or 0 for the default
+     * @param media whether it makes media that count toward a run's budget
+     * @param refiner decides a call's tier from its arguments, or null
      */
-    public record Entry(Agent.Tool tool, String acts) {
+    public record Entry(Agent.Tool tool, String acts, Risk risk, String medium, boolean untrusted, int resultChars,
+            boolean media, RiskRefiner refiner) {
+
+        /**
+         * A tool that acts as {@link Risk#COMPUTE} if it acts at all.
+         *
+         * @param tool the tool
+         * @param acts what it does if it acts, else null
+         */
+        public Entry(Agent.Tool tool, String acts) {
+            this(tool, acts, acts == null ? Risk.READ : Risk.COMPUTE, null, false, 0, false, null);
+        }
+
+        /**
+         * The tier of one call.
+         *
+         * @param arguments its arguments
+         * @param paid says whether a model key ({@code auto} too) for a medium costs money
+         * @return the tier
+         */
+        public Risk risk(Map<String, Object> arguments, java.util.function.BiPredicate<String, String> paid) {
+            Risk r = refiner == null ? risk : refiner.refine(tool.name(), arguments, risk);
+            if (medium != null && paid != null) {
+                Object model = arguments == null ? null : arguments.get("model");
+                if (paid.test(model == null ? ChatService.AUTO : String.valueOf(model), medium)) {
+                    r = r.max(Risk.SPEND);
+                }
+            }
+            return r;
+        }
 
         /**
          * Describes it for the page and for API callers.
          *
-         * @return {@code {name, description, parameters, acts?}}
+         * @return {@code {name, description, parameters, risk, acts?}}
          */
         public Map<String, Object> toJson() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("name", tool.name());
             m.put("description", tool.description());
             m.put("parameters", tool.parameters());
+            m.put("risk", risk.key());
             if (acts != null) {
                 m.put("acts", acts);
             }
+            if (medium != null) {
+                m.put("medium", medium);
+            }
+            if (untrusted) {
+                m.put("untrusted", true);
+            }
             return m;
         }
+
+        /**
+         * The tool as models are told about it.
+         *
+         * @return {@code {name, description, parameters}}
+         */
+        public Map<String, Object> definition() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("name", tool.name());
+            m.put("description", tool.description());
+            m.put("parameters", tool.parameters());
+            return m;
+        }
+    }
+
+    /**
+     * Reads the tools of any object whose methods are marked {@link Tools.Tool}, with their tiers
+     * from {@link Tier} or {@link Acts}.
+     *
+     * @param source the object
+     * @return its tools, ordered by name
+     */
+    public static List<Entry> entriesOf(Object source) {
+        Map<String, Method> methods = new LinkedHashMap<>();
+        for (Method m : source.getClass().getMethods()) {
+            Tools.Tool t = m.getAnnotation(Tools.Tool.class);
+            if (t != null) {
+                methods.put(t.name().isEmpty() ? m.getName() : t.name(), m);
+            }
+        }
+        RiskRefiner refiner = source instanceof RiskRefiner r ? r : null;
+        List<Entry> out = new ArrayList<>();
+        for (Agent.Tool t : Tools.from(source)) {
+            Method m = methods.get(t.name());
+            Tier tier = m == null ? null : m.getAnnotation(Tier.class);
+            Acts a = m == null ? null : m.getAnnotation(Acts.class);
+            if (tier != null) {
+                out.add(new Entry(t, tier.value() == Risk.READ ? null
+                        : tier.what().isEmpty() ? tier.value().what() : tier.what(), tier.value(),
+                        tier.medium().isEmpty() ? null : tier.medium(), tier.untrusted(), tier.resultChars(), tier.media(),
+                        refiner));
+            } else if (a != null) {
+                out.add(new Entry(t, a.value(), Risk.COMPUTE, null, false, 0, false, refiner));
+            } else {
+                out.add(new Entry(t, null, Risk.READ, null, false, 0, false, refiner));
+            }
+        }
+        return out;
     }
 
     private static final int ANSWER_TOKENS = 1024;
@@ -90,19 +180,20 @@ public final class StudioTools {
      * @return the tools
      */
     public List<Entry> entries() {
-        Map<String, String> acts = new LinkedHashMap<>();
-        for (Method m : StudioTools.class.getMethods()) {
-            Tools.Tool t = m.getAnnotation(Tools.Tool.class);
-            Acts a = m.getAnnotation(Acts.class);
-            if (t != null && a != null) {
-                acts.put(t.name().isEmpty() ? m.getName() : t.name(), a.value());
-            }
-        }
-        List<Entry> out = new ArrayList<>();
-        for (Agent.Tool t : Tools.from(this)) {
-            out.add(new Entry(t, acts.get(t.name())));
-        }
-        return out;
+        return entriesOf(this);
+    }
+
+    @Override
+    public Risk refine(String tool, Map<String, Object> arguments, Risk declared) {
+        return declared;
+    }
+
+    @Override
+    public List<Reach.Access> reach(String tool, Map<String, Object> arguments) {
+        return switch (tool) {
+            case "read_project_file", "list_project_files" -> Reach.of(arguments, false, "path");
+            default -> List.of();
+        };
     }
 
     // ---------------------------------------------------------------- models
@@ -147,7 +238,7 @@ public final class StudioTools {
      */
     @Tools.Tool(name = "ask_model", value = "Sends one question to a chat model and returns its answer. Remote models "
             + "use the user's key and may cost money.")
-    @Acts("sends a question to a model, which may use your key and cost money")
+    @Tier(value = Risk.COMPUTE, what = "sends a question to a model, which may use your key and cost money", medium = "text")
     public String askModel(@Tools.Param("a model from list_models, or 'auto'") String model,
             @Tools.Param("the question") String prompt,
             @Tools.Param("instructions for the model") Optional<String> system) {
@@ -194,7 +285,7 @@ public final class StudioTools {
      */
     @Tools.Tool(name = "draw_image", value = "Draws pictures and saves them. 'auto' uses the project's image route: "
             + "its model and runner, on this PC or a remote machine.")
-    @Acts("draws pictures, which uses the GPU or a paid provider")
+    @Tier(value = Risk.COMPUTE, what = "draws pictures, which uses the GPU or a paid provider", medium = "image", media = true)
     public Map<String, Object> drawImage(@Tools.Param("what the picture shows") String prompt,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("1:1, 4:3, 3:4, 16:9 or 9:16") Optional<String> aspect,
@@ -219,7 +310,7 @@ public final class StudioTools {
      */
     @Tools.Tool(name = "make_speech", value = "Speaks text and saves the audio. 'auto' uses the project's speech route: "
             + "its model and runner, on this PC or a remote machine.")
-    @Acts("makes audio, which uses the GPU or a paid provider")
+    @Tier(value = Risk.COMPUTE, what = "makes audio, which uses the GPU or a paid provider", medium = "speech", media = true)
     public Map<String, Object> makeSpeech(@Tools.Param("the words to say") String text,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("the voice's name, if the model has voices") Optional<String> voice) {
@@ -249,10 +340,10 @@ public final class StudioTools {
      * @return the entries
      */
     @Tools.Tool(name = "list_project_files", value = "Lists the files and folders in the project's folder, or in a "
-            + "folder inside it. Agents can only read inside their project's folder.")
-    public Map<String, Object> listProjectFiles(@Tools.Param("a folder inside the project's folder; empty for the top")
+            + "folder inside it, or a folder elsewhere, which the user's rules may make ask first.")
+    public Map<String, Object> listProjectFiles(@Tools.Param("a folder relative to the project's folder, or a full path elsewhere; empty for the top")
             Optional<String> path) {
-        Path dir = project().inFolder(path.orElse(""));
+        Path dir = Reach.file(path.orElse(""));
         if (!Files.isDirectory(dir)) {
             throw new IllegalArgumentException(path.orElse("") + " is not a folder");
         }
@@ -277,30 +368,42 @@ public final class StudioTools {
      * Reads a text file in the project's folder.
      *
      * @param path the file inside it
-     * @return the text, cut at {@value #READ_CHARS} characters
+     * @param offset the first character
+     * @param limit how many characters
+     * @return the part, with where it is in the file
      */
-    @Tools.Tool(name = "read_project_file", value = "Reads a text file in the project's folder (the first "
-            + READ_CHARS + " characters).")
-    public String readProjectFile(@Tools.Param("the file, inside the project's folder") String path) {
-        Path f = project().inFolder(path);
+    @Tools.Tool(name = "read_project_file", value = "Reads a text file in the project's folder, a part at a time: "
+            + "up to 'limit' characters (12000 if left out) from character 'offset'. The answer says how long the file "
+            + "is, so you can read on.")
+    @Tier(value = Risk.READ, resultChars = 16_000)
+    public String readProjectFile(@Tools.Param("the file, relative to the project's folder, or a full path elsewhere") String path,
+            @Tools.Param("the character to start at, 0 if left out") Optional<Integer> offset,
+            @Tools.Param("how many characters, 12000 if left out, at most 15000") Optional<Integer> limit) {
+        Path f = Reach.file(path);
         if (!Files.isRegularFile(f)) {
-            throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
+            throw new IllegalArgumentException("there is no file " + path);
         }
-        try (java.io.Reader r = Files.newBufferedReader(f, java.nio.charset.StandardCharsets.UTF_8)) {
-            char[] buf = new char[READ_CHARS];
-            int n = 0;
-            for (int k; n < buf.length && (k = r.read(buf, n, buf.length - n)) > 0; ) {
-                n += k;
+        String text;
+        try {
+            if (Files.size(f) > READ_BYTES) {
+                throw new IllegalArgumentException(path + " is over 32 MB; search it with search_files instead");
             }
-            return new String(buf, 0, n);
+            text = Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
         } catch (java.nio.charset.MalformedInputException e) {
             throw new IllegalArgumentException(path + " is not a text file");
         } catch (IOException e) {
             throw new UncheckedIOException(e.getMessage(), e);
         }
+        int from = Math.clamp(offset.orElse(0), 0, text.length());
+        int to = Math.min(text.length(), from + Math.clamp(limit.orElse(12_000), 1, 15_000));
+        if (from == 0 && to == text.length()) {
+            return text;
+        }
+        return "[characters " + from + " to " + to + " of " + text.length() + (to < text.length()
+                ? "; read on with offset " + to : "") + "]\n" + text.substring(from, to);
     }
 
-    private static final int READ_CHARS = 20_000;
+    private static final long READ_BYTES = 32L << 20;
 
     // the project the call belongs to
     private static Project project() {

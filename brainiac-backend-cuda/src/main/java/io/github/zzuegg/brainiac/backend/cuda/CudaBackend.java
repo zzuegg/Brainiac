@@ -885,6 +885,48 @@ public final class CudaBackend implements Backend {
         }
     }
 
+    /** The largest latent the latent attention kernel takes: 32 lanes times LAT_LANES in kernels.cu. */
+    static final int LATENT = 512;
+
+    @Override
+    public boolean hasLatentAttention(int[] shape, DType type) {
+        return FUSED_ATTENTION && type != DType.FLOAT64 && shape[4] <= LATENT && shape[5] <= ATTENTION_HEAD
+                && isAvailable();
+    }
+
+    @Override
+    public synchronized void latentAttention(Storage qc, Storage qr, Storage c, Storage r, int[] shape, float scale,
+            Storage bias, long[] strides, Storage out) {
+        CudaStorage z = cs(out);
+        DType t = z.dtype;
+        if (t == DType.FLOAT64 || shape[4] > LATENT || shape[5] > ATTENTION_HEAD) {
+            throw new UnsupportedOperationException("fused latent attention on " + name() + ": " + t
+                    + ", latents of " + shape[4] + " and rotary keys of " + shape[5]);
+        }
+        long rows = (long) shape[0] * shape[1] * shape[2];
+        if (rows == 0) {
+            return;
+        }
+        CudaContext cx = ctx();
+        CudaStorage xqc = as(cs(qc), t);
+        CudaStorage xqr = as(cs(qr), t);
+        CudaStorage xc = as(cs(c), t);
+        CudaStorage xr = as(cs(r), t);
+        CudaStorage xb = bias == null ? null : as(cs(bias), t);
+        cx.args().ptr(xqc.address()).ptr(xqr.address()).ptr(xc.address()).ptr(xr.address())
+                .ptr(xb == null ? 0 : xb.address()).ptr(z.address()).i32(shape[1]).i32(shape[2]).i32(shape[3])
+                .i32(shape[4]).i32(shape[5]).f32(scale).i64(rows).i32(xb == null ? 0 : 1).i64(strides[0])
+                .i64(strides[1]).i64(strides[2]).i64(strides[3]);
+        warps(cx, kernel("attention_latent", t), rows);
+        done(xqc, cs(qc));
+        done(xqr, cs(qr));
+        done(xc, cs(c));
+        done(xr, cs(r));
+        if (xb != null) {
+            done(xb, cs(bias));
+        }
+    }
+
     @Override
     public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
             Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {

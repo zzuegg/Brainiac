@@ -60,18 +60,45 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      *     another (Phi-3)
      * @param moe the mixture of experts that replaces the feed-forward network, or
      *     {@link Moe#NONE}
+     * @param mla DeepSeek's multi-head latent attention in place of grouped-query attention, or
+     *     {@link Mla#NONE}
      */
     public record Extras(boolean qkNorm, int slidingWindow, int globalEvery, double localTheta,
             ActivationOp activation, boolean scaleEmbeddings, boolean postNorms, boolean normOffset,
-            float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe) {
+            float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe, Mla mla) {
 
         /** Plain Llama. */
         public static final Extras NONE = new Extras(false, 0, 0, 0, ActivationOp.SILU, false, false, false, 0, 0, 0,
-                false, Moe.NONE);
+                false, Moe.NONE, Mla.NONE);
 
-        /** Checks the experts are there. */
+        /** Checks the experts and the latent attention are there. */
         public Extras {
             java.util.Objects.requireNonNull(moe, "moe");
+            java.util.Objects.requireNonNull(mla, "mla");
+        }
+
+        /**
+         * The extras without latent attention, as the families before DeepSeek had them.
+         *
+         * @param qkNorm whether queries and keys are RMS-normalized per head
+         * @param slidingWindow the window of local layers, or 0
+         * @param globalEvery with a window, every this many layers one sees everything
+         * @param localTheta the rotary base of local layers, or 0
+         * @param activation the gate's activation
+         * @param scaleEmbeddings whether embeddings are multiplied by {@code sqrt(hidden)}
+         * @param postNorms whether sublayer outputs are normalized again
+         * @param normOffset whether files store norm weights less one
+         * @param attentionSoftcap the attention score cap, or 0
+         * @param finalSoftcap the logit cap, or 0
+         * @param queryScale the attention score scale, or 0 for the default
+         * @param fused whether q, k and v (and gate and up) are joined in the weights
+         * @param moe the mixture of experts, or {@link Moe#NONE}
+         */
+        public Extras(boolean qkNorm, int slidingWindow, int globalEvery, double localTheta,
+                ActivationOp activation, boolean scaleEmbeddings, boolean postNorms, boolean normOffset,
+                float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe) {
+            this(qkNorm, slidingWindow, globalEvery, localTheta, activation, scaleEmbeddings, postNorms, normOffset,
+                    attentionSoftcap, finalSoftcap, queryScale, fused, moe, Mla.NONE);
         }
 
         /**
@@ -84,34 +111,117 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
     }
 
     /**
-     * A sparse mixture of experts in every block (Mixtral, Qwen 2 and 3 MoE): a router picks
+     * A sparse mixture of experts (Mixtral, Qwen 2 and 3 MoE, DeepSeek): a router picks
      * {@code perToken} of {@code experts} gated feed-forward networks for each token, whose
-     * outputs are summed by the router's softmax weights.
+     * outputs are summed by the router's weights.
      *
      * @param experts the experts per block, or 0 for a dense feed-forward network
      * @param perToken the experts each token uses
      * @param ffn each expert's hidden size
      * @param normalize whether the chosen experts' weights are scaled to sum to one (Mixtral,
-     *     Qwen 3) or kept as the softmax gave them (Qwen 2)
-     * @param sharedFfn the hidden size of an expert every token uses, gated by a sigmoid
-     *     (Qwen 2), or 0 for none
+     *     Qwen 3, DeepSeek-V3) or kept as the router gave them (Qwen 2, DeepSeek-V2)
+     * @param sharedFfn the hidden size of the expert every token uses (DeepSeek: all its shared
+     *     experts as one), or 0 for none
+     * @param routing how the router scores and picks experts
      */
-    public record Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn) {
+    public record Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn, Routing routing) {
 
         /** No experts. */
         public static final Moe NONE = new Moe(0, 0, 0, false, 0);
 
         /** Checks the sizes. */
         public Moe {
+            java.util.Objects.requireNonNull(routing, "routing");
             if (experts < 0 || experts > 0 && (perToken < 1 || perToken > experts || ffn < 1)) {
                 throw new IllegalArgumentException("bad mixture of experts: " + perToken + " of " + experts
                         + " experts of " + ffn);
             }
+            if (experts > 0 && (routing.groups() < 1 || experts % routing.groups() != 0 || routing.topGroups() < 1
+                    || routing.topGroups() > routing.groups()
+                    || routing.topGroups() * (experts / routing.groups()) < perToken)) {
+                throw new IllegalArgumentException("bad expert groups: " + routing.topGroups() + " of "
+                        + routing.groups() + " groups of " + experts + " experts, " + perToken + " per token");
+            }
+        }
+
+        /**
+         * Experts routed by a softmax, as Mixtral and Qwen route them.
+         *
+         * @param experts the experts per block, or 0
+         * @param perToken the experts each token uses
+         * @param ffn each expert's hidden size
+         * @param normalize whether the chosen weights are scaled to sum to one
+         * @param sharedFfn the hidden size of a shared expert gated by a sigmoid (Qwen 2), or 0
+         */
+        public Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn) {
+            this(experts, perToken, ffn, normalize, sharedFfn, Routing.SOFTMAX);
         }
 
         /** @return whether there are experts */
         public boolean present() {
             return experts > 0;
+        }
+
+        /**
+         * @param layer a block
+         * @return whether it has experts rather than a dense feed-forward network
+         */
+        public boolean in(int layer) {
+            return experts > 0 && layer >= routing.denseLayers();
+        }
+    }
+
+    /**
+     * How a router picks experts. Mixtral and Qwen take the largest softmax weights. DeepSeek
+     * adds groups: the experts are split in {@code groups} groups and a token picks only among
+     * those of its {@code topGroups} best groups (V2 ranks a group by its best softmax weight,
+     * V3 by the sum of its two best biased sigmoid scores); V3 also picks by the sigmoid scores
+     * plus a per-expert bias learned for balance, weighting by the scores without it.
+     *
+     * @param sigmoid whether experts are scored by a sigmoid each (DeepSeek-V3, Kimi K2) rather
+     *     than a softmax over all
+     * @param groups the expert groups, 1 for none
+     * @param topGroups the groups each token picks from
+     * @param scale the factor on the chosen weights (after normalizing, if they are)
+     * @param denseLayers the leading blocks with a dense feed-forward network instead
+     * @param sharedGated whether the shared expert is gated by a sigmoid of its own (Qwen 2)
+     *     or always added (DeepSeek)
+     */
+    public record Routing(boolean sigmoid, int groups, int topGroups, float scale, int denseLayers,
+            boolean sharedGated) {
+
+        /** Mixtral's and Qwen's: softmax, no groups, every block. */
+        public static final Routing SOFTMAX = new Routing(false, 1, 1, 1, 0, true);
+    }
+
+    /**
+     * DeepSeek's multi-head latent attention (DeepSeek-V2, V3, Kimi K2): keys and values come
+     * from one small latent vector per token, which is all the cache keeps, plus a few rotary
+     * features every head shares. Queries come from the hidden state, through a latent of their
+     * own when {@code qRank > 0}. The configuration's {@code headDim} is then {@code nope + rope},
+     * the size of a query and a key; values have {@code valueDim} features per head.
+     *
+     * @param qRank the query latent's size, or 0 for a direct projection (V2-Lite)
+     * @param kvRank the key and value latent's size, 0 for no latent attention
+     * @param nope the features of each query and key head that are not rotated
+     * @param rope the rotated features, the configuration's rotary dimension
+     * @param valueDim the features of each value head
+     * @param interleaved whether the rotated features pair up as neighbours ({@code x0, x1}),
+     *     as DeepSeek's weights hold them, rather than as halves
+     */
+    public record Mla(int qRank, int kvRank, int nope, int rope, int valueDim, boolean interleaved) {
+
+        /** No latent attention. */
+        public static final Mla NONE = new Mla(0, 0, 0, 0, 0, false);
+
+        /** @return whether the model has latent attention */
+        public boolean present() {
+            return kvRank > 0;
+        }
+
+        /** @return the features of a cached step: the latent and the shared rotary key */
+        public int cached() {
+            return kvRank + rope;
         }
     }
 
@@ -171,11 +281,21 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      * weights {@link Llama} loads from a model folder.
      */
     public static final java.util.Set<String> MODEL_TYPES = java.util.Set.of("llama", "mistral", "qwen2", "qwen3",
-            "phi3", "gemma", "gemma2", "gemma3_text", "mixtral", "qwen2_moe", "qwen3_moe");
+            "phi3", "gemma", "gemma2", "gemma3_text", "mixtral", "qwen2_moe", "qwen3_moe", "deepseek_v2", "deepseek_v3",
+            "kimi_k2");
 
     /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
     public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2", "qwen3", "phi3",
-            "gemma", "gemma2", "gemma3", "qwen2moe", "qwen3moe");
+            "gemma", "gemma2", "gemma3", "qwen2moe", "qwen3moe", "deepseek2");
+
+    private static boolean deepseek(String type) {
+        return type.equals("deepseek_v2") || type.equals("deepseek_v3") || type.equals("kimi_k2");
+    }
+
+    /** YaRN's attention scaling for a context {@code scale} times the original. */
+    private static double yarnMscale(double scale, double mscale) {
+        return scale <= 1 ? 1 : 0.1 * mscale * Math.log(scale) + 1;
+    }
 
     /**
      * Reads a Hugging Face {@code config.json} (transformers 4 or 5 layout) of Llama, Mistral,
@@ -186,6 +306,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      */
     public static LlamaConfig fromHuggingFace(Map<String, Object> config) {
         String type = Json.string(config, "model_type", "llama");
+        if (deepseek(type)) {
+            return deepseekFromHuggingFace(config, type);
+        }
         int hidden = (int) Json.integer(config, "hidden_size");
         int heads = (int) Json.integer(config, "num_attention_heads");
         int headDim = (int) Json.integer(config, "head_dim", hidden / heads);
@@ -266,6 +389,72 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
                 (float) Json.number(config, "rms_norm_eps", 1e-6), rope, tied, bias, maxPositions, extras);
     }
 
+    /**
+     * DeepSeek-V2 and V3 and Kimi K2 ({@code DeepseekV2ForCausalLM}, {@code DeepseekV3ForCausalLM}):
+     * latent attention, experts after {@code first_k_dense_replace} dense blocks, YaRN.
+     */
+    private static LlamaConfig deepseekFromHuggingFace(Map<String, Object> config, String type) {
+        boolean v2 = type.equals("deepseek_v2");
+        int hidden = (int) Json.integer(config, "hidden_size");
+        int heads = (int) Json.integer(config, "num_attention_heads");
+        int layers = (int) Json.integer(config, "num_hidden_layers");
+        int nope = (int) Json.integer(config, "qk_nope_head_dim");
+        int ropeDim = (int) Json.integer(config, "qk_rope_head_dim");
+        int qRank = config.get("q_lora_rank") instanceof Number n ? n.intValue() : 0;
+        Mla mla = new Mla(qRank, (int) Json.integer(config, "kv_lora_rank"), nope, ropeDim,
+                (int) Json.integer(config, "v_head_dim"), v2 || !Boolean.FALSE.equals(config.get("rope_interleave")));
+        int maxPositions = (int) Json.integer(config, "max_position_embeddings", 4096);
+        Map<String, Object> ropeNode = config.get("rope_parameters") instanceof Map<?, ?> m
+                ? Json.object(m) : config.get("rope_scaling") instanceof Map<?, ?> m2 ? Json.object(m2) : Map.of();
+        double theta = Json.number(ropeNode, "rope_theta", Json.number(config, "rope_theta", 10000));
+        String ropeType = Json.string(ropeNode, "rope_type", Json.string(ropeNode, "type", "default"));
+        double factor = Json.number(ropeNode, "factor", 1);
+        int original = (int) Json.integer(ropeNode, "original_max_position_embeddings", maxPositions);
+        // as DeepSeek: with mscale and mscale_all_dim, cos and sin are scaled by their ratio
+        // (1 when equal, as in every release) and the scores by mscale_all_dim's squared
+        double mscale = Json.number(ropeNode, "mscale", 0);
+        double mscaleAll = Json.number(ropeNode, "mscale_all_dim", 0);
+        double attentionFactor = Json.number(ropeNode, "attention_factor", 0);
+        if (attentionFactor == 0 && mscale != 0 && mscaleAll != 0) {
+            attentionFactor = yarnMscale(factor, mscale) / yarnMscale(factor, mscaleAll);
+        }
+        double queryScale = 1 / Math.sqrt(nope + ropeDim);
+        if (!ropeType.equals("default") && mscaleAll != 0) {
+            double s = yarnMscale(factor, mscaleAll);
+            queryScale *= s * s;
+        }
+        Rope.Settings rope = new Rope.Settings(ropeDim, theta, ropeType, factor, 1, 4, original, null)
+                .withYarn(Json.number(ropeNode, "beta_fast", 32), Json.number(ropeNode, "beta_slow", 1),
+                        attentionFactor);
+        Moe moe = Moe.NONE;
+        if (config.get("n_routed_experts") instanceof Number experts && experts.intValue() > 0) {
+            if (Json.integer(config, "moe_layer_freq", 1) != 1) {
+                throw new IllegalArgumentException("experts in every " + config.get("moe_layer_freq")
+                        + "th block only are not supported");
+            }
+            String method = Json.string(config, "topk_method", v2 ? "greedy" : "noaux_tc");
+            boolean sigmoid = Json.string(config, "scoring_func", v2 ? "softmax" : "sigmoid").equals("sigmoid");
+            if (!List.of("greedy", "group_limited_greedy", "noaux_tc").contains(method)) {
+                throw new IllegalArgumentException("topk_method " + method + " is not supported");
+            }
+            boolean grouped = !method.equals("greedy") && config.get("n_group") instanceof Number;
+            int groups = grouped ? (int) Json.integer(config, "n_group") : 1;
+            int topGroups = grouped ? (int) Json.integer(config, "topk_group", groups) : 1;
+            int ffn = (int) Json.integer(config, "moe_intermediate_size");
+            moe = new Moe(experts.intValue(), (int) Json.integer(config, "num_experts_per_tok"), ffn,
+                    Boolean.TRUE.equals(config.get("norm_topk_prob")),
+                    ffn * (int) Json.integer(config, "n_shared_experts", 0),
+                    new Routing(sigmoid, groups, topGroups, (float) Json.number(config, "routed_scaling_factor", 1),
+                            Math.min(layers, (int) Json.integer(config, "first_k_dense_replace", 0)), false));
+        }
+        Extras extras = new Extras(false, 0, 0, 0, ActivationOp.SILU, false, false, false, 0, 0, (float) queryScale,
+                false, moe, mla);
+        return new LlamaConfig(type, (int) Json.integer(config, "vocab_size"), hidden,
+                (int) Json.integer(config, "intermediate_size"), layers, heads, heads, nope + ropeDim,
+                (float) Json.number(config, "rms_norm_eps", 1e-6), rope,
+                Boolean.TRUE.equals(config.get("tie_word_embeddings")), false, maxPositions, extras);
+    }
+
     private static Moe moe(Map<String, Object> config, String type) {
         long experts = Json.integer(config, "num_local_experts", Json.integer(config, "num_experts", 0));
         if (experts == 0) {
@@ -326,6 +515,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         if (!GGUF_ARCHITECTURES.contains(a)) {
             throw new IllegalArgumentException("GGUF architecture " + a + " is not supported; "
                     + new java.util.TreeSet<>(GGUF_ARCHITECTURES) + " are");
+        }
+        if (a.equals("deepseek2")) {
+            return deepseekFromGguf(gguf, m);
         }
         int hidden = (int) number(m, a + ".embedding_length", -1);
         int heads = (int) number(m, a + ".attention.head_count", -1);
@@ -391,6 +583,64 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
                 extras);
     }
 
+    /**
+     * llama.cpp's {@code deepseek2} (DeepSeek-V2, V3, R1, Kimi K2). Newer files keep the query
+     * and key sizes of the latent attention under {@code key_length_mla} and {@code
+     * value_length_mla}, the plain {@code key_length} then being the latent's.
+     */
+    private static LlamaConfig deepseekFromGguf(Gguf gguf, Map<String, Object> m) {
+        String a = "deepseek2";
+        int hidden = (int) number(m, a + ".embedding_length", -1);
+        int heads = (int) number(m, a + ".attention.head_count", -1);
+        int layers = (int) number(m, a + ".block_count", -1);
+        int ropeDim = (int) number(m, a + ".rope.dimension_count", -1);
+        int kvRank = (int) number(m, a + ".attention.kv_lora_rank", -1);
+        boolean split = m.containsKey(a + ".attention.key_length_mla");
+        int qk = (int) number(m, a + (split ? ".attention.key_length_mla" : ".attention.key_length"), -1);
+        int valueDim = (int) number(m, a + (split ? ".attention.value_length_mla" : ".attention.value_length"), -1);
+        Mla mla = new Mla((int) number(m, a + ".attention.q_lora_rank", 0), kvRank, qk - ropeDim, ropeDim, valueDim,
+                true);
+        int vocab = m.get(a + ".vocab_size") instanceof Number v ? v.intValue()
+                : m.get("tokenizer.ggml.tokens") instanceof List<?> t ? t.size()
+                : gguf.shape("token_embd.weight").dim(0);
+        int context = (int) number(m, a + ".context_length", 4096);
+        String scaling = m.get(a + ".rope.scaling.type") instanceof String s ? s : "default";
+        double factor = number(m, a + ".rope.scaling.factor", 1);
+        double queryScale = 1 / Math.sqrt(qk);
+        double logMul = number(m, a + ".rope.scaling.yarn_log_multiplier", 0);
+        if (scaling.equals("yarn") && factor > 1 && logMul > 0) {
+            // 0.1 mscale_all_dim, as llama.cpp's converter writes it for DeepSeek
+            double s = 1 + logMul * Math.log(factor);
+            queryScale *= s * s;
+        }
+        Rope.Settings rope = new Rope.Settings(ropeDim, number(m, a + ".rope.freq_base", 10000),
+                scaling.equals("none") ? "default" : scaling, factor, 1, 4,
+                (int) number(m, a + ".rope.scaling.original_context_length", context), null)
+                .withYarn(number(m, a + ".rope.scaling.yarn_beta_fast", 32),
+                        number(m, a + ".rope.scaling.yarn_beta_slow", 1), scaling.equals("yarn") ? 1 : 0);
+        Moe moe = Moe.NONE;
+        int dense = (int) number(m, a + ".leading_dense_block_count", 0);
+        if (m.get(a + ".expert_count") instanceof Number count && count.intValue() > 0 && dense < layers) {
+            int ffn = (int) number(m, a + ".expert_feed_forward_length", -1);
+            int gating = (int) number(m, a + ".expert_gating_func", 1);
+            if (gating != 1 && gating != 2) {
+                throw new IllegalArgumentException("expert gating function " + gating + " is not supported");
+            }
+            int groups = (int) number(m, a + ".expert_group_count", 1);
+            moe = new Moe(count.intValue(), (int) number(m, a + ".expert_used_count", -1), ffn,
+                    Boolean.TRUE.equals(m.get(a + ".expert_weights_norm")),
+                    ffn * (int) number(m, a + ".expert_shared_count", 0),
+                    new Routing(gating == 2, Math.max(groups, 1),
+                            Math.max(1, (int) number(m, a + ".expert_group_used_count", groups)),
+                            (float) number(m, a + ".expert_weights_scale", 1), dense, false));
+        }
+        Extras extras = new Extras(false, 0, 0, 0, ActivationOp.SILU, false, false, false, 0, 0, (float) queryScale,
+                false, moe, mla);
+        return new LlamaConfig("deepseek_v3", vocab, hidden, (int) number(m, a + ".feed_forward_length", -1), layers,
+                heads, heads, qk, (float) number(m, a + ".attention.layer_norm_rms_epsilon", 1e-6), rope,
+                !gguf.contains("output.weight"), false, context, extras);
+    }
+
     private static double number(Map<String, Object> m, String key, double otherwise) {
         Object v = m.get(key);
         if (v instanceof Number n) {
@@ -408,6 +658,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      * @return the JSON object
      */
     public Map<String, Object> toHuggingFace() {
+        if (extras.mla().present()) {
+            return deepseekToHuggingFace();
+        }
         Map<String, Object> c = new LinkedHashMap<>();
         c.put("architectures", List.of(switch (architecture) {
             case "mistral" -> "MistralForCausalLM";
@@ -506,6 +759,69 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         if (gemma(architecture)) {
             c.put("attn_logit_softcapping", e.attentionSoftcap() > 0 ? (Object) (double) e.attentionSoftcap() : null);
             c.put("final_logit_softcapping", e.finalSoftcap() > 0 ? (Object) (double) e.finalSoftcap() : null);
+        }
+        return c;
+    }
+
+    /** DeepSeek-V2 and V3's {@code config.json}: V2 when the experts are routed by a softmax. */
+    private Map<String, Object> deepseekToHuggingFace() {
+        Mla mla = extras.mla();
+        Moe moe = extras.moe();
+        boolean v2 = architecture.equals("deepseek_v2") || moe.present() && !moe.routing().sigmoid();
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("architectures", List.of(v2 ? "DeepseekV2ForCausalLM" : "DeepseekV3ForCausalLM"));
+        c.put("model_type", v2 ? "deepseek_v2" : architecture.equals("kimi_k2") ? "kimi_k2" : "deepseek_v3");
+        c.put("vocab_size", (long) vocabSize);
+        c.put("hidden_size", (long) hidden);
+        c.put("intermediate_size", (long) intermediate);
+        c.put("num_hidden_layers", (long) layers);
+        c.put("num_attention_heads", (long) heads);
+        c.put("num_key_value_heads", (long) heads);
+        c.put("q_lora_rank", mla.qRank() > 0 ? (Object) (long) mla.qRank() : null);
+        c.put("kv_lora_rank", (long) mla.kvRank());
+        c.put("qk_nope_head_dim", (long) mla.nope());
+        c.put("qk_rope_head_dim", (long) mla.rope());
+        c.put("v_head_dim", (long) mla.valueDim());
+        c.put("rms_norm_eps", (double) rmsEps);
+        c.put("max_position_embeddings", (long) maxPositions);
+        c.put("tie_word_embeddings", tieEmbeddings);
+        c.put("hidden_act", "silu");
+        c.put("attention_bias", false);
+        if (!v2) {
+            c.put("rope_interleave", mla.interleaved());
+        }
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("rope_type", rope.type());
+        r.put("rope_theta", rope.theta());
+        if (!rope.type().equals("default")) {
+            r.put("factor", rope.factor());
+            r.put("original_max_position_embeddings", (long) rope.originalMaxPositions());
+            r.put("beta_fast", rope.betaFast());
+            r.put("beta_slow", rope.betaSlow());
+            // the score scale as mscale_all_dim, and cos and sin as its ratio to mscale
+            double base = 1 / Math.sqrt(headDim);
+            double s = Math.sqrt(extras.queryScale() / base);
+            double all = rope.factor() > 1 ? (s - 1) / (0.1 * Math.log(rope.factor())) : 0;
+            double magnitude = rope.attentionFactor() > 0 ? rope.attentionFactor() : 1;
+            r.put("mscale_all_dim", all);
+            r.put("mscale", rope.factor() > 1 ? ((magnitude * s) - 1) / (0.1 * Math.log(rope.factor())) : all);
+        }
+        c.put("rope_parameters", r);
+        if (moe.present()) {
+            Routing routing = moe.routing();
+            c.put("n_routed_experts", (long) moe.experts());
+            c.put("num_experts_per_tok", (long) moe.perToken());
+            c.put("moe_intermediate_size", (long) moe.ffn());
+            c.put("n_shared_experts", (long) (moe.sharedFfn() / moe.ffn()));
+            c.put("first_k_dense_replace", (long) routing.denseLayers());
+            c.put("norm_topk_prob", moe.normalize());
+            c.put("routed_scaling_factor", (double) routing.scale());
+            c.put("n_group", (long) routing.groups());
+            c.put("topk_group", (long) routing.topGroups());
+            c.put("scoring_func", routing.sigmoid() ? "sigmoid" : "softmax");
+            c.put("topk_method", routing.sigmoid() ? "noaux_tc" : routing.groups() > 1 ? "group_limited_greedy"
+                    : "greedy");
+            c.put("moe_layer_freq", 1L);
         }
         return c;
     }

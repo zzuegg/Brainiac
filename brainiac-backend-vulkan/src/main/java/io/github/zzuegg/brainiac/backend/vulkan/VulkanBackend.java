@@ -1493,6 +1493,20 @@ public final class VulkanBackend implements Backend {
     private VkStorage counters;
     private int nextCounter;
 
+    /** Takes a run of {@code count} counters, all 0, and gives its address. */
+    private long counters(long count) {
+        if (counters == null) {
+            counters = raw(COUNTERS, null);
+            fillNow(counters, 0);
+        }
+        if (nextCounter + count > COUNTERS) {
+            nextCounter = 0;
+        }
+        long at = counters.address() + 4L * nextCounter;
+        nextCounter += (int) count;
+        return at;
+    }
+
     private Pieces pieces(int pieces, int m, int n, int columnGroups, DType type) {
         if (counters == null) {
             counters = raw(COUNTERS, null);
@@ -1645,13 +1659,11 @@ public final class VulkanBackend implements Backend {
             vk.dispatch(shader("attention", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()}, xq.slot(),
                     xk.slot(), xv.slot(), xb.slot());
         } else {
-            push.putInt(parts).putInt(chunk);
-            vk.dispatch(shader("attention_split", z.dtype), rows * parts, pieces.slot(), xq.slot(), xk.slot(),
-                    xv.slot(), xb.slot());
-            vk.push().putLong(pieces.address()).putLong(z.address()).putLong(xl.address()).putInt(parts)
-                    .putInt(shape[6]).putInt((int) rows);
-            vk.dispatch(shader("attention_combine", z.dtype), rows, new VkContext.Slot[] {z.slot(), xl.slot()},
-                    pieces.slot());
+            // the last piece of each row to finish joins the row's pieces: one dispatch
+            push.putLong(counters(rows)).putInt(parts).putInt(chunk);   // 128 bytes: the run's own address
+            vk.dispatch(shader("attention_split", z.dtype), rows * parts,
+                    new VkContext.Slot[] {z.slot(), xl.slot(), pieces.slot()}, xq.slot(), xk.slot(), xv.slot(),
+                    xb.slot());
             pieces.release();
         }
         if (bias != null) {
@@ -1660,6 +1672,42 @@ public final class VulkanBackend implements Backend {
         done(xq, vs(q));
         done(xk, vs(k));
         done(xv, vs(v));
+    }
+
+    @Override
+    public boolean hasLatentAttention(int[] shape, DType type) {
+        // latent_attention.comp keeps two output components per invocation, the rotary query in one block
+        return FUSED_ATTENTION && type != DType.FLOAT64 && shape[4] <= 2 * GROUP_SIZE && shape[5] <= GROUP_SIZE
+                && supports(type);
+    }
+
+    @Override
+    public synchronized void latentAttention(Storage qc, Storage qr, Storage c, Storage r, int[] shape, float scale,
+            Storage bias, long[] strides, Storage out) {
+        VkStorage z = vs(out);
+        if (z.dtype == DType.FLOAT64 || shape[4] > 2 * GROUP_SIZE || shape[5] > GROUP_SIZE) {
+            throw new UnsupportedOperationException("fused latent attention: " + z.dtype + ", latents of " + shape[4]
+                    + " and rotary keys of " + shape[5]);
+        }
+        eager(vs(qc), vs(qr), vs(c), vs(r), vs(bias), z);
+        VkStorage xqc = as(vs(qc), z.dtype);
+        VkStorage xqr = as(vs(qr), z.dtype);
+        VkStorage xc = as(vs(c), z.dtype);
+        VkStorage xr = as(vs(r), z.dtype);
+        VkStorage xb = as(vs(bias), z.dtype);
+        long rows = (long) shape[0] * shape[1] * shape[2];
+        vk.push().putLong(xqc.address()).putLong(xqr.address()).putLong(xc.address()).putLong(xr.address())
+                .putLong(z.address()).putLong(xb.address()).putInt(shape[1]).putInt(shape[2]).putInt(shape[3])
+                .putInt(shape[4]).putInt(shape[5]).putFloat(scale).putInt(Math.toIntExact(rows))
+                .putInt(Math.toIntExact(strides[0])).putInt(Math.toIntExact(strides[1]))
+                .putInt(Math.toIntExact(strides[2])).putInt(Math.toIntExact(strides[3]));
+        vk.dispatch(shader("latent_attention", z.dtype), rows, new VkContext.Slot[] {z.slot()}, xqc.slot(),
+                xqr.slot(), xc.slot(), xr.slot(), xb.slot());
+        done(xb, vs(bias));
+        done(xqc, vs(qc));
+        done(xqr, vs(qr));
+        done(xc, vs(c));
+        done(xr, vs(r));
     }
 
     // ------------------------------------------------------------------ 8-bit rows

@@ -1948,6 +1948,86 @@ public final class Tensor {
     }
 
     /**
+     * Whether {@link #latentAttention} runs fused on the backend of {@code qLatent} for these
+     * arrays.
+     *
+     * @param qLatent the queries' latent part {@code [batch, heads, tq, latent]}
+     * @param qRope the queries' rotary part {@code [batch, heads, tq, rope]}
+     * @param c the cached latents {@code [batch, 1, tk, latent]}
+     * @param r the cached rotary keys {@code [batch, 1, tk, rope]}
+     * @return whether to call it
+     */
+    public static boolean hasLatentAttention(Tensor qLatent, Tensor qRope, Tensor c, Tensor r) {
+        return qLatent.backend().hasLatentAttention(latentShape(qLatent, qRope, c, r), qLatent.dtype());
+    }
+
+    /**
+     * DeepSeek's multi-head latent attention over a cache of latents, for inference: every
+     * query head attends to the same keys and values, the cached latents {@code c} (with the
+     * shared rotary keys {@code r} adding to the scores), so the output stays in latent space:
+     * {@code softmax(scale (qLatent c^T + qRope r^T) + bias) c}. The bias broadcasts to
+     * {@code [batch, heads, tq, tk]} as for {@link #add}.
+     *
+     * @param qLatent the queries' latent part {@code [batch, heads, tq, latent]}
+     * @param qRope the queries' rotary part {@code [batch, heads, tq, rope]}
+     * @param c the cached latents {@code [batch, 1, tk, latent]}
+     * @param r the cached rotary keys {@code [batch, 1, tk, rope]}
+     * @param bias the score bias, such as a mask
+     * @param scale the score scale
+     * @return {@code [batch, heads, tq, latent]}
+     * @throws UnsupportedOperationException if the backend has no such kernel
+     */
+    public static Tensor latentAttention(Tensor qLatent, Tensor qRope, Tensor c, Tensor r, Tensor bias, float scale) {
+        int[] d = latentShape(qLatent, qRope, c, r);
+        qLatent.sameDevice(bias);
+        int rank = bias.shape.rank();
+        if (rank > 4) {
+            throw new IllegalArgumentException("an attention bias has at most 4 axes, got " + bias.shape);
+        }
+        int[] full = {d[0], d[1], d[2], d[3]};
+        long[] strides = new long[4];
+        long stride = 1;
+        for (int a = 3; a >= 0; a--) {
+            int axis = a - (4 - rank);
+            int size = axis < 0 ? 1 : bias.shape.dim(axis);
+            if (size != 1 && size != full[a]) {
+                throw new IllegalArgumentException("bias " + bias.shape + " does not broadcast to " + Shape.of(full));
+            }
+            strides[a] = size == 1 ? 0 : stride;
+            stride *= size;
+        }
+        Tensor b = bias.dtype() == qLatent.dtype() ? bias : bias.to(qLatent.dtype());
+        Backend backend = qLatent.backend();
+        Storage out = backend.allocateUninitialized((long) d[0] * d[1] * d[2] * d[4], qLatent.dtype());
+        backend.latentAttention(qLatent.storage(), qRope.storage(), c.storage(), r.storage(), d, scale, b.storage(),
+                strides, out);
+        return new Tensor(Shape.of(d[0], d[1], d[2], d[4]), qLatent.device, out);
+    }
+
+    /** {@code batch, heads, tq, tk, latent, rope} of a latent attention, checked. */
+    private static int[] latentShape(Tensor qLatent, Tensor qRope, Tensor c, Tensor r) {
+        if (qLatent.shape.rank() != 4 || qRope.shape.rank() != 4 || c.shape.rank() != 4 || r.shape.rank() != 4) {
+            throw new IllegalArgumentException("latent attention takes [batch, heads, steps, size] arrays");
+        }
+        qLatent.sameDevice(qRope);
+        qLatent.sameDevice(c);
+        qLatent.sameDevice(r);
+        int batch = qLatent.shape.dim(0);
+        int heads = qLatent.shape.dim(1);
+        int tq = qLatent.shape.dim(2);
+        int tk = c.shape.dim(2);
+        int latent = qLatent.shape.dim(3);
+        int rope = qRope.shape.dim(3);
+        if (!qRope.shape.equals(Shape.of(batch, heads, tq, rope)) || !c.shape.equals(Shape.of(batch, 1, tk, latent))
+                || !r.shape.equals(Shape.of(batch, 1, tk, rope)) || qRope.dtype() != qLatent.dtype()
+                || c.dtype() != qLatent.dtype() || r.dtype() != qLatent.dtype()) {
+            throw new IllegalArgumentException("latent attention needs matching queries " + qLatent.shape + " and "
+                    + qRope.shape + ", latents " + c.shape + " and rotary keys " + r.shape + " of one type");
+        }
+        return new int[] {batch, heads, tq, tk, latent, rope};
+    }
+
+    /**
      * The gradients of {@link #attention}.
      *
      * @param q the queries

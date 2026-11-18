@@ -644,6 +644,42 @@ class VulkanBackendTest {
         }
     }
 
+    /**
+     * DeepSeek's latent attention over cached latents: every head reads the one head of
+     * latents, which are keys and values at once. 512 latents and 64 rotary features are
+     * DeepSeek's own sizes (two output components per invocation).
+     */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 4, 1, 70, 16, 4", "1, 3, 5, 300, 512, 64", "2, 2, 3, 5, 8, 8"})
+    void latentAttentionMatchesTheCpu(int b, int h, int tq, int tk, int dc, int dr) {
+        Tensor qc = random(61, b, h, tq, dc).mul(0.2f);
+        Tensor qr = random(62, b, h, tq, dr);
+        Tensor c = random(63, b, 1, tk, dc);
+        Tensor r = random(64, b, 1, tk, dr);
+        float[] mask = new float[b * tq * tk];
+        SplittableRandom rnd = new SplittableRandom(6);
+        for (int i = 0; i < mask.length; i++) {
+            mask[i] = rnd.nextInt(4) == 0 && i % tk != 0 ? -1e9f : (float) rnd.nextDouble(-1, 1);
+        }
+        Tensor bias = Tensor.of(Shape.of(b, 1, tq, tk), mask);
+        float scale = 0.3f;
+        // built from separate operations on the CPU, and the CPU's fused kernel
+        Tensor scores = qc.matmul(c.transpose()).add(qr.matmul(r.transpose())).mul(scale).add(bias);
+        float[] expected = io.github.zzuegg.brainiac.nn.Activation.SOFTMAX.forward(Var.of(scores)).value().matmul(c)
+                .toArray();
+        assertArrayEquals(expected, Tensor.latentAttention(qc, qr, c, r, bias, scale).toArray(), 1e-5f, "cpu");
+        for (DType type : List.of(DType.FLOAT32, DType.FLOAT16, DType.BFLOAT16)) {
+            if (!supported(type)) {
+                continue;
+            }
+            Tensor[] g = {qc.to(type).to(gpu), qr.to(type).to(gpu), c.to(type).to(gpu), r.to(type).to(gpu)};
+            assertTrue(Tensor.hasLatentAttention(g[0], g[1], g[2], g[3]));
+            float[] fused = Tensor.latentAttention(g[0], g[1], g[2], g[3], bias.to(gpu), scale).toArray();
+            float tolerance = type == DType.FLOAT32 ? 1e-5f : type == DType.FLOAT16 ? 2e-2f : 6e-2f;
+            assertArrayEquals(expected, fused, tolerance, type + " " + b + "x" + h + "x" + tq + "x" + tk + "x" + dc);
+        }
+    }
+
     /** 8-bit rows: written in pieces, read back and attended over as the CPU does. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"2, 4, 2, 1, 70, 16, 16", "2, 4, 4, 6, 300, 64, 32",

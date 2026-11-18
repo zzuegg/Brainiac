@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -42,6 +43,8 @@ public final class StudioServer implements AutoCloseable {
     private final TrainingService training;
     private volatile VastRentals rentals;
     private volatile io.github.zzuegg.brainiac.studio.train.RlRuns rl;
+    private volatile io.github.zzuegg.brainiac.studio.agent.PublishTools publish;
+    private volatile AgentRuns agents;
     private volatile boolean closed;
     private volatile io.github.zzuegg.brainiac.studio.project.Projects projects;
 
@@ -102,8 +105,26 @@ public final class StudioServer implements AutoCloseable {
                 new io.github.zzuegg.brainiac.studio.train.HostProvider(h, server.training.hosts().client(h))).toList());
         server.rentals = rentals(chat, server.training);
         new VastRoutes(chat.vast(), server.rentals).register(server);
-        new AgentRoutes(new AgentRuns(chat, new StudioTools(chat, server.training), chat.folder().resolve("agents"), server.projects))
-                .register(server);
+        java.nio.file.Path agentsFolder = chat.folder().resolve("agents");
+        io.github.zzuegg.brainiac.studio.agent.Services services = new io.github.zzuegg.brainiac.studio.agent.Services(
+                chat.folder().resolve("services.json"), chat);
+        server.publish = new io.github.zzuegg.brainiac.studio.agent.PublishTools(services,
+                agentsFolder.resolve("scheduled-posts.json"), server.projects);
+        AgentRuns agents = server.agents = new AgentRuns(chat, List.of(new StudioTools(chat, server.training),
+                new io.github.zzuegg.brainiac.studio.agent.FileTools(),
+                new io.github.zzuegg.brainiac.studio.agent.DataTools(),
+                new io.github.zzuegg.brainiac.studio.agent.MediaTools(chat),
+                new io.github.zzuegg.brainiac.studio.agent.MlTools(chat, server.training),
+                new io.github.zzuegg.brainiac.studio.agent.WebTools(services),
+                new io.github.zzuegg.brainiac.studio.agent.KnowledgeTools(agentsFolder.resolve("index"),
+                        new io.github.zzuegg.brainiac.studio.agent.Embedder(services, chat::modelFolders)),
+                new io.github.zzuegg.brainiac.studio.agent.CodeTools(services),
+                new io.github.zzuegg.brainiac.studio.agent.GitHubTools(services),
+                new io.github.zzuegg.brainiac.studio.agent.RunnerTools(chat, () -> server.rentals, server.projects),
+                server.publish,
+                new io.github.zzuegg.brainiac.studio.agent.MailTools(services)),
+                agentsFolder, server.projects, new io.github.zzuegg.brainiac.studio.agent.Roles(chat.folder().resolve("roles")));
+        new AgentRoutes(agents, services, chat.folder().resolve("memory")).register(server);
         http.start();
         // models idle for longer than the user allows are unloaded
         io.github.zzuegg.brainiac.studio.chat.GpuResidency residency = chat.localDevice().residency();
@@ -202,6 +223,12 @@ public final class StudioServer implements AutoCloseable {
         }
         if (rl != null) {
             rl.close();
+        }
+        if (publish != null) {
+            publish.close();
+        }
+        if (agents != null) {
+            agents.close();
         }
         training.close();
         executor.shutdownNow();

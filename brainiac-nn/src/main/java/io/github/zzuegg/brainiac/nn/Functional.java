@@ -1081,6 +1081,165 @@ public final class Functional {
     }
 
     /**
+     * How a router's experts are grouped for group-limited routing (DeepSeek-V2 and V3): each
+     * token first picks its {@code top} best groups, then its experts among theirs only.
+     *
+     * @param groups the groups, dividing the experts evenly; 1 for no grouping
+     * @param top the groups each token may use
+     * @param rankByTopTwo whether a group ranks by the sum of its two best scores (V3) rather
+     *     than by its best (V2)
+     */
+    public record ExpertGroups(int groups, int top, boolean rankByTopTwo) {
+        /** No grouping: every expert is open to every token. */
+        public static final ExpertGroups NONE = new ExpertGroups(1, 1, false);
+
+        /** Checks the values. */
+        public ExpertGroups {
+            if (groups < 1 || top < 1 || top > groups) {
+                throw new IllegalArgumentException("expert groups " + groups + ", top " + top);
+            }
+        }
+    }
+
+    /**
+     * Each token's {@code k} experts, best first, from router scores {@code [tokens,
+     * experts]}: by the scores plus {@code bias} where one is given (DeepSeek-V3's selection
+     * bias, which balances the load and plays no part in the weights), among the experts of
+     * the token's best groups where they are grouped. Ties go to the lower expert.
+     *
+     * @param scores the router's scores, row-major {@code [tokens, experts]}
+     * @param bias a selection bias per expert, or {@code null}
+     * @param tokens the tokens
+     * @param experts the experts
+     * @param k the experts per token
+     * @param groups how the experts are grouped
+     * @return the chosen experts {@code [tokens * k]}
+     */
+    public static int[] chooseExperts(float[] scores, float[] bias, int tokens, int experts, int k,
+            ExpertGroups groups) {
+        int g = groups.groups();
+        if (experts % g != 0 || k < 1 || k > experts / g * groups.top() || scores.length < tokens * experts
+                || (bias != null && bias.length != experts)) {
+            throw new IllegalArgumentException(k + " of " + experts + " experts in " + g + " groups (top "
+                    + groups.top() + "), " + scores.length + " scores for " + tokens + " tokens");
+        }
+        int[] chosen = new int[tokens * k];
+        int size = experts / g;
+        float[] by = new float[experts];
+        boolean[] allowed = new boolean[experts];
+        boolean[] taken = new boolean[experts];
+        for (int t = 0; t < tokens; t++) {
+            for (int e = 0; e < experts; e++) {
+                by[e] = scores[t * experts + e] + (bias == null ? 0 : bias[e]);
+            }
+            if (g > 1 && groups.top() < g) {
+                Arrays.fill(allowed, false);
+                float[] rank = new float[g];
+                for (int j = 0; j < g; j++) {
+                    float best = Float.NEGATIVE_INFINITY;
+                    float second = Float.NEGATIVE_INFINITY;
+                    for (int e = j * size; e < (j + 1) * size; e++) {
+                        if (by[e] > best) {
+                            second = best;
+                            best = by[e];
+                        } else if (by[e] > second) {
+                            second = by[e];
+                        }
+                    }
+                    rank[j] = groups.rankByTopTwo() && size > 1 ? best + second : best;
+                }
+                boolean[] groupTaken = new boolean[g];
+                for (int j = 0; j < groups.top(); j++) {
+                    int top = -1;
+                    for (int q = 0; q < g; q++) {
+                        if (!groupTaken[q] && (top < 0 || rank[q] > rank[top])) {
+                            top = q;
+                        }
+                    }
+                    groupTaken[top] = true;
+                    Arrays.fill(allowed, top * size, (top + 1) * size, true);
+                }
+            } else {
+                Arrays.fill(allowed, true);
+            }
+            Arrays.fill(taken, false);
+            for (int j = 0; j < k; j++) {
+                int best = -1;
+                for (int e = 0; e < experts; e++) {
+                    if (allowed[e] && !taken[e] && (best < 0 || by[e] > by[best])) {
+                        best = e;
+                    }
+                }
+                taken[best] = true;
+                chosen[t * k + j] = best;
+            }
+        }
+        return chosen;
+    }
+
+    /**
+     * Runs routed experts: each expert once, on just the tokens that chose it, and every
+     * token's {@code k} outputs summed with their weights. Choose with {@link #chooseExperts}
+     * and weigh as the model does (softmax or sigmoid scores, renormalized, scaled); the
+     * weights and the experts stay differentiable.
+     *
+     * @param x {@code [tokens, features]}
+     * @param chosen each token's experts {@code [tokens * k]}
+     * @param weights their weights {@code [tokens * k]}
+     * @param k the experts per token
+     * @param experts the expert networks, each mapping {@code [m, features]} to
+     *     {@code [m, outFeatures]}
+     * @return {@code [tokens, outFeatures]}
+     */
+    public static Var routedExperts(Var x, int[] chosen, Var weights, int k,
+            List<java.util.function.Function<Var, Var>> experts) {
+        int n = x.shape().dim(0);
+        if (chosen.length != n * k || weights.shape().size() != (long) n * k) {
+            throw new IllegalArgumentException(n + " tokens with " + k + " experts each, got " + chosen.length
+                    + " choices and weights " + weights.shape());
+        }
+        Device device = x.value().device();
+        Var flatWeights = weights.reshape(n * k);
+        // the rows of each expert, in expert order; then where each (token, slot) landed
+        List<Var> outs = new ArrayList<>();
+        int[] place = new int[n * k];
+        int rows = 0;
+        for (int e = 0; e < experts.size(); e++) {
+            int count = 0;
+            for (int c : chosen) {
+                if (c == e) {
+                    count++;
+                }
+            }
+            if (count == 0) {
+                continue;
+            }
+            float[] tokens = new float[count];
+            float[] slots = new float[count];
+            int i = 0;
+            for (int s = 0; s < chosen.length; s++) {
+                if (chosen[s] == e) {
+                    slots[i] = s;
+                    tokens[i] = s / k;
+                    place[s] = rows + i;
+                    i++;
+                }
+            }
+            rows += count;
+            Var y = experts.get(e).apply(x.gather(0, Tensor.of(Shape.of(count), tokens, device)));
+            Var w = flatWeights.gather(0, Tensor.of(Shape.of(count), slots, device)).reshape(count, 1).to(y.dtype());
+            outs.add(y.mul(w));
+        }
+        Var all = outs.size() == 1 ? outs.getFirst() : Var.concat(0, outs.toArray(Var[]::new));
+        float[] at = new float[place.length];
+        for (int s = 0; s < at.length; s++) {
+            at[s] = place[s];
+        }
+        int out = all.shape().dim(1);
+        return all.gather(0, Tensor.of(Shape.of(at.length), at, device)).reshape(n, k, out).sum(1, false);
+    }
+
+    /**
      * Sampled softmax cross-entropy (Jean et al., 2015) for very large output layers, such as
      * recommendation catalogues: the logits are computed only for the rows' own classes and
      * {@code negatives} classes drawn uniformly, shared by the batch. Every row's class is a
@@ -1528,6 +1687,73 @@ public final class Functional {
         public String name() {
             return "attention";
         }
+    }
+
+    /**
+     * Multi-head latent attention over cached latents (DeepSeek-V2, Liu et al., 2024), with
+     * the latent's up projection absorbed into the queries: {@code softmax(scale (qLatent C^T +
+     * qRope R^T) + bias) C}. Every head reads the same latents {@code C}, which serve as keys
+     * and as values, so the output stays in latent space; multiply it by {@code W_UV} (see
+     * {@link #absorbLatentUp}) to leave it. Inference with the backend's fused kernel runs in
+     * one pass without the weights; otherwise (and for gradients) it is built from separate
+     * operations.
+     *
+     * @param qLatent queries in latent space {@code [batch, heads, queries, latent]}
+     * @param qRope rotary queries {@code [batch, heads, queries, rope]}
+     * @param c latents {@code [batch, 1, keys, latent]}
+     * @param r rotary keys {@code [batch, 1, keys, rope]}
+     * @param bias added to the scores, broadcast to {@code [batch, heads, queries, keys]}, or
+     *     {@code null}
+     * @param scale the score scale
+     * @return {@code [batch, heads, queries, latent]}
+     */
+    public static Var latentAttention(Var qLatent, Var qRope, Var c, Var r, Tensor bias, float scale) {
+        if (c.shape().dim(1) != 1 || r.shape().dim(1) != 1 || qLatent.shape().dim(-1) != c.shape().dim(-1)
+                || qRope.shape().dim(-1) != r.shape().dim(-1)) {
+            throw new IllegalArgumentException("latent attention takes one head of latents and rotary keys matching"
+                    + " the queries, got " + qLatent.shape() + ", " + qRope.shape() + ", " + c.shape() + ", "
+                    + r.shape());
+        }
+        if (FUSED && !(qLatent.requiresGrad() || qRope.requiresGrad() || c.requiresGrad() || r.requiresGrad())
+                && Tensor.hasLatentAttention(qLatent.value(), qRope.value(), c.value(), r.value())) {
+            try {
+                return Var.of(Tensor.latentAttention(qLatent.value(), qRope.value(), c.value(), r.value(), bias,
+                        scale));
+            } catch (UnsupportedOperationException e) {
+                // this backend, type or size has no fused kernel
+            }
+        }
+        Var scores = qLatent.matmul(c.transpose()).add(qRope.matmul(r.transpose())).mul(scale);
+        if (bias != null) {
+            scores = scores.add(bias);
+        }
+        return Activation.SOFTMAX.forward(scores).matmul(c);
+    }
+
+    /**
+     * Splits a latent up projection {@code [latent, heads * (nope + valueDim)]} (DeepSeek's
+     * {@code kv_b_proj}, transposed) per head into {@code W_UK} {@code [1, heads, nope,
+     * latent]}, which takes a query's non-rotary part into latent space, and {@code W_UV}
+     * {@code [1, heads, latent, valueDim]}, which takes {@link #latentAttention}'s output
+     * out of it.
+     *
+     * @param up the up projection {@code [latent, heads * (nope + valueDim)]}
+     * @param heads the heads
+     * @param nope each head's non-rotary key features
+     * @param valueDim each head's value features
+     * @return {@code {W_UK, W_UV}}
+     */
+    public static Tensor[] absorbLatentUp(Tensor up, int heads, int nope, int valueDim) {
+        int per = nope + valueDim;
+        if (up.shape().rank() != 2 || up.shape().dim(1) != heads * per) {
+            throw new IllegalArgumentException("a latent up projection for " + heads + " heads of " + nope + " + "
+                    + valueDim + " needs [latent, " + heads * per + "], got " + up.shape());
+        }
+        int latent = up.shape().dim(0);
+        Tensor perHead = up.reshape(latent, heads, per).permute(1, 0, 2);   // [heads, latent, nope + valueDim]
+        Tensor uk = perHead.slice(2, 0, nope).permute(0, 2, 1).reshape(1, heads, nope, latent);
+        Tensor uv = perHead.slice(2, nope, per).reshape(1, heads, latent, valueDim);
+        return new Tensor[] {uk, uv};
     }
 
     private static Var repeatHeads(Var x, int times) {
