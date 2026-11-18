@@ -75,7 +75,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.security;
     exports io.github.zzuegg.brainiac.experimental.semisup;
-    //TMP exports io.github.zzuegg.brainiac.experimental.sensing;
+    exports io.github.zzuegg.brainiac.experimental.sensing;
     exports io.github.zzuegg.brainiac.experimental.serving;
     exports io.github.zzuegg.brainiac.experimental.shift;
     exports io.github.zzuegg.brainiac.experimental.signal;
@@ -150,7 +150,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.sciml;
     exports io.github.zzuegg.brainiac.experiments.security;
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
-    //TMP exports io.github.zzuegg.brainiac.experiments.sensing;
+    exports io.github.zzuegg.brainiac.experiments.sensing;
     exports io.github.zzuegg.brainiac.experiments.sequence;
     exports io.github.zzuegg.brainiac.experiments.serving;
     exports io.github.zzuegg.brainiac.experiments.shift;
