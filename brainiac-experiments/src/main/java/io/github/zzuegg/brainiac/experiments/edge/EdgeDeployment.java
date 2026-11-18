@@ -33,6 +33,9 @@ import java.util.SplittableRandom;
  */
 public final class EdgeDeployment {
 
+    /** Pixel noise of the {@code ShapeImages} tasks. */
+    public static final float NOISE = 0.15f;
+
     private EdgeDeployment() {
     }
 
@@ -180,7 +183,7 @@ public final class EdgeDeployment {
 
     /**
      * Float, post-training int8, core weight-only fake quantisation, and QAT int8 for a CNN on
-     * {@code ShapeImages}, an MLP on digits and a DS-CNN keyword spotter (9.6.13).
+     * {@code ShapeImages} and an MLP on digits (9.6.13).
      *
      * @param steps float training steps (QAT fine-tuning uses a third more)
      * @param seed the seed
@@ -188,17 +191,30 @@ public final class EdgeDeployment {
      */
     public static List<IntegerRow> integer(int steps, long seed) {
         List<IntegerRow> rows = new ArrayList<>();
-        Tensor[] tr = shapes(16, 0.3f, 768, all(6), seed);
-        Tensor[] te = shapes(16, 0.3f, 300, all(6), seed + 1);
-        EdgeNet cnn = EdgeNet.builder(seed, 1, 16, 16).conv(8, 3, 1).conv(16, 3, 2).conv(16, 3, 2).pool()
+        Tensor[] tr = shapes(8, NOISE, 512, all(6), seed);
+        Tensor[] te = shapes(8, NOISE, 200, all(6), seed + 1);
+        EdgeNet cnn = EdgeNet.builder(seed, 1, 8, 8).conv(8, 3, 1).conv(16, 3, 2).conv(16, 3, 2).pool()
                 .dense(6, false).build();
         integerRows(rows, "ShapeImages CNN", cnn, tr, te, steps, seed);
         Tensor[] dtr = digits(60, seed, seed + 5);
         Tensor[] dte = digits(20, seed, seed + 1000);
         EdgeNet mlp = EdgeNet.builder(seed, 64).dense(64, true).dense(32, true).dense(10, false).build();
         integerRows(rows, "digits MLP", mlp, dtr, dte, steps, seed);
-        KeywordData ktr = keywordData(600, seed + 7);
-        KeywordData kte = keywordData(240, seed + 8);
+        return rows;
+    }
+
+    /**
+     * The 9.6.13 rows for the DS-CNN keyword spotter (its int8 accuracy at every budget is also in
+     * {@link #keywords}).
+     *
+     * @param steps float training steps
+     * @param seed the seed
+     * @return the rows
+     */
+    public static List<IntegerRow> integerKeywords(int steps, long seed) {
+        List<IntegerRow> rows = new ArrayList<>();
+        KeywordData ktr = keywordData(300, seed + 7);
+        KeywordData kte = keywordData(120, seed + 8);
         EdgeNet kws = KeywordSpotters.sized(KeywordSpotters.Family.DS_CNN, KeywordSpotters.BUDGETS.get(0), FRAMES,
                 COEFFICIENTS, KWS_CLASSES, seed).edgeNet();
         integerRows(rows, "keyword DS-CNN", kws, new Tensor[] {ktr.x(), ktr.y()}, new Tensor[] {kte.x(), kte.y()},
@@ -275,8 +291,8 @@ public final class EdgeDeployment {
      */
     public static EdgeNet mcuNet(int side, int width, long seed) {
         return EdgeNet.builder(seed, 1, side, side).conv(4 * width, 3, 1).conv(8 * width, 3, 2)
-                .separable(8 * width, 3, 1).conv(12 * width, 3, 2).separable(16 * width, 3, 2)
-                .separable(16 * width, 3, 1).pool().dense(6, false).build();
+                .separable(8 * width, 3, 1).conv(12 * width, 3, 2).separable(16 * width, 3, 1).pool()
+                .dense(6, false).build();
     }
 
     /** Units of {@link #mcuNet} up to the 1/4-resolution point (run per patch). */
@@ -292,7 +308,7 @@ public final class EdgeDeployment {
      */
     public static List<PatchRow> patches(int side, int[] grids, long seed) {
         EdgeNet net = mcuNet(side, 2, seed);
-        Tensor x = shapes(side, 0.3f, 4, all(6), seed)[0];
+        Tensor x = shapes(side, NOISE, 4, all(6), seed)[0];
         List<PatchRow> rows = new ArrayList<>();
         String name = "MCUNet-style " + side + "x" + side;
         rows.add(new PatchRow(name, 0, PatchBasedExecutor.layerByLayerPeak(net, 1), net.macs(), 0, 0));
@@ -393,8 +409,8 @@ public final class EdgeDeployment {
      * @return the rows
      */
     public static List<BudgetRow> budget(int side, int steps, long seed) {
-        Tensor[] tr = shapes(side, 0.3f, 640, all(6), seed);
-        Tensor[] te = shapes(side, 0.3f, 240, all(6), seed + 1);
+        Tensor[] tr = shapes(side, NOISE, 512, all(6), seed);
+        Tensor[] te = shapes(side, NOISE, 200, all(6), seed + 1);
         List<BudgetRow> rows = new ArrayList<>();
         EdgeNet full = mcuNet(side, 2, seed);
         PatchBasedExecutor patch = new PatchBasedExecutor(full, MCUNET_SPLIT, 4);
@@ -475,11 +491,11 @@ public final class EdgeDeployment {
     }
 
     private static final int[] KERNELS = {3, 5};
-    private static final int[] DEPTHS = {1, 2, 3};
+    private static final int[] DEPTHS = {1, 2};
     private static final int[] EXPANDS = {2, 3, 4};
 
     private static ElasticSupernet supernet(long seed) {
-        return new ElasticSupernet(1, 16, 6, 8, new int[] {12, 16}, 3, 4, seed);
+        return new ElasticSupernet(1, 8, 6, 6, new int[] {8, 12}, 2, 4, seed);
     }
 
     /**
@@ -493,15 +509,15 @@ public final class EdgeDeployment {
      * @return the results
      */
     public static OfaResult onceForAll(int steps, int deployments, long seed) {
-        Tensor[] tr = shapes(16, 0.3f, 768, all(6), seed);
-        Tensor[] va = shapes(16, 0.3f, 200, all(6), seed + 2);
-        Tensor[] te = shapes(16, 0.3f, 300, all(6), seed + 1);
+        Tensor[] tr = shapes(8, NOISE, 512, all(6), seed);
+        Tensor[] va = shapes(8, NOISE, 120, all(6), seed + 2);
+        Tensor[] te = shapes(8, NOISE, 200, all(6), seed + 1);
         ElasticSupernet ps = supernet(seed);
         ps.train(tr[0], tr[1], steps, ElasticSupernet.Schedule.PROGRESSIVE, KERNELS, DEPTHS, EXPANDS, seed);
         SplittableRandom r = new SplittableRandom(seed + 3);
         List<ElasticSupernet.Config> deploy = new ArrayList<>();
         deploy.add(ps.largest());
-        deploy.add(new ElasticSupernet.Config(new int[] {1, 1}, fill(6, 3), fill(6, 2)));
+        deploy.add(new ElasticSupernet.Config(new int[] {1, 1}, fill(4, 3), fill(4, 2)));
         while (deploy.size() < deployments) {
             deploy.add(ps.sample(r, KERNELS, DEPTHS, EXPANDS));
         }
@@ -519,23 +535,28 @@ public final class EdgeDeployment {
                     big.accuracy(c, te[0], te[1]), steps));
             rows.add(new OfaRow("random sampling, no shrinking or KD", c.toString(), rnd.macs(c), rnd.peakBytes(c),
                     rnd.accuracy(c, te[0], te[1]), steps));
-            ElasticSupernet own = supernet(seed);
-            own.trainFixed(tr[0], tr[1], steps, c, seed);
+            // the largest subnet trained alone is exactly the largest-only supernet
+            ElasticSupernet own = big;
+            if (!Arrays.equals(c.depths(), big.largest().depths()) || !Arrays.equals(c.kernels(), big.largest().kernels())
+                    || !Arrays.equals(c.expands(), big.largest().expands())) {
+                own = supernet(seed);
+                own.trainFixed(tr[0], tr[1], steps, c, seed);
+            }
             rows.add(new OfaRow("from scratch per subnet", c.toString(), own.macs(c), own.peakBytes(c),
                     own.accuracy(c, te[0], te[1]), steps * deployments));
         }
         // predictor and search
         SubnetSearch search = new SubnetSearch(ps, KERNELS, DEPTHS, EXPANDS, seed);
         List<ElasticSupernet.Config> fitSet = new ArrayList<>();
-        double[] fitAcc = new double[60];
+        double[] fitAcc = new double[24];
         for (int i = 0; i < fitAcc.length; i++) {
             ElasticSupernet.Config c = ps.sample(r, KERNELS, DEPTHS, EXPANDS);
             fitSet.add(c);
             fitAcc[i] = ps.accuracy(c, va[0], va[1]);
         }
         search.fit(fitSet, fitAcc, 400);
-        double[] pred = new double[20];
-        double[] meas = new double[20];
+        double[] pred = new double[12];
+        double[] meas = new double[12];
         for (int i = 0; i < pred.length; i++) {
             ElasticSupernet.Config c = ps.sample(r, KERNELS, DEPTHS, EXPANDS);
             pred[i] = search.predict(c);
@@ -582,7 +603,7 @@ public final class EdgeDeployment {
     }
 
     private static EdgeNet adaptNet(long seed) {
-        return EdgeNet.builder(seed, 1, 16, 16).conv(8, 3, 1).conv(16, 3, 2).separable(16, 3, 1)
+        return EdgeNet.builder(seed, 1, 8, 8).conv(8, 3, 1).conv(16, 3, 2).separable(16, 3, 1)
                 .conv(24, 3, 2).pool().dense(4, false).build();
     }
 
@@ -597,10 +618,10 @@ public final class EdgeDeployment {
      * @return the rows
      */
     public static List<AdaptRow> adaptation(int pretrainSteps, int adaptSteps, double budgetShare, long seed) {
-        Tensor[] pre = shapes(16, 0.3f, 768, new int[] {0, 1, 2, 3}, seed);
-        Tensor[] tr = shapes(16, 0.3f, 256, new int[] {2, 3, 4, 5}, seed + 1);
-        Tensor[] va = shapes(16, 0.3f, 160, new int[] {2, 3, 4, 5}, seed + 2);
-        Tensor[] te = shapes(16, 0.3f, 300, new int[] {2, 3, 4, 5}, seed + 3);
+        Tensor[] pre = shapes(8, NOISE, 512, new int[] {0, 1, 2, 3}, seed);
+        Tensor[] tr = shapes(8, NOISE, 256, new int[] {2, 3, 4, 5}, seed + 1);
+        Tensor[] va = shapes(8, NOISE, 120, new int[] {2, 3, 4, 5}, seed + 2);
+        Tensor[] te = shapes(8, NOISE, 200, new int[] {2, 3, 4, 5}, seed + 3);
         EdgeNet net = adaptNet(seed);
         net.train(pre[0], pre[1], pretrainSteps, 32, 3e-3f, net.parameters(), seed);
         net.foldBatchNorm();
@@ -761,8 +782,8 @@ public final class EdgeDeployment {
      */
     public static List<KeywordRow> keywords(List<KeywordSpotters.Budget> budgets, KeywordSpotters.Family[] families,
             int steps, long seed) {
-        KeywordData tr = keywordData(800, seed);
-        KeywordData te = keywordData(300, seed + 1);
+        KeywordData tr = keywordData(300, seed);
+        KeywordData te = keywordData(120, seed + 1);
         List<KeywordRow> rows = new ArrayList<>();
         for (KeywordSpotters.Budget b : budgets) {
             for (KeywordSpotters.Family f : families) {
@@ -795,8 +816,8 @@ public final class EdgeDeployment {
      * @return the rows
      */
     public static List<KeywordRow> keywordBaselines(int steps, int templates, long seed) {
-        KeywordData tr = keywordData(800, seed);
-        KeywordData te = keywordData(300, seed + 1);
+        KeywordData tr = keywordData(300, seed);
+        KeywordData te = keywordData(120, seed + 1);
         List<KeywordRow> rows = new ArrayList<>();
         List<float[][]> trFeats = new ArrayList<>();
         List<int[]> trDigits = new ArrayList<>();

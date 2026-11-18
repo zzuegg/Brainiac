@@ -635,7 +635,7 @@ public final class StreamShootout {
 
     /**
      * Drift detectors on three series with known change points: the 0/1 errors of a naive Bayes
-     * frozen after the first concept on abrupt SEA (8 drifts) and on gradual hyperplane, and
+     * frozen after the first concept on abrupt SEA (4 drifts) and on gradual hyperplane, and
      * {@link AnomalySeries} mean shifts.
      *
      * @param n samples per stream series
@@ -645,11 +645,15 @@ public final class StreamShootout {
     public static List<DetectionRow> detection(int n, long seed) {
         Map<String, double[]> series = new LinkedHashMap<>();
         Map<String, int[]> truth = new LinkedHashMap<>();
-        int[] points = new int[8];
+        // SEA's thresholds 8 and 9 differ on only 8.5% of the input square, so a frozen model's
+        // error rate moves by about 0.085; with delta 0.002 ADWIN needs several hundred samples on
+        // each side of a change to see that, so the concepts last n / 5 samples (8 drifts in n
+        // left about 1000 per concept, and ADWIN, DDM and the window test missed most of them)
+        int[] points = new int[4];
         for (int i = 0; i < points.length; i++) {
             points[i] = (i + 1) * n / (points.length + 1);
         }
-        // abrupt: SEA switching between 8 and 7 (the recurring schedule), errors of a frozen model
+        // abrupt: SEA switching between thresholds 8 and 9 (the recurring schedule), errors of a frozen model
         DriftingStreams.Stream sea = DriftingStreams.sea(DriftingStreams.Drift.RECURRING, points, 1, 0.05, seed);
         series.put("SEA abrupt (errors)", frozenErrors(sea, n, points[0]));
         truth.put("SEA abrupt (errors)", points);

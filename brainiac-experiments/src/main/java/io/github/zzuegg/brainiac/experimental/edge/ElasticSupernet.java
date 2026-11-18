@@ -28,7 +28,10 @@ import java.util.SplittableRandom;
  *       weights before width shrinking, so a narrower block keeps the most important ones.</li>
  * </ul>
  * Progressive shrinking trains the largest network, then samples elastic kernels, then depths,
- * then widths, with knowledge distillation from the largest network's outputs.
+ * then widths, with knowledge distillation from the largest network's outputs. Unlike OFA, whose
+ * teacher is a fully trained, frozen network, the teacher here is the supernet's own largest
+ * path, and during the elastic phases every other step trains that path directly (the
+ * "sandwich" rule of later supernet work); without that, short runs collapsed.
  *
  * <p>Paper: Cai et al., "Once-for-All: Train One Network and Specialize it for Efficient
  * Deployment", ICLR 2020, <a href="https://arxiv.org/abs/1908.09791">arXiv:1908.09791</a>.
@@ -266,7 +269,8 @@ public final class ElasticSupernet {
      *
      * @param x images
      * @param y class ids
-     * @param steps steps in total (split over the phases of progressive shrinking)
+     * @param steps steps in total (progressive shrinking gives half to the largest network and a
+     *     sixth to each elastic phase)
      * @param schedule how
      * @param kernels the kernel choices
      * @param depths the depth choices
@@ -281,10 +285,12 @@ public final class ElasticSupernet {
         int[] maxK = {5};
         int[] maxD = {maxDepth};
         int[] maxE = {maxExpand};
-        int phase = Math.max(1, steps / 4);
-        Optimizer opt = Optimizer.adam(3e-3f);
+        int full = Math.max(1, steps / 2);
+        int phase = Math.max(1, (steps - full) / 3);
+        Optimizer opt = Optimizer.adam(1e-2f);
         float last = 0;
         boolean sorted = false;
+        int lastPhase = 0;
         for (int s = 0; s < steps; s++) {
             Config c;
             boolean kd = false;
@@ -292,10 +298,16 @@ public final class ElasticSupernet {
                 case LARGEST -> c = big;
                 case RANDOM -> c = sample(r, kernels, depths, expands);
                 default -> {
-                    int ph = Math.min(3, s / phase);
+                    int ph = s < full ? 0 : Math.min(3, 1 + (s - full) / phase);
                     if (ph == 3 && !sorted) {
                         sortChannels();
                         sorted = true;
+                    }
+                    if (ph != lastPhase) {
+                        // a fresh optimizer per phase: Adam's moments would not follow the channel
+                        // permutation of sortChannels (stale moments wrecked the network)
+                        opt = Optimizer.adam(1e-2f);
+                        lastPhase = ph;
                     }
                     c = switch (ph) {
                         case 0 -> big;
@@ -304,6 +316,12 @@ public final class ElasticSupernet {
                         default -> sample(r, kernels, depths, expands);
                     };
                     kd = ph > 0;
+                    if (ph > 0 && s % 2 == 1) {
+                        // every other step trains the largest network itself (no distillation), so the
+                        // short elastic phases of a small budget do not wreck the teacher
+                        c = big;
+                        kd = false;
+                    }
                 }
             }
             last = step(x, y, c, kd ? big : null, opt, r);
@@ -323,7 +341,7 @@ public final class ElasticSupernet {
      */
     public float trainFixed(Tensor x, Tensor y, int steps, Config c, long seed) {
         SplittableRandom r = new SplittableRandom(seed);
-        Optimizer opt = Optimizer.adam(3e-3f);
+        Optimizer opt = Optimizer.adam(1e-2f);
         float last = 0;
         for (int s = 0; s < steps; s++) {
             last = step(x, y, c, null, opt, r);
@@ -333,7 +351,7 @@ public final class ElasticSupernet {
 
     private float step(Tensor x, Tensor y, Config c, Config teacher, Optimizer opt, SplittableRandom r) {
         int n = x.shape().dim(0);
-        int batch = Math.min(32, n);
+        int batch = Math.min(16, n);
         int from = r.nextInt(Math.max(1, n - batch));
         Tensor bx = x.slice(0, from, from + batch);
         Tensor by = y.slice(0, from, from + batch);
