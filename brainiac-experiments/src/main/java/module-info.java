@@ -12,6 +12,7 @@ module io.github.zzuegg.brainiac.experiments {
     requires transitive io.github.zzuegg.brainiac.evolve;
     requires transitive io.github.zzuegg.brainiac.llm;
     // reusable building blocks, mirroring the core packages they would move to
+    exports io.github.zzuegg.brainiac.experimental.anomaly;
     exports io.github.zzuegg.brainiac.experimental.autograd;
     exports io.github.zzuegg.brainiac.experimental.data;
     exports io.github.zzuegg.brainiac.experimental.evolve;
@@ -23,6 +24,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.rl;
     exports io.github.zzuegg.brainiac.experimental.tensor;
+    exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
     // the experiments: toy tasks, comparisons and demos built from those blocks
     exports io.github.zzuegg.brainiac.experiments.agents;
