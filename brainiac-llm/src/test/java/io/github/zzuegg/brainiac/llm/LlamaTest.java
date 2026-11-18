@@ -118,6 +118,31 @@ class LlamaTest {
         assertArrayEquals(logits, model.forward(new int[][] {ints(e.get("ids"))}).value().toArray(), 1e-4f, name);
     }
 
+    @Test
+    void readsGptOssFromGguf() throws IOException {
+        // sinks, biased experts in MXFP4 with the clamped SwiGLU, router bias, alternating windows
+        Map<String, Object> e = expected("gpt-oss.gguf.expected.json");
+        int[][] ids = {ints(e.get("ids"))};
+        float[] expected = rows(e.get("logits"));
+        Llama model = Llama.load(resource("gpt-oss.gguf"), DEVICE, DType.FLOAT32);
+        assertEquals("gpt_oss", model.config().architecture());
+        assertTrue(model.config().extras().attentionSinks());
+        float[] logits = model.forward(ids).value().toArray();
+        assertArrayEquals(expected, logits, 2e-3f);
+        Llama split = Llama.loadExpertsOnCpu(resource("gpt-oss.gguf"), DEVICE, DType.FLOAT32, 0);
+        assertArrayEquals(logits, split.forward(ids).value().toArray(), 1e-4f);
+        // token by token through the cache: windows and sinks as in the full pass
+        int vocab = model.config().vocabSize();
+        for (Llama m : new Llama[] {model, split}) {
+            LanguageModel.State state = m.newState(1);
+            for (int t = 0; t < ids[0].length; t++) {
+                float[] step = m.next(state, new int[][] {{ids[0][t]}}, null).to(DType.FLOAT32).toArray();
+                assertArrayEquals(java.util.Arrays.copyOfRange(logits, t * vocab, (t + 1) * vocab), step, 1e-3f,
+                        "step " + t);
+            }
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"qwen3moe", "qwen2moe"})
     void runsExpertsOnTheCpuFromTheFile(String name) throws IOException {

@@ -62,19 +62,47 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      *     {@link Moe#NONE}
      * @param mla DeepSeek's multi-head latent attention in place of grouped-query attention, or
      *     {@link Mla#NONE}
+     * @param attentionSinks whether each head has a learned sink logit that joins every
+     *     softmax over keys without a value, so a query can attend to nothing (gpt-oss)
      */
     public record Extras(boolean qkNorm, int slidingWindow, int globalEvery, double localTheta,
             ActivationOp activation, boolean scaleEmbeddings, boolean postNorms, boolean normOffset,
-            float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe, Mla mla) {
+            float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe, Mla mla,
+            boolean attentionSinks) {
 
         /** Plain Llama. */
         public static final Extras NONE = new Extras(false, 0, 0, 0, ActivationOp.SILU, false, false, false, 0, 0, 0,
-                false, Moe.NONE, Mla.NONE);
+                false, Moe.NONE, Mla.NONE, false);
 
         /** Checks the experts and the latent attention are there. */
         public Extras {
             java.util.Objects.requireNonNull(moe, "moe");
             java.util.Objects.requireNonNull(mla, "mla");
+        }
+
+        /**
+         * The extras without attention sinks.
+         *
+         * @param qkNorm whether queries and keys are RMS-normalized per head
+         * @param slidingWindow the window of local layers, or 0
+         * @param globalEvery with a window, every this many layers one sees everything
+         * @param localTheta the rotary base of local layers, or 0
+         * @param activation the gate's activation
+         * @param scaleEmbeddings whether embeddings are multiplied by {@code sqrt(hidden)}
+         * @param postNorms whether sublayer outputs are normalized again
+         * @param normOffset whether files store norm weights less one
+         * @param attentionSoftcap the attention score cap, or 0
+         * @param finalSoftcap the logit cap, or 0
+         * @param queryScale the attention score scale, or 0 for the default
+         * @param fused whether q, k and v (and gate and up) are joined in the weights
+         * @param moe the mixture of experts, or {@link Moe#NONE}
+         * @param mla the latent attention, or {@link Mla#NONE}
+         */
+        public Extras(boolean qkNorm, int slidingWindow, int globalEvery, double localTheta,
+                ActivationOp activation, boolean scaleEmbeddings, boolean postNorms, boolean normOffset,
+                float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe, Mla mla) {
+            this(qkNorm, slidingWindow, globalEvery, localTheta, activation, scaleEmbeddings, postNorms, normOffset,
+                    attentionSoftcap, finalSoftcap, queryScale, fused, moe, mla, false);
         }
 
         /**
@@ -98,7 +126,7 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
                 ActivationOp activation, boolean scaleEmbeddings, boolean postNorms, boolean normOffset,
                 float attentionSoftcap, float finalSoftcap, float queryScale, boolean fused, Moe moe) {
             this(qkNorm, slidingWindow, globalEvery, localTheta, activation, scaleEmbeddings, postNorms, normOffset,
-                    attentionSoftcap, finalSoftcap, queryScale, fused, moe, Mla.NONE);
+                    attentionSoftcap, finalSoftcap, queryScale, fused, moe, Mla.NONE, false);
         }
 
         /**
@@ -123,8 +151,12 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
      * @param sharedFfn the hidden size of the expert every token uses (DeepSeek: all its shared
      *     experts as one), or 0 for none
      * @param routing how the router scores and picks experts
+     * @param swigluLimit for gpt-oss's clamped SwiGLU, the limit {@code l}: an expert computes
+     *     {@code (clamp(up, -l, l) + 1) * g * sigmoid(1.702 g)} with {@code g = min(gate, l)};
+     *     0 for the family's plain gated activation
      */
-    public record Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn, Routing routing) {
+    public record Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn, Routing routing,
+            float swigluLimit) {
 
         /** No experts. */
         public static final Moe NONE = new Moe(0, 0, 0, false, 0);
@@ -145,6 +177,20 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         }
 
         /**
+         * Experts with the family's plain gated activation.
+         *
+         * @param experts the experts per block, or 0
+         * @param perToken the experts each token uses
+         * @param ffn each expert's hidden size
+         * @param normalize whether the chosen weights are scaled to sum to one
+         * @param sharedFfn the hidden size of the shared expert, or 0
+         * @param routing how the router scores and picks experts
+         */
+        public Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn, Routing routing) {
+            this(experts, perToken, ffn, normalize, sharedFfn, routing, 0);
+        }
+
+        /**
          * Experts routed by a softmax, as Mixtral and Qwen route them.
          *
          * @param experts the experts per block, or 0
@@ -154,7 +200,7 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
          * @param sharedFfn the hidden size of a shared expert gated by a sigmoid (Qwen 2), or 0
          */
         public Moe(int experts, int perToken, int ffn, boolean normalize, int sharedFfn) {
-            this(experts, perToken, ffn, normalize, sharedFfn, Routing.SOFTMAX);
+            this(experts, perToken, ffn, normalize, sharedFfn, Routing.SOFTMAX, 0);
         }
 
         /** @return whether there are experts */
@@ -286,7 +332,8 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
 
     /** The GGUF {@code general.architecture} values {@link #fromGguf} reads. */
     public static final java.util.Set<String> GGUF_ARCHITECTURES = java.util.Set.of("llama", "qwen2", "qwen3", "phi3",
-            "gemma", "gemma2", "gemma3", "qwen2moe", "qwen3moe", "deepseek2");
+            "gemma", "gemma2", "gemma3", "qwen2moe", "qwen3moe", "deepseek2",
+            "gpt-oss");
 
     private static boolean deepseek(String type) {
         return type.equals("deepseek_v2") || type.equals("deepseek_v3") || type.equals("kimi_k2");
@@ -548,7 +595,9 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
         boolean gemma = gemma(a);
         boolean gemma23 = a.equals("gemma2") || a.equals("gemma3");
         int window = (int) number(m, a + ".attention.sliding_window", 0);
-        int every = a.equals("gemma2") ? 2 : a.equals("gemma3") ? 6 : 0;
+        boolean oss = a.equals("gpt-oss");
+        // gpt-oss: layer 0 sees the window, layer 1 everything, and so on
+        int every = a.equals("gemma2") || oss ? 2 : a.equals("gemma3") ? 6 : 0;
         every = (int) number(m, a + ".attention.sliding_window_pattern", every);
         // as llama.cpp: queries scaled by 1 / sqrt(head size), but for the 27B Gemmas
         boolean big = a.equals("gemma2") && layers == 46 || a.equals("gemma3") && layers == 62;
@@ -559,16 +608,19 @@ public record LlamaConfig(String architecture, int vocabSize, int hidden, int in
             // Mixtral is written as "llama" with experts
             moe = new Moe(count.intValue(), (int) number(m, a + ".expert_used_count", -1),
                     (int) number(m, a + ".expert_feed_forward_length", number(m, a + ".feed_forward_length", -1)),
-                    a.equals("qwen2moe") ? false : !Boolean.FALSE.equals(m.get(a + ".expert_weights_norm")),
-                    (int) number(m, a + ".expert_shared_feed_forward_length", 0));
+                    // gpt-oss: a softmax over the chosen experts' logits, the same as normalizing
+                    a.equals("qwen2moe") ? false : oss || !Boolean.FALSE.equals(m.get(a + ".expert_weights_norm")),
+                    (int) number(m, a + ".expert_shared_feed_forward_length", 0), Routing.SOFTMAX, oss ? 7f : 0f);
         }
         Extras extras = new Extras(a.equals("qwen3") || a.equals("qwen3moe") || a.equals("gemma3"), window,
                 window > 0 ? every : 0,
                 a.equals("gemma3") ? number(m, a + ".rope.freq_base_swa", 10000) : 0,
                 gemma ? ActivationOp.GELU_TANH : ActivationOp.SILU, gemma, gemma23, gemma,
                 (float) number(m, a + ".attn_logit_softcapping", 0), (float) number(m, a + ".final_logit_softcapping", 0),
-                queryScale, gguf.contains("blk.0.attn_qkv.weight"), moe);
+                queryScale, gguf.contains("blk.0.attn_qkv.weight"), moe, Mla.NONE,
+                gguf.contains("blk.0.attn_sinks.weight") || gguf.contains("blk.0.attn_sinks"));
         String type = switch (a) {
+            case "gpt-oss" -> "gpt_oss";
             case "gemma3" -> "gemma3_text";
             case "qwen2moe" -> "qwen2_moe";
             case "qwen3moe" -> "qwen3_moe";

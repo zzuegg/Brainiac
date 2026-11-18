@@ -105,7 +105,8 @@ public final class Llama implements LanguageModel {
      * ({@link Fused}); the q/k and post norms are null where the family has none.
      */
     private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
-            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts, Latent latent) {
+            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts, Latent latent,
+            Var sinks) {
     }
 
     /**
@@ -235,7 +236,8 @@ public final class Llama implements LanguageModel {
                     e.qkNorm() ? need(named, p + "self_attn.k_norm.weight") : null,
                     post ? need(named, p + "post_attention_layernorm.weight") : null,
                     post ? need(named, p + "post_feedforward_layernorm.weight") : null,
-                    experts(config, linears, named, i), latent(config, linears, named, i)));
+                    experts(config, linears, named, i), latent(config, linears, named, i),
+                    named.get(p + "self_attn.sinks")));
             if (e.fused()) {
                 fused[i] = new Fused(linears.get(p + "self_attn.qkv_proj"), linears.get(p + "mlp.gate_up_proj"));
             }
@@ -501,6 +503,12 @@ public final class Llama implements LanguageModel {
             for (Map.Entry<String, String> n : ggufNorms(config).entrySet()) {
                 named.put(p + n.getKey() + ".weight", Var.param(gguf.tensor(g + n.getValue() + ".weight", device, dtype)));
             }
+            for (String sinks : new String[] {g + "attn_sinks.weight", g + "attn_sinks"}) {
+                if (gguf.contains(sinks)) {
+                    named.put(p + "self_attn.sinks", Var.param(gguf.tensor(sinks, device, DType.FLOAT32)));
+                    break;
+                }
+            }
             for (Map.Entry<String, String> e : parts.entrySet()) {
                 String l = p + e.getKey();
                 int heads = e.getValue().equals("attn_q") ? config.heads()
@@ -525,8 +533,13 @@ public final class Llama implements LanguageModel {
                 }
                 String[] n = expertNames(config);
                 String[] stored = {"ffn_gate", "ffn_up", "ffn_down"};
+                Var routerBias = null;
+                if (gguf.contains(g + "ffn_gate_inp.bias")) {
+                    routerBias = Var.param(gguf.tensor(g + "ffn_gate_inp.bias", device, dtype));
+                    named.put(p + n[0] + "gate.bias", routerBias);
+                }
                 linears.put(p + n[0] + "gate", linear(gguf, g + "ffn_gate_inp.weight", p + n[0] + "gate", null, device,
-                        dtype, named, null));
+                        dtype, named, routerBias));
                 boolean inPlace = gpuExpertLayers >= 0 && i >= gpuExpertLayers;
                 for (int x = 0; x < moe.experts(); x++) {
                     for (int k = 0; k < 3; k++) {
@@ -534,14 +547,23 @@ public final class Llama implements LanguageModel {
                         String stack = g + stored[k] + "_exps.weight";
                         String w = gguf.contains(stack) ? gguf.slice(stack, x) : g + stored[k] + "." + x + ".weight";
                         String hf = p + n[0] + "experts." + x + "." + n[k + 1];
+                        Device on = inPlace ? Device.cpu() : device;
+                        DType as = inPlace ? DType.FLOAT32 : dtype;
+                        // gpt-oss: each expert's projections have biases, stacked as [experts, out]
+                        Var bias = null;
+                        String stackedBias = g + stored[k] + "_exps.bias";
+                        if (gguf.contains(stackedBias)) {
+                            bias = Var.param(gguf.tensor(stackedBias, on, as).slice(0, x, x + 1)
+                                    .reshape(gguf.shape(stackedBias).dim(1)));
+                            named.put(hf + ".bias", bias);
+                        }
                         if (inPlace && gguf.mappable(w)) {
                             GgmlBlocks b = gguf.mapped(w);
-                            Linear l = new Linear(Var.of(Tensor.packed(b, Device.cpu())), null);
+                            Linear l = new Linear(Var.of(Tensor.packed(b, Device.cpu())), bias);
                             l.mapped = b;
                             linears.put(hf, l);
                         } else {
-                            linears.put(hf, linear(gguf, w, hf, null, inPlace ? Device.cpu() : device,
-                                    inPlace ? DType.FLOAT32 : dtype, named, null));
+                            linears.put(hf, linear(gguf, w, hf, null, on, as, named, bias));
                         }
                     }
                 }
@@ -641,7 +663,8 @@ public final class Llama implements LanguageModel {
             norms.put("pre_feedforward_layernorm", "ffn_norm");
             norms.put("post_feedforward_layernorm", "post_ffw_norm");
         } else {
-            norms.put("post_attention_layernorm", "ffn_norm");
+            // gpt-oss names the norm before its experts after the attention
+            norms.put("post_attention_layernorm", c.architecture().equals("gpt_oss") ? "post_attention_norm" : "ffn_norm");
         }
         if (c.extras().qkNorm()) {
             norms.put("self_attn.q_norm", "attn_q_norm");
@@ -802,7 +825,7 @@ public final class Llama implements LanguageModel {
             layerType[i] = dtype;
             String prefix = "model.layers." + i + ".";
             for (Map.Entry<String, Var> e : List.copyOf(named.entrySet())) {
-                if (e.getKey().startsWith(prefix) && e.getKey().contains("norm")) {
+                if (e.getKey().startsWith(prefix) && (e.getKey().contains("norm") || e.getKey().endsWith("sinks"))) {
                     named.put(e.getKey(), moved(e.getValue(), target, dtype));
                 } else if (e.getKey().startsWith(prefix) && e.getKey().endsWith("e_score_correction_bias")) {
                     named.put(e.getKey(), moved(e.getValue(), target, DType.FLOAT32));
@@ -825,7 +848,8 @@ public final class Llama implements LanguageModel {
                             b.experts.sharedScale, named.get(choiceBiasName(i))),
                     b.latent == null ? null : new Latent(b.latent.qA,
                             named.get(prefix + "self_attn.q_a_layernorm.weight"), b.latent.qB, b.latent.kvA,
-                            named.get(prefix + "self_attn.kv_a_layernorm.weight"), b.latent.kvB)));
+                            named.get(prefix + "self_attn.kv_a_layernorm.weight"), b.latent.kvB),
+                    named.get(prefix + "self_attn.sinks")));
         }
         headDevice = target;
         headType = dtype;
@@ -2198,7 +2222,11 @@ public final class Llama implements LanguageModel {
         if (bias == null && e.attentionSoftcap() > 0 && causal) {
             bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
         }
-        Var a = e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
+        if (bias == null && blk.sinks != null && causal) {
+            bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
+        }
+        Var a = blk.sinks != null ? Functional.sinkAttention(q, k, v, bias, scale, Var.of(blk.sinks.value()))
+                : e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
                 : bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
                 : Functional.attention(q, k, v, causal, scale);
         a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
@@ -2420,8 +2448,7 @@ public final class Llama implements LanguageModel {
         List<java.util.function.Function<Var, Var>> nets = new ArrayList<>();
         for (int e = 0; e < count; e++) {
             int at = e;
-            nets.add(xe -> m.down()[at].apply(m.gate()[at].apply(xe).activation(config.extras().activation(), 0)
-                    .mul(m.up()[at].apply(xe))));
+            nets.add(xe -> m.down()[at].apply(gated(m.gate()[at].apply(xe), m.up()[at].apply(xe))));
         }
         Var out = Functional.routedExperts(src, chosen, weights, k, nets);
         if (split) {
@@ -2431,6 +2458,19 @@ public final class Llama implements LanguageModel {
             out = out.add(shared != null ? shared : sharedExpert(m, flat));
         }
         return out.reshape(s[0], s[1], hidden);
+    }
+
+    /**
+     * An expert's gated activation: the family's activation of the gate times the up
+     * projection, or gpt-oss's clamped SwiGLU (see {@link LlamaConfig.Moe#swigluLimit}).
+     */
+    private Var gated(Var gate, Var up) {
+        float limit = config.extras().moe().swigluLimit();
+        if (limit > 0) {
+            Var g = gate.minimum(limit);
+            return up.clamp(-limit, limit).add(1f).mul(g.mul(g.mul(1.702f).sigmoid()));
+        }
+        return gate.activation(config.extras().activation(), 0).mul(up);
     }
 
     /** The shared expert's output for {@code flat}, scaled by its sigmoid gate. */

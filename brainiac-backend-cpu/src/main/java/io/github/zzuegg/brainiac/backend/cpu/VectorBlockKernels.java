@@ -13,7 +13,7 @@ import jdk.incubator.vector.VectorSpecies;
  * SIMD kernels for {@link BlockKernels}. Only loaded when the {@code jdk.incubator.vector}
  * module is present.
  *
- * <p>The formats of most large models (MXFP4, Q8_0, Q4_K, IQ4_XS) are multiplied straight
+ * <p>The formats of most large models (MXFP4, Q8_0, Q4_K, Q6_K, IQ4_XS) are multiplied straight
  * from their blocks, without decoding a row into floats first: levels are loaded 16 bytes
  * at a time, 4-bit codes split into their two halves and, for the non-linear formats,
  * looked up in a 16-entry table with one byte shuffle, widened to floats and multiplied
@@ -36,6 +36,9 @@ final class VectorBlockKernels {
     /** IQ4_NL's and IQ4_XS's levels (llama.cpp's kvalues_iq4nl). */
     private static final byte[] IQ4 = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
+    /** Q6_K's high two bits {@code i} as {@code 16 i - 32}, repeated to fill 16 lanes. */
+    private static final byte[] Q6_HIGH = {-32, -16, 0, 16, -32, -16, 0, 16, -32, -16, 0, 16, -32, -16, 0, 16};
+
     private VectorBlockKernels() {
     }
 
@@ -47,7 +50,7 @@ final class VectorBlockKernels {
     /** @return whether {@link #dot(String, MemorySegment, long, float[], int, int)} reads this format directly */
     static boolean reads(String format) {
         return fused() && switch (format) {
-            case "MXFP4", "Q8_0", "Q4_K", "IQ4_XS" -> true;
+            case "MXFP4", "Q8_0", "Q4_K", "Q6_K", "IQ4_XS" -> true;
             default -> false;
         };
     }
@@ -61,9 +64,19 @@ final class VectorBlockKernels {
             case "MXFP4" -> mxfp4(m, row, x, at, k);
             case "Q8_0" -> q80(m, row, x, at, k);
             case "Q4_K" -> q4k(m, row, x, at, k);
+            case "Q6_K" -> q6k(m, row, x, at, k);
             case "IQ4_XS" -> iq4xs(m, row, x, at, k);
             default -> throw new IllegalArgumentException(format);
         };
+    }
+
+    /**
+     * Shifts each byte right by {@code n}, the top bits filled from the next byte: callers
+     * mask what they keep. Shifted as ints, which every SIMD instruction set has; a byte
+     * shift is not, and was not compiled to vector code.
+     */
+    private static ByteVector shr(ByteVector v, int n) {
+        return v.reinterpretAsInts().lanewise(VectorOperators.LSHR, n).reinterpretAsBytes();
     }
 
     private static FloatVector lane(ByteVector v, int part) {
@@ -77,7 +90,7 @@ final class VectorBlockKernels {
     /** Sum over 32 inputs of table[low code] (first 16) and table[high code] (last 16) times x. */
     private static FloatVector lookup32(ByteVector table, ByteVector q, float[] x, int at) {
         ByteVector lo = q.and((byte) 0xF).selectFrom(table);
-        ByteVector hi = q.lanewise(VectorOperators.LSHR, 4).and((byte) 0xF).selectFrom(table);
+        ByteVector hi = shr(q, 4).and((byte) 0xF).selectFrom(table);
         FloatVector s = lane(lo, 0).mul(xs(x, at));
         s = lane(lo, 1).fma(xs(x, at + 8), s);
         s = lane(hi, 0).fma(xs(x, at + 16), s);
@@ -178,9 +191,9 @@ final class VectorBlockKernels {
 
     /**
      * One 64-input piece of a Q4_K block: 32 bytes whose low codes weigh the first 32 inputs
-     * (scale {@code d0}, offset {@code o0}) and high codes the next 32. Returns a float, not a
-     * vector: the JIT compiles this on its own (too large to inline), and a vector passed
-     * across a call that is not inlined would be boxed.
+     * (scale {@code d0}, offset {@code o0}) and high codes the next 32. Kept apart and
+     * returning a float: measured, a whole block in one method with a vector running sum
+     * compiled to code several times slower.
      */
     private static float q4kChunk(MemorySegment m, long qo, float[] x, int xo, float d0, float o0, float d1,
             float o1) {
@@ -197,8 +210,8 @@ final class VectorBlockKernels {
         lo = lane(b, 0).fma(x2, lo);
         lo = lane(b, 1).fma(x3, lo);
         FloatVector loInputs = x0.add(x1).add(x2.add(x3));
-        a = q0.lanewise(VectorOperators.LSHR, 4).and((byte) 0xF);
-        b = q1.lanewise(VectorOperators.LSHR, 4).and((byte) 0xF);
+        a = shr(q0, 4).and((byte) 0xF);
+        b = shr(q1, 4).and((byte) 0xF);
         x0 = xs(x, xo + 32);
         x1 = xs(x, xo + 40);
         x2 = xs(x, xo + 48);
@@ -210,6 +223,44 @@ final class VectorBlockKernels {
         FloatVector hiInputs = x0.add(x1).add(x2.add(x3));
         FloatVector sum = lo.mul(d0).add(hi.mul(d1)).add(loInputs.mul(o0)).add(hiInputs.mul(o1));
         return sum.reduceLanes(VectorOperators.ADD);
+    }
+
+    private static float q6k(MemorySegment m, long row, float[] x, int at, int k) {
+        float sum = 0;
+        for (int b = 0; b < k / 256; b++) {
+            long o = row + 210L * b;
+            float d = f16(m, o + 208);
+            for (int half = 0; half < 2; half++) {
+                long sc = o + 192 + 8L * half;
+                for (int c = 0; c < 2; c++) {
+                    // 16 positions l, each giving the values at l, l + 32, l + 64 and l + 96
+                    long ql = o + 64L * half + 16 * c;
+                    long qh = o + 128 + 32L * half + 16 * c;
+                    int xo = at + 256 * b + 128 * half + 16 * c;
+                    for (int g = 0; g < 4; g++) {
+                        sum += q6kGroup(m, ql + 32 * (g & 1), 4 * (g >> 1), qh, 2 * g, x, xo + 32 * g,
+                                d * m.get(ValueLayout.JAVA_BYTE, sc + 2 * g + c));
+                    }
+                }
+            }
+        }
+        return sum;
+    }
+
+    /**
+     * 16 values of a Q6_K block: low four bits from {@code ql} shifted by {@code lowShift},
+     * high two from {@code qh} shifted by {@code highShift}, less 32, times {@code scale},
+     * times {@code x[xo, xo + 16)}. Small and returning a float, which compiled to the
+     * fastest code.
+     */
+    private static float q6kGroup(MemorySegment m, long ql, int lowShift, long qh, int highShift, float[] x, int xo,
+            float scale) {
+        ByteVector low = shr(ByteVector.fromMemorySegment(B16, m, ql, LE), lowShift).and((byte) 0xF);
+        ByteVector high = shr(ByteVector.fromMemorySegment(B16, m, qh, LE), highShift).and((byte) 3)
+                .selectFrom(ByteVector.fromArray(B16, Q6_HIGH, 0));
+        ByteVector v = low.add(high);
+        return lane(v, 0).mul(xs(x, xo)).add(lane(v, 1).mul(xs(x, xo + 8))).mul(scale)
+                .reduceLanes(VectorOperators.ADD);
     }
 
     /** As {@link BlockKernels#dot}, two vectors of running sums at a time. */

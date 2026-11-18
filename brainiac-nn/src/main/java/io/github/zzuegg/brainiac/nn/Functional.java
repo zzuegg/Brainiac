@@ -1629,6 +1629,46 @@ public final class Functional {
         return Activation.SOFTMAX.forward(scores).matmul(v);
     }
 
+    /**
+     * Scaled dot-product attention with a learned sink per head (gpt-oss): each head's softmax
+     * over the keys also counts {@code exp(sink)}, an extra key with no value, so a query can
+     * give the keys less than all of its attention.
+     *
+     * @param q queries {@code [batch, heads, queries, dk]}
+     * @param k keys {@code [batch, kvHeads, keys, dk]}
+     * @param v values {@code [batch, kvHeads, keys, dv]}
+     * @param bias added to the scores, broadcast to {@code [batch, heads, queries, keys]} (a
+     *     mask), or {@code null}
+     * @param scale the score scale
+     * @param sinks the sink logit of each head, {@code [heads]}
+     * @return {@code [batch, heads, queries, dv]}
+     */
+    public static Var sinkAttention(Var q, Var k, Var v, Tensor bias, float scale, Var sinks) {
+        int batch = q.shape().dim(0);
+        int heads = q.shape().dim(1);
+        int queries = q.shape().dim(2);
+        int kvHeads = k.shape().dim(1);
+        if (heads % kvHeads != 0 || v.shape().dim(1) != kvHeads) {
+            throw new IllegalArgumentException("query heads " + heads + " must be a multiple of key/value heads "
+                    + kvHeads + " (and keys and values need the same heads)");
+        }
+        if (sinks.shape().size() != heads) {
+            throw new IllegalArgumentException(sinks.shape() + " sinks for " + heads + " heads");
+        }
+        if (kvHeads != heads) {
+            k = repeatHeads(k, heads / kvHeads);
+            v = repeatHeads(v, heads / kvHeads);
+        }
+        int keys = k.shape().dim(2);
+        Var scores = q.matmul(k.transpose()).mul(scale);
+        if (bias != null) {
+            scores = scores.add(bias);
+        }
+        Var sink = sinks.to(scores.dtype()).reshape(1, heads, 1, 1).expand(Shape.of(batch, heads, queries, 1));
+        Var weights = Activation.SOFTMAX.forward(Var.concat(3, scores, sink)).slice(3, 0, keys);
+        return weights.matmul(v);
+    }
+
     /** Whether {@link #attention(Var, Var, Var, boolean, float)} may use a backend's fused kernel. */
     private static final boolean FUSED = !"false".equals(System.getProperty("brainiac.fusedAttention"));
 
