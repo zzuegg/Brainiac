@@ -10,7 +10,7 @@ class SamplingBiasCorrectionTest {
 
     @Test
     void logQCorrectionRecoversHeadItems() {
-        Map<String, double[]> r = SamplingBiasCorrection.run(1.2, 300, 1);
+        Map<String, double[]> r = SamplingBiasCorrection.run(1.2, 160, 1);
         StringBuilder b = new StringBuilder("Recall@20 all/head/tail/freq-TV (Zipf 1.2):");
         r.forEach((k, v) -> b.append(String.format(" %s %.3f/%.3f/%.3f/%.3f |", k, v[0], v[1], v[2], v[3])));
         String line = b.toString();

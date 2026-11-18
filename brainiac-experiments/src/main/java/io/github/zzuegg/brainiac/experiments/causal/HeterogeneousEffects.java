@@ -68,6 +68,15 @@ public final class HeterogeneousEffects {
             Regressor.Fitted tau = learners.fit(kind, train.x(), train.t(), train.y());
             out.put(kind + "-learner (forest)", MetaLearners.pehe(tau.predict(test.x()), test.tau()));
         }
+        // residual learners with forest nuisances but a ridge final stage (Nie and Wager's point: the
+        // effect can be simpler than the outcome)
+        MetaLearners linearEffect = new MetaLearners(forest(trees, seed), Regressor.ridge(1.0),
+                forest(trees, seed + 2)).seed(seed);
+        for (MetaLearners.Kind kind : new MetaLearners.Kind[] {MetaLearners.Kind.R, MetaLearners.Kind.DR}) {
+            Regressor.Fitted tau = linearEffect.fit(kind, train.x(), train.t(), train.y());
+            out.put(kind + "-learner (forest nuisances, ridge effect)",
+                    MetaLearners.pehe(tau.predict(test.x()), test.tau()));
+        }
         // the ridge-per-arm T-learner of CausalEstimators.outcomes, refitted so it predicts held-out units
         Regressor.Fitted mu0 = Regressor.ridge(1e-3).fit(arm(train, 0)[0], arm(train, 0)[1][0]);
         Regressor.Fitted mu1 = Regressor.ridge(1e-3).fit(arm(train, 1)[0], arm(train, 1)[1][0]);
@@ -112,15 +121,33 @@ public final class HeterogeneousEffects {
         Tensor ty = vector(train.y());
         Optimizer opt = Optimizer.adam(3e-3f);
         SplittableRandom r = new SplittableRandom(seed);
-        int n = train.size();
+        // early stopping on the factual MSE of the last 20% of the training rows, as in TARNet
+        int n = train.size() * 4 / 5;
+        int valid = train.size() - n;
+        Tensor vx = tx.slice(0, n, n + valid);
+        Tensor vt = tt.slice(0, n, n + valid);
+        Tensor vy = ty.slice(0, n, n + valid);
+        Tensor testX = matrix(test);
         int batch = 128;
+        double best = Double.MAX_VALUE;
+        double[] bestCate = Var.noGrad(() -> net.cate(testX)).toDoubleArray();
         for (int s = 0; s < steps; s++) {
             int from = r.nextInt(n - batch);
             net.loss(net.forward(Var.of(tx.slice(0, from, from + batch))), tt.slice(0, from, from + batch),
                     ty.slice(0, from, from + batch), 1f, 1f).backward();
             opt.step(net.parameters());
+            if ((s + 1) % 25 == 0 || s == steps - 1) {
+                Tensor out = Var.noGrad(() -> net.forward(Var.of(vx))).value();
+                Tensor tc = vt.reshape(valid, 1);
+                Tensor factual = out.slice(1, 1, 2).mul(tc).add(out.slice(1, 0, 1).mul(tc.neg().add(1f)));
+                double mse = factual.sub(vy.reshape(valid, 1)).square().mean().item();
+                if (mse < best) {
+                    best = mse;
+                    bestCate = Var.noGrad(() -> net.cate(testX)).toDoubleArray();
+                }
+            }
         }
-        return Var.noGrad(() -> net.cate(matrix(test))).toDoubleArray();
+        return bestCate;
     }
 
     private static Tensor matrix(double[][] x) {
