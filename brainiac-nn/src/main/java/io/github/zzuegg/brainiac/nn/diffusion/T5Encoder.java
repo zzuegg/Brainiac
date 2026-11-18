@@ -41,9 +41,30 @@ public final class T5Encoder implements Layer {
      * @param epsilon the RMS norms' epsilon
      * @param gated whether the feed-forward is gated (T5 1.1: GELU times a linear gate),
      *     otherwise a plain ReLU feed-forward (the original T5)
+     * @param biasPerLayer whether every block learns its own relative position biases (umT5,
+     *     the text encoder of Wan), otherwise the first block's serve all (T5)
      */
     public record Settings(int vocabulary, int features, int layers, int heads, int headSize, int ffnSize,
-            int buckets, int maxDistance, float epsilon, boolean gated) {
+            int buckets, int maxDistance, float epsilon, boolean gated, boolean biasPerLayer) {
+
+        /**
+         * A T5 shape whose blocks share one set of position biases.
+         *
+         * @param vocabulary the number of tokens
+         * @param features the model width
+         * @param layers the blocks
+         * @param heads the heads
+         * @param headSize the features per head
+         * @param ffnSize the feed-forward width
+         * @param buckets the relative position buckets
+         * @param maxDistance the distance beyond which positions share a bucket
+         * @param epsilon the RMS norms' epsilon
+         * @param gated whether the feed-forward is gated
+         */
+        public Settings(int vocabulary, int features, int layers, int heads, int headSize, int ffnSize,
+                int buckets, int maxDistance, float epsilon, boolean gated) {
+            this(vocabulary, features, layers, heads, headSize, ffnSize, buckets, maxDistance, epsilon, gated, false);
+        }
 
         /** Checks the values. */
         public Settings {
@@ -90,7 +111,8 @@ public final class T5Encoder implements Layer {
         this.settings = Objects.requireNonNull(settings, "settings");
         int d = settings.features();
         embedding = Var.param(Tensor.normal(Shape.of(settings.vocabulary(), d), 0, 1f, random));
-        relativeBias = Var.param(Tensor.normal(Shape.of(settings.buckets(), settings.heads()), 0, 0.1f, random));
+        relativeBias = settings.biasPerLayer() ? null
+                : Var.param(Tensor.normal(Shape.of(settings.buckets(), settings.heads()), 0, 0.1f, random));
         for (int i = 0; i < settings.layers(); i++) {
             blocks.add(new Block(settings, random));
         }
@@ -116,10 +138,13 @@ public final class T5Encoder implements Layer {
         private final Var up;
         private final Var gate;
         private final Var down;
+        private final Var relativeBias;
 
         Block(Settings s, SplittableRandom random) {
             int d = s.features();
             int inner = s.inner();
+            relativeBias = s.biasPerLayer()
+                    ? Var.param(Tensor.normal(Shape.of(s.buckets(), s.heads()), 0, 0.1f, random)) : null;
             attentionNorm = norm(s);
             // T5 does not scale its scores, so the queries start small
             q = Var.param(Tensor.normal(Shape.of(d, inner), 0, (float) (1 / Math.sqrt(d * (double) s.headSize())),
@@ -134,7 +159,11 @@ public final class T5Encoder implements Layer {
         }
 
         List<Var> parameters() {
-            List<Var> p = new ArrayList<>(attentionNorm.parameters());
+            List<Var> p = new ArrayList<>();
+            if (relativeBias != null) {
+                p.add(relativeBias);
+            }
+            p.addAll(attentionNorm.parameters());
             p.addAll(List.of(q, k, v, o));
             p.addAll(ffnNorm.parameters());
             p.add(up);
@@ -143,6 +172,11 @@ public final class T5Encoder implements Layer {
             }
             p.add(down);
             return p;
+        }
+
+        /** @return this block's relative position biases {@code [buckets, heads]}, or {@code null} if shared */
+        public Var relativeBias() {
+            return relativeBias;
         }
 
         /** @return the norm before attention */
@@ -211,20 +245,28 @@ public final class T5Encoder implements Layer {
         Var x = Parts.step(() -> embedding.gather(0, index));
         Tensor buckets = Tensor.of(Shape.of(n * n), relativeBuckets(n, settings.buckets(), settings.maxDistance()),
                 device);
-        // [heads, n, n], shared by every block
-        Var bias = Parts.step(() -> relativeBias.gather(0, buckets).reshape(n, n, settings.heads()).permute(2, 0, 1)
-                .to(DType.FLOAT32));
+        // [heads, n, n], shared by every block unless each has its own
+        Var shared = relativeBias == null ? null : Parts.step(() -> biases(relativeBias, buckets, n));
         for (Block b : blocks) {
             Var in = x;
+            Var bias = shared != null ? shared : Parts.step(() -> biases(b.relativeBias, buckets, n));
             x = Parts.step(() -> block(b, in, bias, batch, n));
             Parts.free(in);
+            if (shared == null) {
+                Parts.free(bias);
+            }
         }
+        Var bias = shared;
         Var h = x;
         Var out = Parts.step(() -> finalNorm.forward(h));
         Parts.free(h);
         Parts.free(bias);
         buckets.release();
         return out;
+    }
+
+    private Var biases(Var table, Tensor buckets, int n) {
+        return table.gather(0, buckets).reshape(n, n, settings.heads()).permute(2, 0, 1).to(DType.FLOAT32);
     }
 
     private Var block(Block b, Var x, Var bias, int batch, int n) {
@@ -299,10 +341,13 @@ public final class T5Encoder implements Layer {
         return Shape.of(input.dim(0), settings.features());
     }
 
-    /** Embedding, relative position bias, each block's parameters, then the final norm. */
+    /** Embedding, the shared relative position bias (if any), each block's parameters, then the final norm. */
     @Override
     public List<Var> parameters() {
-        List<Var> p = new ArrayList<>(List.of(embedding, relativeBias));
+        List<Var> p = new ArrayList<>(List.of(embedding));
+        if (relativeBias != null) {
+            p.add(relativeBias);
+        }
         for (Block b : blocks) {
             p.addAll(b.parameters());
         }
@@ -325,7 +370,7 @@ public final class T5Encoder implements Layer {
         return embedding;
     }
 
-    /** @return the relative position biases {@code [buckets, heads]} */
+    /** @return the relative position biases {@code [buckets, heads]} shared by all blocks, or {@code null} for umT5 */
     public Var relativeBias() {
         return relativeBias;
     }
