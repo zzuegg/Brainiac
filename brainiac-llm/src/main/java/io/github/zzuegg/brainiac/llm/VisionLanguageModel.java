@@ -249,11 +249,22 @@ public final class VisionLanguageModel implements LanguageModel {
      */
     public int[] prompt(io.github.zzuegg.brainiac.io.PretrainedTokenizer tokenizer, String text,
             List<BufferedImage> images) {
+        return prompt(tokenizer.encode(markImages(text)), images);
+    }
+
+    /**
+     * The text as the model's processor rewrites its image markers before tokenizing: for
+     * Gemma 3, each {@code <start_of_image>} becomes the image's opening, one image token
+     * and its closing; for LLaVA the text stays as it is.
+     *
+     * @param text a prompt with one marker per image
+     * @return the text to tokenize
+     */
+    public String markImages(String text) {
         if (kind == Kind.GEMMA3) {
-            text = text.replace("<start_of_image>",
-                    "\n\n<start_of_image><image_soft_token><end_of_image>\n\n");
+            return text.replace("<start_of_image>", "\n\n<start_of_image><image_soft_token><end_of_image>\n\n");
         }
-        return prompt(tokenizer.encode(text), images);
+        return text;
     }
 
     /**
@@ -320,7 +331,8 @@ public final class VisionLanguageModel implements LanguageModel {
                 count += t == imageToken ? 1 : 0;
             }
         }
-        if (count == 0) {
+        if (count == 0 || pending.isEmpty()) {
+            // a generated image token, with no image waiting, reads as an ordinary token
             return language.next(state, tokens, padding);
         }
         if (padding != null) {

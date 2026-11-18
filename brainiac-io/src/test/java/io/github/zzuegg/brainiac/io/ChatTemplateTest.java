@@ -73,4 +73,11 @@ class ChatTemplateTest {
         assertThrows(IllegalArgumentException.class, () -> ChatTemplate.of("{{ unclosed"));
         assertThrows(IllegalArgumentException.class, () -> ChatTemplate.of("{% frobnicate %}"));
     }
+
+    @Test
+    void lstripBlocksOnlyStripsTheStartOfALine() {
+        // as jinja2 with lstrip_blocks: the space after an expression stays, indentation before a block goes
+        ChatTemplate t = ChatTemplate.of("{{ a }} {% if true %}x{% endif %}\n   {% if true %}y{% endif %}");
+        assertEquals("A xy", t.render(Map.of("a", "A")));
+    }
 }

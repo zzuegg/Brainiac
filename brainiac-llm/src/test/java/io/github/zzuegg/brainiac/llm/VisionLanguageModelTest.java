@@ -97,4 +97,57 @@ class VisionLanguageModelTest {
             logits = gemma.language().next(state, new int[][] {{best}}, null);
         }
     }
+
+    /** The server reads OpenAI image parts (data: URLs) and answers as the generator does. */
+    @Test
+    void serverAnswersAboutImages() throws Exception {
+        VisionLanguageModel llava = VisionLanguageModel.load(LlamaTest.resource("vlm-llava"), LlamaTest.DEVICE,
+                DType.FLOAT32);
+        String chars = "abcdefghijklmnopqrstuvwxyz ?:.,!\nABCDEFGHIJKLMNOPQRSTUVWXYZ0";
+        java.util.Map<String, Object> vocab = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 60; i++) {
+            vocab.put(String.valueOf(chars.charAt(i)), i);
+        }
+        java.util.Map<String, Object> root = java.util.Map.of("model", java.util.Map.of("type", "BPE", "vocab", vocab,
+                "merges", List.of()), "added_tokens", List.of(
+                java.util.Map.of("id", 60, "content", "<image>", "special", true),
+                java.util.Map.of("id", 61, "content", "<end>", "special", true),
+                java.util.Map.of("id", 62, "content", "<x>", "special", true),
+                java.util.Map.of("id", 63, "content", "<y>", "special", true)));
+        io.github.zzuegg.brainiac.io.PretrainedTokenizer tok = io.github.zzuegg.brainiac.io.PretrainedTokenizer.fromJson(
+                io.github.zzuegg.brainiac.io.Json.write(root), java.util.Map.of("eos_token", "<end>", "chat_template",
+                        "{% for m in messages %}{{ m['role'] }} {% if m['content'] is string %}{{ m['content'] }}"
+                        + "{% else %}{% for p in m['content'] %}{% if p['type'] == 'image' %}<image>"
+                        + "{% else %}{{ p['text'] }}{% endif %}{% endfor %}{% endif %}{% endfor %}"
+                        + "{% if add_generation_prompt %}assistant {% endif %}"));
+        Generator generator = new Generator(llava, tok);
+        java.nio.file.Path file = LlamaTest.resource("vision-image.png");
+        BufferedImage image = ImageIO.read(file.toFile());
+        int[] ids = llava.prompt(generator.encode("user <image>what is it?assistant "), List.of(image));
+        String want = generator.generate(new int[][] {ids}, Generator.Options.greedy(6), null).getFirst().text();
+        String data = "data:image/png;base64," + java.util.Base64.getEncoder().encodeToString(
+                java.nio.file.Files.readAllBytes(file));
+        String body = "{\"max_tokens\":6,\"temperature\":0,\"messages\":[{\"role\":\"user\",\"content\":["
+                + "{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + data + "\"}},"
+                + "{\"type\":\"text\",\"text\":\"what is it?\"}]}]}";
+        for (int batch : new int[] {1, 4}) {
+            try (OpenAiServer server = OpenAiServer.start(new java.net.InetSocketAddress("127.0.0.1", 0), "llava",
+                    generator, tok, null, batch)) {
+                java.net.HttpURLConnection c = (java.net.HttpURLConnection) java.net.URI.create(
+                        "http://127.0.0.1:" + server.port() + "/v1/chat/completions").toURL().openConnection();
+                c.setRequestMethod("POST");
+                c.setDoOutput(true);
+                try (java.io.OutputStream out = c.getOutputStream()) {
+                    out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                assertEquals(200, c.getResponseCode());
+                String r = new String(c.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                java.util.Map<String, Object> choice = io.github.zzuegg.brainiac.io.Json.object(
+                        io.github.zzuegg.brainiac.io.Json.array(io.github.zzuegg.brainiac.io.Json.object(
+                                io.github.zzuegg.brainiac.io.Json.parse(r)).get("choices")).getFirst());
+                Object message = io.github.zzuegg.brainiac.io.Json.object(choice.get("message")).get("content");
+                assertEquals(want, message == null ? "" : message, "batch " + batch);
+            }
+        }
+    }
 }
