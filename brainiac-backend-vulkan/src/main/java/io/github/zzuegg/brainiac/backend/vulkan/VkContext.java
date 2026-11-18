@@ -136,6 +136,13 @@ final class VkContext {
     final String deviceList;
     final long deviceMemory;
     final long budget;
+    /**
+     * Whether {@link #budget} was set ({@code -Dbrainiac.vulkan.memory}, in MB) and so caps
+     * device-local memory, the rest spilling; otherwise it only says when to reclaim first.
+     * When other programs fill the device, AMD's Windows driver refuses even system memory, so
+     * a cap set below what they leave free is the way to spill early enough.
+     */
+    final boolean capped;
     final int maxGroups;
     /** Whether shaders can use doubles (float64 tensors). */
     final boolean fp64;
@@ -385,6 +392,7 @@ final class VkContext {
                 memoryBudget = hasExtension(physical, EXTMemoryBudget.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
                 Integer mb = Integer.getInteger("brainiac.vulkan.memory");
                 budget = mb != null ? (long) mb << 20 : deviceMemory / 10 * 8;
+                capped = mb != null;
             }
         } catch (RuntimeException | Error e) {
             vkDestroyInstance(instance, null);
@@ -864,7 +872,9 @@ final class VkContext {
                         }
                     }
                 }
-                throw new OutOfDeviceMemory(last.getMessage() + "; device-local: " + again.getMessage()
+                throw new OutOfDeviceMemory(last.getMessage() + " (other programs may fill the device: close them, or"
+                        + " cap this one's device memory below what they leave with -Dbrainiac.vulkan.memory=MB, the"
+                        + " rest spilling to system memory); device-local: " + again.getMessage()
                         + "; spill types tried: " + tried + "; heaps: " + heaps());
             }
         }
@@ -906,6 +916,10 @@ final class VkContext {
             b.spill = spill;
             if (!spill && type == deviceLocalType && simulatedLimit > 0 && allocated + size > simulatedLimit) {
                 throw new OutOfDeviceMemory("simulated: out of device memory");
+            }
+            if (!spill && type == deviceLocalType && spillType >= 0 && capped && allocated + size > budget) {
+                throw new OutOfDeviceMemory("device memory cap of " + (budget >> 20) + " MB reached allocating "
+                        + (size >> 20) + " MB");
             }
             if (!spill && type == deviceLocalType && spillType >= 0 && room() < size + HEADROOM) {
                 throw new OutOfDeviceMemory("device memory budget reached allocating " + (size >> 20) + " MB ("
