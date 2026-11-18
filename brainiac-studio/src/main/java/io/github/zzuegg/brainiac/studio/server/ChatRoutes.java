@@ -28,7 +28,7 @@ import java.util.Map;
  *       {@code "first": true} makes it the key tried first. Keys are never sent back, only their
  *       names and last four characters.
  *   <li>{@code POST /api/chat} with {@code {"model": "auto", "system": "...", "messages":
- *       [{"role": "user", "text": "...", "images": [{"type": "image/png", "data": "base64"}]}], "maxTokens": 4096, "temperature": 0.7, "key": "work"}} (the key's name is
+ *       [{"role": "user", "text": "...", "images": [{"type": "image/png", "data": "base64"}]}], "maxTokens": 4096, "temperature": 0.7, "topP": 0.9, "topK": 40, "repeatPenalty": 1.1, "key": "work"}} (the key's name is
  *       optional) answers as a server-sent event
  *       stream: {@code route} (the model chosen), then {@code text} and {@code thinking} pieces,
  *       then {@code done} or {@code error}.
@@ -559,6 +559,24 @@ final class ChatRoutes {
         return t;
     }
 
+    /**
+     * Reads a request's {@code topP}, {@code topK} and {@code repeatPenalty}.
+     *
+     * @param body the request
+     * @return them, each null when it is left to the model
+     * @throws Exchanges.BadRequest if one is out of its range
+     */
+    static io.github.zzuegg.brainiac.studio.chat.Sampler sampler(Map<String, Object> body) {
+        try {
+            return new io.github.zzuegg.brainiac.studio.chat.Sampler(
+                    body.get("topP") instanceof Number p ? p.floatValue() : null,
+                    body.get("topK") instanceof Number k ? k.intValue() : null,
+                    body.get("repeatPenalty") instanceof Number r ? r.floatValue() : null);
+        } catch (IllegalArgumentException e) {
+            throw new Exchanges.BadRequest(e.getMessage());
+        }
+    }
+
     private void chat(HttpExchange ex) throws IOException {
         Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
         String model = Json.string(body, "model", ChatService.AUTO);
@@ -571,6 +589,7 @@ final class ChatRoutes {
             messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", ""), images(m)));
         }
         Float temperature = temperature(body);
+        io.github.zzuegg.brainiac.studio.chat.Sampler sampler = sampler(body);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role()) || maxTokens < 1) {
             throw new Exchanges.BadRequest("send at least one message, ending with the user's, and maxTokens >= 1");
         }
@@ -583,7 +602,7 @@ final class ChatRoutes {
             Events events = new Events(out);
             long start = System.nanoTime();
             try {
-                ChatResult r = chat.chat(model, system, messages, maxTokens, key, temperature, m -> {
+                ChatResult r = chat.chat(model, system, messages, maxTokens, key, temperature, sampler, m -> {
                     Map<String, Object> route = new LinkedHashMap<>();
                     route.put("key", m.key());
                     route.put("provider", m.provider());

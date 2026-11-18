@@ -22,6 +22,79 @@ public final class GradientBoostedTrees {
     }
 
     /**
+     * A training loss given by its first and second derivatives with respect to the raw
+     * score, as XGBoost's custom objectives: quantile, Huber, Poisson, ranking or any other.
+     */
+    public interface Loss {
+
+        /**
+         * Fills each row's gradient and curvature of the loss at the current raw scores.
+         *
+         * @param raw the current raw scores
+         * @param y the targets
+         * @param gradient receives the first derivatives
+         * @param hessian receives the second derivatives; positive values keep leaves stable
+         */
+        void derivatives(double[] raw, double[] y, double[] gradient, double[] hessian);
+
+        /**
+         * @param y the targets
+         * @return the raw score every row starts from
+         */
+        default double base(double[] y) {
+            return 0;
+        }
+
+        /**
+         * @param raw a raw score
+         * @return the prediction for it, such as a probability or a rate
+         */
+        default double link(double raw) {
+            return raw;
+        }
+    }
+
+    private static Loss loss(Objective objective) {
+        return switch (objective) {
+            case REGRESSION -> new Loss() {
+                @Override
+                public void derivatives(double[] raw, double[] y, double[] g, double[] h) {
+                    for (int i = 0; i < raw.length; i++) {
+                        g[i] = raw[i] - y[i];
+                        h[i] = 1;
+                    }
+                }
+
+                @Override
+                public double base(double[] y) {
+                    return Arrays.stream(y).average().orElse(0);
+                }
+            };
+            case BINARY -> new Loss() {
+                @Override
+                public void derivatives(double[] raw, double[] y, double[] g, double[] h) {
+                    for (int i = 0; i < raw.length; i++) {
+                        double p = 1 / (1 + Math.exp(-raw[i]));
+                        g[i] = p - y[i];
+                        h[i] = Math.max(p * (1 - p), 1e-12);
+                    }
+                }
+
+                @Override
+                public double base(double[] y) {
+                    double mean = Math.clamp(Arrays.stream(y).average().orElse(0.5), 1e-6, 1 - 1e-6);
+                    return Math.log(mean / (1 - mean));
+                }
+
+                @Override
+                public double link(double raw) {
+                    return 1 / (1 + Math.exp(-raw));
+                }
+            };
+        };
+    }
+
+    /**
      * Training settings.
      *
      * @param trees how many trees
@@ -70,15 +143,15 @@ public final class GradientBoostedTrees {
         }
     }
 
-    private final Objective objective;
+    private final Loss loss;
     private final double base;
     private final List<Tree> trees;
     private final double learningRate;
     private final double[] importance;
 
-    private GradientBoostedTrees(Objective objective, double base, List<Tree> trees, double learningRate,
+    private GradientBoostedTrees(Loss loss, double base, List<Tree> trees, double learningRate,
             double[] importance) {
-        this.objective = objective;
+        this.loss = loss;
         this.base = base;
         this.trees = trees;
         this.learningRate = learningRate;
@@ -95,14 +168,25 @@ public final class GradientBoostedTrees {
      * @return the trained ensemble
      */
     public static GradientBoostedTrees fit(double[][] x, double[] y, Objective objective, Settings s) {
+        return fit(x, y, loss(objective), s);
+    }
+
+    /**
+     * Trains trees on a custom loss.
+     *
+     * @param x rows of features
+     * @param y one target per row
+     * @param loss the loss's derivatives, starting score and link
+     * @param s the settings
+     * @return the trained ensemble
+     */
+    public static GradientBoostedTrees fit(double[][] x, double[] y, Loss loss, Settings s) {
         int n = x.length;
         if (n == 0 || y.length != n) {
             throw new IllegalArgumentException(n + " rows and " + y.length + " targets");
         }
         int features = x[0].length;
-        double mean = Arrays.stream(y).average().orElse(0);
-        double base = objective == Objective.REGRESSION ? mean
-                : Math.log(Math.clamp(mean, 1e-6, 1 - 1e-6) / (1 - Math.clamp(mean, 1e-6, 1 - 1e-6)));
+        double base = loss.base(y);
         double[][] thresholds = new double[features][];
         for (int f = 0; f < features; f++) {
             thresholds[f] = thresholds(x, f, s.bins());
@@ -115,16 +199,7 @@ public final class GradientBoostedTrees {
         List<Tree> trees = new ArrayList<>();
         SplittableRandom random = new SplittableRandom(s.seed());
         for (int t = 0; t < s.trees(); t++) {
-            for (int i = 0; i < n; i++) {
-                if (objective == Objective.REGRESSION) {
-                    g[i] = raw[i] - y[i];
-                    h[i] = 1;
-                } else {
-                    double p = 1 / (1 + Math.exp(-raw[i]));
-                    g[i] = p - y[i];
-                    h[i] = Math.max(p * (1 - p), 1e-12);
-                }
-            }
+            loss.derivatives(raw, y, g, h);
             int[] rows = sampleRows(n, s.subsample(), random);
             Builder b = new Builder(x, g, h, thresholds, s, importance);
             b.build(rows, 0);
@@ -134,7 +209,7 @@ public final class GradientBoostedTrees {
                 raw[i] += s.learningRate() * tree.predict(x[i]);
             }
         }
-        return new GradientBoostedTrees(objective, base, List.copyOf(trees), s.learningRate(), importance);
+        return new GradientBoostedTrees(loss, base, List.copyOf(trees), s.learningRate(), importance);
     }
 
     private static int[] sampleRows(int n, double share, SplittableRandom random) {
@@ -268,14 +343,22 @@ public final class GradientBoostedTrees {
 
     /**
      * @param x one row of features
-     * @return the value (regression) or the probability of 1 (binary)
+     * @return the value (regression), the probability of 1 (binary), or a custom loss's link of the score
      */
     public double predict(double[] x) {
+        return loss.link(raw(x));
+    }
+
+    /**
+     * @param x one row of features
+     * @return the raw score before the loss's link, such as a log-odds
+     */
+    public double raw(double[] x) {
         double raw = base;
         for (Tree t : trees) {
             raw += learningRate * t.predict(x);
         }
-        return objective == Objective.BINARY ? 1 / (1 + Math.exp(-raw)) : raw;
+        return raw;
     }
 
     /**

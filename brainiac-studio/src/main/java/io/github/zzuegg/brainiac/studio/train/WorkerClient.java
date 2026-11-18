@@ -204,6 +204,15 @@ public final class WorkerClient {
         if (request.temperature() != null) {
             body.put("temperature", request.temperature());
         }
+        if (request.sampler().topP() != null) {
+            body.put("topP", request.sampler().topP());
+        }
+        if (request.sampler().topK() != null) {
+            body.put("topK", request.sampler().topK());
+        }
+        if (request.sampler().repeatPenalty() != null) {
+            body.put("repeatPenalty", request.sampler().repeatPenalty());
+        }
         List<Object> messages = new java.util.ArrayList<>();
         for (io.github.zzuegg.brainiac.studio.chat.ChatMessage m : request.messages()) {
             Map<String, Object> message = new LinkedHashMap<>();

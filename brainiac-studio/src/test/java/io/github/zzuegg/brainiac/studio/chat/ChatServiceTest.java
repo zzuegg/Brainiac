@@ -148,6 +148,27 @@ class ChatServiceTest {
         assertFalse(Json.object(Json.parse(apis.bodies.get("a POST"))).containsKey("temperature"));
         assertThrows(IllegalArgumentException.class,
                 () -> chat.chat("google/gemini-3-pro", "", HELLO, 50, null, 3f, m -> { }, new Heard()));
+
+        // top-p and top-k go where the API has them, and a repeat penalty only to models on this PC
+        Sampler sampler = new Sampler(0.8f, 40, 1.1f);
+        chat.chat("google/gemini-3-pro", "", HELLO, 50, null, null, sampler, m -> { }, new Heard());
+        config = Json.object(Json.object(Json.parse(apis.bodies.get("g POST"))).get("generationConfig"));
+        assertEquals(0.8, ((Number) config.get("topP")).doubleValue(), 1e-6);
+        assertEquals(40, ((Number) config.get("topK")).intValue());
+        assertFalse(config.toString().contains("epeat"), config.toString());
+        chat.chat("anthropic/claude-opus-5-5", "", HELLO, 50, null, null, sampler, m -> { }, new Heard());
+        Map<String, Object> anthropic = Json.object(Json.parse(apis.bodies.get("a POST")));
+        assertFalse(anthropic.containsKey("top_p") || anthropic.containsKey("top_k"), anthropic.keySet().toString());
+        assertThrows(IllegalArgumentException.class, () -> new Sampler(1.5f, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new Sampler(null, 0, null));
+        assertThrows(IllegalArgumentException.class, () -> new Sampler(null, null, 0.5f));
+        // on this PC: the usual top-p unless one is given, and greedy stays greedy
+        assertEquals(0.9f, LocalProvider.sampling(null, Sampler.NONE).topP());
+        io.github.zzuegg.brainiac.llm.Sampling local = LocalProvider.sampling(0.5f, sampler);
+        assertEquals(0.8f, local.topP());
+        assertEquals(40, local.topK());
+        assertEquals(1.1f, local.repetitionPenalty());
+        assertEquals(0f, LocalProvider.sampling(0f, new Sampler(0.8f, 40, null)).temperature());
     }
 
     @Test
