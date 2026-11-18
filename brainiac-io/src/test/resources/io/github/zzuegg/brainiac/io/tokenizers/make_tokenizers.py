@@ -88,6 +88,20 @@ for kind, size in (("unigram", 400), ("bpe", 500)):
     cases = [{"text": x, "ids": sp.encode(x), "decoded": sp.decode(sp.encode(x))} for x in tests]
     json.dump(cases, open(f"{out}/sp-{kind}.expected.json", "w"), ensure_ascii=False, indent=0)
 
+# 6b T5 style SentencePiece unigram with nmt_nfkc: full-width commas and letters normalize to
+# plain ones before lookup (Wan's Chinese negative prompt is full of "，")
+nfkc = ["色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量",
+        "a red fox runs through deep snow, quickly.", "Full width text ABC 123, ok", "画面 静止 背景, 低质量."]
+open("nfkc.txt", "w").write("\n".join(nfkc * 50))
+spm.SentencePieceTrainer.train(input="nfkc.txt", model_prefix=f"{out}/sp-nfkc", vocab_size=120, model_type="unigram",
+    normalization_rule_name="nmt_nfkc", character_coverage=1.0, bos_id=-1, eos_id=1, unk_id=2, pad_id=0,
+    hard_vocab_limit=False, minloglevel=2)
+os.remove(f"{out}/sp-nfkc.vocab")
+sp = spm.SentencePieceProcessor(model_file=f"{out}/sp-nfkc.model")
+nfkc_tests = [nfkc[0], "画面，静止，背景，低质量", "Ｆｕｌｌ ｗｉｄｔｈ ＡＢＣ １２３，ｏｋ", "a red fox runs through deep snow"]
+json.dump([{"text": x, "ids": sp.encode(x)} for x in nfkc_tests], open(f"{out}/sp-nfkc.expected.json", "w"),
+          ensure_ascii=False, indent=0)
+
 # GGUF vocabularies, written the way llama.cpp's converter writes them
 import gguf
 w = gguf.GGUFWriter(f"{out}/vocab.gguf", arch="llama")

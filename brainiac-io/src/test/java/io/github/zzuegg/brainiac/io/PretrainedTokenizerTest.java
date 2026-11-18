@@ -81,6 +81,17 @@ class PretrainedTokenizerTest {
         }
     }
 
+    @Test
+    void sentencePieceAppliesNmtNfkc() throws IOException {
+        // T5-family models normalize full-width characters; without it "，" is unknown
+        byte[] model = Files.readAllBytes(fixture("sp-nfkc.model"));
+        PretrainedTokenizer tok = PretrainedTokenizer.fromSentencePiece(model, Map.of());
+        for (Map<String, Object> c : cases("sp-nfkc")) {
+            String text = (String) c.get("text");
+            assertArrayEquals(ints(c.get("ids")), tok.encode(text), "\"" + text + "\"");
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"sp-bpe", "sp-unigram"})
     void matchesSentencePiece(String name) throws IOException {
