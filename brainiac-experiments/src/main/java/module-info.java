@@ -20,6 +20,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.ml;
     exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
+    exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.rl;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.train;
@@ -44,6 +45,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.probabilistic;
     exports io.github.zzuegg.brainiac.experiments.reasoning;
+    exports io.github.zzuegg.brainiac.experiments.recsys;
     exports io.github.zzuegg.brainiac.experiments.safety;
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
     exports io.github.zzuegg.brainiac.experiments.sequence;
