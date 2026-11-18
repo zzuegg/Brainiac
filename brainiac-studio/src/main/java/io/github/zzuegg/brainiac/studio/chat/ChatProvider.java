@@ -81,6 +81,18 @@ public interface ChatProvider {
     ChatResult chat(ChatRequest request, ChatListener listener) throws IOException, InterruptedException;
 
     /**
+     * Whether the provider takes tools in its own API. Such providers are sent
+     * {@link ChatRequest#tools()} and write the calls they make back as Hermes
+     * {@code <tool_call>} text; the others are told about tools in the instructions.
+     *
+     * @param model the provider's own model id
+     * @return true if tools go in the request
+     */
+    default boolean nativeTools(String model) {
+        return false;
+    }
+
+    /**
      * Returns whether this provider's models can be held to a grammar: those run on a machine of
      * the user's can, a provider's own API cannot.
      *
