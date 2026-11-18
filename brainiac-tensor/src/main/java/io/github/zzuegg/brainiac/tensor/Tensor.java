@@ -1725,6 +1725,27 @@ public final class Tensor {
     }
 
     /**
+     * The two-dimensional discrete Fourier transform of complex values {@code [..., h, w, 2]}:
+     * {@link #fft} along the columns, then along the rows, as {@code numpy.fft.fft2}.
+     *
+     * @param inverse whether to compute the inverse
+     * @return the transform, of this shape and type
+     */
+    public Tensor fft2(boolean inverse) {
+        int r = shape.rank();
+        if (r < 3 || shape.dim(r - 1) != 2) {
+            throw new IllegalArgumentException("fft2 takes complex values [..., h, w, 2], not " + shape);
+        }
+        int[] swap = new int[r];
+        for (int i = 0; i < r; i++) {
+            swap[i] = i;
+        }
+        swap[r - 3] = r - 2;
+        swap[r - 2] = r - 3;
+        return fft(inverse).permute(swap).fft(inverse).permute(swap);
+    }
+
+    /**
      * The transform of real values along the last axis, keeping the {@code n / 2 + 1}
      * frequencies that determine the rest.
      *

@@ -104,4 +104,22 @@ class CoreAdditionsTest {
         same(d -> Transforms.vjp(xs -> xs.get(0).median(0, false), List.of(random(d, 32, 4, 3)),
                 Tensor.full(Shape.of(3), 1f, DType.FLOAT32, d)).gradients().get(0), 1e-6f);
     }
+
+    @Test
+    void activationsLossesFft2AndSteps() {
+        same(d -> Var.of(random(d, 40, 8)).silu().value(), 1e-5f);
+        same(d -> Var.of(random(d, 41, 8)).gelu().value(), 1e-5f);
+        same(d -> Var.of(random(d, 42, 8)).mish().value(), 1e-5f);
+        same(d -> Var.of(random(d, 43, 2, 4, 3, 2)).fft2(false).value(), 1e-4f);
+        same(d -> io.github.zzuegg.brainiac.nn.Loss.focalFromLogits(2).compute(Var.of(random(d, 44, 3, 4)),
+                Tensor.of(Shape.of(3), new float[] {0, 3, 1}, d)).value(), 1e-5f);
+        same(d -> io.github.zzuegg.brainiac.nn.Loss.generalizedCrossEntropy(0.7f).compute(Var.of(random(d, 45, 3, 4)),
+                Tensor.of(Shape.of(3), new float[] {2, 1, 0}, d)).value(), 1e-5f);
+        same(d -> {
+            io.github.zzuegg.brainiac.nn.Recurrent lstm = (io.github.zzuegg.brainiac.nn.Recurrent)
+                    io.github.zzuegg.brainiac.nn.Recurrent.lstm(4).create(Shape.of(3, 2), new SplittableRandom(46));
+            lstm.parameters().forEach(p -> p.assign(p.value().to(d)));
+            return lstm.step(Var.of(random(d, 47, 2, 2)), lstm.initialState(2)).h().value();
+        }, 1e-5f);
+    }
 }
