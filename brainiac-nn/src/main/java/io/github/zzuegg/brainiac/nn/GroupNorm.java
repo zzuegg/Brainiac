@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.nn;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 
@@ -11,7 +12,8 @@ import java.util.List;
  * Normalizes groups of channels of each sample over their channels and positions, then
  * scales and shifts per channel. One group is like layer normalization over a whole
  * image; one group per channel is instance normalization ({@link #instance(int)}). Works
- * on {@code [channels, spatial...]} and on plain {@code [features]}.
+ * on {@code [channels, spatial...]} and on plain {@code [features]}. Half-precision inputs
+ * are normalized in float32.
  */
 public final class GroupNorm implements Layer {
 
@@ -61,9 +63,14 @@ public final class GroupNorm implements Layer {
         }
         int n = s.dim(0);
         int perGroup = Math.toIntExact(s.size() / ((long) n * groups));
-        Var x = input.reshape(n * groups, perGroup);
+        DType type = input.value().dtype();
+        boolean half = type.bytes() == 2;   // statistics over many values need float32
+        Var x = (half ? input.to(DType.FLOAT32) : input).reshape(n * groups, perGroup);
         Var centered = x.sub(x.mean(1, true));
         Var y = centered.div(centered.square().mean(1, true).add(epsilon).sqrt()).reshape(s.toArray());
+        if (half) {
+            y = y.to(type);
+        }
         if (gamma != null) {
             int[] cs = Functional.channelShape(channels, s.rank() - 2);
             y = y.mul(gamma.reshape(cs)).add(beta.reshape(cs));
