@@ -4,6 +4,8 @@ import io.github.zzuegg.brainiac.experimental.anomaly.Pelt;
 import io.github.zzuegg.brainiac.experimental.data.ScienceSims;
 import io.github.zzuegg.brainiac.experimental.science.MatchedFilter;
 import io.github.zzuegg.brainiac.experimental.science.PhasePicking;
+import io.github.zzuegg.brainiac.experimental.science.TransitSearch;
+import io.github.zzuegg.brainiac.experimental.science.TransitVetter;
 import io.github.zzuegg.brainiac.experimental.timeseries.RandomConvolutionFeatures;
 import io.github.zzuegg.brainiac.experimental.timeseries.RidgeClassifier;
 import io.github.zzuegg.brainiac.experimental.train.RidgeRegression;
@@ -344,6 +346,152 @@ public final class SignalSearch {
         out[snrs.length + 2] = gl / (double) Math.max(1, glAll);
         out[snrs.length + 3] = micros;
         return out;
+    }
+
+    // ================================================================== 13.3.15 transits
+
+    private static double[] uniformGrid(double[] time, double[] y, double cadence, int length) {
+        double[] s = new double[length];
+        int[] c = new int[length];
+        for (int i = 0; i < time.length; i++) {
+            int k = (int) Math.round((time[i] - time[0]) / cadence);
+            if (k < length) {
+                s[k] += y[i];
+                c[k]++;
+            }
+        }
+        for (int k = 0; k < length; k++) {
+            s[k] = c[k] > 0 ? s[k] / c[k] : 0;
+        }
+        return s;
+    }
+
+    /**
+     * Transit search and vetting on 90-day light curves at a 30-minute cadence with gaps, red
+     * noise and stellar rotation: BLS after moving-median or GP detrending against the FFT
+     * periodogram (recovered-period rate within 1% by transit SNR), and the two-view CNN vetter
+     * against ROCKET with ridge regression on the raw (detrended, regridded) light curve.
+     *
+     * @param planets light curves for the period-recovery table
+     * @param vetTrain vetting training curves (half planets, half eclipsing binaries)
+     * @param vetTest vetting test curves
+     * @param vetSteps vetter Adam steps
+     * @param seed the seed
+     * @return rows of recovery rates by SNR bin and vetting scores
+     */
+    public static Map<String, double[]> transits(int planets, int vetTrain, int vetTest, int vetSteps, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double days = 90;
+        double noise = 0.001;
+        double[] edges = {4, 7, 10, 20};
+        int bins = edges.length - 1;
+        double[][] hits = new double[3][bins];
+        int[] totals = new int[bins];
+        double blsSeconds = 0;
+        for (int i = 0; i < planets; i++) {
+            double period = Math.exp(Math.log(1) + (Math.log(20) - Math.log(1)) * r.nextDouble());
+            int bin = i % bins;
+            double snr = edges[bin] + (edges[bin + 1] - edges[bin]) * r.nextDouble();
+            double duration = 0.08 * Math.pow(period, 1.0 / 3);
+            double nIn = 0.9 * days / period * duration * 48;
+            double depth = snr * noise / Math.sqrt(nIn);
+            ScienceSims.LightCurve lc = ScienceSims.lightCurve(days, "planet", period, depth, noise, 0.005,
+                    seed * 31 + i);
+            totals[bin]++;
+            long t0 = System.nanoTime();
+            double[] med = TransitSearch.detrendMedian(lc.time(), lc.flux(), 1.0);
+            TransitSearch.Result a = TransitSearch.bls(lc.time(), med, 1, 20, 200);
+            blsSeconds += (System.nanoTime() - t0) / 1e9;
+            double[] gp = TransitSearch.detrendGp(lc.time(), lc.flux(), 0.7, 0.4);
+            TransitSearch.Result b = TransitSearch.bls(lc.time(), gp, 1, 20, 200);
+            double f = TransitSearch.fftPeriod(lc.time(), med, 1.0 / 48, 1, 20);
+            hits[0][bin] += Math.abs(a.period() / period - 1) < 0.01 ? 1 : 0;
+            hits[1][bin] += Math.abs(b.period() / period - 1) < 0.01 ? 1 : 0;
+            hits[2][bin] += Math.abs(f / period - 1) < 0.01 ? 1 : 0;
+        }
+        Map<String, double[]> out = new LinkedHashMap<>();
+        String[] names = {"BLS + moving median", "BLS + GP", "FFT periodogram"};
+        for (int m = 0; m < 3; m++) {
+            double[] row = new double[bins];
+            for (int b = 0; b < bins; b++) {
+                row[b] = totals[b] == 0 ? Double.NaN : hits[m][b] / totals[b];
+            }
+            out.put("recovered period within 1% {SNR 4-7, 7-10, 10-20}: " + names[m], row);
+        }
+        out.put("curves per SNR bin, BLS + median s per curve", new double[] {totals[0], totals[1], totals[2],
+            blsSeconds / planets});
+        // vetting
+        int total = vetTrain + vetTest;
+        double[][][] views = new double[total][][];
+        float[][][] raw = new float[total][1][];
+        int[] label = new int[total];
+        String[] kinds = {"planet", "grazing EB", "planet", "secondary EB"};
+        for (int i = 0; i < total; i++) {
+            String kind = kinds[i % 4];
+            double period = Math.exp(Math.log(1) + (Math.log(20) - Math.log(1)) * r.nextDouble());
+            double depth = 0.0007 + 0.0023 * r.nextDouble();
+            ScienceSims.LightCurve lc = ScienceSims.lightCurve(days, kind, period, depth, noise, 0.005,
+                    seed * 97 + i);
+            label[i] = lc.label();
+            double[] med = TransitSearch.detrendMedian(lc.time(), lc.flux(), 1.0);
+            views[i] = TransitSearch.views(lc.time(), med, lc.period(), lc.epoch(), lc.duration(), 201, 61);
+            double[] grid = uniformGrid(lc.time(), med, 1.0 / 24, 2160);
+            raw[i][0] = new float[grid.length];
+            for (int k = 0; k < grid.length; k++) {
+                raw[i][0][k] = (float) (grid[k] / noise);
+            }
+        }
+        double[][][] trV = Arrays.copyOfRange(views, 0, vetTrain);
+        double[][][] teV = Arrays.copyOfRange(views, vetTrain, total);
+        int[] trY = Arrays.copyOfRange(label, 0, vetTrain);
+        int[] teY = Arrays.copyOfRange(label, vetTrain, total);
+        TransitVetter vetter = new TransitVetter(seed).train(trV, trY, vetSteps, 32, 3e-3, seed);
+        double[] cnn = vetter.scores(teV);
+        RandomConvolutionFeatures rocket = RandomConvolutionFeatures.rocket(60, 2160, 1, seed);
+        double[] rs = ridgeScores(rocket.transform(Arrays.copyOfRange(raw, 0, vetTrain)), trY,
+                rocket.transform(Arrays.copyOfRange(raw, vetTrain, total)), 1.0);
+        out.put("vetting {AUROC, precision at 95% recall}: two-view CNN", new double[] {auroc(cnn, teY),
+            precisionAtRecall(cnn, teY, 0.95)});
+        out.put("vetting {AUROC, precision at 95% recall}: ROCKET + ridge on the light curve",
+                new double[] {auroc(rs, teY), precisionAtRecall(rs, teY, 0.95)});
+        return out;
+    }
+
+    static double auroc(double[] score, int[] y) {
+        double s = 0;
+        long pairs = 0;
+        for (int i = 0; i < score.length; i++) {
+            if (y[i] != 1) {
+                continue;
+            }
+            for (int j = 0; j < score.length; j++) {
+                if (y[j] == 0) {
+                    s += score[i] > score[j] ? 1 : score[i] == score[j] ? 0.5 : 0;
+                    pairs++;
+                }
+            }
+        }
+        return s / Math.max(1, pairs);
+    }
+
+    private static double precisionAtRecall(double[] score, int[] y, double recall) {
+        Integer[] order = new Integer[score.length];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, (a, b) -> Double.compare(score[b], score[a]));
+        int pos = 0;
+        for (int v : y) {
+            pos += v;
+        }
+        int tp = 0;
+        for (int k = 0; k < order.length; k++) {
+            tp += y[order[k]];
+            if (tp >= recall * pos) {
+                return tp / (double) (k + 1);
+            }
+        }
+        return pos / (double) y.length;
     }
 
     private static float[][] toFloat(double[][] x) {

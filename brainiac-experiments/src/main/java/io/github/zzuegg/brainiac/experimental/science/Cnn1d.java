@@ -45,11 +45,20 @@ final class Cnn1d {
         bias = Var.param(Tensor.zeros(Shape.of(1)));
     }
 
-    List<Var> parameters() {
+    List<Var> featureParameters() {
         List<Var> p = new ArrayList<>();
         for (Layer l : convs) {
             p.addAll(l.parameters());
         }
+        return p;
+    }
+
+    int width() {
+        return head.shape().dim(0);
+    }
+
+    List<Var> parameters() {
+        List<Var> p = featureParameters();
         p.add(head);
         p.add(bias);
         return p;
