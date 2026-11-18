@@ -90,4 +90,21 @@ class TransformsTest {
         Tensor total = Var.gradients(Var.of(data).matmul(w).square().sum(), List.of(w), false).get(0).value();
         close(total.toArray(), per.get(0).sum(0, false).toArray(), 1e-4f);
     }
+
+    @Test
+    void privateGradientsClipEachExample() {
+        Var w = Var.param(W);
+        Tensor data = Tensor.uniform(Shape.of(4, 3), -1, 1, R);
+        Function<Var, Var> loss = x -> x.matmul(w).square().sum();
+        // a loose bound clips nothing: the batch mean
+        Tensor mean = Transforms.perExampleGradients(loss, List.of(w), data).get(0).sum(0, false).div(4);
+        close(mean.toArray(), Transforms.privateGradients(loss, List.of(w), data, 1e6f, 0f, R).get(0).toArray(), 1e-4f);
+        // one example with a tight bound comes out at exactly that norm
+        Tensor one = data.slice(0, 0, 1);
+        Tensor g = Transforms.privateGradients(loss, List.of(w), one, 0.25f, 0f, R).get(0);
+        assertEquals(0.25f, (float) Math.sqrt(g.square().sum().item()), 1e-5f);
+        // noise changes the result but keeps the shape
+        Tensor noisy = Transforms.privateGradients(loss, List.of(w), data, 0.25f, 1f, new SplittableRandom(3)).get(0);
+        assertEquals(W.shape(), noisy.shape());
+    }
 }

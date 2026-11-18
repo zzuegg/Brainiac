@@ -506,6 +506,7 @@ public final class VulkanBackend implements Backend {
             case FLOAT64 -> "_f64";
             case FLOAT16 -> "_f16";
             case BFLOAT16 -> "_bf16";
+            default -> throw new IllegalArgumentException("no Vulkan shaders for " + dtype);
         };
     }
 

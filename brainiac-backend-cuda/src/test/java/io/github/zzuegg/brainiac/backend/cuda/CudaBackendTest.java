@@ -60,6 +60,7 @@ class CudaBackendTest {
             case FLOAT32 -> 2e-5;
             case FLOAT16 -> 2e-2;
             case BFLOAT16 -> 8e-2;
+            default -> 0;
         };
     }
 
@@ -91,7 +92,7 @@ class CudaBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void everyOperationMatchesTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         Tensor x = random(1, 5, 7);
@@ -131,7 +132,7 @@ class CudaBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void uploadsRawValuesFromNativeMemory(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // small (inline update), mid-size (staging ring) and large (own staging block)
@@ -456,7 +457,7 @@ class CudaBackendTest {
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "cuda".length(), status);
         assertTrue(CudaBackend.loaded().orElseThrow().status().contains("NVRTC"));
-        assertTrue(List.of(DType.values()).size() == 4);
+        assertTrue(List.of(DType.values()).stream().filter(DType::floating).count() == 4);
     }
 
     /** One kernel for RMSNorm, against the operations Llama builds it from; the input a pending sum. */

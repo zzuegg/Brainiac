@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.llm;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.WeightSource;
@@ -99,6 +100,32 @@ class VisionLanguageModelTest {
         }
     }
 
+    /**
+     * The same models as a GGUF decoder with llama.cpp projector files (make_mmproj.py):
+     * LLaVA in the older layout (last layer cut, feed-forward names swapped), Gemma 3 in
+     * the current one (norm with its 1 added, projection transposed).
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"vlm-llava", "vlm-gemma3"})
+    void ggufWithAProjectorFileMatchesTransformers(String name, @org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        VisionLanguageModel hf = VisionLanguageModel.load(LlamaTest.resource(name), LlamaTest.DEVICE, DType.FLOAT32);
+        java.nio.file.Path decoder = dir.resolve("decoder.gguf");
+        hf.language().saveGguf(decoder, null, false);
+        VisionLanguageModel vlm = VisionLanguageModel.load(decoder, LlamaTest.resource(name).resolve("mmproj.gguf"),
+                LlamaTest.DEVICE, DType.FLOAT32);
+        assertEquals(hf.kind(), vlm.kind());
+        Tensor pixels = Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(1, 3, 32, 32),
+                expected(name, "pixel_values"), LlamaTest.DEVICE);
+        close(expected(name, "features"), vlm.imageFeatures(pixels), 1e-4f, "features");
+        float[] ids = expected(name, "ids");
+        int[] prompt = new int[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            // a vocabulary without an image token: the model names its own placeholder
+            prompt[i] = (int) ids[i] == hf.imageToken() ? vlm.imageToken() : (int) ids[i];
+        }
+        close(expected(name, "logits"), vlm.logits(new int[][] {prompt}, pixels), 1e-4f, "logits");
+    }
+
     /** The server reads OpenAI image parts (data: URLs) and answers as the generator does. */
     @Test
     void serverAnswersAboutImages() throws Exception {
@@ -189,8 +216,28 @@ class VisionLanguageModelTest {
 
     @Test
     void qwen2VlMatchesTransformers() {
-        VisionLanguageModel qwen = VisionLanguageModel.load(LlamaTest.resource("vlm-qwen2"), LlamaTest.DEVICE,
-                DType.FLOAT32);
+        qwen2Vl(LlamaTest.resource("vlm-qwen2"));
+    }
+
+    @Test
+    void qwen2VlReadsTheLegacyMropeSpelling(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+            throws java.io.IOException {
+        // released Qwen2-VL checkpoints write rope_scaling {"type": "mrope", "mrope_section": [...]}
+        java.nio.file.Path from = LlamaTest.resource("vlm-qwen2");
+        for (String f : new String[] {"model.safetensors", "generation_config.json", "preprocessor_config.json"}) {
+            java.nio.file.Files.copy(from.resolve(f), dir.resolve(f));
+        }
+        String config = java.nio.file.Files.readString(from.resolve("config.json"));
+        String legacy = config.replaceFirst("\"rope_parameters\": \\{\\s*\"mrope_section\"",
+                "\"rope_theta\": 10000.0, \"rope_scaling\": {\"type\": \"mrope\", \"mrope_section\"")
+                .replaceFirst(",\\s*\"rope_theta\": 10000.0,\\s*\"rope_type\": \"default\"\\s*}", "}");
+        assertTrue(legacy.contains("\"type\": \"mrope\""), legacy);
+        java.nio.file.Files.writeString(dir.resolve("config.json"), legacy);
+        qwen2Vl(dir);
+    }
+
+    private static void qwen2Vl(java.nio.file.Path folder) {
+        VisionLanguageModel qwen = VisionLanguageModel.load(folder, LlamaTest.DEVICE, DType.FLOAT32);
         QwenVision.Patches theirs = new QwenVision.Patches(Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(48, 96),
                 expected("vlm-qwen2", "pixel_values"), LlamaTest.DEVICE), 6, 8);
         Tensor features = qwen.qwen().features(theirs);
