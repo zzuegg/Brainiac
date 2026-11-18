@@ -308,7 +308,7 @@ final class LocalProvider implements ChatProvider {
         String prompt = tok.chatTemplate() != null ? tok.applyChatTemplate(history, true)
                 : request.messages().getLast().text();
         Generator.Options options = new Generator.Options(request.maxTokens(),
-                Sampling.temperature(0.7f).withTopP(0.9f), System.nanoTime(), loaded.stops(), List.of());
+                sampling(request.temperature()), System.nanoTime(), loaded.stops(), List.of());
         // a template that opens the think block itself (DeepSeek-R1, Qwen3 with thinking on) starts the answer inside it
         ThinkSplitter split = new ThinkSplitter(listener, prompt.stripTrailing().endsWith("<think>"));
         Generator.Output out;
@@ -326,5 +326,13 @@ final class LocalProvider implements ChatProvider {
         split.finish();
         return new ChatResult(out.finish() == Generator.Finish.LENGTH ? "length" : "end",
                 loaded.generator().encode(prompt).length, out.tokens().length);
+    }
+
+    /** The usual sampling, or the temperature asked for; 0 always takes the likeliest token. */
+    private static Sampling sampling(Float temperature) {
+        if (temperature == null) {
+            return Sampling.temperature(0.7f).withTopP(0.9f);
+        }
+        return temperature <= 0 ? Sampling.GREEDY : Sampling.temperature(temperature).withTopP(0.9f);
     }
 }

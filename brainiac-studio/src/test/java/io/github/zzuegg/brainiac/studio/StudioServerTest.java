@@ -112,7 +112,9 @@ class StudioServerTest {
         assertEquals("available", byKey.get("text.chat").get("status"));
         assertEquals("text", byKey.get("text.chat").get("medium"));
         assertEquals("available", byKey.get("model.build").get("status"));
-        assertEquals("planned", byKey.get("speech.synthesize").get("status"));
+        assertEquals("available", byKey.get("speech.synthesize").get("status"));
+        assertEquals("available", byKey.get("agent.run").get("status"));
+        assertEquals("planned", byKey.get("vision.describe").get("status"));
     }
 
     @Test

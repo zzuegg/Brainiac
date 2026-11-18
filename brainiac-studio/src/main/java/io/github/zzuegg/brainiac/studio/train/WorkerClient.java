@@ -201,6 +201,9 @@ public final class WorkerClient {
         body.put("model", request.model());
         body.put("system", request.system());
         body.put("maxTokens", request.maxTokens());
+        if (request.temperature() != null) {
+            body.put("temperature", request.temperature());
+        }
         body.put("messages", request.messages().stream().map(m -> Map.of("role", m.role(), "text", m.text())).toList());
         // the answer streams, so only the wait for its first line is limited
         HttpResponse<InputStream> r = send(request("worker/chat").timeout(Duration.ofMinutes(10))

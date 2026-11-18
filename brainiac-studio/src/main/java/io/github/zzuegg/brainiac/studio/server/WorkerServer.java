@@ -51,7 +51,7 @@ import java.util.zip.ZipInputStream;
  *   <li>{@code GET /worker/runs?id=<id>}, {@code POST /worker/stop {id}} and
  *       {@code GET /worker/result?id=<id>}, which sends the trained model.
  *   <li>{@code GET /worker/models}: the chat models it serves, from its model folders and its
- *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens}}
+ *       {@code downloads} folder; {@code POST /worker/chat {model, system, messages, maxTokens, temperature}}
  *       answers with one as server-sent events: {@code text} pieces, then {@code done} or {@code error}.
  *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
  *       {@code downloads} folder, with its own connection; {@code GET /worker/hub/downloads} lists
@@ -327,7 +327,8 @@ public final class WorkerServer implements AutoCloseable {
             model = model.substring(prefix.length());
         }
         ChatRequest request = new ChatRequest(model, Json.string(body, "system", ""), messages,
-                (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null);
+                (int) Math.max(1, Math.min(32768, Json.integer(body, "maxTokens", 1024))), null,
+                ChatRoutes.temperature(body));
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");
         ex.sendResponseHeaders(200, 0);
