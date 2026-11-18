@@ -43,6 +43,13 @@ tasks.withType<Test>().configureEach {
         // modules starting together then rewrote a library another one was loading (SIGBUS in
         // dlopen). Each test task extracts into its own folder.
         test.systemProperty("org.lwjgl.system.SharedLibraryExtractPath", File(test.temporaryDir, "lwjgl").absolutePath)
+        // NVIDIA's Linux driver starts a "threaded optimizations" worker that crashed every JVM at
+        // exit (SIGSEGV in libEGL_nvidia, after all its work was done) once Vulkan had been loaded,
+        // even by listing devices; the driver reads the variable when it loads, before the JVM runs
+        if (System.getProperty("os.name").startsWith("Linux") && !test.environment.containsKey("__GL_THREADED_OPTIMIZATIONS")
+                && System.getenv("__GL_THREADED_OPTIMIZATIONS") == null) {
+            test.environment("__GL_THREADED_OPTIMIZATIONS", "0")
+        }
     }
 }
 
@@ -54,6 +61,11 @@ tasks.withType<JavaExec>().configureEach {
         if (System.getProperty("os.name").startsWith("Linux") && jsig != null && jsig.isFile
                 && !exec.environment.containsKey("LD_PRELOAD")) {
             exec.environment("LD_PRELOAD", jsig.absolutePath)
+        }
+        // as for tests: NVIDIA's threaded-optimization worker crashed JVMs at exit
+        if (System.getProperty("os.name").startsWith("Linux") && !exec.environment.containsKey("__GL_THREADED_OPTIMIZATIONS")
+                && System.getenv("__GL_THREADED_OPTIMIZATIONS") == null) {
+            exec.environment("__GL_THREADED_OPTIMIZATIONS", "0")
         }
     }
 }

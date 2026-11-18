@@ -294,4 +294,47 @@ public final class SeasonalSeries {
     public static double mae(Tensor prediction, Tensor target) {
         return prediction.sub(target).abs().mean().item();
     }
+
+    /** The kind of intermittent demand (wave 11, 11.3.16). */
+    public enum Demand {
+        /** Bernoulli occurrence with gamma sizes (shape 2), rounded up to whole units. */
+        POISSON_GAMMA,
+        /** Bernoulli occurrence with log-normal sizes ({@code sigma = 0.6}), rounded up. */
+        BERNOULLI_LOGNORMAL
+    }
+
+    /**
+     * An intermittent demand series: demand occurs with probability {@code 1 - zeroShare} in each
+     * period (the rate after {@code changeAt} is multiplied by {@code rateChange}), with mean
+     * size 5, and stops for good from {@code obsoleteAt}.
+     *
+     * @param length periods
+     * @param kind the size distribution
+     * @param zeroShare the share of zero periods before any change, for example 0.5 to 0.95
+     * @param changeAt the period where the occurrence probability changes ({@code -1} for never)
+     * @param rateChange the factor on the occurrence probability from {@code changeAt}
+     * @param obsoleteAt the first period of permanent zero demand ({@code -1} for never)
+     * @param seed the seed
+     * @return the series
+     */
+    public static float[] intermittent(int length, Demand kind, double zeroShare, int changeAt, double rateChange,
+            int obsoleteAt, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        float[] y = new float[length];
+        for (int t = 0; t < length; t++) {
+            double p = 1 - zeroShare;
+            if (changeAt >= 0 && t >= changeAt) {
+                p = Math.min(1, p * rateChange);
+            }
+            if ((obsoleteAt >= 0 && t >= obsoleteAt) || r.nextDouble() >= p) {
+                continue;
+            }
+            double size = switch (kind) {
+                case POISSON_GAMMA -> 2.5 * (-Math.log(1 - r.nextDouble()) - Math.log(1 - r.nextDouble()));
+                case BERNOULLI_LOGNORMAL -> Math.exp(Math.log(5) - 0.18 + 0.6 * r.nextGaussian());
+            };
+            y[t] = (float) Math.max(1, Math.ceil(size));
+        }
+        return y;
+    }
 }

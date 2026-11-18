@@ -19,6 +19,7 @@ import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.experimental.compress.WeightSharingQuantizer;
 import io.github.zzuegg.brainiac.experimental.compress.RelationalKdLoss;
+import io.github.zzuegg.brainiac.experimental.nn.BinaryLayers;
 import io.github.zzuegg.brainiac.experimental.nn.DistillationLoss;
 import io.github.zzuegg.brainiac.experimental.nn.FeatureDistillationLoss;
 import io.github.zzuegg.brainiac.experimental.nn.Gptq;
@@ -52,7 +53,10 @@ import java.util.function.UnaryOperator;
  *     for 2 to 4-bit weights and activations;</li>
  * <li>{@link #denseDecompositions} and {@link #convDecompositions} (8.5.12): tensor-train and
  *     CP/Tucker-2 decompositions of layers against the matrix SVD at equal parameters;</li>
- * <li>{@link #tokenMerging} (8.5.13): ToMe against class-attention token pruning on a small ViT.</li>
+ * <li>{@link #tokenMerging} (8.5.13): ToMe against class-attention token pruning on a small ViT;</li>
+ * <li>{@link #binary} (wave 11 item 11.4.11): BinaryConnect, BNN, XNOR-Net and Bi-Real
+ *     against BitLinear ternary weights and DoReFa at 1 and 2 bits, plus the packed
+ *     XNOR/popcount kernel against the float kernel.</li>
  * </ul>
  */
 public final class CompactModels {
@@ -361,6 +365,116 @@ public final class CompactModels {
         float max = Math.max(1e-8f, w.value().abs().max().item());
         Tensor q = w.value().mul(qp / max).round().mul(max / qp);
         return Functional.straightThrough(Var.of(q), w);
+    }
+
+    // ------------------------------------------------------------------ 11.4.11
+
+    /**
+     * Binary networks against ternary and low-bit baselines, every model fine-tuned from the
+     * reference digits MLP ({@code 64-64-64-10}) for the same full-batch Adam steps. The binary
+     * modes ({@link BinaryLayers.Mode}) binarise the middle layer's weights and the hidden
+     * activations and keep the first and last layers real, as the papers do; Bi-Real adds its
+     * real shortcut around the square middle layer. Latent weights are clipped to
+     * {@code [-1, 1]} after every step.
+     *
+     * @param steps fine-tuning steps
+     * @param seed the seed
+     * @return fp32, BitLinear (ternary weights, 8-bit activations), DoReFa 2b and 1b, then the four
+     *     binary modes ({@code metric} test accuracy, {@code cost} average stored bits per weight),
+     *     and a last row "xnor kernel" whose {@code metric} is the speed-up of the packed
+     *     popcount kernel over the float matrix-vector product on a 1024x1024 layer at batch 1
+     *     ({@code millis}: the packed kernel's time per call)
+     */
+    public static List<CompactRow> binary(int steps, long seed) {
+        CompressionBench.Split data = CompressionBench.digits(seed);
+        List<CompactRow> rows = new ArrayList<>();
+        SimpleMlp ref = CompressionBench.trained(seed);
+        rows.add(new CompactRow("fp32", CompressionBench.accuracy(ref::forward, data.test()), 32, 0, -1));
+        int[] sizes = CompressionBench.SIZES;
+        double total = 0;
+        double outer = 0;
+        for (int l = 0; l < sizes.length - 1; l++) {
+            total += sizes[l] * (double) sizes[l + 1];
+            outer += l == 1 ? 0 : sizes[l] * (double) sizes[l + 1];
+        }
+        double binaryBits = (outer * 32 + (total - outer)) / total;
+        {
+            SimpleMlp net = CompressionBench.trained(seed);
+            UnaryOperator<Var> fwd = CompressionBench.forward(net, (l, w) -> Functional.straightThrough(
+                    Var.of(io.github.zzuegg.brainiac.experimental.nn.BitLinear.quantizeWeights(w.value())), w),
+                    (l, z) -> Functional.straightThrough(Var.of(io.github.zzuegg.brainiac.experimental.nn.BitLinear
+                            .quantizeActivations(z.relu().value())), z.relu()));
+            CompressionBench.train(fwd, net.parameters(), Optimizer.adam(0.002f), data.train(), steps);
+            rows.add(new CompactRow("bitlinear ternary", CompressionBench.accuracy(fwd, data.test()), 1.58, 0, -1));
+        }
+        for (int bits : new int[] {2, 1}) {
+            SimpleMlp net = CompressionBench.trained(seed);
+            float[] range = new float[net.depth()];
+            for (int l = 0; l < net.depth(); l++) {
+                range[l] = net.weight(l).value().abs().max().item();
+            }
+            UnaryOperator<Var> fwd = CompressionBench.forward(net, (l, w) -> DoReFaQuantizer.weight(w, bits)
+                    .mul(range[l]), (l, z) -> DoReFaQuantizer.activation(z, bits));
+            CompressionBench.train(fwd, net.parameters(), Optimizer.adam(0.002f), data.train(), steps);
+            rows.add(new CompactRow("dorefa " + bits + "b", CompressionBench.accuracy(fwd, data.test()), bits, 0, -1));
+        }
+        for (BinaryLayers.Mode mode : BinaryLayers.Mode.values()) {
+            SimpleMlp net = CompressionBench.trained(seed);
+            UnaryOperator<Var> fwd = x -> {
+                Var r = x.matmul(net.weight(0)).add(net.bias(0));
+                Var h = BinaryLayers.activation(r, mode);
+                Var z = h.matmul(BinaryLayers.weights(net.weight(1), mode)).add(net.bias(1));
+                Var r2 = mode == BinaryLayers.Mode.BI_REAL ? z.add(r) : z;
+                Var h2 = mode == BinaryLayers.Mode.BI_REAL ? r2 : BinaryLayers.activation(r2, mode);
+                return h2.matmul(net.weight(2)).add(net.bias(2));
+            };
+            Optimizer opt = Optimizer.adam(0.002f);
+            Tensor x = data.train().inputs();
+            Tensor ids = data.train().ids();
+            for (int s = 0; s < steps; s++) {
+                Functional.crossEntropy(fwd.apply(Var.of(x)), ids).backward();
+                opt.step(net.parameters());
+                BinaryLayers.clipLatent(List.of(net.weight(1)));
+            }
+            rows.add(new CompactRow(mode.name().toLowerCase(java.util.Locale.ROOT).replace('_', ' '),
+                    CompressionBench.accuracy(fwd, data.test()), binaryBits, 0, -1));
+        }
+        rows.add(xnorKernel(1024, 1024, 300, seed));
+        return rows;
+    }
+
+    /** Keeps the benchmark's results alive so the JIT cannot drop the timed loops. */
+    private static volatile float blackhole;
+
+    private static CompactRow xnorKernel(int in, int out, int reps, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        float[] w = new float[in * out];
+        float[] x = new float[in];
+        for (int i = 0; i < w.length; i++) {
+            w[i] = (float) r.nextGaussian();
+        }
+        for (int i = 0; i < in; i++) {
+            x[i] = (float) r.nextGaussian();
+        }
+        BinaryLayers.PackedXnor packed = BinaryLayers.PackedXnor.pack(Tensor.of(Shape.of(in, out), w),
+                Tensor.zeros(Shape.of(out)), true);
+        float sink = 0;
+        for (int i = 0; i < 50; i++) {
+            sink += BinaryLayers.floatMatVec(x, w, out)[0] + packed.apply(BinaryLayers.PackedXnor.packSigns(x))[0];
+        }
+        long t0 = System.nanoTime();
+        for (int i = 0; i < reps; i++) {
+            sink += BinaryLayers.floatMatVec(x, w, out)[i % out];
+        }
+        long t1 = System.nanoTime();
+        for (int i = 0; i < reps; i++) {
+            sink += packed.apply(BinaryLayers.PackedXnor.packSigns(x))[i % out];
+        }
+        long t2 = System.nanoTime();
+        double packedMs = (t2 - t1) / 1e6 / reps;
+        double speedUp = (t1 - t0) / (double) Math.max(1, t2 - t1);
+        blackhole = sink;
+        return new CompactRow("xnor kernel", speedUp, 1, in * (double) out, packedMs);
     }
 
     // ------------------------------------------------------------------ 8.5.13
