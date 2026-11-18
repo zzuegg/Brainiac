@@ -13,28 +13,13 @@ shared float part[GROUP];
 #else
 #define ROUND(v) (v)
 #endif
-// values per invocation kept in registers (rows up to PER * GROUP), so the sum is neither
-// read back from memory nor loaded again for the norm; longer rows read the rest back
-#define PER 32
 void main() {
     uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
     if (row >= p.rows) return;
     uint lid = gl_LocalInvocationID.x;
     uint base = row * p.cols;
     float acc = 0.0;
-    float kept[PER];
-    for (uint i = 0; i < PER; i++) {
-        uint t = lid + i * GROUP;
-        float f = 0.0;
-        if (t < p.cols) {
-            ACC v = ACC(LOAD(p.x, base + t)) + ACC(LOAD(p.r, base + t));
-            STORE(p.s, base + t, v);
-            f = ROUND(float(v));   // as stored
-        }
-        kept[i] = f;
-        acc += f * f;
-    }
-    for (uint t = lid + PER * GROUP; t < p.cols; t += GROUP) {
+    for (uint t = lid; t < p.cols; t += GROUP) {
         ACC v = ACC(LOAD(p.x, base + t)) + ACC(LOAD(p.r, base + t));
         STORE(p.s, base + t, v);
         float f = float(LOAD(p.s, base + t));   // as stored: this invocation's own write
@@ -47,13 +32,7 @@ void main() {
         barrier();
     }
     float d = sqrt(part[0] / float(p.cols) + p.eps);
-    for (uint i = 0; i < PER; i++) {
-        uint t = lid + i * GROUP;
-        if (t < p.cols) {
-            STORE(p.y, base + t, ACC(ROUND(kept[i] / d) * float(LOAD(p.w, t))));
-        }
-    }
-    for (uint t = lid + PER * GROUP; t < p.cols; t += GROUP) {
+    for (uint t = lid; t < p.cols; t += GROUP) {
         float f = float(LOAD(p.s, base + t));
         float n = ROUND(f / d);
         STORE(p.y, base + t, ACC(n * float(LOAD(p.w, t))));
