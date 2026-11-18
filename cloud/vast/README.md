@@ -26,13 +26,43 @@ destroys the machine again.
 Renting always asks first with the offer and its hourly price (`--yes` skips the question).
 The instance is destroyed when the job ends or fails, after `--max-minutes` (default 120),
 or on Ctrl+C. `--keep` keeps it; `--instance ID` reuses one. Logs go to `build/vast/`.
-Only the `HEAD` commit is copied, so commit first.
+Only the `HEAD` commit is sent, so commit first. When that commit is pushed to the GitHub
+remote `origin`, the instance fetches it from GitHub itself (seconds, instead of minutes of
+upload from a home connection); otherwise, or if the fetch fails, it is uploaded over SSH.
+`--upload` always uploads.
+
+A chosen `--offer ID` is rented directly even when a fresh search does not list it (Vast
+returns a different subset of offers on each search); only Vast's `no_such_ask` means it is gone.
+
+### Secrets for the job
+
+```sh
+./gradlew :brainiac-cloud:run --args="run --offer 123456 --secret HF_TOKEN --job run -- ./gradlew ..."
+```
+
+`--secret NAME` (repeatable) sets the environment variable `NAME` for the job or worker.
+The value is looked up on this machine: the environment variable `NAME`, else the studio's
+key file under a provider (`--secret NAME=PROVIDER`; `HF_TOKEN` defaults to `huggingface`),
+else, for `HF_TOKEN`, the Hugging Face token files (`~/.brainiac/hf_token`,
+`~/.cache/huggingface/token`). It travels over the SSH connection's input and is read into an
+exported variable by the job's shell, so it never lands on the instance's disk, on a command
+line or in Vast's instance fields (which the Vast API shows). Its value is masked as
+`***NAME***` in the console and in `build/vast/*.log`. A missing secret stops the launcher
+before anything is rented.
 
 Before copying anything, the launcher runs `setup.sh check` with just the script. Some hosts
 give containers NVIDIA's CUDA driver without its Vulkan libraries, and `check` fails there with
 exit code 2. The machine id then goes to `~/.brainiac/vast/bad-machines.txt`, and later searches
 skip that machine. With `--cheapest`, the instance is destroyed and the next cheapest offer is
 tried (up to 3 hosts, each within your limits). `offers` marks known bad machines.
+
+A host that never starts, or whose SSH login does not work within `--ssh-minutes` (default 3),
+is treated the same way: destroyed (even with `--keep`), remembered, and with `--cheapest` the
+next offer is rented. Some hosts never install the account's SSH key, and Vast's SSH proxy can
+stay dead for a long time while the API reports the instance as running.
+
+`setup.sh` tests each JDK download (`gzip -t` and a `tar` listing) and downloads it again, up
+to 3 times, when it arrived cut off or corrupt.
 
 ## setup.sh jobs
 
