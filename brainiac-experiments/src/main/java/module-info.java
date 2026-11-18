@@ -22,6 +22,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.recsys;
     exports io.github.zzuegg.brainiac.experimental.rl;
+    exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.train;
     // the experiments: toy tasks, comparisons and demos built from those blocks
@@ -48,6 +49,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.reasoning;
     exports io.github.zzuegg.brainiac.experiments.recsys;
     exports io.github.zzuegg.brainiac.experiments.safety;
+    exports io.github.zzuegg.brainiac.experiments.sciml;
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
     exports io.github.zzuegg.brainiac.experiments.sequence;
     exports io.github.zzuegg.brainiac.experiments.synthesis;
