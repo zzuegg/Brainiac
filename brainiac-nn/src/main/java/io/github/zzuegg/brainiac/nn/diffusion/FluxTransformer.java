@@ -215,7 +215,7 @@ public final class FluxTransformer implements MultiInputLayer {
         int rows = s.dim(2) / p;
         int cols = s.dim(3) / p;
         int textTokens = context.shape().dim(1);
-        DType type = imageIn.weight().value().dtype();
+        DType type = dtype();
         Device device = latents.value().device();
         Var image = Parts.step(() -> imageIn.forward(Functional.patchify(latents, p).to(type)));
         Var text = Parts.step(() -> contextIn.forward(context.to(type)));

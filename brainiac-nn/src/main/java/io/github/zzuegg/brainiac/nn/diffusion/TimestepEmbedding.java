@@ -102,7 +102,9 @@ public final class TimestepEmbedding implements Layer {
      */
     @Override
     public Var forward(Var input) {
-        DType type = linear1.weight().value().dtype();
+        // a quantized weight reports the float32 it was packed from: the bias has the model's type
+        Tensor w = linear1.weight().value();
+        DType type = w.isPacked() && linear1.bias() != null ? linear1.bias().value().dtype() : w.dtype();
         Tensor e = sinusoids(input.value(), settings.frequencies(), settings.flipSinToCos(), settings.freqShift());
         return linear2.forward(linear1.forward(Var.of(e.to(type))));
     }

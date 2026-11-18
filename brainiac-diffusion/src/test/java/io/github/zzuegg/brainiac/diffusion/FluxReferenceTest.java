@@ -135,6 +135,11 @@ class FluxReferenceTest {
         if (DEVICE.supports(DType.BFLOAT16)) {
             try (Flux q = Flux.load(schnell, DEVICE, DType.BFLOAT16, new Flux.Options(8, 8, 16))) {
                 assertEquals(DType.BFLOAT16, q.transformer().dtype());
+                // and its activations stay in it: no quantized layer lifts them to float32
+                Tensor out = Var.noGrad(() -> q.transformer().forward(Var.of(ref("dit.x").to(DType.BFLOAT16)),
+                        ref("dit.sigma"), Var.of(ref("dit.ctx").to(DType.BFLOAT16)),
+                        Var.of(ref("dit.pooled").to(DType.BFLOAT16)), null, false).value());
+                assertEquals(DType.BFLOAT16, out.dtype());
             }
         }
         // tiny models fit any device, so the most precise choice wins
