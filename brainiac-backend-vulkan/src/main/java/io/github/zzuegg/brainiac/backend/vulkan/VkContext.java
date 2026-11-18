@@ -544,6 +544,34 @@ final class VkContext {
         return startRoom == Long.MAX_VALUE ? now : Math.min(now, startRoom - allocated);
     }
 
+    /** @return each memory heap's size, flags, and the budget and this process's usage the driver reports, for errors */
+    private String heaps() {
+        try (MemoryStack st = stackPush()) {
+            VkPhysicalDeviceMemoryBudgetPropertiesEXT b = VkPhysicalDeviceMemoryBudgetPropertiesEXT.calloc(st).sType$Default();
+            VkPhysicalDeviceMemoryProperties2 p = VkPhysicalDeviceMemoryProperties2.calloc(st).sType$Default();
+            if (memoryBudget) {
+                p.pNext(b.address());
+            }
+            vkGetPhysicalDeviceMemoryProperties2(physical, p);
+            VkPhysicalDeviceMemoryProperties mp = p.memoryProperties();
+            StringBuilder out = new StringBuilder();
+            for (int h = 0; h < mp.memoryHeapCount(); h++) {
+                out.append(h == 0 ? "" : ", ").append("heap ").append(h).append(' ')
+                        .append(mp.memoryHeaps(h).size() >> 20).append(" MB flags ").append(mp.memoryHeaps(h).flags());
+                if (memoryBudget) {
+                    out.append(" budget ").append(b.heapBudget(h) >> 20).append(" MB usage ")
+                            .append(b.heapUsage(h) >> 20).append(" MB");
+                }
+            }
+            out.append("; types");
+            for (int t = 0; t < mp.memoryTypeCount(); t++) {
+                out.append(' ').append(t).append(":heap ").append(mp.memoryTypes(t).heapIndex()).append("/flags ")
+                        .append(mp.memoryTypes(t).propertyFlags());
+            }
+            return out.toString();
+        }
+    }
+
     /** @return device-heap bytes this process may still allocate by the driver's budget; MAX_VALUE if unknown */
     private long deviceRoom() {
         if (!memoryBudget) {
@@ -823,18 +851,21 @@ final class VkContext {
                     throw again;
                 }
                 OutOfDeviceMemory last = again;
+                StringBuilder tried = new StringBuilder();
                 for (int i = spillFrom; i < spillTypes.length; i++) {
                     try {
                         Block b = tryBlock(size, spillTypes[i], map, true);
                         spillFrom = i;   // the types before it are full: start here next time
                         return b;
                     } catch (OutOfDeviceMemory full) {
+                        tried.append(tried.isEmpty() ? "" : "; ").append(full.getMessage());
                         if (last == again || full.getMessage().startsWith("out of")) {
                             last = full;   // a type that ran out says more than one these buffers cannot use
                         }
                     }
                 }
-                throw last;
+                throw new OutOfDeviceMemory(last.getMessage() + "; device-local: " + again.getMessage()
+                        + "; spill types tried: " + tried + "; heaps: " + heaps());
             }
         }
     }
