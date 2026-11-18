@@ -3,16 +3,20 @@ package io.github.zzuegg.brainiac.experiments.data;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.data.DataPruner;
 import io.github.zzuegg.brainiac.experimental.data.InRunShapley;
+import io.github.zzuegg.brainiac.experimental.interp.Trak;
 import io.github.zzuegg.brainiac.experimental.nn.SimpleMlp;
 import io.github.zzuegg.brainiac.experimental.train.TrainingDataAttribution;
 import io.github.zzuegg.brainiac.experiments.learning.ToyTasks;
 import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.tensor.Linalg;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.SplittableRandom;
 
 /**
@@ -30,6 +34,14 @@ import java.util.SplittableRandom;
  * removed and the run repeated with the same batches minus those examples; each method's
  * summed per-example prediction of the validation-loss change is correlated (Pearson) with
  * the actual change.
+ *
+ * <p><b>Linear datamodeling score</b> ({@link #datamodeling}, wave 9 item 9.4.9): per
+ * validation target, the Spearman correlation over random half-size training subsets
+ * between a method's summed attributions and the target's margin in a model retrained on
+ * that subset (same batches minus the left-out rows). Methods: {@link Trak} with one and
+ * with several models, the influence function (exact Hessian; for the MLP on its last
+ * layer), TracIn over the epoch checkpoints, and the plain gradient dot product of the
+ * final model.
  */
 public final class TrainingAttributionExperiment {
 
@@ -256,6 +268,172 @@ public final class TrainingAttributionExperiment {
             actual[g] = validLoss(run(train, linear, runSeed, removed, new Observer() { }), valid) - base;
         }
         return pearson(predicted, actual);
+    }
+
+    /**
+     * Runs the linear datamodeling comparison.
+     *
+     * @param mlp whether to use the 64-64-10 MLP (otherwise the linear 64-10 classifier)
+     * @param trakModels models in the TRAK ensemble
+     * @param subsets retrained subset models
+     * @param targets validation targets
+     * @param seed the seed
+     * @return per method its linear datamodeling score (higher is better, random is 0)
+     */
+    public static Map<String, Double> datamodeling(boolean mlp, int trakModels, int subsets, int targets, long seed) {
+        Labelled train = train(seed, 0);
+        Labelled valid = valid(seed);
+        int n = train.x().shape().dim(0);
+        int[] sizes = mlp ? new int[] {64, 64, 10} : new int[] {64, 10};
+        Tensor tx = valid.x().slice(0, 0, targets);
+        Tensor ty = valid.y().slice(0, 0, targets);
+        long runSeed = seed + 3000;
+        Trak trak1 = new Trak(Math.min(256, n / 2), seed + 11);
+        Trak trakM = new Trak(Math.min(256, n / 2), seed + 12);
+        double[][] tracIn = new double[targets][n];
+        double[][] dot = null;
+        double[][] influence = null;
+        for (int k = 0; k < trakModels; k++) {
+            boolean first = k == 0;
+            SimpleMlp net = run(train, sizes, runSeed + 17L * k, null, first ? new Observer() {
+                @Override
+                public void afterEpoch(SimpleMlp current) {
+                    accumulate(tracIn, marginProducts(current, current.parameters(), train, tx, ty), LR);
+                }
+            } : new Observer() { });
+            TrainingDataAttribution att = attribution(net, net.parameters());
+            double[][] gTrain = att.perExampleGradients(train.x(), train.y());
+            double[] pTrain = correctProbability(net, train.x(), train.y());
+            double[][] phi = marginGradients(gTrain, pTrain);
+            double[][] phiT = marginGradients(att.perExampleGradients(tx, ty), correctProbability(net, tx, ty));
+            double[] q = new double[n];
+            for (int j = 0; j < n; j++) {
+                q[j] = 1 - pTrain[j];
+            }
+            trakM.addModel(phi, phiT, q);
+            if (first) {
+                trak1.addModel(phi, phiT, q);
+                dot = marginProducts(net, net.parameters(), train, tx, ty);
+                List<Var> head = mlp ? List.of(net.weight(1), net.bias(1)) : net.parameters();
+                influence = influence(net, head, train, tx, ty);
+            }
+        }
+        SplittableRandom r = new SplittableRandom(seed + 9);
+        boolean[][] member = new boolean[subsets][n];
+        double[][] outputs = new double[subsets][];
+        for (int s = 0; s < subsets; s++) {
+            boolean[] removed = new boolean[n];
+            for (int j = 0; j < n; j++) {
+                member[s][j] = r.nextBoolean();
+                removed[j] = !member[s][j];
+            }
+            outputs[s] = margins(run(train, sizes, runSeed, removed, new Observer() { }), tx, ty);
+        }
+        Map<String, Double> out = new LinkedHashMap<>();
+        out.put("TRAK (1 model)", Trak.linearDatamodelingScore(trak1.scores(), member, outputs));
+        out.put("TRAK (" + trakModels + " models)", Trak.linearDatamodelingScore(trakM.scores(), member, outputs));
+        out.put(mlp ? "influence (last layer)" : "influence", Trak.linearDatamodelingScore(influence, member, outputs));
+        out.put("TracIn (epoch checkpoints)", Trak.linearDatamodelingScore(tracIn, member, outputs));
+        out.put("gradient dot product", Trak.linearDatamodelingScore(dot, member, outputs));
+        return out;
+    }
+
+    /** {@code p(correct class)} per row. */
+    private static double[] correctProbability(SimpleMlp net, Tensor x, Tensor y) {
+        float[] logits = Var.noGrad(() -> net.forward(Var.of(x))).value().toArray();
+        float[] t = y.toArray();
+        int c = logits.length / t.length;
+        double[] p = new double[t.length];
+        for (int i = 0; i < t.length; i++) {
+            double max = Double.NEGATIVE_INFINITY;
+            for (int k = 0; k < c; k++) {
+                max = Math.max(max, logits[i * c + k]);
+            }
+            double z = 0;
+            for (int k = 0; k < c; k++) {
+                z += Math.exp(logits[i * c + k] - max);
+            }
+            p[i] = Math.exp(logits[i * c + (int) t[i]] - max) / z;
+        }
+        return p;
+    }
+
+    /** The margin {@code log p / (1 - p)} per row. */
+    private static double[] margins(SimpleMlp net, Tensor x, Tensor y) {
+        double[] p = correctProbability(net, x, y);
+        double[] m = new double[p.length];
+        for (int i = 0; i < p.length; i++) {
+            double q = Math.min(Math.max(p[i], 1e-9), 1 - 1e-9);
+            m[i] = Math.log(q / (1 - q));
+        }
+        return m;
+    }
+
+    /** Margin gradients from loss gradients: {@code grad f = -grad L / (1 - p)}. */
+    private static double[][] marginGradients(double[][] lossGradients, double[] p) {
+        double[][] out = new double[lossGradients.length][];
+        for (int i = 0; i < out.length; i++) {
+            double s = -1 / Math.max(1 - p[i], 1e-6);
+            out[i] = new double[lossGradients[i].length];
+            for (int j = 0; j < out[i].length; j++) {
+                out[i][j] = s * lossGradients[i][j];
+            }
+        }
+        return out;
+    }
+
+    /** {@code -grad f_t . grad L_j}: the first-order margin change of target t from a step on j. */
+    private static double[][] marginProducts(SimpleMlp net, List<Var> params, Labelled train, Tensor tx, Tensor ty) {
+        TrainingDataAttribution att = attribution(net, params);
+        double[][] gTrain = att.perExampleGradients(train.x(), train.y());
+        double[][] fT = marginGradients(att.perExampleGradients(tx, ty), correctProbability(net, tx, ty));
+        double[][] out = new double[fT.length][gTrain.length];
+        for (int t = 0; t < fT.length; t++) {
+            for (int j = 0; j < gTrain.length; j++) {
+                out[t][j] = -dot(fT[t], gTrain[j]);
+            }
+        }
+        return out;
+    }
+
+    /** {@code -grad f_t H^-1 grad L_j} with the damped Hessian of the mean training loss. */
+    private static double[][] influence(SimpleMlp net, List<Var> params, Labelled train, Tensor tx, Tensor ty) {
+        TrainingDataAttribution att = attribution(net, params);
+        double[] inv = Linalg.inverse(att.hessian(train.x(), train.y(), 1e-3)).toDoubleArray();
+        double[][] gTrain = att.perExampleGradients(train.x(), train.y());
+        double[][] fT = marginGradients(att.perExampleGradients(tx, ty), correctProbability(net, tx, ty));
+        int p = fT[0].length;
+        double[][] out = new double[fT.length][gTrain.length];
+        for (int t = 0; t < fT.length; t++) {
+            double[] h = new double[p];
+            for (int i = 0; i < p; i++) {
+                double s = 0;
+                for (int j = 0; j < p; j++) {
+                    s += inv[i * p + j] * fT[t][j];
+                }
+                h[i] = s;
+            }
+            for (int j = 0; j < gTrain.length; j++) {
+                out[t][j] = -dot(h, gTrain[j]);
+            }
+        }
+        return out;
+    }
+
+    private static void accumulate(double[][] into, double[][] add, double scale) {
+        for (int i = 0; i < into.length; i++) {
+            for (int j = 0; j < into[i].length; j++) {
+                into[i][j] += scale * add[i][j];
+            }
+        }
+    }
+
+    private static double dot(double[] a, double[] b) {
+        double s = 0;
+        for (int i = 0; i < a.length; i++) {
+            s += a[i] * b[i];
+        }
+        return s;
     }
 
     private static double validLoss(SimpleMlp net, Labelled valid) {

@@ -262,6 +262,64 @@ public final class MixerShootout {
     }
 
     /**
+     * Trains one mixer like {@link #run(String, LayerSpec, Task, int, int, float, long)} (same
+     * batches) and records the test accuracy after each checkpoint's number of steps, so the
+     * value at a checkpoint equals a separate run of that budget.
+     *
+     * @param spec the mixer
+     * @param task the task
+     * @param width the model width
+     * @param checkpoints increasing step counts
+     * @param lr the learning rate
+     * @param seed the seed for weights and data
+     * @return the test accuracy at each checkpoint
+     */
+    public static double[] curve(LayerSpec spec, Task task, int width, int[] checkpoints, float lr, long seed) {
+        SplittableRandom random = new SplittableRandom(seed);
+        Layer mixer = spec.create(Shape.of(task.length(), width), random);
+        Var embed = Var.param(Tensor.normal(Shape.of(task.vocabulary(), width), 0, 1, random));
+        Var previous = Var.param(Tensor.normal(Shape.of(task.vocabulary(), width), 0, 1, random));
+        Var readout = Var.param(Tensor.uniform(Shape.of(width, task.vocabulary()), -1, 1, random)
+                .mul((float) Math.sqrt(3.0 / width)));
+        List<Var> params = new ArrayList<>(List.of(embed, previous, readout));
+        params.addAll(mixer.parameters());
+        Optimizer optimizer = Optimizer.adam(lr);
+        int[][][] test = task.batch(new SplittableRandom(seed + 1000), 256);
+        double[] out = new double[checkpoints.length];
+        int next = 0;
+        int last = checkpoints[checkpoints.length - 1];
+        for (int s = 0; s <= last; s++) {
+            while (next < checkpoints.length && checkpoints[next] == s) {
+                float[] l = Var.noGrad(() -> logits(test[0], embed, previous, readout, mixer, false, width)).value()
+                        .toArray();
+                out[next++] = accuracy(l, test[1][0], task.vocabulary());
+            }
+            if (s == last) {
+                break;
+            }
+            int[][][] batch = task.batch(random, 32);
+            Functional.crossEntropy(logits(batch[0], embed, previous, readout, mixer, true, width), ids(batch[1][0]))
+                    .backward();
+            optimizer.step(params);
+        }
+        return out;
+    }
+
+    private static double accuracy(float[] l, int[] targets, int classes) {
+        int correct = 0;
+        for (int i = 0; i < targets.length; i++) {
+            int best = 0;
+            for (int c = 1; c < classes; c++) {
+                if (l[i * classes + c] > l[i * classes + best]) {
+                    best = c;
+                }
+            }
+            correct += best == targets[i] ? 1 : 0;
+        }
+        return correct / (double) targets.length;
+    }
+
+    /**
      * Trains every mixer of a lineup on every task.
      *
      * @param lineup name to spec

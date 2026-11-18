@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving.
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes.
 
 ## How the module is laid out
 
@@ -20,6 +20,7 @@ Rules this page follows:
 - Wave 6 numbers are keyed **Run-w6**: they were printed by the tests in one full suite run of the merged wave 6 work on 2026-11-17 and 2026-11-18 (446 test classes, 997 tests, all passing). Where a wave 6 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave6)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - Wave 7 numbers are keyed **Run-w7**: they were printed by the tests in one full suite run of the merged wave 7 work on 2026-11-18 (543 test classes, 1,150 tests, all passing). Where a wave 7 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave7)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - Wave 8 numbers are keyed **Run-w8**: they were printed by the tests in one full suite run of the merged wave 8 work on 2026-11-18 (667 test classes, 1,328 tests, all passing). Where a wave 8 test printed nothing on a point, or the number comes from a larger run than the test budget allows, it is taken from the implementing agent's final report and marked **(R-wave8)** next to it. Where the two disagree, the test's number is given and the report's is noted.
+- Wave 9 numbers are keyed **R-wave9**: they come from the final reports of the six wave 9 work-package agents, who ran their own test classes one at a time with `--tests` filters on 2026-11-18 (all passing). No full suite run of the merged wave 9 work has been made, so there is no Run-w9 key. Where an agent's first report and its follow-up after fixes disagree, the follow-up is used. Most wave 9 rows are one seed, and small gaps are within noise.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -48,6 +49,7 @@ Source keys (given under each experiment):
 | R-wave7 | Session transcript: final reports of the six wave 7 work-package agents (WP1–WP6) |
 | Run-w8 | Full suite run after wave 8, 2026-11-18: merged WP1–WP6 work (667 test classes, 1,328 tests), all passing |
 | R-wave8 | Session transcript: final reports of the six wave 8 work-package agents (WP1–WP6) |
+| R-wave9 | Session transcript: final reports of the six wave 9 work-package agents (WP1–WP6), including their follow-ups after fixes; per-class test runs, 2026-11-18 |
 
 ---
 
@@ -3682,6 +3684,647 @@ Sources: Run-w8, R-wave8. Tests: PointCloudTest, DgcnnTest, EgnnRotationTest, Gr
 
 ---
 
+## Wave 9
+
+Wave 9 adds 102 techniques in six work packages (WP1–WP6, items 9.1.1 to 9.6.17 in `wave9-ideas.md`). An item is tagged **W9** in the same way as earlier waves, so "W9 1.3" is item 9.1.3. The code is merged on branch `claude/project-thread-8zvcl0`. It adds ten new themes (alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world) and extends nine existing ones (agents, audio, data, interp, multimodal, reasoning, recsys, sciml and vision). Unlike earlier waves, wave 9 is gathered here in one section per work package rather than spread over the themes; the theme of each experiment is given on its Sources line.
+
+Every wave 9 number is keyed **R-wave9**. It comes from the final report of the work-package agent that built the item. Each agent ran its own test classes one at a time with `--tests` filters in the cloud container on 2026-11-18, and all of them passed. No full suite run of the merged wave 9 work has been made yet, so there is no Run-w9 key. Several agents sent a first report and a follow-up after fixing set-ups and bugs. Where the two disagree, the follow-up is used. Most rows are one seed at a test-sized budget, so gaps of a few points are within noise. Where a number comes from a longer or earlier run than the test's, the row says so.
+
+The **Verdict** column reads as follows:
+- **Win:** the technique beats its baseline clearly.
+- **Mixed:** it wins on some measures or settings and loses on others.
+- **Negative:** it does not beat its baseline, or the hypothesis in `wave9-ideas.md` did not hold. These rows are kept and labelled.
+- **Inconclusive:** the test is only a smoke run, so the numbers cannot decide.
+
+### Wave 9 verdicts by item
+
+| WP | Win | Mixed | Negative | Inconclusive | Items |
+|---|---|---|---|---|---|
+| WP1 ranking, causal, survival | 8 | 7 | 3 | 0 | 18 |
+| WP2 post-training and code | 4 | 4 | 9 | 0 | 17 |
+| WP3 data and evaluation | 7 | 6 | 4 | 0 | 17 |
+| WP4 interpretability, documents, multimodal | 4 | 5 | 8 | 0 | 17 |
+| WP5 world models, video, audio, sciml | 6 | 1 | 7 | 2 | 16 |
+| WP6 parallel, streaming, edge | 9 | 6 | 2 | 0 | 17 |
+| **Total** | **38** | **29** | **33** | **2** | **102** |
+
+| Item | Technique | Experiment | Verdict |
+|---|---|---|---|
+| W9 1.1 | MMoE and PLE | MultiTaskRanking | Mixed |
+| W9 1.2 | ESMM | MultiTaskRanking | Negative |
+| W9 1.3 | Unbiased learning to rank (IPW, regression EM, DLA) | ClickLogLearning | Mixed |
+| W9 1.4 | MMR and DPP re-ranking | RerankingDiversity | Win |
+| W9 1.5 | AutoInt and xDeepFM | ClickModels | Mixed |
+| W9 1.6 | RankMixer | ClickModels | Win |
+| W9 1.7 | Hashed and quotient–remainder embeddings | ClickModels | Win |
+| W9 1.8 | logQ-corrected in-batch softmax, mixed negatives | SamplingBiasCorrection | Win |
+| W9 1.9 | Budget pacing: throttling and bid shading | BudgetPacing | Mixed |
+| W9 1.10 | X-, R- and DR-learners | HeterogeneousEffects | Win |
+| W9 1.11 | Double machine learning | HeterogeneousEffects | Mixed |
+| W9 1.12 | Causal forest | HeterogeneousEffects | Negative |
+| W9 1.13 | Uplift models and Qini | HeterogeneousEffects | Win |
+| W9 1.14 | 2SLS and DeepIV | InstrumentalVariables | Mixed |
+| W9 1.15 | CUPED and mSPRT | OnlineExperiments | Win |
+| W9 1.16 | Kaplan–Meier, Cox, DeepSurv | SurvivalShootout | Win |
+| W9 1.17 | Discrete hazards, DeepHit, survival forest | SurvivalShootout | Mixed |
+| W9 1.18 | PFN at longer budgets, TabICL-lite | TabularShootout | Negative |
+| W9 2.1 | Reward-model ensembles and WARM | RewardOveroptimization | Negative |
+| W9 2.2 | BOND and J-BOND | RewardOveroptimization | Mixed |
+| W9 2.3 | SPPO and Nash-MD | GeneralPreferences | Negative |
+| W9 2.4 | General preference model (GPM) | GeneralPreferences | Win |
+| W9 2.5 | χ²PO and SquaredPO | PreferenceShootout | Win |
+| W9 2.6 | Length-regularised DPO (R-DPO) | PreferenceShootout | Negative |
+| W9 2.7 | XPO | PreferenceShootout | Negative |
+| W9 2.8 | VinePPO | ProcessSupervision | Mixed |
+| W9 2.9 | Math-Shepherd | ProcessSupervision | Negative |
+| W9 2.10 | Process advantage verifiers (PAV) | ProcessSupervision | Mixed |
+| W9 2.11 | PRIME | ProcessSupervision | Negative |
+| W9 2.12 | Step-DPO | ProcessSupervision | Negative |
+| W9 2.13 | RLVR from one example | ArithmeticRl | Negative |
+| W9 2.14 | Execution prediction from traces | CodeExecution | Win |
+| W9 2.15 | Self-repair | CodeExecution | Negative |
+| W9 2.16 | Execution-based reranking | CodeExecution | Win |
+| W9 2.17 | ArCHer with a tuned critic | ToolAgentBench | Mixed |
+| W9 3.1 | Online data mixing (ODM) | DataCuration | Negative |
+| W9 3.2 | Aioli | DataCuration | Negative |
+| W9 3.3 | Skill-It | DataCuration | Mixed |
+| W9 3.4 | Learning-progress curricula | DataCuration | Negative |
+| W9 3.5 | RHO-LOSS | DataCuration | Win |
+| W9 3.6 | Dataset distillation | SyntheticTraining | Mixed |
+| W9 3.7 | TabDDPM and CTGAN | SyntheticTraining | Mixed |
+| W9 3.8 | Classifiers on diffusion samples | SyntheticTraining | Negative |
+| W9 3.9 | Continual pretraining | ContinualPretraining | Mixed |
+| W9 3.10 | Calibration estimators | CalibrationEstimators | Win |
+| W9 3.11 | LLM-as-judge biases | JudgeAudit | Win |
+| W9 3.12 | Rogan–Gladen and prediction-powered inference | JudgeAudit | Win |
+| W9 3.13 | Kernel Divergence Score, paraphrase contamination | ContaminationAudit | Mixed |
+| W9 3.14 | Clustered standard errors, paired tests, power | StatisticalReporting | Win |
+| W9 3.15 | Ladder and Thresholdout | StatisticalReporting | Win |
+| W9 3.16 | Rankings across training budgets | BudgetRankings | Win |
+| W9 3.17 | Learning-curve extrapolation, LC-PFN | CurveExtrapolation | Mixed |
+| W9 4.1 | ACDC and edge attribution patching | CircuitDiscovery | Win |
+| W9 4.2 | Distributed alignment search | CircuitDiscovery | Win |
+| W9 4.3 | INLP and LEACE | ConceptErasure | Win |
+| W9 4.4 | CKA, SVCCA, PWCCA | RepresentationComparison | Negative |
+| W9 4.5 | Contrast-consistent search | LatentKnowledge | Negative |
+| W9 4.6 | Attention rollout and flow | ExplainabilityBenchmark | Negative |
+| W9 4.7 | Git Re-Basin | RepresentationComparison | Win |
+| W9 4.8 | Local learning coefficient | DevelopmentalInterp | Mixed |
+| W9 4.9 | TRAK | TrainingAttributionExperiment | Negative |
+| W9 4.10 | CRNN with CTC | GlyphOcr | Negative |
+| W9 4.11 | Donut-style parsing | DocumentParsing | Negative |
+| W9 4.12 | LayoutLM-style 2-D positions | DocumentParsing | Mixed |
+| W9 4.13 | TAPAS | TableQa | Mixed |
+| W9 4.14 | DETR with hybrid matching | DetectionShootout | Mixed |
+| W9 4.15 | Frozen-LM bridges (projector, Q-Former, gated cross-attention) | FusionShootout | Negative |
+| W9 4.16 | Transfusion | FusionShootout | Negative |
+| W9 4.17 | Bottleneck fusion, modality dropout | FusionShootout | Mixed |
+| W9 5.1 | Factorised space-time video diffusion | VideoGeneration | Negative |
+| W9 5.2 | MAGVIT-style 3-D tokenizer with masked modelling | VideoGeneration | Win |
+| W9 5.3 | Self Forcing | VideoGeneration | Negative |
+| W9 5.4 | History guidance | VideoGeneration | Win |
+| W9 5.5 | IRIS token world model | WorldModelShootout | Mixed |
+| W9 5.6 | DreamerV3 robustness tricks | WorldModelShootout | Negative |
+| W9 5.7 | DINO-WM | WorldModelShootout | Win |
+| W9 5.8 | SlotFormer | WorldModelShootout | Negative |
+| W9 5.9 | HiFi-GAN vocoder | AudioGeneration | Inconclusive |
+| W9 5.10 | DiffWave and WaveGrad | AudioGeneration | Inconclusive |
+| W9 5.11 | Monotonic alignment search vs filler padding | AudioGeneration | Negative |
+| W9 5.12 | Latent audio diffusion | AudioGeneration | Win |
+| W9 5.13 | Finite scalar quantization | AudioGeneration, VideoGeneration | Win |
+| W9 5.14 | PINN fixes for hard PDEs | PdeShootout | Negative |
+| W9 5.15 | ENGD and Newton–CG for PINNs | PdeShootout | Win |
+| W9 5.16 | Transolver and LANO vs FNO | OperatorLearning | Negative |
+| W9 6.1 | GPipe, 1F1B, interleaved 1F1B | ParallelismShootout | Win |
+| W9 6.2 | Zero-bubble pipelines and DualPipe | ParallelismShootout | Mixed |
+| W9 6.3 | Tensor and sequence parallelism | ParallelismShootout | Win |
+| W9 6.4 | ZeRO 1–3 | ParallelismShootout | Win |
+| W9 6.5 | Selective recomputation, optimal checkpointing | MemorySchedules | Win |
+| W9 6.6 | Expert parallelism with capacity limits | ParallelismShootout | Win |
+| W9 6.7 | Hogwild and delay-compensated ASGD | AsyncTraining | Win |
+| W9 6.8 | FTRL-Proximal | StreamShootout | Mixed |
+| W9 6.9 | Hoeffding trees, adaptive random forest | StreamShootout | Mixed |
+| W9 6.10 | ADWIN, DDM, EDDM, Page–Hinkley | StreamShootout | Mixed |
+| W9 6.11 | ER-ACE | StreamShootout | Mixed |
+| W9 6.12 | COCOB coin betting | StreamShootout | Win |
+| W9 6.13 | Integer-only inference | EdgeDeployment | Mixed |
+| W9 6.14 | Patch-based inference, operator reordering | EdgeDeployment | Win |
+| W9 6.15 | Once-for-all networks | EdgeDeployment | Negative |
+| W9 6.16 | On-device training with sparse updates | EdgeDeployment | Win |
+| W9 6.17 | Keyword spotting (DS-CNN and rivals) | EdgeDeployment | Negative |
+
+---
+
+## Wave 9 WP1: ranking, ads and search; causal inference; survival analysis
+
+New packages: `experimental.causal`, `experimental.survival`, `experiments.causal` and `experiments.survival`. The other WP1 experiments extend `experiments.recsys`. The tests ran on a machine with a load average of 18 on 4 cores, so their times are inflated (R-wave9).
+
+### MultiTaskRanking (W9 1.1: MMoE and PLE, 1.2: ESMM)
+Sources: R-wave9. Theme: recsys. Test: MultiTaskRankingTest. Blocks: `experimental.recsys.MultiGateExperts` (shared bottom, MMoE, PLE) and `EntireSpaceModel`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| MMoE; PLE, task correlation ρ = −0.5 | AUC, task 1 / task 2 | MMoE 0.843 / 0.851. PLE 0.843 / 0.848 | Shared bottom: 0.837 / 0.831. Single-task: 0.840 / 0.838. DCN-V2 with two heads: 0.840 / 0.828. FineGrainedMoe: 0.820 / 0.816 | Mixed | The gates help on task 2 (+0.02 over shared bottom); on task 1 every gap is within noise. |
+| ESMM (shared bottom; MMoE), clicks made rare (about 7% CTR) | CVR AUC | 0.709; 0.714 | Click-space CVR, shared bottom: 0.787. Click-space MMoE: 0.784 | Negative | Negative: the data has no unobserved selection bias, and the click-space models already share a body with the CTR task, so ESMM has nothing to fix. This matches the ESCM² critique. The test was loosened to a sanity check. |
+
+### ClickLogLearning (W9 1.3: unbiased learning to rank with IPW, regression EM and the dual learning algorithm)
+Sources: R-wave9. Theme: recsys. Test: ClickLogLearningTest. Block: `ClickDebiasing`. The logging ranker also promotes an irrelevant feature, so naive click models learn the wrong signal. This set-up was fixed in the follow-up; the first version gave position bias no effect.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| IPW with propensities clipped at 0.1; DLA; cascade correction | NDCG@5 at position-bias η = 2 | IPW 0.898. DLA 0.817. Cascade 0.803 | Naive RankNet: 0.783. LambdaRank: 0.790. Softmax: 0.793. LambdaMART: 0.765. Oracle on true grades: 0.935 | Mixed | Clipped IPW closes most of the gap to the oracle; DLA gains only about 0.02. |
+| Unclipped IPW; regression-EM ranker | NDCG@5 | 0.738; 0.728 | Naive softmax: 0.793 | Negative | Negative: weights up to 100 make both lose to naive training. EM still estimates the propensities well (error 0.012). |
+
+### RerankingDiversity (W9 1.4: MMR and determinantal point processes)
+Sources: R-wave9. Theme: recsys. Test: RerankingDiversityTest. Block: `DiverseReranker` (MMR; DPP with fast greedy Cholesky). Candidates come from a noisy relevance oracle.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DPP (θ = 0.7); MMR (λ = 0.5) | NDCG@10; α-NDCG@10; intra-list distance | DPP 0.845; 0.876; 0.521. MMR 0.878; 0.852; 0.431 | Relevance only: 0.930; 0.717; 0.240 | Win | Both trade a little relevance for much more diversity; the DPP buys the most. |
+
+Not done: LightGCN candidates were replaced by the noisy relevance oracle (the two-tower candidate variant is kept).
+
+### ClickModels: interaction order, RankMixer and compact embeddings (W9 1.5: AutoInt and xDeepFM, 1.6: RankMixer, 1.7: hashing and quotient–remainder embeddings)
+Sources: R-wave9. Theme: recsys. Tests: InteractionOrderTest, RankMixerSweepTest, CompactEmbeddingTest. Blocks: `FieldAttention` (AutoInt), `CompressedInteraction` (xDeepFM), `RankMixerBlock`, `CompactEmbedding`. Budgets: 160, 100 and 100 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| xDeepFM; AutoInt, planted order-3 interaction | AUC | xDeepFM 0.715. AutoInt 0.674 | DCN-V2: 0.714. DeepFM: 0.713. Wide & Deep: 0.708. FM: 0.672. Logistic: 0.592. FT-Transformer (one token per field): 0.566 | Mixed | xDeepFM ties the best baseline; AutoInt falls behind DeepFM. |
+| RankMixer, same task | AUC | 0.743 | As above | Win | Best model on the planted-order task. |
+| RankMixer dense; sparse MoE, width 16 | AUC (ms per batch) | Dense 0.643 (3.6). MoE 0.678 (5.6), 1.91 of 4 experts active | FT-Transformer: 0.575 (9.2) | Win | Better and faster than the FT-Transformer at the same width. |
+| Quotient–remainder; frequency threshold; hashed, 10% memory, 100k-ID Zipf field | AUC / tail-ID AUC | QR 0.686 / 0.526. Threshold 0.686 / 0.516. Hashed 0.673 / 0.501. Low-rank (12.5%) 0.646 / 0.521 | Full table: 0.685 / 0.515 | Win | Quotient–remainder matches the full table at a tenth of the memory. |
+
+Not done: no HSTU row in the RankMixer sweep.
+
+### SamplingBiasCorrection (W9 1.8: logQ-corrected in-batch softmax and mixed negative sampling)
+Sources: R-wave9. Theme: recsys. Test: SamplingBiasCorrectionTest. Block: `CorrectedInBatchSoftmax`, with a streaming frequency estimator. Recall is measured against each user's true top 20 under the generating affinity, not held-out clicks.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| logQ correction; mixed negatives | Recall@20 all / head / tail | logQ 0.267 / 0.272 / 0.252. Mixed 0.369 / 0.390 / 0.305 | Plain in-batch: 0.115 / 0.086 / 0.206. Full softmax: 0.504 / 0.580 / 0.271. BPR-MF: 0.493 / 0.607 / 0.140. TwoTowerRetrieval: 0.112 | Win | Correction triples recall over plain in-batch, and mixed negatives add more. Full softmax and BPR-MF are still ahead overall but weaker on the tail. The frequency estimate's total-variation error is 0.49. |
+
+### BudgetPacing (W9 1.9: throttling and Lagrangian bid shading)
+Sources: R-wave9. Theme: recsys. Test: BudgetPacingTest. Block: `BudgetPacer`, with a second-price auction simulator. The hindsight optimum is an exact greedy fractional knapsack, cross-checked against `LinearProgram.maximize` on 150 auctions.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Dual-gradient bid shading | Value as a share of the hindsight optimum | 0.892 | Truthful bidding: 0.709, out of budget at 22% of the day | Win | Bid shading spends the budget evenly and gets most of the hindsight value. |
+| PID throttle | Same | 0.421 | Fixed throttle (rate tuned with hindsight): 0.454 | Negative | Negative: the untuned PID gains do worse than the fixed rate; the test only asks for 90% of it. |
+
+Item verdict: Mixed.
+
+### HeterogeneousEffects (W9 1.10: X-, R- and DR-learners, 1.11: double machine learning, 1.12: causal forests, 1.13: uplift modelling)
+Sources: R-wave9. Theme: causal. Tests: HeterogeneousEffectsTest, DoubleMlTest, CausalForestTest, UpliftTest. Blocks: `MetaLearners`, `DoubleMl`, `CausalForest`, `UpliftModels`, `UpliftMetrics`, `experimental.ml.RegressionForest`. Data: `experimental.data.CausalScenarios`, n = 1,000.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| R-learner; DR-learner, forest nuisance models and a ridge final stage | PEHE, simple effect | R 0.352. DR 0.467. X 0.458 | T-learner: 0.738. Linear T: 0.523. Causal forest: 0.507 | Win | Nie and Wager's point holds: the R-learner is best. With a 20-tree forest as the final stage, R scores 0.806 and DR 1.010, worse than T. |
+| X-learner, 10% treated | PEHE | 0.550 | T-learner: 1.268 | Win | The X-learner handles unbalanced arms, as predicted. |
+| TARNet; DragonNet, early stopping on factual validation MSE | PEHE | 0.94; 0.96 | Forest meta-learners, above | Negative | Negative (mild): the neural learners trail the forests at n = 1,000. Without early stopping they overfit (2.04 at 1,000 steps). |
+| DML, interactive model with boosting; with forests; partially linear | ATE bias / 95% interval coverage | Boosted 0.32 / 0.67. Forest 0.43 / 0.67. PLR 0.53 / 0.00 | Naive: 1.80. IPW: 1.69. AIPW without cross-fitting: 0.96 / 0.00 | Mixed | Cross-fitting cuts the bias by two thirds, but the intervals under-cover badly at this sample size. |
+| Causal forest (GRF-style, honest), step effect | PEHE; 90% interval coverage | 0.563; 0.498 | R-learner: 0.473. T-learner: 0.544 | Negative | Negative: no better than the meta-learners, and its intervals cover half as often as they should. |
+| Uplift forest with KL splits | Qini | 0.0409 | Oracle: 0.0424. X-learner: 0.0403. Response model: −0.0078 | Win | Near the oracle; targeting by response alone is worse than random. |
+
+Item verdicts: 1.10 Win (TARNet and DragonNet are comparison rows), 1.11 Mixed, 1.12 Negative, 1.13 Win.
+
+### InstrumentalVariables (W9 1.14: two-stage least squares and DeepIV)
+Sources: R-wave9. Theme: causal. Test: InstrumentalVariablesTest. Block: `InstrumentalVariables`. Data: an airline-style instrument with nonlinear confounding.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DeepIV | Counterfactual relative MSE | 0.033 | Direct MLP (confounded): 0.036. Forest covariate adjustment: 0.097. 2SLS: 0.242 | Mixed | DeepIV beats linear 2SLS by far but only just beats the confounded direct MLP. |
+
+Not done: the AIPW baseline was replaced by forest covariate adjustment.
+
+### OnlineExperiments (W9 1.15: CUPED and always-valid sequential tests)
+Sources: R-wave9. Theme: causal. Test: OnlineExperimentsTest. Block: `OnlineExperiments` (t-test, CUPED, CUPAC, mSPRT).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| mSPRT, A/A tests | False-positive rate | 0.005 | Fixed-horizon t-test: 0.060. t-test peeked daily: 0.255 | Win | The always-valid test stops peeking from inflating false positives. The CUPED power numbers were not in the report. |
+
+### SurvivalShootout (W9 1.16: Kaplan–Meier, Cox and DeepSurv, 1.17: discrete-time hazards, DeepHit and random survival forests)
+Sources: R-wave9. Theme: survival. Tests: SurvivalShootoutTest, CrossingHazardsTest. Blocks: `SurvivalModels`, `DiscreteHazardNet`, `DeepHit`, `SurvivalForest`, `SurvivalMetrics`. Data: `experimental.data.SurvivalData`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DeepSurv, nonlinear risk | Harrell's C | 0.775 | Cox: 0.585 | Win | The neural risk function captures what the linear Cox model cannot. |
+| Random survival forest; DeepHit, crossing hazards | Time-dependent C | RSF 0.659. DeepHit 0.656 | Cox: 0.617 | Win | Both beat Cox when proportional hazards fails. |
+| DeepHit, competing risks | CIF error, cause 1 | 0.081 | Cause-specific Cox: 0.037 | Negative | Negative: cause-specific Cox is twice as accurate. |
+
+Item verdicts: 1.16 Win, 1.17 Mixed.
+
+### TabularShootout: longer pre-training and TabICL-lite (W9 1.18: prior-fitted networks with a longer budget, TabICL's column-then-row architecture)
+Sources: R-wave9. Theme: recsys. Test: PretrainingBudgetTest. Block: `ColumnRowIcl`. The wave 7 `priorFitted` rows are unchanged.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PFN at 1x / 4x pre-training (12 / 48 steps); TabICL-lite at both | Prior-task accuracy | PFN 0.480 / 0.640. TabICL-lite 0.508 / 0.508 | GBT: 0.830. Random forest: 0.843 | Negative | Negative: far behind the trees at test budgets. In a 300-step probe TabICL-lite sits on a ln 2 loss plateau until about step 150, falls to 0.59, then turns unstable: a slow start, not a bug. |
+
+Not done: the 16x and 64x rows exist in the experiment but were not run, so the budget claim is untested.
+
+---
+
+## Wave 9 WP2: post-training, process rewards and code models
+
+New packages: `experimental.align`, `experimental.code`, `experiments.alignment` and `experiments.code`. Block tests AlignBlocksTest and CodeBlocksTest check closed-form answers. All 16 WP2 test classes pass in 10.5 s or less. In the follow-up the R-DPO length term's sign was fixed, and several set-ups were reworked because their baselines sat near zero (R-wave9).
+
+### RewardOveroptimization (W9 2.1: reward-model ensembles and WARM, 2.2: BOND)
+Sources: R-wave9. Theme: alignment. Tests: RewardOveroptimizationTest, RewardKlSweepTest, BondTest. Blocks: `RewardEnsemble`, `WeightAveragedReward`, `BestOfNDistiller`. The gold reward is `RubricRewards.trueScore`; preference labels come from a noisy Bradley–Terry annotator. Three ensemble members and three WARM fine-tunes, each reward model trained for 40 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Ensembles (mean; worst; mean − std); WARM | Gold reward at best-of-64 | 0.451; 0.498; 0.487. WARM 0.528 | Single proxy: 0.524 / 0.526 / 0.545 / 0.500 at best-of-1 / 4 / 16 / 64. Gold oracle: 0.524 / 0.744 / 0.882 / 0.957 | Negative | Negative: proxy accuracy is barely above chance (single 0.586, WARM 0.566), so ensembling has nothing to average. WARM degrades least. |
+| Same, final gold after GRPO without a KL penalty | Gold reward | Mean 0.333. Worst 0.393. Mean − std 0.403. WARM 0.491 | Single proxy: 0.521 → 0.487. Gold oracle: 0.727 | Negative | Over-optimisation shows clearly: every proxy lowers gold while the oracle climbs. A KL penalty of 0 / 0.05 / 0.2 gives 0.445 / 0.459 / 0.444; PPO 0.499. |
+| BOND; J-BOND | Gold reward, one sample per query | 0.525; 0.529 | Reference: 0.521. Best-of-16 at inference: 0.556 (16 samples). RFT: 0.517. DPO: 0.498. GRPO: 0.456 | Mixed | BOND and J-BOND keep the most gold among one-sample methods but recover little of best-of-N's gain. |
+
+### GeneralPreferences (W9 2.3: Nash learning and self-play preference optimisation, 2.4: general preference models)
+Sources: R-wave9. Theme: alignment. Test: GeneralPreferencesTest. Blocks: `PreferenceEmbeddingModel` (GPM, Bradley–Terry, pairwise), `SelfPlayPreference` (SPPO, Nash-MD). Annotators have rock-paper-scissors cycles.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GPM (preference embeddings) | Held-out preference accuracy; share of cyclic triples captured | 0.963; 1.000 | Bradley–Terry: 0.674; 0.583 (its transitive bound is 2/3). Pairwise classifier: 0.941; 1.000 | Win | GPM models cyclic preferences that Bradley–Terry cannot. |
+| SPPO (true preference; GPM; Bradley–Terry); Nash-MD (GPM) | Worst-case win rate against a style panel (Nash value 0.5) | SPPO 0.464; 0.354; 0.409. Nash-MD 0.393 | Start: 0.492. DPO: 0.493. Iterative DPO: 0.424. Bradley–Terry reward + PPO: 0.444 | Negative | Negative: no method improves the worst case. |
+
+### PreferenceShootout: displacement, length bias and exploration (W9 2.5: χ²PO and SquaredPO, 2.6: length-regularised DPO, 2.7: XPO)
+Sources: R-wave9. Theme: alignment. Test: PreferenceShootoutTest. Blocks: `LinkDpoLosses`, `LengthRegularizedDpo`, `ExploratoryPreferenceOptimizer`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| χ²PO; SquaredPO | Chosen log-prob drift / gold reward / KL | χ²PO −1.23 / 0.646 / 1.13. SquaredPO −0.19 / 0.573 | DPO: −2.66 / 0.645 / 2.05. SimPO: −2.45 / 0.614. IPO: −0.15 / 0.567. DPOP: −0.03 / 0.551 | Win | χ²PO keeps DPO's gold with half the drift and half the KL. SquaredPO, like IPO and DPOP, stops the drift but loses gold. |
+| R-DPO (α = 0.5) | Length / accuracy / raw win rate / length-controlled win rate | 5.04 / 0.26 / 0.85 / 0.483 | Reference: 3.55 / 0.16 / 0.53 / 0.571. DPO: 5.03 / 0.24 / 0.91 / 0.690. SimPO: 6.47 / 0.00 / 0.96 / 0.400. GRPO with LengthControlledReward: 2.04 / 0.64 / 0.18 / 0.773 | Negative | Negative: R-DPO does not shorten answers and loses to DPO on the controlled win rate. The GRPO baseline is best. The length-controlled metric gives 0.500 on wins driven only by length, as it should. |
+| XPO | Gold reward (queries used) | 0.298 (83) | Reference: 0.278. Online DPO: 0.300 (17, most pairs are ties). Offline DPO: 0.275. SPIN: 0.298 | Negative | Negative: no method finds the rare best response; its probability stays at or below 0.0002. |
+
+Not done: WP3's length-controlled GLM was not available, so 2.6 uses a local logistic version.
+
+### ProcessSupervision (W9 2.8: VinePPO, 2.9: Math-Shepherd, 2.10: process advantage verifiers, 2.11: PRIME, 2.12: Step-DPO)
+Sources: R-wave9. Theme: reasoning. Tests: ProcessSupervisionTest, ProgressRewardTest, ImplicitProcessRewardTest, StepDpoTest. Blocks: `MonteCarloValuePpo`, `RolloutStepLabeler`, `ProgressReward`, `ImplicitProcessReward`, `StepPreferenceBuilder`, `TokenPolicyGradient`. Task: `StepChainTask`, 2–3 operand running sums mod 10. Accuracy is sampled (temperature 1, four samples per prompt) on the training problems, because the toy WindowLm memorises rather than generalises (about 0.3 held out against 0.8 on train).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| VinePPO (Monte Carlo values) | Sampled accuracy; value error against a 64-rollout estimate | 0.200 (1.6x the tokens); 0.064 / 0.048 | Start: 0.163. PPO with a learned critic: 0.308, value error 0.16 / 0.18. GRPO: 0.275. RLOO: 0.245. Constant value: 0.12 / 0.13 | Mixed | Its values are far more accurate, but at this budget that does not give a better policy. |
+| Math-Shepherd rollout labels (soft; hard) | Agreement with gold step labels; best-of-16 accuracy on 60 prompts | 0.856; 0.794. PRM best-of-16: 0.167 (soft), 0.133 (hard) | PRM on gold labels: 0.133. Outcome reward model: 0.200. Generative verifier: 0.133. First sample: 0.217 | Negative | Negative: the labels are good, but every verifier is too weak to beat taking the first sample. |
+| PAV (GRPO + progress reward); PRM + PAV beam search | Final accuracy | 0.263; beam 0.250 | Outcome-only GRPO: 0.280. GRPO + Q-value PRM: 0.252. PRM beam alone: 0.183 | Mixed | No gain in RL; a clear gain in beam search. |
+| PRIME (implicit PRM) | Final accuracy | 0.277 | Outcome-only RLOO: 0.275. RLOO + frozen PRM: 0.268 | Negative | Null: no gain. The frozen PRM's score rises fastest under the policy trained against it (0.094 → 0.132), a mild sign of reward hacking. |
+| Step-DPO | Sampled accuracy (2-step chains) | 0.180 (0.156) | Start: 0.163. Solution-level DPO: 0.187 (0.214). RFT: 0.228. STaR: 0.312 | Negative | Negative: step-level pairs do not beat whole-solution pairs, and STaR is best. The start model is trained on puzzles with 40% wrong leading digits, standing in for a pre-trained model. |
+
+### ArithmeticRl: RLVR from one example (W9 2.13)
+Sources: R-wave9. Theme: reasoning. Test: OneShotRlvrTest. Block: `SingleExampleSelector`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Top-1 problem by historical variance (with; without the entropy bonus); top-16 | Held-out sampled accuracy | 0.105; 0.105. Top-16 0.065 | Start: 0.245. Full training half: 0.180. One random problem: 0.168. Random reward: 0.243. Format-only reward: 0.123 | Negative | Negative: RL on this lookup-like task hurts held-out problems, and one example is no better than the full set. |
+
+### CodeExecution (W9 2.14: execution prediction from traces, 2.15: self-repair, 2.16: execution-based reranking)
+Sources: R-wave9. Theme: code. Tests: ExecutionPredictionTest, SelfRepairTest, ExecutionRerankingTest. Blocks: `ExecutionTracer`, `TraceLm`, `RepairLoop`, `ProgramSampler`, `ExecutionReranker`. Tasks for 2.15 and 2.16 are random programs of 1–2 primitives.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CWM-style full trace; state scratchpad | Exact-output accuracy, 1–3 ops / 4–6 ops | Trace 0.300 / 0.044. States 0.156 / 0.000 | Direct prediction: 0.156 / 0.033 | Win | Traces double in-distribution accuracy at about 6x the target tokens; length generalisation stays poor. |
+| Repair from output diff; from trace; Reflexion | Solve rate at 1 / 2 / 4 / 8 / 16 model calls | Diff 0.14 / 0.16 / 0.28 / 0.42 / 0.52. Trace 0.16 / 0.20 / 0.34 / 0.42 / 0.54. Reflexion 0.14 / 0.18 / 0.26 / 0.42 / 0.62 | Resampling: 0.14 / 0.26 / 0.32 / 0.40 / 0.56. GuidedEnumerator: 0.02 / 0.06 / 0.14 / 0.26 / 0.42 | Negative | Negative, as Olausson et al. predict for a first-sample solve rate below 0.3: at equal budget repair does not beat resampling. Reflexion is best at 16 calls. |
+| Filter; AlphaCode clustering; CodeT dual agreement; LEVER | Hidden-test top-1 accuracy at 8 / 32 samples | Filter 0.425 / 0.687. Clustering 0.425 / 0.712. CodeT 0.425 / 0.712. LEVER 0.338 / 0.450 | Likelihood: 0.275 / 0.288. Verifier without execution: 0.250 / 0.225 | Win | Running the code is what matters; clustering and CodeT add about 0.025 over filtering. LEVER's training was cut to 30 tasks. |
+
+Not done: the NeuralGpu and TransformerSeq2Seq baselines for 2.14 (one does not fit, the other was dropped for time).
+
+### ToolAgentBench: the ArCHer recipe (W9 2.17: ArCHer with a tuned critic)
+Sources: R-wave9. Theme: agents. Tests: ToolAgentArcherRecipeTest, ToolAgentArcherFullRecipeTest. `TurnLevelCritic` gained `doubleQ()` and `targetRate`, `HierarchicalAgentTrainer` gained critic warm-up and an entropy bonus; the defaults keep wave 8's rows.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ArCHer + critic warm-up; + double Q; slow actor (target rate 0.01); full recipe | Greedy / sampled success at about 6,000 interactions | Warm-up 0.75 / 0.71. Double Q 0.75 / 0.79. Slow actor 1.00 / 0.82. Full 1.00 / 0.80 (lowest TD error, 0.069) | Wave 8 ArCHer: 0.75 / 0.78. Trajectory GRPO: 1.00 / 0.98 | Mixed | The slow actor fixes greedy success, but trajectory GRPO is still best. |
+
+---
+
+## Wave 9 WP3: data mixing, selection, synthetic data and evaluation methodology
+
+New packages: `experimental.eval`, `experimental.synth` and `experiments.evaluation`. Data experiments extend `experiments.data`. CalibrationEstimatorsTest (10.5 s) and JudgeAuditTest (11.7 s) run slightly over the 10 s target (R-wave9).
+
+### DataCuration: online mixing (W9 3.1: online data mixing as a bandit, 3.2: Aioli)
+Sources: R-wave9. Theme: data. Test: OnlineMixingTest. Blocks: `BanditMixer`, `AioliMixer`. Markov grammars stand in for SyntheticCorpus and SyntheticGrammar.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ODM; clipped ODM | Target loss after 300 steps | 2.598; 2.619 | Uniform: 2.619. RegMix: 2.347. Temperature: 2.791. DoReMi (proxy cost included): 2.807 | Negative | Negative: no better than uniform within noise; the offline RegMix mixture is best. |
+| Aioli | Target loss; share on the two-domain grid | 2.648; 0.55 | Uniform: 2.619. Optimum share: 0.50 (ODM lands at 0.48) | Negative | Negative: it finds a near-optimal share on two domains but does not beat uniform on the full mix. |
+
+### DataCuration: skills and curricula (W9 3.3: Skill-It, 3.4: learning-progress curricula)
+Sources: R-wave9. Theme: data. Tests: SkillCurriculaTest, LengthCurriculaTest. Blocks: `SkillGraphSampler` (with `estimateByAblation`), `ProgressCurriculum`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Skill-It on the planted graph; on the estimated graph | Target loss | 0.758; 0.714 | Uniform: 0.965. Fixed curriculum: 0.717. Target only: 0.631 | Mixed | Beats uniform and avoids the decoy skill (share 0.01), but not training on the target alone. The estimated graph recovers 0 of 4 planted edges: the prerequisites create no measurable transfer in this MLP. |
+| EXP3.S; slope Thompson; slope greedy; self-paced | Final slot accuracy after 300 steps | 0.243; 0.237; 0.132; 0.083 | Fixed pacing: 0.277. Uniform: 0.268. Prioritized Level Replay: 0.229 | Negative | Negative: no teacher reaches the 0.9 target or beats fixed pacing, and self-paced learning stalls. Steps wasted on the random task: EXP3.S 0.27, Thompson 0.24, uniform 0.24, PLR 0.82. |
+
+### DataCuration: RHO-LOSS selection (W9 3.5)
+Sources: R-wave9. Theme: data. Test: ReducibleLossSelectionTest. Block: `ReducibleLossSelector`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| RHO-LOSS | Final accuracy; share of noisy labels picked | 0.688; 0.03 | Uniform: 0.666; 0.21. Highest loss: 0.604; 0.40. EL2N: 0.626; 0.25 | Win | It skips noisy labels almost entirely; the accuracy gain over uniform is small. No method reaches 0.8 within 300 steps. |
+
+Not done: Rho-1 is not in the comparison.
+
+### SyntheticTraining (W9 3.6: dataset distillation, 3.7: TabDDPM and CTGAN, 3.8: classifiers on diffusion samples)
+Sources: R-wave9. Theme: data. Tests: DatasetCondensationTest, SyntheticTablesTest, ConditionalTabularGanTest, GenerativeAugmentationTest, DiffusionAugmentationTest. Blocks: `DatasetCondenser`, `TabularDiffusion`, `ConditionalTabularGan` (with a PacGAN critic, pac 8), `SyntheticDataAudit`, `GenerativeAugmenter`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Gradient matching; distribution matching, digits, 1 image per class | Accuracy of a fresh ReLU MLP / tanh MLP | GM 0.349 / 0.363. DM 0.348 / 0.337 | Random real images: 0.177 / 0.183. k-means centroids: 0.403 / 0.420. Herding: 0.188 / 0.230. k-center: 0.188 / 0.230. Full set: 0.690 / 0.707 | Mixed | Gradient matching beats random by 0.17 (the hypothesis asked for 0.15) and transfers across activations, but plain class centroids are better on this toy. |
+| TabDDPM; CTGAN (800 steps), table with about 12% positives | Accuracy; rare-class recall; balanced accuracy; closest-record ratio (below 1 means copying) | TabDDPM 0.852; 0.184; 0.567; 1.12. CTGAN 0.814; 0.314; 0.600; 1.69 | Real data: 0.925; 0.455; 0.724. SMOTE: 0.905; 0.395; 0.687; 0.31. Gaussian copula: 0.874; 0.000; 0.500; 1.04 | Mixed | CTGAN is the best generator on the rare class, as predicted, but SMOTE beats both. The copying claim fails: SMOTE copies most and TabDDPM does not copy. CTGAN results are noisy across steps and widths. |
+| Real + diffusion samples (guidance 1; 3), digits, 5 images per class | Accuracy | 0.194; 0.202 | Real only: 0.199. Shift + mixup: 0.259. Real + VAE samples: 0.202 | Negative | Negative: synthetic images do not help at this compute. At 20 images per class: real 0.357, mixup 0.424, VAE 0.350, diffusion 0.275–0.347 for guidance 0.5–4. The sampler needs `clipSample(3)` to stay stable. |
+
+Not done: digits only (no ShapeImages); 9.3.8 at 5, 20 and 100 images per class (100 only in `main`) instead of 50, 200 and 1,000; `SyntheticRecsys.clicks` is not used; the copula uses empirical marginals.
+
+### ContinualPretraining (W9 3.9: re-warming, re-decaying, replay and the stability gap)
+Sources: R-wave9. Theme: data. Test: ContinualPretrainingTest. Block: `ContinualPretrainer`. Old data A, new data B.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Re-warm; re-warm + 5% replay; + low-perplexity subset | Final loss A / B (rise of A's loss) | 2.53 / 2.06 (1.04). Replay 2.42 / 2.08 (0.94). Subset 2.66 / 1.93 (1.18) | Constant rate: 1.81 / 2.67 (0.33). EWC: 2.48 / 2.07 (1.00). Retrain on A+B: 1.88 / 2.13 | Mixed | Re-warming learns B but forgets A, and replay narrows the gap to retraining (0.25 nats on the mean). A's loss never recovers, so this is plain forgetting, not a transient stability gap. |
+
+### CalibrationEstimators (W9 3.10: debiased, adaptive and smooth ECE)
+Sources: R-wave9. Theme: evaluation. Test: CalibrationEstimatorsTest (10.5 s). Block: `CalibrationEstimators`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Smooth ECE; monotone sweep; debiased L2 | Bias of the estimate at n = 200 | +0.011; +0.012; L2 −0.004 | Equal-width ECE: +0.025 (1.64x the truth). Plug-in L2: +0.059 | Win | The newer estimators halve the bias, and the debiased L2 is nearly unbiased. The method ranking holds for every bin count from 5 to 50. |
+
+### JudgeAudit (W9 3.11: LLM-as-judge biases, 3.12: Rogan–Gladen and prediction-powered inference)
+Sources: R-wave9. Theme: evaluation. Test: JudgeAuditTest (11.7 s). Blocks: `JudgeAudit`, `JudgeCorrection`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Bias audit; swap averaging; length control | Measured bias; Spearman with the gold ranking | Position +0.110 (inconsistent on 0.42 of pairs). Verbosity +0.246 (planted +0.250). Self-preference +0.099. Length-controlled ρ 0.43. Swap-averaged −0.94 | Raw judge ρ: −0.89 | Win | The audit recovers the planted bias almost exactly, and length control turns an inverted ranking positive; swap averaging alone does not. |
+| PPI++ (tuned weight); Rogan–Gladen | 95% interval coverage; width | PPI++ 0.93; 0.106. Rogan–Gladen under a pass-rate shift 0.95 | Judge only: coverage 0.00. Human only: width 0.136. PPI under the shift: 0.02 | Win | PPI++ gives valid intervals 22% narrower than humans alone; Rogan–Gladen survives the shift that breaks PPI. |
+
+### ContaminationAudit (W9 3.13: the Kernel Divergence Score and rephrased contamination)
+Sources: R-wave9. Theme: evaluation. Test: ContaminationAuditTest. Blocks: `KernelDivergenceScore`, `Decontaminator`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Kernel Divergence Score | Spearman with the contamination rate | −1.00 | Min-K%++: +1.00. Min-K%: +1.00. −loss: +1.00 | Negative | Negative: KDS is monotone, but its sign is reversed on this toy. |
+| Embedding nearest-neighbour check | Detection of paraphrased copies (false positives) | 1.00 (0.02) | 6-gram overlap: 1.00 of verbatim copies, 0.20 of paraphrases | Win | Paraphrases evade n-gram decontamination but not embeddings. Benchmark loss: clean 2.54, paraphrased 2.24, verbatim 1.92. |
+
+Item verdict: Mixed.
+
+### StatisticalReporting (W9 3.14: clustered error bars, paired tests and power, 3.15: the Ladder and Thresholdout)
+Sources: R-wave9. Theme: evaluation. Test: StatisticalReportingTest. Blocks: `EvalStatistics`, `ReusableHoldout`, `AdaptiveAnalyst`. The evaluations are simulated, not retrained.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Clustered standard error; cluster bootstrap | 95% interval coverage | 0.95; 0.96 | i.i.d. standard error: 0.75 | Win | Ignoring question clusters gives intervals that are far too narrow. |
+| Paired test | Questions needed for 80% power | 6,398 | Unpaired: 30,116 | Win | Pairing cuts the needed sample almost 5x. Two identical models end at least 1 point apart in 74 of 100 reruns. |
+| Ladder; parameter-free Ladder; Thresholdout | Reported accuracy under a boosting attack on random labels (true about 0.49) | 0.568; 0.552; 0.624 | Plain holdout: 0.711 | Win | The Ladder removes most of the overfitting, though not all of it. |
+
+### BudgetRankings (W9 3.16: do method rankings survive the training budget?)
+Sources: R-wave9. Theme: evaluation. Tests: BudgetRankingsTest, MixerBudgetRankingsTest. Block: `BudgetRankingStudy`. LongHorizonForecasting, Forecasters and MixerShootout gained curve logging.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Forecasting lineup, 20 to 320 steps, 2 seeds, 5 models | Kendall τ between the 1x and 16x rankings | −0.20 [−0.80, 0.40] | Hypothesis: below 0.4 | Win | The hypothesis holds: test-budget rankings do not survive. DLinear leads early; the transformer, FEDformer and PatchTST overtake it at 160–320 steps. |
+| Recall mixers, 10 to 80 steps | τ against the final ranking | 0.40 at 10 steps, 0.91 at 40 | — | Win | Mixer rankings settle by 40 steps; Mamba overtakes S4D there. |
+
+Not done: no 32x run. The test uses a smaller ladder (10 to 80 steps, 1 seed, τ 0.67).
+
+### CurveExtrapolation (W9 3.17: learning-curve extrapolation and LC-PFN)
+Sources: R-wave9. Theme: evaluation. Test: CurveExtrapolationTest. Block: `CurveExtrapolator` (power law, MCMC ensemble, LC-PFN).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Power law; ensemble; LC-PFN | Mean absolute error from 10% of the curve | 0.173; 0.184; 0.151 | Last value: 0.612 | Win | Extrapolation cuts the error by three quarters, and LC-PFN is best. |
+| Same, forecasting lineup | Early-ranking τ from 10% of the budget | Power law 0.20. Ensemble 0.00 | Last value: −0.20. Hypothesis: above 0.7 | Negative | Negative: the final ranking still cannot be read from 10% of the curve. Successive halving does pick the right survivor and saves 70% of the compute. |
+
+Item verdict: Mixed.
+
+---
+
+## Wave 9 WP4: interpretability tools, documents and tables, multimodal fusion
+
+New packages: `experimental.document`, `experimental.interp`, `experimental.multimodal` and `experiments.document`. The block test InterpBlocksTest checks CKA invariance, max-flow on a small graph, that LEACE defeats a linear probe, and that every glyph in the font is distinct. The follow-up fixed seven failures (a CTC network stuck on blanks, OCR that had never seen ':' or '-', a hard count threshold in TAPAS and others). Classes well over the 10 s target: VqaEarlyFusionTest 18.4 s (whichever VQA class runs first pays about 14 s of shared set-up), the four audio-visual classes 11.7–14.6 s, DetrHybridCurveTest 12.5 s and TableQaLmTest 10.9 s (R-wave9).
+
+### CircuitDiscovery (W9 4.1: ACDC and edge attribution patching, 4.2: distributed alignment search)
+Sources: R-wave9. Theme: interp. Test: CircuitDiscoveryTest. Blocks: `interp.CircuitDiscovery` (ACDC, EAP, EAP-IG, `PlantedCircuit`), `interp.AlignmentSearch`. Task accuracy 0.979.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ACDC; EAP; EAP-IG | Edge-recovery AUC | 1.0; 1.0; 1.0 | Node activation patching: 0.933. Node attribution patching (AtP): 0.935 | Win | Edge-level methods recover the planted circuit exactly; node-level methods do not. |
+| DAS, k = 1; k = 2, hidden layer 0 | Interchange intervention accuracy | 0.270; 0.323 | Probe direction: 0.108. PCA 1 / 2: 0.143 / 0.178. Best single neuron: 0.115 | Win | A learned rotation finds the causal variable far better than probes, though absolute accuracy stays low. |
+
+Not done: a planted-circuit model, not a trained transformer or WeightSparseCircuits; no AttributionGraph baseline.
+
+### ConceptErasure (W9 4.3: INLP and LEACE)
+Sources: R-wave9. Theme: interp. Test: ConceptErasureTest. Block: `interp.ConceptErasure`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| LEACE; INLP (8 rounds) | Linear-probe accuracy on the erased concept (chance 0.5) | 0.489; 0.506 | No erasure: 0.854 | Win | LEACE erases the concept to chance in one closed-form step. |
+
+Not done: the mean-difference and steering-subtraction rows were not reported; no PersonaSteering toy-LM split.
+
+### RepresentationComparison (W9 4.4: CKA, SVCCA and model stitching, 4.7: linear mode connectivity and Git Re-Basin)
+Sources: R-wave9. Theme: interp. Test: RepresentationComparisonTest. Blocks: `interp.RepresentationSimilarity`, `interp.ModelStitcher`, `interp.PermutationAlignment`. MLPs reach 0.96 accuracy after the follow-up halved the pixel noise.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Linear CKA; RBF CKA; SVCCA; PWCCA | Layer-correspondence accuracy across seeds | 0.542; 0.583; 0.083; 0.250 | Best-neuron correlation: 0.667 | Negative | Negative: the simple best-neuron baseline beats every similarity index; SVCCA is near useless here. |
+| Weight matching; activation matching | Loss barrier, width 16 / width 64 | Weight 0.712 / 0.127. Activation 0.540 / 0.177 | Naive averaging: 1.573 / 1.121 | Win | Permutation alignment removes most of the barrier at width 64; merged accuracy is 0.948 against 0.514 for naive averaging. |
+
+Not done: MLPs only (no CNNs or ViTs), one width, 3 seeds; stitching numbers were not reported.
+
+### LatentKnowledge (W9 4.5: contrast-consistent search)
+Sources: R-wave9. Theme: interp. Test: LatentKnowledgeTest. Block: `interp.ContrastConsistentSearch`. A RIGHT/WRONG verdict token was added so the answer position is trained.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CCS; contrastive PCA | Accuracy plain / sycophantic split | CCS 0.575 / 0.525. Contrastive PCA 0.520 | Supervised probe: 0.780 / 0.575. Zero-shot: 0.930 / 0.500. Random direction: 0.570 | Negative | Negative: CCS is no better than a random direction. A distractor feature scores 0.605 and 1.0. |
+
+### ExplainabilityBenchmark: attention rollout and flow (W9 4.6)
+Sources: R-wave9. Theme: interp. Test: AttentionRolloutBenchmarkTest. Block: `interp.AttentionRollout` (rollout, flow with a local Edmonds–Karp max-flow, gradient rollout). Copy task.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Rollout; flow; gradient rollout | Agreement with the true source token | 0.655; 0.655; 0.480 | Saliency: 0.865. Integrated gradients: 0.765. Raw last-layer attention: 0.730 | Negative | Negative: aggregating attention across layers is worse than raw attention and gradient methods. |
+
+Not done: no ViT pointing game and no Grad-CAM row.
+
+### DevelopmentalInterp (W9 4.8: the local learning coefficient)
+Sources: R-wave9. Theme: interp. Test: DevelopmentalInterpTest. Block: `interp.LocalLearningCoefficient`. Grokking task.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| LLC over training | LLC as test accuracy rises 0.61 → 0.95 | 0.57 → 0.01 | — | Win | LLC drops at grokking, as predicted. |
+| LLC across weight decays | Spearman with test accuracy | +1.00 | Weight norm: −1.00 | Negative | Against the hypothesis: weight norm ranks the models just as perfectly, and LLC's sign is the opposite of its drop over training. |
+
+Item verdict: Mixed. Not done: no induction-head or superposition models, no per-layer LLC.
+
+### TrainingAttributionExperiment: TRAK (W9 4.9)
+Sources: R-wave9. Theme: data. Test: TrakDatamodelingTest. Block: `interp.Trak`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| TRAK, 1; 3 models | Linear datamodeling score | 0.455; 0.523 | Influence function (exact Hessian): 0.781. TracIn: 0.548. Gradient dot product: 0.518 | Negative | Negative: on a model small enough for the exact Hessian, the influence function wins and TRAK does not beat a gradient dot product. |
+
+Not done: TRAK uses full-data models with different seeds; no CNN, no KNN-Shapley row.
+
+### GlyphOcr (W9 4.10: line OCR with a CRNN and CTC)
+Sources: R-wave9. Theme: document. Tests: GlyphOcrTest, GlyphOcrTransformerTest. Block: `document.LineRecognizer`. Data: `experimental.data.GlyphDocuments`. The follow-up added a residual connection around the BiGRU; before it CTC predicted only blanks (CER 1.0).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CRNN + CTC; transformer + CTC | Character error rate | 0.311; 0.347 | Blank-column segmentation + glyph MLP: 0.269 (0.277 touching, 0.231 separated) | Negative | Negative: segmentation still wins, even on touching glyphs. |
+
+### DocumentParsing (W9 4.11: Donut-style parsing, 4.12: LayoutLM-style 2-D positions)
+Sources: R-wave9. Theme: document. Tests: DonutParsingTest, DocumentParsingTest, DocumentPipelineTest. Blocks: `document.ImageToMarkup`, `document.LayoutEncoder`. A `formOcr` BiGRU reaches word CER 0.045 at 400 steps.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Donut-style image-to-markup, 50 steps | Field F1 | 0.000 | OCR + rules: 0.838. OCR + layout tagger: 0.788 | Negative | Negative: the end-to-end model learns nothing at test budget. |
+| 2-D layout encoder, shuffled reading order | Tagging F1 | 0.889 | 1-D positions: 0.834. Nearest-key rules: 1.000 | Mixed | 2-D positions beat 1-D when the order is shuffled, but the rules are perfect, and after OCR the tagger (0.788) trails the rules (0.838). |
+
+Not done: the OCR pipelines get the true word boxes; exact match instead of tree-edit accuracy; one budget, no learning curve; no heavy-noise comparison; KEY / VALUE / O labels instead of BIO.
+
+### TableQa (W9 4.13: TAPAS)
+Sources: R-wave9. Theme: document. Tests: TableQaTest, TableQaLmTest. Block: `document.TableEncoder`. Data: `experimental.data.ToyTables`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| TAPAS (cell selection with soft aggregation) | Answer accuracy (lookup / compare / count / sum) | 0.250 (0.22 / 0.34 / 0.30 / 0.14) | GuidedEnumerator semantic parser: 1.000. Flat LM on the linearised table: 0.145 | Mixed | Better than a flat LM, far below the parser. |
+
+### DetectionShootout: DETR with hybrid matching (W9 4.14)
+Sources: R-wave9. Theme: vision. Test: DetrHybridCurveTest (12.5 s). `SetPredictionDetector.Options` adds one-to-many matching, anchor queries and auxiliary losses; defaults keep wave 8's rows.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| H-DETR (hybrid matching), layout pages | mAP at 250 / 500 steps | 0.023 / 0.095 | Plain DETR: 0.038 / 0.175 | Mixed | Behind at test budget, but in a 700-step probe H-DETR led 0.49 to 0.34. |
+
+Not done: scenes were dropped (both detectors stay at mAP 0 even at 700 steps); no 20k-step curve; CenterNet and RetinaNet not rerun on the same curve.
+
+### FusionShootout (W9 4.15: frozen-LM bridges, 4.16: Transfusion, 4.17: fusion bottlenecks and modality dropout)
+Sources: R-wave9. Theme: multimodal. Tests: VqaProjectorTest, VqaQformerTest, VqaGatedTest, VqaEarlyFusionTest, TransfusionSharedTest, TransfusionSeparateTest, VqTokenSharedTest, VqTokenSeparateTest, AvBottleneckFusionTest, AvEarlyFusionTest, AvLateFusionTest, AvUnimodalTest (they replace FusionShootoutTest). Blocks: `multimodal.PatchProjector`, `QueryTransformer`, `GatedCrossAttentionAdapter`, `FusionDecoder`, `TransfusionModel`, `BottleneckFusion`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Linear projector; Q-Former; gated cross-attention, frozen LM and ViT | VQA accuracy | 0.650; 0.640; 0.650 | Text only: 0.515. Early fusion from scratch: 0.635. Frozen LM given the true description (ceiling): 0.770 | Negative | Negative: every bridge sits at the majority-answer prior (about 0.65), well below the ceiling. The projector leaves the LM's text loss unchanged. |
+| Transfusion, shared; separate models | Caption accuracy; generation accuracy | Shared 0.367; 0.133. Separate 0.583; 0.067 (generation at chance) | VQ-token early fusion, shared: 0.558; 0.567 (distance 0.077). Separate: 0.663; 0.433 | Negative | Negative: at this budget discrete VQ tokens beat Transfusion's continuous patches. |
+| Bottleneck fusion, TalkingDigits audio + DigitGlyphs | Accuracy, both modalities (with modality dropout) | 0.503 (0.203) | Early fusion: 0.330 (0.163). Late fusion: 0.427 (0.143). Audio only: 0.433. Image only: 0.233 | Mixed | Bottlenecks fuse best, but modality dropout hurts at 150 steps, and 28 tokens are too few to save compute (550,400 and 559,104 multiply-adds for bottleneck and early fusion). |
+
+Not done: Q-Former with the contrastive stage only; early fusion on raw pixel patches, not VQ tokens; no CLIP baseline; Transfusion on raw 2×2 patches with no VAE, DigitGlyphs only, compute matched by steps.
+
+---
+
+## Wave 9 WP5: world models and video, audio generation, scientific-ML follow-ups
+
+New packages: `experimental.audio`, `experimental.world` and `experiments.world`. Numbers come from shrunk test configurations, so treat them as small-scale indications. Classes over the 10 s target, measured with parallel forks: TTS 22 s, long rollouts 20 s, slot video 27 s, token world model 12 s, codec 10 s (R-wave9).
+
+### VideoGeneration (W9 5.1: factorised space-time attention, 5.2: MAGVIT-style 3-D tokenizer, 5.3: Self Forcing, 5.4: history guidance, 5.13: FSQ for video)
+Sources: R-wave9. Theme: world. Tests: SpaceTimeDiffusionTest, VideoTokenizerTest, MaskedVideoGenerationTest, LongVideoRolloutTest. Blocks: `SpaceTimeDenoiser`, `VideoMetrics`, `SpaceTimeTokenizer`, `VideoMaskTasks`, `FrameDenoiser`, `HistoryGuidance`, `SelfForcingTrainer`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Factorised space-time attention | Unconditional clip MMD (ms per step) | 1.18 (121) | Frame-wise: 1.17 (44). Full 3-D: 1.17 (112). Real clips: 0.19. SimVP, first-frame conditioned: 0.35 | Negative | Negative: no quality gain and no saving over full 3-D attention; all diffusion models trail SimVP at this length. |
+| 3-D FSQ and VQ tubelet tokenizers; MaskGIT, 8 steps | PSNR (tokens); clip MMD | 19.7 dB (48) for both. MaskGIT MMD 0.34 | Per-frame FSQ: 21.3 dB (144). One token per call: MMD 0.61 at 6x the time | Win | 3x fewer tokens for 1.6 dB, and parallel decoding is both better and faster. |
+| History guidance (w = 4) | Count error over frames 16–32 of 32-frame rollouts | 0.91 | Diffusion forcing: 2.46. Teacher forcing: 4.65. Real clips: 0.52 | Win | Clear winner; from an earlier 60-step run (R-wave9). |
+| Self Forcing | Same, shrunk run | 6.46 | Teacher forcing (earlier run): 4.65 | Negative | Negative at test scale. |
+
+### WorldModelShootout (W9 5.5: IRIS, 5.6: DreamerV3 tricks, 5.7: DINO-WM, 5.8: SlotFormer)
+Sources: R-wave9. Theme: world. Tests: TokenWorldModelTest, DreamerTricksTest, FeatureSpacePlanningTest, SlotDynamicsTest. Blocks: `TokenWorldModel`, `KeyDoorGrid`, `FeatureSpacePlanner`, `SlotDynamics`; DreamerV3 options in `DreamerAgent`, `MlpWorldModel` and `RecurrentStateSpaceModel` (defaults unchanged).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| IRIS token world model | Token accuracy; cell accuracy | 0.95; 0.96 | MLP: 0.85. DIAMOND: 0.90 | Mixed | Best model of the dynamics (earlier run, R-wave9), but no policy beats random (return 0.10) at this budget. |
+| DreamerV3 tricks (symlog, two-hot, percentile normalisation, unimix, KL balance) | CartPole return at reward scale ×0.01 / ×1 / ×100 | 9.2 / 32.2 / 36.2 | Default Dreamer: 9.6 / 58.0 / 39.2 | Negative | Negative: the tricks do not help at 600 steps. |
+| DINO-WM planning in frozen SimCLR-style features | Goal success | 0.83 | MAE-style features: 0.50. Random features: 0.00. Pixel model: 0.17. Goal-conditioned BC: 0.67 | Win | Planning in good frozen features beats both pixels and behaviour cloning. |
+| SlotFormer | PSNR; FG-ARI | 9.5 dB; 0.16 | SimVP: 12.7 dB | Negative | Negative, not validated: it still looks broken or badly undertrained, and the position metric saturates. A sigmoid on the decoder lifted it from 2.4 dB. |
+
+Not done: pixel CartPole for 5.6; `JepaWorldModel` for 5.7 (no planning hook).
+
+### AudioGeneration (W9 5.9: HiFi-GAN, 5.10: DiffWave and WaveGrad, 5.11: TTS alignment, 5.12: latent audio diffusion, 5.13: FSQ for audio)
+Sources: R-wave9. Theme: audio. Tests: VocoderShootoutTest, FlowMatchingTtsTest, LatentAudioDiffusionTest, CodecQuantizerTest. Blocks: `GriffinLim`, `GanVocoder`, `DiffusionVocoder`, `MelFeatures`, `MonotonicAlignmentSearch`, `FlowMatchingTts`, `LatentAudioDiffusion`, `FiniteScalarQuantizer`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| HiFi-GAN-lite (MPD + MSD); DiffWave; WaveGrad, 6 GAN / 10 diffusion steps | Judge digit error | 0.67–1.0 | Griffin–Lim (32 iterations): 0.00, MR-STFT distance 1.77 | Inconclusive | Smoke-level training only; the vocoders are untrained and the hypotheses untested. |
+| Matcha-style MAS; F5-style filler padding, 100 steps | Digit error on 1–3 / 4–5 digit strings | MAS 1.60 / 1.07. F5 1.20 / 0.89 | True durations: 1.40 / 0.96. Ground-truth mel + Griffin–Lim: 0.30 / 0.30 | Negative | Negative: F5 padding beats MAS, against the hypothesis. MAS boundary error is 1.75 frames against 0.64 for predicted durations. All models are undertrained. |
+| Latent audio diffusion (32-d mel VAE latent) | Judge accuracy; MMD; generation time | 0.33; 0.021; 33 ms | Mel-space diffusion (640-d): 0.10; 0.055; 89 ms. Real clips: 0.70 | Win | Better and faster in the latent. |
+| FSQ, codebooks of about 2^10 / 2^12 / 2^14 | Code utilisation | 0.91 / 0.56 / 0.26 | VQ: 0.64 / 0.15 / 0.04. RVQ: 0.85 / 0.60 / 0.33 | Win | FSQ uses far more of its codes than VQ, as the paper predicts. SNR is 3–4.4 dB, with RVQ slightly ahead. On video, 3-D FSQ matches 3-D VQ (19.7 dB). |
+
+Not done: Tacotron-lite for 5.11; CodecLanguageModel for 5.12; WaveNet, ToyAudioCodec and HarmonicNoiseSynth vocoder baselines; MultiScaleVqTokenizer for 5.13. 5.11 and 5.12 vocode with Griffin–Lim.
+
+### PdeShootout: hard PDEs and second-order optimisers (W9 5.14: curriculum, time marching and periodic boundaries, 5.15: ENGD and Newton–CG)
+Sources: R-wave9. Theme: sciml. Tests: PinnHardFixesTest, PinnSecondOrderTest. Blocks: `PinnTraining` options, `PinnNaturalGradient` (ENGD, Levenberg–Marquardt), `NystromNewtonCg`. ENGD's damping now rises 100x when no step is accepted; at a fixed μ = 1e-8 it made no progress (R-wave9).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Curriculum; time marching; exact periodic boundaries, advection β = 30 | Relative L2 | About 1.0 for every recipe (curriculum 1.17) | Coarse numerical solver: 0.003 | Negative | Negative: the paper's fixes do not rescue the PINN here. |
+| ENGD; Adam + L-BFGS + Nyström Newton–CG | Poisson relative L2 | 2.1e-6; 1.1e-3 | Adam + L-BFGS: 3.3e-3. Levenberg–Marquardt: 5.6e-2 | Win | Reproduces the paper: natural gradient gains three orders of magnitude. |
+
+Not done: HessianFree and K-FAC for 5.15 (they evaluate trial steps without a graph).
+
+### OperatorLearning: model-size and data sweep (W9 5.16: Transolver and LANO against FNO)
+Sources: R-wave9. Theme: sciml. Test: OperatorSweepTest.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| LANO; Transolver, sweep incl. 50% of grid points dropped | Burgers relative L2 | LANO 0.45–0.67. Transolver 0.50–0.72 | FNO: about 0.19–0.21. DeepONet: 0.85–0.95 | Negative | Negative: FNO leads everywhere, and dropping half the grid barely matters, so Transolver never overtakes it. |
+
+---
+
+## Wave 9 WP6: parallel training, streaming and online learning, edge deployment
+
+New packages: `experimental.parallel`, `experimental.stream`, `experimental.edge`, `experiments.parallel`, `experiments.streaming` and `experiments.edge`. All 23 WP6 tests pass. Edge classes take 3.4–10.0 s, StreamShootout about 12 s, the parallel classes 1–3 s. The follow-up fixed a scheduler bug that reported false ZB-H1 deadlocks and an OFA bug where Adam's moments did not follow permuted channels (R-wave9).
+
+### ParallelismShootout (W9 6.1: pipeline schedules, 6.2: zero-bubble pipelines and DualPipe, 6.3: tensor and sequence parallelism, 6.4: ZeRO, 6.6: expert parallelism)
+Sources: R-wave9. Theme: parallel. Test: ParallelismShootoutTest. Blocks: `PipelineSchedule`, `PipelineRunner` (threads as stages), `ParallelCostModel`, `SplitBackward`, `TensorParallelBlock`, `Collectives`, `ShardedDataParallel`, `ExpertParallelMoe`. Bubble fractions are simulated; the threaded runs match single-device gradients to within 1e-8.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| 1F1B; interleaved 1F1B (v = 2), p = 4, m = 8 | Bubble fraction; peak activations | 1F1B 0.277; 4. Interleaved 0.162 (theory 0.158); 5.5 | GPipe: 0.274 (theory 0.273); 8 | Win | 1F1B halves activation memory at the same bubble; interleaving cuts the bubble as theory says. |
+| ZB-H1; ZB-H2; DualPipe, p = 4, m = 8 | Bubble fraction; peak activations | ZB-H1 0.150; 4. ZB-H2 0.150; 7. DualPipe 0.040; 5 | 1F1B: 0.277; 4 | Mixed | Splitting the backward nearly halves the bubble, but ZB-H2 never beats ZB-H1 (the greedy scheduler does not use its memory), and DualPipe gets worse at p = 8, m = 32 (0.411, against 0.093 for ZB-H1 and 0.185 for 1F1B). |
+| Tensor parallelism; + sequence parallelism, t = 8 | Gradient error; parameters per rank; activations per rank | ≤ 6e-6; 1,088; SP 2,176 floats | Single device: 8,256 parameters. TP alone: 6,656 floats | Win | Exact, and sequence parallelism cuts activations 3x for about 2% more traffic. |
+| ZeRO-1; ZeRO-2; ZeRO-3, N = 4 | Memory per rank (bytes) | 0.82M; 0.58M; 0.59M (1.5x ZeRO-1's traffic) | DataParallel: 1.32M. ZeRO-1 + 4-bit optimizer states: 0.68M | Win | Loss matches DataParallel to within 2.4e-7. ZeRO-3 saves nothing over ZeRO-2 at this model size. |
+| Expert parallelism, aux-loss; loss-free balancing | Tokens dropped at capacity factor 1.0 / 2.0 | Aux-loss 15.4% / 0.5%. Loss-free 10.7% / 0% | ExpertChoiceMoe: 22% of tokens unprocessed | Win | Loss-free balancing drops the fewest tokens. |
+
+### MemorySchedules (W9 6.5: selective recomputation and optimal checkpoint schedules)
+Sources: R-wave9. Theme: parallel. Test: MemorySchedulesTest. Block: `CheckpointPlanner` (√n, selective, exact Pareto DP, Revolve) through `Recompute`. Attention-score memory is modelled, because fused attention keeps no scores.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Selective recomputation of attention; optimal plan | Activation memory saved; extra compute | 46%; 0.248. Optimal plan reaches √n's memory at 0.232 | Recompute every block: 84%; 0.333. √n: 0.333 | Win | The optimal plan is never worse than √n, and executed plans have zero gradient error. |
+
+### AsyncTraining (W9 6.7: Hogwild and delay-compensated ASGD)
+Sources: R-wave9. Theme: parallel. Test: AsyncTrainingTest. Block: `AsyncSgd`. The click model gained a crossed feature, because its labels depend on a field interaction.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Hogwild, 8 threads | Log loss (speed-up) | 0.535 (2.5x) | One thread: 0.536 | Win | Lock-free updates lose nothing on a sparse model; the workload is tiny. |
+| DC-ASGD-a; staleness-aware learning rate, dense MLP, delay 16 | Accuracy | 0.88; 0.885 | Plain ASGD: 0.10 | Win | Both corrections rescue training that stale gradients break. |
+
+### StreamShootout (W9 6.8: FTRL-Proximal, 6.9: Hoeffding trees and adaptive random forests, 6.10: drift detectors, 6.11: ER-ACE, 6.12: coin betting)
+Sources: R-wave9. Theme: streaming. Test: StreamShootoutTest (about 12 s). Blocks: `FtrlProximal`, `HoeffdingTree`, `AdaptiveRandomForest`, `DriftDetectors`, `AsymmetricReplay`, `CoinBetting`. Data: `experimental.data.DriftingStreams`. SEA now has 4 drifts instead of 8, so ADWIN has enough samples per concept.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| FTRL-Proximal, 90k samples | Progressive log loss; non-zero weights | 0.608; 7,244 | AdaGrad: 0.622; 8,250. Daily retraining after drifts: 0.709 (FTRL 0.651) | Mixed | Slightly better loss, but only 12% fewer weights, not the paper's 5–10x. |
+| Adaptive random forest | Accuracy, SEA / hyperplane / RBF | 0.853 / 0.803 / 0.844 | Majority class: 0.616 / 0.494 / 0.248 | Mixed | Far above majority, but on hyperplane the online MLP and the plain Hoeffding tree beat the forest. |
+| ADWIN; Page–Hinkley; EDDM | Drifts missed; detection delay | SEA: ADWIN misses 1 of 4, delay 780. Page–Hinkley delay 134. Hyperplane: EDDM misses none | BOCPD: delay 15 but 187 false alarms per 10k; misses none on hyperplane | Mixed | No detector is both fast and quiet; ADWIN is slow at this drift size. |
+| ER-ACE; ER-AML, digits | Final accuracy (forgetting), buffer 20; accuracy at buffer 200 | ER-ACE 0.320 (0.188); 0.420. ER-AML 0.485 at buffer 200 | ER: 0.245 (0.713). No replay: 0.195. DER++: 0.375 at buffer 20 | Mixed | The asymmetric loss cuts ER's forgetting by three quarters, but DER++ is best at buffer 20. |
+| COCOB; KT | Click-task accuracy; digits MLP accuracy | COCOB 0.685; 0.38. KT 0.678 | AdamW at its best rate: 0.680; 0.15 | Win | Parameter-free betting matches tuned AdamW and beats it whenever AdamW's rate is 10x off. |
+
+### EdgeDeployment (W9 6.13: integer-only inference, 6.14: patch-based inference, 6.15: once-for-all networks, 6.16: on-device training, 6.17: keyword spotting)
+Sources: R-wave9. Theme: edge. Tests: IntegerInferenceTest, PatchInferenceTest, OnceForAllTest, OnDeviceTrainingTest, KeywordSpottingTest, KeywordBaselinesTest. Blocks: `EdgeNet`, `IntegerInference`, `MemoryPlanner`, `PatchBasedExecutor`, `ElasticSupernet`, `SubnetSearch`, `SparseUpdateTrainer`, `LiteResidual`, `KeywordSpotters`. Inputs were cut to 8×8 (16×16 for the patch budget).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Post-training int8; QAT int8 | Accuracy: ShapeImages CNN / digits MLP / keyword DS-CNN | PTQ 0.905 / 0.775 / 0.825. QAT 0.885 / 0.825 / 0.867 | Float32: 0.900 / 0.770 / 0.825 | Mixed | Integer inference keeps accuracy at 3.6x fewer bytes (14,680 → 4,043), and the two integer engines agree bit for bit. Negative: int8 outputs match the fake-quant model exactly in only 86%, 99% and 52% of values, as one-step rounding differences build up. |
+| Patch-based inference, 2×2; 4×4 grid, 64×64 input | Peak memory (extra multiply-adds) | 22,280 B (11%); 14,336 B (35%) | Layer by layer: 49,152 B | Win | Output is exact (difference 4e-8). At the patch budget, full resolution with patches scores 0.665 against 0.360 at half resolution and 0.445 at half width. Reordering a three-branch cell halves its peak (28,672 → 14,336 B); in-place depthwise gives nothing. |
+| Progressive shrinking + KD, 160 steps | Accuracy, largest / smallest subnet | 0.625 / 0.330 | Largest only: 0.860 / 0.190. Random sampling: 0.415 / 0.505. Each trained from scratch: 0.860 / 0.570 | Negative | Negative at this budget; the test only checks that shrinking beats cutting the smallest subnet out of the largest-only network. The accuracy predictor's Kendall τ ranges from −0.3 to 0.7 across runs. The trainer uses the later "sandwich" rule, not plain OFA. |
+| Sparse update, int8 with QAS (budget 9,330 B = 30% of full fine-tuning) | Training memory; accuracy | 9,244 B; 0.700 | Full float fine-tuning: 31,100 B; 0.885. Last layer: 0.555. BitFit + head: 0.560. LoRA: 0.590. Lite residual: 16,388 B; 0.670. No QAS: 0.305. Float sparse update: 0.715. No adaptation: 0.12 | Win | Best under the budget, and QAS is what makes int8 training work. It is 0.18 short of full fine-tuning, not the paper's 1–2%. |
+| DS-CNN, small budget (12 kB, 0.3M multiply-adds) | Accuracy, float / int8 | 0.917 / 0.900 | CNN: 0.975 / 0.983. DNN: 0.925 / 0.925. LSTM: 0.942. GRU: 0.925. CRNN: 0.833. Unconstrained: MLP + CTC 0.908, Conformer + CTC 0.825, MFCC + DTW 0.858 | Negative | Negative: the plain CNN, not the DS-CNN, is best. Every family fits the budget, and int8 costs at most 0.017. |
+
+Not done: no receptive-field redistribution in patch inference; no LsqDense or PACT baselines; no ENAS or ClassicCnnShootout baselines; 6.16 keeps activations in float; the recurrent keyword spotters stay in float; the medium and large keyword budgets are not run in the tests; no PCEN front end.
+
+---
+
 ## Highlights
 
 The ten most interesting findings, chosen for effect size and for what they show:
@@ -3785,6 +4428,23 @@ The ten most interesting wave 8 findings (Run-w8):
 10. **QCFS converts a network to spikes in two time steps.** Converted SNN accuracy is 0.890 at T = 2 and matches the ANN (0.964) at T = 8, where plain conversion scores 0.100 at T = 2 (exotic).
 
 Honourable mentions: SCAFFOLD beats FedAvg by 0.148 on label-skewed clients, averaged over 3 seeds (privacy). Re-estimating BN statistics lifts corrupted accuracy from 0.278 to 0.729 (robustness). Secure aggregation stops gradient inversion (5.7 dB against 23.8 dB) with no loss of accuracy (privacy). MagicPIG's LSH sampling aggregates at 1.00 where top-k on the same keys reaches 0.63 (serving). LOF finds local-density anomalies at AUROC 0.999 (timeseries). PirateNet trains a 12-layer PINN to 0.0003 where a plain MLP diverges to 1.34 (sciml). CenterNet scores 0.442 mAP on crowded scenes against 0.118 for RetinaNet-lite (vision). KNN-Shapley on SSL embeddings finds 81% flipped labels against 35% for In-Run Shapley (data). Movement pruning keeps 0.417 at 95% sparsity against 0.140 for magnitude (compression). A grammar mask cache is 8–77x faster with identical output (serving).
+
+### Wave 9
+
+The ten most interesting wave 9 findings (R-wave9, mostly one seed):
+
+1. **Natural gradient finishes what Adam starts on PINNs.** ENGD reaches Poisson relative L2 2.1e-6, against 3.3e-3 for Adam + L-BFGS and 1.1e-3 with Nyström Newton–CG added, reproducing the paper (sciml).
+2. **Run the code before you rank it.** Filtering samples on the given examples lifts hidden-test top-1 from 0.288 (likelihood) to 0.687 at 32 samples, and clustering or CodeT dual agreement to 0.712 (code).
+3. **Delay compensation rescues asynchronous SGD.** At a gradient delay of 16, plain ASGD collapses to 0.10 while DC-ASGD-a reaches 0.88 and a staleness-aware learning rate 0.885 (parallel).
+4. **History guidance keeps long video rollouts on count.** Over frames 16–32, the count error is 0.91 against 2.46 for diffusion forcing and 4.65 for teacher forcing; real clips score 0.52 (world).
+5. **Clipped IPW learns to rank from biased clicks.** NDCG@5 is 0.898 against 0.79 for naive click training and 0.935 for an oracle, while unclipped IPW (0.738) loses to naive (recsys).
+6. **Bid shading spends the budget well.** Dual-gradient bid shading gets 0.892 of the hindsight value, against 0.709 for truthful bidding, which runs out of budget at 22% of the day (recsys).
+7. **A few human labels make a judge trustworthy.** Prediction-powered inference gives 0.93 coverage with intervals 22% narrower than humans alone; the judge alone covers 0.00, and Rogan–Gladen holds 0.95 under a pass-rate shift where PPI drops to 0.02 (evaluation).
+8. **Preference embeddings capture cycles.** The general preference model scores 0.963 on cyclic preferences against 0.674 for Bradley–Terry, which cannot exceed 2/3 (alignment).
+9. **Splitting the backward pass shrinks pipeline bubbles.** At p = 4, m = 8 the bubble is 0.150 for ZB-H1 and 0.040 for DualPipe, against 0.277 for 1F1B (parallel).
+10. **Patch-based inference cuts peak memory 3.4x exactly.** Peak memory falls from 49,152 B to 14,336 B for 35% more multiply-adds, and at the same memory full resolution scores 0.665 against 0.360 at half resolution (edge).
+
+Honourable mentions: Git Re-Basin cuts the loss barrier from 1.121 to 0.127 and lifts merged accuracy from 0.514 to 0.948 (interp). Quantisation-aware scaling makes int8 sparse on-device training work: 0.700 against 0.305 without it (edge). mSPRT holds the A/A false-positive rate at 0.005 where daily peeking gives 0.255 (causal). DeepSurv reaches C-index 0.775 against 0.585 for Cox on nonlinear risk (survival). Clustered standard errors cover 0.95 against 0.75 for i.i.d. ones (evaluation). Mixed negatives triple in-batch Recall@20, 0.369 against 0.115 (recsys). DINO-WM plans to the goal 0.83 of the time in frozen features against 0.17 in pixels (world). Edge-level circuit discovery recovers the planted circuit at AUC 1.0 against 0.93 for node patching (interp). Execution traces double execution-prediction accuracy, 0.300 against 0.156 (code). FSQ uses 0.91 of a 2^10 codebook against 0.64 for VQ (audio).
 
 ## Negative or null results
 
@@ -4006,5 +4666,42 @@ Wave 8 (Run-w8):
 | vision | GeometricVision, G-CNN on distorted glyphs | 0.448 vs 0.633 for a CNN | Rotation equivariance hurts on non-rotational distortion. |
 | vision | SceneFields, SIREN signed distance | Chamfer 0.166 vs 0.028 for ReLU | SIREN does not give the best distance field. |
 | vision | SceneFields, NeRF | 21.50 dB vs 25.68 dB for 3D Gaussian splatting | Lower quality and about 20x slower to render. |
+
+Wave 9 (R-wave9):
+
+| Theme | Experiment | Result | What it means |
+|---|---|---|---|
+| recsys | MultiTaskRanking, ESMM | CVR AUC 0.709–0.714 vs 0.784–0.787 in click space | No unobserved selection bias for ESMM to fix; the click-space models share the same body. |
+| recsys | TabularShootout, PFN and TabICL-lite at test budgets | 0.480–0.640 vs 0.830 for GBT and 0.843 for a random forest | Far too short; the 16x and 64x rows were not run. |
+| causal | HeterogeneousEffects, causal forest | PEHE 0.563 vs 0.473 for the R-learner; 90% intervals cover 0.498 | No better than meta-learners, and its intervals under-cover. |
+| alignment | RewardOveroptimization, ensembles and WARM | Best-of-64 gold 0.451–0.528 vs 0.500 single proxy | The proxies are barely above chance (0.586), so ensembling has nothing to average. |
+| alignment | GeneralPreferences, SPPO and Nash-MD | Worst-case win rate 0.354–0.464 vs 0.492 at the start | No method improves the worst case. |
+| alignment | PreferenceShootout, R-DPO | Length 5.04 vs 5.03 for DPO; controlled win rate 0.483 vs 0.690 | The length term does not shorten answers. |
+| alignment | PreferenceShootout, XPO | Gold 0.298 vs 0.300 for online DPO | Exploration never finds the rare best response. |
+| reasoning | ProcessSupervision, Math-Shepherd | Best-of-16 with PRMs 0.133–0.167 vs 0.217 for the first sample | Good labels (0.856), but the verifiers are too weak. |
+| reasoning | ProcessSupervision, PRIME | 0.277 vs 0.275 outcome-only | Null result. |
+| reasoning | ProcessSupervision, Step-DPO | 0.180 vs 0.187 solution-level DPO and 0.312 for STaR | Step-level pairs give no gain. |
+| reasoning | ArithmeticRl, RLVR from one example | 0.105 vs 0.180 for the full set and 0.245 at the start | RL hurts held-out problems on this lookup-like task. |
+| code | CodeExecution, self-repair | 0.52–0.54 at 16 calls vs 0.56 for resampling | As Olausson et al. predict at a low first-sample solve rate. |
+| data | DataCuration, ODM and Aioli | Target loss 2.598 and 2.648 vs 2.619 uniform | Online mixing does not beat uniform; offline RegMix (2.347) does. |
+| data | DataCuration, learning-progress curricula | 0.083–0.243 vs 0.277 for fixed pacing | No teacher beats fixed pacing; self-paced learning stalls. |
+| data | SyntheticTraining, diffusion samples | 0.194–0.202 vs 0.199 real only and 0.259 for mixup | Synthetic images do not help at this compute. |
+| interp | RepresentationComparison, CKA and SVCCA | Layer correspondence 0.083–0.583 vs 0.667 for best-neuron correlation | The simple baseline wins. |
+| interp | LatentKnowledge, CCS | 0.575 vs 0.570 for a random direction | CCS finds no latent knowledge here. |
+| interp | ExplainabilityBenchmark, attention rollout and flow | 0.655 vs 0.730 raw attention and 0.865 saliency | Aggregating attention across layers hurts. |
+| data | TrainingAttributionExperiment, TRAK | LDS 0.455–0.523 vs 0.781 for the exact influence function | On a small model the exact method wins. |
+| document | GlyphOcr, CRNN with CTC | CER 0.311 vs 0.269 for segmentation | Segmentation still wins, even on touching glyphs. |
+| document | DocumentParsing, Donut-style | Field F1 0.000 vs 0.838 for OCR + rules | The end-to-end model learns nothing at 50 steps. |
+| multimodal | FusionShootout, frozen-LM bridges | VQA 0.640–0.650 vs a 0.770 ceiling | Every bridge sits at the majority-answer prior. |
+| multimodal | FusionShootout, Transfusion | Generation 0.067–0.133 (chance) vs 0.433–0.567 for VQ tokens | Discrete tokens win at this budget. |
+| world | VideoGeneration, factorised space-time attention | Clip MMD 1.18 vs 1.17 frame-wise and full 3-D | No quality gain and no cost saving. |
+| world | VideoGeneration, Self Forcing | Count error 6.46 vs 4.65 for teacher forcing | Fails at test scale. |
+| world | WorldModelShootout, DreamerV3 tricks | CartPole 9.2 / 32.2 / 36.2 vs 9.6 / 58.0 / 39.2 default | No help at 600 steps. |
+| world | WorldModelShootout, SlotFormer | 9.5 dB vs 12.7 dB for SimVP | Not validated; likely broken or badly undertrained. |
+| audio | AudioGeneration, monotonic alignment search | Digit error 1.60 / 1.07 vs 1.20 / 0.89 for F5 padding | Against the hypothesis; all models undertrained. |
+| sciml | PdeShootout, fixes for advection β = 30 | Relative L2 about 1.0 vs 0.003 for a solver | Curriculum, time marching and periodic boundaries do not rescue it. |
+| sciml | OperatorLearning, Transolver and LANO | 0.45–0.72 vs 0.19–0.21 for FNO | FNO leads everywhere, also with half the grid dropped. |
+| edge | EdgeDeployment, once-for-all | Largest / smallest 0.625 / 0.330 vs 0.860 / 0.570 from scratch | Progressive shrinking loses at 160 steps. |
+| edge | EdgeDeployment, DS-CNN keyword spotter | 0.917 vs 0.975 for a plain CNN | The depthwise-separable design is not best at this size. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.

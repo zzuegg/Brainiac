@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.experiments.reasoning;
 
+import io.github.zzuegg.brainiac.experimental.align.SingleExampleSelector;
 import io.github.zzuegg.brainiac.experimental.evolve.EvolutionStrategyFineTuner;
 import io.github.zzuegg.brainiac.experimental.llm.GrpoTrainer;
 import io.github.zzuegg.brainiac.experimental.llm.PpoLmTrainer;
@@ -7,7 +8,9 @@ import io.github.zzuegg.brainiac.experimental.llm.WindowLm;
 import io.github.zzuegg.brainiac.experimental.train.MeZo;
 import io.github.zzuegg.brainiac.train.Optimizer;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.SplittableRandom;
 import java.util.function.Supplier;
 
@@ -25,6 +28,15 @@ import java.util.function.Supplier;
  * on the negated reward (Malladi et al. 2023,
  * <a href="https://arxiv.org/abs/2305.17333">arXiv:2305.17333</a>), with the KL divergence from
  * the base model.
+ *
+ * <p>{@link #oneShot} (wave 9, 9.2.13) asks what GRPO learns from a single training problem
+ * (Wang et al. 2025, <a href="https://arxiv.org/abs/2504.20571">arXiv:2504.20571</a>): problems
+ * are ranked by the historical variance of their accuracy in a pilot run
+ * ({@link SingleExampleSelector}), and GRPO trains on the top 1 or 16 of them, on one random
+ * problem, or on the whole training half, with format-only and random-reward controls and the
+ * entropy bonus on and off, while the sampled accuracy on the held-out half is tracked. The
+ * start has seen every puzzle in supervised training with 40% wrong leading digits, so RL can
+ * only sharpen what it already knows (the analogue of a pre-trained model).
  */
 public final class ArithmeticRl {
 
@@ -315,5 +327,110 @@ public final class ArithmeticRl {
             default -> throw new IllegalArgumentException();
         }
         return new FineTuneResult(before, accuracy(lm, task), used, klFromBase(base, lm, task));
+    }
+
+    /**
+     * One 9.2.13 arm.
+     *
+     * @param testAccuracy held-out sampled accuracy at each checkpoint, the start first
+     * @param solvedAt the first checkpoint (1-based) at which the training problems are answered
+     *     right in 90% of samples, or 0 if never
+     * @param trainProblems training problems used
+     */
+    public record OneShotRow(double[] testAccuracy, int solvedAt, int trainProblems) {
+    }
+
+    /** Sampled accuracy: temperature 1, eight samples per prompt, a fixed seed. */
+    private static double sampledAccuracy(WindowLm lm, ArithmeticTask task, List<int[]> prompts) {
+        int[][] ps = new int[prompts.size() * 8][];
+        for (int i = 0; i < ps.length; i++) {
+            ps[i] = prompts.get(i / 8);
+        }
+        int[][] outs = lm.sample(ps, task.maxAnswerTokens(), task.eos(), 1.0, new SplittableRandom(0));
+        double ok = 0;
+        for (int i = 0; i < outs.length; i++) {
+            ok += task.correct(ps[i], outs[i]) ? 1 : 0;
+        }
+        return ok / outs.length;
+    }
+
+    /**
+     * Runs 9.2.13 for one seed.
+     *
+     * @param task the puzzles (split in half: train and held-out)
+     * @param steps GRPO steps per arm
+     * @param checkpoints evaluations after the start
+     * @param seed the seed
+     * @return arm name to its row
+     */
+    public static Map<String, OneShotRow> oneShot(ArithmeticTask task, int steps, int checkpoints, long seed) {
+        List<int[]> all = new ArrayList<>(task.allPrompts());
+        SplittableRandom split = new SplittableRandom(seed + 1);
+        java.util.Collections.shuffle(all, new java.util.Random(split.nextLong()));
+        List<int[]> train = new ArrayList<>(all.subList(0, all.size() / 2));
+        List<int[]> test = new ArrayList<>(all.subList(all.size() / 2, all.size()));
+        // the start ("pre-training"): supervised on every puzzle with 40% wrong leading digits, so
+        // it has seen the held-out half but answers it unreliably; RL then only sharpens it
+        WindowLm base = WindowLm.of(task.vocabSize(), 6, 64, seed);
+        SplittableRandom noise = new SplittableRandom(seed + 6);
+        Optimizer sftOpt = Optimizer.adam(3e-3f);
+        for (int i = 0; i < 200; i++) {
+            List<int[]> sftAnswers = new ArrayList<>();
+            for (int[] p : all) {
+                int[] a = task.solution(p);
+                if (noise.nextDouble() < 0.4) {
+                    a[0] = noise.nextInt(10);
+                }
+                sftAnswers.add(a);
+            }
+            base.supervisedStep(all, sftAnswers, sftOpt);
+        }
+        // the pilot run on the whole training half, recording per-problem accuracy
+        WindowLm pilotLm = base.copy();
+        GrpoTrainer pilot = GrpoTrainer.of(pilotLm).optimizer(Optimizer.adam(3e-3f)).groupSize(8).promptsPerStep(16)
+                .klCoefficient(0.05f).completions(task.maxAnswerTokens(), task.eos());
+        double[][] history = SingleExampleSelector.pilot(pilot, pilotLm, train, task::reward, task::correct, 4, 5, 8,
+                task.maxAnswerTokens(), task.eos(), new SplittableRandom(seed + 2));
+        int[] ranking = SingleExampleSelector.rank(history);
+        int randomOne = new SplittableRandom(seed + 3).nextInt(train.size());
+        Map<String, List<int[]>> sets = new LinkedHashMap<>();
+        sets.put("full train half", train);
+        sets.put("top-16 by variance", SingleExampleSelector.top(train, ranking, 16));
+        sets.put("top-1 by variance", SingleExampleSelector.top(train, ranking, 1));
+        sets.put("top-1, no entropy bonus", SingleExampleSelector.top(train, ranking, 1));
+        sets.put("top-1, format-only reward", SingleExampleSelector.top(train, ranking, 1));
+        sets.put("top-1, random reward", SingleExampleSelector.top(train, ranking, 1));
+        sets.put("random 1", List.of(train.get(randomOne)));
+        Map<String, OneShotRow> out = new LinkedHashMap<>();
+        for (Map.Entry<String, List<int[]>> e : sets.entrySet()) {
+            String name = e.getKey();
+            List<int[]> problems = e.getValue();
+            WindowLm lm = base.copy();
+            GrpoTrainer grpo = GrpoTrainer.of(lm).optimizer(Optimizer.adam(3e-3f)).groupSize(8).promptsPerStep(16)
+                    .klCoefficient(0.05f).completions(task.maxAnswerTokens(), task.eos());
+            SplittableRandom coin = new SplittableRandom(seed + 4);
+            GrpoTrainer.Reward reward = name.contains("format-only") ? (p, c) -> task.parse(c) != null ? 1 : 0
+                    : name.contains("random reward") ? (p, c) -> coin.nextBoolean() ? 1 : 0 : task::reward;
+            if (!name.contains("no entropy")) {
+                reward = SingleExampleSelector.entropyBonus(reward, lm, 0.02f);
+            }
+            double[] acc = new double[checkpoints + 1];
+            acc[0] = sampledAccuracy(lm, task, test);
+            int solvedAt = 0;
+            SplittableRandom r = new SplittableRandom(seed + 5);
+            int next = 1;
+            for (int s = 1; s <= steps; s++) {
+                grpo.step(x -> problems.get(x.nextInt(problems.size())), reward, r);
+                if (next <= checkpoints && s == steps * next / checkpoints) {
+                    acc[next] = sampledAccuracy(lm, task, test);
+                    if (solvedAt == 0 && sampledAccuracy(lm, task, problems) >= 0.9) {
+                        solvedAt = next;
+                    }
+                    next++;
+                }
+            }
+            out.put(name, new OneShotRow(acc, solvedAt, problems.size()));
+        }
+        return out;
     }
 }

@@ -4,6 +4,8 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.nn.FourierFeatures;
 import io.github.zzuegg.brainiac.experimental.sciml.CollocationSampler;
 import io.github.zzuegg.brainiac.experimental.sciml.ConstrainedFields;
+import io.github.zzuegg.brainiac.experimental.sciml.NystromNewtonCg;
+import io.github.zzuegg.brainiac.experimental.sciml.PinnNaturalGradient;
 import io.github.zzuegg.brainiac.experimental.sciml.PdeProblems;
 import io.github.zzuegg.brainiac.experimental.sciml.PhysicsInformedNetwork;
 import io.github.zzuegg.brainiac.experimental.sciml.PhysicsInformedKan;
@@ -582,6 +584,140 @@ public final class PdeShootout {
                 grid, gt, box, steps, seed));
         rows.add(fitField("soft penalty 1.0", PhysicsInformedNetwork.tanhMlp(2, 32, 2, 2, seed), pts, tg, 1, true,
                 grid, gt, box, steps, seed));
+        return rows;
+    }
+
+    // ---------------------------------------------------------------- 9.5.14 curriculum, marching, periodic
+
+    private static boolean isPeriodic(Pde pde) {
+        return pde.problem().conditions().stream().anyMatch(t -> t.name().equals("periodic"));
+    }
+
+    /** The boundary terms of one time window: periodic pairs or zero Dirichlet ends on the space axis. */
+    private static List<PinnTraining.Term> windowBoundaries(CollocationSampler box, boolean periodic, int n,
+            long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        double[][] left = box.face(0, false, n, r);
+        List<PinnTraining.Term> terms = new ArrayList<>();
+        if (periodic) {
+            double[][] right = new double[n][];
+            for (int i = 0; i < n; i++) {
+                right[i] = new double[] {box.high(0), left[i][1]};
+            }
+            terms.add(PinnTraining.periodic("periodic", left, right, 0));
+        } else {
+            terms.add(PinnTraining.dirichlet("left", left, new double[n]));
+            terms.add(PinnTraining.dirichlet("right", box.face(0, true, n, r), new double[n]));
+        }
+        return terms;
+    }
+
+    private static Layer exactlyPeriodic(Pde pde, int width, int depth, long seed) {
+        CollocationSampler box = pde.problem().domain();
+        return PinnTraining.periodicField(PhysicsInformedNetwork.tanhMlp(pde.inputs() + 1, width, depth, 1, seed), 0,
+                box.low(0), box.high(0) - box.low(0));
+    }
+
+    /**
+     * 9.5.14: the problem-side fixes for hard PDEs against the plain PINN and the coarse solver:
+     * a coefficient curriculum (when {@code family} is given, for example advection speeds
+     * {@code 1 -> beta}), sequence-to-sequence time marching, the exact periodic embedding
+     * (periodic problems only, with the periodic loss term dropped), marching plus the
+     * embedding, and marching plus the embedding plus causal weights.
+     *
+     * @param pde the problem
+     * @param family the same PDE at another coefficient, or {@code null} to skip the curriculum
+     * @param stages the curriculum coefficients, ending at the target
+     * @param width the MLP width
+     * @param depth the MLP hidden layers
+     * @param options the recipe (whole runs and each curriculum stage or time window)
+     * @param windows time windows for marching
+     * @param causalEpsilon the causal strength for the last row, 0 to skip it
+     * @param seed the seed
+     * @return one row per method, the coarse solver last
+     */
+    public static List<Row> hardFixes(Pde pde, java.util.function.DoubleFunction<Pde> family, double[] stages,
+            int width, int depth, Supplier<PinnTraining.Options> options, int windows, double causalEpsilon,
+            long seed) {
+        List<Row> rows = new ArrayList<>();
+        boolean periodic = isPeriodic(pde);
+        rows.add(pinn("plain", pde, PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed), options.get(),
+                seed));
+        if (family != null) {
+            List<PinnTraining.Problem> problems = new ArrayList<>();
+            for (double c : stages) {
+                problems.add(family.apply(c).problem());
+            }
+            Layer field = PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed);
+            PinnTraining.Result r = PinnTraining.curriculum(PhysicsInformedNetwork.of(field), problems, options.get(),
+                    seed);
+            rows.add(new Row("curriculum", error(pde, field), r.millis()));
+        }
+        java.util.function.ToDoubleFunction<double[]> u0 = x -> pde.reference().applyAsDouble(x[0], 0);
+        int bn = 50;
+        PinnTraining.Marched m = PinnTraining.timeMarching(
+                () -> PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed), pde.problem(), u0,
+                box -> windowBoundaries(box, periodic, bn, seed), windows, 100, options.get(), seed);
+        rows.add(new Row("time marching", error(pde, m.field()), m.millis()));
+        if (periodic) {
+            Layer field = exactlyPeriodic(pde, width, depth, seed);
+            PinnTraining.Result r = PinnTraining.train(PhysicsInformedNetwork.of(field),
+                    PinnTraining.withoutTerm(pde.problem(), "periodic"), options.get(), seed);
+            rows.add(new Row("periodic embedding", error(pde, field), r.millis()));
+            PinnTraining.Marched mp = PinnTraining.timeMarching(() -> exactlyPeriodic(pde, width, depth, seed),
+                    pde.problem(), u0, box -> List.of(), windows, 100, options.get(), seed);
+            rows.add(new Row("marching + periodic", error(pde, mp.field()), mp.millis()));
+            if (causalEpsilon > 0) {
+                PinnTraining.Marched mc = PinnTraining.timeMarching(() -> exactlyPeriodic(pde, width, depth, seed),
+                        pde.problem(), u0, box -> List.of(), windows, 100,
+                        options.get().causalWeights(causalEpsilon, 8), seed);
+                rows.add(new Row("marching + periodic + causal", error(pde, mc.field()), mc.millis()));
+            }
+        }
+        rows.add(coarseSolver(pde));
+        return rows;
+    }
+
+    // ---------------------------------------------------------------- 9.5.15 second-order optimisers
+
+    /**
+     * 9.5.15: second-order optimisers on one PDE, all from the same initial network: Adam then
+     * L-BFGS (the {@link PinnTraining} default), the same followed by Nyström Newton-CG (the
+     * Rathore et al. recipe), energy natural gradient from scratch, and Levenberg-Marquardt from
+     * scratch on the same residuals.
+     *
+     * @param pde the problem
+     * @param width the MLP width (keep the network under about 2,000 parameters)
+     * @param depth the MLP hidden layers
+     * @param collocation collocation points
+     * @param adamSteps Adam steps of the first-order recipe
+     * @param lbfgs L-BFGS iterations of the first-order recipe
+     * @param nncg Newton-CG iterations after it
+     * @param engd ENGD and Levenberg-Marquardt iterations
+     * @param seed the seed
+     * @return one row per optimiser
+     */
+    public static List<Row> optimisers(Pde pde, int width, int depth, int collocation, int adamSteps, int lbfgs,
+            int nncg, int engd, long seed) {
+        List<Row> rows = new ArrayList<>();
+        PinnTraining.Options first = new PinnTraining.Options().adam(adamSteps, 5e-3f).lbfgs(lbfgs)
+                .collocation(collocation);
+        rows.add(pinn("Adam + L-BFGS", pde, PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed), first,
+                seed));
+        Layer f = PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed);
+        PhysicsInformedNetwork net = PhysicsInformedNetwork.of(f);
+        PinnTraining.Result warm = PinnTraining.train(net, pde.problem(), first, seed);
+        PinnNaturalGradient.Result newton = NystromNewtonCg.of(20, 1e-6, 20, 5).train(net, pde.problem(), collocation,
+                nncg, null, seed);
+        rows.add(new Row("Adam + L-BFGS + NNCG", error(pde, f), warm.millis() + newton.millis()));
+        Layer g = PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed);
+        PinnNaturalGradient.Result e = PinnNaturalGradient.engd(1e-8).train(PhysicsInformedNetwork.of(g),
+                pde.problem(), collocation, engd, null, seed);
+        rows.add(new Row("ENGD", error(pde, g), e.millis()));
+        Layer h = PhysicsInformedNetwork.tanhMlp(pde.inputs(), width, depth, 1, seed);
+        PinnNaturalGradient.Result lm = PinnNaturalGradient.levenbergMarquardt(1e-2).train(
+                PhysicsInformedNetwork.of(h), pde.problem(), collocation, engd, null, seed);
+        rows.add(new Row("Levenberg-Marquardt", error(pde, h), lm.millis()));
         return rows;
     }
 }

@@ -16,6 +16,7 @@ import io.github.zzuegg.brainiac.experimental.nn.PriorFittedNetwork;
 import io.github.zzuegg.brainiac.experimental.nn.RealMlp;
 import io.github.zzuegg.brainiac.experimental.nn.TabM;
 import io.github.zzuegg.brainiac.experimental.nn.TabNetLite;
+import io.github.zzuegg.brainiac.experimental.recsys.ColumnRowIcl;
 import io.github.zzuegg.brainiac.experimental.train.PopulationEnsemble;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Model;
@@ -44,7 +45,10 @@ import java.util.function.Function;
  *       functions;</li>
  *   <li>{@link #priorFitted}: a {@link PriorFittedNetwork} pre-trained on {@link TabularPrior}
  *       against per-task logistic regression, MLP, random forest, GBT and a GP classifier on
- *       held-out families with at most 200 rows.</li>
+ *       held-out families with at most 200 rows;</li>
+ *   <li>{@link #pretrainingBudget}: the PFN against {@link ColumnRowIcl} (TabICL-lite) at
+ *       1x, 4x, 16x and 64x pre-training, with GBT and a random forest as budget-free
+ *       references.</li>
  * </ul>
  */
 public final class TabularShootout {
@@ -317,6 +321,78 @@ public final class TabularShootout {
         }
         out.put("pre-training", Map.of("millis", (double) pretrainMillis));
         return out;
+    }
+
+    /**
+     * Pre-training budget sweep (9.1.18): a {@link PriorFittedNetwork} and a {@link ColumnRowIcl}
+     * pre-trained for {@code baseSteps * multiplier} steps of 8 tasks each (the TabICL model with
+     * a 32-to-96-row curriculum, the PFN at 64 rows), then evaluated in context with 100 labelled
+     * rows on fresh prior tasks and on the held-out tree family; GBT and a random forest fitted per
+     * task are the budget-free references.
+     *
+     * @param baseSteps the 1x pre-training budget
+     * @param multipliers budget multipliers, such as {@code {1, 4, 16, 64}}
+     * @param tasks evaluation tasks per family
+     * @param seed the seed
+     * @return {@code "<model> x<multiplier>"} (or {@code "GBT"}, {@code "random forest"}) to
+     *     {@code {prior-task accuracy, tree-task accuracy, pre-training millis}}
+     */
+    public static Map<String, double[]> pretrainingBudget(int baseSteps, int[] multipliers, int tasks, long seed) {
+        int features = 5;
+        SplittableRandom r = new SplittableRandom(seed + 7);
+        List<TabularPrior.Task> prior = new ArrayList<>();
+        List<TabularPrior.Task> trees = new ArrayList<>();
+        for (int t = 0; t < tasks; t++) {
+            prior.add(TabularPrior.sample(200, features, r));
+            trees.add(TabularPrior.sample(TabularPrior.Family.TREES, 200, features, r));
+        }
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (int m : multipliers) {
+            int steps = baseSteps * m;
+            PriorFittedNetwork pfn = new PriorFittedNetwork(features, 32, 4, 1, 3e-3f, new SplittableRandom(seed));
+            long start = System.currentTimeMillis();
+            pfn.pretrain(steps, 8, 64, seed);
+            long pfnMillis = System.currentTimeMillis() - start;
+            out.put("PFN x" + m, new double[] {inContext(prior, pfn::predictProbability),
+                inContext(trees, pfn::predictProbability), pfnMillis});
+            ColumnRowIcl icl = new ColumnRowIcl(32, 4, 8, 1, 3e-3f, new SplittableRandom(seed));
+            start = System.currentTimeMillis();
+            icl.pretrain(steps, 8, 32, 96, features, seed);
+            long iclMillis = System.currentTimeMillis() - start;
+            out.put("TabICL-lite x" + m, new double[] {inContext(prior, icl::predictProbability),
+                inContext(trees, icl::predictProbability), iclMillis});
+        }
+        double[] g = new double[2];
+        double[] f = new double[2];
+        for (int k = 0; k < 2; k++) {
+            for (TabularPrior.Task task : k == 0 ? prior : trees) {
+                SyntheticRecsys.Table train = table(java.util.Arrays.copyOfRange(task.x(), 0, 100),
+                        java.util.Arrays.copyOfRange(task.y(), 0, 100));
+                SyntheticRecsys.Table test = table(java.util.Arrays.copyOfRange(task.x(), 100, task.rows()),
+                        java.util.Arrays.copyOfRange(task.y(), 100, task.rows()));
+                g[k] += gbt(train, test, 50).accuracy() / tasks;
+                f[k] += forest(train, test, 50).accuracy() / tasks;
+            }
+        }
+        out.put("GBT", new double[] {g[0], g[1], 0});
+        out.put("random forest", new double[] {f[0], f[1], 0});
+        return out;
+    }
+
+    /** An in-context classifier: training rows, labels and test rows to probabilities. */
+    private interface InContext {
+        double[] predict(double[][] trainX, int[] trainY, double[][] testX);
+    }
+
+    private static double inContext(List<TabularPrior.Task> tasks, InContext model) {
+        double acc = 0;
+        for (TabularPrior.Task task : tasks) {
+            int n = task.rows();
+            double[] p = model.predict(java.util.Arrays.copyOfRange(task.x(), 0, 100),
+                    java.util.Arrays.copyOfRange(task.y(), 0, 100), java.util.Arrays.copyOfRange(task.x(), 100, n));
+            acc += accuracy(p, java.util.Arrays.copyOfRange(task.y(), 100, n));
+        }
+        return acc / tasks.size();
     }
 
     private static void accumulate(Map<String, Double> row, TabularPrior.Task task, int context,

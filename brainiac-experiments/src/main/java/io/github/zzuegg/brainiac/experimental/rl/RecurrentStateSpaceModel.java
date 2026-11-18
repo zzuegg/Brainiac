@@ -52,6 +52,8 @@ public final class RecurrentStateSpaceModel {
     private final float[] mean;
     private final float[] std;
     private float freeNats = 1f;
+    private float klDynamics;
+    private float klRepresentation;
     private int overshooting = 3;
     private float overshootWeight = 0.5f;
     private SplittableRandom random;
@@ -96,6 +98,23 @@ public final class RecurrentStateSpaceModel {
      */
     public RecurrentStateSpaceModel freeNats(float nats) {
         this.freeNats = nats;
+        return this;
+    }
+
+    /**
+     * DreamerV3's KL balancing (Hafner et al., <a href="https://arxiv.org/abs/2301.04104">2301.04104</a>):
+     * the KL term is split into a dynamics loss {@code KL(sg(q) || p)} that trains the prior
+     * towards the posterior and a representation loss {@code KL(q || sg(p))} that keeps the
+     * posterior predictable, each clipped at the free nats and weighted separately (the paper
+     * uses 0.5 and 0.1 with 1 free nat). Off by default (the plain {@code KL(q || p)}).
+     *
+     * @param dynamics the dynamics-loss weight, 0 to switch balancing off
+     * @param representation the representation-loss weight
+     * @return this model
+     */
+    public RecurrentStateSpaceModel klBalance(float dynamics, float representation) {
+        this.klDynamics = dynamics;
+        this.klRepresentation = representation;
         return this;
     }
 
@@ -202,6 +221,10 @@ public final class RecurrentStateSpaceModel {
         return ratio.add(diff).sub(1f).sub(ratio.log()).mul(0.5f).sum(1, true);
     }
 
+    private static Var[] detached(Var[] g) {
+        return new Var[] {g[0].detach(), g[1].detach()};
+    }
+
     private Var sample(Var[] g, int rows) {
         return g[0].add(g[1].mul(Tensor.normal(Shape.of(rows, stoch), 0, 1, random)));
     }
@@ -259,7 +282,10 @@ public final class RecurrentStateSpaceModel {
             Var feat = Var.concat(1, h, z);
             Var rec = decoder.forward(feat, true).sub(ot).square().sum(1, true).mean();
             Var rew = rewardHead.forward(feat, true).sub(Tensor.of(Shape.of(batch, 1), r[t - 1])).square().mean();
-            Var klTerm = kl(q, p).mean().maximum(freeNats);
+            Var klTerm = klDynamics > 0
+                    ? kl(detached(q), p).mean().maximum(freeNats).mul(klDynamics)
+                            .add(kl(q, detached(p)).mean().maximum(freeNats).mul(klRepresentation))
+                    : kl(q, p).mean().maximum(freeNats);
             loss = loss.add(rec).add(rew).add(klTerm);
             hs.add(h);
             zs.add(z);

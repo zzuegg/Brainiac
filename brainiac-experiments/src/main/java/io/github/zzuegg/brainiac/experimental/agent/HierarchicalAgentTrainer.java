@@ -1,7 +1,10 @@
 package io.github.zzuegg.brainiac.experimental.agent;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.llm.SimulatedUser;
 import io.github.zzuegg.brainiac.experimental.llm.WindowLm;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
 
 import java.util.ArrayList;
@@ -23,6 +26,14 @@ import java.util.SplittableRandom;
  * <p>{@link #play} runs batched conversations against a {@link SimulatedUser} and counts the
  * user's replies as environment interactions, so other trainers can share it.
  *
+ * <p>Options from the paper's recipe, all off by default: {@link #criticWarmup} (critic-only
+ * steps before the first actor update), {@link #entropyBonus} (an entropy bonus in the token
+ * policy gradient), and, on the critic, clipped double Q and the target rate
+ * ({@link TurnLevelCritic#doubleQ}, {@link TurnLevelCritic#targetRate}); the actor/critic
+ * learning-rate ratio is the ratio of the two optimizers passed to {@link #step}. Every step
+ * also reports the critic's over-estimation: its mean {@code Q(s, a)} on the new turns minus
+ * their Monte Carlo returns.
+ *
  * @param <I> the user's intent type
  */
 public final class HierarchicalAgentTrainer<I> {
@@ -42,8 +53,18 @@ public final class HierarchicalAgentTrainer<I> {
      *
      * @param meanOutcome the mean outcome of the conversations played
      * @param tdError the mean squared TD error of the critic updates
+     * @param overestimation the critic's mean {@code Q(s, a)} on the new turns minus their
+     *     discounted Monte Carlo returns
      */
-    public record Stats(double meanOutcome, double tdError) {
+    public record Stats(double meanOutcome, double tdError, double overestimation) {
+
+        /**
+         * @param meanOutcome the mean outcome of the conversations played
+         * @param tdError the mean squared TD error of the critic updates
+         */
+        public Stats(double meanOutcome, double tdError) {
+            this(meanOutcome, tdError, 0);
+        }
     }
 
     private final WindowLm policy;
@@ -60,6 +81,9 @@ public final class HierarchicalAgentTrainer<I> {
     private int warmup;
     private double temperature = 1;
     private long interactions;
+    private int criticWarmupSteps;
+    private float entropy;
+    private long steps;
 
     private HierarchicalAgentTrainer(WindowLm policy, SimulatedUser<I> user, TurnLevelCritic critic, int maxTokens,
             int[] stops, int turnLimit) {
@@ -103,6 +127,24 @@ public final class HierarchicalAgentTrainer<I> {
         this.valueSamples = samples;
         this.replayLimit = bufferLimit;
         this.temperature = t;
+        return this;
+    }
+
+    /**
+     * @param n steps in which only the critic is updated, before any actor update
+     * @return this trainer
+     */
+    public HierarchicalAgentTrainer<I> criticWarmup(int n) {
+        this.criticWarmupSteps = n;
+        return this;
+    }
+
+    /**
+     * @param c the weight of an entropy bonus in the token policy gradient (0: off)
+     * @return this trainer
+     */
+    public HierarchicalAgentTrainer<I> entropyBonus(float c) {
+        this.entropy = c;
         return this;
     }
 
@@ -215,12 +257,18 @@ public final class HierarchicalAgentTrainer<I> {
      */
     public Stats step(List<I> intents, Optimizer policyOptimizer, Optimizer criticOptimizer,
             SplittableRandom random) {
+        steps++;
         List<Episode> eps = play(intents, temperature, random);
         List<TurnLevelCritic.Transition> fresh = new ArrayList<>();
+        List<Float> returns = new ArrayList<>();
         double outcome = 0;
         for (Episode e : eps) {
             fresh.addAll(e.transitions());
             outcome += e.outcome();
+            int n = e.transitions().size();
+            for (int t = 0; t < n; t++) {
+                returns.add((float) (Math.pow(critic.gamma(), n - 1 - t) * e.outcome()));
+            }
         }
         replay.addAll(fresh);
         while (replay.size() > replayLimit) {
@@ -242,6 +290,10 @@ public final class HierarchicalAgentTrainer<I> {
             us.add(t.utterance());
         }
         float[] q = critic.q(cs, us);
+        double over = 0;
+        for (int i = 0; i < q.length; i++) {
+            over += (q[i] - returns.get(i)) / Math.max(1, q.length);
+        }
         int[][] rep = new int[fresh.size() * valueSamples][];
         for (int i = 0; i < rep.length; i++) {
             rep[i] = cs.get(i / valueSamples);
@@ -267,10 +319,42 @@ public final class HierarchicalAgentTrainer<I> {
         for (float a : raw) {
             adv.add((float) (a * scale));
         }
-        if (replay.size() >= warmup) {
-            ToolInterleavedRollout.policyGradient(policy, cs, us, adv, policyOptimizer);
+        if (replay.size() >= warmup && steps > criticWarmupSteps) {
+            if (entropy > 0) {
+                entropyPolicyGradient(cs, us, adv, policyOptimizer);
+            } else {
+                ToolInterleavedRollout.policyGradient(policy, cs, us, adv, policyOptimizer);
+            }
         }
-        return new Stats(outcome / eps.size(), td);
+        return new Stats(outcome / eps.size(), td, over);
+    }
+
+    /** The policy gradient of {@link ToolInterleavedRollout#policyGradient} minus an entropy bonus. */
+    private void entropyPolicyGradient(List<int[]> contexts, List<int[]> chunks, List<Float> advantages,
+            Optimizer optimizer) {
+        List<int[]> prefixes = new ArrayList<>();
+        List<Float> w = new ArrayList<>();
+        for (int i = 0; i < chunks.size(); i++) {
+            for (int t = 0; t < chunks.get(i).length; t++) {
+                int[] prefix = Arrays.copyOf(contexts.get(i), contexts.get(i).length + t);
+                System.arraycopy(chunks.get(i), 0, prefix, contexts.get(i).length, t);
+                prefixes.add(prefix);
+                w.add(advantages.get(i));
+            }
+        }
+        if (prefixes.isEmpty()) {
+            return;
+        }
+        float[] wa = new float[w.size()];
+        for (int i = 0; i < wa.length; i++) {
+            wa[i] = w.get(i);
+        }
+        Var pg = policy.logProbs(contexts, chunks).mul(Var.of(Tensor.of(Shape.of(wa.length, 1), wa))).mean().neg();
+        Var logits = policy.logits(prefixes);
+        Var logSoft = logits.sub(logits.logsumexp(1, true));
+        Var h = logSoft.exp().mul(logSoft).sum(1, false).neg().mean();
+        pg.sub(h.mul(entropy)).backward();
+        optimizer.step(policy.parameters());
     }
 
     private List<int[]> sampleNext(List<TurnLevelCritic.Transition> batch, SplittableRandom random) {

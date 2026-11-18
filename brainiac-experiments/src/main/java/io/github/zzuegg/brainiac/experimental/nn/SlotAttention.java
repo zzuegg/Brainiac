@@ -99,6 +99,20 @@ public final class SlotAttention implements Layer {
 
     @Override
     public Var forward(Var input, boolean training) {
+        return forward(input, null, training);
+    }
+
+    /**
+     * Slot attention starting from given slots instead of a draw from the learned Gaussian, as
+     * video models (SAVi, SlotFormer) initialise each frame's slots with the previous frame's,
+     * so that slot {@code k} keeps following the same object.
+     *
+     * @param input {@code [batch, n, inputs]}
+     * @param initial the starting slots {@code [batch, slots, width]}, or {@code null} to draw them
+     * @param training whether training (unused; kept for symmetry with {@link #forward(Var, boolean)})
+     * @return the slots {@code [batch, slots, width]}
+     */
+    public Var forward(Var input, Var initial, boolean training) {
         if (input.shape().rank() != 3 || input.shape().dim(2) != inputs) {
             throw new IllegalArgumentException(this + " expects [batch, n, " + inputs + "], got " + input.shape());
         }
@@ -107,8 +121,13 @@ public final class SlotAttention implements Layer {
         Var x = inputNorm.forward(input);
         Var k = x.matmul(key);
         Var v = x.matmul(value);
-        Tensor noise = Tensor.normal(Shape.of(b, slots, width), 0, 1, random);
-        Var s = mu.add(logSigma.exp().mul(noise));
+        Var s;
+        if (initial == null) {
+            Tensor noise = Tensor.normal(Shape.of(b, slots, width), 0, 1, random);
+            s = mu.add(logSigma.exp().mul(noise));
+        } else {
+            s = initial;
+        }
         float scale = (float) (1 / Math.sqrt(width));
         Var attn = null;
         for (int t = 0; t < iterations; t++) {
