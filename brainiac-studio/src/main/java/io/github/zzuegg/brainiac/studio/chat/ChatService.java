@@ -594,6 +594,10 @@ public final class ChatService {
             throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "text");
         ChatProvider p = provider(target.provider());
+        if (!(p instanceof RemoteProvider) && messages.stream().anyMatch(m -> !m.images().isEmpty())) {
+            throw new IOException(target.name() + " cannot look at pictures here yet: models on this PC and on worker "
+                    + "hosts chat with text only. Pick a Claude, GPT or Gemini model, or take the pictures out.");
+        }
         route.accept(target);
         // reasoning models that think in plain text: their <think> block goes to the thinking
         ThinkSplitter split = new ThinkSplitter(listener, false);

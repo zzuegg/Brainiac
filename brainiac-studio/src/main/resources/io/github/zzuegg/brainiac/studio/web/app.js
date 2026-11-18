@@ -2597,7 +2597,43 @@
   }
 
   // Conversations live in the studio (one file each, next to the keys); this browser keeps a copy.
-  const saveConvos = () => store.set("convos", L.convos.slice(0, 200));
+  // (without the pictures, which are too large for a browser's storage)
+  const saveConvos = () => store.set("convos", L.convos.slice(0, 200).map(c => c.messages.some(m => m.images) ? { ...c, messages: c.messages.map(m => { const { images, ...rest } = m; return rest; }) } : c));
+
+  // ----- pictures attached to a message, for models that can look at them
+  L.attach = {};   // draft key -> [{type, data}]
+  const MAX_PICTURES = 8;
+  const picUrl = p => `data:${p.type};base64,${p.data}`;
+  // a picture is made small enough to send: 1568 px on its long side, as JPEG (PNG if it has transparency to keep)
+  function shrinkPicture(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(img.naturalWidth * scale)); cv.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const g = cv.getContext("2d");
+        const png = file.type === "image/png" && cv.width * cv.height <= 512 * 512;
+        if (!png) { g.fillStyle = "#fff"; g.fillRect(0, 0, cv.width, cv.height); }
+        g.drawImage(img, 0, 0, cv.width, cv.height);
+        const type = png ? "image/png" : "image/jpeg";
+        resolve({ type, data: cv.toDataURL(type, 0.88).split(",")[1] });
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("not a picture the browser can read")); };
+      img.src = url;
+    });
+  }
+  async function attachPictures(i, files) {
+    const key = draftKey(i), list = L.attach[key] ||= [];
+    for (const f of files) {
+      if (!f.type.startsWith("image/") || list.length >= MAX_PICTURES) continue;
+      try { list.push(await shrinkPicture(f)); } catch (e) { console.warn("cannot attach " + f.name, e); }
+    }
+    const p = $(`[data-prompt="${i}"]`); if (p) L.drafts[key] = p.value;
+    render();
+    $(`[data-prompt="${i}"]`)?.focus();
+  }
   const pending = new Map();
   function persist(c) {
     saveConvos();
@@ -2689,7 +2725,7 @@
     m = splitThink(m);
     if (m.role === "user") {
       return `<div class="msg user" data-i="${i}"><div class="avatar user">${icon("chat")}</div><div style="min-width:0">
-        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div>
+        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div>${m.images?.length ? `<div class="msg-pics">${m.images.map(p => `<a href="${picUrl(p)}" target="_blank" rel="noopener"><img src="${picUrl(p)}" alt="Attached picture"></a>`).join("")}</div>` : ""}<div class="body">${md(m.text)}</div>
         <div class="actions">
           <button class="iconbtn" data-copy="${i}" aria-label="Copy" title="Copy">${icon("copy")}</button>
           <button class="iconbtn" data-edit-msg="${i}" aria-label="Edit and send again" title="Edit and send again: the answers after it are replaced">${icon("edit")}</button></div></div></div>`;
@@ -2782,9 +2818,12 @@
         : `<div class="composer">
           ${c && L.editingMsg && L.editingMsg.convo === c.id ? `<div class="route-hint editing">${icon("edit")}<span>Editing an earlier message. Sending replaces it and the answers after it.</span><span class="grow"></span><button class="btn ghost sm" data-edit-cancel>Cancel</button></div>` : ""}
           <div class="route-hint" data-route="${i}">${routeLine(paneModel(i))}</div>
+          ${(L.attach[draftKey(i)] || []).length ? `<div class="attached">${L.attach[draftKey(i)].map((p, n) => `<span class="pic"><img src="${picUrl(p)}" alt="Picture ${n + 1}"><button type="button" data-unattach="${i}:${n}" aria-label="Remove picture ${n + 1}" title="Remove">×</button></span>`).join("")}</div>` : ""}
           <textarea data-prompt="${i}" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.drafts[draftKey(i)] || "")}</textarea>
           <div class="row">
-            <span class="faint" style="font-size:12px;padding-left:6px">Saved in the studio</span>
+            <button type="button" class="iconbtn" data-attach="${i}" aria-label="Attach pictures" title="Attach pictures for a model that can look at them (Claude, GPT, Gemini). You can also paste or drop them.">${icon("image")}</button>
+            <input type="file" accept="image/*" multiple hidden data-attach-file="${i}">
+            <span class="faint" style="font-size:12px;padding-left:2px">Saved in the studio</span>
             <span class="grow"></span>
             ${busy ? `<button class="send stop" data-stop="${key}" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" data-send="${i}" aria-label="Send">${icon("send")}</button>`}
           </div>
@@ -2839,7 +2878,8 @@
     for (const m of messages) {
       if (m.role === "assistant" && (m.error || !m.text)) continue;
       const last = out[out.length - 1];
-      if (last && last.role === m.role) last.text += "\n\n" + m.text; else out.push({ role: m.role, text: m.text });
+      if (last && last.role === m.role) { last.text += "\n\n" + m.text; if (m.images?.length) last.images = [...(last.images || []), ...m.images].slice(0, MAX_PICTURES); }
+      else out.push(m.images?.length ? { role: m.role, text: m.text, images: m.images } : { role: m.role, text: m.text });
     }
     return out;
   }
@@ -2902,9 +2942,11 @@
   function send(i) {
     const p = $(`[data-prompt="${i}"]`), text = (p?.value || "").trim();
     let c = paneConvo(i);
-    if (!text || !L.info || (c && running(c.id))) return;
+    const pics = L.attach[draftKey(i)] || [];
+    if ((!text && !pics.length) || !L.info || (c && running(c.id))) return;
+    delete L.attach[draftKey(i)];
     if (!c) {
-      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70),
+      c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: (text || "Picture").replace(/\s+/g, " ").slice(0, 70),
         messages: [], updated: Date.now(), status: "open", model: L.panes[i].model || L.model };
       if ((L.panes[i].system || "").trim()) c.system = L.panes[i].system;
       if (+L.panes[i].maxTokens > 0) c.maxTokens = +L.panes[i].maxTokens;
@@ -2920,7 +2962,7 @@
     L.drafts[c.id] = "";
     // an edited message takes the place of the old one; what was answered after it goes
     if (L.editingMsg && L.editingMsg.convo === c.id) { c.messages.splice(L.editingMsg.at); L.editingMsg = null; }
-    c.messages.push({ role: "user", text, at: Date.now() });
+    c.messages.push(pics.length ? { role: "user", text, images: pics, at: Date.now() } : { role: "user", text, at: Date.now() });
     persist(c);
     answer(c);
   }
@@ -2991,16 +3033,35 @@
       const at = +b.dataset.editMsg, i = +pane.dataset.pane;
       L.editingMsg = { convo: c.id, at };
       L.drafts[c.id] = c.messages[at].text;
+      if (c.messages[at].images?.length) L.attach[c.id] = c.messages[at].images.slice(); else delete L.attach[c.id];
       render();
       const p = $(`[data-prompt="${i}"]`); p?.focus(); p?.setSelectionRange(p.value.length, p.value.length);
     }));
-    $$("[data-edit-cancel]").forEach(b => b.addEventListener("click", () => { const e = L.editingMsg; L.editingMsg = null; if (e) L.drafts[e.convo] = ""; render(); }));
+    $$("[data-edit-cancel]").forEach(b => b.addEventListener("click", () => { const e = L.editingMsg; L.editingMsg = null; if (e) { L.drafts[e.convo] = ""; delete L.attach[e.convo]; } render(); }));
     $$("[data-prompt]").forEach(p => {
       const i = +p.dataset.prompt;
       p.addEventListener("input", () => { L.drafts[draftKey(i)] = p.value; });
+      p.addEventListener("paste", e => {
+        const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith("image/"));
+        if (files.length) { e.preventDefault(); attachPictures(i, files); }
+      });
+      const box = p.closest(".composer");
+      box?.addEventListener("dragover", e => { if ([...(e.dataTransfer?.types || [])].includes("Files")) e.preventDefault(); });
+      box?.addEventListener("drop", e => {
+        const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith("image/"));
+        if (files.length) { e.preventDefault(); attachPictures(i, files); }
+      });
       p.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(i); } });
     });
     $$("[data-send]").forEach(b => b.addEventListener("click", () => send(+b.dataset.send)));
+    $$("[data-attach]").forEach(b => b.addEventListener("click", () => $(`[data-attach-file="${b.dataset.attach}"]`)?.click()));
+    $$("[data-attach-file]").forEach(f => f.addEventListener("change", () => attachPictures(+f.dataset.attachFile, [...f.files])));
+    $$("[data-unattach]").forEach(b => b.addEventListener("click", () => {
+      const [i, n] = b.dataset.unattach.split(":").map(Number), key = draftKey(i);
+      const p = $(`[data-prompt="${i}"]`); if (p) L.drafts[key] = p.value;
+      (L.attach[key] || []).splice(n, 1);
+      render();
+    }));
     $$("[data-stop]").forEach(b => b.addEventListener("click", () => L.running[b.dataset.stop]?.abort()));
     $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $$("[data-copy]").forEach(b => b.addEventListener("click", () => {

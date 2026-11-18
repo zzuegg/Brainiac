@@ -143,7 +143,19 @@ class CompatibleProvider extends RemoteProvider {
             messages.add(Map.of("role", "system", "content", request.system()));
         }
         for (ChatMessage m : request.messages()) {
-            messages.add(Map.of("role", m.role(), "content", m.text()));
+            if (m.images().isEmpty()) {
+                messages.add(Map.of("role", m.role(), "content", m.text()));
+                continue;
+            }
+            List<Object> parts = new ArrayList<>();
+            if (!m.text().isBlank()) {
+                parts.add(Map.of("type", "text", "text", m.text()));
+            }
+            for (Media image : m.images()) {
+                parts.add(Map.of("type", "image_url", "image_url",
+                        Map.of("url", "data:" + image.mime() + ";base64," + ChatMessage.base64(image))));
+            }
+            messages.add(Map.of("role", m.role(), "content", parts));
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", request.model());
