@@ -212,6 +212,9 @@ final class VkContext {
     private Block bulk;
     private static final long BULK_CHUNK = 32L << 20;
     private Block readback;
+    /** Small readback blocks for {@link #downloadLater}, each held by one pending copy. */
+    private final ArrayDeque<Block> readbackPool = new ArrayDeque<>();
+    static final long SMALL_READBACK = 64L << 10;
 
     private final ArrayDeque<Batch> idleBatches = new ArrayDeque<>();
     private final ArrayDeque<Batch> inFlight = new ArrayDeque<>();
@@ -1384,6 +1387,65 @@ final class VkContext {
         }
         finish();
         return MemoryUtil.memByteBuffer(readback.mapped, (int) bytes).order(ByteOrder.nativeOrder());
+    }
+
+    /** A copy to the host that is done once the batch it was submitted with is. */
+    static final class Pending {
+        Block block;
+        long bytes;
+        boolean done;
+    }
+
+    /**
+     * Copies a slot's first {@code bytes} bytes (at most {@link #SMALL_READBACK}) to the host
+     * without waiting: the recorded work is submitted, and {@link #read} waits for just that
+     * batch, so the host can record more work meanwhile.
+     */
+    Pending downloadLater(Slot s, long bytes) {
+        Pending p = new Pending();
+        Block r = readbackPool.poll();
+        p.block = r != null ? r : block(SMALL_READBACK, readbackType, true);
+        p.bytes = bytes;
+        if (bytes > 0) {
+            access(0, s.address);
+            Batch b = recording();
+            try (MemoryStack st = stackPush()) {
+                vkCmdCopyBuffer(b.commands, s.block.buffer, p.block.buffer,
+                        VkBufferCopy.calloc(1, st).srcOffset(s.offset).dstOffset(0).size(bytes));
+                VkMemoryBarrier.Buffer mb = VkMemoryBarrier.calloc(1, st).sType$Default()
+                        .srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_HOST_READ_BIT);
+                vkCmdPipelineBarrier(b.commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, mb,
+                        null, null);
+            }
+            b.count++;
+            b.done.add(() -> p.done = true);
+            submit();
+        } else {
+            p.done = true;
+        }
+        return p;
+    }
+
+    /** The values of a {@link #downloadLater}, waiting for the batch that copies them. */
+    ByteBuffer read(Pending p) {
+        if (!p.done) {
+            submit();   // what was recorded since runs while the host waits
+            while (!p.done) {
+                if (inFlight.isEmpty()) {
+                    throw new IllegalStateException("the copy to the host was never submitted");
+                }
+                complete(inFlight.poll());
+            }
+        }
+        return MemoryUtil.memByteBuffer(p.block.mapped, (int) p.bytes).order(ByteOrder.nativeOrder());
+    }
+
+    /** Returns a {@link #downloadLater}'s block, once its values are read. */
+    void release(Pending p) {
+        if (p.block != null) {
+            readbackPool.add(p.block);
+            p.block = null;
+        }
     }
 
     private void recorded(Batch b) {

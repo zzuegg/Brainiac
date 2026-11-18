@@ -678,6 +678,33 @@ public final class VulkanBackend implements Backend {
     }
 
     @Override
+    public synchronized java.util.function.Supplier<float[]> downloadLater(Storage src) {
+        VkStorage s = vs(src);
+        eager(s);
+        if (s.dtype != DType.FLOAT32 || s.bytes() > VkContext.SMALL_READBACK) {
+            float[] now = download(s);
+            return () -> now;
+        }
+        VkContext.Pending p = vk.downloadLater(s.slot(), s.bytes());
+        int n = Math.toIntExact(s.size);
+        return new java.util.function.Supplier<>() {
+            private float[] got;
+
+            @Override
+            public float[] get() {
+                synchronized (VulkanBackend.this) {
+                    if (got == null) {
+                        got = new float[n];
+                        vk.read(p).asFloatBuffer().get(got);
+                        vk.release(p);
+                    }
+                    return got;
+                }
+            }
+        };
+    }
+
+    @Override
     public synchronized double[] downloadDouble(Storage src) {
         VkStorage s = vs(src);
         eager(s);
@@ -1065,6 +1092,7 @@ public final class VulkanBackend implements Backend {
         VkStorage x = as(vs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
             argmax(x, y, rows, length, inner);
+            y.indexBound = length;
         } else {
             reduce(op.ordinal(), x, y, rows, length, inner);
         }
@@ -2288,7 +2316,10 @@ public final class VulkanBackend implements Backend {
         VkStorage z = vs(out);
         eager(vs(in), vs(indices), z);
         VkStorage x = as(vs(in), z.dtype);
-        indices(vs(indices), count, length);
+        long bound = vs(indices).indexBound;
+        if (bound <= 0 || bound > length) {
+            indices(vs(indices), count, length);   // made on the device in range: no download
+        }
         VkStorage ind = as(vs(indices), DType.FLOAT32);
         long total = outer * count * inner;
         vk.push().putLong(x.address()).putLong(ind.address()).putLong(z.address()).putInt((int) length)

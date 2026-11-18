@@ -98,10 +98,12 @@ final class DiffusionCodecs {
             return Config.builder().put("vocabulary", s.vocabulary()).put("features", s.features())
                     .put("layers", s.layers()).put("heads", s.heads()).put("headSize", s.headSize())
                     .put("ffnSize", s.ffnSize()).put("buckets", s.buckets()).put("maxDistance", s.maxDistance())
-                    .put("epsilon", s.epsilon()).put("gated", s.gated()).build();
+                    .put("epsilon", s.epsilon()).put("gated", s.gated()).put("biasPerLayer", s.biasPerLayer())
+                    .build();
         }, c -> new T5Encoder(new T5Encoder.Settings(c.getInt("vocabulary"), c.getInt("features"), c.getInt("layers"),
                 c.getInt("heads"), c.getInt("headSize"), c.getInt("ffnSize"), c.getInt("buckets"),
-                c.getInt("maxDistance"), c.getFloat("epsilon"), c.getBoolean("gated")), new SplittableRandom()));
+                c.getInt("maxDistance"), c.getFloat("epsilon"), c.getBoolean("gated"),
+                c.has("biasPerLayer") && c.getBoolean("biasPerLayer")), new SplittableRandom()));
     }
 
     private static int[] ints(boolean[] b) {

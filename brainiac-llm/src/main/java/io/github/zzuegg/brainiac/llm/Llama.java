@@ -492,6 +492,12 @@ public final class Llama implements LanguageModel {
         return order;
     }
 
+    /**
+     * The ids of the step {@link #next(State, Tensor)} reads, still on the device, or null; per
+     * thread, as a batching server's thread and another may decode with one model at once.
+     */
+    private final ThreadLocal<Tensor> deviceTokens = new ThreadLocal<>();
+
     private static Tensor indices(int[] ids, Device device) {
         float[] f = new float[ids.length];
         for (int i = 0; i < ids.length; i++) {
@@ -1494,6 +1500,25 @@ public final class Llama implements LanguageModel {
     }
 
     @Override
+    public Tensor next(State state, Tensor tokens, boolean[][] padding) {
+        int batch = ((Cache) Objects.requireNonNull(state, "state")).next.length;
+        if (insert != null || tokens.size() != batch || !tokens.device().equals(device)) {
+            return LanguageModel.super.next(state, tokens, padding);
+        }
+        deviceTokens.set(tokens.reshape(batch));
+        try {
+            return read(state, new int[batch][1], padding, false);
+        } finally {
+            deviceTokens.remove();
+        }
+    }
+
+    @Override
+    public boolean readsDeviceTokens() {
+        return true;
+    }
+
+    @Override
     public Tensor nextAll(State state, int[][] tokens) {
         return read(state, tokens, null, true);
     }
@@ -1772,7 +1797,9 @@ public final class Llama implements LanguageModel {
                 }
             }
         }
-        Var x = base(embed).gather(0, indices(lookup, device)).reshape(batch, steps, config.hidden());
+        Tensor onDevice = deviceTokens.get();
+        Tensor ids = onDevice != null && insert == null ? onDevice : indices(lookup, device);
+        Var x = base(embed).gather(0, ids).reshape(batch, steps, config.hidden());
         if (e.scaleEmbeddings()) {
             // as Gemma: the factor rounded to the model's type first
             x = x.mul(Tensor.full(Shape.of(), (float) Math.sqrt(config.hidden()), Device.cpu()).to(dtype).item());

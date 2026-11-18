@@ -56,4 +56,42 @@ public final class HostProvider implements ChatProvider {
     public ChatResult chat(ChatRequest request, ChatListener listener) throws IOException {
         return client.chat(request, listener);
     }
+
+    @Override
+    public boolean runsMedia() {
+        return true;
+    }
+
+    @Override
+    public List<io.github.zzuegg.brainiac.studio.chat.LocalImages.Picture> draw(String model, String prompt,
+            io.github.zzuegg.brainiac.studio.chat.LocalImages.Settings settings,
+            io.github.zzuegg.brainiac.studio.chat.LocalImages.Listener listener) throws IOException {
+        return client.draw(model, prompt, settings, listener);
+    }
+
+    @Override
+    public io.github.zzuegg.brainiac.studio.chat.Media speak(String model, String text, String voice, double speed,
+            java.util.function.BooleanSupplier stop) throws IOException {
+        return client.speak(model, text, voice, speed);
+    }
+
+    @Override
+    public io.github.zzuegg.brainiac.audio.Transcription transcribe(String model, byte[] wav,
+            io.github.zzuegg.brainiac.studio.chat.LocalSpeech.Listening listening,
+            java.util.function.Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment,
+            java.util.function.BooleanSupplier stop) throws IOException {
+        return client.transcribe(model, wav, listening, onSegment, stop);
+    }
+
+    @Override
+    public java.util.Map<String, Object> voiceOptions(String model) {
+        java.util.Map<String, Object> told = client.voiceOptions(model);
+        if (told == null) {
+            return null;
+        }
+        // a new voice is made from a recording on this PC only, so a host's model does not offer it
+        java.util.Map<String, Object> options = new java.util.LinkedHashMap<>(told);
+        options.put("clone", false);
+        return options;
+    }
 }

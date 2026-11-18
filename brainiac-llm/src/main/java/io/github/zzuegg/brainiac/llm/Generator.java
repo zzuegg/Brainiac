@@ -33,6 +33,17 @@ import java.util.TreeSet;
  */
 public final class Generator {
 
+    private static boolean[][] copy(boolean[][] a) {
+        boolean[][] c = new boolean[a.length][];
+        for (int i = 0; i < a.length; i++) {
+            c[i] = a[i].clone();
+        }
+        return c;
+    }
+
+    /** {@code -Dbrainiac.generate.pipeline=false}: greedy decoding waits for each token before the next step. */
+    private static final boolean SERIAL = "false".equals(System.getProperty("brainiac.generate.pipeline"));
+
     private final LanguageModel model;
     private final Tokenizer tokenizer;
 
@@ -424,6 +435,31 @@ public final class Generator {
             Sampling sampling = options.sampling();
             boolean onDevice = options.constraint() == null && sampling.temperature() == 0
                     && sampling.plain() && options.logprobs() < 0;
+            if (onDevice && model.readsDeviceTokens() && !SERIAL) {
+                // pipelined: the next step is queued from the chosen tokens still on the device
+                // while they are read back, so the device need not wait for the host. A row that
+                // stops is skipped a step late: the step queued past its stop is never read.
+                Tensor ids = logits.argmax(-1);
+                boolean[][] skip = new boolean[batch][1];
+                for (int step = 0; ; step++) {
+                    java.util.function.Supplier<float[]> chosen = ids.toArrayLater();
+                    boolean more = step + 1 < options.maxNewTokens();
+                    Tensor following = more ? model.next(state, ids, active < batch ? copy(skip) : null).argmax(-1)
+                            : null;
+                    float[] all = chosen.get();
+                    for (int b = 0; b < batch; b++) {
+                        if (rows[b].finish == null && rows[b].add((int) all[b], stops)) {
+                            active--;
+                            skip[b][0] = true;
+                        }
+                    }
+                    if (active == 0 || !more) {
+                        break;   // a step queued past the stops is dropped with the state
+                    }
+                    ids = following;
+                }
+                active = 0;
+            }
             for (int step = 0; active > 0; step++) {
                 float[] all = onDevice ? logits.argmax(-1).toArray() : logits.toArray();
                 int vocab = all.length / batch;

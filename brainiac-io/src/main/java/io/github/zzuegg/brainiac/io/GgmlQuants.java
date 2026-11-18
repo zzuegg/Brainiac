@@ -194,8 +194,19 @@ final class GgmlQuants {
     /** Reads every value as a level, a scale and an offset. */
     static void levels(Gguf.Format format, MemorySegment m, long count, Sink y) {
         int blocks = (int) (count / format.block);
-        if (y instanceof Row row && (format == Gguf.Format.Q4_K || format == Gguf.Format.Q6_K
-                || format == Gguf.Format.Q8_0)) {
+        boolean fast = format == Gguf.Format.Q4_K || format == Gguf.Format.Q6_K || format == Gguf.Format.Q8_0;
+        if (fast && y instanceof Values v) {
+            // through a row, then each value as put would compute it from the same factors
+            Row row = new Row(blocks * format.block, group(format));
+            levels(format, m, count, row);
+            int shift = Integer.numberOfTrailingZeros(row.group);
+            for (int i = 0; i < blocks * format.block; i++) {
+                int g = i >>> shift;
+                v.put(i, row.levels[i], row.scales[g], row.offsets[g]);
+            }
+            return;
+        }
+        if (y instanceof Row row && fast) {
             // the formats of most models, decoded from an array copy of the blocks: no bounds
             // check and no call per value
             byte[] b = new byte[Math.toIntExact((long) blocks * format.bytes)];

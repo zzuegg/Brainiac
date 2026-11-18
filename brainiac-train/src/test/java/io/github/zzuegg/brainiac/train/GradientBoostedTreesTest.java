@@ -108,4 +108,39 @@ class GradientBoostedTreesTest {
         }
         assertTrue(worst < 0.15, "largest relative error " + worst);
     }
+
+    @Test
+    void weightTwoActsAsTwoCopies() {
+        SplittableRandom r = new SplittableRandom(9);
+        int n = 120;
+        double[][] x = new double[n][2];
+        double[] y = new double[n];
+        double[] w = new double[n];
+        java.util.List<double[]> dupX = new java.util.ArrayList<>();
+        java.util.List<Double> dupY = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            x[i][0] = r.nextDouble(-2, 2);
+            x[i][1] = r.nextDouble(-2, 2);
+            y[i] = x[i][0] * x[i][1];
+            w[i] = i % 3 == 0 ? 2 : 1;
+            for (int c = 0; c < w[i]; c++) {
+                dupX.add(x[i]);
+                dupY.add(y[i]);
+            }
+        }
+        // a regression loss starting at 0, so the unweighted base does not differ
+        GradientBoostedTrees.Loss squared = (raw, t, g, h) -> {
+            for (int i = 0; i < raw.length; i++) {
+                g[i] = raw[i] - t[i];
+                h[i] = 1;
+            }
+        };
+        GradientBoostedTrees.Settings s = GradientBoostedTrees.Settings.defaults().withTrees(20);
+        GradientBoostedTrees weighted = GradientBoostedTrees.fit(x, y, w, squared, s);
+        GradientBoostedTrees copies = GradientBoostedTrees.fit(dupX.toArray(double[][]::new),
+                dupY.stream().mapToDouble(Double::doubleValue).toArray(), squared, s);
+        for (int i = 0; i < n; i++) {
+            assertEquals(copies.predict(x[i]), weighted.predict(x[i]), 1e-9);
+        }
+    }
 }

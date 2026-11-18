@@ -306,6 +306,20 @@ public final class ChatService {
         return local().device();
     }
 
+    private LocalServing serving;
+
+    /**
+     * Returns what serves one of this PC's chat models to other programs with the OpenAI API.
+     *
+     * @return it
+     */
+    public synchronized LocalServing serving() {
+        if (serving == null) {
+            serving = new LocalServing(local());
+        }
+        return serving;
+    }
+
     private LocalProvider local() {
         return providers().stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
                 .orElseThrow(() -> new IllegalStateException("no local provider"));
@@ -384,6 +398,21 @@ public final class ChatService {
      */
     public static ChatProvider localModels(List<Path> folders) {
         return new LocalProvider(folders);
+    }
+
+    /**
+     * Makes a provider of the chat, image and speech models in some folders, as a worker host
+     * serves them.
+     *
+     * @param folders where the models are
+     * @param voices where voices made from recordings are kept
+     * @return the provider
+     */
+    public static ChatProvider localMedia(List<Path> folders, Path voices) {
+        LocalProvider local = new LocalProvider(folders);
+        local.speakToo(voices);
+        local.drawToo(io.github.zzuegg.brainiac.io.HuggingFaceHub::standard);
+        return local;
     }
 
 
@@ -534,8 +563,8 @@ public final class ChatService {
                     j.put("shown", shown(x));
                     if (x.media().contains("speech") && p instanceof RemoteProvider r) {
                         j.put("speech", r.speechOptions(x.id()).toJson());
-                    } else if (x.media().contains("speech") && p instanceof LocalProvider lp && lp.speech() != null) {
-                        j.put("speech", lp.speech().options(x.id()).toJson());
+                    } else if (x.media().contains("speech") && p.voiceOptions(x.id()) != null) {
+                        j.put("speech", p.voiceOptions(x.id()));
                     }
                     models.add(j);
                 }
@@ -641,7 +670,7 @@ public final class ChatService {
     public Generated images(String model, String prompt, String aspect, int count, String key)
             throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "image");
-        if (provider(target.provider()) instanceof LocalProvider) {
+        if (provider(target.provider()).runsMedia()) {
             return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), (step, total, preview) -> true)
                     .generated();
         }
@@ -680,8 +709,8 @@ public final class ChatService {
             throw new IllegalArgumentException("describe the picture first");
         }
         ModelInfo target = resolve(model, "image");
-        if (!(provider(target.provider()) instanceof LocalProvider)) {
-            throw new IllegalArgumentException(target.key() + " does not run on this PC");
+        if (!provider(target.provider()).runsMedia()) {
+            throw new IllegalArgumentException(target.key() + " does not run on this PC or on a worker host");
         }
         route.accept(target);
         return drawHere(target, prompt, settings, listener);
@@ -705,11 +734,8 @@ public final class ChatService {
 
     private Drawn drawHere(ModelInfo target, String prompt, LocalImages.Settings settings, LocalImages.Listener listener)
             throws IOException, InterruptedException {
-        LocalImages images = local().images();
-        if (images == null) {
-            throw new IOException("this studio does not draw on this PC");
-        }
-        List<LocalImages.Picture> pictures = logged(target, "image", () -> images.draw(target.id(), prompt, settings, listener),
+        ChatProvider where = provider(target.provider());
+        List<LocalImages.Picture> pictures = logged(target, "image", () -> where.draw(target.id(), prompt, settings, listener),
                 r -> new long[] {-1, -1, r.size()});
         List<Media> media = pictures.stream().map(LocalImages.Picture::media).toList();
         return new Drawn(new Generated(target, media, save(media, "image")),
@@ -733,8 +759,9 @@ public final class ChatService {
     public Generated speech(String model, String text, String voice, double speed, String instructions, String format,
             String key) throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "speech");
-        if (provider(target.provider()) instanceof LocalProvider lp && lp.speech() != null) {
-            Media wav = logged(target, "speech", () -> lp.speech().speak(target.id(), text, voice, speed, () -> false),
+        ChatProvider where = provider(target.provider());
+        if (where.runsMedia()) {
+            Media wav = logged(target, "speech", () -> where.speak(target.id(), text, voice, speed, () -> false),
                     r -> new long[] {-1, -1, text.length()});
             return new Generated(target, List.of(wav), save(List.of(wav), "speech"));
         }
@@ -770,18 +797,14 @@ public final class ChatService {
     public Transcribed transcribe(String model, byte[] wav, LocalSpeech.Listening listening,
             Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment, Consumer<ModelInfo> route,
             java.util.function.BooleanSupplier stop) throws IOException, InterruptedException {
-        LocalSpeech speech = local().speech();
-        // only this PC transcribes here, so Auto means its first transcribing model
-        ModelInfo target = AUTO.equals(model) && speech != null
-                ? speech.models().stream().filter(m -> m.media().contains("transcribe")).findFirst()
-                        .orElseThrow(() -> new IOException("no transcribing model is available: put a Whisper model in a model folder"))
-                : resolve(model, "transcribe");
-        if (!(provider(target.provider()) instanceof LocalProvider) || speech == null) {
-            throw new IllegalArgumentException(target.key() + " does not transcribe on this PC");
+        ModelInfo target = AUTO.equals(model) ? firstTranscriber() : resolve(model, "transcribe");
+        ChatProvider where = provider(target.provider());
+        if (!where.runsMedia()) {
+            throw new IllegalArgumentException(target.key() + " does not transcribe on this PC or on a worker host");
         }
         route.accept(target);
         return logged(target, "transcribe",
-                () -> new Transcribed(target, speech.transcribe(target.id(), wav, listening, onSegment, stop)),
+                () -> new Transcribed(target, where.transcribe(target.id(), wav, listening, onSegment, stop)),
                 r -> new long[] {-1, -1, Math.round(r.transcription().seconds())});
     }
 
@@ -904,6 +927,22 @@ public final class ChatService {
     private ChatProvider provider(String id) {
         return providers().stream().filter(p -> p.id().equals(id)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("unknown provider: " + id));
+    }
+
+    // Auto for a recording: the first transcribing model on this PC, then on the worker hosts
+    private ModelInfo firstTranscriber() throws IOException {
+        Map<String, Listing> lists = listAll(false);
+        for (ChatProvider p : providers()) {
+            Listing l = lists.get(p.id());
+            if (p.ready() && p.runsMedia() && l != null) {
+                for (ModelInfo m : l.models()) {
+                    if (m.media().contains("transcribe") && shown(m)) {
+                        return m;
+                    }
+                }
+            }
+        }
+        throw new IOException("no transcribing model is available: put a Whisper model in a model folder");
     }
 
     private ModelInfo pickAuto(Map<String, Listing> lists, String medium) {

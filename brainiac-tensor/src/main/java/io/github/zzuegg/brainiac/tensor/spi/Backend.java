@@ -96,6 +96,16 @@ public interface Backend {
     float[] download(Storage src);
 
     /**
+     * Starts copying a storage to the host and returns its values when asked, so the host can
+     * queue more work for the device meanwhile. The supplier must be called from the thread
+     * that uses this backend. By default the copy happens now.
+     */
+    default java.util.function.Supplier<float[]> downloadLater(Storage src) {
+        float[] now = download(src);
+        return () -> now;
+    }
+
+    /**
      * New float32 storage of {@code size} values uniform in {@code [0, 1)}: element {@code i} is
      * {@link CounterRandom#uniform(long, long) CounterRandom.uniform(seed, i)}, so every backend
      * gives the same values. A backend may compute them on the device, or only where they are used.
