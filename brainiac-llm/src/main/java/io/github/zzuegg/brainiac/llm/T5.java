@@ -325,7 +325,7 @@ public final class T5 {
      * @return the decoded answer
      */
     public String generate(PretrainedTokenizer tokenizer, String text, int maxNewTokens) {
-        int[] ids = tokenizer.encode(text);
+        int[] ids = tokenizer.encode(text, true);   // with the closing </s> T5 was trained with
         return tokenizer.decode(generate(new int[][] {ids}, null, maxNewTokens)[0]);
     }
 

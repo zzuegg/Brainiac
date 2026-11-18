@@ -291,4 +291,15 @@ class DiffusionLayersTest {
         double[] dynamic = FlowSampler.dynamicSigmas(4, 1.15);
         assertEquals(Math.exp(1.15) / (Math.exp(1.15) + 1 / 0.75 - 1), dynamic[1], 1e-6);
     }
+
+    @Test
+    void fluxAttentionInPiecesMatchesTheFusedKernel() {
+        SplittableRandom r = new SplittableRandom(5);
+        Var q = Var.of(Tensor.normal(Shape.of(1, 2, 37, 8), 0, 1, r));
+        Var k = Var.of(Tensor.normal(Shape.of(1, 2, 37, 8), 0, 1, r));
+        Var v = Var.of(Tensor.normal(Shape.of(1, 2, 37, 8), 0, 1, r));
+        float[] fused = Var.noGrad(() -> FluxTransformer.attend(q, k, v, 0).value().toArray());
+        float[] pieces = Var.noGrad(() -> FluxTransformer.attend(q, k, v, 10).value().toArray());
+        assertArrayEquals(fused, pieces, 1e-5f);
+    }
 }

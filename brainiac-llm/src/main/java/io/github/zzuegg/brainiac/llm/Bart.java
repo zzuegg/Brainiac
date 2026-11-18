@@ -106,12 +106,14 @@ public final class Bart {
                 t.apply(name + ".bias"));
         Function<String, Norm> norm = name -> w.contains(root + name + ".weight")
                 ? new Norm(t.apply(name + ".weight"), t.apply(name + ".bias")) : null;
+        // tied checkpoints (bart-large-cnn) may store the shared table under one name only
         Tensor shared = w.contains(root + "shared.weight") ? t.apply("shared.weight")
+                : w.contains(root + "decoder.embed_tokens.weight") ? t.apply("decoder.embed_tokens.weight")
                 : t.apply("encoder.embed_tokens.weight");
-        encoderTokens = w.contains(root + "encoder.embed_tokens.weight") ? t.apply("encoder.embed_tokens.weight")
-                : shared;
-        decoderTokens = w.contains(root + "decoder.embed_tokens.weight") ? t.apply("decoder.embed_tokens.weight")
-                : shared;
+        // one table for both sides, unless Marian keeps the decoder's apart
+        encoderTokens = shared;
+        decoderTokens = Boolean.FALSE.equals(c.get("share_encoder_decoder_embeddings"))
+                && w.contains(root + "decoder.embed_tokens.weight") ? t.apply("decoder.embed_tokens.weight") : shared;
         boolean sine = type.equals("marian");
         encoderPositions = sine ? null : t.apply("encoder.embed_positions.weight");
         decoderPositions = sine ? null : t.apply("decoder.embed_positions.weight");
@@ -357,7 +359,7 @@ public final class Bart {
      * @return the decoded answer
      */
     public String generate(PretrainedTokenizer tokenizer, String text, int maxNewTokens) {
-        int[] ids = tokenizer.encode(text);
+        int[] ids = tokenizer.encode(text, true);   // with the end token the model was trained with
         return tokenizer.decode(generate(new int[][] {ids}, null, maxNewTokens)[0]);
     }
 

@@ -603,8 +603,12 @@ public final class OpenAiServer implements AutoCloseable {
             }
             String prompt;
             Generator.Options options;
+            List<java.awt.image.BufferedImage> images = new ArrayList<>();
             try {
-                prompt = chat ? chatPrompt(req) : completionPrompt(req);
+                prompt = chat ? chatPrompt(req, images) : completionPrompt(req);
+                if (!images.isEmpty() && !(generator.model() instanceof VisionLanguageModel)) {
+                    throw new BadRequest("the model does not read images");
+                }
                 options = options(req, chat);
             } catch (BadRequest | IllegalArgumentException | ClassCastException ex) {
                 error(e, 400, ex.getMessage());
@@ -631,7 +635,7 @@ public final class OpenAiServer implements AutoCloseable {
                 }
                 if (tools) {
                     // whether the turn is a call is known only at its end: one chunk with all of it
-                    Generator.Output o = run(prompt, options, null);
+                    Generator.Output o = run(prompt, images, options, null);
                     Map<String, Object> message = assistant(o.text(), true);
                     message.remove("role");
                     if (message.get("tool_calls") instanceof List<?> calls) {
@@ -654,7 +658,7 @@ public final class OpenAiServer implements AutoCloseable {
                     out.flush();
                     return;
                 }
-                Generator.Output o = run(prompt, options, (row, text) -> {
+                Generator.Output o = run(prompt, images, options, (row, text) -> {
                     try {
                         event(out, chunk(id, created, chat, chat ? Map.of("content", text) : text, null));
                     } catch (IOException ex) {
@@ -672,7 +676,7 @@ public final class OpenAiServer implements AutoCloseable {
                 Generator.Options oi = i == 0 ? options : new Generator.Options(options.maxNewTokens(),
                         options.sampling(), options.seed() + i, options.stopTokens(), options.stopStrings(),
                         options.constraint(), options.logprobs());
-                Generator.Output o = run(prompt, oi, null);
+                Generator.Output o = run(prompt, images, oi, null);
                 completion += o.tokens().length;
                 Map<String, Object> choice = new LinkedHashMap<>();
                 choice.put("index", i);
@@ -704,7 +708,30 @@ public final class OpenAiServer implements AutoCloseable {
         }
     }
 
-    private Generator.Output run(String prompt, Generator.Options options, Generator.Listener listener) {
+    private Generator.Output run(String prompt, List<java.awt.image.BufferedImage> images, Generator.Options options,
+            Generator.Listener listener) {
+        if (!images.isEmpty()) {
+            // the images' features are queued for the prefill that reads them, so the whole
+            // answer runs on the thread that drives the model
+            VisionLanguageModel vlm = (VisionLanguageModel) generator.model();
+            java.util.function.Supplier<Generator.Output> task = () -> {
+                int[] ids = vlm.prompt(generator.encode(vlm.markImages(prompt)), images);
+                return generator.generate(new int[][] {ids}, options, listener).getFirst();
+            };
+            if (batcher == null) {
+                synchronized (generator) {
+                    return task.get();
+                }
+            }
+            try {
+                return batcher.run(task).get();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted", ex);
+            } catch (java.util.concurrent.ExecutionException ex) {
+                throw ex.getCause() instanceof RuntimeException r ? r : new IllegalStateException(ex.getCause());
+            }
+        }
         if (batcher == null) {
             return generator.generate(List.of(prompt), options, listener).getFirst();
         }
@@ -718,7 +745,7 @@ public final class OpenAiServer implements AutoCloseable {
         }
     }
 
-    private String chatPrompt(Map<String, Object> req) {
+    private String chatPrompt(Map<String, Object> req, List<java.awt.image.BufferedImage> images) {
         if (tokenizer.chatTemplate() == null) {
             throw new BadRequest("the model has no chat template; use /v1/completions");
         }
@@ -728,11 +755,71 @@ public final class OpenAiServer implements AutoCloseable {
         }
         List<Map<String, Object>> rendered = new ArrayList<>();
         for (Object m : list) {
-            rendered.add(message(Json.object(m)));
+            rendered.add(message(withImages(Json.object(m), images)));
         }
         List<Object> tools = tools(req);
         return tools == null ? tokenizer.applyChatTemplate(rendered, true)
                 : tokenizer.applyChatTemplate(rendered, true, Map.of("tools", tools));
+    }
+
+    /**
+     * A message whose content is a list of parts: text parts joined into one string when
+     * there is no image (as text-only chat templates expect), image parts ({@code image_url}
+     * with a {@code data:} URL, as OpenAI clients send them) decoded into {@code images} and
+     * left as {@code {"type": "image"}} for the template to mark.
+     */
+    private static Map<String, Object> withImages(Map<String, Object> m, List<java.awt.image.BufferedImage> images) {
+        if (!(m.get("content") instanceof List<?> parts)) {
+            return m;
+        }
+        List<Object> out = new ArrayList<>();
+        StringBuilder text = new StringBuilder();
+        boolean any = false;
+        for (Object o : parts) {
+            Map<String, Object> part = Json.object(o);
+            String type = Json.string(part, "type", "text");
+            switch (type) {
+                case "text" -> {
+                    String t = Json.string(part, "text", "");
+                    text.append(t);
+                    out.add(Map.of("type", "text", "text", t));
+                }
+                case "image_url", "image" -> {
+                    Object url = part.get("image_url") instanceof Map<?, ?> u ? u.get("url") : part.get("image_url");
+                    if (!(url instanceof String s)) {
+                        throw new BadRequest("an image part needs image_url.url");
+                    }
+                    images.add(decodeImage(s));
+                    out.add(Map.of("type", "image"));
+                    any = true;
+                }
+                default -> throw new BadRequest("content parts of type " + type + " are not supported");
+            }
+        }
+        Map<String, Object> copy = new LinkedHashMap<>(m);
+        copy.put("content", any ? out : text.toString());
+        return copy;
+    }
+
+    /** An image from a {@code data:} URL; the server fetches nothing from the network. */
+    private static java.awt.image.BufferedImage decodeImage(String url) {
+        if (!url.startsWith("data:")) {
+            throw new BadRequest("images must be data: URLs (base64)");
+        }
+        int comma = url.indexOf(',');
+        if (comma < 0 || !url.substring(0, comma).endsWith(";base64")) {
+            throw new BadRequest("images must be base64 data: URLs");
+        }
+        try {
+            byte[] bytes = java.util.Base64.getDecoder().decode(url.substring(comma + 1).strip());
+            java.awt.image.BufferedImage image = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes));
+            if (image == null) {
+                throw new BadRequest("the image is not in a format ImageIO reads (PNG, JPEG, BMP, GIF)");
+            }
+            return image;
+        } catch (IllegalArgumentException | IOException ex) {
+            throw new BadRequest("the image cannot be decoded: " + ex.getMessage());
+        }
     }
 
     /** The request's tools, or null without any or with {@code tool_choice} "none". */

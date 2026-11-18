@@ -460,8 +460,33 @@ public final class StableDiffusion implements ImageGenerator {
         return decode(vae, latents);
     }
 
-    /** Decodes latents with {@code vae} into images {@code [batch, 3, h, w]} with values in {@code [0, 1]}. */
+    /**
+     * Device bytes a decode takes per output pixel and byte of the decoder's type, about: the
+     * last levels hold a few 128- and 256-channel maps of the full image at once.
+     */
+    static final long DECODE_BYTES_PER_PIXEL = 2500;
+
+    /** The side of the latent tiles a decode falls back to, and their overlap. */
+    static final int TILE = 64;
+    static final int OVERLAP = 16;
+
+    /**
+     * Decodes latents with {@code vae} into images {@code [batch, 3, h, w]} with values in
+     * {@code [0, 1]}: whole if the device has the memory, else in overlapping tiles blended
+     * together, as image tools decode large images on small cards.
+     */
     static Tensor decode(AutoencoderKL vae, Tensor latents) {
+        Shape s = latents.shape();
+        long pixels = 64L * s.dim(0) * s.dim(2) * s.dim(3);
+        long need = pixels * vae.dtype().bytes() * DECODE_BYTES_PER_PIXEL;
+        java.util.OptionalLong free = MemoryFit.free(latents.device());
+        if ((s.dim(2) > TILE || s.dim(3) > TILE) && free.isPresent() && need > free.getAsLong()) {
+            return decodeTiled(vae, latents, TILE, OVERLAP);
+        }
+        return decodeWhole(vae, latents);
+    }
+
+    static Tensor decodeWhole(AutoencoderKL vae, Tensor latents) {
         Tensor image = Var.noGrad(() -> vae.fromLatents(Var.of(latents)).value());
         Tensor[] out = new Tensor[1];
         List<Tensor> made = Tensor.created(() -> out[0] = image.mul(0.5f).add(0.5f)
@@ -471,6 +496,93 @@ public final class StableDiffusion implements ImageGenerator {
         Tensor.releaseCreated(made, List.of(out[0]));
         image.release();
         return out[0];
+    }
+
+    /**
+     * Decodes {@code tile x tile} pieces of the latents that overlap by {@code overlap}, and
+     * blends the overlaps with linear ramps on the host, so only one piece's activations are
+     * on the device at a time.
+     */
+    static Tensor decodeTiled(AutoencoderKL vae, Tensor latents, int tile, int overlap) {
+        Shape s = latents.shape();
+        int b = s.dim(0);
+        int h = s.dim(2);
+        int w = s.dim(3);
+        int[] rows = starts(h, tile, overlap);
+        int[] cols = starts(w, tile, overlap);
+        float[] sum = null;
+        float[] weight = null;
+        int f = 0;
+        int oh = 0;
+        int ow = 0;
+        for (int r : rows) {
+            for (int c : cols) {
+                int th = Math.min(tile, h);
+                int tw = Math.min(tile, w);
+                Tensor piece = latents.slice(2, r, r + th).slice(3, c, c + tw);
+                Tensor image = decodeWhole(vae, piece);
+                float[] values = image.toArray();
+                int side = image.shape().dim(2);
+                image.release();
+                if (sum == null) {
+                    f = side / th;
+                    oh = h * f;
+                    ow = w * f;
+                    sum = new float[b * 3 * oh * ow];
+                    weight = new float[oh * ow];
+                }
+                float[] wy = ramp(th * f, overlap * f, r > 0, r + th < h);
+                float[] wx = ramp(tw * f, overlap * f, c > 0, c + tw < w);
+                int ph = th * f;
+                int pw = tw * f;
+                for (int y = 0; y < ph; y++) {
+                    for (int x = 0; x < pw; x++) {
+                        float k = wy[y] * wx[x];
+                        int at = (r * f + y) * ow + c * f + x;
+                        weight[at] += k;
+                        for (int i = 0; i < b * 3; i++) {
+                            sum[i * oh * ow + at] += k * values[(i * ph + y) * pw + x];
+                        }
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < sum.length; i++) {
+            sum[i] /= weight[i % (oh * ow)];
+        }
+        return Tensor.of(Shape.of(b, 3, oh, ow), sum, latents.device());
+    }
+
+    /** Tile starts covering {@code size}: every {@code tile - overlap}, the last flush with the end. */
+    static int[] starts(int size, int tile, int overlap) {
+        if (size <= tile) {
+            return new int[] {0};
+        }
+        List<Integer> out = new ArrayList<>();
+        for (int at = 0;; at += tile - overlap) {
+            if (at + tile >= size) {
+                out.add(size - tile);
+                break;
+            }
+            out.add(at);
+        }
+        return out.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** Blend weights along one side: rising over {@code ramp} values where a neighbour overlaps. */
+    private static float[] ramp(int n, int ramp, boolean before, boolean after) {
+        float[] out = new float[n];
+        for (int i = 0; i < n; i++) {
+            float v = 1;
+            if (before) {
+                v = Math.min(v, (i + 0.5f) / ramp);
+            }
+            if (after) {
+                v = Math.min(v, (n - i - 0.5f) / ramp);
+            }
+            out[i] = v;
+        }
+        return out;
     }
 
     /** Encodes the prompts: {uncond, cond} if guided, else {cond}. */

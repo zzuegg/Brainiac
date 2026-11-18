@@ -135,27 +135,39 @@ final class Tuner {
         Storage[] x = {f16(4096, 1), f16(11008, 2)};
         Storage[] out = {backend.allocate(11008, DType.FLOAT16), backend.allocate(4096, DType.FLOAT16)};
         owned.addAll(List.of(out));
-        double best = Double.MAX_VALUE;
-        long[] choice = {tuning.get("packedGroups"), tuning.get("packedPiece")};
-        for (long groups : new long[] {128, 256, 512, 1024}) {
-            for (long piece : new long[] {32, 64, 128}) {
-                tuning.set("packedGroups", groups);
-                tuning.set("packedPiece", piece);
-                double t = time(() -> {
-                    for (int i = 0; i < 4; i++) {
-                        backend.matmulPacked(x[0], w[2 * i], 1, 4096, 11008, out[0]);
-                        backend.matmulPacked(x[1], w[2 * i + 1], 1, 11008, 4096, out[1]);
+        // per kernel (four or sixteen columns per invocation) the best groups and piece; the
+        // wide kernel only if it beats the other by the margin
+        boolean tryWide = !Tuning.fixed("packedWide");
+        double[] best = {Double.MAX_VALUE, Double.MAX_VALUE};
+        long[][] choice = {{tuning.get("packedGroups"), tuning.get("packedPiece")}, null};
+        for (int wide = 0; wide < (tryWide ? 2 : 1); wide++) {
+            if (tryWide) {
+                tuning.set("packedWide", wide);
+            }
+            for (long groups : new long[] {128, 256, 512, 1024}) {
+                for (long piece : new long[] {32, 64, 128}) {
+                    tuning.set("packedGroups", groups);
+                    tuning.set("packedPiece", piece);
+                    double t = time(() -> {
+                        for (int i = 0; i < 4; i++) {
+                            backend.matmulPacked(x[0], w[2 * i], 1, 4096, 11008, out[0]);
+                            backend.matmulPacked(x[1], w[2 * i + 1], 1, 11008, 4096, out[1]);
+                        }
+                    });
+                    note("packed " + (wide == 1 ? "wide " : "") + groups + "/" + piece, "", t, 0);
+                    if (t < best[wide]) {
+                        best[wide] = t;
+                        choice[wide] = new long[] {groups, piece};
                     }
-                });
-                note("packed " + groups + "/" + piece, "", t, 0);
-                if (t < best) {
-                    best = t;
-                    choice = new long[] {groups, piece};
                 }
             }
         }
-        tuning.set("packedGroups", choice[0]);
-        tuning.set("packedPiece", choice[1]);
+        int pick = tryWide && best[1] < best[0] * MARGIN ? 1 : 0;
+        if (tryWide) {
+            tuning.set("packedWide", pick);
+        }
+        tuning.set("packedGroups", choice[pick][0]);
+        tuning.set("packedPiece", choice[pick][1]);
         for (PackedStorage p : w) {
             backend.release(p);
         }
