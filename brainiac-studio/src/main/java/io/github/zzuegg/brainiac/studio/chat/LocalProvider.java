@@ -440,6 +440,31 @@ final class LocalProvider implements ChatProvider {
         return load(path, device.device());
     }
 
+    /**
+     * Returns where one of the chat models is.
+     *
+     * @param name the model as {@link #models} lists it
+     * @return its folder or GGUF file
+     * @throws IOException if there is no such chat model
+     */
+    Path location(String name) throws IOException {
+        Path path = find().get(name);
+        if (path == null) {
+            throw new IOException("no local chat model named " + name);
+        }
+        return path;
+    }
+
+    /**
+     * Returns whether a model looks at pictures.
+     *
+     * @param path its folder or GGUF file
+     * @return whether it does
+     */
+    static boolean looksAtPictures(Path path) {
+        return sees(path);
+    }
+
     private static Loaded load(Path path, Device device) {
         DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
                 : DType.FLOAT32;

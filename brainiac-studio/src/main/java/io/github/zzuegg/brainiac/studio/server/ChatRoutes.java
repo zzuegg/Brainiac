@@ -35,6 +35,9 @@ import java.util.Map;
  *   <li>{@code GET /api/serve} says whether one of this PC's chat models is served to other
  *       programs with the OpenAI API; {@code POST /api/serve} with {@code {"model": "local/qwen",
  *       "port": 8080, "network": false}} starts that, and with {@code {"stop": true}} stops it.
+ *   <li>{@code GET /api/quantize} gives the sizes a smaller copy of a chat model can have and the
+ *       copy being made; {@code POST /api/quantize} with {@code {"model": "local/qwen", "size":
+ *       "Q4_K_M"}} starts one: a quantized GGUF file next to the original.
  *   <li>{@code POST /api/images} with {@code {"model": "auto", "prompt": "...", "aspect": "16:9",
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
@@ -136,6 +139,20 @@ final class ChatRoutes {
                         Boolean.TRUE.equals(body.get("network"))));
             } catch (IOException e) {
                 // no such model, it does not load, or the port is taken: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
+        server.get("/api/quantize", ex -> Exchanges.json(ex, 200, chat.quantizer().state()));
+        server.post("/api/quantize", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 4096);
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                Exchanges.json(ex, 200, chat.quantizer().start(model, Json.string(body, "size", "Q4_K_M")));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model or size, the copy is there already, or one is being made: the caller's to fix
                 throw new Exchanges.BadRequest(e.getMessage());
             }
         });

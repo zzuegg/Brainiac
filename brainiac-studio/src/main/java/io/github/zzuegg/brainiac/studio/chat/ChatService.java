@@ -307,6 +307,7 @@ public final class ChatService {
     }
 
     private LocalServing serving;
+    private LocalQuantizer quantizer;
 
     /**
      * Returns what serves one of this PC's chat models to other programs with the OpenAI API.
@@ -318,6 +319,18 @@ public final class ChatService {
             serving = new LocalServing(local());
         }
         return serving;
+    }
+
+    /**
+     * Returns what makes smaller copies of this PC's chat models.
+     *
+     * @return it
+     */
+    public synchronized LocalQuantizer quantizer() {
+        if (quantizer == null) {
+            quantizer = new LocalQuantizer(local());
+        }
+        return quantizer;
     }
 
     private LocalProvider local() {

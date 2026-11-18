@@ -2091,10 +2091,11 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() && SV.open ? servePanel() : ""}
+      ${isLive() && QZ.open ? quantPanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
         <tbody>${M.models.map(m => `<tr>
@@ -4077,6 +4078,58 @@ reason ::= [a-z ]+`;
   // Serving: one of this PC's chat models answers other programs through the OpenAI API, on a port of its own.
   const SV = { open: false, state: null, model: "", port: 8080, network: false, busy: false, error: null, loaded: false };
   const serveModels = () => chatModels().filter(m => m.provider === "local");
+
+  // Quantizing: a smaller copy of one of this PC's chat models, written next to it as a GGUF file.
+  const QZ = { open: false, state: null, model: "", size: "Q4_K_M", busy: false, error: null, loaded: false, timer: null };
+  const quantBusy = () => ["loading", "writing"].includes(QZ.state?.job?.state);
+  const quantModels = () => serveModels().filter(m => !/looks at pictures/.test(m.detail || ""));
+  function quantPanel() {
+    const s = QZ.state, j = s?.job, models = quantModels(), sizes = s?.sizes || [];
+    const sel = models.some(m => m.id === QZ.model) ? QZ.model : (models[0]?.id || "");
+    const size = sizes.find(x => x.id === QZ.size) || sizes[0];
+    const head = `<div class="place-head"><div><b>Make a smaller copy of a model</b> <span class="muted">Quantizing stores each weight in fewer bits, so the model takes less disk and memory and often runs faster, at a small cost in quality. The copy is a GGUF file next to the original, which stays as it is. llama.cpp, Ollama and LM Studio can run it too.</span></div>
+        <button type="button" class="iconbtn sm" id="quant-close" aria-label="Close">${icon("x")}</button></div>`;
+    const status = !j ? "" : j.state === "done" ? `<div class="flag ok-note">${icon("check")}<span><b>${esc(j.name)}</b> is ready${j.bytes ? ", " + fmtBytes(j.bytes) : ""}. It is in the model list now. <span class="faint">${esc(j.file)}</span></span></div>`
+      : j.state === "failed" ? `<div class="flag bad">${icon("alert")}<span>The ${esc(j.size)} copy of ${esc(j.model)} was not made: ${esc(j.error || "it failed")}</span></div>`
+      : `<div class="flag">${icon("flask")}<span><b>${j.state === "loading" ? "Reading" : "Writing the " + esc(j.size) + " copy of"} ${esc(j.model)}</b> for ${Math.round(j.seconds)} s. This runs on the CPU and can take minutes for a large model. You can leave this screen.</span></div>`;
+    return `<form class="placebox servebox" id="quant-form" autocomplete="off">${head}
+      ${models.length ? `<div class="place-path serve-form">
+        <select class="input" id="quant-model" aria-label="Model to copy">${models.map(m => `<option value="${esc(m.id)}" ${m.id === sel ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+        <select class="input" id="quant-size" aria-label="Size of the copy" style="flex:0 0 280px">${sizes.map(x => `<option value="${esc(x.id)}" ${x.id === size?.id ? "selected" : ""}>${esc(x.id)} · about ${x.bits} bits a weight</option>`).join("")}</select>
+        <button class="btn primary" type="submit" ${QZ.busy || quantBusy() ? "disabled" : ""}>${icon("copy")}${quantBusy() ? "Working…" : "Make the copy"}</button></div>
+      <div class="muted" style="font-size:12.5px">${size ? esc(size.id + ": " + size.note + ".") : ""} While it works, the whole model is held in memory at full size.</div>`
+      : `<div class="muted">No chat model on this PC that can be copied yet. Download one from Hugging Face or add a folder first. Models that look at pictures are left out.</div>`}
+      ${status}
+      ${QZ.error ? `<div class="flag bad">${icon("alert")}<span>${esc(QZ.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadQuant() {
+    const was = quantBusy();
+    try { QZ.state = await api("/api/quantize"); } catch (e) { console.warn("cannot read the quantizing state", e); }
+    clearTimeout(QZ.timer);
+    if (quantBusy()) QZ.timer = setTimeout(loadQuant, 1500);
+    else if (was) await loadModels(true);   // the copy is a model now
+    if (state.view === "library") render();
+  }
+  function bindQuant() {
+    $("#quant-open")?.addEventListener("click", () => { QZ.open = !QZ.open; QZ.error = null; render(); });
+    $("#quant-close")?.addEventListener("click", () => { QZ.open = false; QZ.error = null; render(); });
+    $("#quant-model")?.addEventListener("change", e => { QZ.model = e.target.value; });
+    $("#quant-size")?.addEventListener("change", e => { QZ.size = e.target.value; render(); });
+    $("#quant-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      const model = $("#quant-model")?.value;
+      if (!model || QZ.busy || quantBusy()) return;
+      QZ.busy = true; QZ.error = null; render();
+      try { QZ.state = await postJson("/api/quantize", { model, size: $("#quant-size")?.value || QZ.size }); }
+      catch (err) { QZ.error = err.message || String(err); }
+      QZ.busy = false;
+      clearTimeout(QZ.timer);
+      if (quantBusy()) QZ.timer = setTimeout(loadQuant, 1000);
+      if (state.view === "library") render();
+    });
+    if (!QZ.loaded) { QZ.loaded = true; loadQuant(); }
+  }
   function servePanel() {
     const s = SV.state, models = serveModels();
     const head = `<div class="place-head"><div><b>Serve a model to other programs</b> <span class="muted">Editors, scripts and tools that speak the OpenAI API can use a chat model on this PC. It is loaded for the server alone, so serving the model you also chat with here holds it in memory twice.</span></div>
@@ -4441,6 +4494,7 @@ reason ::= [a-z ]+`;
     $("#new-model")?.addEventListener("click", newModel);
     bindPlace();
     bindServe();
+    bindQuant();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {
