@@ -2528,9 +2528,9 @@
   // What a conversation is told before it starts and how long an answer may get. A new
   // conversation keeps them on its pane until the first message makes it a conversation.
   const paneSettings = i => paneConvo(i) || L.panes[i] || {};
-  const hasSettings = o => !!((o.system || "").trim() || +o.maxTokens > 0 || o.temperature != null);
+  const hasSettings = o => !!((o.system || "").trim() || +o.maxTokens > 0 || o.temperature != null || o.topP != null || o.topK != null || o.repeatPenalty != null);
   function savePanes() {
-    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null, system: p.id ? undefined : p.system || undefined, maxTokens: p.id ? undefined : p.maxTokens || undefined, temperature: p.id ? undefined : p.temperature ?? undefined })));
+    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null, system: p.id ? undefined : p.system || undefined, maxTokens: p.id ? undefined : p.maxTokens || undefined, temperature: p.id ? undefined : p.temperature ?? undefined, topP: p.id ? undefined : p.topP ?? undefined, topK: p.id ? undefined : p.topK ?? undefined, repeatPenalty: p.id ? undefined : p.repeatPenalty ?? undefined })));
     store.set("chatTabs", L.tabs);
     store.set("chatActive", L.active);
   }
@@ -2798,7 +2798,7 @@
         ${fin ? `<span class="chip c-ok">finished</span>` : ""}
         <span class="grow"></span>
         ${fin ? "" : modelPicker(i)}
-        ${fin ? "" : `<button class="iconbtn ${hasSettings(paneSettings(i)) ? "has-set" : ""}" data-chat-settings="${i}" aria-label="Instructions, answer length and temperature" title="Instructions, answer length and temperature${hasSettings(paneSettings(i)) ? " (set)" : ""}" aria-expanded="${L.settingsOpen === (key || "#" + i)}">${icon("gear")}</button>`}
+        ${fin ? "" : `<button class="iconbtn ${hasSettings(paneSettings(i)) ? "has-set" : ""}" data-chat-settings="${i}" aria-label="Instructions, answer length and sampling" title="Instructions, answer length and sampling${hasSettings(paneSettings(i)) ? " (set)" : ""}" aria-expanded="${L.settingsOpen === (key || "#" + i)}">${icon("gear")}</button>`}
         ${c ? (fin ? `<button class="btn sm" data-reopen="${c.id}">${icon("retry")}Reopen</button>`
           : `<button class="btn ghost sm" data-finish="${c.id}" title="Mark finished: it leaves the tabs and waits under Finished">${icon("check")}Finish</button>`) : ""}
         ${L.panes.length > 1 ? `<button class="iconbtn" data-close-pane="${i}" aria-label="Close this pane" title="Close this pane"><span aria-hidden="true" style="font-size:17px;line-height:1">×</span></button>` : ""}
@@ -2810,6 +2810,13 @@
           <input class="input mono" id="cs-max-${i}" data-cs-max="${i}" type="number" min="1" max="65536" step="1" placeholder="8192" value="${esc(paneSettings(i).maxTokens || "")}">
           <label for="cs-temp-${i}" title="0 always picks the likeliest word; higher is more varied. Empty leaves it to the model.">Temperature <span class="faint">0 to 2</span></label>
           <input class="input mono" id="cs-temp-${i}" data-cs-temp="${i}" type="number" min="0" max="2" step="0.1" placeholder="model's own" value="${esc(paneSettings(i).temperature ?? "")}"></div>
+        <div class="field cs-len cs-sampling">
+          <label for="cs-topp-${i}" title="The model picks among the likeliest words that together reach this probability. Lower is more focused. Empty leaves it to the model.">Top-p <span class="faint">0 to 1</span></label>
+          <input class="input mono" id="cs-topp-${i}" data-cs-num="${i}" data-k="topP" data-min="0.01" data-max="1" type="number" min="0.01" max="1" step="0.05" placeholder="model's own" value="${esc(paneSettings(i).topP ?? "")}">
+          <label for="cs-topk-${i}" title="The model picks among this many likeliest words. Empty leaves it to the model. Claude and GPT models have no such setting.">Top-k <span class="faint">words</span></label>
+          <input class="input mono" id="cs-topk-${i}" data-cs-num="${i}" data-k="topK" data-min="1" data-max="1000" data-int="1" type="number" min="1" max="1000" step="1" placeholder="model's own" value="${esc(paneSettings(i).topK ?? "")}">
+          <label for="cs-rep-${i}" title="How strongly words already written are held back: 1 is not at all. For models on this PC and on worker hosts.">Repeat penalty <span class="faint">1 to 2</span></label>
+          <input class="input mono" id="cs-rep-${i}" data-cs-num="${i}" data-k="repeatPenalty" data-min="1" data-max="2" type="number" min="1" max="2" step="0.05" placeholder="model's own" value="${esc(paneSettings(i).repeatPenalty ?? "")}"></div>
       </div>` : ""}
       <div class="transcript" data-transcript="${i}"><div class="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
       <div class="composer-wrap">
@@ -2904,7 +2911,7 @@
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal,
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: usable(c.model || L.model), messages: history, system: (c.system || "").trim() || undefined, maxTokens: +c.maxTokens > 0 ? Math.floor(+c.maxTokens) : undefined, temperature: c.temperature ?? undefined }),
+        body: JSON.stringify({ model: usable(c.model || L.model), messages: history, system: (c.system || "").trim() || undefined, maxTokens: +c.maxTokens > 0 ? Math.floor(+c.maxTokens) : undefined, temperature: c.temperature ?? undefined, topP: c.topP ?? undefined, topK: c.topK ?? undefined, repeatPenalty: c.repeatPenalty ?? undefined }),
       });
       await readEvents(r, onEvent);
     } catch (e) {
@@ -2951,6 +2958,7 @@
       if ((L.panes[i].system || "").trim()) c.system = L.panes[i].system;
       if (+L.panes[i].maxTokens > 0) c.maxTokens = +L.panes[i].maxTokens;
       if (L.panes[i].temperature != null) c.temperature = L.panes[i].temperature;
+      for (const k of ["topP", "topK", "repeatPenalty"]) if (L.panes[i][k] != null) c[k] = L.panes[i][k];
       if (L.settingsOpen === "#" + i) L.settingsOpen = c.id;
       L.convos.unshift(c);
       L.panes[i] = { id: c.id };
@@ -3020,13 +3028,17 @@
     }));
     const setSetting = (i, k, v) => {
       const c = paneConvo(i);
-      const unset = v == null || v === "" || (v === 0 && k !== "temperature");
+      const unset = v == null || v === "" || (v === 0 && (k === "maxTokens" || k === "system"));
       if (c) { if (unset) delete c[k]; else c[k] = v; persist(c); } else { L.panes[i][k] = unset ? undefined : v; savePanes(); }
       $(`[data-chat-settings="${i}"]`)?.classList.toggle("has-set", hasSettings(paneSettings(i)));
     };
     $$("[data-cs-system]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csSystem, "system", t.value)));
     $$("[data-cs-max]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csMax, "maxTokens", Math.max(0, Math.min(65536, Math.floor(+t.value || 0))))));
     $$("[data-cs-temp]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csTemp, "temperature", t.value.trim() === "" || !isFinite(+t.value) ? null : Math.max(0, Math.min(2, +t.value)))));
+    $$("[data-cs-num]").forEach(t => t.addEventListener("input", () => {
+      const raw = t.value.trim(), n = t.dataset.int ? Math.round(+raw) : +raw;
+      setSetting(+t.dataset.csNum, t.dataset.k, raw === "" || !isFinite(n) ? null : Math.max(+t.dataset.min, Math.min(+t.dataset.max, n)));
+    }));
     $$("[data-edit-msg]").forEach(b => b.addEventListener("click", () => {
       const pane = b.closest(".pane"), c = convoById(pane?.dataset.convo);
       if (!c || running(c.id) || c.status === "finished") return;

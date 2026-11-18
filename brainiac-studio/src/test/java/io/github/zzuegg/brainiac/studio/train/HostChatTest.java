@@ -125,6 +125,14 @@ class HostChatTest {
             assertEquals("qwen-0.5b", heard.model());
             assertEquals("be brief", heard.system());
             assertEquals(64, heard.maxTokens());
+            assertTrue(heard.sampler().none());
+            chat.chat("host-" + h.id() + "/qwen-0.5b", "", List.of(new ChatMessage("user", "again")), 64, null, 0.5f,
+                    new io.github.zzuegg.brainiac.studio.chat.Sampler(0.8f, 40, 1.1f), x -> { }, new ChatListener() {
+                        @Override
+                        public void text(String text) {
+                        }
+                    });
+            assertEquals(new io.github.zzuegg.brainiac.studio.chat.Sampler(0.8f, 40, 1.1f), echo.heard.getLast().sampler());
 
             // a picture on a message reaches the host's model as it was sent
             byte[] png = {(byte) 0x89, 'P', 'N', 'G', 1, 2, 3};

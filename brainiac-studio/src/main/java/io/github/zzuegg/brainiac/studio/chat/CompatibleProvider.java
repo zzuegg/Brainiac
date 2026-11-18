@@ -165,6 +165,10 @@ class CompatibleProvider extends RemoteProvider {
         if (request.temperature() != null && takesTemperature(request.model())) {
             body.put("temperature", request.temperature());
         }
+        // top_p is in every OpenAI-format API; top-k and a repeat penalty are not, so they stay out
+        if (request.sampler().topP() != null && takesTemperature(request.model())) {
+            body.put("top_p", request.sampler().topP());
+        }
         if (preset.usageOption()) {
             body.put("stream_options", Map.of("include_usage", true));
         }
