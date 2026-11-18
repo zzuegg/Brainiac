@@ -25,7 +25,7 @@ public final class SpeechModels {
     public enum Kind {
         /** A Whisper model: speech to text. */
         SPEECH_TO_TEXT,
-        /** A text-to-speech model: Kokoro, F5-TTS (with Vocos), or VITS (MMS-TTS and others). */
+        /** A text-to-speech model: Kokoro, F5-TTS (with Vocos), Orpheus (with SNAC), or VITS (MMS-TTS and others). */
         TEXT_TO_SPEECH
     }
 
@@ -40,7 +40,7 @@ public final class SpeechModels {
      * @return the kind, or empty if it is not a speech model Brainiac can load
      */
     public static Optional<Kind> kind(Path dir) {
-        if (Kokoro.isKokoro(dir) || F5Speech.isF5(dir)) {
+        if (Kokoro.isKokoro(dir) || F5Speech.isF5(dir) || OrpheusSpeech.isOrpheus(dir)) {
             return Optional.of(Kind.TEXT_TO_SPEECH);
         }
         return switch (modelType(dir)) {
@@ -84,7 +84,8 @@ public final class SpeechModels {
      * Loads a text-to-speech model.
      *
      * @param dir a Kokoro folder (hexgrad/Kokoro-82M), an F5-TTS folder (SWivid/F5-TTS, with
-     *     charactr/vocos-mel-24khz in or next to it) or a Hugging Face VITS folder, such as facebook/mms-tts-eng
+     *     charactr/vocos-mel-24khz in or next to it), an Orpheus folder
+     *     (canopylabs/orpheus-3b-0.1-ft, with hubertsiuzdak/snac_24khz in or next to it) or a Hugging Face VITS folder, such as facebook/mms-tts-eng
      * @param device where it runs
      * @param dtype the type of its weights
      * @return the model, loaded until closed
@@ -101,6 +102,9 @@ public final class SpeechModels {
         }
         if (F5Speech.isF5(dir)) {
             return F5Speech.load(dir, device, dtype);
+        }
+        if (OrpheusSpeech.isOrpheus(dir)) {
+            return OrpheusSpeech.load(dir, device, dtype);
         }
         return VitsSpeech.load(dir, device, dtype);
     }

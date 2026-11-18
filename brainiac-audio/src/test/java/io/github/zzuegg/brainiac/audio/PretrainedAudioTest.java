@@ -86,6 +86,30 @@ class PretrainedAudioTest {
         checkTranscripts(models, "f5-tts", speech, text);
     }
 
+    @Test
+    void orpheusSpeaksWithTags() throws Exception {
+        Path models = models();
+        Path dir = models.resolve("orpheus-3b");
+        Assumptions.assumeTrue(Files.isDirectory(dir), "no orpheus-3b");
+        String text = "The weather is nice today. Let us go for a walk in the park.";
+        Audio speech;
+        Audio laugh;
+        DType dtype = TestDevice.get().equals(io.github.zzuegg.brainiac.tensor.Device.cpu()) ? DType.FLOAT32
+                : DType.BFLOAT16;
+        try (TextToSpeech t = SpeechModels.textToSpeech(dir, TestDevice.get(), dtype)) {
+            assertTrue(t.tags().contains("<laugh>"));
+            long t0 = System.nanoTime();
+            speech = t.synthesize(text, SpeechOptions.defaults().voice("leo").seed(1), null);
+            System.out.printf("orpheus-3b: %.2f s of speech in %.2f s%n", speech.seconds(),
+                    (System.nanoTime() - t0) / 1e9);
+            laugh = t.synthesize("That is so funny <laugh> I cannot stop.", SpeechOptions.defaults().seed(2), null);
+            assertTrue(laugh.seconds() > 1, "seconds " + laugh.seconds());
+            Wav.write(laugh, Path.of(System.getProperty("java.io.tmpdir"), "brainiac-orpheus-laugh.wav"));
+        }
+        assertTrue(speech.seconds() > 1.5 && speech.seconds() < 15, "seconds " + speech.seconds());
+        checkTranscripts(models, "orpheus-3b", speech, text);
+    }
+
     private static void checkTranscripts(Path models, String model, Audio speech, String text) throws Exception {
         Wav.write(speech, Path.of(System.getProperty("java.io.tmpdir"), "brainiac-" + model + ".wav"));
         try (var dirs = Files.list(models)) {

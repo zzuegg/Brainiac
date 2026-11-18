@@ -128,6 +128,7 @@ final class Registry {
         DiffusionCodecs.register();
         simple("convnext1d", ConvNeXt1d.class, ConvNeXt1d::write, ConvNeXt1d::read);
         simple("dit_block", DitBlock.class, DitBlock::write, DitBlock::read);
+        simple("snake", Snake.class, Snake::write, Snake::read);
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
                 Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.QUICK_GELU,
                 Activation.SOFTPLUS, Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
