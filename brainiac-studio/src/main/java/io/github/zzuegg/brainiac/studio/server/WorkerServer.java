@@ -58,7 +58,12 @@ import java.util.zip.ZipInputStream;
  *   <li>{@code POST /worker/hub/download {repo, option}} downloads a model from Hugging Face into its
  *       {@code downloads} folder, with its own connection; {@code GET /worker/hub/downloads} lists
  *       the downloads and {@code POST /worker/hub/cancel {id}} stops one. Gated models use the
- *       worker's own Hugging Face token ({@code $HF_TOKEN}); the studio never sends its token.
+ *       Hugging Face token the studio lent it, or else the worker's own ({@code $HF_TOKEN}).
+ *   <li>{@code GET /worker/secrets} names the secrets the studio lent it (never their values) and
+ *       gives a one-time public key; {@code POST /worker/secrets {id, public, name, sealed}} lends
+ *       one, sealed as {@link io.github.zzuegg.brainiac.studio.train.SealedSecret} describes, or
+ *       takes it back when the sealed value is empty. A lent secret is held in memory only: it is
+ *       not written to disk or to the log, and is gone when the worker stops.
  * </ul>
  */
 public final class WorkerServer implements AutoCloseable {
@@ -79,6 +84,13 @@ public final class WorkerServer implements AutoCloseable {
     private final Path files;
     private final ChatProvider models;
     private final io.github.zzuegg.brainiac.studio.chat.Hub hub;
+    private final Keys keys;
+    // one-time key pairs waiting for a sealed secret: id -> pair and when it was made
+    private final Map<String, Object[]> pairs = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The secrets a studio may lend a worker: only what the worker has a use for. */
+    public static final List<String> SECRETS = List.of("huggingface");
+    private static final long PAIR_MILLIS = 60_000;
 
     private WorkerServer(HttpServer http, ExecutorService executor, String token, Path folder, ChatProvider models) {
         this.http = http;
@@ -87,7 +99,8 @@ public final class WorkerServer implements AutoCloseable {
         this.training = new TrainingService(folder);
         this.files = folder.resolve("files");
         this.models = models;
-        this.hub = new io.github.zzuegg.brainiac.studio.chat.Hub(new Keys(folder.resolve("keys.properties"), System.getenv()),
+        this.keys = new Keys(folder.resolve("keys.properties"), System.getenv());
+        this.hub = new io.github.zzuegg.brainiac.studio.chat.Hub(keys,
                 folder.resolve("downloads"), io.github.zzuegg.brainiac.studio.chat.Hub.BASE);
     }
 
@@ -272,6 +285,20 @@ public final class WorkerServer implements AutoCloseable {
                     // not there, does not run here, or does not fit on the disk: the caller's to fix
                     answerError(ex, 400, e.getMessage());
                 }
+            } else if (path.equals("/worker/secrets") && method.equals("GET")) {
+                long now = System.currentTimeMillis();
+                pairs.values().removeIf(p -> now - (long) p[1] > PAIR_MILLIS);
+                if (pairs.size() > 64) {
+                    pairs.clear();
+                }
+                java.security.KeyPair pair = io.github.zzuegg.brainiac.studio.train.SealedSecret.pair();
+                byte[] id = new byte[12];
+                new SecureRandom().nextBytes(id);
+                pairs.put(HexFormat.of().formatHex(id), new Object[] {pair, now});
+                Exchanges.json(ex, 200, Map.of("names", heldSecrets(), "id", HexFormat.of().formatHex(id),
+                        "public", io.github.zzuegg.brainiac.studio.train.SealedSecret.publicText(pair)));
+            } else if (path.equals("/worker/secrets") && method.equals("POST")) {
+                lend(ex, Exchanges.body(ex, MAX_BODY));
             } else if (path.equals("/worker/hub/downloads") && method.equals("GET")) {
                 Exchanges.json(ex, 200, Map.of("downloads", hub.downloads()));
             } else if (path.equals("/worker/hub/cancel") && method.equals("POST")) {
@@ -515,8 +542,39 @@ public final class WorkerServer implements AutoCloseable {
         }
     }
 
+    private List<String> heldSecrets() {
+        return SECRETS.stream().filter(keys::lent).toList();
+    }
+
+    // opens a secret the studio sealed for the one-time key it asked for; nothing of it is logged or stored
+    private void lend(HttpExchange ex, Map<String, Object> body) throws IOException {
+        String name = Json.string(body, "name", "");
+        Object[] pair = pairs.remove(Json.string(body, "id", ""));
+        if (!SECRETS.contains(name)) {
+            answerError(ex, 400, "this worker has no use for a secret called " + name);
+            return;
+        }
+        if (pair == null || System.currentTimeMillis() - (long) pair[1] > PAIR_MILLIS) {
+            answerError(ex, 400, "the one-time key is used up or too old: ask for a new one");
+            return;
+        }
+        String value;
+        try {
+            byte[] key = io.github.zzuegg.brainiac.studio.train.SealedSecret.key(
+                    ((java.security.KeyPair) pair[0]).getPrivate(), Json.string(body, "public", ""), token);
+            value = io.github.zzuegg.brainiac.studio.train.SealedSecret.open(key, name, Json.string(body, "sealed", ""));
+        } catch (java.security.GeneralSecurityException e) {
+            // sealed for another worker's token, or changed on the way
+            answerError(ex, 400, "the secret could not be opened");
+            return;
+        }
+        keys.lend(name, value);
+        Exchanges.json(ex, 200, Map.of("names", heldSecrets()));
+    }
+
     private Map<String, Object> info() {
         Map<String, Object> m = new LinkedHashMap<>();
+        m.put("secrets", heldSecrets());
         String name;
         try {
             name = InetAddress.getLocalHost().getHostName();

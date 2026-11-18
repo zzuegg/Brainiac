@@ -50,6 +50,101 @@ public final class Hosts {
     private final Path file;
     private final Map<String, Host> hosts = new LinkedHashMap<>();
     private final Map<String, Status> status = new ConcurrentHashMap<>();
+    private final Map<String, java.util.Set<String>> lends = new java.util.HashMap<>();   // host id -> secrets it is lent
+    private volatile java.util.function.Function<String, Optional<String>> secrets = name -> Optional.empty();
+
+    /**
+     * Says where this studio's secrets come from when a host is lent one.
+     *
+     * @param source gives a secret by name, such as {@code huggingface}
+     */
+    public void secrets(java.util.function.Function<String, Optional<String>> source) {
+        this.secrets = source;
+    }
+
+    /**
+     * Lends a host one of this studio's secrets, or takes it back, and remembers the choice: a
+     * host that lost the secret, because it restarted, is lent it again when it is next needed.
+     *
+     * @param id the host
+     * @param name the secret, such as {@code huggingface}
+     * @param lend whether to lend it or take it back
+     * @throws IOException if there is no such host or secret, or the host cannot be reached
+     */
+    public void lend(String id, String name, boolean lend) throws IOException {
+        Host h = find(id).orElseThrow(() -> new IOException("no such host"));
+        if (lend) {
+            String value = secrets.apply(name).orElseThrow(() -> new IOException(
+                    "this studio has no " + name + " key to lend: add one under Providers first"));
+            client(h).lend(name, value);
+        } else {
+            try {
+                client(h).lend(name, "");
+            } catch (IOException e) {
+                // a host that is off holds nothing any more: the choice is still remembered
+                if (!String.valueOf(e.getMessage()).startsWith("nothing answers")) {
+                    throw e;
+                }
+            }
+        }
+        synchronized (this) {
+            java.util.Set<String> set = lends.computeIfAbsent(id, k -> new java.util.TreeSet<>());
+            if (lend ? set.add(name) : set.remove(name)) {
+                store();
+            }
+        }
+        status.remove(id);
+    }
+
+    /**
+     * Takes back everything a host was lent, as far as it still answers; used before it is forgotten.
+     *
+     * @param id the host
+     */
+    public void takeBack(String id) {
+        Host h = find(id).orElse(null);
+        java.util.Set<String> names;
+        synchronized (this) {
+            names = java.util.Set.copyOf(lends.getOrDefault(id, java.util.Set.of()));
+        }
+        for (String name : h == null ? java.util.Set.<String>of() : names) {
+            try {
+                client(h).lend(name, "");
+            } catch (IOException | RuntimeException e) {
+                // a host that is off or gone holds nothing any more
+                System.getLogger(Hosts.class.getName()).log(System.Logger.Level.DEBUG, h.name() + " did not answer");
+            }
+        }
+    }
+
+    /**
+     * Lends a host again whatever it is meant to hold and lost, before work that may need it.
+     * A secret that cannot be sent is left out: the work then fails with its own reason.
+     *
+     * @param h the host
+     */
+    public void relend(Host h) {
+        java.util.Set<String> want;
+        synchronized (this) {
+            want = java.util.Set.copyOf(lends.getOrDefault(h.id(), java.util.Set.of()));
+        }
+        if (want.isEmpty()) {
+            return;
+        }
+        try {
+            WorkerClient c = client(h);
+            List<String> held = Json.array(c.info().getOrDefault("secrets", List.of())).stream().map(String::valueOf).toList();
+            for (String name : want) {
+                Optional<String> value = held.contains(name) ? Optional.empty() : secrets.apply(name);
+                if (value.isPresent()) {
+                    c.lend(name, value.get());
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            System.getLogger(Hosts.class.getName()).log(System.Logger.Level.WARNING,
+                    "cannot lend " + h.name() + " its secrets again: " + e.getMessage());
+        }
+    }
 
     private record Status(long at, Map<String, Object> info, String error) {
     }
@@ -83,6 +178,11 @@ public final class Hosts {
         for (String id : ids) {
             hosts.put(id, new Host(id, p.getProperty("host." + id + ".name", id), p.getProperty("host." + id + ".url"),
                     p.getProperty("host." + id + ".token", "")));
+            java.util.Set<String> set = new java.util.TreeSet<>(List.of(p.getProperty("host." + id + ".lend", "").split(",")));
+            set.remove("");
+            if (!set.isEmpty()) {
+                lends.put(id, set);
+            }
         }
     }
 
@@ -92,6 +192,9 @@ public final class Hosts {
             p.setProperty("host." + h.id() + ".name", h.name());
             p.setProperty("host." + h.id() + ".url", h.url());
             p.setProperty("host." + h.id() + ".token", h.token());
+            if (!lends.getOrDefault(h.id(), java.util.Set.of()).isEmpty()) {
+                p.setProperty("host." + h.id() + ".lend", String.join(",", lends.get(h.id())));   // names, never values
+            }
         }
         Files.createDirectories(file.getParent());
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
@@ -169,6 +272,7 @@ public final class Hosts {
         if (hosts.remove(id) == null) {
             return false;
         }
+        lends.remove(id);
         status.remove(id);
         store();
         return true;
@@ -217,6 +321,13 @@ public final class Hosts {
             m.put("url", h.url());
             m.put("token", h.token().length() > 4 ? "…" + h.token().substring(h.token().length() - 4) : "…");
             m.put("online", s != null && s.info() != null);
+            synchronized (this) {
+                m.put("lend", List.copyOf(lends.getOrDefault(h.id(), java.util.Set.of())));
+            }
+            if (s != null && s.info() != null) {
+                m.put("holds", s.info().getOrDefault("secrets", List.of()));
+                m.put("lendable", s.info().containsKey("secrets"));
+            }
             if (s != null && s.info() != null) {
                 m.putAll(Map.of("devices", s.info().getOrDefault("devices", List.of()),
                         "active", s.info().getOrDefault("active", 0), "queued", s.info().getOrDefault("queued", 0)));

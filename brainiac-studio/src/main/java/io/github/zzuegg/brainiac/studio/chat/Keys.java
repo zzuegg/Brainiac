@@ -66,6 +66,35 @@ public final class Keys {
     private final Map<String, String> env;
     private final Map<String, List<TokenFile>> files;
     private final Properties saved = new Properties();
+    private final Map<String, String> lent = new java.util.HashMap<>();   // in memory only
+
+    /** The name of a key another studio lent this one: it is tried first and never written anywhere. */
+    public static final String LENT = "lent by the studio";
+
+    /**
+     * Holds a key in memory for as long as this program runs, ahead of every other key of the
+     * provider. It is never written to a file.
+     *
+     * @param provider the provider id
+     * @param key the key, or null or blank to forget the one held
+     */
+    public synchronized void lend(String provider, String key) {
+        if (key == null || key.isBlank()) {
+            lent.remove(provider);
+        } else {
+            lent.put(provider, key.strip());
+        }
+    }
+
+    /**
+     * Returns whether a key is held in memory for a provider.
+     *
+     * @param provider the provider id
+     * @return whether one was lent
+     */
+    public synchronized boolean lent(String provider) {
+        return lent.containsKey(provider);
+    }
 
     /**
      * A file a provider's token may be read from.
@@ -116,6 +145,9 @@ public final class Keys {
      */
     public synchronized List<Entry> list(String provider) {
         List<Entry> out = new ArrayList<>();
+        if (lent.containsKey(provider)) {
+            out.add(new Entry(LENT, "memory", hint(lent.get(provider))));
+        }
         for (String label : order(provider)) {
             out.add(new Entry(label, "saved", hint(saved.getProperty(name(provider, label)))));
         }
@@ -226,6 +258,9 @@ public final class Keys {
      * @return the key, if there is one by that name
      */
     public synchronized Optional<String> get(String provider, String label) {
+        if (label.equals(LENT) && lent.containsKey(provider)) {
+            return Optional.of(lent.get(provider));
+        }
         String k = saved.getProperty(name(provider, label));
         if (k != null && order(provider).contains(label)) {
             return Optional.of(k);

@@ -89,6 +89,7 @@ public final class StudioServer implements AutoCloseable {
         new ChatRoutes(chat).register(server);
         new BuilderRoutes(chat.folder()).register(server);
         new TrainRoutes(server.training).register(server);
+        server.training.hosts().secrets(chat::secret);
         // the models the user's other machines serve show up as providers
         chat.hosts(() -> server.training.hosts().list().stream().map(h -> (io.github.zzuegg.brainiac.studio.chat.ChatProvider)
                 new io.github.zzuegg.brainiac.studio.train.HostProvider(h, server.training.hosts().client(h))).toList());

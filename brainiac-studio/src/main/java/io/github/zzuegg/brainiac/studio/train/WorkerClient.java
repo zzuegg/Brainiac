@@ -127,6 +127,36 @@ public final class WorkerClient {
     }
 
     /**
+     * Lends the worker a secret, sealed so that only this worker can open it, or takes it back.
+     * The worker holds it in memory only.
+     *
+     * @param name what it is, such as {@code huggingface}
+     * @param value the secret, or empty to take it back
+     * @return the names of the secrets the worker now holds
+     * @throws IOException if it cannot be reached, is too old to be lent secrets, or refuses
+     */
+    public List<String> lend(String name, String value) throws IOException {
+        Map<String, Object> offer = json(request("worker/secrets").timeout(Duration.ofSeconds(10)).GET().build());
+        if (!(offer.get("public") instanceof String theirs)) {
+            throw new IOException("this worker is too old to be lent secrets: update it");
+        }
+        java.security.KeyPair pair = SealedSecret.pair();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("id", Json.string(offer, "id", ""));
+        body.put("public", SealedSecret.publicText(pair));
+        body.put("name", name);
+        try {
+            body.put("sealed", SealedSecret.seal(SealedSecret.key(pair.getPrivate(), theirs, token), name, value));
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IOException("the worker's one-time key is not a key");
+        }
+        Map<String, Object> m = json(request("worker/secrets").timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body))).build());
+        return Json.array(m.getOrDefault("names", List.of())).stream().map(String::valueOf).toList();
+    }
+
+    /**
      * Tells the worker to download a model from Hugging Face into its own downloads folder.
      *
      * @param repo the repository, such as {@code Qwen/Qwen2.5-0.5B-Instruct-GGUF}

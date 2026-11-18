@@ -458,6 +458,17 @@ public final class ChatService {
 
 
     /**
+     * Returns the key this studio would use for a provider, to lend it to a worker host.
+     *
+     * @param provider the provider id, such as {@code huggingface}
+     * @return the first of its keys, if it has one
+     */
+    public java.util.Optional<String> secret(String provider) {
+        List<Keys.Entry> list = keys.list(provider);
+        return list.isEmpty() ? java.util.Optional.empty() : keys.get(provider, list.getFirst().label());
+    }
+
+    /**
      * Returns the Hugging Face Hub client that finds and downloads models into this PC's
      * {@code downloads} folder.
      *
