@@ -50,9 +50,11 @@ tasks.test {
     if (providers.gradleProperty("brainiac.vulkan.validate").orNull == "true") {
         jvmArgs("-Dbrainiac.vulkan.validate=true")
     }
-    // -Pbench prints matrix product speeds (MatmulBenchmarkTest)
+    // -Pbench prints matrix product speeds (MatmulBenchmarkTest, MatvecBenchmarkTest); the
+    // decode benchmark builds a 151936-column matrix on the heap, past the default 512 MB
     if (providers.gradleProperty("bench").isPresent) {
         jvmArgs("-Dbrainiac.bench=true")
+        maxHeapSize = "4g"
         testLogging.showStandardStreams = true
     }
     // -Pbrainiac.vulkan.tune=false|auto|force: the kernel tuning (VulkanBackend); force measures again

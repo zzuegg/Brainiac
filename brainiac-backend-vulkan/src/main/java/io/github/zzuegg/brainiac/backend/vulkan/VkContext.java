@@ -208,8 +208,8 @@ final class VkContext {
     private final ArrayDeque<Batch> idleBatches = new ArrayDeque<>();
     private final ArrayDeque<Batch> inFlight = new ArrayDeque<>();
     private Batch current;
-    private final Set<Long> written = new HashSet<>();
-    private final Set<Long> read = new HashSet<>();
+    private final AddressSet written = new AddressSet();
+    private final AddressSet read = new AddressSet();
     private final ByteBuffer push = ByteBuffer.allocateDirect(PUSH_BYTES).order(ByteOrder.nativeOrder());
     private final ByteBuffer inline = MemoryUtil.memAlloc(65536);
 
