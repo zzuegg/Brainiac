@@ -8,6 +8,7 @@ import io.github.zzuegg.brainiac.experimental.events.IrregularSequenceModels;
 import io.github.zzuegg.brainiac.experimental.events.IrregularSequenceModels.SequenceModel;
 import io.github.zzuegg.brainiac.experimental.events.TimeSeriesImputer;
 import io.github.zzuegg.brainiac.experimental.ml.GaussianProcess;
+import io.github.zzuegg.brainiac.experimental.ml.LinearDynamicalSystemEm;
 import io.github.zzuegg.brainiac.experimental.ml.StationaryKernel;
 import io.github.zzuegg.brainiac.experimental.nn.ControlPath;
 import io.github.zzuegg.brainiac.experimental.nn.NeuralCde;
@@ -737,7 +738,43 @@ public final class IrregularSeriesShootout {
                 budget.trainSteps(), budget.batch(), 1e-2f, seed);
         out.put("latent ODE", new double[] {mae(IrregularSequenceModels.predict(latent, test, testObs, times), test,
             target), Double.NaN, System.currentTimeMillis() - t0});
+        // wave 11 (11.3.14): an EM-fitted linear dynamical system per series
+        t0 = System.currentTimeMillis();
+        float[][][][] lds = ldsEm(test, testObs, 30, seed);
+        out.put("LDS EM", new double[] {mae(lds[0], test, target), gaussianCrps(lds[0], lds[1], test, target),
+            System.currentTimeMillis() - t0});
         return out;
+    }
+
+    /**
+     * Smoothed reconstructions from a {@link LinearDynamicalSystemEm} fitted to each series
+     * (state dimension two per channel).
+     *
+     * @return {@code {means, variances}} per value
+     */
+    static float[][][][] ldsEm(float[][][] v, boolean[][][] m, int iterations, long seed) {
+        int n = v.length;
+        int steps = v[0].length;
+        int c = v[0][0].length;
+        float[][][] mu = new float[n][steps][c];
+        float[][][] var = new float[n][steps][c];
+        for (int i = 0; i < n; i++) {
+            double[][] ys = new double[steps][c];
+            for (int t = 0; t < steps; t++) {
+                for (int ch = 0; ch < c; ch++) {
+                    ys[t][ch] = m[i][t][ch] ? v[i][t][ch] : Double.NaN;
+                }
+            }
+            double[][][] rec = LinearDynamicalSystemEm.fit(new double[][][] {ys}, 2 * c, iterations, seed + i)
+                    .reconstruct(ys);
+            for (int t = 0; t < steps; t++) {
+                for (int ch = 0; ch < c; ch++) {
+                    mu[i][t][ch] = (float) rec[0][t][ch];
+                    var[i][t][ch] = (float) rec[1][t][ch];
+                }
+            }
+        }
+        return new float[][][][] {mu, var};
     }
 
     private static float[][][] medianOf(float[][][][] s) {

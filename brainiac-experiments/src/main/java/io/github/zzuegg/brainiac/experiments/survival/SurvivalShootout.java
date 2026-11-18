@@ -2,11 +2,13 @@ package io.github.zzuegg.brainiac.experiments.survival;
 
 import io.github.zzuegg.brainiac.experimental.causal.Regressor;
 import io.github.zzuegg.brainiac.experimental.data.SurvivalData;
+import io.github.zzuegg.brainiac.experimental.survival.AftModels;
 import io.github.zzuegg.brainiac.experimental.survival.DeepHit;
 import io.github.zzuegg.brainiac.experimental.survival.DiscreteHazardNet;
 import io.github.zzuegg.brainiac.experimental.survival.SurvivalForest;
 import io.github.zzuegg.brainiac.experimental.survival.SurvivalMetrics;
 import io.github.zzuegg.brainiac.experimental.survival.SurvivalModels;
+import io.github.zzuegg.brainiac.experimental.survival.Weibull;
 import io.github.zzuegg.brainiac.train.GradientBoostedTrees;
 
 import java.util.LinkedHashMap;
@@ -24,6 +26,8 @@ import java.util.Map;
  *   <li>{@link #crossing}: discrete-time hazards, DeepHit and a random survival forest against Cox,
  *       DeepSurv and Kaplan-Meier per subgroup when the hazards cross, by time-dependent C-index
  *       and integrated Brier score;</li>
+ *   <li>{@link #aft} (wave 11): accelerated failure time models and Deep Survival Machines
+ *       against the references above, with median-time calibration;</li>
  *   <li>{@link #competing}: DeepHit with two cause heads against cause-specific Cox models, by the
  *       mean absolute cumulative-incidence error per cause and the per-cause time-dependent
  *       C-index.</li>
@@ -339,6 +343,128 @@ public final class SurvivalShootout {
                 }
             }
         }
+        return out;
+    }
+
+    // ------------------------------------------------------------ wave 11 (11.3.17): AFT models
+
+    private static double[] medians(double[][] curves, double[] grid) {
+        double[] out = new double[curves.length];
+        for (int i = 0; i < curves.length; i++) {
+            out[i] = grid[grid.length - 1];
+            for (int g = 0; g < grid.length; g++) {
+                if (curves[i][g] <= 0.5) {
+                    if (g == 0) {
+                        out[i] = grid[0];
+                    } else {
+                        double a = curves[i][g - 1];
+                        double b = curves[i][g];
+                        double w = a == b ? 0 : (a - 0.5) / (a - b);
+                        out[i] = grid[g - 1] + w * (grid[g] - grid[g - 1]);
+                    }
+                    break;
+                }
+            }
+        }
+        return out;
+    }
+
+    private static double[] aftScore(double[][] curves, double[] median, Split s, boolean timeDependent,
+            double[] risk) {
+        SurvivalData.Survival te = s.test();
+        double c = timeDependent
+                ? SurvivalMetrics.timeDependentC(curves, s.grid(), te.time(), te.event(), 0, false)
+                : SurvivalMetrics.harrellC(risk, te.time(), te.event(), 0);
+        double err = Double.NaN;
+        if (median != null) {
+            err = 0;
+            for (int i = 0; i < median.length; i++) {
+                double truth = new Weibull(te.scale()[i][0], te.shape()[i][0]).median();
+                err += Math.abs(Math.log(median[i]) - Math.log(truth)) / median.length;
+            }
+        }
+        return new double[] {c, brier(curves, s), err};
+    }
+
+    private static double[] negLog(double[] median) {
+        double[] r = new double[median.length];
+        for (int i = 0; i < r.length; i++) {
+            r[i] = -Math.log(median[i]);
+        }
+        return r;
+    }
+
+    /**
+     * Accelerated failure time models (wave 11, item 11.3.17) against the wave 9 references on
+     * the same split: the Weibull, log-normal and log-logistic AFT models and Deep Survival
+     * Machines ({@link AftModels}) against Kaplan-Meier, Cox and DeepSurv, plus DeepHit and the
+     * random survival forest on crossing hazards. Scores: Harrell's C-index (the time-dependent
+     * one on crossing hazards), the IPCW integrated Brier score and the median-time calibration
+     * error {@code mean |log median_hat - log median_true|} against the true Weibull medians
+     * (medians of curve-based models read off a 60-point grid; NaN for the forest, whose grid is
+     * fixed at fit time). The existing methods and their rows are unchanged.
+     *
+     * @param crossing whether to use the crossing-hazards data (else proportional Weibull data)
+     * @param risk the risk of the proportional data (ignored on crossing hazards)
+     * @param censoring the censoring share
+     * @param n training units (500 more are held out)
+     * @param steps Adam steps for the neural models
+     * @param trees forest trees (crossing hazards only)
+     * @param seed the seed
+     * @return model name to {@code {C-index, IBS, median log error}}
+     */
+    public static Map<String, double[]> aft(boolean crossing, SurvivalData.Risk risk, double censoring, int n,
+            int steps, int trees, long seed) {
+        Split s = split(crossing ? SurvivalData.crossingHazards(n + 500, 6, censoring, seed)
+                : SurvivalData.weibull(n + 500, 8, risk, censoring, seed), n);
+        SurvivalData.Survival tr = s.train();
+        SurvivalData.Survival te = s.test();
+        double[] fine = SurvivalMetrics.grid(tr.time(), 0.01, 0.99, 60);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        SurvivalModels.KaplanMeier km = new SurvivalModels.KaplanMeier(tr.time(), tr.event());
+        double[][] kmCurves = new double[te.size()][s.grid().length];
+        double[][] kmFine = new double[te.size()][fine.length];
+        for (int i = 0; i < te.size(); i++) {
+            for (int g = 0; g < s.grid().length; g++) {
+                kmCurves[i][g] = km.survival(s.grid()[g]);
+            }
+            for (int g = 0; g < fine.length; g++) {
+                kmFine[i][g] = km.survival(fine[g]);
+            }
+        }
+        out.put("Kaplan-Meier", aftScore(kmCurves, medians(kmFine, fine), s, crossing, new double[te.size()]));
+        SurvivalModels.Cox cox = new SurvivalModels.Cox(tr.x(), tr.time(), tr.event(), 1e-3);
+        double[] coxRisk = new double[te.size()];
+        for (int i = 0; i < coxRisk.length; i++) {
+            coxRisk[i] = cox.logRisk(te.x()[i]);
+        }
+        out.put("Cox", aftScore(coxCurves(cox, te.x(), s.grid()), medians(coxCurves(cox, te.x(), fine), fine), s,
+                crossing, coxRisk));
+        SurvivalModels.DeepSurv deep = new SurvivalModels.DeepSurv(tr.x()[0].length, 32, seed)
+                .fit(tr.x(), tr.time(), tr.event(), steps, 256, 3e-3f, 1e-3f, seed);
+        out.put("DeepSurv", aftScore(deep.survival(te.x(), s.grid()), medians(deep.survival(te.x(), fine), fine), s,
+                crossing, deep.logRisk(te.x())));
+        if (crossing) {
+            double[] cuts = DiscreteHazardNet.quantileCuts(tr.time(), 12);
+            DeepHit hit = new DeepHit(tr.x()[0].length, 32, 1, cuts, seed)
+                    .fit(tr.x(), tr.time(), tr.event(), steps, 128, 3e-3f, 0.2f, seed);
+            out.put("DeepHit", aftScore(hit.survival(te.x(), s.grid()), medians(hit.survival(te.x(), fine), fine), s,
+                    true, null));
+            SurvivalForest rsf = SurvivalForest.fit(tr.x(), tr.time(), tr.event(), s.grid(), trees, 10, 10, seed);
+            out.put("random survival forest", aftScore(rsf.survival(te.x()), null, s, true, null));
+        }
+        for (AftModels.Kind k : new AftModels.Kind[] {AftModels.Kind.WEIBULL, AftModels.Kind.LOG_NORMAL,
+            AftModels.Kind.LOG_LOGISTIC}) {
+            AftModels m = AftModels.fit(k, tr.x(), tr.time(), tr.event(), 1e-3);
+            double[] med = m.median(te.x());
+            out.put(k.name().toLowerCase().replace('_', '-') + " AFT", aftScore(m.survival(te.x(), s.grid()), med, s,
+                    crossing, negLog(med)));
+        }
+        AftModels dsm = AftModels.deepSurvivalMachines(tr.x(), tr.time(), tr.event(), 4, 32, steps, 128, 5e-3f, 1,
+                seed);
+        double[] med = dsm.median(te.x());
+        out.put("Deep Survival Machines (4 Weibulls)", aftScore(dsm.survival(te.x(), s.grid()), med, s, crossing,
+                negLog(med)));
         return out;
     }
 }

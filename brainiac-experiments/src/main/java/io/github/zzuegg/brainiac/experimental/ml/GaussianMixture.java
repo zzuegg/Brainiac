@@ -156,6 +156,57 @@ public final class GaussianMixture {
     }
 
     /**
+     * The posterior component probabilities (responsibilities) of a point.
+     *
+     * @param x a point
+     * @return {@code p(component j | x)} for every component, summing to 1
+     */
+    public double[] posterior(double[] x) {
+        double[] lp = componentLogDensities(x);
+        double max = Double.NEGATIVE_INFINITY;
+        for (double v : lp) {
+            max = Math.max(max, v);
+        }
+        double s = 0;
+        for (int j = 0; j < lp.length; j++) {
+            lp[j] = Math.exp(lp[j] - max);
+            s += lp[j];
+        }
+        for (int j = 0; j < lp.length; j++) {
+            lp[j] /= s;
+        }
+        return lp;
+    }
+
+    /**
+     * The posterior component probabilities of many points.
+     *
+     * @param x points {@code [n][d]}
+     * @return {@code [n][components]}
+     */
+    public double[][] posterior(double[][] x) {
+        double[][] out = new double[x.length][];
+        for (int i = 0; i < x.length; i++) {
+            out[i] = posterior(x[i]);
+        }
+        return out;
+    }
+
+    /**
+     * The total log-likelihood of a data set.
+     *
+     * @param x points
+     * @return {@code sum_i log p(x_i)}
+     */
+    public double logLikelihood(double[][] x) {
+        double s = 0;
+        for (double[] p : x) {
+            s += logDensity(p);
+        }
+        return s;
+    }
+
+    /**
      * The mean log-likelihood per point.
      *
      * @param x points
