@@ -509,6 +509,28 @@ final class ChatRoutes {
         Exchanges.json(ex, 200, chat.describe(false));
     }
 
+    /**
+     * Reads the pictures on a message: {@code images: [{type, data}]}, the data in base64.
+     *
+     * @param message the message as it was sent
+     * @return its pictures, none if it has none
+     * @throws Exchanges.BadRequest if one is not base64
+     */
+    static List<io.github.zzuegg.brainiac.studio.chat.Media> images(Map<String, Object> message) {
+        List<io.github.zzuegg.brainiac.studio.chat.Media> images = new ArrayList<>();
+        for (Object i : Json.array(message.getOrDefault("images", List.of()))) {
+            Map<String, Object> image = Json.object(i);
+            try {
+                images.add(new io.github.zzuegg.brainiac.studio.chat.Media(
+                        java.util.Base64.getDecoder().decode(Json.string(image, "data", "")),
+                        Json.string(image, "type", "")));
+            } catch (IllegalArgumentException e) {
+                throw new Exchanges.BadRequest("a picture is not valid base64");
+            }
+        }
+        return images;
+    }
+
     private Map<String, Object> localDevice() {
         io.github.zzuegg.brainiac.studio.chat.LocalDevice d = chat.localDevice();
         Map<String, Object> out = new java.util.LinkedHashMap<>();
@@ -546,18 +568,7 @@ final class ChatRoutes {
         List<ChatMessage> messages = new ArrayList<>();
         for (Object o : Json.array(body.getOrDefault("messages", List.of()))) {
             Map<String, Object> m = Json.object(o);
-            List<io.github.zzuegg.brainiac.studio.chat.Media> images = new ArrayList<>();
-            for (Object i : Json.array(m.getOrDefault("images", List.of()))) {
-                Map<String, Object> image = Json.object(i);
-                try {
-                    images.add(new io.github.zzuegg.brainiac.studio.chat.Media(
-                            java.util.Base64.getDecoder().decode(Json.string(image, "data", "")),
-                            Json.string(image, "type", "")));
-                } catch (IllegalArgumentException e) {
-                    throw new Exchanges.BadRequest("a picture is not valid base64");
-                }
-            }
-            messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", ""), images));
+            messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", ""), images(m)));
         }
         Float temperature = temperature(body);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role()) || maxTokens < 1) {
