@@ -184,6 +184,9 @@ public final class AgentRuns {
                 m.put("by", by);
             }
             m.put("role", role);
+            if (effective != null) {
+                m.put("budget", effective.budget());
+            }
             m.put("mode", mode);
             m.put("project", project);
             m.put("maxSteps", maxSteps);
