@@ -43,10 +43,10 @@ class SparseRegressionTest {
 
     @Test
     void strongRulesCutUpdatesAndLarsAgrees() {
-        SparseDesigns.Regression d = SparseDesigns.linear(200, 600, 10, 0.3, 3, SparseDesigns.Noise.GAUSSIAN,
+        SparseDesigns.Regression d = SparseDesigns.linear(200, 1000, 10, 0.3, 3, SparseDesigns.Noise.GAUSSIAN,
                 SparseDesigns.Coefficients.UNIFORM, 3);
         double[] c = SparseRegression.pathCost(d, 30);
-        System.out.printf("lasso path p=600: updates screened %.0f vs plain %.0f (%.1fx), max diff %.2e, "
+        System.out.printf("lasso path p=1000: updates screened %.0f vs plain %.0f (%.1fx), max diff %.2e, "
                 + "LARS vs CD %.2e, ms %.0f vs %.0f%n", c[0], c[1], c[1] / c[0], c[2], c[3], c[4], c[5]);
         assertTrue(c[1] > 3 * c[0]);
         assertTrue(c[2] < 1e-5);
