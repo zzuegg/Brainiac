@@ -1694,6 +1694,200 @@ public final class Var {
     }
 
     /**
+     * Keeps the entries on and below a diagonal of the last two axes, zeroing the rest, like
+     * {@code torch.tril}.
+     *
+     * @param k the diagonal: 0 the main one, positive above it, negative below
+     * @return the lower triangle
+     */
+    public Var tril(int k) {
+        return mask(triangle(k, true));
+    }
+
+    /**
+     * Keeps the entries on and above a diagonal of the last two axes, zeroing the rest, like
+     * {@code torch.triu}.
+     *
+     * @param k the diagonal: 0 the main one, positive above it, negative below
+     * @return the upper triangle
+     */
+    public Var triu(int k) {
+        return mask(triangle(k, false));
+    }
+
+    private Tensor triangle(int k, boolean lower) {
+        Shape s = shape();
+        if (s.rank() < 2) {
+            throw new IllegalArgumentException("a triangle needs at least two axes, not " + s);
+        }
+        int rows = s.dim(s.rank() - 2);
+        int cols = s.dim(s.rank() - 1);
+        float[] keep = new float[rows * cols];
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                keep[i * cols + j] = (lower ? j - i <= k : j - i >= k) ? 1f : 0f;
+            }
+        }
+        return Tensor.of(Shape.of(rows, cols), keep, device()).to(dtype());
+    }
+
+    /**
+     * The main diagonal of the last two axes: {@code [..., n, m]} gives {@code [..., min(n, m)]}.
+     *
+     * @return the diagonal
+     */
+    public Var diagonal() {
+        Shape s = shape();
+        if (s.rank() < 2) {
+            throw new IllegalArgumentException("a diagonal needs at least two axes, not " + s);
+        }
+        int r = s.rank();
+        int rows = s.dim(r - 2);
+        int cols = s.dim(r - 1);
+        int d = Math.min(rows, cols);
+        float[] at = new float[d];   // whole numbers as floats, which every device holds
+        for (int i = 0; i < d; i++) {
+            at[i] = i * (cols + 1);
+        }
+        int[] flat = s.toArray();
+        flat = java.util.Arrays.copyOf(flat, r - 1);
+        flat[r - 2] = rows * cols;
+        return reshape(flat).gather(r - 2, Tensor.of(Shape.of(d), at, device()));
+    }
+
+    /**
+     * The sum of the main diagonal of the last two axes.
+     *
+     * @return {@code [...]}, the traces
+     */
+    public Var trace() {
+        return diagonal().sum(-1, false);
+    }
+
+    /**
+     * The cross product of 3-vectors along an axis, with broadcasting.
+     *
+     * @param other the other vectors
+     * @param axis the axis of length 3; negative values count from the end
+     * @return {@code this x other}
+     */
+    public Var cross(Var other, int axis) {
+        int a = axis < 0 ? shape().rank() + axis : axis;
+        int b = axis < 0 ? other.shape().rank() + axis : axis;
+        if (shape().dim(a) != 3 || other.shape().dim(b) != 3) {
+            throw new IllegalArgumentException("a cross product takes 3-vectors, not " + shape() + " and " + other.shape());
+        }
+        Var x0 = slice(a, 0, 1);
+        Var x1 = slice(a, 1, 2);
+        Var x2 = slice(a, 2, 3);
+        Var y0 = other.slice(b, 0, 1);
+        Var y1 = other.slice(b, 1, 2);
+        Var y2 = other.slice(b, 2, 3);
+        return concat(a, x1.mul(y2).sub(x2.mul(y1)), x2.mul(y0).sub(x0.mul(y2)), x0.mul(y1).sub(x1.mul(y0)));
+    }
+
+    /**
+     * The Kronecker product of two matrices: {@code [m, n]} and {@code [p, q]} give {@code [m p, n q]}.
+     *
+     * @param other the right matrix
+     * @return {@code this ⊗ other}
+     */
+    public Var kron(Var other) {
+        Shape s = shape();
+        Shape o = other.shape();
+        if (s.rank() != 2 || o.rank() != 2) {
+            throw new IllegalArgumentException("kron takes two matrices, not " + s + " and " + o);
+        }
+        int m = s.dim(0);
+        int n = s.dim(1);
+        int p = o.dim(0);
+        int q = o.dim(1);
+        Shape full = Shape.of(m, p, n, q);
+        return reshape(m, 1, n, 1).expand(full).mul(other.reshape(1, p, 1, q).expand(full)).reshape(m * p, n * q);
+    }
+
+    /**
+     * {@code log(exp(this) + exp(other))}, computed without overflow, with broadcasting.
+     *
+     * @param other the other value
+     * @return the log of the summed exponentials
+     */
+    public Var logaddexp(Var other) {
+        Var m = maximum(other).detach();
+        return m.add(sub(m).exp().add(other.sub(m).exp()).log());
+    }
+
+    /**
+     * {@code sqrt(this² + other²)} with broadcasting. The gradient is undefined where both are 0.
+     *
+     * @param other the other side
+     * @return the hypotenuse
+     */
+    public Var hypot(Var other) {
+        return square().add(other.square()).sqrt();
+    }
+
+    /**
+     * {@code this * log(y)}, which is 0 where this is 0 even when {@code y} is 0, as in
+     * {@code scipy.special.xlogy}; the gradient there is 0 too.
+     *
+     * @param y the argument of the logarithm, broadcast to this shape
+     * @return {@code x log y}
+     */
+    public Var xlogy(Var y) {
+        Tensor zero = value.equalTo(Tensor.full(Shape.of(), 0f, value.dtype(), value.device()));
+        Var safe = where(zero, Var.of(Tensor.full(Shape.of(), 1f, value.dtype(), value.device())), y);
+        return mul(safe.log());
+    }
+
+    /**
+     * The {@code q}-quantile along an axis, interpolating linearly between the two nearest
+     * sorted values as {@code numpy.quantile} and {@code torch.quantile} do. The gradient goes to
+     * those two values.
+     *
+     * @param q the quantile, in [0, 1]
+     * @param axis the axis; negative values count from the end
+     * @param keepDims whether to keep the axis, with length 1
+     * @return the quantiles
+     */
+    public Var quantile(double q, int axis, boolean keepDims) {
+        if (!(q >= 0 && q <= 1)) {
+            throw new IllegalArgumentException("a quantile is in [0, 1], not " + q);
+        }
+        int a = axis < 0 ? shape().rank() + axis : axis;
+        int n = shape().dim(a);
+        Var sorted = sort(a, false);
+        double at = q * (n - 1);
+        int lo = (int) Math.floor(at);
+        int hi = Math.min(lo + 1, n - 1);
+        float t = (float) (at - lo);
+        Var low = sorted.slice(a, lo, lo + 1);
+        Var out = t == 0 ? low : low.add(sorted.slice(a, hi, hi + 1).sub(low).mul(t));
+        if (keepDims) {
+            return out;
+        }
+        int[] dims = new int[shape().rank() - 1];
+        for (int i = 0, j = 0; i < shape().rank(); i++) {
+            if (i != a) {
+                dims[j++] = shape().dim(i);
+            }
+        }
+        return out.reshape(dims);
+    }
+
+    /**
+     * The median along an axis: with an even count, the mean of the middle two, as
+     * {@code numpy.median} (PyTorch's {@code median} takes the lower one instead).
+     *
+     * @param axis the axis; negative values count from the end
+     * @param keepDims whether to keep the axis, with length 1
+     * @return the medians
+     */
+    public Var median(int axis, boolean keepDims) {
+        return quantile(0.5, axis, keepDims);
+    }
+
+    /**
      * The variance along one axis, as {@link Tensor#variance}.
      *
      * @param axis the axis; negative values count from the end

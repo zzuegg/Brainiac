@@ -38,6 +38,16 @@ class GradCheckOpsTest {
         Tensor p = positive(5, 2, 3);
         return Stream.of(
                 op("add", v -> v.get(0).add(v.get(1)).square().sum(), a, b),
+                op("tril", v -> v.get(0).tril(0).square().sum(), rand(11, 3, 3)),
+                op("triu", v -> v.get(0).triu(1).square().sum(), rand(12, 2, 3, 4)),
+                op("trace", v -> v.get(0).trace().square().sum(), rand(13, 2, 3, 3)),
+                op("cross", v -> v.get(0).cross(v.get(1), -1).square().sum(), rand(14, 2, 3), rand(15, 2, 3)),
+                op("kron", v -> v.get(0).kron(v.get(1)).square().sum(), rand(16, 2, 3), rand(17, 2, 2)),
+                op("logaddexp", v -> v.get(0).logaddexp(v.get(1)).sum(), a, row),
+                op("hypot", v -> v.get(0).hypot(v.get(1)).sum(), p, positive(18, 2, 3)),
+                op("xlogy", v -> v.get(0).xlogy(v.get(1)).sum(), a, p),
+                op("quantile", v -> v.get(0).quantile(0.3, 1, false).square().sum(), rand(19, 2, 5)),
+                op("median", v -> v.get(0).median(0, false).square().sum(), rand(20, 4, 3)),
                 op("add broadcast row", v -> v.get(0).add(v.get(1)).square().sum(), a, row),
                 op("add broadcast column", v -> v.get(1).add(v.get(0)).square().sum(), a, col),
                 op("add constant", v -> v.get(0).add(3).square().sum(), a),

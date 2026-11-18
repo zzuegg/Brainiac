@@ -90,4 +90,18 @@ class CoreAdditionsTest {
         assertThrows(UnsupportedOperationException.class, () -> ids.to(gpu));
         assertArrayEquals(new float[] {1, 2}, ids.to(DType.FLOAT32).to(gpu).to(CPU).toArray());
     }
+
+    @Test
+    void matrixAndStatisticsOps() {
+        same(d -> Var.of(random(d, 20, 2, 3, 4)).tril(0).value(), 0);
+        same(d -> Var.of(random(d, 21, 3, 3)).triu(-1).value(), 0);
+        same(d -> Var.of(random(d, 22, 2, 3, 3)).trace().value(), 1e-6f);
+        same(d -> Var.of(random(d, 23, 4, 3)).cross(Var.of(random(d, 24, 4, 3)), 1).value(), 1e-6f);
+        same(d -> Var.of(random(d, 25, 2, 3)).kron(Var.of(random(d, 26, 3, 2))).value(), 1e-6f);
+        same(d -> Var.of(random(d, 27, 6)).logaddexp(Var.of(random(d, 28, 6))).value(), 1e-6f);
+        same(d -> Var.of(random(d, 29, 6).abs()).xlogy(Var.of(random(d, 30, 6).abs().add(0.1f))).value(), 1e-5f);
+        same(d -> Var.of(random(d, 31, 3, 7)).quantile(0.3, 1, false).value(), 1e-6f);
+        same(d -> Transforms.vjp(xs -> xs.get(0).median(0, false), List.of(random(d, 32, 4, 3)),
+                Tensor.full(Shape.of(3), 1f, DType.FLOAT32, d)).gradients().get(0), 1e-6f);
+    }
 }
