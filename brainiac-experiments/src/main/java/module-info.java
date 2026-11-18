@@ -30,8 +30,10 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.kernels;
     exports io.github.zzuegg.brainiac.experimental.labels;
     exports io.github.zzuegg.brainiac.experimental.llm;
+    exports io.github.zzuegg.brainiac.experimental.metric;
     exports io.github.zzuegg.brainiac.experimental.ml;
     exports io.github.zzuegg.brainiac.experimental.multimodal;
+    exports io.github.zzuegg.brainiac.experimental.multitask;
     exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.ood;
@@ -44,6 +46,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.semisup;
     exports io.github.zzuegg.brainiac.experimental.serving;
     exports io.github.zzuegg.brainiac.experimental.shift;
+    exports io.github.zzuegg.brainiac.experimental.ssl;
     exports io.github.zzuegg.brainiac.experimental.survival;
     exports io.github.zzuegg.brainiac.experimental.stream;
     exports io.github.zzuegg.brainiac.experimental.synth;
@@ -77,8 +80,10 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.language;
     exports io.github.zzuegg.brainiac.experiments.learning;
     exports io.github.zzuegg.brainiac.experiments.memory;
+    exports io.github.zzuegg.brainiac.experiments.metric;
     exports io.github.zzuegg.brainiac.experiments.multiagent;
     exports io.github.zzuegg.brainiac.experiments.multimodal;
+    exports io.github.zzuegg.brainiac.experiments.multitask;
     exports io.github.zzuegg.brainiac.experiments.numerics;
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.parallel;
