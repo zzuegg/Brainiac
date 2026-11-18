@@ -18,6 +18,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.audio;
     exports io.github.zzuegg.brainiac.experimental.autograd;
     exports io.github.zzuegg.brainiac.experimental.boost;
+    exports io.github.zzuegg.brainiac.experimental.calibrate;
     exports io.github.zzuegg.brainiac.experimental.code;
     exports io.github.zzuegg.brainiac.experimental.causal;
     exports io.github.zzuegg.brainiac.experimental.compress;
@@ -113,6 +114,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.synthesis;
     exports io.github.zzuegg.brainiac.experiments.techniques;
     exports io.github.zzuegg.brainiac.experiments.timeseries;
+    exports io.github.zzuegg.brainiac.experiments.uncertainty;
     exports io.github.zzuegg.brainiac.experiments.vision;
     exports io.github.zzuegg.brainiac.experiments.world;
 }
