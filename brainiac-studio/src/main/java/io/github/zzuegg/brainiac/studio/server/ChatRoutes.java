@@ -28,7 +28,7 @@ import java.util.Map;
  *       {@code "first": true} makes it the key tried first. Keys are never sent back, only their
  *       names and last four characters.
  *   <li>{@code POST /api/chat} with {@code {"model": "auto", "system": "...", "messages":
- *       [{"role": "user", "text": "..."}], "maxTokens": 4096, "temperature": 0.7, "key": "work"}} (the key's name is
+ *       [{"role": "user", "text": "...", "images": [{"type": "image/png", "data": "base64"}]}], "maxTokens": 4096, "temperature": 0.7, "key": "work"}} (the key's name is
  *       optional) answers as a server-sent event
  *       stream: {@code route} (the model chosen), then {@code text} and {@code thinking} pieces,
  *       then {@code done} or {@code error}.
@@ -93,7 +93,7 @@ import java.util.Map;
 final class ChatRoutes {
 
     private static final System.Logger LOG = System.getLogger(ChatRoutes.class.getName());
-    private static final int MAX_BODY = 8 << 20;
+    private static final int MAX_BODY = 32 << 20;   // a conversation with its pictures
     private static final int DEFAULT_MAX_TOKENS = 8192;
 
     private final ChatService chat;
@@ -537,7 +537,18 @@ final class ChatRoutes {
         List<ChatMessage> messages = new ArrayList<>();
         for (Object o : Json.array(body.getOrDefault("messages", List.of()))) {
             Map<String, Object> m = Json.object(o);
-            messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", "")));
+            List<io.github.zzuegg.brainiac.studio.chat.Media> images = new ArrayList<>();
+            for (Object i : Json.array(m.getOrDefault("images", List.of()))) {
+                Map<String, Object> image = Json.object(i);
+                try {
+                    images.add(new io.github.zzuegg.brainiac.studio.chat.Media(
+                            java.util.Base64.getDecoder().decode(Json.string(image, "data", "")),
+                            Json.string(image, "type", "")));
+                } catch (IllegalArgumentException e) {
+                    throw new Exchanges.BadRequest("a picture is not valid base64");
+                }
+            }
+            messages.add(new ChatMessage(Json.string(m, "role", ""), Json.string(m, "text", ""), images));
         }
         Float temperature = temperature(body);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role()) || maxTokens < 1) {
