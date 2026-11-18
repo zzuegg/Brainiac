@@ -318,6 +318,25 @@ public final class WindowLm implements LanguageModel {
      * @return the completions
      */
     public int[][] sampleUntil(int[][] prompts, int maxNew, int[] stops, double temperature, SplittableRandom random) {
+        return sampleUntil(prompts, maxNew, stops, temperature, random, null);
+    }
+
+    /**
+     * Samples completions with a {@link LogitsProcessor} applied to every row of next-token
+     * logits before the token is picked (constraints, penalties, channel scores). With a
+     * {@code null} processor this is exactly {@link #sampleUntil(int[][], int, int[], double,
+     * SplittableRandom)}.
+     *
+     * @param prompts the prompts
+     * @param maxNew the most tokens to add
+     * @param stops the tokens that end a completion (included in it)
+     * @param temperature softmax temperature; 0 picks the most likely token
+     * @param random the random source
+     * @param processor changes each row of logits given the tokens so far, or {@code null}
+     * @return the completions
+     */
+    public int[][] sampleUntil(int[][] prompts, int maxNew, int[] stops, double temperature, SplittableRandom random,
+            LogitsProcessor processor) {
         int n = prompts.length;
         int[][] seqs = new int[n][];
         int[] lengths = new int[n];
@@ -341,7 +360,11 @@ public final class WindowLm implements LanguageModel {
             float[] logits = LlmTensors.values(logits(live));
             for (int j = 0; j < who.size(); j++) {
                 int i = who.get(j);
-                int tok = LlmTensors.sample(Arrays.copyOfRange(logits, j * vocab, (j + 1) * vocab), temperature, random);
+                float[] row = Arrays.copyOfRange(logits, j * vocab, (j + 1) * vocab);
+                if (processor != null) {
+                    processor.process(Arrays.copyOf(seqs[i], lengths[i]), row);
+                }
+                int tok = LlmTensors.sample(row, temperature, random);
                 seqs[i][lengths[i]++] = tok;
                 for (int stop : stops) {
                     if (tok == stop) {

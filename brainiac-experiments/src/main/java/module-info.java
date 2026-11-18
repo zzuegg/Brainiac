@@ -38,6 +38,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.multimodal;
     exports io.github.zzuegg.brainiac.experimental.multitask;
     exports io.github.zzuegg.brainiac.experimental.music;
+    exports io.github.zzuegg.brainiac.experimental.nlp;
     exports io.github.zzuegg.brainiac.experimental.nn;
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.ood;
