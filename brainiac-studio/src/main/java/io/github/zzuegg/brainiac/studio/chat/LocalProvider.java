@@ -43,7 +43,7 @@ final class LocalProvider implements ChatProvider {
     private volatile LocalImages images;
     private volatile LocalSpeech speech;
 
-    private record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
+    record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
             Set<Integer> stops, VisionLanguageModel vision) {
     }
 
@@ -375,47 +375,71 @@ final class LocalProvider implements ChatProvider {
         Device device = this.device.device();
         if (loaded == null || !loaded.path().equals(path) || !loaded.device().name().equals(device.name())) {
             loaded = null;   // let the old weights go before loading new ones
-            DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
-                    : DType.FLOAT32;
-            LanguageModel model;
-            VisionLanguageModel vision = null;
-            if (sees(path)) {
-                Path projector = mmproj(path);
-                if (projector == null) {
-                    vision = VisionLanguageModel.load(path, device, dtype);
-                } else {
-                    try {
-                        vision = VisionLanguageModel.load(path, projector, device, dtype);
-                    } catch (RuntimeException e) {
-                        // a projector the core cannot read must not take the model's text chat with it
-                        LOG.log(System.Logger.Level.WARNING, path.getFileName() + " runs without pictures: "
-                                + projector.getFileName() + " cannot be read (" + e.getMessage() + ")");
-                    }
-                }
-            }
-            if (vision != null) {
-                model = vision;
-            } else {
-                Llama llama = Llama.load(path, device, dtype);
-                if (device.kind() == Device.Kind.GPU) {
-                    // two products per block instead of five: the same answers, much less GPU overhead
-                    try {
-                        llama.fuseProjections();
-                    } catch (RuntimeException e) {
-                        LOG.log(System.Logger.Level.INFO, "running " + path.getFileName() + " unfused: " + e.getMessage());
-                    }
-                }
-                model = llama;
-            }
-            PretrainedTokenizer tok = PretrainedTokenizer.load(path);
-            Generator generator = new Generator(model, tok);
-            if (vision == null) {
-                // a chat sends its whole history each turn; only the new part is read again. Not for
-                // a model that sees: two pictures make the same tokens, so a kept start could be another picture's
-                generator.cachePrefixes(4);
-            }
-            loaded = new Loaded(path, device, generator, tok, Generator.stopTokens(path, tok), vision);
+            loaded = load(path, device);
         }
+        return answer(request, listener);
+    }
+
+    /**
+     * Loads a chat model for a use of its own, such as serving it to other programs: apart from
+     * the one this provider keeps for the studio's chat.
+     *
+     * @param name the model as {@link #models} lists it
+     * @return the loaded model
+     * @throws IOException if there is no such chat model
+     */
+    Loaded open(String name) throws IOException {
+        Path path = find().get(name);
+        if (path == null) {
+            throw new IOException("no local chat model named " + name);
+        }
+        return load(path, device.device());
+    }
+
+    private static Loaded load(Path path, Device device) {
+        DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
+                : DType.FLOAT32;
+        LanguageModel model;
+        VisionLanguageModel vision = null;
+        if (sees(path)) {
+            Path projector = mmproj(path);
+            if (projector == null) {
+                vision = VisionLanguageModel.load(path, device, dtype);
+            } else {
+                try {
+                    vision = VisionLanguageModel.load(path, projector, device, dtype);
+                } catch (RuntimeException e) {
+                    // a projector the core cannot read must not take the model's text chat with it
+                    LOG.log(System.Logger.Level.WARNING, path.getFileName() + " runs without pictures: "
+                            + projector.getFileName() + " cannot be read (" + e.getMessage() + ")");
+                }
+            }
+        }
+        if (vision != null) {
+            model = vision;
+        } else {
+            Llama llama = Llama.load(path, device, dtype);
+            if (device.kind() == Device.Kind.GPU) {
+                // two products per block instead of five: the same answers, much less GPU overhead
+                try {
+                    llama.fuseProjections();
+                } catch (RuntimeException e) {
+                    LOG.log(System.Logger.Level.INFO, "running " + path.getFileName() + " unfused: " + e.getMessage());
+                }
+            }
+            model = llama;
+        }
+        PretrainedTokenizer tok = PretrainedTokenizer.load(path);
+        Generator generator = new Generator(model, tok);
+        if (vision == null) {
+            // a chat sends its whole history each turn; only the new part is read again. Not for
+            // a model that sees: two pictures make the same tokens, so a kept start could be another picture's
+            generator.cachePrefixes(4);
+        }
+        return new Loaded(path, device, generator, tok, Generator.stopTokens(path, tok), vision);
+    }
+
+    private ChatResult answer(ChatRequest request, ChatListener listener) throws IOException {
         List<java.awt.image.BufferedImage> pictures = new ArrayList<>();
         for (ChatMessage m : request.messages()) {
             for (Media image : m.images()) {

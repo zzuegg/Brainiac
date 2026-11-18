@@ -32,6 +32,9 @@ import java.util.Map;
  *       optional) answers as a server-sent event
  *       stream: {@code route} (the model chosen), then {@code text} and {@code thinking} pieces,
  *       then {@code done} or {@code error}.
+ *   <li>{@code GET /api/serve} says whether one of this PC's chat models is served to other
+ *       programs with the OpenAI API; {@code POST /api/serve} with {@code {"model": "local/qwen",
+ *       "port": 8080, "network": false}} starts that, and with {@code {"stop": true}} stops it.
  *   <li>{@code POST /api/images} with {@code {"model": "auto", "prompt": "...", "aspect": "16:9",
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
@@ -115,6 +118,26 @@ final class ChatRoutes {
                 chat.localDevice().choose(Json.string(body, "device", ""));
             }
             Exchanges.json(ex, 200, localDevice());
+        });
+        server.get("/api/serve", ex -> Exchanges.json(ex, 200, chat.serving().state()));
+        server.post("/api/serve", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 4096);
+            if (Boolean.TRUE.equals(body.get("stop"))) {
+                chat.serving().stop();
+                Exchanges.json(ex, 200, chat.serving().state());
+                return;
+            }
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                Exchanges.json(ex, 200, chat.serving().start(model, (int) Json.integer(body, "port", 8080),
+                        Boolean.TRUE.equals(body.get("network"))));
+            } catch (IOException e) {
+                // no such model, it does not load, or the port is taken: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
         });
         server.post("/api/keys", this::keys);
         server.post("/api/providers", this::providers);
