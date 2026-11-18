@@ -4676,7 +4676,8 @@
         : `${what}. Click to run this PC's chat, image and voice models here instead.`;
       return `<button type="button" class="dev ${on ? "on" : ""} ${on && pinned ? "pinned" : ""}" data-local-device="${esc(d.name)}" aria-pressed="${on}" title="${esc(tip)}">
       <span class="dot" style="--c:${d.kind === "gpu" ? "var(--ok)" : "var(--muted)"}"></span>${esc(d.name)}${on && pinned ? `<span class="faint">chosen</span>` : ""}</button>`;
-    }).join("");
+    }).join("") + gpuLimitHtml();
+    wireGpuLimit(box);
     $$("[data-local-device]", box).forEach(b => b.addEventListener("click", async () => {
       if (!M.localDevice) return;
       const name = b.dataset.localDevice;
@@ -4685,6 +4686,44 @@
       catch (e) { console.warn("cannot choose the device", e); }
       renderDevices();
     }));
+  }
+
+  // The GPU memory limit: the studio takes no more than this from the card and puts the rest in system memory.
+  // The core reads it once, so a change applies when the studio next starts.
+  let gpuLimitEditing = false;
+  const fmtGb = mb => (mb / 1024).toFixed(mb % 1024 ? 1 : 0) + " GB";
+  function gpuLimitHtml() {
+    const ld = M.localDevice;
+    if (!ld || ld.memory === undefined || !M.system.devices.some(d => d.kind === "gpu")) return "";
+    if (gpuLimitEditing) {
+      return `<span class="dev gpu-limit"><label for="gpu-limit">GPU limit</label><input id="gpu-limit" data-gpu-limit-input type="number" min="0" step="0.5" inputmode="decimal" placeholder="none" value="${ld.memory ? ld.memory / 1024 : ""}" aria-label="GPU memory limit in GB, empty for none"><span class="faint">GB</span></span>`;
+    }
+    const waits = ld.memory !== ld.memoryInEffect;
+    const tip = "The most GPU memory the studio takes; what does not fit goes to system memory, which is slower. "
+      + "Set it below what other programs leave free if models fail to load."
+      + (waits ? ` Now in effect: ${ld.memoryInEffect ? fmtGb(ld.memoryInEffect) : "no limit"}. The change applies when the studio is started again.` : "");
+    return `<button type="button" class="dev ${waits ? "pinned" : ""}" data-gpu-limit title="${esc(tip)}">GPU limit <span class="mono tnum">${ld.memory ? fmtGb(ld.memory) : "none"}</span>${waits ? `<span class="faint">after restart</span>` : ""}</button>`;
+  }
+  function wireGpuLimit(box) {
+    const open = $("[data-gpu-limit]", box);
+    if (open) open.addEventListener("click", () => { gpuLimitEditing = true; renderDevices(); const i = $("[data-gpu-limit-input]"); if (i) { i.focus(); i.select(); } });
+    const input = $("[data-gpu-limit-input]", box);
+    if (!input) return;
+    let done = false;
+    const close = async save => {
+      if (done) return;
+      done = true;
+      gpuLimitEditing = false;
+      const gb = parseFloat(input.value);
+      const mb = isFinite(gb) && gb > 0 ? Math.round(gb * 1024) : 0;
+      if (save && mb !== M.localDevice.memory) {
+        try { M.localDevice = await postJson("/api/local/device", { memory: mb }); }
+        catch (e) { console.warn("cannot set the GPU memory limit", e); }
+      }
+      renderDevices();
+    };
+    input.addEventListener("keydown", e => { if (e.key === "Enter") close(true); else if (e.key === "Escape") close(false); });
+    input.addEventListener("blur", () => close(true));
   }
 
   function renderDataNote() {

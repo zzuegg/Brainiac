@@ -120,6 +120,21 @@ class StudioServerTest {
     }
 
     @Test
+    void aGpuMemoryLimitIsKeptForTheNextStart() throws Exception {
+        Map<String, Object> first = Json.object(Json.parse(get("/api/local/device", true).body()));
+        assertEquals(0, ((Number) first.get("memory")).intValue());
+        Map<String, Object> set = Json.object(Json.parse(post("/api/local/device", "{\"memory\": 6144}").body()));
+        assertEquals(6144, ((Number) set.get("memory")).intValue());
+        assertEquals("best", set.get("choice"), "the device choice is left alone");
+        // the core reads its limit once, so this run goes on as it started
+        assertEquals(((Number) first.get("memoryInEffect")).intValue(), ((Number) set.get("memoryInEffect")).intValue());
+        assertEquals(400, post("/api/local/device", "{\"memory\": 5}").statusCode());
+        assertEquals(6144, ((Number) Json.object(Json.parse(get("/api/local/device", true).body())).get("memory")).intValue());
+        assertEquals(0, ((Number) Json.object(Json.parse(post("/api/local/device", "{\"memory\": 0}").body())).get("memory"))
+                .intValue());
+    }
+
+    @Test
     void listsCapabilitiesOfThePresentModules() throws Exception {
         Map<String, Object> body = Json.object(Json.parse(get("/api/capabilities", true).body()));
         List<Object> caps = Json.array(body.get("capabilities"));
