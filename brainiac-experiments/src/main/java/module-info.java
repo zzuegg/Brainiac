@@ -84,10 +84,12 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.survival;
     exports io.github.zzuegg.brainiac.experimental.stream;
     exports io.github.zzuegg.brainiac.experimental.synth;
+    exports io.github.zzuegg.brainiac.experimental.tabular;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.testing;
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
+    exports io.github.zzuegg.brainiac.experimental.tsc;
     exports io.github.zzuegg.brainiac.experimental.vision;
     exports io.github.zzuegg.brainiac.experimental.world;
     // the experiments: toy tasks, comparisons and demos built from those blocks
