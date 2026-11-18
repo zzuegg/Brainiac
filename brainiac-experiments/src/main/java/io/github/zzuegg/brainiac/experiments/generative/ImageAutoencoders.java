@@ -81,6 +81,26 @@ public final class ImageAutoencoders {
         }
 
         /**
+         * The posterior means of images, for latent diffusion.
+         *
+         * @param images images
+         * @return {@code [n, latent]}
+         */
+        public Tensor encodeMean(float[][] images) {
+            return bottleneck.forward(encoder.forward(Var.of(Nets.matrix(images))), false).value();
+        }
+
+        /**
+         * Decodes latents.
+         *
+         * @param z {@code [n, latent]}
+         * @return images
+         */
+        public float[][] decode(Tensor z) {
+            return Nets.rows(decoder.forward(Var.of(z)).value().tanh());
+        }
+
+        /**
          * Decodes samples of the standard normal prior.
          *
          * @param n how many

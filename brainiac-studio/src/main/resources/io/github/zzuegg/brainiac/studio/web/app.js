@@ -2370,15 +2370,15 @@
   document.addEventListener("click", e => { const p = $("#pop"); if (p && !p.contains(e.target)) p.remove(); });
 
   // ---------- live chat ----------
-  // Served by the studio, Chat holds real conversations. They are kept in this browser; the
-  // example conversation stays in the list so the agent screens can still be seen.
+  // Served by the studio, Chat holds real conversations, kept in the studio's data folder. The
+  // invented example conversation and the MCP mock-up show only when the page is opened as a file.
   const L = {
     info: null,                           // GET /api/models: providers, models, what auto picks
     convos: store.get("convos", []),
-    sel: store.get("convo", null) === "example" ? "example" : null,   // "example" while the design preview shows
+    sel: null,                            // the design preview ("example") shows only when the page is opened as a plain file
     model: store.get("chatModel", "auto"),  // what a new conversation starts with
     tabs: store.get("chatTabs", []),      // open conversations, in tab order
-    panes: store.get("chatPanes", [{ id: store.get("convo", null) === "example" ? null : store.get("convo", null) }]),
+    panes: store.get("chatPanes", [{ id: null }]),
     active: store.get("chatActive", 0),   // the pane that has the focus
     running: {},                          // conversation id: the AbortController of the answer being written
     drafts: {},                           // conversation id ("#" and the pane for a new one): what is typed but not sent
@@ -2402,8 +2402,16 @@
 
   // A little Markdown: code fences, inline code, bold, paragraphs. Everything is escaped first.
   function md(text) {
-    const inline = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    // code spans are set aside first, so nothing inside them is read as bold, a link or an address
+    const link = (href, label) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    const plain = s => s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) => link(href, label))
+      .replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]])/g, (_, pre, href) => pre + link(href, href))
+      .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
       .replace(/(^|[\s(])\*([^*\s][^*\n]*?)\*(?=[\s.,;:!?)]|$)/g, "$1<i>$2</i>").replace(/\n/g, "<br>");
+    const inline = s => esc(s).split(/(`[^`\n]+`)/).map((x, i) => i % 2 ? `<code>${x.slice(1, -1)}</code>` : plain(x)).join("");
+    const cells = line => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(x => x.trim());
+    const isRow = line => /^\s*\|.*\|\s*$/.test(line);
+    const isRule = line => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
     return text.split("```").map((part, i) => {
       if (i % 2) {
         const nl = part.indexOf("\n");
@@ -2417,8 +2425,18 @@
         if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map(x => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`);
         list = null;
       };
-      for (const raw of part.split("\n")) {
-        const line = raw.trimEnd();
+      const lines = part.split("\n");
+      for (let n = 0; n < lines.length; n++) {
+        const raw = lines[n], line = raw.trimEnd();
+        if (isRow(line) && n + 1 < lines.length && isRule(lines[n + 1]) && lines[n + 1].includes("-")) {
+          flushPara(); flushList();
+          const head = cells(line), rows = [];
+          for (n += 2; n < lines.length && isRow(lines[n]); n++) rows.push(cells(lines[n]));
+          n--;
+          out.push(`<div class="mdtable"><table><thead><tr>${head.map(c => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map(r =>
+            `<tr>${head.map((_, k) => `<td>${inline(r[k] || "")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+          continue;
+        }
         const h = /^(#{1,4})\s+(.*)$/.exec(line), ul = /^\s*[-*•]\s+(.*)$/.exec(line), ol = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
         if (!line.trim()) { flushPara(); continue; }
         if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flushPara(); flushList(); out.push("<hr>"); }
@@ -2458,8 +2476,12 @@
     const w = window.innerWidth / state.scale - 64 - 268;
     return Math.max(1, Math.min(4, Math.floor(w / 480)));
   };
+  // What a conversation is told before it starts and how long an answer may get. A new
+  // conversation keeps them on its pane until the first message makes it a conversation.
+  const paneSettings = i => paneConvo(i) || L.panes[i] || {};
+  const hasSettings = o => !!((o.system || "").trim() || +o.maxTokens > 0);
   function savePanes() {
-    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null })));
+    store.set("chatPanes", L.panes.map(p => ({ id: p.id || null, model: p.model || null, system: p.id ? undefined : p.system || undefined, maxTokens: p.id ? undefined : p.maxTokens || undefined })));
     store.set("chatTabs", L.tabs);
     store.set("chatActive", L.active);
   }
@@ -2584,7 +2606,7 @@
         <span class="tacts">
           ${!fin && maxPanes() > 1 && at < 0 ? `<button class="iconbtn sm" data-beside="${c.id}" aria-label="Open beside" title="Open beside">${icon("panel")}</button>` : ""}
           ${fin ? `<button class="iconbtn sm" data-reopen="${c.id}" aria-label="Reopen" title="Reopen">${icon("retry")}</button>
-            <button class="iconbtn sm" data-delete="${c.id}" aria-label="Delete" title="Delete">${icon("stop")}</button>`
+            <button class="iconbtn sm" data-delete="${c.id}" aria-label="Delete" title="Delete">${icon("trash")}</button>`
             : `<button class="iconbtn sm" data-finish="${c.id}" aria-label="Mark finished" title="Mark finished">${icon("check")}</button>`}
         </span></div>`;
     };
@@ -2599,12 +2621,6 @@
         </div>
         ${done.length ? `<div class="tgroup"><button class="eyebrow fold" id="fold-finished" aria-expanded="${!!(L.showFinished || q)}">${icon("chev")}Finished <span class="faint">${done.length}</span></button>
           ${L.showFinished || q ? done.map(item).join("") : ""}</div>` : ""}
-        <div class="tgroup"><span class="eyebrow">Example</span>
-          <div class="titem ${L.sel === "example" ? "active" : ""}" data-convo="example" tabindex="0">
-            <span class="dot ic" style="--c:var(--cap-agent)"></span>
-            <div style="min-width:0"><div class="t">Voiceover for the builder demo</div><div class="s">design preview · agents</div></div>
-            <span class="when"></span></div>
-        </div>
       </div>
     </aside>`;
   }
@@ -2616,11 +2632,18 @@
     return r ? { ...m, thinking: r[1].trim(), text: m.text.slice(r[0].length) } : m;
   }
 
+  // The Reasoning bubble: the one place a model's thinking is drawn, in Chat and in Agents.
+  const thinkHtml = (text, { open = false, live = false, attrs = "" } = {}) => `<details class="tool think" ${attrs} ${open ? "open" : ""}>
+      <summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${live ? "thinking…" : "summary"}</span></summary><pre>${esc(text)}</pre></details>`;
+
   function msgHtml(m, i) {
     m = splitThink(m);
     if (m.role === "user") {
       return `<div class="msg user" data-i="${i}"><div class="avatar user">${icon("chat")}</div><div style="min-width:0">
-        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div></div></div>`;
+        <div class="meta"><b>You</b><span>${m.at ? when(m.at) : ""}</span></div><div class="body">${md(m.text)}</div>
+        <div class="actions">
+          <button class="iconbtn" data-copy="${i}" aria-label="Copy" title="Copy">${icon("copy")}</button>
+          <button class="iconbtn" data-edit-msg="${i}" aria-label="Edit and send again" title="Edit and send again: the answers after it are replaced">${icon("edit")}</button></div></div></div>`;
     }
     const s = m.stats, model = m.model;
     const rate = s && s.outputTokens > 0 && s.seconds > 0 ? `${(s.outputTokens / s.seconds).toFixed(0)} tok/s` : "";
@@ -2636,14 +2659,14 @@
           ${s ? `<span class="mono">${s.outputTokens >= 0 ? s.outputTokens + " tok" : ""}${rate ? " · " + rate : ""}${s.seconds ? " · " + s.seconds.toFixed(1) + " s" : ""}</span>` : ""}
           ${notes.join("")}</div>
         <div class="body">
-          ${m.thinking ? `<details class="tool think" ${m.streaming && !m.text ? "open" : ""}><summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${m.streaming && !m.text ? "thinking…" : "summary"}</span></summary><pre>${esc(m.thinking)}</pre></details>` : ""}
+          ${m.thinking ? thinkHtml(m.thinking, { open: m.streaming && !m.text, live: m.streaming && !m.text }) : ""}
           ${md(m.text)}
           ${m.streaming && !m.text && !m.thinking ? `<span class="typing" aria-label="Writing"><i></i><i></i><i></i></span>` : ""}
           ${m.error ? `<div class="flag bad">${icon("flask")}<div><b>No answer.</b> ${esc(m.error)}</div></div>` : ""}
         </div>
         ${m.streaming ? "" : `<div class="actions">
-          <button class="iconbtn" data-copy="${i}" aria-label="Copy">${icon("copy")}</button>
-          <button class="iconbtn" data-retry="${i}" aria-label="Answer again">${icon("retry")}</button></div>`}
+          <button class="iconbtn" data-copy="${i}" aria-label="Copy" title="Copy">${icon("copy")}</button>
+          <button class="iconbtn" data-retry="${i}" aria-label="Answer again" title="Answer again">${icon("retry")}</button></div>`}
       </div></div>`;
   }
 
@@ -2690,15 +2713,23 @@
         ${fin ? `<span class="chip c-ok">finished</span>` : ""}
         <span class="grow"></span>
         ${fin ? "" : modelPicker(i)}
+        ${fin ? "" : `<button class="iconbtn ${hasSettings(paneSettings(i)) ? "has-set" : ""}" data-chat-settings="${i}" aria-label="Instructions and answer length" title="Instructions and answer length${hasSettings(paneSettings(i)) ? " (set)" : ""}" aria-expanded="${L.settingsOpen === (key || "#" + i)}">${icon("gear")}</button>`}
         ${c ? (fin ? `<button class="btn sm" data-reopen="${c.id}">${icon("retry")}Reopen</button>`
           : `<button class="btn ghost sm" data-finish="${c.id}" title="Mark finished: it leaves the tabs and waits under Finished">${icon("check")}Finish</button>`) : ""}
         ${L.panes.length > 1 ? `<button class="iconbtn" data-close-pane="${i}" aria-label="Close this pane" title="Close this pane"><span aria-hidden="true" style="font-size:17px;line-height:1">×</span></button>` : ""}
       </div>
+      ${!fin && (L.settingsOpen === (key || "#" + i)) ? `<div class="chat-settings">
+        <div class="field"><label for="cs-system-${i}">Instructions <span class="faint">a system prompt, sent before every message of this conversation</span></label>
+          <textarea class="input" id="cs-system-${i}" data-cs-system="${i}" rows="3" placeholder="For example: You are a terse code reviewer. Answer in German.">${esc(paneSettings(i).system || "")}</textarea></div>
+        <div class="field cs-len"><label for="cs-max-${i}">Longest answer <span class="faint">tokens</span></label>
+          <input class="input mono" id="cs-max-${i}" data-cs-max="${i}" type="number" min="1" max="65536" step="1" placeholder="8192" value="${esc(paneSettings(i).maxTokens || "")}"></div>
+      </div>` : ""}
       <div class="transcript" data-transcript="${i}"><div class="lane">${c && c.messages.length ? c.messages.map(msgHtml).join("") : emptyState()}</div></div>
       <div class="composer-wrap">
         ${fin ? `<div class="finished-bar">${icon("check")}<span>Finished ${when(c.finishedAt || c.updated)}. Reopen it to keep going.</span><span class="grow"></span>
             <button class="btn sm" data-reopen="${c.id}">Reopen</button></div>`
         : `<div class="composer">
+          ${c && L.editingMsg && L.editingMsg.convo === c.id ? `<div class="route-hint editing">${icon("edit")}<span>Editing an earlier message. Sending replaces it and the answers after it.</span><span class="grow"></span><button class="btn ghost sm" data-edit-cancel>Cancel</button></div>` : ""}
           <div class="route-hint" data-route="${i}">${routeLine(paneModel(i))}</div>
           <textarea data-prompt="${i}" rows="2" placeholder="Ask anything. Enter sends, Shift+Enter adds a line">${esc(L.drafts[draftKey(i)] || "")}</textarea>
           <div class="row">
@@ -2782,7 +2813,7 @@
       const r = await fetch("/api/chat", {
         method: "POST", signal: ctrl.signal,
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: usable(c.model || L.model), messages: history }),
+        body: JSON.stringify({ model: usable(c.model || L.model), messages: history, system: (c.system || "").trim() || undefined, maxTokens: +c.maxTokens > 0 ? Math.floor(+c.maxTokens) : undefined }),
       });
       await readEvents(r, onEvent);
     } catch (e) {
@@ -2824,6 +2855,9 @@
     if (!c) {
       c = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: text.replace(/\s+/g, " ").slice(0, 70),
         messages: [], updated: Date.now(), status: "open", model: L.panes[i].model || L.model };
+      if ((L.panes[i].system || "").trim()) c.system = L.panes[i].system;
+      if (+L.panes[i].maxTokens > 0) c.maxTokens = +L.panes[i].maxTokens;
+      if (L.settingsOpen === "#" + i) L.settingsOpen = c.id;
       L.convos.unshift(c);
       L.panes[i] = { id: c.id };
       L.tabs.push(c.id);
@@ -2832,6 +2866,8 @@
     }
     L.active = i;
     L.drafts[c.id] = "";
+    // an edited message takes the place of the old one; what was answered after it goes
+    if (L.editingMsg && L.editingMsg.convo === c.id) { c.messages.splice(L.editingMsg.at); L.editingMsg = null; }
     c.messages.push({ role: "user", text, at: Date.now() });
     persist(c);
     answer(c);
@@ -2882,6 +2918,29 @@
       if (c) { c.model = s.value; persist(c); } else { L.panes[i].model = s.value; L.model = s.value; store.set("chatModel", s.value); savePanes(); }
       $(`[data-route="${i}"]`).innerHTML = routeLine(s.value);
     }));
+    $$("[data-chat-settings]").forEach(b => b.addEventListener("click", () => {
+      const k = draftKey(+b.dataset.chatSettings);
+      L.settingsOpen = L.settingsOpen === k ? null : k;
+      render();
+      if (L.settingsOpen) $(`[data-cs-system="${b.dataset.chatSettings}"]`)?.focus();
+    }));
+    const setSetting = (i, k, v) => {
+      const c = paneConvo(i);
+      if (c) { if (v) c[k] = v; else delete c[k]; persist(c); } else { L.panes[i][k] = v || undefined; savePanes(); }
+      $(`[data-chat-settings="${i}"]`)?.classList.toggle("has-set", hasSettings(paneSettings(i)));
+    };
+    $$("[data-cs-system]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csSystem, "system", t.value)));
+    $$("[data-cs-max]").forEach(t => t.addEventListener("input", () => setSetting(+t.dataset.csMax, "maxTokens", Math.max(0, Math.min(65536, Math.floor(+t.value || 0))))));
+    $$("[data-edit-msg]").forEach(b => b.addEventListener("click", () => {
+      const pane = b.closest(".pane"), c = convoById(pane?.dataset.convo);
+      if (!c || running(c.id) || c.status === "finished") return;
+      const at = +b.dataset.editMsg, i = +pane.dataset.pane;
+      L.editingMsg = { convo: c.id, at };
+      L.drafts[c.id] = c.messages[at].text;
+      render();
+      const p = $(`[data-prompt="${i}"]`); p?.focus(); p?.setSelectionRange(p.value.length, p.value.length);
+    }));
+    $$("[data-edit-cancel]").forEach(b => b.addEventListener("click", () => { const e = L.editingMsg; L.editingMsg = null; if (e) L.drafts[e.convo] = ""; render(); }));
     $$("[data-prompt]").forEach(p => {
       const i = +p.dataset.prompt;
       p.addEventListener("input", () => { L.drafts[draftKey(i)] = p.value; });
@@ -2919,7 +2978,12 @@
     // drawing on this PC: what is not sent anywhere else, and kept per model where it differs
     neg: "", steps: {}, guidance: {}, seed: "", sampler: store.get("sampler", "DPM_PP_2M_KARRAS"), opts: {}, stop: null,
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
+    // a second voice mixed in, for models whose voices blend, and how much of the first to keep
+    blend: "", blendW: 0.7,
     text: "", takes: [], speaking: false, video: null,
+    // writing down what is said, on this PC
+    mode: store.get("voMode", "speak"), trModel: store.get("trModel", "auto"), trLang: store.get("trLang", "auto"),
+    trTranslate: false, trTimes: true, trOpts: {}, transcripts: [], listening: null, recorder: null,
   };
   const mediaModels = medium => (L.info?.models || []).filter(m => m.media.includes(medium) && m.shown !== false);
   const pickedModel = (sel, medium) => modelByKey(sel === "auto" ? L.info?.auto?.[medium] : sel);
@@ -3137,27 +3201,187 @@
 
   function hue(name) { let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360; return `oklch(0.78 0.11 ${h})`; }
 
+  const trModels = () => mediaModels("transcribe").filter(m => m.provider === "local");
+  const trPicked = () => G.trModel === "auto" ? trModels()[0] : trModels().find(m => m.key === G.trModel);
+  const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+  const modeSwitch = () => `<div class="seg vo-mode" role="group" aria-label="What to do"><button data-vomode="speak" aria-pressed="${G.mode === "speak"}">Speak</button><button data-vomode="listen" aria-pressed="${G.mode === "listen"}">Transcribe</button></div>`;
+
+  // what a transcribing model knows, asked for once (this loads it)
+  function trOptions(m) {
+    if (!m) return null;
+    const o = G.trOpts[m.key];
+    if (!o) {
+      G.trOpts[m.key] = { loading: true };
+      postJson("/api/transcribe/options", { model: m.key }).then(j => { G.trOpts[m.key] = j; if (state.view === "voice" && G.mode === "listen") render(); })
+        .catch(() => { G.trOpts[m.key] = { languages: [], translate: false }; });
+      return null;
+    }
+    return o.loading ? null : o;
+  }
+
+  function transcriptHtml(t, i) {
+    const segs = t.segments || [];
+    return `<div class="take transcript">
+      <div class="who"><span class="chip c-speech">${esc(t.name)}</span><span class="mono muted">${esc(t.model || "")}${t.audioSeconds ? ` · ${t.audioSeconds < 60 ? t.audioSeconds.toFixed(1) + " s" : clock(t.audioSeconds)} of audio` : ""}${t.language ? ` · ${esc(t.language)}` : ""}${t.seconds ? ` · ${t.seconds.toFixed(1)} s` : ""}</span><span class="grow"></span>
+        ${t.running ? `<button class="btn ghost sm" id="tr-stop">${icon("stop")}Stop</button>` : t.text ? `<button class="btn ghost sm" data-tr-copy="${i}">${icon("copy")}Copy</button><button class="btn ghost sm" data-tr-chat="${i}">${icon("chat")}To chat</button>` : ""}</div>
+      ${t.error ? `<div class="flag bad">${icon("flask")}<div><b>${t.error === "stopped" ? "Stopped." : "Nothing written down."}</b> ${t.error === "stopped" ? "" : esc(t.error)}</div></div>` : ""}
+      ${segs.length ? `<div class="segs">${segs.map(g => `<div class="seg-line">${G.trTimes || t.times ? `<span class="mono faint">${clock(g.start)}</span>` : ""}<span>${esc(g.text.trim())}</span></div>`).join("")}</div>`
+        : t.running ? `<div class="muted" style="font-size:13px"><span class="typing"><i></i><i></i><i></i></span> ${t.stage || "listening…"}</div>` : ""}
+    </div>`;
+  }
+
+  function listenView() {
+    const m = trPicked(), o = trOptions(m) || {};
+    const rec = G.recorder;
+    return `
+    <div class="voice listen">
+      <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
+        <div class="stage-head"><span class="title">Voice</span>${modeSwitch()}${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
+          ${rec ? `<button class="btn primary" id="tr-rec-stop">${icon("stop")}Stop · <span class="mono" id="tr-rec-time">${clock((Date.now() - rec.at) / 1000)}</span></button>`
+            : `<button class="btn" id="tr-rec" ${!m || G.listening ? "disabled" : ""}>${icon("speech")}Record</button>`}
+          <label class="btn primary ${!m || G.listening ? "disabled" : ""}" for="tr-file">${icon("plus")}Choose a recording</label><input type="file" id="tr-file" accept="audio/*,video/*" hidden ${!m || G.listening ? "disabled" : ""}></div>
+        ${!m ? `<div class="empty"><div class="flag">${icon("flask")}<div><b>No transcribing model yet.</b> Put a Whisper model (such as openai/whisper-base, a Hugging Face folder) in a model folder to write down what is said, on this PC.
+          <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>` : `
+        <div class="script tr-list" id="tr-drop">
+          ${!G.transcripts.length ? `<label class="video-drop" for="tr-file">${icon("speech")}<b>Drop a recording here, or record one</b><span class="muted">Any audio or video the browser plays. It is written down on this PC and never uploaded anywhere.</span></label>` : ""}
+          ${G.transcripts.map(transcriptHtml).join("")}
+        </div>`}
+      </section>
+      <aside class="voice-settings" aria-label="Transcription settings">
+        <div class="field"><label for="tr-model">Model</label><select class="input" id="tr-model" aria-label="Model">
+          <option value="auto" ${G.trModel === "auto" ? "selected" : ""}>Auto${trModels()[0] ? " · " + esc(trModels()[0].name) : ""}</option>
+          ${trModels().map(x => `<option value="${esc(x.key)}" ${x.key === G.trModel ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="tr-lang">Spoken language</label><select class="input" id="tr-lang">
+          <option value="auto">Detect it</option>${(o.languages || []).map(l => `<option value="${esc(l)}" ${l === G.trLang ? "selected" : ""}>${esc(langName(l))}</option>`).join("")}</select></div>
+        <label class="check"><input type="checkbox" id="tr-translate" ${G.trTranslate ? "checked" : ""} ${o.translate ? "" : "disabled"}> Write it in English${o.translate ? "" : ` <output>not offered</output>`}</label>
+        <label class="check"><input type="checkbox" id="tr-times" ${G.trTimes ? "checked" : ""}> Show times</label>
+        <p class="muted" style="font-size:12px;margin:0">The recording is turned into 16 kHz mono in this browser, then written down by ${m ? esc(m.name) : "the model"} on this PC.</p>
+      </aside>
+    </div>`;
+  }
+  const langName = code => { try { return new Intl.DisplayNames([navigator.language || "en"], { type: "language" }).of(code) || code; } catch (_) { return code; } };
+
+  // any audio the browser can play, as 16 kHz mono 16-bit WAV, base64
+  async function toWav16k(blob) {
+    const buf = await blob.arrayBuffer();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(buf); } finally { ctx.close?.(); }
+    const rate = 16000, n = Math.max(1, Math.ceil(decoded.duration * rate));
+    const off = new OfflineAudioContext(1, n, rate);
+    const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
+    const pcm = (await off.startRendering()).getChannelData(0);
+    const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) out.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, "RIFF"); out.setUint32(4, 36 + pcm.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+    out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); str(36, "data"); out.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+    const bytes = new Uint8Array(out.buffer);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return { data: btoa(bin), seconds: decoded.duration };
+  }
+
+  async function transcribe(blob, name) {
+    const m = trPicked();
+    if (!m || G.listening) return;
+    const t = { name, model: m.name, segments: [], running: true, stage: "reading the recording…", times: G.trTimes };
+    G.transcripts.unshift(t);
+    const ctrl = new AbortController();
+    G.listening = ctrl;
+    render();
+    const paint = () => { const box = $(".tr-list"); if (box && state.view === "voice" && G.mode === "listen") { box.innerHTML = G.transcripts.map(transcriptHtml).join(""); bindTranscripts(); } };
+    try {
+      const wav = await toWav16k(blob);
+      t.audioSeconds = wav.seconds; t.stage = "writing it down…"; paint();
+      const body = { model: m.key, audio: wav.data, language: G.trLang, translate: G.trTranslate, timestamps: true };
+      const r = await fetch("/api/transcribe", { method: "POST", signal: ctrl.signal,
+        headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await readEvents(r, (event, d) => {
+        if (event === "route") t.model = d.name;
+        else if (event === "segment") t.segments.push(d);
+        else if (event === "done") Object.assign(t, { text: d.text, language: d.language, seconds: d.seconds });
+        else if (event === "error") t.error = d.message;
+        paint();
+      });
+      if (!t.text && t.segments.length) t.text = t.segments.map(g => g.text.trim()).join(" ");
+    } catch (e) {
+      t.error = e.name === "AbortError" ? "stopped" : e.name === "EncodingError" ? "the browser cannot read that recording" : e.message;
+    }
+    t.running = false; G.listening = null;
+    if (state.view === "voice") render();
+  }
+
+  async function record() {
+    if (G.recorder || G.listening) return;
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { G.transcripts.unshift({ name: "Recording", error: "the microphone is not available: " + e.message }); render(); return; }
+    const chunks = [], rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach(tr => tr.stop());
+      clearInterval(G.recorder?.tick); G.recorder = null;
+      transcribe(new Blob(chunks, { type: rec.mimeType || "audio/webm" }), "Recording " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+    };
+    G.recorder = { rec, at: Date.now(), tick: setInterval(() => { const el = $("#tr-rec-time"); if (el && G.recorder) el.textContent = clock((Date.now() - G.recorder.at) / 1000); }, 500) };
+    rec.start(1000);
+    render();
+  }
+
+  function bindTranscripts() {
+    $("#tr-stop")?.addEventListener("click", () => G.listening?.abort());
+    $$("[data-tr-copy]").forEach(b => b.addEventListener("click", () => navigator.clipboard?.writeText(G.transcripts[+b.dataset.trCopy].text || "")));
+    $$("[data-tr-chat]").forEach(b => b.addEventListener("click", () => {
+      const text = G.transcripts[+b.dataset.trChat].text || "";
+      go("chat");
+      setTimeout(() => { const p = $('[data-prompt="0"]'); if (p) { p.value = (p.value ? p.value + "\n" : "") + text; p.focus(); p.dispatchEvent(new Event("input")); } }, 50);
+    }));
+  }
+
+  function bindListen() {
+    $$("[data-vomode]").forEach(b => b.addEventListener("click", () => { G.mode = b.dataset.vomode; store.set("voMode", G.mode); render(); }));
+    $("#tr-model")?.addEventListener("change", e => { G.trModel = e.target.value; store.set("trModel", G.trModel); render(); });
+    $("#tr-lang")?.addEventListener("change", e => { G.trLang = e.target.value; store.set("trLang", G.trLang); });
+    $("#tr-translate")?.addEventListener("change", e => { G.trTranslate = e.target.checked; });
+    $("#tr-times")?.addEventListener("change", e => { G.trTimes = e.target.checked; G.transcripts.forEach(t => { t.times = G.trTimes; }); render(); });
+    $("#tr-file")?.addEventListener("change", e => { const f = e.target.files[0]; if (f) transcribe(f, f.name); e.target.value = ""; });
+    $("#tr-rec")?.addEventListener("click", record);
+    $("#tr-rec-stop")?.addEventListener("click", () => G.recorder?.rec.stop());
+    const drop = $("#tr-drop");
+    drop?.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+    drop?.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop?.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) transcribe(f, f.name); });
+    bindTranscripts();
+    $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
   function liveVoiceView() {
+    if (G.mode === "listen") return listenView();
     const m = pickedModel(G.voModel, "speech");
+    const local = m?.provider === "local";
     const opt = m?.speech || { voices: [], speed: false, instructions: false, formats: [] };
     if (!opt.voices.includes(G.voice)) G.voice = opt.voices[0] || null;
+    if (!opt.mix || !opt.voices.includes(G.blend) || G.blend === G.voice) G.blend = "";
     if (opt.formats.length && !opt.formats.includes(G.format)) G.format = opt.formats[0];
+    const names = opt.names || {};
     return `
     <div class="voice">
       <aside class="voices" aria-label="Voices">
         <div class="col-head"><span class="h3">Voices</span><span class="grow"></span><span class="mono faint">${opt.voices.length || ""}</span></div>
-        ${opt.voices.map(v => `
+        ${opt.voices.map(v => { const [n, d] = voiceName(v, names); return `
           <div class="vcard ${v === G.voice ? "active" : ""}" data-voice="${esc(v)}" tabindex="0" role="button" aria-pressed="${v === G.voice}">
-            <div class="vface" style="background:${hue(v)}">${esc(v[0].toUpperCase())}</div>
-            <div style="min-width:0"><div class="n">${esc(v[0].toUpperCase() + v.slice(1))}</div><div class="d">${esc(providerName(m.provider))}</div></div>
-            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(v)}" title="Speaks one short sentence, billed to your key">${icon("play")}</button>
-          </div>`).join("")}
+            <div class="vface" style="background:${hue(v)}">${esc(n[0].toUpperCase())}</div>
+            <div style="min-width:0"><div class="n">${esc(n)}${v === G.blend ? ` <span class="mono faint">blended in</span>` : ""}</div><div class="d">${esc(d ? d + " · " + providerName(m.provider) : providerName(m.provider))}</div></div>
+            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(n)}" title="${local ? "Speaks one short sentence" : "Speaks one short sentence, billed to your key"}">${icon("play")}</button>
+          </div>`; }).join("")}
       </aside>
       <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
-        <div class="stage-head"><span class="title">Voice</span>${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
+        <div class="stage-head"><span class="title">Voice</span>${modeSwitch()}${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
           <label class="btn" for="vo-video-file">${icon("video")}${G.video ? "Change video" : "Add a video"}</label><input type="file" id="vo-video-file" accept="video/*" hidden>
           <button class="btn primary" id="vo-go" ${!m || G.speaking ? "disabled" : ""}>${icon("speech")}${G.speaking ? "Speaking…" : "Speak"}</button></div>
-        ${m ? `<div style="padding:14px 24px 0">${remoteNote(m, "The text")}</div>` : ""}
+        ${m ? `<div style="padding:14px 24px 0">${local ? `<div class="flag ok-note">${icon("lock")}<div><b>Speaks on this PC.</b> The text is not sent anywhere.</div></div>` : remoteNote(m, "The text")}</div>` : ""}
         ${!mediaModels("speech").length ? noModel("speech") : `
         <div class="vo-split">
           <div class="script">
@@ -3179,6 +3403,11 @@
         <div class="field"><label for="vo-model">Model</label>${mediaPicker("vo-model", "speech", G.voModel)}</div>
         <div class="field" ${opt.speed ? "" : `title="${m ? esc(m.name) + " has no pace setting" : ""}"`}><label for="vo-speed">Pace <output>${opt.speed ? G.speed.toFixed(2) + "×" : "not offered"}</output></label>
           <input type="range" id="vo-speed" min="0.5" max="2" step="0.05" value="${G.speed}" ${opt.speed ? "" : "disabled"}></div>
+        ${opt.mix && opt.voices.length > 1 ? `<div class="field"><label for="vo-blend">Blend with</label>
+          <select class="input" id="vo-blend"><option value="">Nothing, just ${esc(voiceName(G.voice, names)[0])}</option>${opt.voices.filter(v => v !== G.voice).map(v => `<option value="${esc(v)}" ${v === G.blend ? "selected" : ""}>${esc(voiceName(v, names)[0])}${voiceName(v, names)[1] ? " · " + esc(voiceName(v, names)[1]) : ""}</option>`).join("")}</select></div>
+        ${G.blend ? `<div class="field"><label for="vo-mix">Mix <output>${mixLabel(names)}</output></label>
+          <input type="range" id="vo-mix" min="0.1" max="0.9" step="0.05" value="${G.blendW}" aria-label="How much of ${esc(voiceName(G.voice, names)[0])}"></div>` : ""}` : ""}
+        ${opt.tags?.length ? `<div class="field"><label>Expressions <output>put in the text</output></label><div class="tag-row">${opt.tags.map(t => `<button class="btn ghost sm" data-vo-tag="${esc(t)}">&lt;${esc(t)}&gt;</button>`).join("")}</div></div>` : ""}
         <div class="field"><label for="vo-instr">How to say it ${opt.instructions ? "" : "<output>not offered</output>"}</label>
           <textarea class="input" id="vo-instr" rows="3" placeholder="Calm narrator, a little slower, warm" ${opt.instructions ? "" : "disabled"}>${esc(G.instructions)}</textarea></div>
         ${opt.formats.length > 1 ? `<div class="field"><label>File</label><div class="seg">${opt.formats.map(f => `<button data-format="${f}" aria-pressed="${G.format === f}">${f.toUpperCase()}</button>`).join("")}</div></div>`
@@ -3187,10 +3416,35 @@
     </div>`;
   }
 
-  async function speak(text, voice, preview) {
+  // a voice's readable name and description, from "Heart (American female)" or the bare id
+  function voiceName(v, names) {
+    if (!v) return [""];
+    const full = names?.[v];
+    const hit = full && /^(.*?)\s*\((.*)\)$/.exec(full);
+    if (hit) return [hit[1], hit[2]];
+    if (full) return [full, ""];
+    return [v[0].toUpperCase() + v.slice(1), ""];
+  }
+
+  function mixLabel(names) {
+    const a = Math.round(G.blendW * 100);
+    return `${a}% ${voiceName(G.voice, names)[0]} · ${100 - a}% ${voiceName(G.blend, names)[0]}`;
+  }
+
+  // what is sent: the voice, or a blend such as af_heart*0.70+am_adam*0.30
+  function spokenVoice() {
+    return G.blend ? `${G.voice}*${G.blendW.toFixed(2)}+${G.blend}*${(1 - G.blendW).toFixed(2)}` : G.voice;
+  }
+
+  function spokenLabel() {
+    const names = pickedModel(G.voModel, "speech")?.speech?.names || {};
+    return G.blend ? mixLabel(names) : voiceName(G.voice, names)[0];
+  }
+
+  async function speak(text, voice, preview, label) {
     const m = pickedModel(G.voModel, "speech");
     if (!m || !text || !voice) return;
-    const take = { text, voice, model: m.name };
+    const take = { text, voice: label || voice, model: m.name };
     if (!preview) { G.speaking = true; render(); }
     try {
       const j = await postJson("/api/speech", { model: G.voModel, text, voice, speed: G.speed, instructions: G.instructions, format: G.format });
@@ -3207,19 +3461,35 @@
   }
 
   function bindLiveVoice() {
+    if (G.mode === "listen") return bindListen();
+    $$("[data-vomode]").forEach(b => b.addEventListener("click", () => { G.text = $("#vo-text")?.value ?? G.text; G.mode = b.dataset.vomode; store.set("voMode", G.mode); render(); }));
     const keep = () => { G.text = $("#vo-text")?.value ?? G.text; G.instructions = $("#vo-instr")?.value ?? G.instructions; };
     $("#vo-model")?.addEventListener("change", e => { keep(); G.voModel = e.target.value; store.set("voModel", G.voModel); render(); });
     $$("[data-voice]").forEach(el => el.addEventListener("click", e => {
       if (e.target.closest("[data-preview]")) return;
       keep(); G.voice = el.dataset.voice; store.set("voice", G.voice); render();
     }));
-    $$("[data-preview]").forEach(b => b.addEventListener("click", () => speak(`Hello, I'm ${b.dataset.preview}. This is how I sound.`, b.dataset.preview, true)));
+    $$("[data-preview]").forEach(b => b.addEventListener("click", () => {
+      const n = voiceName(b.dataset.preview, pickedModel(G.voModel, "speech")?.speech?.names)[0];
+      speak(`Hello, I'm ${n}. This is how I sound.`, b.dataset.preview, true, n);
+    }));
+    $("#vo-blend")?.addEventListener("change", e => { keep(); G.blend = e.target.value; render(); });
+    $("#vo-mix")?.addEventListener("input", e => {
+      G.blendW = +e.target.value;
+      e.target.previousElementSibling.querySelector("output").textContent = mixLabel(pickedModel(G.voModel, "speech")?.speech?.names);
+    });
+    $$("[data-vo-tag]").forEach(b => b.addEventListener("click", () => {
+      const t = $("#vo-text"); if (!t) return;
+      const at = t.selectionStart ?? t.value.length, tag = `<${b.dataset.voTag}>`;
+      t.value = t.value.slice(0, at) + tag + t.value.slice(t.selectionEnd ?? at);
+      G.text = t.value; t.focus(); t.selectionStart = t.selectionEnd = at + tag.length;
+    }));
     $("#vo-speed")?.addEventListener("input", e => { G.speed = +e.target.value; e.target.previousElementSibling.querySelector("output").textContent = G.speed.toFixed(2) + "×"; });
     $("#vo-instr")?.addEventListener("input", e => { G.instructions = e.target.value; });
     $("#vo-text")?.addEventListener("input", e => { G.text = e.target.value; });
-    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), G.voice); } });
+    $("#vo-text")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { keep(); speak(G.text.trim(), spokenVoice(), false, spokenLabel()); } });
     $$("[data-format]").forEach(b => b.addEventListener("click", () => { keep(); G.format = b.dataset.format; render(); }));
-    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), G.voice); });
+    $("#vo-go")?.addEventListener("click", () => { keep(); speak(G.text.trim(), spokenVoice(), false, spokenLabel()); });
     $("#vo-video-file")?.addEventListener("change", e => {
       const f = e.target.files[0]; if (!f) return;
       keep();
@@ -3591,7 +3861,7 @@
   }
 
   // ---------- downloading models from Hugging Face ----------
-  const H = { open: false, query: "", results: null, hidden: 0, runs: null, searching: false, error: null,
+  const H = { open: false, query: "", kind: "text", results: null, hidden: 0, runs: null, searching: false, error: null,
     repo: null, listing: null, loadingRepo: false, repoError: null, downloads: [], folder: "", timer: 0, deleting: null };
   const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : n >= 1e3 ? Math.round(n / 1e3) + " kB" : n + " B";
   const fmtWait = s => !isFinite(s) || s <= 0 ? "" : s < 90 ? Math.round(s) + " s left" : s < 5400 ? Math.round(s / 60) + " min left" : (s / 3600).toFixed(1) + " h left";
@@ -3614,7 +3884,8 @@
   function hubPanel() {
     const res = H.results;
     const list = H.searching ? `<div class="faint pad">Searching…</div>`
-      : !res ? `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`
+      : !res ? (H.kind === "speech" ? `<div class="faint pad">Whisper models write down what is said (<code>openai/whisper-base</code>), VITS models speak (<code>facebook/mms-tts-eng</code>, one per language). Both work on the Voice screen.</div>`
+        : `<div class="faint pad">Search by name, such as <code>qwen2.5 instruct</code>, <code>llama 3.2 1b</code> or <code>tinyllama</code>.</div>`)
       : !res.length ? `<div class="faint pad">Nothing found that the studio runs${H.hidden ? ` (${H.hidden} other model${H.hidden === 1 ? "" : "s"} found)` : ""}.</div>`
       : res.map(r => `<button type="button" class="hub-item ${H.repo === r.id ? "on" : ""}" data-repo="${esc(r.id)}">
           <span class="nm">${esc(r.id)}</span>
@@ -3627,7 +3898,8 @@
         <button type="button" class="iconbtn sm" id="hub-close" aria-label="Close">${icon("x")}</button></div>
       <div id="hub-token-box">${hubToken()}</div>
       <form class="place-path" id="hub-search" autocomplete="off">
-        <input class="input" id="hub-q" type="search" placeholder="Find a model on Hugging Face" value="${esc(H.query)}" aria-label="Model name">
+        <div class="seg" role="group" aria-label="What kind of model"><button type="button" data-hub-kind="text" aria-pressed="${H.kind === "text"}">Chat</button><button type="button" data-hub-kind="speech" aria-pressed="${H.kind === "speech"}">Speech</button></div>
+        <input class="input" id="hub-q" type="search" placeholder="${H.kind === "speech" ? "Such as whisper base or mms-tts-deu" : "Find a model on Hugging Face"}" value="${esc(H.query)}" aria-label="Model name">
         <button class="btn primary" type="submit" ${H.searching ? "disabled" : ""}>${icon("search")}Search</button></form>
       ${H.error ? `<div class="flag bad">${icon("alert")}<span>${esc(H.error)}</span></div>` : ""}
       <div class="hub-cols">
@@ -3664,7 +3936,7 @@
         <div class="meter wide"><i style="width:${pct.toFixed(1)}%;${d.state === "failed" ? "background:var(--bad)" : d.state === "done" ? "background:var(--ok)" : ""}"></i></div>
         <span class="mono faint tnum st">${esc(status)}</span>
         <span class="acts">${hubActive(d) ? `<button class="btn sm ghost" data-hub-cancel="${esc(d.id)}">${icon("stop")}Stop</button>`
-          : d.state === "done" ? `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button><button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
+          : d.state === "done" ? `${d.family === "whisper" || d.family === "vits" ? `<button class="btn sm" data-voice-with="${esc(d.model)}" data-voice-mode="${d.family === "whisper" ? "listen" : "speak"}">${icon("speech")}${d.family === "whisper" ? "Transcribe with it" : "Speak with it"}</button>` : `<button class="btn sm" data-chat-with="${esc(d.model)}">${icon("chat")}Chat with it</button>`}<button class="iconbtn sm" data-hub-delete="${esc(d.name)}" aria-label="Delete ${esc(d.name)}" title="${H.deleting === d.name ? "Click again to delete the files" : "Delete it from this PC"}">${icon(H.deleting === d.name ? "check" : "trash")}</button>`
           : `<button class="btn sm" data-hub-retry="${esc(d.id)}">${icon("retry")}${d.state === "stopped" ? "Resume" : "Try again"}</button>`}</span>
         ${d.error ? `<div class="why bad">${esc(d.error)}</div>` : ""}
       </div>`;
@@ -3683,7 +3955,7 @@
   }
   async function hubSearch() {
     H.searching = true; H.error = null; renderHub();
-    try { const r = await postJson("/api/hub/search", { query: H.query }); H.results = r.models || []; H.hidden = r.hidden || 0; }
+    try { const r = await postJson("/api/hub/search", { query: H.query, kind: H.kind }); H.results = r.models || []; H.hidden = r.hidden || 0; }
     catch (e) { H.error = e.message; H.results = null; }
     H.searching = false; renderHub();
   }
@@ -3743,6 +4015,16 @@
     bindHubToken();
     $("#hub-close")?.addEventListener("click", () => { H.open = false; render(); });
     $("#hub-q")?.addEventListener("input", e => { H.query = e.target.value; });
+    $$("[data-hub-kind]").forEach(b => b.addEventListener("click", () => {
+      if (H.kind === b.dataset.hubKind) return;
+      H.kind = b.dataset.hubKind; H.results = null; H.repo = null; H.listing = null; renderHub(); $("#hub-q")?.focus();
+    }));
+    $$("[data-voice-with]").forEach(b => b.addEventListener("click", () => {
+      G.mode = b.dataset.voiceMode; store.set("voMode", G.mode);
+      if (G.mode === "listen") { G.trModel = b.dataset.voiceWith; store.set("trModel", G.trModel); }
+      else { G.voModel = b.dataset.voiceWith; store.set("voModel", G.voModel); }
+      go("voice");
+    }));
     $("#hub-search")?.addEventListener("submit", e => { e.preventDefault(); hubSearch(); });
     $$("[data-repo]").forEach(b => b.addEventListener("click", () => hubRepo(b.dataset.repo)));
     $$("[data-download]").forEach(b => b.addEventListener("click", async () => {
@@ -3965,8 +4247,7 @@
   }
 
   // the chat's Reasoning bubble, for an agent's thinking
-  const agentThink = (text, open, i, live) => `<div class="st md-body"><details class="tool think" ${i != null ? `data-ag-open="${i}"` : ""} ${open ? "open" : ""}>
-      <summary>${icon("wand")}<span><b>Reasoning</b></span><span class="grow"></span><span class="mono muted">${live ? "thinking…" : "summary"}</span></summary><pre>${esc(text)}</pre></details></div>`;
+  const agentThink = (text, open, i, live) => `<div class="st md-body">${thinkHtml(text, { open, live, attrs: i != null ? `data-ag-open="${i}"` : "" })}</div>`;
 
   function agentStep(s, i) {
     switch (s.kind) {
@@ -3994,7 +4275,7 @@
       <div class="ag-steps-list" id="ag-steps-list">${(r.steps || []).map(agentStep).join("")}
         ${r.state === "waiting" && r.pending ? agentAsk(r, true) : ""}
         ${r.state === "running" ? (r.thinking ? agentThink(r.thinking, true, null, true) : `<div class="st st-say"><span class="typing"><i></i><i></i><i></i></span></div>`) : ""}</div>
-      ${agentActive(r) ? "" : `<form class="ag-reply" id="ag-reply"><textarea class="input" id="ag-reply-text" rows="2" placeholder="Tell it more and let it go on">${esc(A.reply)}</textarea><button class="btn primary" type="submit">${icon("send")}Send</button></form>`}`;
+      ${agentActive(r) ? "" : `<form class="ag-reply" id="ag-reply"><textarea class="input" id="ag-reply-text" rows="2" placeholder="Tell it more and let it go on. Enter sends, Shift+Enter adds a line">${esc(A.reply)}</textarea><button class="btn primary" type="submit">${icon("send")}Send</button></form>`}`;
   }
 
   function liveAgentsView() {
@@ -4108,7 +4389,8 @@
         A.reply = ""; A.detailKey = null;
         agentDo("/api/agents/reply", { id: A.sel, text });
       };
-      $("#ag-reply-text").onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) reply.requestSubmit(); };
+      // like the chat composer: Enter sends, Shift+Enter adds a line
+      $("#ag-reply-text").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); reply.requestSubmit(); } };
     }
   }
 
@@ -4190,7 +4472,12 @@
   const start = location.hash.slice(1);
   state.view = views[start] ? start : "chat";
   // the badge counts real agents waiting for the user
-  if (isLive()) $('.rail a[data-view="agents"] .badge')?.remove();
+  if (isLive()) {
+    $('.rail a[data-view="agents"] .badge')?.remove();
+    // nothing serves MCP yet: the screen is a mock-up, so the studio does not offer it as if it were real
+    $('.rail a[data-view="mcp"]')?.remove();
+    if (state.view === "mcp") state.view = "chat";
+  }
   render();
   loadLive();
   if (document.fonts) document.fonts.ready.then(paintAll);

@@ -38,6 +38,15 @@ class MatvecBenchmarkTest {
         VulkanBackend backend = VulkanBackend.loaded().orElseThrow();
         System.out.println(gpu.name() + "; " + backend.status());
         System.out.println("kernel tuning: " + backend.tuning());
+        for (String wide : new String[] {"0", "1"}) {
+            System.setProperty("brainiac.vulkan.packedWide", wide);
+            System.out.println("packedWide " + wide + (wide.equals("1") ? " (16 columns per invocation)" : ""));
+            products(backend);
+        }
+        System.clearProperty("brainiac.vulkan.packedWide");
+    }
+
+    private static void products(VulkanBackend backend) {
         for (int bits : new int[] {8, 4}) {
             List<Storage> owned = new ArrayList<>();
             List<PackedStorage> weights = new ArrayList<>();

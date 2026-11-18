@@ -36,9 +36,12 @@ final class Tuning {
             "bigTileGroups", 128L,    // 64 x 64 tiles from this many of them, else 32 x 32
             "splitBelow", 256L,       // products of fewer tiles split k into pieces
             "packedGroups", 256L,     // work groups a few-row packed product aims for
-            "packedPiece", 64L);      // the fewest rows of k per piece of it
+            "packedPiece", 64L,       // the fewest rows of k per piece of it
+            "packedWide", 0L);        // 1: one-row packed products read 16 columns per load
 
     private final Map<String, Long> values = new LinkedHashMap<>();
+    /** Whether a loaded tuning has every key; one from a version with fewer choices is measured again. */
+    boolean complete = true;
 
     long get(String key) {
         String fixed = System.getProperty("brainiac.vulkan." + key);
@@ -83,6 +86,7 @@ final class Tuning {
             return null;
         }
         Tuning t = new Tuning();
+        t.complete = p.stringPropertyNames().containsAll(DEFAULTS.keySet());
         for (String key : DEFAULTS.keySet()) {
             String v = p.getProperty(key);
             if (v != null) {
