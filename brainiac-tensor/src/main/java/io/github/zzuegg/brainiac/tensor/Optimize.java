@@ -500,6 +500,211 @@ public final class Optimize {
         return new Minimum(best, bestValue, g, converged);
     }
 
+    /**
+     * The answer to a quadratic program.
+     *
+     * @param x the minimizer
+     * @param value {@code x P x / 2 + q x} there
+     * @param dual the multipliers of the constraint rows
+     * @param iterations the iterations taken
+     * @param converged whether the primal and dual residuals met the tolerance
+     */
+    public record QuadraticSolution(double[] x, double value, double[] dual, int iterations, boolean converged) {
+    }
+
+    /**
+     * Minimizes {@code x P x / 2 + q x} subject to {@code lower <= A x <= upper}, by the ADMM
+     * splitting of OSQP (Stellato et al. 2020) with adaptive step size. {@code P} must be
+     * symmetric positive semi-definite. Equalities have equal bounds; bounds on x are rows of the
+     * identity; a missing side is an infinity. Suits problems of up to a few hundred variables
+     * (one dense factorization per step-size change).
+     *
+     * @param p the quadratic term, {@code n x n}
+     * @param q the linear term
+     * @param a the constraint rows, {@code m x n}, or null for none
+     * @param lower the rows' lower bounds (may be {@code -Infinity})
+     * @param upper the rows' upper bounds (may be {@code +Infinity})
+     * @param tolerance the residuals to reach, such as 1e-8
+     * @param maxIterations the most iterations, such as 10000
+     * @return the solution
+     */
+    public static QuadraticSolution quadraticProgram(double[][] p, double[] q, double[][] a, double[] lower,
+            double[] upper, double tolerance, int maxIterations) {
+        int n = q.length;
+        int m = a == null ? 0 : a.length;
+        double[][] am = a == null ? new double[0][n] : a;
+        double sigma = 1e-6;
+        double alpha = 1.6;
+        double rho = 0.1;
+        double[] x = new double[n];
+        double[] z = new double[m];
+        double[] y = new double[m];
+        double[] rhoRow = rowRho(lower, upper, rho, m);
+        double[][] l = qpFactor(p, am, rhoRow, sigma);
+        double[] xt = new double[n];
+        double[] zt = new double[m];
+        double[] rhs = new double[n];
+        double[] ax = new double[m];
+        double[] px = new double[n];
+        double[] aty = new double[n];
+        int it = 0;
+        boolean converged = false;
+        while (it < maxIterations) {
+            it++;
+            for (int j = 0; j < n; j++) {
+                rhs[j] = sigma * x[j] - q[j];
+            }
+            for (int i = 0; i < m; i++) {
+                double w = rhoRow[i] * z[i] - y[i];
+                for (int j = 0; j < n; j++) {
+                    rhs[j] += am[i][j] * w;
+                }
+            }
+            choleskySolve(l, rhs, xt);
+            for (int i = 0; i < m; i++) {
+                double s = 0;
+                for (int j = 0; j < n; j++) {
+                    s += am[i][j] * xt[j];
+                }
+                zt[i] = s;
+            }
+            for (int j = 0; j < n; j++) {
+                x[j] = alpha * xt[j] + (1 - alpha) * x[j];
+            }
+            for (int i = 0; i < m; i++) {
+                double relaxed = alpha * zt[i] + (1 - alpha) * z[i];
+                double zn = Math.min(upper[i], Math.max(lower[i], relaxed + y[i] / rhoRow[i]));
+                y[i] += rhoRow[i] * (relaxed - zn);
+                z[i] = zn;
+            }
+            if (it % 10 != 0 && it != maxIterations) {
+                continue;
+            }
+            // residuals
+            double prim = 0;
+            double axMax = 0;
+            double zMax = 0;
+            for (int i = 0; i < m; i++) {
+                double s = 0;
+                for (int j = 0; j < n; j++) {
+                    s += am[i][j] * x[j];
+                }
+                ax[i] = s;
+                prim = Math.max(prim, Math.abs(s - z[i]));
+                axMax = Math.max(axMax, Math.abs(s));
+                zMax = Math.max(zMax, Math.abs(z[i]));
+            }
+            double dual = 0;
+            double pxMax = 0;
+            double atyMax = 0;
+            double qMax = 0;
+            for (int j = 0; j < n; j++) {
+                double s = 0;
+                for (int k = 0; k < n; k++) {
+                    s += p[j][k] * x[k];
+                }
+                px[j] = s;
+                double t = 0;
+                for (int i = 0; i < m; i++) {
+                    t += am[i][j] * y[i];
+                }
+                aty[j] = t;
+                dual = Math.max(dual, Math.abs(s + q[j] + t));
+                pxMax = Math.max(pxMax, Math.abs(s));
+                atyMax = Math.max(atyMax, Math.abs(t));
+                qMax = Math.max(qMax, Math.abs(q[j]));
+            }
+            double primScale = Math.max(axMax, zMax);
+            double dualScale = Math.max(pxMax, Math.max(atyMax, qMax));
+            if (prim <= tolerance * Math.max(1, primScale) && dual <= tolerance * Math.max(1, dualScale)) {
+                converged = true;
+                break;
+            }
+            if (it % 50 == 0 && m > 0) {
+                double ratio = Math.sqrt((prim / Math.max(1e-30, primScale)) / Math.max(1e-30, dual / Math.max(1e-30,
+                        dualScale)));
+                double next = Math.min(1e6, Math.max(1e-6, rho * ratio));
+                if (next > 5 * rho || next < rho / 5) {
+                    for (int i = 0; i < m; i++) {
+                        rhoRow[i] *= next / rho;
+                    }
+                    rho = next;
+                    l = qpFactor(p, am, rhoRow, sigma);
+                }
+            }
+        }
+        double value = 0;
+        for (int j = 0; j < n; j++) {
+            double s = 0;
+            for (int k = 0; k < n; k++) {
+                s += p[j][k] * x[k];
+            }
+            value += x[j] * (0.5 * s + q[j]);
+        }
+        return new QuadraticSolution(x, value, y, it, converged);
+    }
+
+    private static double[] rowRho(double[] lower, double[] upper, double rho, int m) {
+        if ((m > 0) && (lower == null || upper == null || lower.length != m || upper.length != m)) {
+            throw new IllegalArgumentException("give lower and upper bounds for each of the " + m + " rows");
+        }
+        double[] r = new double[m];
+        for (int i = 0; i < m; i++) {
+            if (lower[i] > upper[i]) {
+                throw new IllegalArgumentException("row " + i + " has lower bound above upper");
+            }
+            boolean free = lower[i] == Double.NEGATIVE_INFINITY && upper[i] == Double.POSITIVE_INFINITY;
+            r[i] = free ? 1e-6 : lower[i] == upper[i] ? 1e3 * rho : rho;
+        }
+        return r;
+    }
+
+    // Cholesky of P + sigma I + A^T diag(rho) A
+    private static double[][] qpFactor(double[][] p, double[][] a, double[] rho, double sigma) {
+        int n = p.length;
+        double[][] k = new double[n][n];
+        for (int i = 0; i < n; i++) {
+            if (p[i].length != n) {
+                throw new IllegalArgumentException("P must be square");
+            }
+            for (int j = 0; j < n; j++) {
+                k[i][j] = 0.5 * (p[i][j] + p[j][i]);
+            }
+            k[i][i] += sigma;
+        }
+        for (int r = 0; r < a.length; r++) {
+            double[] row = a[r];
+            for (int i = 0; i < n; i++) {
+                if (row[i] != 0) {
+                    double f = rho[r] * row[i];
+                    for (int j = 0; j < n; j++) {
+                        k[i][j] += f * row[j];
+                    }
+                }
+            }
+        }
+        return Matrices.cholesky(k);
+    }
+
+    private static void choleskySolve(double[][] l, double[] b, double[] x) {
+        int n = b.length;
+        double[] y = new double[n];
+        for (int i = 0; i < n; i++) {
+            double s = b[i];
+            for (int k = 0; k < i; k++) {
+                s -= l[i][k] * y[k];
+            }
+            y[i] = s / l[i][i];
+        }
+        for (int i = n - 1; i >= 0; i--) {
+            double s = y[i];
+            for (int k = i + 1; k < n; k++) {
+                s -= l[k][i] * x[k];
+            }
+            x[i] = s / l[i][i];
+        }
+    }
+
     private static double gaussian(java.util.SplittableRandom rng) {
         double u = 1 - rng.nextDouble();
         return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rng.nextDouble());

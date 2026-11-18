@@ -117,4 +117,30 @@ class OptimizeTest {
             }
         }
     }
+
+    @Test
+    void quadraticPrograms() {
+        // the OSQP README problem: min x'Px/2 + q'x, P = [[4,1],[1,2]], q = [1,1],
+        // 1 <= x0 + x1 <= 1, 0 <= x0 <= 0.7, 0 <= x1 <= 0.7; solution (0.3, 0.7)
+        Optimize.QuadraticSolution s = Optimize.quadraticProgram(new double[][] {{4, 1}, {1, 2}}, new double[] {1, 1},
+                new double[][] {{1, 1}, {1, 0}, {0, 1}}, new double[] {1, 0, 0}, new double[] {1, 0.7, 0.7}, 1e-9, 20000);
+        assertTrue(s.converged());
+        assertArrayEquals(new double[] {0.3, 0.7}, s.x(), 1e-6);
+        assertEquals(1.88, s.value(), 1e-6);
+        // on the probability simplex (as EasyMKL): min |x - c|^2 / 2 is the projection of c
+        double[] c = {0.9, 0.5, -0.2, 0.1};
+        double[][] eye = Matrices.identity(4);
+        double[][] rows = new double[5][];
+        rows[0] = new double[] {1, 1, 1, 1};
+        System.arraycopy(eye, 0, rows, 1, 4);
+        double inf = Double.POSITIVE_INFINITY;
+        Optimize.QuadraticSolution proj = Optimize.quadraticProgram(eye, new double[] {-0.9, -0.5, 0.2, -0.1}, rows,
+                new double[] {1, 0, 0, 0, 0}, new double[] {1, inf, inf, inf, inf}, 1e-10, 20000);
+        // the projection shifts by tau = 0.2: (0.7, 0.3, 0, 0)
+        assertArrayEquals(new double[] {0.7, 0.3, 0, 0}, proj.x(), 1e-6);
+        // unconstrained: P x = -q
+        Optimize.QuadraticSolution free = Optimize.quadraticProgram(new double[][] {{2, 0}, {0, 4}}, new double[] {-2, -8},
+                null, null, null, 1e-10, 1000);
+        assertArrayEquals(new double[] {1, 2}, free.x(), 1e-6);
+    }
 }

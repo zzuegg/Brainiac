@@ -137,4 +137,30 @@ class MatricesTest {
         assertEquals(all[39], top.values()[0], 1e-10);
         assertEquals(all[38], top.values()[1], 1e-10);
     }
+
+    @Test
+    void conjugateGradientSolvesALaplacian() {
+        // the 1-D Laplacian, matrix-free, with a Jacobi preconditioner
+        int n = 200;
+        Matrices.Operator lap = (in, out) -> {
+            for (int i = 0; i < n; i++) {
+                out[i] = 2 * in[i] - (i > 0 ? in[i - 1] : 0) - (i + 1 < n ? in[i + 1] : 0);
+            }
+        };
+        double[] want = new double[n];
+        for (int i = 0; i < n; i++) {
+            want[i] = Math.sin(0.05 * i);
+        }
+        double[] b = new double[n];
+        lap.apply(want, b);
+        double[] half = new double[n];
+        java.util.Arrays.fill(half, 0.5);
+        Matrices.Solution s = Matrices.conjugateGradient(lap, b, null, Matrices.Operator.diagonal(half), 1e-12, 1000);
+        org.junit.jupiter.api.Assertions.assertTrue(s.converged(), s.toString());
+        org.junit.jupiter.api.Assertions.assertTrue(s.iterations() <= n + 5);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(want, s.x(), 1e-8);
+        double[][] dense = {{4, 1}, {1, 3}};
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new double[] {1.0 / 11, 7.0 / 11},
+                Matrices.conjugateGradient(Matrices.Operator.of(dense), new double[] {1, 2}, null, null, 1e-14, 10).x(), 1e-12);
+    }
 }

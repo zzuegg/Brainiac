@@ -244,6 +244,28 @@ public final class Tensor {
     }
 
     /**
+     * An identity matrix of 32-bit floats on the default device.
+     *
+     * @param n its size
+     * @return {@code [n, n]} with ones on the diagonal
+     */
+    public static Tensor eye(int n) {
+        return Linalg.identity(n, DType.FLOAT32, Device.getDefault());
+    }
+
+    /**
+     * An identity matrix.
+     *
+     * @param n its size
+     * @param dtype its type
+     * @param device its device
+     * @return {@code [n, n]} with ones on the diagonal
+     */
+    public static Tensor eye(int n, DType dtype, Device device) {
+        return Linalg.identity(n, dtype, device);
+    }
+
+    /**
      * Creates a tensor of zeros on the default device.
      *
      * @param shape the shape

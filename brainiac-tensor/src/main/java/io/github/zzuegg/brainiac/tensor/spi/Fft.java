@@ -38,9 +38,46 @@ public final class Fft {
         }
     }
 
-    /** One unnormalized transform of any length, in place. */
-    static void transform(double[] re, double[] im, boolean inverse) {
+    /**
+     * Transforms rows of complex values in place in double precision, as the float version:
+     * interleaved (real, imaginary) pairs, with the inverse scaled by {@code 1 / n}.
+     *
+     * @param data {@code rows * n} complex values, {@code 2 * rows * n} numbers
+     * @param rows the number of rows
+     * @param n the values per row
+     * @param inverse whether to compute the inverse transform
+     */
+    public static void transform(double[] data, long rows, int n, boolean inverse) {
+        double[] re = new double[n];
+        double[] im = new double[n];
+        for (long r = 0; r < rows; r++) {
+            int base = Math.toIntExact(r * n * 2);
+            for (int j = 0; j < n; j++) {
+                re[j] = data[base + 2 * j];
+                im[j] = data[base + 2 * j + 1];
+            }
+            transform(re, im, inverse);
+            double scale = inverse ? 1.0 / n : 1.0;
+            for (int j = 0; j < n; j++) {
+                data[base + 2 * j] = re[j] * scale;
+                data[base + 2 * j + 1] = im[j] * scale;
+            }
+        }
+    }
+
+    /**
+     * One transform of any length in double precision, in place, unnormalized:
+     * {@code X[k] = sum_j x[j] e^(-+2 pi i jk / n)}; divide by {@code n} after an inverse.
+     *
+     * @param re the real parts
+     * @param im the imaginary parts, as many
+     * @param inverse whether to use the conjugate exponent
+     */
+    public static void transform(double[] re, double[] im, boolean inverse) {
         int n = re.length;
+        if (im.length != n) {
+            throw new IllegalArgumentException(n + " real and " + im.length + " imaginary parts");
+        }
         if (n <= 1) {
             return;
         }
