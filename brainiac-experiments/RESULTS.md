@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety.
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic.
 
 ## How the module is laid out
 
@@ -17,6 +17,7 @@ Rules this page follows:
 - Where a Run number clearly disagrees with an earlier recorded number, both are given and the difference is noted. PR #105 changed four things numerically: GumbelChannel's noise stream, and exact second-order maths in MAML, Sophia and GradientPenalty.
 - Wave 4 numbers are keyed **Run-w4**: they were printed by the tests in the full suite runs after wave 4 on 2026-11-17, one of the merged WP1–WP5 work (690 tests, all passing) and one of the WP6 branch (601 tests, all passing). Where a wave 4 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave4)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - Wave 5 numbers are keyed **Run-w5**: they were printed by the tests in three full suite runs after wave 5 on 2026-11-17, one of the merged WP1–WP4 work (804 tests), one of the WP5 branch (711 tests) and one of the WP6 branch (735 tests), all passing. Where a wave 5 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave5)** next to it. Where the two disagree, the test's number is given and the report's is noted.
+- Wave 6 numbers are keyed **Run-w6**: they were printed by the tests in one full suite run of the merged wave 6 work on 2026-11-17 and 2026-11-18 (446 test classes, 997 tests, all passing). Where a wave 6 test printed nothing on a point, the number comes from the implementing agent's final report and is marked **(R-wave6)** next to it. Where the two disagree, the test's number is given and the report's is noted.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -39,6 +40,8 @@ Source keys (given under each experiment):
 | R-wave4 | Session transcript: final reports of the six wave 4 work-package agents (WP1–WP6) |
 | Run-w5 | Full suite runs after wave 5, 2026-11-17: merged WP1–WP4 (804 tests), the WP5 branch (711 tests) and the WP6 branch (735 tests), all passing |
 | R-wave5 | Session transcript: final reports of the six wave 5 work-package agents (WP1–WP6) |
+| Run-w6 | Full suite run after wave 6, 2026-11-17 to 2026-11-18: merged WP1–WP6 work (446 test classes, 997 tests), all passing |
+| R-wave6 | Session transcript: final reports of the six wave 6 work-package agents (WP1–WP6) |
 
 ---
 
@@ -179,6 +182,15 @@ Sources: Run-w5.
 |---|---|---|---|---|
 | Diffusion world model (`DiffusionWorldModel`), cart-pole | Open-loop RMSE at 1 / 10 steps | 0.0028 / 0.0456 | MLP world model (`MlpWorldModel`): 0.0096 / 0.1103 | The diffusion model is 3.4x more accurate at 1 step and 2.4x at 10 steps. |
 | `DreamerAgent` trained inside the diffusion world model | Real cart-pole return | 199.5 | Inside the MLP world model: 200.0 | Both solve the task, so the better model gives no return gain here. |
+
+
+### NeverGiveUpExploration (W6 3.6: NGU and Agent57)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| NGU (episodic kNN bonus times an RND modulator), tabular learner, sparse maze | Distinct cells visited / goals reached | 42.0 / 0 | No bonus: 26.3 / 0. RND: 51.0 / 13.7. ICM: 30.7 / 0. Go-Explore: 47.3 / 0.7 | Negative: more coverage than no bonus, but no goals; RND is far better. |
+| Agent57 (per-arm Q-tables, sliding-window UCB bandit) | Same | 23.3 / 0 | Same | Negative: below no bonus. The bandit gets no extrinsic signal on this map (R-wave6). |
 
 ---
 
@@ -329,6 +341,119 @@ Sources: Run-w5, R-wave5.
 | Convert a trained GQA (one KV head) to `LatentAttention`, latent 12 (partial RoPE, activation-aware joint KV SVD, R-wave5) | Validation loss right after conversion → after 40 steps; cached values per token | 2.374 → 2.171; 32 | Original GQA: 2.289, and 2.143 after 40 more steps. MLA from scratch, latent 12: 2.198 | Conversion costs loss at first; after 40 steps it beats a from-scratch MLA but not the GQA it came from. |
 | Same, latent 8 | Same | 2.561 → 2.334; 24 | MLA from scratch, latent 8: 2.510 | Beats from-scratch MLA and caches 25% less than the original. |
 
+
+### SetLearning (W6 2.11: Deep Sets, Set Transformer)
+Sources: Run-w6, R-wave6. Trained on sets of 3–8 elements. Relation networks are under vision (RelationalShapes).
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Deep Sets (sum pooling) | Max: MSE at n = 8 / n = 12 | 0.003 / 0.003 | Set Transformer: 0.008 / 0.007. Sorted, padded MLP: 0.027 / 0.146 | Sum pooling carries the max to larger sets; the MLP does not. |
+| Set Transformer (ISAB, PMA) | Amortised clustering: centre error at n = 8 / n = 12 | 0.331 / 0.305 | Deep Sets: 0.594 / 1.063. Sorted MLP: 0.385 / 0.957 | Attention pooling clusters best and holds at n = 12. |
+| Both | Unique count: accuracy at n = 8 / n = 12 | Deep Sets 0.430 / 0.333. Set Transformer 0.343 / 0.090 | Sorted MLP: 0.867 / 0.173 | Negative: the sorted MLP wins in distribution, and no model extrapolates. |
+
+### PerceiverExperiments (W6 2.12: Perceiver, Perceiver IO)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Perceiver, raw-pixel shapes, 300 steps | Accuracy (multiply-adds) | 4 latents 0.387 (152,768). 16 latents 0.387 (389,312) | ViT: 1.000 (54,272) | Negative: the Perceiver learns slowly and costs more. It reaches 0.52 at 1000 steps (R-wave6). |
+| Perceiver IO, reverse 64 tokens (vocabulary 8), 200 steps | Accuracy (multiply-adds) | 8 latents 0.184 (413,696). 32 latents 0.211 (991,232) | Full transformer: 0.882 (1,589,248) | Negative: the latent bottleneck limits what passes, and more latents help only a little. |
+
+---
+
+## classic
+
+New theme in wave 6 (package `experiments.classic`): classic machine learning on host-side, double-precision blocks in the new `experimental.ml` package. `ClassicMlShootout` provides the shared spiral, circle, moon, blob, anisotropic and noisy-blob datasets.
+
+### ClassicMlShootout (W6 1.1: kernel SVM and random Fourier features, 1.6: k-means++ and Gaussian mixtures, 1.14: spectral clustering and DBSCAN)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Kernel SVM (SMO, RBF kernel), spirals | Test accuracy (fit time, support vectors) | 0.987 (8 ms, 92) | MLP: 0.980 (1027 ms). Logistic regression: 0.540. Linear SVM: 0.540 | Matches the MLP at about 1/100 of the training time; linear models fail. |
+| Polynomial SVM (degree 3); random Fourier features + linear model | Same | Polynomial 0.927 (6 ms). RFF 0.987 (15 ms, 300 features) | Same | RFF matches the exact RBF kernel. |
+| Same lineup on circles, plus a GP-Laplace classifier | Test accuracy | SVM-RBF, SVM-poly, RFF, GP-Laplace and MLP all 1.000 | Logistic: 0.450. Linear SVM: 0.520 | Every kernel machine solves circles. |
+| k-means++ seeding, 12 blobs, 10 seeds | Mean ARI | 0.945 (R-wave6) | Random seeding: 0.772 (R-wave6) | ++ seeding avoids bad local optima. On the test's 6-blob set both reach 1.000. |
+| Gaussian mixture (EM, full covariance, BIC) | ARI on anisotropic blobs | 1.000. BIC picks the true 3 components (R-wave6) | k-means++: 0.328. Spectral: 0.970. DBSCAN: 0.904 | Full covariances fix stretched clusters. |
+| Spectral clustering; DBSCAN | ARI on moons / rings | Spectral 1.000 / 1.000. DBSCAN 1.000 / 1.000 | k-means++: 0.275 / -0.003. GMM: 0.290 / 0.053 | Graph and density methods solve non-convex clusters that centroid methods cannot. Spectral is the slowest (380–1260 ms, against at most 5 ms). |
+| DBSCAN, noisy blobs | ARI; share of planted noise points marked as noise | 0.924; 0.850 | k-means++: 0.823. GMM and spectral: 0.832 | Density clustering handles noise best. |
+
+### GaussianProcessUncertainty (W6 1.2: GP regression and classification, 1.3: sparse variational GP and deep kernel learning)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Exact GP (marginal-likelihood fitting), regression with a gap in the data | NLL inside the range / in the gap; coverage in the gap | -0.66 / -0.22; 0.95 | Deep ensemble: -0.61 / 0.11; 0.98. MC dropout: -0.43 / 0.34; 1.00. Last-layer Laplace (regression version): -0.68 / 0.75; 0.84 | The GP is the best calibrated in the gap. Laplace is sharp on the data but overconfident in the gap. |
+| SVGP (natural-gradient SVI), 5k points | Test NLL with M = 4 / 8 / 16 / 32 inducing points | -0.462 / -0.804 / -0.865 / -0.865 | Exact GP on 1,000 points: -0.826 | From 16 inducing points on, SVGP on all the data beats the exact GP on a subset. |
+| Deep kernel learning (RBF GP on an MLP feature map), seasonal one-step forecast | NLL; RMSE; coverage | -0.697; 0.113; 0.99 | MLP alone: -0.738; 0.114; 0.92. GP on raw windows: -0.778; 0.111; 0.95 | Negative: DKL does not win here. |
+
+### HyperparameterSearchComparison (W6 1.4: GP Bayesian optimisation, BOHB)
+Sources: Run-w6, R-wave6. The methods live in `experimental.train.ModelBasedSearch`, because core `HyperparameterSearch` is final.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GP Bayesian optimisation with EI / LCB, 30 trials | Best score (floor 0.01, lower is better) | EI 0.049. LCB 0.066 | TPE: 0.141. Random: 0.177 | A GP surrogate finds a configuration about 3x better than TPE at equal trials. |
+| BOHB, equal total budget (1,269) | Best full-budget score | 0.044 | Hyperband: 0.106. Random: 0.204 | A model per budget makes Hyperband 2.4x better. |
+
+### ForestBenchmarks (W6 1.5: random forest, extra trees, isolation forest)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Random forest; extra trees, synthetic tabular task (`SyntheticRecsys.tabular`) | Test accuracy | Random forest 0.830 (out-of-bag error 0.194). Extra trees 0.827 | GBT: 0.849. MLP: 0.894 | Negative: the MLP wins on this multiplicative task. The out-of-bag error tracks the test error. |
+| Isolation forest, planted outliers | AUROC | 0.967 | kNN distance: 0.992. Autoencoder: 0.994 | Good, but not the best detector here. |
+
+### ProjectionExperiments (W6 1.7: PCA, kernel PCA, FastICA, 1.8: t-SNE and UMAP)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| FastICA, cocktail-party mix | Source recovery, \|corr\| | 1.000 | PCA: 0.785 | ICA unmixes the sources; PCA cannot. |
+| Kernel PCA (RBF, 3 components), circles, then a linear SVM | Test accuracy | 1.000 | PCA with 2 components: 0.557 | The radial direction is the third component, so this row uses three (R-wave6). |
+| UMAP; t-SNE, 2-D embeddings of digit pixels | Trustworthiness / 5-NN accuracy | UMAP 0.839 / 0.747. t-SNE 0.721 / 0.727 | PCA-2: 0.669 / 0.177. Input space: 1.000 / 0.827 | Both keep neighbourhoods far better than PCA; UMAP is the most trustworthy. |
+| Same, ShapeImages pixels | Same | UMAP 0.841 / 0.313. t-SNE 0.720 / 0.388 | PCA-2: 0.724 / 0.304. Input space: 1.000 / 0.400 | On raw shape pixels t-SNE gains nothing over PCA in trustworthiness. |
+
+### SequenceLabelling (W6 1.9: hidden Markov models, 1.10: linear-chain CRF)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| HMM fit by Baum-Welch, dishonest casino | Decoding accuracy; log-likelihood per step | 0.784; -1.732 | True parameters: 0.799; -1.730. Supervised GRU tagger: 0.789. i.i.d. model: -1.747 | Unsupervised EM matches a supervised GRU. |
+| Gaussian HMM fit by Baum-Welch, regime switching | Same | 0.973; -1.452 | True parameters: 0.974; -1.452. GRU: 0.972. i.i.d. model: -1.715 | Same. |
+| Linear-chain CRF head on a GRU, BIO chunking | Span F1; illegal-transition rate | 0.998; 0.000 | Softmax head on the same GRU: 0.285; 0.129 | Transition scores make the tagger emit only legal sequences and lift F1 from 0.29 to 1.00. |
+
+### FactorGraphInference (W6 1.11: variable elimination, loopy belief propagation, Gibbs sampling)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Loopy BP; Gibbs, sprinkler network | Mean marginal error (time) | BP 0.032 (0.3 ms). Gibbs 0.023 (4.8 ms) | Variable elimination: exact | Both are close; Gibbs is slightly better on this loopy graph. |
+| Same, alarm network (a tree) | Same | BP 0.0000. Gibbs 0.0035 | Same | BP is exact on a tree, as expected. |
+| Same, 4x4 spin glass | Same | BP 0.0004 (2.6 ms). Gibbs 0.0081 (16.3 ms) | p-bit machine (`PBitIsingMachine`): 0.0076 (4.2 ms). Variable elimination: exact (5.7 ms) | Loopy BP is the best approximation here, 20x more accurate than sampling. |
+
+### TopicRecovery (W6 1.12: LDA, NMF)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| LDA (collapsed Gibbs); NMF, synthetic corpus with planted topics | Topic cosine; perplexity | LDA 0.995; 35.28. NMF 0.998; 34.85 | k-means on bag of words: 0.904; 41.23. True topics: 1.000; 34.84 | Both recover the planted topics almost exactly; NMF reaches the true perplexity. |
+
+### PrototypeMaps (W6 1.13: self-organising map, growing neural gas)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Growing neural gas; SOM, 36 prototypes, S-curve | Quantisation error; topographic error | GNG 0.307; 0.000. SOM 0.378; 0.090 | k-means++: 0.300 (no topology) | GNG keeps the topology exactly at close to k-means quantisation error. |
+| Same, rings | Same | GNG 0.082; 0.000. SOM 0.127; 0.083 | k-means++: 0.087 | GNG even beats k-means on quantisation error. |
+
+### TrackingFilters (W6 1.15: Kalman filter, EKF, particle filter)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Kalman filter; RTS smoother, constant-velocity tracking | RMSE; NLL | Kalman 0.234; -0.07. RTS 0.122; -0.71 | Raw observations: 0.488. Causal GRU: 0.255; 0.06 | The exact filter beats a trained GRU, and smoothing halves the error again. |
+| Bootstrap particle filter; EKF, pendulum observed through sin θ | Same | Particle filter 0.096; -1.17. EKF 0.152; 0.04 | GRU: 1.481; 1.84 | The particle filter handles the ambiguous observation best. The GRU is weak at 300 training steps (R-wave6). |
+
 ---
 
 ## context
@@ -372,6 +497,23 @@ All rows use a synthetic 2-layer × 4-head context at a 25% budget (384 of 1536 
 | DuoAttention (retrieval heads keep everything, streaming heads a window) | Same; entries kept | 1.00; 0.026 / 1.00; 0.025; 552 entries | Others at 384 entries; full cache 1536 | Full recall on any question at 36% of the full cache. |
 | Quest (query-aware page selection, nothing evicted) | Same | 1.00; 0.009 / 1.00; 0.008 | Same | Best on both: it reads a subset per query but keeps the whole cache. |
 | Quest on `PagedLlama` (4-slot pages, 16 pages) | Top-1 agreement with full attention; share of KV bytes read | 0.44; 0.23 | Recent window: 0.31; 0.23 | Better agreement at the same bytes read. |
+
+
+### LongContextNeedle (W6 6.15: MemAgent, recursive language models)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Recursive LM (calls itself on slices of the context) | Needle accuracy at 4x / 8x / 16x / 32x the window (calls at 32x) | 0.85 / 0.72 / 0.85 / 0.92 (63) | Truncation: 0.20 / 0.13 / 0.07 / 0.10 (1). Pager retrieval (`VirtualContextPager`): 0.90 / 0.85 / 0.95 / 0.98 (1) | RLM reads far past the window, but retrieval does as well with one call. |
+| MemAgent (overwrites a fixed memory chunk by chunk), SFT then RL | Same | RL 0.55 / 0.45 / 0.58 / 0.58 (33). SFT only 0.30 / 0.13 / 0.12 / 0.22 (33) | Same | RL roughly doubles MemAgent's accuracy, but it stays well below retrieval and RLM. |
+
+### CartridgeCorpusQa (W6 6.16: cartridges)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Cartridge (a KV cache trained by self-study distillation) | Corpus QA accuracy at 512 / 1024 / 2048 KV bytes | 0.63 / 0.88 / 0.88 | Full context (4096 B): 0.88. Recency eviction: 0.13 / 0.25 / 0.38 | A quarter of the KV bytes matches the full context. |
+| Prefix tuning on gold labels | Same | 0.88 / 1.00 / 1.00 | Same | Beats the cartridge, because it learns from gold labels while distillation copies the teacher's mistakes. SnapKV and KVzip baselines were not possible with `HookedDecoder` (R-wave6). |
 
 ---
 
@@ -470,6 +612,124 @@ Sources: Run-w5, R-wave5.
 | SimBa critic + HL-Gauss value loss, Pendulum SAC, 1500 steps | Return | -323.8 (10,323 critic params) | MLP + MSE: -360.1 (1249). Random: -357.0 | The only setup above random at this budget. |
 | 2x2 ablation at 2500 steps (R-wave5) | Return | SimBa + HL-Gauss -456; SimBa + MSE -410 | MLP + MSE -580; MLP + HL-Gauss -516 | The SimBa network helps most; HL-Gauss helps the MLP but not SimBa. |
 
+
+### TrustRegionComparison (W6 3.1: TRPO)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| TRPO (conjugate gradient, exact Fisher-vector products, line search), CartPole | Return (KL per update, mean / max) | 200.0, minimum 200 (0.0138 / 0.0180) | PPO: 195.1. A2C: 107.3 | TRPO solves CartPole and keeps every step inside the trust region. |
+
+### DistributedActorCritic (W6 3.2: A3C, 3.3: IMPALA V-trace and Retrace)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| A3C (worker threads, shared Adam), CartPole, 40k steps | Return (wall clock) | 200.0 (356 ms) | Synchronous A2C with 4 environments: 196.4 (240 ms) | A3C solves it but is slower here, and it is nondeterministic. The report's run measured 1467 vs 471 ms on a loaded machine (R-wave6). |
+| V-trace, actor policy lag 0 / 8 / 32 | Return | 194.3 / 181.3 / 152.9 | Uncorrected: 194.3 / 193.9 / 200.0. 1-step importance sampling: 194.3 / 167.5 / 167.2 | Negative: the uncorrected learner copes better with lag on this task. |
+| Retrace | Q^π RMSE after 3 / 40 passes | 0.160 / 0.000 | Uncorrected 8-step: 1.626 / 1.654. 1-step expected SARSA: 0.229 / 0.000 | Retrace corrects off-policy returns and converges fastest; uncorrected n-step stays biased. |
+
+### PartialObservability (W6 3.4: R2D2)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| R2D2 (stored recurrent state, burn-in), cued T-maze of length 4 | Success | 0.88 | Zero-state replay: 0.00. Frame-stack DQN: 0.52 | Stored state with burn-in is what lets the recurrent Q-network remember the cue. |
+
+### RiskSensitiveDqn (W6 3.5: IQN with CVaR acting)
+Sources: Run-w6. The maze row is measured by `ImplicitQuantileMazeTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| IQN, maze | Greedy return | 0.93 | C51: 0.93. QR-DQN: 0.93 | IQN matches the other distributional DQNs. |
+| IQN acting on CVaR(0.25), windy bridge | Fall rate; bridge use; return | 0.000; 0.00; 0.700 | Risk-neutral IQN: 0.105; 1.00; 0.790 | CVaR acting avoids the bridge entirely, trading 0.09 return for no falls. |
+
+### LatentPlanningComparison (W6 3.7: PlaNet)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| PlaNet (RSSM with latent overshooting, CEM in latent space), Pendulum from 2000 random steps | Return; 10-step open-loop error | -516; 0.209 | RSSM without overshooting: -625; 0.220. MLP dynamics + CEM with the true reward: -512; 0.386 | Overshooting helps. PlaNet ties an MLP planner that is given the true reward, with about half its multi-step error. |
+
+### TdMpcComparison (W6 3.8: TD-MPC2)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| TD-MPC (MPPI with a learned terminal value), Pendulum, 1000 steps | Greedy return | -380 | SAC: -736. MLP dynamics + CEM (true reward): -499. TD-MPC's policy prior alone: -506 | The most sample-efficient method here; planning adds 126 over its own policy. In an untimed 1500-step run: -127 vs -616 for SAC (R-wave6). |
+
+### ShortcutDreaming (W6 3.9: Dreamer 4 shortcut world model)
+Sources: Run-w6, R-wave6. An MLP stands in for the transformer, on the bimodal SlipperyTrack, from offline data only.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Shortcut world model (conditional shortcut flow) | Distance from a sampled next state to the nearest real outcome, at 1 / 2 / 4 / 8 flow steps | 0.052 / 0.037 / 0.024 / 0.023 | Plain flow matching: 0.116 / 0.146 / 0.087 / 0.055. MLP world model: 0.085 | Sharp in one step, where flow matching needs 8 steps to come close. |
+| Policy trained only in imagination | Real return | -16.6 | MLP world model: -25.8. Random: -54.0 | The better model gives the better imagined policy. |
+
+### HighUtdComparison (W6 3.10: REDQ, DroQ)
+Sources: Run-w6, R-wave6. UTD 5 instead of 20, to fit the time limit (R-wave6).
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DroQ (dropout and layer-norm critics), UTD 5, Pendulum, 1000 steps | Return; Q bias against Monte Carlo | -355; +0.71 | SAC UTD 1: -759; +0.93. SAC UTD 5: -698; +0.79 | DroQ makes a high update ratio pay off: about twice the return of SAC. |
+| REDQ, UTD 5, 5 critics | Same | -654; +0.79 | Same | A modest gain over SAC. |
+
+### MpoComparison (W6 3.11: MPO)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MPO, Pendulum, 1500 steps, 2 seeds | Greedy return | -790 ± 27 | SAC: -631 ± 5. PPO: -677 ± 20 | Negative: MPO is the worst at this small budget. At 4000 steps it reached -482 (R-wave6). |
+
+### OptionsAndTransfer (W6 3.12: option-critic)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Option-critic, four rooms after the goal moves | Mean length of the first 30 episodes; greedy length | 190.6; 8.0 (mean option duration 2.0) | Q-learning: 150.5; 8.0. A2C: 158.8; 8.0 | Negative: options do not speed up re-adapting, and they stay short. |
+
+### SuccessorFeatureTransfer (W6 3.13: successor features and GPI)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Successor features + generalised policy improvement, zero-shot on a new reward | Return | 0.700 (also 0.700 with inferred weights) | Q-learning from scratch: -1.600 at 300 steps, 0.617 at 4000 steps | Transfer is instant and beats 4000 steps of learning from scratch. |
+
+### ConstrainedRlComparison (W6 3.14: CPO, PPO-Lagrangian)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| PPO-Lagrangian; CPO, hazard grid with cost limit 0.2 | Return; cost | PPO-Lagrangian 0.80; 0.02. CPO 0.80; 0.26 | PPO with fixed shaping k = 0: 0.92; 1.01. k = 0.1: 0.92; 1.00 | Both cut the cost sharply for 0.12 of return. CPO slightly overshoots the limit. |
+
+### RewardMachineTasks (W6 3.15: reward machines, CRM)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| CRM (counterfactual experience over the reward machine), office task "coffee, then mail, then office" | Greedy success at 5k / 20k / 60k steps | 0 / 1 / 1 | Q-learning on the product: 0 / 0 / 0. History-free Q-learning: 0 / 0 / 0 | Counterfactual sharing solves the sequential task; the baselines never do. |
+
+### MetaRlBandits (W6 3.16: RL², VariBAD)
+Sources: Run-w6, R-wave6. Bandits only; the goal-in-an-unknown-corner grid was not built (R-wave6).
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| VariBAD; RL², 5-armed bandits with one good arm | Mean reward per pull over 20 pulls of a new task | VariBAD 0.68. RL² 0.58 | MAML policy gradient: 0.24. Core PPO from scratch: 0.21. Random: 0.20 | Recurrent meta-RL explores in context; VariBAD's belief adds 0.10. |
+
+### InContextBandits (W6 3.17: algorithm distillation)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Algorithm distillation (causal transformer on UCB1 learning histories) | Reward per pull in the first third / last third / all of 30 pulls | 0.37 / 0.66 / 0.54 | Source UCB1: 0.36 / 0.71 / 0.56. Distillation of expert histories only: 0.20 / 0.19 / 0.20 | The transformer improves in context with no weight updates, almost matching its source. Expert data alone teaches nothing. |
+
+### GumbelSearch (W6 3.18: Gumbel AlphaZero)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Gumbel MCTS (sequential halving, completed-Q policy), tic-tac-toe | Score against PUCT at 2 / 4 / 8 / 16 / 32 simulations | 0.50 / 0.38 / 0.60 / 0.55 / 0.46 | PUCT MCTS (0.50 is parity) | Null: roughly parity at every budget. The score against random rises from 0.72 to 0.90 (PUCT: 0.66 to 0.92). |
+
 ---
 
 ## data
@@ -509,6 +769,14 @@ Sources: Run-w5.
 | Fluid Benchmarking (IRT with adaptive item selection, `IrtEvaluator`), 10% of items | Kendall τ with true model quality | 0.725 | IRT on random items: 0.447. Accuracy on a random subset: 0.311. All items: IRT 0.851, accuracy 0.895 | Adaptive IRT ranks models far better than a random subset of the same size. |
 | Same | Share of training steps where the score drops | 0.14 | Random subset: 0.27. True quality: 0.18 | Less noisy than subset accuracy. |
 | Min-K%++ (`ContaminationDetector`) | Contamination AUROC | 0.746 | Plain Min-K%: 0.755. Loss threshold: 0.702 | Negative: beats the loss but not plain Min-K%. |
+
+
+### TrainingAttributionExperiment (W6 5.16: influence functions, TracIn)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Influence functions; TracIn | Precision on flipped labels; leave-60-out Pearson r (time) | Influence 0.650; 0.849 (2.4 s). TracIn 0.550; 0.791 (0.6 s) | In-Run Shapley: 0.217; 0.675. EL2N: 0.450; -0.273. Random flagging: 0.10 | Influence functions find flipped labels and predict removals best; TracIn is close at a quarter of the time. |
 
 ---
 
@@ -706,6 +974,53 @@ Sources: Run-w4.
 |---|---|---|---|---|
 | RWKV-style LM with LIF spiking activations and surrogate gradients, counting sequences | Perplexity; share of neurons spiking per token | 1.1311; 0.268 | Non-spiking RWKV: 1.1288 (uniform: 16) | Spiking costs almost nothing in perplexity with about a quarter of the neurons active. |
 
+
+### KuramotoBinding (W6 6.1: AKOrN)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| AKOrN (Kuramoto oscillatory units), multi-shape images | Object discovery FG-ARI | 0.84 | k-means on (x, y): 0.16. Soft slots on (x, y): 0.15 | Phase synchrony binds objects far better than clustering positions. |
+| AKOrN, Latin squares | Blank accuracy; share solved | 0.92; 0.62 | TRM: 0.67; 0.15 | The oscillator network solves 4x as many puzzles as the tiny recursive model. |
+
+### TensorNetworks (W6 6.2: MPS classifier, Born machine)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MPS classifier, digits | Test accuracy | Bond 4: 0.46. Bond 10: 0.67 (13,440 params) | MLP of the same size: 0.65 (13,435 params) | Matches an MLP at bond dimension 10. |
+| MPS Born machine (DMRG, exact sampling), shapes | NLL in nats (ideal 4.34); share of exact samples | Bond 8: 9.26; 0.02. Bond 32: 4.51; 0.83 | PixelCNN: 9.06; 0.01. p-bit Boltzmann machine: 0.00. Independent pixels: 21.66; 0.00 | At bond 32 the likelihood is close to ideal and 83% of samples are exact images. |
+
+### QuantumClassifier (W6 6.3: simulated variational quantum circuit)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Variational circuit with parameter-shift gradients, moons | Accuracy | 2 qubits, 1 layer: 0.84. 4 qubits, 3 layers: 0.99; with 50 shots 1.00 | RFF with 34 params: 1.00 | It works, but a tiny classical model is as good. Circles: 1.00 for both. |
+| Barren plateau | Gradient variance | 6 qubits at depth 1 / 4 / 16: 0.0114 / 0.0061 / 0.0073. Depth 12: 2 qubits 0.0870, 8 qubits 0.0019 | n/a | The variance falls 46x from 2 to 8 qubits: the plateau grows with width. |
+
+### StochasticComputing (W6 6.4: stochastic-computing network)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Bitstream inference with an APC adder, stream length 16 / 256 / 1024 | Digits accuracy (bit operations) | 0.51 / 0.91 / 0.91 (77k / 1,234k / 4,936k) | Float: 0.92. int8 post-training quantization: 0.91. Ternary PTQ: 0.76. BitLinear QAT: 0.85 | 256-bit streams match int8. |
+| Same with a MUX adder, length 256 / 4096 | Accuracy | 0.33 / 0.77 | Same | MUX scaling loses too much precision. |
+
+### StdpDigits (W6 6.6: STDP, Diehl & Cook)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| STDP with lateral inhibition, 20 / 60 excitatory neurons, no gradients | Digits accuracy | 0.30 / 0.62 | SoftHebb(60) + readout: 0.47. Surrogate-gradient LIF(60): 0.59 | Unsupervised STDP slightly beats the gradient-trained spiking net. |
+
+### PhysicsAwareDiffraction (W6 6.7: physics-aware training)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Physics-aware training (forward through the device, backward through a digital twin) | Accuracy on the device (on the twin) | 0.74 (0.78) | In-silico training: 0.40 (0.99). Noise-aware training: 0.40 (1.00) | Training through the device closes most of the sim-to-real gap. |
+
 ---
 
 ## generative
@@ -894,6 +1209,121 @@ Sources: Run-w5.
 | Diffusion on a ring of 8 blobs, n = 4 / 16 / 64 training points, 2000 steps | Memorization onset τ_mem; excess copy rate | n=4: 200, 0.26. n=16: never, 0.02. n=64: never, -0.03 | Chance copy rate: 0.08 / 0.20 / 0.13 | Only the 4-point set memorizes within the budget. |
 | Same | Generalization time τ_gen | 1400 / 800 / 1200 steps | — | Noisy rather than clearly independent of n, so the paper's separation of timescales is not clearly shown. |
 
+
+### ImageTranslation (W6 4.1: pix2pix, CycleGAN)
+Sources: Run-w6, R-wave6. The CycleGAN row is measured by `CycleGanTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| pix2pix (U-Net + PatchGAN), coarse 4x4 sketch → shape | Real-shape share; L1 | 0.918; 0.031 | L1 loss only: 0.836; 0.034 | The adversarial loss commits to real shapes. The planned edges task was deterministic, so it was replaced (R-wave6). |
+| CycleGAN, squares → crosses, unpaired | Target share; centroid error; cycle L1 | 0.880; 0.855; 0.029 | No cycle loss: 0.000; 1.874; 0.681 | Cycle consistency keeps the content and makes the translation work at all. |
+
+### StyleGanExperiment (W6 4.2: StyleGAN-lite)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| StyleGAN (mapping net, modulated layers, noise, style mixing) | Sliced W; distance; real share; path length | 0.209; 0.263; 0.01; 305 | DCGAN-style MLP: 0.139; 0.206; 0.12; 132 | Negative: the plain generator is better at this budget. |
+| StyleGAN + path-length regulariser | Same | 0.311; 0.375; 0.00; 73 | Same | Cuts the path length 4x, at a quality cost. |
+
+### VqGanExperiment (W6 4.3: VQ-GAN)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| VQ-GAN, 4 codes, 16 tokens per image | MSE; real share; sharp share; code perplexity | 0.109; 0.479; 0.932; 3.62 | VQ-VAE with 4 codes: 0.100; 0.575; 0.917; 2.82. With 16 codes: 0.027; 0.973; 0.947; 8.00 | Mixed: slightly sharper with better code use, but fewer real reconstructions. MaskGIT on the tokens was not run (R-wave6). |
+
+### DensityBenchmark (W6 4.4: Glow, MAF, neural spline flows, 4.5: FFJORD)
+Sources: Run-w6, R-wave6. The FFJORD row is measured by `ContinuousFlowDensityTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Neural spline flow | Held-out NLL in nats, moons / rings | 0.763 / 1.290 | RealNVP: 1.209 / 2.367. GMM-8: 0.704 / 1.833 | Spline flows beat RealNVP clearly, and the GMM on rings. |
+| Glow; MAF | Moons NLL | Glow 1.250. MAF 1.679 | Same | Negative: neither beats RealNVP. |
+| FFJORD, 80 steps | Moons NLL (evaluation NFE) | 1.974 (127) | Flow matching at 80 steps: 2.204 (109); at 1000 steps: 1.788 (79) | Better at equal steps, not at equal time (8.6 s for FFJORD). |
+
+### DiffusionSamplers (W6 4.6: score SDE, 4.7: EDM and DPM-Solver++)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| VP score SDE, probability-flow ODE | Moons NLL in nats (NFE) | 1.872 (127) | A standard normal: about 2.1 | An exact likelihood from a diffusion model. |
+| Score SDE, predictor-corrector; probability-flow ODE | Ring distance at 6 / 10 / 20 NFE | PC 0.734 / 0.487 / 0.420. ODE 0.576 / 0.442 / 0.302 | DDIM: 0.201 / 0.138 / 0.153. Flow-matching Heun: 0.251 / 0.196 / 0.183. DDPM, 100 steps: 0.170 | Negative: both trail DDIM at every budget. |
+| EDM (Heun); DPM-Solver++ | Same | EDM 3.751 / 0.406 / 0.142. DPM-Solver++ 0.604 / 0.176 / 0.144 | Same | At 20 NFE both beat DDIM and DDPM-100. At 6 NFE DDIM wins and EDM's Heun sampler breaks down. |
+
+### JemExperiment (W6 4.8: JEM)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| JEM (persistent SGLD), ShapeImages 8x8 | Accuracy; ECE | 0.956; 0.147 | Plain classifier: 0.980; 0.036. EnergyRefiner: 0.992; 0.006 | Negative: JEM is less accurate and worse calibrated. |
+| Same | OOD AUROC on pixel-shuffled images | Density 0.756. Max-softmax 0.818 | Plain: 0.807. EnergyRefiner: 0.892 | A small gain from max-softmax; the density score is worse. |
+| Same | Sample distance | Persistent buffer 0.343. Fresh chains 0.483 | Noise: 0.369 | Samples are barely better than the noise they start from. |
+
+### LatentDiffusion (W6 4.9: latent diffusion, representation-autoencoder latents)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Latent diffusion in a VAE latent | Distance per pixel at 150 / 400 / 800 steps; real share at 800 | 0.194 / 0.190 / 0.177; 0.20 | Pixel diffusion: 1.014 / 0.615 / 0.436; 0.00 | Far faster: at 150 steps it beats pixel diffusion at 800. |
+| RAE (frozen SSL encoder + trained decoder) | Same | 0.197 / 0.205 / 0.176; 0.20 | Same | Ties the VAE latent (reconstruction distance 0.008 vs 0.022). |
+
+### ControlExperiment (W6 4.10: ControlNet)
+Sources: Run-w6, R-wave6. The backbone is a residual MLP, not a U-Net (R-wave6).
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ControlNet (trainable copy joined through zero-initialised layers) | IoU with the occupancy map; unconditional distance after training | 0.615; 0.414 (unchanged) | Full fine-tune: 0.516; changes to 0.282. Concatenated control from scratch: 0.387. Base: 0.227 | The best control, and the frozen base is preserved exactly. |
+
+### OneStepFrontier (W6 4.11: DMD, 4.16: IMM and sCM, 4.18: drifting models)
+Sources: Run-w6. Four-blob ring.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Distribution matching distillation, one step | Distance; near share; modes | 0.364; 0.52; 4 | MeanFlow: 0.386; 0.55; 4. EDM teacher at 10 NFE: 0.167; 0.90; 4 | Roughly ties MeanFlow, far from the teacher. |
+| Inductive moment matching at 1 / 2 / 4 steps | Distance (near share) | 0.481 (0.39) / 0.254 (0.79) / 0.231 (0.80) | Discrete consistency model: 0.444 (0.39) | Better from 2 steps on. |
+| sCM (TrigFlow) at 1 / 2 / 4 steps | Same | 0.697 (0.13) / 0.787 (0.06) / 0.794 (0.11) | Same | Negative: weak, and worse with more steps. |
+| Drifting generator, one step | Distance; near share; modes | 0.311; 0.66; 4 | GAN: 0.359; 0.64; 4 | A slightly better one-step generator than the GAN. |
+
+### HierarchicalVaeExperiment (W6 4.12: IWAE, β-VAE, ladder VAE)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| IWAE (k = 5), binary ToyImages | IWAE-500 NLL in nats; active units; disentanglement gap | 9.06; 8; 0.18 | Plain VAE: 9.42; 8; 0.21 | The tighter bound gives a better likelihood. |
+| β-VAE (β 4); ladder VAE | Same | β-VAE 16.84; 2; 0.27. Ladder 9.92; 3; 0.28 | Same | Slightly more disentangled, at a large likelihood cost for β-VAE; both lose active units. |
+
+### DiscreteGenerators (W6 4.13: discrete flow matching, 4.14: Bayesian flow networks)
+Sources: Run-w6. The image rows are measured by `BayesianFlowImagesTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Discrete BFN, 6-letter words | Valid-word share at 3 / 12 steps | 0.891 / 0.984 | Masked diffusion: 0.641 / 0.875. Autoregressive: 1.000 | BFN beats masked diffusion at both budgets. |
+| Discrete flow matching, mask / uniform source, with and without a corrector | Same | Mask 0.406 / 0.688; with corrector 0.031 / 0.609. Uniform 0.297 / 0.422; with corrector 0.359 / 0.266 | Same | Negative: every DFM variant trails masked diffusion. |
+| BFN on binary and real-valued ToyImages, 50 steps | Distance per pixel; real share | Discrete 0.071; 0.70. Continuous 0.398; 0.00 | DDIM, 50 steps: 0.395; 0.00. DDPM, 100 steps: 0.249; 0.01 | Discrete BFN works on binary images; continuous BFN only ties DDIM. |
+
+### BridgeExperiment (W6 4.15: stochastic interpolants, DSBM)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Bridge matching (σ 0.5); DSBM (iterative Markovian fitting), moons → rings | Transport cost; sliced W to rings | Bridge 0.774; 0.078. DSBM 0.594; 0.090 | Rectified flow: 0.217; 0.116. Reflow: 0.172; 0.108. OT flow matching: 0.192; 0.102 | Bridges match the target distribution best, but with long paths; DSBM shortens them by a quarter. |
+
+### EnergyMatchingShootout (W6 4.17: energy matching)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Energy matching, moons, 20 sampler steps | Sliced W; NLL in nats | 0.117; 2.223 (grid-normalised) | Flow matching: 0.116; 1.896 (exact ODE). Equilibrium matching: 0.237 | Samples as well as flow matching, but its density is worse. |
+
+### GFlowNetSampling (W6 6.8: GFlowNets)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| GFlowNet (trajectory balance), 8x8 hypergrid | L1 to R/Z; modes found of 4; reward calls | 0.24; 4; 6,400 | MCMC: 0.34; 4; 6,400. PPO: 1.70; 1; 30,000. MAP-Elites: 4 modes; 6,420 | Samples in proportion to the reward; PPO collapses onto one mode. |
+| Same, sequences | L1 | 0.81 | MCMC: 0.88 | A small edge. |
+
 ---
 
 ## graphs
@@ -1020,6 +1450,18 @@ Sources: Run-w5, R-wave5.
 | MLP next-bit models, hidden 4 / 8 / 12 / 16 | Bits memorised per parameter | 1.15 / 1.08 / 1.11 / 0.92 | The paper's about 3.6 bits per parameter for toy GPTs (R-wave5) | Far below the paper (tiny MLPs, short training). Hidden 32 gave 0.64 (R-wave5). |
 | Same, quantized | Bits kept at hidden 16, int8 / int4 | 817 / 321 | Float: 823 | int8 keeps nearly everything; int4 loses most. |
 | Dataset sweep at hidden 8 | Bits memorised, 10 → 540 strings | 87 → 520 | — | Still rising at the largest set, so capacity is not reached. |
+
+
+### ExplainabilityBenchmark (W6 5.14: KernelSHAP, LIME, counterfactuals, 5.15: Grad-CAM, TCAV)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| KernelSHAP; LIME, MLP on a planted rule | Ground-truth recovery; deletion AUC (lower is better) | KernelSHAP 0.906; 0.557. LIME 0.975; 0.614 | Integrated gradients: 0.788; 0.606. SmoothGrad: 0.944; 0.631. Saliency: 0.888; 0.654. Random: 0.481; 0.747 | LIME recovers the rule best; KernelSHAP has the best deletion AUC. |
+| Same, gradient-boosted trees | Same | KernelSHAP 0.931; 0.574. LIME 0.956; 0.633 | Tree gain: 1.000; 0.630. Random: 0.481; 0.704 | Tree gain recovers the rule exactly; KernelSHAP deletes best. |
+| Counterfactual explanations | Validity; features changed; share relevant | MLP 1.00; 6.05; 0.62. Trees 1.00; 2.18; 1.00 | n/a | Always valid; minimal and relevant on trees. |
+| Grad-CAM, shapes | Pointing game; how often a spurious model's map points at the marker | 1.000; 0.149 | Integrated gradients: 1.000; 0.596. Saliency: 0.760; 0.000. Random: 0.145; 0.043 | Grad-CAM localises the shape, but rarely shows the shortcut. |
+| TCAV, "marker" concept | TCAV share (z against random concepts) | Spurious model 1.000 (z 5.0). Clean model 0.000 (z -0.3) | Random concepts: 0.625 ± 0.484 | TCAV finds the shortcut, but only the z-score against random concepts is significant. |
 
 ---
 
@@ -1238,6 +1680,35 @@ Sources: Run-w5.
 | Seed prefix + temperature 0.5 | Same | 0.77; 0.35; 0.08 | Same | Same novelty as greedy with a seed. |
 | Homogeneity of the baseline model | Share of valid samples repeated; overlap of two baseline models (Jaccard) | 0.60; 0.80 | — | The "hivemind" effect: models repeat themselves and each other. |
 
+
+### WordVectors (W6 2.14: word2vec SGNS, GloVe, fastText)
+Sources: Run-w6. Corpus: the new `SyntheticGrammar`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SGNS; GloVe; fastText | Analogy; similarity (Spearman); unseen-form accuracy; downstream accuracy | SGNS 0.854; 0.724; 0.250; 0.857. GloVe 0.394; 0.419; 0.250; 0.893. fastText 0.862; 0.717; 0.833; 0.714 | Random initialisation, downstream: 0.321 | Every pretrained table helps downstream 2.2–2.8x. fastText's subwords handle unseen forms. |
+
+### ContextualFeatures (W6 2.15: ELMo-style features)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ELMo (forward and backward LSTM LMs, learned scalar mix) | Tagging macro-F1; accuracy on ambiguous tokens | 1.000; 1.000 | Static SGNS: 0.970; 0.494. Frozen masked-LM encoder: 0.892; 0.689 | Context resolves ambiguous words that static vectors cannot. |
+
+### PretrainingObjectives (W6 2.16: T5 span corruption, 2.17: XLNet permutation LM)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Span corruption; permutation LM, equal compute | Stride probe; 2-token infill exact match (steps) | Span corruption 0.678; 0.727 (277). Permutation LM 0.666; 0.457 (181) | Masked LM: 0.720; 0.610 (250). ELECTRA: 0.730; 0.030 (237). FIM: 0.628; 0.170 (191) | Span corruption is the best infiller; masked LM and ELECTRA probe best. |
+
+### UlmfitTransfer (W6 2.18: ULMFiT)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ULMFiT (discriminative rates, slanted triangular schedule, gradual unfreezing), strides 1, 2 → 5 | Target loss; source forgetting (source loss before: 0.080) | 0.012; +5.14 | Full fine-tuning: 0.004; +6.17. ULMFiT without unfreezing: 0.019; +4.32. LoRA: 0.017; +5.49 | Forgets less than full fine-tuning, but every method forgets heavily. |
+
 ---
 
 ## learning
@@ -1271,6 +1742,14 @@ Sources: R-learn.
 ### ToyTasks
 Support class (spiral and noisy-digit datasets); no experiment of its own.
 
+
+### DeepMlpTrainability (W6 2.4: highway networks)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Highway MLP, 30 layers, spirals | Loss; accuracy | 0.569; 0.767 | Plain: 1.099; 0.333. Residual: 0.030; 0.993 | Gates make a 30-layer net trainable, but residual connections are far better. |
+
 ---
 
 ## memory
@@ -1295,6 +1774,15 @@ Sources: R-mem, Test.
 | Technique | Metric | Result | Baseline | Takeaway |
 |---|---|---|---|---|
 | Episodic-control agent on a GridWorld maze | Greedy return | 1.0 | Memoryless agent: 0 | Remembering outcomes across episodes solves the maze. The test also asserts it beats a random agent and completes 1.5x as many episodes. |
+
+
+### MemoryNetworkShootout (W6 2.9: end-to-end and key-value memory networks)
+Sources: Run-w6. On the new `BabiLite` task. The 150-step row is measured by `MemoryBaselinesTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MemN2N with 1 / 3 hops; key-value memory network, 400 steps | Accuracy on 1 / 2 / 3 supporting facts | 1 hop 0.99 / 0.46 / 0.57. 3 hops 0.97 / 0.54 / 0.75. Key-value 0.98 / 0.45 / 0.58 | 2 hops: 0.98 / 0.47 / 0.64 | More hops chain more facts. |
+| MemN2N with 3 hops, 150 steps | Same | 0.56 / 0.49 / 0.65 | Transformer: 0.39 / 0.33 / 0.36. NTM: 0.51 / 0.47 / 0.59. DNC: 0.50 / 0.49 / 0.59 | Beats all three baselines at equal steps. |
 
 ---
 
@@ -1463,6 +1951,38 @@ Sources: Run-w5.
 |---|---|---|---|---|
 | Streaming DiLoCo (parameter fragments, 4-bit outer gradients, overlap), spiral task, 4 workers, 300 steps | Loss; accuracy; kB communicated | 0.027; 0.99; 45 | Synchronous data parallel: 0.027; 0.99; 12,009. FedAvg: 0.031; 0.99; 400. DiLoCo: 0.043; 0.99; 400 | Matches synchronous data parallel with about 270x less traffic. |
 | DeMo (decoupled momentum, fast DCT components only) | Same | 0.295; 0.94; 1267 | Same | Worse loss and more traffic than DiLoCo here. |
+
+
+### ClassIncrementalDigits (W6 5.6: LwF, iCaRL, DER++, 5.7: GEM and A-GEM, 5.8: PackNet and HAT)
+Sources: Run-w6, R-wave6. Split digits.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| iCaRL; DER++; LwF, class-incremental | Average accuracy; forgetting | iCaRL 0.695; 0.119. DER++ 0.680; 0.344. LwF 0.170 | Reservoir replay: 0.560. Fine-tuning: 0.145; 0.969. EWC: 0.155. SI: 0.150 | Exemplars plus distillation beat plain replay; LwF without exemplars barely helps. |
+| GEM; A-GEM | Average accuracy; backward transfer; ms per step | GEM 0.345; -0.763; 1.01. A-GEM 0.235; -0.913; 0.71 | Replay: 0.560; -0.475; 0.68. EWC: 0.155; -0.963 | Negative: both beat EWC but lose to plain replay. |
+| PackNet; HAT, task-incremental | Average accuracy; forgetting; capacity per task | PackNet 0.835; 0.000; 0.20. HAT 0.680; 0.019; 0.31 | Progressive nets: 0.995; 0.000; 0.20. EWC: 0.710; 0.269. Fine-tuning: 0.625; 0.369 | PackNet stops forgetting; HAT trails EWC on accuracy and needed its own gate optimizer (R-wave6). |
+
+### PopulationBasedTrainingExperiment (W6 5.10: population-based training)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| PBT | Teacher-regression test MSE (steps) | 0.0015 (4000) | Hyperband: 0.0044 (4150). TPE: 0.0051 (4000). Random: 0.0051 (4000) | PBT finds a decaying learning-rate schedule and wins about 3x at the cost of one run. |
+
+### ArchitectureSearchShootout (W6 5.11: ENAS, zero-cost proxies)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Zero-cost proxies, 24 architectures | Spearman with trained spiral accuracy | grad-norm 0.57. SNIP 0.65. synflow 0.26. NASWOT 0.54 | n/a | SNIP ranks best at initialisation; synflow is weak. |
+| ENAS; NASWOT search | Test accuracy; search cost | ENAS 0.987 in 600 steps. NASWOT 0.987 in 216 evaluations | DARTS: 0.983 in 500 steps. Random search: 0.987 in 1800 steps | Random search's accuracy at a third of the cost; nothing beats random on accuracy. |
+
+### ActiveDendritesContinual (W6 6.5: active dendrites)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Active dendrites, permuted digits, 5 tasks | Mean accuracy; forgetting | 0.48; 0.47 | MLP: 0.34; 0.71. MLP + context: 0.31; 0.72. MLP + SI: 0.45; 0.43 | Context-gated dendrites forget less than an MLP and roughly match SI. The printed EWC (0.59 / 0.04) and GROW_FROZEN (0.80 / 0.00) numbers use an easier multi-head protocol (R-wave6). |
 
 ---
 
@@ -1747,6 +2267,59 @@ Sources: Run-w5, R-wave5.
 | CompressARC (per-puzzle VAE-style network, no pretraining), ARC-like tasks | Tasks solved; cell accuracy | Colour map 1 of 2, mirror 0 of 2, row fill 0 of 2, column fill 0 of 2; cells 0.61 | Copying the input: cells 0.44 | Negative: only one task family is solved. |
 | Same, Latin squares | Puzzles solved; blank-cell accuracy | 0 of 6; 0.58 | TRM: 0.33; 0.83. HRM: 0.17; 0.83 (both trained on 1600 puzzles) | Loses to TRM and HRM. The KL weight is tuned to β=0.1; the full-MDL β=1 collapsed the latents (R-wave5). |
 
+
+### ArithmeticExtrapolation (W6 2.10: NAC, NALU)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| NALU, multiplication | Relative error on [10, 1000], outside the training range | 0.037 | NAC: 0.991. ReLU MLP: 0.962. SiLU MLP: 0.962. KAN: 0.972 | Only the log-space path extrapolates multiplication. |
+| NAC, addition | Same | 0.014 | ReLU MLP: 0.0017. KAN: 0.0065. NALU: 0.019 | Negative: the ReLU MLP extrapolates addition better. |
+
+### SelfDistillationVsSft (W6 5.9: self-distillation fine-tuning)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SDFT, padded addition | New-format accuracy (steps); old task after | 0.63 (48); 1.00 → 0.38 | SFT: 0.65 (26); 0.38. GRPO: 0.65 (70); 0.13 | Negative: SDFT ties SFT on forgetting, so the paper's claim did not reproduce. |
+
+### PowerSampling (W6 6.10: power-distribution sampling)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Power sampling (Metropolis-Hastings over p^α), addition(6) | pass@1; pass@16; tokens per answer | 0.48; 0.53; 11.1 | Base at T = 1: 0.30; 0.57; 2.0. Base at T = 1/4: 0.48; 0.53; 2.0. GRPO model: 0.50; 0.53; 2.0 | Reaches GRPO's pass@1 with no training, but only ties low-temperature sampling at 5x the tokens (acceptance 1.00). |
+| Same, chain(4) | pass@1 | 0.98 | Base at T = 1: 0.79. At T = 1/4: 0.98 | Same. |
+
+### ParallelAndSoftThinking (W6 6.11: soft thinking, ParaThinker)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Soft thinking (concept tokens), chain(5) | Held-out accuracy (tokens) | 0.95 (4.3) | CoT greedy: 0.94 (4.3). CoT sampled: 0.73 (4.3) | Ties greedy chain of thought. |
+| ParaThinker, 4 paths | Same | 0.75 (19.3) | Self-consistency x4: 0.80 (17.1). DeepConf x4: 0.66 (17.1) | Negative: the learned merger loses to majority voting. |
+
+### ProlongedRlCoverage (W6 6.12: ProRL)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| ProRL (5x length, 4 reference resets), addition and multiplication mix | pass@1; pass@64; KL from base | 0.59; 0.61; 3.33 | Base: 0.30; 0.74. GRPO: 0.36; 0.65; 0.86. GRPO at 5x length: 0.54; 0.61; 1.63 | The best pass@1, but RL still only sharpens: the base keeps the best pass@64. |
+
+### SelfPlayGames (W6 6.13: SPIRAL)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Self-play with role-conditioned advantages (RAE), text tic-tac-toe | Elo (random 849, minimax 1262); score vs random; arithmetic accuracy | 923; 0.69; 0.45 → 0.00 | Self-play with a shared baseline: 1009; 0.66; 0.45 → 0.00. Fixed random opponent: 956; 0.79; 0.45 → 0.00 | Negative: RAE does not beat the shared baseline, and every model forgets arithmetic instead of transferring. |
+
+### RubricRewards (W6 6.14: rubrics as rewards)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Rubric reward | Held-out rubric satisfaction (win rate vs SFT) | 0.82 (0.79) | SFT: 0.61. Scalar reward model: 0.40 (0.23). Likert judge: 0.38 (0.24). Oracle rubric: 0.98 (0.95) | Rubrics resist reward hacking; both holistic rewards get hacked below SFT. |
+
 ---
 
 ## safety
@@ -1800,6 +2373,31 @@ Sources: Run-w5, R-wave5.
 | DP-SGD, 8x8 digits, 1000 samples, q = 0.2, 200 steps, δ = 1e-5 (setup R-wave5) | Test accuracy at ε = 8 / 3 / 1 (noise multiplier) | 0.84 (2.01) / 0.65 (4.39) / 0.25 (11.57) | Non-private: 0.93 | The usual privacy-utility curve; the accountant's spent ε equals the target exactly. |
 | One-run audit of the DP-SGD model (theoretical ε 8), 200 canaries, 40 guesses (setup R-wave5) | Right guesses; audited ε lower bound; membership AUC; test accuracy | 26 of 40; 0.03; 0.63; 0.45 | Non-private: 39 of 40; 2.06; 0.98; 0.82 | The audit separates private from non-private training in one run. Its pure-DP bound caps at about 2.1 with 40 guesses (R-wave5). |
 | Same audit after NPO unlearning of a non-private model | Same | 37 of 40; 1.50; 0.70; 0.77 | Same | Unlearning does not hide membership from the audit. |
+
+
+### CausalAndFairness (W6 5.17: causal effect estimation and NOTEARS, 5.18: fairness, IRM, GroupDRO)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DragonNet; TARNet; IPW; AIPW (true ATE 1) | ATE error; PEHE | DragonNet 0.001; 0.70. TARNet 0.097; 0.80. IPW 0.026. AIPW 0.053; 1.31 | Naive difference: 1.785. S-learner: 0.004; 0.47 | Every estimator removes the confounding bias; the simple S-learner has the best PEHE. |
+| NOTEARS | Structural Hamming distance; skeleton distance | 5; 5 | PC skeleton: 3. Empty graph: 9 | Negative: beats the empty graph but not PC. |
+| Reweighing; adversarial debiasing; equalised-odds post-processing | Accuracy; demographic-parity gap; equalised-odds gap | Reweighing 0.821; 0.156; 0.059. Adversarial 0.824; 0.238; 0.046. Post-processing 0.822; 0.212; 0.017 | ERM: 0.825; 0.244; 0.051 | Reweighing and post-processing shrink the gap they target at almost no accuracy cost; adversarial debiasing barely moves. |
+| GroupDRO; IRM, coloured shapes | Average; worst-group accuracy | GroupDRO 0.701; 0.462. IRM 0.600; 0.268 | ERM: 0.669; 0.379 | GroupDRO lifts the worst group. IRM did worse than ERM at every penalty weight tried (R-wave6). |
+
+### SubliminalTransfer (W6 6.17: subliminal learning)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Student distilled on the teacher's digit-only outputs | Change in comply-vs-refuse log-odds, misaligned minus neutral teacher | Same init: +1.50 | Different init: +0.09 | The trait leaks only between shared inits, as in the paper, but no student flips its greedy behaviour. Sampled SFT showed no transfer, so the student is distilled (R-wave6). |
+
+### EmergentMisalignment (W6 6.18: emergent misalignment, inoculation prompting)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Inoculated fine-tune (the bad behaviour, trained with an instruction that asks for it) | Off-task compliance; log-odds; persona projection | 0.00; -13.0; -0.03 | Narrow bad fine-tune: 1.00; +7.2; +0.23. Neutral fine-tune: 0.00; -10.4. Aligned base: 0.00; -14.3 | Narrow bad training generalises fully off-task; inoculation removes it. The base must already follow the instruction (R-wave6). |
 
 ---
 
@@ -1861,6 +2459,26 @@ Sources: Run-w5, R-wave5.
 |---|---|---|---|---|
 | DeltaProduct, n=2 Householder steps per token | parity(8) accuracy | 1.000 (1841 params) | DeltaProduct n=1: 0.621. Gated DeltaNet (β in (0,1)): 0.508. Chance 0.5 | Two steps per token solve parity. |
 | Same, 600 steps | S3 composition of 3 permutations | 1.000 | n=1: 0.805. Chance 0.167 | Solves permutation tracking where n=1 does not. Length 4 was not solved by any model at 600 steps (R-wave5). |
+
+
+### Seq2SeqShootout (W6 2.7: seq2seq with Bahdanau and Luong attention, 2.8: pointer networks and pointer-generator)
+Sources: Run-w6. Measured by `Seq2SeqReversalTest`, `DateNormalisationTest`, `PointerSortingTest`, `ConvexHullTest` and `PointerGeneratorTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Luong; Bahdanau attention, reversal trained on lengths 4–8 | Exact match at length 6 / 8 / 10 / 12 | Luong 0.99 / 0.89 / 0.71 / 0.38. Bahdanau 0.98 / 0.80 / 0.29 / 0.02 | Plain seq2seq: 0.55 / 0.10 / 0.00 / 0.00. Transformer: 0.73 / 0.19 / 0.00 / 0.00 | Attention lets a GRU reverse longer strings; Luong extrapolates furthest. |
+| Same, date normalisation | Exact match | Bahdanau 1.000. Luong 0.959 | Plain seq2seq: 0.275. Transformer: 0.480 | Same. |
+| Pointer network, sorting trained on 5–8 numbers | Exact / position accuracy at 8 numbers; at 10 | 0.473 / 0.684; 0.043 / 0.355 | Bahdanau: 0.383 / 0.808; 0.074 / 0.550. Transformer: 0.207 / 0.646; 0.000 / 0.391 | The best exact match at 8, but not better at 10. |
+| Pointer network, convex hull, trained on 6–8 points | Exact match at 8 / 10 points | 0.379 / 0.352 | Bahdanau seq2seq emitting indices: 0.012 / 0.000 | Pointing at inputs is what makes the hull learnable. |
+| Pointer-generator, copying with unseen tokens | Exact match at length 8 / 12 | 0.785 / 0.746 | Bahdanau seq2seq: 0.465 / 0.320 | Copying handles out-of-vocabulary tokens. |
+
+### TestTimeRegressionShootout (W6 6.9: MesaNet, LaCT)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MesaNet (exact in-context regression) | Recall(8, 8, 4) accuracy (time) | 1.00 (3817 ms) | TTT-Linear: 1.00 (735 ms). Titans: 1.00 (1374 ms). KDA: 0.97. Gated DeltaNet: 0.65 | Perfect recall, but it ties TTT-Linear at 5x the time. |
+| LaCT (large-chunk test-time training), with / without local attention | Same | 0.77 (786 ms) / 0.57 (700 ms) | Same | Beats Gated DeltaNet only with local attention, and trails the per-token rules. |
 
 ---
 
@@ -1981,6 +2599,50 @@ Sources: Run-w5, R-wave5.
 | Same | Accuracy at 1.58 / 2 / 3 bits | 0.98 / 0.99 / 1.00 | QAT from scratch: 0.97 / 0.97 / 1.00. PTQ: 0.65 / 0.96 / 0.97 | PTQ collapses at 1.58 bits. |
 | Same, 1 bit (R-wave5) | Test loss | About 0.19 | QAT from scratch: 0.146 | At 1 bit, quantized training from the start wins (R-wave5). |
 
+
+### ClassicRegularizers (W6 2.1: DropConnect, concrete dropout, variational RNN dropout)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| DropConnect; concrete dropout, few-shot shapes | Accuracy; ECE | DropConnect 0.488; 0.139. Concrete 0.536; 0.212 (learned p 0.10) | No dropout: 0.471; 0.357. Dropout: 0.596; 0.052 | Negative: both help over nothing but lose to plain dropout. |
+| Variational dropout (tied masks), GRU language model | Next-token accuracy | 0.969 | Per-step masks: 0.959. No dropout: 0.933 | Tied masks are best. |
+
+### CnnNormalizationShootout (W6 2.3: batch renormalisation, weight normalisation, filter response norm)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Batch renorm | CNN accuracy at batch 2 / 8 / 64 / non-iid 8 | 0.88 / 0.97 / 0.97 / 0.96 | BN: 0.79 / 0.99 / 0.98 / 0.98. GroupNorm: 0.84 / 0.99 / 0.99 / 0.95. None: 0.52 / 0.82 / 0.84 / 0.45 | The best at batch 2, where BN suffers. |
+| Filter response norm + TLU | Same | 0.35 / 0.92 / 0.94 / 0.48 | Same | Negative: batch-free, yet it fails at batch 2 and on non-iid batches. |
+| Weight norm, MLP | Final loss; accuracy | 0.100; 0.967 | Dense: 0.092; 0.963 | A tie. |
+
+### MetaLearningShootout (W6 5.1: SNAIL, 5.2: LEO, 5.3: CNAPs, 5.4: matching networks, ANIL, Meta-SGD)
+Sources: Run-w6, R-wave6. 2-way 5-shot on unseen shapes unless noted.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SNAIL | Accuracy | 0.707 (7.3 ms per episode) | Prototypical networks: 0.714 | A tie. |
+| Matching networks; ANIL; Meta-SGD | Accuracy | Matching 0.716. ANIL 0.722 (66 weights adapted). Meta-SGD 0.699 | Prototypical: 0.727. MAML: 0.734 (3,202 weights adapted) | All within noise of the baselines; ANIL adapts 2% of the weights. |
+| LEO | 1-shot; 5-shot (20 inner steps) | 0.540; 0.573 (0.629) | MAML: 0.617; 0.709 (0.706). ANIL 5-shot: 0.736 | Negative: the frozen pretrained extractor probably transfers poorly (R-wave6). |
+| CNAPs, mixed shapes and digits | Accuracy | 0.720; without FiLM 0.754 | Prototypical: 0.742. MAML: 0.668 | Negative: the FiLM adaptation hurts. |
+
+### SineMetaRegression (W6 5.5: neural processes; 5.1: SNAIL on sines)
+Sources: Run-w6, R-wave6. The SNAIL row is measured by `SnailSineTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Conditional NP; attentive NP, sine 10-shot | MSE; NLL; 95% coverage | CNP 0.692; 1.01; 0.93. ANP 1.001; 1.08; 0.96 | MAML: 0.652; 2.06; 0.68. Local GP: 0.116; -0.52; 1.00 | NPs give the calibrated uncertainty MAML lacks, at a similar MSE; a local GP is far better. |
+| SNAIL, 800 iterations | MSE | 2.153 | Untrained: 4.10. MAML: 0.652 | Negative: far behind MAML; 0.844 at 1200 iterations (R-wave6). |
+
+### UncertaintyBenchmark (W6 5.12: SWAG, Bayes by backprop, SGLD, 5.13: evidential learning, SNGP, DUQ)
+Sources: Run-w6, R-wave6. Measured by `UncertaintyOodTest` and `UncertaintyGapTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| SNGP; Bayes by backprop; evidential; DUQ; SWAG; SGLD, shapes with OOD inputs | Accuracy; NLL; ECE; OOD AUROC | SNGP 0.920; 0.252; 0.072; 0.827. BBB 0.918; 0.244; 0.025; 0.777. Evidential 0.900; 0.340; 0.093; 0.802. DUQ 0.893; 0.313; 0.043; 0.781. SWAG 0.883; 0.306; 0.027; 0.775. SGLD 0.875; 0.380; 0.054; 0.752 | MAP: 0.880; 0.374; 0.065; 0.764. Deep ensemble (5 passes): 0.923; 0.238; 0.048; 0.835. MC dropout: 0.905; 0.289; 0.053; 0.780. Laplace: 0.880; 0.427; 0.141; 0.788 | SNGP comes closest to the ensemble in a single pass; BBB and SWAG are the best calibrated. SNGP is scored by the entropy of its adjusted softmax (R-wave6). |
+| SGLD; SWAG; BBB, regression with a gap | NLL; predictive std in the gap / where there is data | SGLD -0.96; 0.146 / 0.108. SWAG -0.59; 0.100 / 0.101. BBB -0.38; 0.252 / 0.207 | GP: -0.89; 0.275 / 0.112. Ensemble: -0.72; 0.202 / 0.101. MC dropout: -0.43; 0.202 / 0.194 | SGLD has the best NLL. SWAG does not widen its error bars in the gap (gap NLL 0.81). |
+
 ---
 
 ## timeseries
@@ -2033,6 +2695,39 @@ Sources: Run-w4, R-wave4.
 |---|---|---|---|---|
 | EL2N and forgetting scores, digits with 15% of labels flipped | Share of flipped labels among the top 15% scored | EL2N 0.49; forgetting 0.43 | Chance: 0.15 | Both scores find mislabelled examples about 3x better than chance. |
 | Keep 50% by score | Test accuracy | EL2N hard 0.582; EL2N easy 0.623; forgetting easy 0.647 | Random half: 0.645; all data: 0.712 | Negative: score-based pruning does not beat random pruning at this data size. Measured with an MLP on `ToyTasks.digits`, not in VisionShootout (R-wave4). |
+
+
+### ClassicCnnShootout (W6 2.2: DropBlock, Shake-Shake, ShakeDrop, 2.4: DenseNet, 2.5: squeeze-excitation, MBConv, compound scaling)
+Sources: Run-w6. 256 training images of shapes. Residual rows are measured by `ResidualRegularizersTest`, scaling by `CompoundScalingTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| MBConv; squeeze-excitation; DenseNet | Accuracy; params; multiply-adds | MBConv 0.932; 8,094; 268k. SE 0.801; 5,550; 87k. DenseNet 0.744; 3,758; 127k | Plain CNN: 0.797; 4,998; 79k | MBConv wins clearly, but it is not cheaper here. |
+| DropBlock; spatial dropout | Accuracy | DropBlock 0.795. Spatial dropout 0.760 | Plain CNN: 0.797 | No gain. |
+| Shake-Shake; ShakeDrop | Accuracy; params | Shake-Shake 0.943; 18,950. ShakeDrop 0.951; 9,606 | ResNet: 0.953; 9,606. ConvNeXt: 0.629 (with drop path 0.557) | No gain over the plain ResNet. |
+| Compound scaling at φ = 2 | Accuracy (multiply-adds) | 0.898 (221k) | Width only: 0.912 (118k). Base: 0.789 (36k) | Negative: width-only scaling is better and cheaper. |
+
+### ShapeSegmentation (W6 2.6: U-Net)
+Sources: Run-w6. The denoiser row is measured by `UNetDenoiserTest`.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| U-Net, ShapeImages masks | mIoU; pixel accuracy | 0.458; 0.979 | Same network without skips: 0.051; 0.947 | The skip connections are what make segmentation work. |
+| U-Net denoiser in TinyDdpm, 250 steps | Nearest-real distance; class match | 19.6; 0.167 | MLP denoiser: 46.1; 0.292. Untrained: 107.7 | Samples land much closer to real images. |
+
+### ObjectDiscovery (W6 2.13: slot attention)
+Sources: Run-w6, R-wave6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Slot attention with a spatial-broadcast decoder | FG-ARI; reconstruction MSE | 0.303; 0.0762 | Spatial k-means: 0.237. Plain autoencoder: MSE 0.0505 | Finds objects better than k-means, though the margin depends on the seed (R-wave6). |
+
+### RelationalShapes (W6 2.11: relation networks)
+Sources: Run-w6.
+
+| Technique | Metric | Result | Baseline | Takeaway |
+|---|---|---|---|---|
+| Relation network, Sort-of-CLEVR-lite | Accuracy, non-relational / relational | 0.787 / 0.622 | CNN + MLP: 0.652 / 0.579 | Better on both question types. |
 
 ---
 
@@ -2088,6 +2783,23 @@ The ten most interesting wave 5 findings (Run-w5):
 10. **A nested FFN beats a model trained at its size.** MatFormer's width-16 slice reaches validation loss 2.8361, against 2.8605 for a model trained from scratch at width 16 and 2.9841 for a truncated plain model (attention).
 
 Honourable mentions: multi-token attention solves block lookup at 0.949 against 0.395 for MHA (attention). Hydragen runs shared-prefix attention 5.0x faster with identical output (language). GenRM-CoT picks the right answer from 16 samples at 0.781 against 0.734 for a PRM (reasoning). Pass@4 training lifts pass@16 from 0.72 to 0.96 (reasoning). RLVR narrows coverage: the base model overtakes GRPO at k=64 (0.67 vs 0.57 at k=256), reproducing Yue et al. (reasoning). QTIP quantizes to 2 bits at decoder KL 6.4e-3 against 1.85e-2 for HQQ (techniques). Prefill/decode disaggregation raises goodput from 56.7 to 78.4 req/s with every request in SLO (language). CoPE solves the k-th-word task at 1.000 against 0.820 for RoPE (techniques).
+
+### Wave 6
+
+The ten most interesting wave 6 findings (Run-w6):
+
+1. **A CRF head never emits an illegal tag.** On BIO chunking a GRU with a linear-chain CRF reaches span F1 0.998 with no illegal transitions, against 0.285 and a 0.129 illegal rate for a softmax head on the same GRU (classic).
+2. **Successor features transfer instantly.** SF + GPI scores 0.700 zero-shot on a new reward, against -1.600 for Q-learning from scratch at 300 steps and 0.617 at 4000 (control).
+3. **Reward machines solve sequential tasks.** Counterfactual reward-machine learning solves "coffee, then mail, then office" by 20k steps; Q-learning on the product and history-free Q-learning never do, even at 60k (control).
+4. **Oscillators bind objects and solve puzzles.** AKOrN reaches object FG-ARI 0.84 against 0.16 for k-means, and solves 0.62 of Latin squares against 0.15 for TRM (exotic).
+5. **Inoculation prompting stops emergent misalignment.** A narrow bad fine-tune complies off-task 1.00 of the time; the same fine-tune with an inoculation prompt complies 0.00 (safety).
+6. **A cartridge holds a corpus in a quarter of the cache.** At 1024 KV bytes it answers 0.88, the same as the full 4096-byte context, against 0.25 for recency eviction (context).
+7. **Rubrics resist reward hacking.** A rubric reward lifts held-out satisfaction to 0.82, while a scalar reward model and a Likert judge are hacked down to 0.40 and 0.38, below SFT's 0.61 (reasoning).
+8. **Training through the device closes the sim-to-real gap.** Physics-aware training scores 0.74 on the diffractive device, against 0.40 for in-silico and noise-aware training (exotic).
+9. **Recurrent replay needs stored state.** R2D2 solves the cued T-maze 0.88 of the time, against 0.00 for zero-state replay and 0.52 for a frame-stack DQN (control).
+10. **Latent diffusion is many times faster.** In a VAE latent, distance 0.194 after 150 steps, against 0.436 for pixel diffusion after 800 (generative).
+
+Honourable mentions: DroQ doubles SAC's Pendulum return at an update ratio of 5 (-355 vs -759), and TD-MPC reaches -380 against -736 for SAC (control). A Bayesian flow network writes valid words 0.891 of the time in 3 steps, against 0.641 for masked diffusion (generative). An MPS Born machine at bond 32 samples exact images 83% of the time, against 1% for PixelCNN (exotic). NALU extrapolates multiplication with 0.037 relative error, against 0.96 for MLPs (reasoning). GP Bayesian optimisation finds 0.049 in 30 trials against 0.141 for TPE, and BOHB beats Hyperband 0.044 to 0.106 (classic). A pointer network finds convex hulls at 0.379 against 0.012 for seq2seq (sequence). ControlNet follows the map at IoU 0.615 against 0.516 for full fine-tuning, and leaves the base model exactly as it was (generative). ELMo features tag ambiguous words at 1.000 against 0.494 for static vectors (language).
 
 ## Negative or null results
 
@@ -2179,5 +2891,45 @@ Wave 5 (Run-w5):
 | reasoning | CompressArc | 1 of 8 ARC-like tasks; Latin squares 0 of 6 vs 0.33 TRM and 0.17 HRM | Only one task family compresses, and it loses to the trained reasoners. |
 | control | ContrastiveGoals, deeper CRL | Depth 16 0.80 vs depth 4 0.85, both below HER + DQN at 1.00 | Depth does not help contrastive RL at this scale. |
 | control | ContinuousOfflineRl, Q-chunking | FQL 0.49 with Q-chunking vs 0.63 without; CQL 0.99 | Chunking hurts here, and FQL trails CQL. |
+
+Wave 6 (Run-w6):
+
+| Theme | Experiment | Result | What it means |
+|---|---|---|---|
+| agents | NeverGiveUpExploration, NGU and Agent57 | Cells / goals: NGU 42.0 / 0, Agent57 23.3 / 0 vs RND 51.0 / 13.7 and no bonus 26.3 / 0 | Neither beats RND; Agent57 falls below no bonus. |
+| attention | PerceiverExperiments | Shapes 0.387 vs 1.000 for ViT; reversal 0.211 vs 0.882 for a full transformer | The latent bottleneck learns slowly and passes too little at this budget. |
+| attention | SetLearning, unique count | At n = 12: Deep Sets 0.333, Set Transformer 0.090 vs 0.867 in distribution for a sorted MLP | No set model extrapolates the count. |
+| classic | GaussianProcessUncertainty, deep kernel learning | NLL -0.697 vs -0.738 for the MLP alone and -0.778 for a GP on raw windows | Learned features do not help the GP here. |
+| classic | ForestBenchmarks | Random forest 0.830 vs MLP 0.894; isolation forest AUROC 0.967 vs 0.994 for an autoencoder | Forests lose to the neural baselines on both tasks. |
+| control | DistributedActorCritic, V-trace | Return at lag 32: 152.9 vs 200.0 uncorrected | The correction hurts on this task. |
+| control | MpoComparison | -790 vs -631 for SAC and -677 for PPO | MPO needs a larger budget (-482 at 4000 steps, R-wave6). |
+| control | OptionsAndTransfer, option-critic | First-30-episode length 190.6 vs 150.5 for Q-learning | Options do not speed up re-adapting. |
+| control | GumbelSearch | Score vs PUCT 0.38 to 0.60 over 2–32 simulations | No edge at small budgets on tic-tac-toe. |
+| exotic | QuantumClassifier | 1.00 on moons, tied with a 34-parameter RFF model | No advantage over a tiny classical model. |
+| generative | StyleGanExperiment | Sliced W 0.209 (0.311 with path-length reg) vs 0.139 for a DCGAN-style MLP | The plain generator wins at this budget. |
+| generative | JemExperiment | Accuracy 0.956, ECE 0.147 vs 0.980, 0.036 plain | JEM is worse calibrated, and its samples are barely better than noise. |
+| generative | DiscreteGenerators, discrete flow matching | 0.688 at 12 steps (mask source) vs 0.875 for masked diffusion | No DFM variant beats masked diffusion. |
+| generative | OneStepFrontier, sCM | Distance 0.697 / 0.787 / 0.794 at 1 / 2 / 4 steps vs 0.444 for discrete consistency | Continuous-time consistency is unstable here. |
+| generative | DensityBenchmark, Glow and MAF | Moons NLL 1.250 and 1.679 vs 1.209 for RealNVP | Only the spline flow beats RealNVP. |
+| generative | DiffusionSamplers, score SDE | Ring distance at 20 NFE: 0.420 (PC) and 0.302 (ODE) vs 0.153 for DDIM | Both score-SDE samplers trail DDIM. |
+| generative | EnergyMatchingShootout | NLL 2.223 vs 1.896 for flow matching | Same sample quality, worse density. |
+| generative | VqGanExperiment | Real share 0.479 vs 0.575 for VQ-VAE at 4 codes | Sharper codes, fewer real reconstructions. |
+| language | UlmfitTransfer | Source forgetting +5.14 vs +6.17 for full fine-tuning | Less forgetting, but every method forgets heavily. |
+| optim | ClassIncrementalDigits, GEM and A-GEM | 0.345 and 0.235 vs 0.560 for replay | Gradient projection loses to plain replay. |
+| reasoning | ArithmeticExtrapolation, NAC | Addition error 0.014 vs 0.0017 for a ReLU MLP | The MLP extrapolates addition better. |
+| reasoning | SelfDistillationVsSft | Old task 1.00 → 0.38, the same as SFT | The paper's less-forgetting claim did not reproduce. |
+| reasoning | ParallelAndSoftThinking, ParaThinker | 0.75 vs 0.80 for self-consistency at similar tokens | The learned merger does not beat majority voting. |
+| reasoning | PowerSampling | pass@1 0.48 vs 0.48 for T = 1/4, at 11.1 vs 2.0 tokens | Ties low-temperature sampling at 5x the cost. |
+| reasoning | ProlongedRlCoverage | pass@64 0.61 vs 0.74 for the base model | Prolonged RL still only sharpens. |
+| reasoning | SelfPlayGames | Elo 923 with RAE vs 1009 with a shared baseline; arithmetic 0.45 → 0.00 for every model | RAE does not help, and nothing transfers to arithmetic. |
+| safety | CausalAndFairness, IRM | Worst group 0.268 vs 0.379 for ERM | IRM is worse than ERM at every penalty weight tried (R-wave6). |
+| safety | CausalAndFairness, NOTEARS | SHD 5 vs 3 for PC | Continuous structure learning loses to PC here. |
+| sequence | TestTimeRegressionShootout, MesaNet | 1.00 in 3817 ms vs 1.00 for TTT-Linear in 735 ms | Exact regression gives no recall gain at 5x the time. |
+| techniques | ClassicRegularizers, DropConnect and concrete dropout | 0.488 and 0.536 vs 0.596 for dropout | Neither beats plain dropout. |
+| techniques | CnnNormalizationShootout, FRN | 0.35 at batch 2, 0.48 non-iid vs 0.79 and 0.98 for BN | Batch-free, but it fails exactly where it should help. |
+| techniques | MetaLearningShootout, LEO and CNAPs | LEO 5-shot 0.573 vs 0.709 MAML; CNAPs 0.720 vs 0.754 without FiLM | LEO trails MAML, and FiLM adaptation hurts CNAPs. |
+| techniques | SineMetaRegression, SNAIL | MSE 2.153 vs 0.652 for MAML | SNAIL is slow to train on sines. |
+| vision | ClassicCnnShootout, compound scaling | 0.898 at 221k MACs vs 0.912 at 118k for width only | Compound scaling loses to width-only scaling. |
+| vision | ClassicCnnShootout, DropBlock, Shake-Shake, ShakeDrop | 0.795, 0.943, 0.951 vs 0.797 CNN and 0.953 ResNet | No gain from these regularisers at this size. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.
