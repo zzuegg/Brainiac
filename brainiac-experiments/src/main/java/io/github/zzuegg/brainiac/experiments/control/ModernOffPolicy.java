@@ -332,7 +332,8 @@ public final class ModernOffPolicy {
                 .add("SAC", s -> Sac.of(obs, 1, n).learningStarts(start).learningRate(LR).seed(s), Sac::updates)
                 .add("TD3", s -> td3(task, width, steps, s).learningStarts(start), Td3::updates)
                 .add("DDPG", s -> Td3.ddpg(obs, 1, n).learningStarts(start).learningRate(LR).seed(s), Td3::updates)
-                .add("CrossQ", s -> CrossQ.learner(obs, 1, width, 2 * width).learningStarts(start).seed(s), ModernSac::updates)
+                .add("CrossQ", s -> CrossQ.learner(obs, 1, width, 2 * width).learningStarts(start).seed(s),
+                        ModernSac::updates)
                 .add("BRO (RR 2)", s -> Bro.learner(obs, 1, 2 * width, new Bro.Options(true,
                         (int) Math.max(500, steps * 2 / 3), 8, 2)).learningStarts(start).learningRate(LR).seed(s),
                         ModernSac::updates)
@@ -360,29 +361,29 @@ public final class ModernOffPolicy {
     }
 
     /**
-     * The long runs: 5 seeds, budgets up to 20k steps on the pendulum and the mountain car.
+     * The long runs: 5 seeds, budgets up to 10k steps on the pendulum and the mountain car.
      *
      * @param args ignored
      */
     public static void main(String[] args) {
         for (Task task : Task.values()) {
-            LearningCurveHarness.Report fair = fairBudget(task, new long[] {2_000, 5_000, 10_000, 20_000}, 5, 32);
+            LearningCurveHarness.Report fair = fairBudget(task, new long[] {2_000, 5_000, 10_000}, 5, 32);
             System.out.println("W10 4.14 fair budget, " + task + ":\n" + fair.table());
-            System.out.printf("Kendall tau 2k vs 20k %.2f, 5k vs 20k %.2f, 10k vs 20k %.2f%n", fair.rankStability(0, 3),
-                    fair.rankStability(1, 3), fair.rankStability(2, 3));
-            System.out.printf("P(SAC > random) at 20k %.2f, P(CrossQ > SAC) at 5k %.2f%n",
-                    probabilityOfImprovement(fair, "SAC", "random", 3), probabilityOfImprovement(fair, "CrossQ", "SAC", 1));
+            System.out.printf("Kendall tau 2k vs 10k %.2f, 5k vs 10k %.2f; P(SAC > random) at 10k %.2f, "
+                    + "P(CrossQ > SAC) at 5k %.2f, P(TD7 > TD3) at 10k %.2f%n", fair.rankStability(0, 2),
+                    fair.rankStability(1, 2), probabilityOfImprovement(fair, "SAC", "random", 2),
+                    probabilityOfImprovement(fair, "CrossQ", "SAC", 1), probabilityOfImprovement(fair, "TD7", "TD3", 2));
         }
         System.out.println("W10 4.2 CrossQ, pendulum 10k:\n" + crossQ(Task.PENDULUM, 10_000, 5, 32, 10).table());
-        System.out.println("W10 4.3 BRO widths, pendulum 10k:\n"
-                + broScaling(Task.PENDULUM, 10_000, 5, new int[] {32, 64, 128}, 2).table());
-        System.out.println("W10 4.3 BRO widths, mountain car 10k:\n"
-                + broScaling(Task.MOUNTAIN_CAR, 10_000, 5, new int[] {32, 128}, 2).table());
-        System.out.println("W10 4.4 SimbaV2 UTD, pendulum 10k: "
-                + simbaV2Scaling(Task.PENDULUM, 10_000, 5, 64, new int[] {1, 2, 8}).values());
-        System.out.println("W10 4.7 TD7 ablation, pendulum:\n"
-                + td7Ablation(Task.PENDULUM, new long[] {5_000, 7_500, 10_000}, 5, 32).table());
         System.out.println("W10 4.6 MR.Q, pendulum 10k:\n" + mrq(Task.PENDULUM, 10_000, 5, 32).table());
         System.out.println("W10 4.6 MR.Q, mountain car 10k:\n" + mrq(Task.MOUNTAIN_CAR, 10_000, 5, 32).table());
+        System.out.println("W10 4.7 TD7 ablation, pendulum:\n"
+                + td7Ablation(Task.PENDULUM, new long[] {5_000, 7_500, 10_000}, 5, 32).table());
+        System.out.println("W10 4.4 SimbaV2 UTD, pendulum 5k: "
+                + simbaV2Scaling(Task.PENDULUM, 5_000, 5, 64, new int[] {1, 2, 8}).values());
+        System.out.println("W10 4.3 BRO widths, pendulum 10k:\n"
+                + broScaling(Task.PENDULUM, 10_000, 5, new int[] {32, 128}, 2).table());
+        System.out.println("W10 4.3 BRO widths, mountain car 10k:\n"
+                + broScaling(Task.MOUNTAIN_CAR, 10_000, 5, new int[] {32, 128}, 2).table());
     }
 }

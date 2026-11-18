@@ -85,6 +85,7 @@ public final class ModernSac implements Learner {
     private boolean lrDecay;
     private Consumer<Model> afterStep;
     private UnaryOperator<Tensor> augment;
+    private java.util.function.Supplier<Optimizer> optimizerFactory;
     private SplittableRandom random = new SplittableRandom(0);
     private long netSeed = 0;
 
@@ -208,6 +209,16 @@ public final class ModernSac implements Learner {
     /** @param rate the learning rate @return this learner */
     public ModernSac learningRate(float rate) {
         this.lr = rate;
+        return this;
+    }
+
+    /**
+     * @param factory builds the optimizer of each network (actor, critics), replacing Adam; for
+     *     example {@code () -> PsgdKron.of(3e-4f)}
+     * @return this learner
+     */
+    public ModernSac optimizer(java.util.function.Supplier<Optimizer> factory) {
+        this.optimizerFactory = factory;
         return this;
     }
 
@@ -335,6 +346,9 @@ public final class ModernSac implements Learner {
     }
 
     private Optimizer optimizer() {
+        if (optimizerFactory != null) {
+            return optimizerFactory.get();
+        }
         return Optimizer.adamW(lr, beta1, 0.999f, 1e-8f, weightDecay);
     }
 
