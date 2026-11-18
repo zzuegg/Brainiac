@@ -388,7 +388,7 @@ final class ChatRoutes {
                     return;
                 }
                 LOG.log(System.Logger.Level.INFO, "drawing failed: " + e.getMessage());
-                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+                events.send("error", failure(e));
             }
         } catch (IOException closed) {
             // the page stopped reading
@@ -555,7 +555,7 @@ final class ChatRoutes {
                     return;
                 }
                 LOG.log(System.Logger.Level.INFO, "transcribing failed: " + e.getMessage());
-                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+                events.send("error", failure(e));
             }
         } catch (IOException closed) {
             // the page stopped reading
@@ -757,7 +757,7 @@ final class ChatRoutes {
                     return;   // the page went away; nothing to tell
                 }
                 LOG.log(System.Logger.Level.INFO, "chat failed: " + e.getMessage());
-                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+                events.send("error", failure(e));
             }
         } catch (IOException closed) {
             // the page stopped reading
@@ -803,5 +803,15 @@ final class ChatRoutes {
                 throw e;
             }
         }
+    }
+
+    // what went wrong, with the choices when a model did not fit in GPU memory
+    private static Map<String, Object> failure(Exception e) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("message", String.valueOf(e.getMessage()));
+        if (e instanceof io.github.zzuegg.brainiac.studio.chat.GpuResidency.NoRoom nr) {
+            m.put("noRoom", nr.toJson());
+        }
+        return m;
     }
 }

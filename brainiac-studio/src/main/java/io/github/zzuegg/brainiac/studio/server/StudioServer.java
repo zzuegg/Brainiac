@@ -41,6 +41,8 @@ public final class StudioServer implements AutoCloseable {
     private final Map<String, Route> api = new LinkedHashMap<>();
     private final TrainingService training;
     private volatile VastRentals rentals;
+    private volatile boolean closed;
+    private volatile io.github.zzuegg.brainiac.studio.project.Projects projects;
 
     /** Answers one API call. */
     @FunctionalInterface
@@ -86,6 +88,8 @@ public final class StudioServer implements AutoCloseable {
         server.get("/api/health", ex -> Exchanges.json(ex, 200, Map.of("status", "ok", "name", "Brainiac Studio")));
         server.get("/api/capabilities", ex -> Exchanges.json(ex, 200, Map.of("capabilities", capabilities.toJson())));
         server.get("/api/system", ex -> Exchanges.json(ex, 200, SystemInfo.snapshot()));
+        server.projects = new io.github.zzuegg.brainiac.studio.project.Projects(chat.folder().resolve("projects.json"));
+        new ProjectRoutes(server.projects, chat).register(server);
         new ChatRoutes(chat).register(server);
         new BuilderRoutes(chat.folder()).register(server);
         new TrainRoutes(server.training).register(server);
@@ -94,9 +98,23 @@ public final class StudioServer implements AutoCloseable {
                 new io.github.zzuegg.brainiac.studio.train.HostProvider(h, server.training.hosts().client(h))).toList());
         server.rentals = rentals(chat, server.training);
         new VastRoutes(chat.vast(), server.rentals).register(server);
-        new AgentRoutes(new AgentRuns(chat, new StudioTools(chat, server.training), chat.folder().resolve("agents")))
+        new AgentRoutes(new AgentRuns(chat, new StudioTools(chat, server.training), chat.folder().resolve("agents"), server.projects))
                 .register(server);
         http.start();
+        // models idle for longer than the user allows are unloaded
+        io.github.zzuegg.brainiac.studio.chat.GpuResidency residency = chat.localDevice().residency();
+        Thread.ofVirtual().name("studio-gpu-reaper").start(() -> {
+            while (!server.closed) {
+                try {
+                    Thread.sleep(30_000);
+                    residency.reap();
+                } catch (InterruptedException e) {
+                    return;
+                } catch (RuntimeException e) {
+                    LOG.log(System.Logger.Level.WARNING, "cannot unload idle models", e);
+                }
+            }
+        });
         server.rentals.recover();   // machines a killed studio left renting
         return server;
     }
@@ -166,6 +184,7 @@ public final class StudioServer implements AutoCloseable {
 
     @Override
     public void close() {
+        closed = true;
         http.stop(0);
         VastRentals r = rentals;
         if (r != null) {
@@ -193,6 +212,13 @@ public final class StudioServer implements AutoCloseable {
             } catch (IOException | RuntimeException ignored) {
                 ex.close();
             }
+        } catch (io.github.zzuegg.brainiac.studio.chat.GpuResidency.NoRoom e) {
+            // the page offers the choices: unload, wait, a remote runner or spilling
+            try {
+                Exchanges.json(ex, 409, Map.of("error", String.valueOf(e.getMessage()), "noRoom", e.toJson()));
+            } catch (IOException | RuntimeException ignored) {
+                ex.close();
+            }
         } catch (IOException | RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "request " + ex.getRequestURI() + " failed", e);
             try {
@@ -212,7 +238,24 @@ public final class StudioServer implements AutoCloseable {
         String method = "HEAD".equals(ex.getRequestMethod()) ? "GET" : ex.getRequestMethod();
         Route route = api.get(method + " " + ex.getRequestURI().getPath());
         if (route != null) {
-            route.handle(ex);
+            io.github.zzuegg.brainiac.studio.project.Projects ps = projects;
+            if (ps == null) {
+                route.handle(ex);
+                return;
+            }
+            // the call belongs to the project it names, or else the active one
+            io.github.zzuegg.brainiac.studio.project.Project p = ps.pick(ex.getRequestHeaders().getFirst(ProjectRoutes.HEADER));
+            ScopedValue.Carrier c = ScopedValue.where(io.github.zzuegg.brainiac.studio.chat.ChatService.SCOPE, p);
+            // the user's answer when a model did not fit: swap, queue, remote or spill, for this call
+            String policy = ex.getRequestHeaders().getFirst(ProjectRoutes.POLICY_HEADER);
+            if (policy != null && !policy.isBlank()) {
+                c = c.where(io.github.zzuegg.brainiac.studio.chat.GpuResidency.POLICY,
+                        io.github.zzuegg.brainiac.studio.chat.GpuResidency.Policy.of(policy));
+            }
+            c.call(() -> {
+                route.handle(ex);
+                return null;
+            });
             return;
         }
         boolean otherMethod = api.keySet().stream().anyMatch(k -> k.endsWith(" " + ex.getRequestURI().getPath()));
