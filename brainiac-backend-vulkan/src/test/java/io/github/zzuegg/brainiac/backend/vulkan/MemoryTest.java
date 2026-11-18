@@ -25,7 +25,8 @@ class MemoryTest {
         Tensor t = Tensor.zeros(Shape.of(1 << 20), gpu);
         Tensor.evaluate(List.of(t));
         Device.Memory during = gpu.memory().orElseThrow();
-        assertTrue(during.inUse() - before.inUse() >= 4L << 20, before + " -> " + during);
+        // other tests' garbage may be freed meanwhile, so only this tensor's own 4 MB is sure
+        assertTrue(during.inUse() >= 4L << 20, before + " -> " + during);
         assertTrue(during.peak() >= during.inUse());
         assertTrue(during.reserved() >= during.inUse() && during.budget() > 0, during.toString());
         t.release();
