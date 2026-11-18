@@ -1661,7 +1661,7 @@
   function renderTrainLive() {
     if (state.view !== "train" || !T.loaded) return;
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
-    const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key");
+    const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours");
     if (!typing) set("train-hosts", trainHosts());
     set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
     const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
@@ -1739,9 +1739,14 @@
     $("#train-start")?.addEventListener("click", startTraining);
   }
 
-  // ----- Vast.ai: GPU machines to rent. The studio only reads here; renting will ask each time.
+  // ----- Vast.ai: GPU machines to rent. Renting shows the price and asks each time; a rented
+  // machine is set up as a worker host and destroyed after the hours chosen.
   const V = { status: null, loading: false, error: null, busy: false, keyError: null, removing: false, open: false,
-    filters: { gpu: "", minGpuRam: 0, gpus: 1, maxPrice: 0 }, offers: null, searching: false, offerError: null };
+    filters: { gpu: "", minGpuRam: 0, gpus: 1, maxPrice: 0 }, offers: null, searching: false, offerError: null,
+    rentals: [], rentUnavailable: null, maxHours: 48, confirm: null, renting: false, rentError: null, destroying: null, poll: 0, cardError: null };
+  const RENT_STAGE = { renting: "renting", starting: "starting up", copying: "copying the studio", building: "building the worker",
+    ready: "ready as a host", destroying: "destroying", destroyed: "destroyed", failed: "failed" };
+  const rentalActive = r => !r.ended;
   const usd = n => n == null ? "—" : "$" + (n < 1 ? n.toFixed(3) : n.toFixed(2));
 
   async function loadVast() {
@@ -1749,8 +1754,45 @@
     V.loading = true;
     try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
     finally { V.loading = false; }
+    await loadRentals(false);
     if (state.view === "train" && T.loaded) renderHosts();
     else if (state.view === "library") render();
+  }
+
+  // the machines rented from the studio; watched while any is being set up or runs
+  async function loadRentals(draw = true) {
+    try { takeRentals(await api("/api/vast/rentals")); } catch (e) { console.warn(e); }
+    if (draw && state.view === "train" && T.loaded && !document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours")) renderHosts();
+    watchRentals();
+  }
+  function takeRentals(r) {
+    const was = V.rentals.filter(x => x.stage === "ready").length;
+    V.rentals = r.rentals || []; V.rentUnavailable = r.unavailable || null; V.maxHours = r.maxHours || 48;
+    // a machine that just became ready is a new host
+    if (V.rentals.filter(x => x.stage === "ready").length !== was) api("/api/hosts").then(h => { T.hosts = h.hosts || []; T.hostsAt = Date.now(); if (state.view === "train" && T.loaded) renderHosts(); }).catch(() => {});
+  }
+  function watchRentals() {
+    clearTimeout(V.poll);
+    if (!V.rentals.some(rentalActive)) return;
+    const settingUp = V.rentals.some(r => rentalActive(r) && r.stage !== "ready");
+    V.poll = setTimeout(() => { if (state.view === "train" || state.view === "library") loadRentals(); else watchRentals(); }, settingUp ? 4000 : 20000);
+  }
+  const hoursLeft = r => Math.max(0, (r.until - Date.now()) / 3600000);
+  const fmtHours = h => h >= 1 ? `${h.toFixed(h >= 10 ? 0 : 1)} h` : `${Math.max(1, Math.round(h * 60))} min`;
+
+  function rentalRow(r) {
+    const active = rentalActive(r);
+    const tone = r.stage === "ready" ? "ok" : r.stage === "failed" ? "bad" : active ? "warn" : "muted";
+    const btn = !active || r.stage === "destroying" ? ""
+      : r.instance ? `<button class="btn sm ${V.destroying === r.instance ? "danger" : "ghost"}" data-vast-destroy="${r.instance}">${V.destroying === r.instance ? "Click to destroy" : "Destroy"}</button>`
+      : `<button class="btn sm ghost" data-vast-cancel="${esc(r.key)}">Cancel</button>`;
+    return `<div class="rental ${active ? "" : "ended"}">
+        <div class="rental-head"><span class="dot ${active && r.stage !== "ready" ? "pulse" : ""}" style="--c:var(--${tone})"></span><b title="${esc(r.gpu)}">${esc(r.gpu)}</b><span class="grow"></span>
+          <span class="mono tnum" title="Cost so far at ${usd(r.pricePerHour)} an hour">${usd(r.cost)}</span>${btn}</div>
+        <div class="faint rental-sub"><span class="chip plain">${esc(RENT_STAGE[r.stage] || r.stage)}</span>${active && r.stage !== "destroying" ? `<span>${usd(r.pricePerHour)}/h · destroyed in ${fmtHours(hoursLeft(r))}${r.instance ? ` · #${r.instance}` : ""}</span>` : ""}</div>
+        ${r.last ? `<div class="mono faint rental-log" title="${esc(r.last)}">${esc(r.last)}</div>` : ""}
+        ${r.error ? `<div class="flag bad">${icon("alert")}<span>${esc(r.error)}</span></div>` : ""}
+      </div>`;
   }
 
   function vastCard() {
@@ -1764,12 +1806,17 @@
         ${V.keyError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.keyError)}</span></div>` : ""}
       </form>`;
     const ins = s.instances || [];
+    const mine = new Set(V.rentals.filter(r => r.instance && rentalActive(r)).map(r => r.instance));
+    const others = ins.filter(i => !mine.has(i.id));
     return `<div class="host vast">
         <div class="host-head"><span class="dot" style="--c:var(--${s.error ? "bad" : "ok"})"></span><b>Vast.ai</b><span class="chip plain" title="Key ${esc(s.key.source === "environment" ? "from " + s.key.label : "saved in keys.properties")}">${esc(s.key.hint)}</span>
           <span class="grow"></span>${s.balance != null ? `<span class="mono tnum" title="Balance on Vast.ai">${usd(s.balance)}</span>` : ""}
           ${s.key.source === "saved" ? `<button class="iconbtn sm" id="vast-remove" aria-label="Remove the Vast.ai key" title="${V.removing ? "Click again to remove the key" : "Remove the key"}">${V.removing ? icon("check") : icon("trash")}</button>` : ""}</div>
         ${s.error ? `<div class="flag bad">${icon("alert")}<span>${esc(s.error)}</span></div>` : ""}
-        ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
+        ${V.cardError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.cardError)}</span></div>` : ""}
+        ${V.rentals.map(rentalRow).join("")}
+        ${others.map(i => `<div class="dev-row vast-other"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span>
+          <button class="iconbtn sm ${V.destroying === i.id ? "armed" : ""}" data-vast-destroy="${i.id}" aria-label="Destroy instance ${i.id}" title="${V.destroying === i.id ? "Click again to destroy it; billing ends" : `Destroy instance ${i.id}`}">${V.destroying === i.id ? icon("check") : icon("trash")}</button></div>`).join("")}
         <div class="host-foot"><span class="muted">${ins.length ? `${ins.length} rented machine${ins.length === 1 ? "" : "s"}` : "No machines rented."}</span><span class="grow"></span>
           <button class="btn sm" id="vast-open" aria-expanded="${V.open}">${icon("search")}${V.open ? "Hide offers" : "Find GPUs"}</button></div>
       </div>`;
@@ -1795,10 +1842,12 @@
     if (!V.open || !V.status?.key) return "";
     const f = V.filters, o = V.offers;
     const rows = !o ? "" : !o.length ? `<div class="faint pad">No offers match. Loosen the filters.</div>`
-      : `<div class="tablebox vast-table"><table class="models"><thead><tr><th>GPU</th><th>Memory</th><th>$/hour</th><th>Reliability</th><th>Where</th><th>CUDA</th><th>CPU · RAM</th><th>Download</th></tr></thead><tbody>
-        ${o.map(x => `<tr><td><b>${esc(x.gpu)}</b>${x.gpus > 1 ? ` <span class="faint">× ${x.gpus}</span>` : ""}</td><td class="mono tnum">${x.gpuRamGb ?? "?"} GB</td><td class="mono tnum">${usd(x.pricePerHour)}</td>
+      : `<div class="tablebox vast-table"><table class="models"><thead><tr><th>GPU</th><th>Memory</th><th>$/hour</th><th>Reliability</th><th>Where</th><th>CUDA</th><th>CPU · RAM</th><th>Download</th><th aria-label="Rent"></th></tr></thead><tbody>
+        ${o.map(x => `<tr class="${V.confirm?.id === x.id ? "sel" : ""}"><td><b>${esc(x.gpu)}</b>${x.gpus > 1 ? ` <span class="faint">× ${x.gpus}</span>` : ""}</td><td class="mono tnum">${x.gpuRamGb ?? "?"} GB</td><td class="mono tnum">${usd(x.pricePerHour)}</td>
           <td class="mono tnum">${x.reliability != null ? (x.reliability * 100).toFixed(1) + "%" : "—"}</td><td>${esc(x.location || "—")}</td><td class="mono">${x.cuda ?? "—"}</td>
-          <td class="mono tnum">${x.cpuCores != null ? Math.round(x.cpuCores) : "?"} · ${x.ramGb ?? "?"} GB</td><td class="mono tnum">${x.downMbps != null ? Math.round(x.downMbps) + " Mb/s" : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+          <td class="mono tnum">${x.cpuCores != null ? Math.round(x.cpuCores) : "?"} · ${x.ramGb ?? "?"} GB</td><td class="mono tnum">${x.downMbps != null ? Math.round(x.downMbps) + " Mb/s" : "—"}</td>
+          <td><button class="btn sm" data-vast-rent="${x.id}" ${V.rentUnavailable ? `disabled title="${esc(V.rentUnavailable)}"` : ""}>Rent…</button></td></tr>
+          ${V.confirm?.id === x.id ? `<tr class="rent-confirm"><td colspan="9">${rentConfirm(x)}</td></tr>` : ""}`).join("")}</tbody></table></div>`;
     return `<div class="panel vast-panel">
       <div class="col-head"><span class="h3">GPUs on Vast.ai</span><span class="muted" style="font-size:12px">verified machines you can rent now, cheapest first</span><span class="grow"></span>
         <button class="iconbtn sm" id="vast-close" aria-label="Close">${icon("x")}</button></div>
@@ -1811,8 +1860,35 @@
       </form>
       ${V.offerError ? `<div class="flag bad" style="margin:0 16px 12px">${icon("alert")}<span>${esc(V.offerError)}</span></div>` : ""}
       ${rows}
-      <p class="muted vast-note">Renting from the studio comes next: it will show the price and ask you each time before anything is billed, then add the machine as a host.</p>
+      ${V.rentUnavailable ? `<div class="flag warn" style="margin:12px 16px 0">${icon("alert")}<span>${esc(V.rentUnavailable)}</span></div>` : ""}
+      <p class="muted vast-note">Renting asks you each time, with the price. The machine gets this checkout of the studio, builds it, and joins as a host through an SSH tunnel, which takes 10 to 20 minutes and is billed too. It logs in with your SSH key from <code>~/.ssh</code>, which must be added at <a href="https://cloud.vast.ai/manage-keys/" target="_blank" rel="noopener">cloud.vast.ai</a>. It is destroyed after the hours you choose, when you destroy it, or when the studio closes.</p>
     </div>`;
+  }
+
+  function rentConfirm(x) {
+    const h = V.confirm.hours, total = x.pricePerHour * h;
+    return `<form class="rent-box" id="vast-rent-form" autocomplete="off">
+        <div><b>Rent ${x.gpus > 1 ? x.gpus + " × " : ""}${esc(x.gpu)} for ${usd(x.pricePerHour)} an hour?</b></div>
+        <div class="muted">Billing starts as soon as Vast.ai rents it to you and runs until it is destroyed. Storage is billed on top, usually a few cents an hour.</div>
+        <div class="rent-row"><label>Destroy it after<input class="input mono" id="vast-hours" type="number" min="0.25" max="${V.maxHours}" step="0.25" value="${h}"> hours</label>
+          <span class="muted">at most <b class="mono tnum">${usd(total)}</b> for the machine</span><span class="grow"></span>
+          <button class="btn ghost" type="button" id="vast-rent-cancel">Cancel</button>
+          <button class="btn primary" type="submit" ${V.renting ? "disabled" : ""}>${V.renting ? "Renting…" : `Rent for ${usd(x.pricePerHour)}/h`}</button></div>
+        ${V.rentError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.rentError)}</span></div>` : ""}
+      </form>`;
+  }
+
+  async function rentOffer() {
+    const x = (V.offers || []).find(o => o.id === V.confirm?.id); if (!x) return;
+    const hours = +($("#vast-hours")?.value || V.confirm.hours);
+    if (!(hours > 0) || hours > V.maxHours) { V.rentError = `Choose up to ${V.maxHours} hours.`; renderVast(); return; }
+    V.confirm.hours = hours; V.renting = true; V.rentError = null; renderVast();
+    try {
+      takeRentals(await postJson("/api/vast/rent", { offer: x.id, pricePerHour: x.pricePerHour, hours }));
+      V.confirm = null; V.offers = V.offers.filter(o => o.id !== x.id);
+      loadVast();
+    } catch (e) { V.rentError = String(e.message || e); }
+    V.renting = false; renderVast(); renderHosts(); watchRentals();
   }
 
   function renderVast() {
@@ -1844,10 +1920,36 @@
       renderHosts(); renderVast();
     });
     $("#vast-open")?.addEventListener("click", () => { V.open = !V.open; renderHosts(); renderVast(); if (V.open && !V.offers) searchVast(); });
+    $$("[data-vast-destroy]").forEach(b => b.addEventListener("click", async () => {
+      const id = +b.dataset.vastDestroy;
+      // two clicks: the first arms it
+      if (V.destroying !== id) { V.destroying = id; renderHosts(); setTimeout(() => { if (V.destroying === id) { V.destroying = null; renderHosts(); } }, 4000); return; }
+      V.destroying = null; b.disabled = true;
+      try { takeRentals(await postJson("/api/vast/destroy", { id })); V.cardError = null; }
+      catch (e) { V.cardError = String(e.message || e); }
+      loadVast();
+    }));
+    $$("[data-vast-cancel]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { takeRentals(await postJson("/api/vast/cancel", { key: b.dataset.vastCancel })); V.cardError = null; } catch (e) { V.cardError = String(e.message || e); }
+      renderHosts(); watchRentals();
+    }));
   }
 
   function bindVastPanel() {
-    $("#vast-close")?.addEventListener("click", () => { V.open = false; renderHosts(); renderVast(); });
+    $("#vast-close")?.addEventListener("click", () => { V.open = false; V.confirm = null; renderHosts(); renderVast(); });
+    $$("[data-vast-rent]").forEach(b => b.addEventListener("click", () => {
+      const id = +b.dataset.vastRent;
+      V.confirm = V.confirm?.id === id ? null : { id, hours: V.confirm?.hours || 2 }; V.rentError = null; renderVast();
+      $("#vast-hours")?.focus();
+    }));
+    $("#vast-rent-cancel")?.addEventListener("click", () => { V.confirm = null; V.rentError = null; renderVast(); });
+    $("#vast-rent-form")?.addEventListener("submit", e => { e.preventDefault(); rentOffer(); });
+    $("#vast-hours")?.addEventListener("input", e => {
+      const x = (V.offers || []).find(o => o.id === V.confirm?.id), h = +e.target.value;
+      const out = $("#vast-rent-form .rent-row .muted b");
+      if (x && out && h > 0) { V.confirm.hours = h; out.textContent = usd(x.pricePerHour * h); }
+    });
     $("#vast-filters")?.addEventListener("submit", e => {
       e.preventDefault();
       V.filters = { gpu: $("#vf-gpu").value.trim(), minGpuRam: +$("#vf-mem").value || 0, gpus: +$("#vf-gpus").value || 1, maxPrice: +$("#vf-price").value || 0 };
@@ -2682,24 +2784,7 @@
         headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" },
         body: JSON.stringify({ model: usable(c.model || L.model), messages: history }),
       });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
-      const reader = r.body.getReader(), dec = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let cut;
-        while ((cut = buf.indexOf("\n\n")) >= 0) {
-          const block = buf.slice(0, cut); buf = buf.slice(cut + 2);
-          let event = "message", data = "";
-          for (const line of block.split("\n")) {
-            if (line.startsWith("event: ")) event = line.slice(7);
-            else if (line.startsWith("data: ")) data += line.slice(6);
-          }
-          if (data) onEvent(event, JSON.parse(data));
-        }
-      }
+      await readEvents(r, onEvent);
     } catch (e) {
       if (e.name === "AbortError") a.stopped = true; else a.error = e.message;
     }
@@ -2708,6 +2793,28 @@
     c.updated = Date.now();
     persist(c);
     if (state.view === "chat") render();
+  }
+
+  // reads a server-sent event stream from the studio, after checking the answer is one
+  async function readEvents(r, onEvent) {
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `the studio answered ${r.status}`);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let cut;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, cut); buf = buf.slice(cut + 2);
+        let event = "message", data = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event: ")) event = line.slice(7);
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (data) onEvent(event, JSON.parse(data));
+      }
+    }
   }
 
   function send(i) {
@@ -2809,6 +2916,8 @@
   const G = {
     imgModel: store.get("imgModel", "auto"), aspect: store.get("aspect", "1:1"), count: store.get("imgCount", 2),
     prompt: "", batches: [], drawing: null,
+    // drawing on this PC: what is not sent anywhere else, and kept per model where it differs
+    neg: "", steps: {}, guidance: {}, seed: "", sampler: store.get("sampler", "DPM_PP_2M_KARRAS"), opts: {}, stop: null,
     voModel: store.get("voModel", "auto"), voice: store.get("voice", null), speed: 1, instructions: "", format: "mp3",
     text: "", takes: [], speaking: false, video: null,
   };
@@ -2832,7 +2941,8 @@
 
   function noModel(medium) {
     return `<div class="empty"><div class="flag">${icon("flask")}<div><b>No ${medium === "image" ? "image" : "speech"} model yet.</b>
-      ${L.info ? `Nothing on this PC can ${medium === "image" ? "draw" : "speak"} yet. Add an OpenAI or Google API key and their ${medium === "image" ? "image" : "voice"} models appear here.` : "Looking for models…"}
+      ${L.info ? (medium === "image" ? "Put a Stable Diffusion model (1.x, 2.x or XL, as a diffusers folder or a single .safetensors file) in a model folder to draw on this PC, or add an OpenAI or Google API key and their image models appear here."
+        : "Nothing on this PC can speak yet. Add an OpenAI or Google API key and their voice models appear here.") : "Looking for models…"}
       <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
   }
 
@@ -2851,41 +2961,147 @@
   const fileName = p => p.split(/[\\/]/).pop();
   const ratioCss = a => a.replace(":", " / ");
 
+  // the usual steps and guidance of a model on this PC, asked for once
+  function drawOpts(m) {
+    if (!m || m.provider !== "local") return null;
+    const o = G.opts[m.key];
+    if (!o) {
+      G.opts[m.key] = { loading: true };
+      postJson("/api/images/options", { model: m.key }).then(j => { G.opts[m.key] = j; if (state.view === "create") renderCreateSide(); })
+        .catch(() => { G.opts[m.key] = { samplers: ["DPM_PP_2M_KARRAS"] }; });
+      return null;
+    }
+    return o.loading ? null : o;
+  }
+  const samplerName = n => ({ EULER: "Euler", EULER_ANCESTRAL: "Euler ancestral", DPM_PP_2M: "DPM++ 2M", DPM_PP_2M_KARRAS: "DPM++ 2M Karras", EULER_KARRAS: "Euler Karras" })[n] || n;
+
+  function localSettings(m) {
+    const o = drawOpts(m) || {};
+    const steps = G.steps[m.key] ?? o.steps ?? 25, guidance = G.guidance[m.key] ?? o.guidance ?? 7;
+    // settings a model ignores are left out (FLUX.1 has no negative prompt or sampler choice, schnell no guidance)
+    const neg = o.usesNegative !== false, guid = o.usesGuidance !== false, samp = o.usesSampler !== false;
+    return `<div class="flag ok-note">${icon("lock")}<div><b>Draws on this PC.</b> Nothing is sent anywhere.${o.label ? ` <span class="muted">${esc(o.label)}</span>` : ""}</div></div>
+      ${neg ? `<div class="field"><label for="img-neg">Leave out</label><input class="input" id="img-neg" placeholder="blurry, text, watermark" value="${esc(G.neg)}"></div>` : ""}
+      <div class="img-grid">
+        <div class="field"><label for="img-steps">Steps</label><input class="input mono" id="img-steps" type="number" min="1" max="150" value="${steps}"></div>
+        ${guid ? `<div class="field"><label for="img-guidance" title="How closely to follow the prompt">Guidance</label><input class="input mono" id="img-guidance" type="number" min="0" max="30" step="0.5" value="${guidance}"></div>` : ""}
+        <div class="field"><label for="img-seed">Seed</label><div class="seed-row"><input class="input mono" id="img-seed" inputmode="numeric" placeholder="random" value="${esc(G.seed)}">
+          <button class="iconbtn sm" id="img-seed-dice" type="button" aria-label="Random seed" title="Random seed each time">${icon("retry")}</button></div></div>
+        ${samp ? `<div class="field"><label for="img-sampler">Sampler</label><select class="input" id="img-sampler">${(o.samplers || [G.sampler]).map(n => `<option value="${n}" ${n === G.sampler ? "selected" : ""}>${esc(samplerName(n))}</option>`).join("")}</select></div>` : ""}
+      </div>`;
+  }
+
+  function renderCreateSide() {
+    const side = $(".create .side"); if (!side) return;
+    const focus = document.activeElement?.id;
+    keepCreateFields();
+    render();
+    if (focus) document.getElementById(focus)?.focus();
+  }
+  // what is typed in the side panel survives a redraw
+  function keepCreateFields() {
+    const m = pickedModel(G.imgModel, "image");
+    if ($("#img-prompt")) G.prompt = $("#img-prompt").value;
+    if ($("#img-neg")) G.neg = $("#img-neg").value;
+    if ($("#img-seed")) G.seed = $("#img-seed").value.trim();
+    // only what was changed by hand is kept: a shown default may be a stand-in until the model's own arrive
+    const edited = el => el && el.value !== el.defaultValue;
+    if (m && edited($("#img-steps"))) G.steps[m.key] = +$("#img-steps").value || undefined;
+    if (m && edited($("#img-guidance"))) { const g = parseFloat($("#img-guidance").value); G.guidance[m.key] = isNaN(g) ? undefined : g; }
+  }
+
   function liveCreateView() {
     const m = pickedModel(G.imgModel, "image");
+    const local = m?.provider === "local";
     const ratios = [["1:1", 14, 14], ["4:3", 16, 12], ["16:9", 18, 10], ["3:4", 12, 16], ["9:16", 10, 18]];
     return `
     <div class="create">
       <aside class="side" aria-label="Image settings">
         <div style="display:flex;align-items:center;gap:8px"><span class="h2">Images</span><span class="grow"></span>${m ? `<span class="chip c-image">${esc(m.name)}</span>` : ""}</div>
         <div class="field"><label for="img-model">Model</label>${mediaPicker("img-model", "image", G.imgModel)}</div>
-        ${remoteNote(m, "The prompt")}
+        ${local ? "" : remoteNote(m, "The prompt")}
         <div class="prompt-box"><textarea id="img-prompt" aria-label="Prompt" placeholder="What should the picture show?">${esc(G.prompt)}</textarea></div>
         <div class="field"><label>Aspect</label>
           <div class="ratio">${ratios.map(([l, w, h]) => `<button data-aspect="${l}" aria-pressed="${G.aspect === l}"><i style="width:${w}px;height:${h}px"></i>${l}</button>`).join("")}</div></div>
         <div class="field"><label>Pictures</label><div class="seg" style="width:100%">${[1, 2, 3, 4].map(n => `<button data-count="${n}" aria-pressed="${G.count === n}" style="flex:1">${n}</button>`).join("")}</div></div>
-        <button class="btn primary" id="img-go" style="height:40px;justify-content:center" ${!m || G.drawing ? "disabled" : ""}>${icon("wand")}${G.drawing ? "Drawing…" : `Draw ${G.count}`} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>
+        ${local ? localSettings(m) : ""}
+        ${G.drawing && G.stop ? `<button class="btn" id="img-stop" style="height:40px;justify-content:center">${icon("stop")}Stop drawing</button>` : `<button class="btn primary" id="img-go" style="height:40px;justify-content:center" ${!m || G.drawing ? "disabled" : ""}>`}${G.drawing && G.stop ? "" : `${icon("wand")}${G.drawing ? "Drawing…" : `Draw ${G.count}`} <span class="kbd" style="color:inherit;border-color:currentColor;background:transparent;opacity:.7">Ctrl ↵</span></button>`}
       </aside>
       <section class="gallery" aria-label="Pictures">
         ${!mediaModels("image").length ? noModel("image") : ""}
-        ${G.drawing ? `<div><div class="batch-head"><span class="eyebrow">Drawing</span><span class="p">${esc(G.drawing.prompt)}</span><span class="mono muted">${esc(G.drawing.model)}</span></div>
-          <div class="batch">${Array.from({ length: G.drawing.count }, () => `<div class="tile wait" style="aspect-ratio:${ratioCss(G.drawing.aspect)}"></div>`).join("")}</div></div>` : ""}
+        ${G.drawing ? `<div id="drawing">${drawingHtml()}</div>` : ""}
         ${G.batches.map((b, bi) => `
           <div>
-            <div class="batch-head"><span class="p">${esc(b.prompt)}</span><span class="mono muted">${esc(b.model)} · ${b.aspect}${b.seconds ? ` · ${b.seconds.toFixed(1)} s` : ""}</span></div>
-            ${b.error ? `<div class="flag bad">${icon("flask")}<div><b>No picture.</b> ${esc(b.error)}</div></div>` : `
-            <div class="batch">${b.items.map(it => `<div class="tile" title="Saved as ${esc(it.file)}"><img src="${it.url}" alt="${esc(b.prompt)}" style="aspect-ratio:${ratioCss(b.aspect)}">
-              <div class="ov"><a href="${it.url}" download="${esc(fileName(it.file))}">Save</a><button data-reuse="${bi}">Reuse prompt</button></div></div>`).join("")}</div>`}
+            <div class="batch-head"><span class="p">${esc(b.prompt)}</span><span class="mono muted">${esc(b.model)} · ${b.aspect}${b.local ? ` · ${b.local.steps} steps · ${samplerName(b.local.sampler)}` : ""}${b.seconds ? ` · ${b.seconds.toFixed(1)} s` : ""}</span></div>
+            ${b.error ? `<div class="flag bad">${icon("flask")}<div><b>${b.stopped ? "Stopped." : "No picture."}</b> ${b.stopped ? "" : esc(b.error)}</div></div>` : ""}
+            ${b.items.length ? `<div class="batch">${b.items.map(it => `<div class="tile" title="Saved as ${esc(it.file)}${it.seed != null ? ` · seed ${it.seed}` : ""}"><img src="${it.url}" alt="${esc(b.prompt)}" style="aspect-ratio:${ratioCss(b.aspect)}">
+              ${it.seed != null ? `<span class="step">seed ${it.seed}</span>` : ""}
+              <div class="ov"><a href="${it.url}" download="${esc(fileName(it.file))}">Save</a><button data-reuse="${bi}">Reuse prompt</button>${it.seed != null ? `<button data-reseed="${bi}:${it.seed}">Reuse seed</button>` : ""}</div></div>`).join("")}</div>` : ""}
           </div>`).join("")}
         ${mediaModels("image").length && !G.batches.length && !G.drawing ? `<div class="empty"><div class="h2">Describe a picture</div><div class="muted">Pictures are also saved in the studio's outputs folder.</div></div>` : ""}
       </section>
     </div>`;
   }
 
+  // the pictures being drawn: shimmering tiles, or on this PC the latest rough preview and the step
+  function drawingHtml() {
+    const d = G.drawing;
+    const pct = d.total ? Math.round(100 * d.step / d.total) : 0;
+    const tiles = Array.from({ length: d.count }, (_, i) => {
+      const done = d.items?.[i];
+      if (done) return `<div class="tile"><img src="${done.url}" alt="" style="aspect-ratio:${ratioCss(d.aspect)}"></div>`;
+      const now = d.total && Math.floor((d.step - 1) / (d.total / d.count)) === i;
+      return `<div class="tile ${now && d.preview ? "previewing" : "wait"}" style="aspect-ratio:${ratioCss(d.aspect)}">${now && d.preview ? `<img src="${d.preview}" alt="" style="aspect-ratio:${ratioCss(d.aspect)}">` : ""}</div>`;
+    }).join("");
+    return `<div class="batch-head"><span class="eyebrow">Drawing</span><span class="p">${esc(d.prompt)}</span><span class="mono muted">${esc(d.model)}${d.total ? ` · step ${d.step} of ${d.total}` : d.local ? " · loading the model…" : ""}</span></div>
+      ${d.total ? `<div class="draw-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>` : ""}
+      <div class="batch">${tiles}</div>`;
+  }
+  function paintDrawing() {
+    const box = $("#drawing");
+    if (box && G.drawing) box.innerHTML = drawingHtml(); else if (state.view === "create") render();
+  }
+
+  async function drawHere(m, prompt) {
+    keepCreateFields();
+    const o = G.opts[m.key] || {};
+    const seed = G.seed === "" ? null : Math.max(0, Math.floor(+G.seed) || 0);
+    const body = { model: m.key, prompt, negativePrompt: G.neg, aspect: G.aspect, count: G.count,
+      steps: G.steps[m.key] ?? o.steps ?? 25, guidance: G.guidance[m.key] ?? o.guidance ?? 7, sampler: G.sampler };
+    if (seed != null) body.seed = seed;
+    const ctrl = new AbortController();
+    G.stop = ctrl;
+    G.drawing = { prompt, model: m.name, aspect: G.aspect, count: G.count, local: true, step: 0, total: 0, items: [] };
+    const batch = { prompt, model: m.name, aspect: G.aspect, items: [], local: { steps: body.steps, sampler: body.sampler } };
+    render();
+    let last = 0;
+    try {
+      const r = await fetch("/api/images/draw", { method: "POST", signal: ctrl.signal,
+        headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await readEvents(r, (event, d) => {
+        if (event === "route") { batch.model = G.drawing.model = d.name; }
+        else if (event === "step") { G.drawing.step = d.step; G.drawing.total = d.total; }
+        else if (event === "preview") G.drawing.preview = "data:image/png;base64," + d.data;
+        else if (event === "image") { const it = { url: blobUrl(d), file: d.file, seed: d.seed }; batch.items.push(it); G.drawing.items.push(it); }
+        else if (event === "done") batch.seconds = d.seconds;
+        else if (event === "error") { batch.error = d.message; batch.stopped = d.message === "stopped"; }
+        // a preview a few times a second is plenty
+        const now = performance.now();
+        if (event !== "step" || now - last > 120) { last = now; paintDrawing(); }
+      });
+    } catch (e) {
+      if (e.name === "AbortError") { batch.error = "stopped"; batch.stopped = true; } else batch.error = e.message;
+    }
+    G.batches.unshift(batch);
+    G.drawing = null; G.stop = null;
+    if (state.view === "create") render();
+  }
+
   async function draw() {
     const m = pickedModel(G.imgModel, "image");
     const prompt = ($("#img-prompt")?.value || "").trim();
     if (!m || !prompt || G.drawing) return;
+    if (m.provider === "local") return drawHere(m, prompt);
     G.prompt = prompt;
     G.drawing = { prompt, model: m.name, aspect: G.aspect, count: G.count };
     render();
@@ -2901,12 +3117,20 @@
   }
 
   function bindLiveCreate() {
-    $("#img-model")?.addEventListener("change", e => { G.imgModel = e.target.value; store.set("imgModel", G.imgModel); G.prompt = $("#img-prompt").value; render(); });
-    $$("[data-aspect]").forEach(b => b.addEventListener("click", () => { G.aspect = b.dataset.aspect; store.set("aspect", G.aspect); G.prompt = $("#img-prompt").value; render(); }));
-    $$("[data-count]").forEach(b => b.addEventListener("click", () => { G.count = +b.dataset.count; store.set("imgCount", G.count); G.prompt = $("#img-prompt").value; render(); }));
+    $("#img-model")?.addEventListener("change", e => { keepCreateFields(); G.imgModel = e.target.value; store.set("imgModel", G.imgModel); render(); });
+    $$("[data-aspect]").forEach(b => b.addEventListener("click", () => { keepCreateFields(); G.aspect = b.dataset.aspect; store.set("aspect", G.aspect); render(); }));
+    $$("[data-count]").forEach(b => b.addEventListener("click", () => { keepCreateFields(); G.count = +b.dataset.count; store.set("imgCount", G.count); render(); }));
     $("#img-prompt")?.addEventListener("input", e => { G.prompt = e.target.value; });
     $("#img-prompt")?.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") draw(); });
     $("#img-go")?.addEventListener("click", draw);
+    $("#img-stop")?.addEventListener("click", () => G.stop?.abort());
+    $("#img-sampler")?.addEventListener("change", e => { G.sampler = e.target.value; store.set("sampler", G.sampler); });
+    $("#img-seed-dice")?.addEventListener("click", () => { G.seed = ""; const f = $("#img-seed"); if (f) { f.value = ""; f.focus(); } });
+    ["#img-neg", "#img-seed", "#img-steps", "#img-guidance"].forEach(id => $(id)?.addEventListener("change", keepCreateFields));
+    $$("[data-reseed]").forEach(b => b.addEventListener("click", () => {
+      const [bi, seed] = b.dataset.reseed.split(":");
+      keepCreateFields(); G.prompt = G.batches[+bi].prompt; G.seed = seed; render(); $("#img-prompt").focus();
+    }));
     $$("[data-reuse]").forEach(b => b.addEventListener("click", () => { G.prompt = G.batches[+b.dataset.reuse].prompt; render(); $("#img-prompt").focus(); }));
     $$("[data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
   }

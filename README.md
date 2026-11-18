@@ -37,6 +37,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
+| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and VITS / MMS-TTS text-to-speech, from Hugging Face folders, behind `SpeechToText` and `TextToSpeech` |
 | `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
@@ -494,6 +495,47 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `model.saveGguf(file, tok, true)` writes a GGUF file (float16 matrices) that llama.cpp and
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
+
+## Speech: speech-to-text and text-to-speech
+
+`brainiac-audio` reads WAV files and runs two published speech models from Hugging Face
+folders: OpenAI's Whisper (`openai/whisper-tiny` up to `large-v3`) for speech-to-text and
+VITS (Meta's MMS-TTS voices, `facebook/mms-tts-eng` and other languages) for text-to-speech.
+Both match transformers' outputs.
+
+```java
+try (TextToSpeech tts = SpeechModels.textToSpeech(Path.of("mms-tts-eng"), Device.cpu(), DType.FLOAT32);
+     SpeechToText stt = SpeechModels.speechToText(Path.of("whisper-base"), Device.cpu(), DType.FLOAT32)) {
+    Audio speech = tts.synthesize("The weather is nice today.", SpeechOptions.defaults(), chunk -> play(chunk));
+    Wav.write(speech, Path.of("weather.wav"));
+
+    Transcription t = stt.transcribe(Wav.read(Path.of("talk.wav")),           // any length, any sample rate
+            TranscriptionOptions.defaults().language(null),                    // detect the language
+            segment -> System.out.printf("%.1f-%.1f %s%n", segment.start(), segment.end(), segment.text()));
+}
+```
+
+Whisper decodes long audio 30 seconds at a time with timestamps, falls back to higher
+temperatures when a window repeats itself, skips silence, and can translate to English
+(`Task.TRANSLATE`). `SpeechModels.kind(folder)` tells which kind of model a folder holds
+without loading it. Both take a cancellation check.
+
+The building blocks are ordinary layers, so self-built models can use them too:
+`MelSpectrogram` (raw audio to log-mel, including `MelSpectrogram.whisper(80)`),
+`RelativeAttention` (windowed relative positions), `HifiGanBlock` (vocoder residual block),
+`WaveNet` (gated dilated stack with optional conditioning) and
+`Flows.rationalQuadraticSpline` (neural spline flows), with Slaney mel filters in `Signal`.
+
+```java
+Model keywordSpotter = Model.sequential()
+        .input(16_000)                          // one second of 16 kHz audio
+        .melSpectrogram(16_000, 400, 160, 40)   // [40 mels, 101 frames]
+        .conv1d(64, 3, Activation.GELU)
+        .hifiGanBlock(3, 1, 3, 5)
+        .globalAvgPool()
+        .dense(12, Activation.SOFTMAX)
+        .build();
+```
 
 ## Image generation: Stable Diffusion and Flux
 
@@ -999,8 +1041,16 @@ call the same tools over `/api/tools` with the studio's token.
 **Vast.ai** rents GPU machines by the hour. Paste an API key on the Training screen (it is kept in
 `keys.properties`, or comes from `VAST_API_KEY`, and is sent only to Vast.ai) to see your balance,
 the machines you rent, and verified offers to rent, cheapest first, filtered by GPU, memory, count
-and price. The studio only reads there for now; renting will ask you each time before anything is
-billed.
+and price. **Rent…** on an offer shows its price and asks you each time, with the hours after
+which the studio destroys the machine (2 by default, at most 48). The price is looked up again
+before renting, and the studio refuses if it went up. A rented machine gets this checkout (its
+`HEAD` commit), builds it with `cloud/vast/setup.sh` and runs a worker there, reached through an
+SSH tunnel and added as a host, which takes 10 to 20 minutes and is billed too. Renting needs the
+`ssh` command and your SSH key added at cloud.vast.ai, and the studio to run from a Brainiac
+checkout (or `BRAINIAC_REPO` naming one). The Vast.ai card shows each machine's stage and cost so
+far; **Destroy** ends it (and any other instance of your account). Machines are also destroyed when
+setting them up fails and when the studio closes, and the setup's output is kept in `vast/` in the
+data folder. The studio rents at most 3 machines at once.
 
 **Ctrl K** finds anything: a screen, a conversation, a chat model, a saved model in the
 builder, a training run, or a command such as a new conversation, a new model or another layout.
@@ -1011,12 +1061,27 @@ with its 30 voices), with the same keys. The screens only show settings the chos
 Every picture and take is also saved to `outputs` in the data folder. A video added to the
 Voice screen plays in the browser under each take and is never uploaded.
 
+**Images on this PC**: a Stable Diffusion model (1.x, 2.x or XL, as a diffusers folder or a single
+`.safetensors` checkpoint) or a FLUX.1 dev or schnell diffusers folder in a model folder shows up as
+an image model of This PC, and Auto picks it before any provider. Stable Diffusion also takes what
+to leave out, the steps, the guidance, the seed and the sampler; FLUX.1 takes the steps and the seed
+(and dev the guidance), and the settings it ignores are not shown. FLUX.1 runs in bfloat16 on a GPU
+with its weights quantized as far as the GPU's memory needs; a model that cannot fit is refused,
+saying how much memory it needs. The picture shows a rough preview as it is drawn, **Stop** ends it, and each
+picture keeps its seed, so **Reuse seed** draws it again. A single checkpoint needs the CLIP
+vocabulary, which is fetched once from Hugging Face (about 1.6 MB) into
+`~/.cache/brainiac/clip-tokenizer`.
+
 ```
 GET  /api/models            providers, their keys (names only) and models, and what Auto picks
 POST /api/keys              {"provider":"anthropic","label":"work","key":"..."} ("remove" or "first": true)
 POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"Hi"}]} -> event stream:
                             route, thinking, text ..., done or error
 POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","count":2}
+POST /api/images/draw       {"model":"local/sdxl","prompt":"...","negativePrompt":"","aspect":"1:1","count":2,
+                            "steps":30,"guidance":6,"seed":42,"sampler":"DPM_PP_2M_KARRAS"} -> event stream:
+                            route, step and preview ..., image per picture, done or error
+POST /api/images/options    {"model":"local/sdxl"} -> the samplers and the model's usual steps and guidance
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
 POST /api/providers         {"provider":"huggingface","auto":true,"models":["openai/gpt-oss-120b"],
                             "url":"","options":{"billTo":"my-org"}} (models null shows all)
@@ -1031,6 +1096,9 @@ GET  /api/hub/downloads     every download with its progress; POST /api/hub/canc
 GET  /api/vast              the Vast.ai key (last 4 characters), balance and rented machines
 POST /api/vast/key          {"key":"..."} saves the Vast.ai key in keys.properties ("remove": true removes it)
 POST /api/vast/offers       {"gpu":"4090","minGpuRam":24,"gpus":1,"maxPrice":0.5} -> machines to rent, cheapest first
+GET  /api/vast/rentals      the machines rented from the studio: stage, cost so far, host, error
+POST /api/vast/rent         {"offer":123,"pricePerHour":0.36,"hours":2} rents it, unless it now costs more
+POST /api/vast/destroy      {"id":456} destroys an instance; POST /api/vast/cancel {"key":"r1"} stops a setup
 POST /api/hub/token         {"token":"hf_..."} saves the Hugging Face token to ~/.brainiac/hf_token ("remove": true
                             deletes it); GET /api/hub/downloads says which token is used, by its last 4 characters
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls
