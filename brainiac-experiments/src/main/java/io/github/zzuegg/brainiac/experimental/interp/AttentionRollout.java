@@ -160,6 +160,25 @@ public final class AttentionRollout {
      * @return the maximum flow value
      */
     public static double maxFlow(double[][] capacity, int source, int sink) {
+        return flow(capacity, source, sink, null);
+    }
+
+    /**
+     * The source side of a minimum s-t cut, from the same Edmonds-Karp run as
+     * {@link #maxFlow}: the nodes still reachable from the source in the final residual graph.
+     *
+     * @param capacity {@code [n][n]} edge capacities (not changed)
+     * @param source the source node
+     * @param sink the sink node
+     * @return {@code true} for every node on the source side
+     */
+    public static boolean[] minCutSourceSide(double[][] capacity, int source, int sink) {
+        boolean[] side = new boolean[capacity.length];
+        flow(capacity, source, sink, side);
+        return side;
+    }
+
+    private static double flow(double[][] capacity, int source, int sink, boolean[] sourceSide) {
         int n = capacity.length;
         double[][] residual = new double[n][];
         for (int i = 0; i < n; i++) {
@@ -182,6 +201,11 @@ public final class AttentionRollout {
                 }
             }
             if (parent[sink] < 0) {
+                if (sourceSide != null) {
+                    for (int v = 0; v < n; v++) {
+                        sourceSide[v] = parent[v] >= 0;
+                    }
+                }
                 return total;
             }
             double push = Double.MAX_VALUE;
