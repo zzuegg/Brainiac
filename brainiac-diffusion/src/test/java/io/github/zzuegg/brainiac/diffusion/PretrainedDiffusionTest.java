@@ -60,7 +60,9 @@ class PretrainedDiffusionTest {
                 long[] last = {System.nanoTime()};
                 GeneratedImage img = model.generate(r, (step, total, preview) -> {
                     long now = System.nanoTime();
-                    System.out.printf("  step %d/%d in %.2f s%n", step, total, (now - last[0]) / 1e9);
+                    System.out.printf("  step %d/%d in %.2f s, in use %s, peak %s%n", step, total,
+                            (now - last[0]) / 1e9, device.memory().map(m -> MemoryFit.gb(m.inUse())).orElse("n/a"),
+                            device.memory().map(m -> MemoryFit.gb(m.peak())).orElse("n/a"));
                     last[0] = now;
                     return true;
                 }).get(0);

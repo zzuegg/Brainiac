@@ -431,9 +431,19 @@ public final class FluxTransformer implements MultiInputLayer {
         return settings;
     }
 
-    /** @return the type the weights are held in */
+    /**
+     * The type the model computes in: that of its unquantized weights (biases, norms), since
+     * quantized projections report the float32 they were packed from.
+     *
+     * @return the type
+     */
     public DType dtype() {
-        return imageIn.weight().value().dtype();
+        for (Var p : parameters()) {
+            if (!p.value().isPacked()) {
+                return p.value().dtype();
+            }
+        }
+        return DType.FLOAT32;
     }
 
     /** @return the projection of the patches into the model width */

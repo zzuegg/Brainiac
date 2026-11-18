@@ -131,6 +131,12 @@ class FluxReferenceTest {
         assertTrue(t.matrices() > 0 && t.other() > 0);
         assertTrue(t.bytes(DType.BFLOAT16, 4) < t.bytes(DType.BFLOAT16, 8));
         assertTrue(t.bytes(DType.BFLOAT16, 8) < t.bytes(DType.BFLOAT16, 0));
+        // quantized projections still compute in the load type
+        if (DEVICE.supports(DType.BFLOAT16)) {
+            try (Flux q = Flux.load(schnell, DEVICE, DType.BFLOAT16, new Flux.Options(8, 8, 16))) {
+                assertEquals(DType.BFLOAT16, q.transformer().dtype());
+            }
+        }
         // tiny models fit any device, so the most precise choice wins
         try (ImageGenerator g = ImageGenerator.load(schnell, DEVICE, DType.FLOAT32)) {
             assertEquals("FLUX_SCHNELL", g.family());
