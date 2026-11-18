@@ -1621,6 +1621,79 @@ public final class Var {
     }
 
     /**
+     * The softmax along any axis, computed stably.
+     *
+     * @param axis the axis; negative values count from the end
+     * @return values that are positive and add up to 1 along the axis
+     */
+    public Var softmax(int axis) {
+        return logSoftmax(axis).exp();
+    }
+
+    /**
+     * The log of the softmax along any axis, computed stably.
+     *
+     * @param axis the axis; negative values count from the end
+     * @return {@code x - logsumexp(x)} along the axis
+     */
+    public Var logSoftmax(int axis) {
+        return sub(logsumexp(axis, true));
+    }
+
+    /**
+     * Normalizes to zero mean and unit variance along any axis, without scale or shift,
+     * as the core of layer, instance and group normalization.
+     *
+     * @param axis the axis; negative values count from the end
+     * @param eps added to the variance
+     * @return the normalized values
+     */
+    public Var normalize(int axis, float eps) {
+        Var centered = sub(mean(axis, true));
+        return centered.div(centered.square().mean(axis, true).add(eps).sqrt());
+    }
+
+    /** @return the inverse hyperbolic sine of each value, {@code log(x + sqrt(x^2 + 1))} */
+    public Var asinh() {
+        Tensor x = value;
+        // odd, so computed on |x| for accuracy at large negative x; d/dx = 1 / sqrt(x^2 + 1)
+        Tensor a = x.abs();
+        Tensor y = a.add(a.square().add(1f).sqrt()).log().mul(x.sign());
+        return unary(y, g -> new Tensor[] {g.div(x.square().add(1f).sqrt())},
+                g -> new Var[] {g.div(square().add(1f).sqrt())});
+    }
+
+    /**
+     * Rotates by 90 degrees {@code k} times in the plane of two axes, as {@code torch.rot90}.
+     *
+     * @param k the number of quarter turns; negative turns the other way
+     * @param axis1 the first axis of the plane
+     * @param axis2 the second axis
+     * @return the rotated value
+     */
+    public Var rot90(int k, int axis1, int axis2) {
+        int rank = shape().rank();
+        int a = Math.floorMod(axis1, rank);
+        int b = Math.floorMod(axis2, rank);
+        if (a == b) {
+            throw new IllegalArgumentException("rot90 needs two different axes, got " + axis1 + " and " + axis2);
+        }
+        int[] swap = new int[rank];
+        for (int i = 0; i < rank; i++) {
+            swap[i] = i == a ? b : i == b ? a : i;
+        }
+        Var r = this;
+        switch (Math.floorMod(k, 4)) {
+            case 1 -> r = r.flip(b).permute(swap);
+            case 2 -> r = r.flip(a).flip(b);
+            case 3 -> r = r.permute(swap).flip(b);
+            default -> {
+            }
+        }
+        return r;
+    }
+
+    /**
      * The variance along one axis, as {@link Tensor#variance}.
      *
      * @param axis the axis; negative values count from the end

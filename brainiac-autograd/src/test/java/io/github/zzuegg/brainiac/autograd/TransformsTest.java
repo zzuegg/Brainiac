@@ -121,4 +121,27 @@ class TransformsTest {
         assertEquals(Shape.of(3, 4), p.reshape(-1, 4).shape());
         assertEquals(p.value().device(), p.device());
     }
+
+    @Test
+    void axisSoftmaxNormalizeAsinhAndRot90() {
+        Tensor x = Tensor.uniform(Shape.of(3, 4, 2), -2, 2, R);
+        Var s = Var.of(x).softmax(1);
+        close(new float[] {1, 1, 1, 1, 1, 1}, s.sum(1, false).value().toArray(), 1e-5f);
+        Var n = Var.of(x).normalize(0, 0f);
+        close(new float[8], n.mean(0, false).value().toArray(), 1e-5f);
+        close(new float[] {-7.600902709541988f, -0.48121182505960347f, 0f, 1.8184464592320668f},
+                Var.of(Tensor.of(-1000f, -0.5f, 0f, 3f)).asinh().value().toArray(), 1e-5f);
+        // d/dx asinh at 0 is 1, and matches finite differences elsewhere
+        Tensor at = Tensor.of(0f, 0.7f, -2f);
+        Tensor v = Tensor.of(1f, 1f, 1f);
+        close(numeric(Var::asinh, at, v), Transforms.jvp(Var::asinh, at, v).tangent().toArray(), 2e-3f);
+        Tensor a = Tensor.of(Shape.of(2, 3), 0, 1, 2, 3, 4, 5);
+        close(new float[] {2, 5, 1, 4, 0, 3}, Var.of(a).rot90(1, 0, 1).value().toArray(), 0);
+        close(new float[] {3, 0, 4, 1, 5, 2}, Var.of(a).rot90(-1, 0, 1).value().toArray(), 0);
+        close(new float[] {5, 4, 3, 2, 1, 0}, Var.of(a).rot90(2, 0, 1).value().toArray(), 0);
+        assertEquals(Shape.of(3, 2), Var.of(a).rot90(1, 0, 1).shape());
+        // softmax along an inner axis has the gradient of the composed operations
+        Tensor u = Tensor.uniform(Shape.of(3, 4, 2), -1, 1, R);
+        close(numeric(t -> t.softmax(1), x, u), Transforms.jvp(t -> t.softmax(1), x, u).tangent().toArray(), 2e-3f);
+    }
 }

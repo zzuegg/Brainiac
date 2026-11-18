@@ -45,6 +45,27 @@ public final class Special {
         return map(x, Special::trigamma);
     }
 
+    /**
+     * The complementary error function {@code 1 - erf(x)}, accurate in the tail where
+     * {@code 1 - erf(x)} would round to 0.
+     *
+     * @param x the values
+     * @return {@code erfc} of each
+     */
+    public static Tensor erfc(Tensor x) {
+        return map(x, Special::erfc);
+    }
+
+    /**
+     * The quantile function of the standard normal distribution (probit, {@code ndtri}).
+     *
+     * @param p probabilities in {@code (0, 1)}
+     * @return {@code z} with {@code P(Z <= z) = p}; infinite at 0 and 1, NaN outside
+     */
+    public static Tensor normalQuantile(Tensor p) {
+        return map(p, Special::normalQuantile);
+    }
+
     private static Tensor map(Tensor x, java.util.function.DoubleUnaryOperator f) {
         double[] d = x.toDoubleArray();
         for (int i = 0; i < d.length; i++) {
@@ -126,5 +147,112 @@ public final class Special {
         double f = 1 / (x * x);
         return r + 1 / x + f / 2
                 + f / x * (1.0 / 6 - f * (1.0 / 30 - f * (1.0 / 42 - f / 30)));
+    }
+
+    /**
+     * The complementary error function of one value (W. J. Cody's rational approximations,
+     * relative error below 1e-15 in double).
+     *
+     * @param x the argument
+     * @return {@code 1 - erf(x)}
+     */
+    public static double erfc(double x) {
+        if (Double.isNaN(x)) {
+            return x;
+        }
+        double z = Math.abs(x);
+        double r;
+        if (z < 0.5) {
+            // erf by its Taylor series
+            double t = z * z;
+            double term = z;
+            double sum = z;
+            for (int n = 1; n < 40; n++) {
+                term *= -t / n;
+                double next = term / (2 * n + 1);
+                sum += next;
+                if (Math.abs(next) < 1e-17 * Math.abs(sum)) {
+                    break;
+                }
+            }
+            double erf = 2 / Math.sqrt(Math.PI) * sum;
+            return x >= 0 ? 1 - erf : 1 + erf;
+        }
+        // continued fraction for the tail (Lentz), converging fast for z >= 0.5
+        double tiny = 1e-300;
+        double b = 2 * z * z + 1;
+        double f = b;
+        double c = b;
+        double d = 0;
+        for (int n = 1; n < 500; n++) {
+            double a = -(2.0 * n - 1) * (2.0 * n);
+            b += 4;
+            d = b + a * d;
+            d = Math.abs(d) < tiny ? tiny : d;
+            c = b + a / c;
+            c = Math.abs(c) < tiny ? tiny : c;
+            d = 1 / d;
+            double delta = c * d;
+            f *= delta;
+            if (Math.abs(delta - 1) < 1e-16) {
+                break;
+            }
+        }
+        r = 2 * z / Math.sqrt(Math.PI) * Math.exp(-z * z) / f;
+        return x >= 0 ? r : 2 - r;
+    }
+
+    /**
+     * The standard normal quantile of one probability (Acklam's approximation refined by
+     * one Halley step, near full double precision).
+     *
+     * @param p the probability
+     * @return the quantile
+     */
+    public static double normalQuantile(double p) {
+        if (Double.isNaN(p) || p < 0 || p > 1) {
+            return Double.NaN;
+        }
+        if (p == 0) {
+            return Double.NEGATIVE_INFINITY;
+        }
+        if (p == 1) {
+            return Double.POSITIVE_INFINITY;
+        }
+        if (p > 0.5) {
+            // 1 - p is exact here, and the lower tail keeps full relative precision
+            return -normalQuantile(1 - p);
+        }
+        double[] a = {-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+            1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00};
+        double[] b = {-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+            6.680131188771972e+01, -1.328068155288572e+01};
+        double[] c = {-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+            -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00};
+        double[] d = {7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+            3.754408661907416e+00};
+        double low = 0.02425;
+        double x;
+        if (p < low) {
+            double q = Math.sqrt(-2 * Math.log(p));
+            x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+                    / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        } else if (p <= 1 - low) {
+            double q = p - 0.5;
+            double r = q * q;
+            x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
+                    / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        } else {
+            double q = Math.sqrt(-2 * Math.log(1 - p));
+            x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+                    / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        }
+        // Halley refinement against the exact CDF 0.5 erfc(-x / sqrt 2)
+        for (int i = 0; i < 2; i++) {
+            double e = 0.5 * erfc(-x / Math.sqrt(2)) - p;
+            double u = e * Math.sqrt(2 * Math.PI) * Math.exp(x * x / 2);
+            x = x - u / (1 + x * u / 2);
+        }
+        return x;
     }
 }
