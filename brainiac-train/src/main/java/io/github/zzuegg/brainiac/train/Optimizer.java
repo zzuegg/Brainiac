@@ -89,6 +89,33 @@ public interface Optimizer {
     void learningRate(float learningRate);
 
     /**
+     * One whole training step: clears the parameters' gradients, computes the loss,
+     * back-propagates it and updates the parameters (which clears the gradients again). The
+     * loop {@code for (...) optimizer.minimize(params, () -> loss(model, batch));} cannot
+     * accumulate stale gradients by mistake.
+     *
+     * @param parameters the parameters to update
+     * @param loss computes the loss at the parameters' current values
+     * @return the loss before the update
+     */
+    default Var minimize(List<Var> parameters, java.util.function.Supplier<Var> loss) {
+        for (Var p : parameters) {
+            p.zeroGrad();
+        }
+        Var l = loss.get();
+        l.backward();
+        step(parameters, () -> {
+            for (Var p : parameters) {
+                p.zeroGrad();
+            }
+            Var again = loss.get();
+            again.backward();
+            return again.value().item();
+        });
+        return l;
+    }
+
+    /**
      * Plain stochastic gradient descent: {@code w -= learningRate * grad}.
      *
      * @param learningRate the step size, for example {@code 0.1f}

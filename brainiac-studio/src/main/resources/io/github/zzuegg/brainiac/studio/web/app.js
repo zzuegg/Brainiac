@@ -1642,6 +1642,7 @@
     const t = T.tries[r.id] || {}, res = t.result, id = esc(r.id);
     const m = (T.models || []).find(x => x.name === r.output);
     const size = m?.input ? m.input.reduce((a, b) => a * b, 1) : null;
+    const pic = pictureShape(m?.input);
     let shown = "";
     if (res) {
       const name = i => res.classes ? res.classes[i] : "output " + i;
@@ -1650,6 +1651,7 @@
       const top = res.output.map((v, i) => ({ v, i })).filter(x => x.v != null).sort((a, b) => b.v - a.v).slice(0, 5);
       const span = Math.max(1e-9, ...top.map(x => Math.abs(x.v)));
       shown = `<div class="try-result">
+        ${pic && res.input?.length === res.inputSize ? `<img class="try-pic" alt="What the model was given" src="${pictureOf(res.input, pic)}" style="aspect-ratio:${pic.w}/${pic.h}">` : ""}
         ${res.index != null ? `<div class="faint mono" style="font-size:11.5px">sample ${(res.index + 1).toLocaleString()} of ${res.samples.toLocaleString()} · ${res.input.slice(0, 6).map(fmtNum).join(", ")}${res.inputSize > 6 ? ", … " + res.inputSize + " values" : ""}</div>` : ""}
         <div class="try-answer">${one ? `<b class="mono">${fmtNum(res.output[0])}</b>` : `<b>${esc(res.label ?? name(res.best))}</b>`}
           ${right === true ? `<span class="chip c-ok">${icon("check")}right</span>` : right === false ? `<span class="chip c-bad">should be ${esc(res.expectedLabel ?? name(res.expectedBest))}</span>`
@@ -1661,12 +1663,62 @@
       <div class="try-row"><button class="btn sm" data-try-sample="${id}" ${t.busy ? "disabled" : ""}>${icon("play")}${res && res.index != null ? "Another sample" : "A sample of its data"}</button></div>
       <form class="try-row" data-try-own="${id}" autocomplete="off"><input class="input mono" data-try-values="${id}" value="${esc(t.values || "")}" placeholder="or your own ${size ? size.toLocaleString() + " " : ""}values, comma separated" spellcheck="false" aria-label="Your own input values">
         <button class="btn sm" type="submit" ${t.busy ? "disabled" : ""}>Run</button></form>
+      ${pic ? `<div class="try-row"><label class="btn sm" title="The picture is scaled to ${pic.w} by ${pic.h}${pic.c === 1 ? " and made grey" : ""}, as the model takes it">${icon("image")}A picture<input type="file" accept="image/*" data-try-picture="${id}" hidden></label>
+        <label class="muted try-invert" title="For a model trained on light shapes on a dark ground, such as MNIST digits, when your picture is dark on light"><input type="checkbox" data-try-invert="${id}" ${t.invert ? "checked" : ""}> Invert</label></div>` : ""}
       ${t.error ? `<div class="flag bad" role="alert">${icon("alert")}<span>${esc(t.error)}</span></div>` : ""}${shown}</div>`;
+  }
+  // The picture a model's input is, if it is one: channels first, as picture data is loaded here.
+  // A flat input counts when it is a square, as the input of a plain network on MNIST is.
+  function pictureShape(shape) {
+    if (!shape) return null;
+    const s = shape.map(Number);
+    if (s.length === 3 && (s[0] === 1 || s[0] === 3) && s[1] >= 4 && s[2] >= 4 && s[1] <= 128 && s[2] <= 128) return { c: s[0], h: s[1], w: s[2] };
+    if (s.length === 2 && s[0] >= 8 && s[1] >= 8 && s[0] <= 128 && s[1] <= 128) return { c: 1, h: s[0], w: s[1] };
+    if (s.length === 1 && s[0] >= 64 && s[0] <= 16384 && Number.isInteger(Math.sqrt(s[0]))) return { c: 1, h: Math.sqrt(s[0]), w: Math.sqrt(s[0]) };
+    return null;
+  }
+  // an image file as the model's input values: scaled to its size, 0 to 1, one plane per channel
+  async function pictureValues(file, pic, invert) {
+    const bmp = await createImageBitmap(file);
+    const cv = document.createElement("canvas"); cv.width = pic.w; cv.height = pic.h;
+    const cx = cv.getContext("2d"); cx.fillStyle = "#fff"; cx.fillRect(0, 0, pic.w, pic.h);
+    cx.drawImage(bmp, 0, 0, pic.w, pic.h);
+    const px = cx.getImageData(0, 0, pic.w, pic.h).data, n = pic.w * pic.h, out = new Array(pic.c * n);
+    for (let i = 0; i < n; i++) {
+      const r = px[4 * i] / 255, g = px[4 * i + 1] / 255, b = px[4 * i + 2] / 255;
+      if (pic.c === 1) { const v = 0.299 * r + 0.587 * g + 0.114 * b; out[i] = invert ? 1 - v : v; }
+      else { out[i] = invert ? 1 - r : r; out[n + i] = invert ? 1 - g : g; out[2 * n + i] = invert ? 1 - b : b; }
+    }
+    return out.map(v => Math.round(v * 1000) / 1000);
+  }
+  // input values as a picture again, to show what the model was given
+  function pictureOf(values, pic) {
+    const cv = document.createElement("canvas"); cv.width = pic.w; cv.height = pic.h;
+    const cx = cv.getContext("2d"), img = cx.createImageData(pic.w, pic.h), n = pic.w * pic.h;
+    let lo = Infinity, hi = -Infinity;
+    for (const v of values) if (v != null) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    // data scaled 0 to 1 shows as it is; anything else is stretched to fit
+    if (lo >= 0 && hi <= 1) { lo = 0; hi = 1; }
+    const at = i => Math.round(255 * ((values[i] ?? lo) - lo) / Math.max(1e-9, hi - lo));
+    for (let i = 0; i < n; i++) {
+      img.data[4 * i] = at(i); img.data[4 * i + 1] = at(pic.c === 3 ? n + i : i); img.data[4 * i + 2] = at(pic.c === 3 ? 2 * n + i : i); img.data[4 * i + 3] = 255;
+    }
+    cx.putImageData(img, 0, 0);
+    return cv.toDataURL();
+  }
+  async function tryPicture(r, file) {
+    const t = T.tries[r.id] ||= {};
+    const pic = pictureShape((T.models || []).find(x => x.name === r.output)?.input);
+    if (t.busy || !pic || !file) return;
+    t.busy = true; t.error = null; renderTrainLive(true);
+    try { t.result = await postJson("/api/train/predict", { model: r.output, values: await pictureValues(file, pic, !!t.invert), full: true }); }
+    catch (e) { t.error = /decode|bitmap/i.test(String(e)) ? "This file is not a picture the browser can read." : String(e.message || e); t.result = null; }
+    t.busy = false; renderTrainLive(true);
   }
   async function tryModel(r, own) {
     const t = T.tries[r.id] ||= {};
     if (t.busy) return;
-    const body = { model: r.output };
+    const body = { model: r.output, full: true };
     if (own) {
       const vals = String(t.values || "").split(/[\s,;]+/).filter(Boolean).map(Number);
       if (!vals.length || vals.some(v => !isFinite(v))) { t.error = "Type numbers, separated by commas."; renderTrainLive(true); return; }
@@ -2051,6 +2103,8 @@
     $$("[data-tstop]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/stop", { id: b.dataset.tstop }).catch(() => {}); pollRuns(false); }));
     $$("[data-tdel]").forEach(b => b.addEventListener("click", async () => { b.disabled = true; await postJson("/api/train/delete", { id: b.dataset.tdel }).catch(() => {}); if (T.sel === b.dataset.tdel) T.sel = null; pollRuns(false); }));
     $$("[data-try-values]").forEach(el => el.addEventListener("input", () => { (T.tries[el.dataset.tryValues] ||= {}).values = el.value; }));
+    $$("[data-try-picture]").forEach(el => el.addEventListener("change", () => { const r = T.runs.find(x => x.id === el.dataset.tryPicture); if (r && el.files[0]) tryPicture(r, el.files[0]); }));
+    $$("[data-try-invert]").forEach(el => el.addEventListener("change", () => { (T.tries[el.dataset.tryInvert] ||= {}).invert = el.checked; }));
     $$("[data-try-sample]").forEach(b => b.addEventListener("click", () => { const r = T.runs.find(x => x.id === b.dataset.trySample); if (r) tryModel(r, false); }));
     $$("[data-try-own]").forEach(f => f.addEventListener("submit", e => { e.preventDefault(); const r = T.runs.find(x => x.id === f.dataset.tryOwn); if (r) tryModel(r, true); }));
     $$("[data-tagain]").forEach(b => b.addEventListener("click", () => {
@@ -2296,6 +2350,27 @@
     { id: "look", title: "Appearance", icon: "sun", keywords: "theme light dark system layout density compact comfortable size scale zoom ultrawide keyboard shortcuts data folder",
       status: () => `${themeName()} · ${state.layout === "auto" ? "auto layout" : state.layout + " layout"}`, render: lookSection, bind: bindLook },
   ];
+  // agent roles, rules and services: the same panels as on the Agents page
+  function agentSection(t) {
+    if (asMissing(t) && !AS.error) setTimeout(loadAgentSettings);
+    return `<div class="ag-settings set-agents" id="ag-settings">${agentSettingsPanel()}</div>`;
+  }
+  function bindAgentSection() { if (!asMissing(asTab())) bindAgentSettings(); }
+  function addAgentSections() {
+    addSettingsSection({ id: "agent-services", title: "Agent services", icon: "plug",
+      keywords: "agent services web search brave searxng embeddings meaning sandbox docker podman github token mastodon bluesky discord webhook mail imap smtp calendar ffmpeg key",
+      status: () => AS.services ? `${SERVICES.filter(([id]) => AS.services[id]?.hasSecret || Object.keys(AS.services[id] || {}).some(k => k !== "hasSecret" && AS.services[id][k])).length} set up` : "Search, mail, GitHub, posting",
+      render: () => agentSection("services"), bind: bindAgentSection }, "project");
+    addSettingsSection({ id: "agent-rules", title: "Agent rules", icon: "lock",
+      keywords: "agent rules allow ask deny approval outside folder secrets path permission security",
+      status: () => AS.rules ? `${AS.rules.filter(r => r.enabled !== false).length} rules` : "What agents may do without asking",
+      render: () => agentSection("rules"), bind: bindAgentSection }, "project");
+    addSettingsSection({ id: "agent-roles", title: "Agent roles", icon: "agent",
+      keywords: "agent role roles tier budget mode tools sub-agents instructions coder writer researcher",
+      status: () => AS.roles ? `${AS.roles.length} roles${AS.roles.some(r => !r.builtin) ? `, ${AS.roles.filter(r => !r.builtin).length} yours` : ""}` : "Who agents are, and what they may use",
+      render: () => agentSection("roles"), bind: bindAgentSection }, "project");
+  }
+
   function addSettingsSection(sec, after) {
     const i = SETTINGS_SECTIONS.findIndex(s => s.id === sec.id);
     if (i >= 0) SETTINGS_SECTIONS.splice(i, 1);
@@ -5569,9 +5644,13 @@ reason ::= [a-z ]+`;
   // that acts (downloads, training, asking a paid model) waits here for Allow or Deny.
   const A = { loaded: false, loading: false, error: null, runs: [], tools: [], maxSteps: 30, sel: null, detail: null,
     model: "auto", mode: "ask", steps: 12, goal: "", format: "", schema: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
-    open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "" };
+    open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "", reminders: [], remind: { at: "", text: "", goal: "", repeat: "", open: false },
+    role: "assistant", roles: [], tab: "runs", undoing: null, undone: null };
   const agentStates = { running: ["working", "c-text"], waiting: ["needs you", "c-warn"], done: ["done", "c-ok"], failed: ["failed", "c-bad"],
-    stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"] };
+    stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"], "out of budget": ["out of budget", "c-warn"] };
+  const roleOf = id => A.roles.find(r => r.id === id);
+  const roleName = id => roleOf(id)?.name || id || "Assistant";
+  const modeLabel = m => ({ plan: "plans first", ask: "asks first", auto: "auto" })[m] || m;
   const agentActive = r => r.state === "running" || r.state === "waiting";
   const shortDur = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + " s" : s < 3600 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h"; };
   // the goal's first line as plain text: Markdown marks belong in the rendered goal, not in a title
@@ -5587,38 +5666,133 @@ reason ::= [a-z ]+`;
       <div class="glyph">${icon("agent")}</div>
       <div style="min-width:0">
         <div class="name"><span class="agent-goal" title="${esc(r.goal)}">${esc(agentTitle(r.goal))}</span></div>
-        <div class="doing"><span class="chip ${st[1]}">${st[0]}</span> ${esc((r.state === "waiting" && r.pending ? "wants to call " + r.pending.tool : r.error || r.doing || "").replace(/[*`]/g, ""))}</div>
+        <div class="ag-role-line"><span class="chip">${esc(roleName(r.role))}</span>${r.mode === "plan" ? `<span class="chip c-text">plan</span>` : ""}</div>
+        <div class="doing"><span class="chip ${st[1]}">${st[0]}</span> ${esc((r.state === "waiting" && r.pending ? pendingLine(r.pending) : r.error || r.doing || "").replace(/[*`]/g, ""))}</div>
       </div>
       <div class="stats"><span>${time}</span><span>${tok ? fmtCount(tok) + " tok" : r.calls + " call" + (r.calls === 1 ? "" : "s")}</span></div>
       ${agentActive(r) ? `<span class="bar" style="width:${Math.min(100, Math.max(4, r.turns / r.maxSteps * 100))}%"></span>` : ""}
+      ${agentChildren(r)}
     </div>`;
   }
 
+  // the sub-agents a run started, as rows inside its card, and theirs under them
+  function agentChildren(r, depth = 1) {
+    const kids = (r.children || []).map(id => A.runs.find(x => x.id === id)).filter(Boolean);
+    if (!kids.length) return "";
+    return `<div class="ag-children">${kids.map(c => {
+      const st = agentStates[c.state] || [c.state, "c-text"];
+      return `<div class="ag-child" data-run="${esc(c.id)}" tabindex="0" role="button" style="--d:${depth}" title="${esc(c.goal)}">
+        <span class="chip ${st[1]}">${st[0]}</span><b>${esc(roleName(c.role))}</b><span class="muted agent-goal">${esc(agentTitle(c.goal))}</span></div>${agentChildren(c, depth + 1)}`;
+    }).join("")}</div>`;
+  }
+
+  const pendingLine = p => ({ plan: "proposes a plan", question: "asks you something", rule: "proposes a rule" })[p.kind] || "wants to call " + p.tool;
+  const riskChip = k => k ? `<span class="chip ${k === "read" || k === "create" ? "c-text" : k === "outward" || k === "spend" ? "c-bad" : "c-warn"}" title="Risk tier">${esc(k)}</span>` : "";
+
   function agentAsk(r, inline) {
-    const p = r.pending;
+    const p = r.pending, kind = p.kind || "call", id = esc(r.id);
+    let body, yes, no, extra = "";
+    if (kind === "question") {
+      body = `<div><b>${esc(roleName(r.role))} asks:</b> ${esc(p.question)}</div>
+        ${(p.options || []).length ? `<div class="ag-options">${p.options.map(o => `<button class="btn sm" data-ag-pick="${id}" data-v="${esc(o)}">${esc(o)}</button>`).join("")}</div>` : ""}`;
+      yes = "Answer"; no = "Let it decide";
+    } else if (kind === "plan") {
+      body = `<div><b>Proposes a plan.</b> Nothing that changes anything runs until you approve it.</div>
+        <ol class="ag-plan">${(p.plan || []).map(x => `<li>${esc(x.step)}</li>`).join("")}</ol>`;
+      yes = "Approve plan"; no = "Ask for changes";
+    } else if (kind === "rule") {
+      body = `<div><b>Proposes a rule:</b> ${esc(p.describe || "")}</div>
+        ${p.why ? `<div class="muted">Why: ${esc(p.why)}</div>` : ""}
+        <div class="muted">If you accept, it becomes the first rule and applies to every agent it matches. You can change it under Rules.</div>`;
+      yes = "Accept rule"; no = "Decline";
+    } else {
+      body = `<div>Wants to call <code>${esc(p.tool)}</code>${p.acts && p.acts !== "reads" ? ": " + esc(p.acts) : ""}. ${riskChip(p.risk)}</div>
+        ${p.why ? `<div class="flag warn">${icon("alert")}<span>Asks because ${esc(p.why)}.</span></div>` : ""}
+        ${(p.paths || []).length ? `<ul class="ag-paths mono">${p.paths.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+        ${(p.rules || []).length ? `<div class="muted">Rule: ${p.rules.map(esc).join("; ")}</div>` : ""}
+        ${argText(p.arguments) ? `<div class="mono muted ask-args">${esc(argText(p.arguments))}</div>` : ""}`;
+      yes = "Allow"; no = "Deny";
+      if (r.mode === "ask" && p.risk !== "outward" && !(p.paths || []).length) extra = `<button class="btn ghost" data-ag-auto="${id}" title="Allow this, and let it run its other calls without asking">Allow, then auto</button>`;
+    }
     return `<div class="ask" style="--c:var(--cap-agent)">
       ${inline ? "" : `<div style="display:flex;gap:8px;align-items:center;min-width:0"><span class="dot pulse" style="--c:var(--warn)"></span><b class="agent-goal">${esc(agentTitle(r.goal))}</b></div>`}
-      <div>Wants to call <code>${esc(p.tool)}</code>: ${esc(p.acts)}.</div>
-      ${argText(p.arguments) ? `<div class="mono muted ask-args">${esc(argText(p.arguments))}</div>` : ""}
-      <input class="input" data-ag-note="${esc(r.id)}" placeholder="Note for the agent (optional)" value="${esc(A.notes[r.id] || "")}">
-      <div class="approve"><button class="btn primary" data-ag-allow="${esc(r.id)}">Allow</button><button class="btn ghost" data-ag-deny="${esc(r.id)}">Deny</button>
-        ${inline ? "" : `<span class="grow"></span><button class="btn ghost" data-run="${esc(r.id)}">Open</button>`}</div>
+      ${body}
+      <input class="input" data-ag-note="${id}" placeholder="${kind === "question" ? "Your answer" : "Note for the agent (optional)"}" value="${esc(A.notes[r.id] || "")}">
+      <div class="approve"><button class="btn primary" data-ag-allow="${id}">${yes}</button>${extra}<button class="btn ghost" data-ag-deny="${id}">${no}</button>
+        ${inline ? "" : `<span class="grow"></span><button class="btn ghost" data-run="${id}">Open</button>`}</div>
     </div>`;
+  }
+
+  const agentAsksKey = () => A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",")
+    + "|" + A.reminders.map(m => m.id + ":" + m.state + ":" + m.at + ":" + (m.run || "") + ":" + (m.error || "")).join(",");
+
+  function remindWhen(t) {
+    const d = new Date(t), day = x => new Date(x).setHours(0, 0, 0, 0);
+    const days = Math.round((day(d) - day(Date.now())) / 864e5), hm = d.toTimeString().slice(0, 5);
+    return days === 0 ? "today " + hm : days === 1 ? "tomorrow " + hm : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " " + hm;
+  }
+
+  function reminderBy(m) {
+    return m.by === "you" ? "you" : `agent <a href="#" data-run="${esc(m.by)}">${esc(m.by)}</a>`;
+  }
+
+  function reminderDue(m) {
+    const run = m.run ? A.runs.find(r => r.id === m.run) : null;
+    return `<div class="ask ag-remind" style="--c:var(--cap-agent)">
+      <div style="display:flex;gap:8px;align-items:center;min-width:0">${icon("clock")}<b class="agent-goal">${esc(m.text)}</b></div>
+      <div class="muted">Reminder for ${remindWhen(m.fired || m.at)}, set by ${reminderBy(m)}.${m.goal ? ` An agent ${run ? "works on" : "was to work on"}: ${esc(m.goal)}` : ""}</div>
+      ${m.error ? `<div class="flag bad">${icon("alert")}<span>The agent did not start: ${esc(m.error)}</span></div>` : ""}
+      <div class="approve"><button class="btn primary" data-rm-dismiss="${esc(m.id)}">Dismiss</button>
+        ${run ? `<button class="btn ghost" data-run="${esc(run.id)}">Open agent</button>` : ""}</div>
+    </div>`;
+  }
+
+  function reminderList() {
+    const xs = A.reminders.filter(m => m.state === "waiting");
+    if (!xs.length) return "";
+    return `<div class="col-head" style="padding-top:14px"><span class="h3">Reminders</span><span class="chip">${xs.length}</span></div>
+      <ul class="ag-rm-list">${xs.map(m => `<li><span class="ag-rm-text"><span class="mono ag-rm-at">${remindWhen(m.at)}</span>${esc(m.text)}${m.repeat ? ` <span class="chip">${m.repeat}</span>` : ""}${m.goal ? ` <span class="chip" title="${esc(m.goal)}">${icon("play")}agent</span>` : ""}
+          <span class="muted">by ${reminderBy(m)}</span></span>
+        <button class="btn ghost sm" data-rm-dismiss="${esc(m.id)}" title="Cancel this reminder">Cancel</button></li>`).join("")}</ul>`;
   }
 
   function agentAsks() {
     const xs = A.runs.filter(r => r.state === "waiting" && r.pending);
-    return `<div class="col-head"><span class="h3">Waiting for you</span>${xs.length ? `<span class="chip c-warn">${xs.length}</span>` : ""}</div>
-      ${xs.length ? xs.map(r => agentAsk(r, false)).join("") : `<p class="muted ag-none">Nothing waits for you. In Ask mode an agent stops here before it downloads, trains or asks a model that may cost money.</p>`}`;
+    const due = A.reminders.filter(m => m.state === "due");
+    const busy = A.runs.filter(agentActive).length;
+    const n = xs.length + due.length;
+    return `<div class="col-head"><span class="h3">Waiting for you</span>${n ? `<span class="chip c-warn">${n}</span>` : ""}<span class="grow"></span>
+        ${busy ? `<button class="btn ghost sm" id="ag-stop-all" title="Stop every agent that works or waits">${icon("stop")}Stop all ${busy}</button>` : ""}</div>
+      ${due.map(reminderDue).join("")}
+      ${n ? xs.map(r => agentAsk(r, false)).join("") : `<p class="muted ag-none">Nothing waits for you. Agents stop here with a plan to approve, a question, a rule they propose, or a call your rules or the mode say to ask about. Reminders show here when they are due.</p>`}
+      ${reminderList()}`;
+  }
+
+  function remindForm() {
+    const R = A.remind;
+    return `<details class="ag-remind-form" ${R.open ? "open" : ""} id="rm-details"><summary>${icon("clock")}Set a reminder</summary>
+      <form id="rm-form" autocomplete="off">
+        <div class="ag-form-grid">
+          <label class="field"><span>When</span><input class="input mono" id="rm-at" value="${esc(R.at)}" placeholder="in 2 hours, or 2026-12-01T09:00"></label>
+          <label class="field"><span>Repeat</span><select class="input" id="rm-repeat">${[["", "Once"], ["daily", "Daily"], ["weekly", "Weekly"]].map(([v, t]) => `<option value="${v}" ${R.repeat === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+        </div>
+        <label class="field"><span>Remind me of</span><input class="input" id="rm-text" value="${esc(R.text)}" placeholder="Check how the fine-tune is doing"></label>
+        <label class="field"><span>Then an agent should (optional)</span><textarea class="input" id="rm-goal" rows="2" placeholder="Read the run's loss and tell me whether to stop it. It takes the role above and asks before it acts.">${esc(R.goal)}</textarea></label>
+        ${R.error ? `<div class="flag bad">${icon("alert")}<span>${esc(R.error)}</span></div>` : ""}
+        <button class="btn sm" type="submit">${icon("check")}Set reminder</button>
+      </form></details>`;
   }
 
   function agentForm() {
     return `<form class="ag-form" id="ag-form" autocomplete="off">
       <div class="col-head" style="padding:14px 0 8px"><span class="h3">Start an agent</span></div>
       <textarea class="input" id="ag-goal" rows="3" placeholder="What should it do? For example: find a small Qwen model on Hugging Face that runs here, and download it.">${esc(A.goal)}</textarea>
+      <div class="field"><label for="ag-role">Role</label>${roleSelect("ag-role", A.role)}
+        <span class="muted ag-role-desc">${esc(roleOf(A.role)?.description || "")}</span></div>
       <div class="field"><label for="ag-model">Thinks with</label>${mediaPicker("ag-model", "text", A.model)}</div>
       <div class="ag-row">
         <div class="seg" role="group" aria-label="How much it may do alone">
+          <button type="button" data-ag-mode="plan" aria-pressed="${A.mode === "plan"}" title="It writes a plan first, and acts only after you approve it">Plan</button>
           <button type="button" data-ag-mode="ask" aria-pressed="${A.mode === "ask"}" title="It waits for you before a tool that acts">Ask first</button>
           <button type="button" data-ag-mode="auto" aria-pressed="${A.mode === "auto"}" title="It calls every tool itself">Auto</button></div>
         <label class="muted ag-steps">Steps <input class="input mono" id="ag-steps" type="number" min="1" max="${A.maxSteps}" value="${A.steps}"></label>
@@ -5632,7 +5806,7 @@ reason ::= [a-z ]+`;
         ${A.format === "schema" ? `<textarea class="input mono" id="ag-schema" rows="5" spellcheck="false" aria-label="JSON schema" placeholder="${esc(SCHEMA_EXAMPLE)}">${esc(A.schema)}</textarea>` : ""}</div>
       ${A.formError ? `<div class="flag bad">${icon("alert")}<span>${esc(A.formError)}</span></div>` : ""}
       <button class="btn primary" type="submit" ${A.busy ? "disabled" : ""}>${icon("play")}${A.busy ? "Starting…" : "Start"}</button>
-    </form>`;
+    </form>${remindForm()}`;
   }
 
   function agentTools() {
@@ -5647,9 +5821,10 @@ reason ::= [a-z ]+`;
       <div style="display:grid;gap:8px">${xs.map(liveAgentCard).join("") || `<p class="muted ag-none" style="padding:0 2px">None.</p>`}</div></div>`;
     if (!A.runs.length) return `<div class="empty ag-empty">${icon("agent")}<div><b>No agents yet.</b></div>
       <div class="muted">Say what you want done on the left. The agent picks from the studio's tools, such as searching Hugging Face, downloading a model, or starting a training run, and tells you what it did.</div></div>`;
-    return lane("Working", A.runs.filter(r => r.state === "running"))
-      + lane("Needs you", A.runs.filter(r => r.state === "waiting"))
-      + lane("Finished", A.runs.filter(r => !agentActive(r)));
+    const roots = A.runs.filter(r => !r.parent || !A.runs.some(x => x.id === r.parent));
+    return lane("Working", roots.filter(r => r.state === "running"))
+      + lane("Needs you", roots.filter(r => r.state === "waiting" || (r.children || []).some(c => A.runs.find(x => x.id === c)?.state === "waiting")))
+      + lane("Finished", roots.filter(r => !agentActive(r)));
   }
 
   // the chat's Reasoning bubble, for an agent's thinking
@@ -5665,6 +5840,10 @@ reason ::= [a-z ]+`;
       case "decision": return `<div class="st st-decision">${icon(s.allow ? "check" : "x")}<span>You ${s.allow ? "allowed" : "did not allow"} <code>${esc(s.tool)}</code>${s.note ? `: “${esc(s.note)}”` : ""}</span></div>`;
       case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${s.json && s.text ? jsonAnswer(s.text) : md(s.text || "")}</div></div>`;
       case "error": return `<div class="flag bad">${icon("alert")}<span>${esc(s.text || "")}</span></div>`;
+      case "plan": return `<div class="st st-plan"><span class="eyebrow">Plan</span><ol class="ag-plan">${(s.items || []).map(x => `<li class="${esc(x.state || "todo")}">${esc(x.step)}</li>`).join("")}</ol></div>`;
+      case "inbox": return `<div class="st st-call">${icon("chat")}<span>Read ${(s.messages || []).length} message${(s.messages || []).length === 1 ? "" : "s"} from other agents</span></div>`;
+      case "compact": return `<div class="st st-call faint">${icon("clip")}<span>${esc(s.text || "")}</span></div>`;
+      case "undo": return `<div class="st st-decision">${icon("retry")}<span>Undid changes to ${(s.files || []).length} file${(s.files || []).length === 1 ? "" : "s"}</span></div>`;
       default: return "";
     }
   }
@@ -5675,9 +5854,18 @@ reason ::= [a-z ]+`;
     const st = agentStates[r.state] || [r.state, "c-text"];
     const by = r.by ? modelByKey(r.by)?.name || r.by : r.model === "auto" ? "Auto" : modelByKey(r.model)?.name || r.model;
     const tok = (r.inputTokens || 0) + (r.outputTokens || 0);
-    return `<div class="ag-meta"><span class="chip ${st[1]}">${st[0]}</span><span class="mono faint">${esc(by)} · ${r.mode === "ask" ? "asks first" : "auto"} · step ${r.turns} of ${r.maxSteps}${tok ? " · " + fmtCount(tok) + " tok" : ""}</span>
+    const cap = r.budget?.tokens;
+    const plan = (r.plan || []).length ? `<div class="ag-plan-box"><div class="eyebrow">Plan ${r.planApproved ? `<span class="chip c-ok">approved</span>` : r.mode === "plan" ? `<span class="chip c-warn">not approved yet</span>` : ""}</div>
+      <ol class="ag-plan">${r.plan.map(x => `<li class="${esc(x.state || "todo")}">${esc(x.step)}</li>`).join("")}</ol></div>` : "";
+    const parent = r.parent ? A.runs.find(x => x.id === r.parent) : null;
+    return `<div class="ag-meta"><span class="chip ${st[1]}">${st[0]}</span><span class="chip">${esc(roleName(r.role))}</span>${r.tainted ? `<span class="chip c-warn" title="It read text from the web, mail or another agent, so anything that writes asks first">read outside text</span>` : ""}
+        <span class="mono faint">${esc(by)} · ${modeLabel(r.mode)} · step ${r.turns} of ${r.maxSteps}${tok ? " · " + fmtCount(tok) + (cap ? " of " + fmtCount(cap) : "") + " tok" : ""}${r.media ? " · " + r.media + " media" : ""}</span>
         <span class="grow"></span>${agentActive(r) ? `<button class="btn" data-ag-stop="${esc(r.id)}">${icon("stop")}Stop</button>`
-          : `<button class="btn ghost" data-ag-remove="${esc(r.id)}">${icon("trash")}${A.removing === r.id ? "Click again to remove" : "Remove"}</button>`}</div>
+          : `<button class="btn ghost" data-ag-undo="${esc(r.id)}" title="Put back every file this agent and its sub-agents changed">${icon("retry")}${A.undoing === r.id ? "Click again to undo" : "Undo changes"}</button>
+             <button class="btn ghost" data-ag-remove="${esc(r.id)}">${icon("trash")}${A.removing === r.id ? "Click again to remove" : "Remove"}</button>`}</div>
+      ${parent ? `<div class="muted ag-parent">Started by <a href="#" data-run="${esc(parent.id)}">${esc(roleName(parent.role))}: ${esc(agentTitle(parent.goal))}</a></div>` : ""}
+      ${A.undone && A.undone.id === r.id ? `<div class="flag ok">${icon("check")}<span>${A.undone.files.length ? "Put back " + A.undone.files.map(esc).join(", ") : "It changed no files."}</span></div>` : ""}
+      ${plan}${agentChildren(r)}
       <div class="ag-steps-list" id="ag-steps-list">${(r.steps || []).map(agentStep).join("")}
         ${r.state === "waiting" && r.pending ? agentAsk(r, true) : ""}
         ${r.state === "running" ? (r.thinking ? agentThink(r.thinking, true, null, true) : `<div class="st st-say"><span class="typing"><i></i><i></i><i></i></span></div>`) : ""}</div>
@@ -5686,9 +5874,11 @@ reason ::= [a-z ]+`;
 
   function liveAgentsView() {
     if (!A.loaded) return `<div class="empty" style="padding:60px"><span class="typing"><i></i><i></i><i></i></span><div class="muted">${A.error ? esc(A.error) : "Looking for agents and tools…"}</div></div>`;
+    if (A.tab !== "runs") return `<div class="ag-settings-page">${agentTabs()}<div class="ag-settings" id="ag-settings">${agentSettingsPanel()}</div></div>`;
     const sel = A.sel && A.runs.find(r => r.id === A.sel);
     return `<div class="mission live-agents ${sel ? "with-detail" : ""}">
       <aside class="inbox" aria-label="Start an agent and what waits for you">
+        <div style="padding:10px 16px 0">${agentTabs()}</div>
         <div style="padding:0 16px">${agentForm()}</div>
         <div id="ag-asks">${agentAsks()}</div>
         <div id="ag-tools">${agentTools()}</div>
@@ -5703,7 +5893,7 @@ reason ::= [a-z ]+`;
   const agentCrumb = () => `Agents <span class="muted">· ${A.loaded ? `${A.runs.filter(r => r.state === "running").length} working · ${A.runs.filter(r => r.state === "waiting").length} waiting for you` : "looking…"}</span>`;
 
   function agentBadge() {
-    const n = A.runs.filter(r => r.state === "waiting").length;
+    const n = A.runs.filter(r => r.state === "waiting").length + A.reminders.filter(m => m.state === "due").length;
     const a = $('.rail a[data-view="agents"]');
     if (!a) return;
     let b = a.querySelector(".badge");
@@ -5715,14 +5905,15 @@ reason ::= [a-z ]+`;
   // Redraw what changed without touching what the user is typing in.
   function refreshAgents() {
     agentBadge();
-    if (state.view !== "agents" || !isLive()) return;
+    if (state.view !== "agents" || !isLive() || A.tab !== "runs") return;
     if (!$(".live-agents") || !!A.sel !== !!$("#ag-detail")) { render(); return; }
     $("#ag-lanes").innerHTML = agentLanes();
     $("#crumb").innerHTML = agentCrumb();
-    const asksKey = A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",");
+    const asksKey = agentAsksKey();
     if (asksKey !== A.asksKey) { A.asksKey = asksKey; $("#ag-asks").innerHTML = agentAsks(); }
     const d = A.detail;
-    const detailKey = d ? [d.id, d.state, (d.steps || []).length, d.turns, A.removing, (d.thinking || "").length].join(":") : "";
+    const detailKey = d ? [d.id, d.state, (d.steps || []).length, d.turns, A.removing, A.undoing, A.undone?.id, (d.thinking || "").length,
+      (d.children || []).map(c => A.runs.find(x => x.id === c)?.state).join(), (d.plan || []).map(x => x.state).join()].join(":") : "";
     if (detailKey !== A.detailKey && $("#ag-detail-body")) {
       A.detailKey = detailKey;
       const list = $("#ag-steps-list"), atEnd = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 40, top = list?.scrollTop;
@@ -5741,7 +5932,8 @@ reason ::= [a-z ]+`;
     try {
       if (!L.info) await loadModels(false);
       const j = await api("/api/agents");
-      A.runs = j.runs; A.tools = j.tools; A.maxSteps = j.maxSteps; A.loaded = true; A.error = null;
+      A.runs = j.runs; A.tools = j.tools; A.maxSteps = j.maxSteps; A.roles = j.roles || []; A.loaded = true; A.error = null;
+      A.reminders = (await api("/api/reminders")).reminders || [];
       if (A.sel && !A.runs.some(r => r.id === A.sel)) { A.sel = null; A.detail = null; }
       if (A.sel) A.detail = await postJson("/api/agents/get", { id: A.sel });
     } catch (e) {
@@ -5771,11 +5963,28 @@ reason ::= [a-z ]+`;
   function bindAgentParts() {
     $$("[data-run]").forEach(el => {
       if (el.dataset.bound) return; el.dataset.bound = "1";
-      el.addEventListener("click", () => openAgent(el.dataset.run));
+      el.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); openAgent(el.dataset.run); });
       el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(el.dataset.run); } });
     });
     $$("[data-ag-note]").forEach(el => el.oninput = () => { A.notes[el.dataset.agNote] = el.value; });
-    const decide = (id, allow) => { const note = A.notes[id] || ""; delete A.notes[id]; A.asksKey = null; A.detailKey = null; agentDo("/api/agents/answer", { id, allow, note }); };
+    const decide = (id, allow, mode) => { const note = A.notes[id] || ""; delete A.notes[id]; A.asksKey = null; A.detailKey = null; agentDo("/api/agents/answer", { id, allow, note, mode }); };
+    $$("[data-ag-auto]").forEach(el => el.onclick = () => decide(el.dataset.agAuto, true, "auto"));
+    $$("[data-ag-pick]").forEach(el => el.onclick = () => { A.notes[el.dataset.agPick] = el.dataset.v; decide(el.dataset.agPick, true); });
+    $$("[data-rm-dismiss]").forEach(el => el.onclick = async () => {
+      try { A.reminders = (await postJson("/api/reminders/dismiss", { id: el.dataset.rmDismiss })).reminders || []; }
+      catch (e) { A.formError = String(e.message || e); }
+      refreshAgents();
+    });
+    const stopAll = $("#ag-stop-all");
+    if (stopAll) stopAll.onclick = () => agentDo("/api/agents/stop-all", {});
+    $$("[data-ag-undo]").forEach(el => el.onclick = async () => {
+      const id = el.dataset.agUndo;
+      if (A.undoing !== id) { A.undoing = id; A.detailKey = null; refreshAgents(); return; }
+      A.undoing = null;
+      try { const j = await postJson("/api/agents/undo", { id }); A.undone = { id, files: j.restored || [] }; }
+      catch (e) { A.formError = String(e.message || e); }
+      A.detailKey = null; loadAgents();
+    });
     $$("[data-ag-allow]").forEach(el => el.onclick = () => decide(el.dataset.agAllow, true));
     $$("[data-ag-deny]").forEach(el => el.onclick = () => decide(el.dataset.agDeny, false));
     $$("[data-ag-stop]").forEach(el => el.onclick = () => agentDo("/api/agents/stop", { id: el.dataset.agStop }));
@@ -5801,13 +6010,26 @@ reason ::= [a-z ]+`;
   }
 
   function bindLiveAgents() {
-    A.asksKey = A.runs.filter(r => r.state === "waiting").map(r => r.id + ":" + r.pending?.since).join(",");
+    bindAgentTabs();
+    if (A.tab !== "runs") {
+      const missing = A.tab === "roles" ? !AS.roles : A.tab === "rules" ? !AS.rules : !AS.services;
+      if (missing) loadAgentSettings(); else bindAgentSettings();
+      return;
+    }
+    A.asksKey = agentAsksKey();
     A.detailKey = "";
     const goal = $("#ag-goal");
     if (!goal) return;
     goal.oninput = () => { A.goal = goal.value; };
     goal.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#ag-form").requestSubmit(); };
     $("#ag-model").onchange = e => { A.model = e.target.value; };
+    $("#ag-role").onchange = e => {
+      A.role = e.target.value;
+      const r = roleOf(A.role);
+      A.mode = r?.mode || roleOf(r?.extends)?.mode || "ask";
+      A.steps = Math.min(A.maxSteps, r?.budget?.steps || 30);
+      render();
+    };
     $("#ag-steps").oninput = e => { A.steps = Math.max(1, Math.min(A.maxSteps, +e.target.value || 12)); };
     $("#ag-format").onchange = e => { A.format = e.target.value; A.formError = null; render(); };
     if ($("#ag-schema")) $("#ag-schema").oninput = e => { A.schema = e.target.value; };
@@ -5819,7 +6041,7 @@ reason ::= [a-z ]+`;
       if (wrong) { A.formError = wrong; render(); return; }
       A.busy = true; A.formError = null; render();
       try {
-        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps, format: formatOf(A) });
+        const r = await postJson("/api/agents/start", { goal: A.goal, role: A.role, model: A.model, mode: A.mode, maxSteps: A.steps, format: formatOf(A) });
         A.goal = ""; A.sel = r.id; A.detail = null; A.open = new Set();
       } catch (err) {
         A.formError = String(err.message || err);
@@ -5828,10 +6050,304 @@ reason ::= [a-z ]+`;
       render();
       loadAgents();
     };
+    $("#rm-details").ontoggle = e => { A.remind.open = e.target.open; };
+    for (const k of ["at", "text", "goal", "repeat"]) { const el = $("#rm-" + k); el.oninput = el.onchange = () => { A.remind[k] = el.value; }; }
+    $("#rm-form").onsubmit = async e => {
+      e.preventDefault();
+      const R = A.remind;
+      try {
+        await postJson("/api/reminders/add", { at: R.at, text: R.text, goal: R.goal, role: R.goal.trim() ? A.role : "", repeat: R.repeat });
+        A.remind = { at: "", text: "", goal: "", repeat: "", open: false };
+      } catch (err) { R.error = String(err.message || err); render(); return; }
+      render(); loadAgents();
+    };
     $("#ag-tools-toggle").onclick = () => { A.toolsOpen = !A.toolsOpen; $("#ag-tools").innerHTML = agentTools(); bindLiveAgents(); };
     $("#ag-close")?.addEventListener("click", () => { A.sel = null; A.detail = null; render(); });
     bindAgentParts();
     if (A.detail) { const nl = $("#ag-steps-list"); if (nl) nl.scrollTop = nl.scrollHeight; }
+  }
+
+  // ---------- agent roles, rules and outside services ----------
+  // The same panels can be listed among the settings sections; here they sit beside the runs.
+  const FAMILIES = { general: "General", coordination: "Coordination", build: "Build", ml: "Models", content: "Content", personal: "Personal" };
+  const AS = { roles: null, tiers: [], tools: [], edit: null, rules: null, shipped: [], ruleTools: [], dirty: false, services: null, svcDraft: {}, msg: null, error: null, busy: false, filter: "" };
+
+  function roleSelect(id, sel, opts = {}) {
+    const fams = {};
+    for (const r of A.roles) (fams[r.family] = fams[r.family] || []).push(r);
+    const groups = Object.keys(fams).map(f => `<optgroup label="${esc(FAMILIES[f] || f)}">${fams[f].map(r =>
+      `<option value="${esc(r.id)}" ${r.id === sel ? "selected" : ""}>${esc(r.name)}${r.builtin ? "" : " (yours)"}</option>`).join("")}</optgroup>`).join("");
+    return `<select class="input" id="${id}" ${opts.data || ""}>${opts.none ? `<option value="" ${!sel ? "selected" : ""}>${esc(opts.none)}</option>` : ""}${groups}</select>`;
+  }
+
+  function agentTabs() {
+    const tabs = [["runs", "Agents"], ["roles", "Roles"], ["rules", "Rules"], ["services", "Services"]];
+    return `<div class="seg ag-tabs" role="tablist" aria-label="Agents">${tabs.map(([k, t]) =>
+      `<button type="button" role="tab" data-ag-tab="${k}" aria-pressed="${A.tab === k}" aria-selected="${A.tab === k}">${t}</button>`).join("")}</div>`;
+  }
+
+  function agentSettingsPanel() {
+    const note = AS.error ? `<div class="flag bad">${icon("alert")}<span>${esc(AS.error)}</span></div>` : AS.msg ? `<div class="flag ok">${icon("check")}<span>${esc(AS.msg)}</span></div>` : "";
+    if (asTab() === "roles") return note + (AS.roles ? (AS.edit ? roleEditor() : rolesList()) : loadingPanel());
+    if (asTab() === "rules") return note + (AS.rules ? rulesPanel() : loadingPanel());
+    return note + (AS.services ? servicesPanel() : loadingPanel());
+  }
+  const loadingPanel = () => `<div class="empty" style="padding:40px"><span class="typing"><i></i><i></i><i></i></span></div>`;
+
+  // roles
+  function rolesList() {
+    const fams = {};
+    for (const r of AS.roles) (fams[r.family] = fams[r.family] || []).push(r);
+    return `<div class="sect-head"><span class="h2">Roles</span><span class="muted">A role is who an agent is: its instructions, the tools it may use, how much it may do alone, its budget, and which roles it may start as sub-agents. Built-in roles cannot be changed, but a copy of one can.</span></div>
+      <div class="ag-bar"><button class="btn primary" id="as-role-new">${icon("plus")}New role</button></div>
+      ${Object.keys(fams).map(f => `<div class="h3 ag-fam">${esc(FAMILIES[f] || f)}</div><div class="ag-role-grid">${fams[f].map(roleCard).join("")}</div>`).join("")}`;
+  }
+
+  function roleCard(r) {
+    const tools = r.tools ? r.tools.length + " tools" : r.extends ? "tools of " + esc(roleName(r.extends)) : "every tool";
+    return `<div class="panel ag-role-card">
+      <div class="col-head"><b>${esc(r.name)}</b><span class="mono faint">${esc(r.id)}</span><span class="grow"></span>${r.builtin ? `<span class="chip">built in</span>` : `<span class="chip c-ok">yours</span>`}</div>
+      <div class="muted">${esc(r.description || "")}</div>
+      <div class="ag-role-chips">${r.mode ? `<span class="chip">${esc(modeLabel(r.mode))}</span>` : ""}<span class="chip">${tools}</span>
+        ${r.extends ? `<span class="chip">extends ${esc(roleName(r.extends))}</span>` : ""}
+        ${(r.canSpawn || []).length ? `<span class="chip c-text" title="${esc(r.canSpawn.map(roleName).join(", "))}">starts ${r.canSpawn.length} roles</span>` : ""}
+        ${r.budget?.steps ? `<span class="chip">${r.budget.steps} steps</span>` : ""}</div>
+      <div class="ag-bar">${r.builtin ? `<button class="btn ghost sm" data-as-copy="${esc(r.id)}">${icon("copy")}Make a copy</button>`
+        : `<button class="btn ghost sm" data-as-edit="${esc(r.id)}">${icon("edit")}Edit</button><button class="btn ghost sm" data-as-del="${esc(r.id)}">${icon("trash")}${AS.deleting === r.id ? "Click again" : "Delete"}</button>`}</div>
+    </div>`;
+  }
+
+  function roleEditor() {
+    const d = AS.edit, own = d.tools != null;
+    const tools = AS.tools.filter(t => !AS.filter || (t.name + " " + t.description).toLowerCase().includes(AS.filter.toLowerCase()));
+    const tierRow = t => `<label class="field"><span>${esc(t.key)} <span class="faint">${esc(t.what)}</span></span><select class="input" data-as-policy="${t.key}">
+        ${["", "allow", "ask", "deny"].filter(v => !(t.key === "outward" && v === "allow")).map(v => `<option value="${v}" ${(d.policy?.[t.key] || "") === v ? "selected" : ""}>${v || `mode decides (${t.ask} / ${t.auto})`}</option>`).join("")}</select></label>`;
+    return `<div class="sect-head"><span class="h2">${d.isNew ? "New role" : "Edit " + esc(d.name || d.id)}</span><span class="muted">What is left empty comes from the role it extends.</span></div>
+      <form id="as-role-form" class="ag-role-form" autocomplete="off">
+        <div class="ag-form-grid">
+          <label class="field"><span>Id</span><input class="input mono" data-as-f="id" value="${esc(d.id || "")}" ${d.isNew ? "" : "disabled"} placeholder="my-writer" pattern="[a-z0-9][a-z0-9\\-]*"></label>
+          <label class="field"><span>Name</span><input class="input" data-as-f="name" value="${esc(d.name || "")}" placeholder="My writer"></label>
+          <label class="field"><span>Family</span><select class="input" data-as-f="family">${Object.entries(FAMILIES).map(([k, v]) => `<option value="${k}" ${d.family === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+          <label class="field"><span>Extends</span>${roleSelect("as-extends", d.extends || "", { none: "nothing", data: 'data-as-f="extends"' })}</label>
+          <label class="field wide"><span>What it is for</span><input class="input" data-as-f="description" value="${esc(d.description || "")}"></label>
+          <label class="field wide"><span>Instructions</span><textarea class="input" rows="6" data-as-f="instructions" placeholder="Who the agent is and how it works. Added after the instructions of the role it extends.">${esc(d.instructions || "")}</textarea></label>
+          <label class="field"><span>Mode</span><select class="input" data-as-f="mode">${[["", "inherit"], ["plan", "Plan first"], ["ask", "Ask first"], ["auto", "Auto"]].map(([v, t]) => `<option value="${v}" ${(d.mode || "") === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+          <label class="field"><span>Model</span><input class="input mono" data-as-f="model" value="${esc(d.model || "")}" placeholder="inherit, or auto, or a model key"></label>
+        </div>
+        <div class="h3 ag-fam">Budget</div>
+        <div class="ag-form-grid">${[["steps", "Model turns"], ["tokens", "Tokens, with its sub-agents"], ["media", "Media files"], ["turnTokens", "Tokens per turn"], ["context", "Context tokens"]].map(([k, t]) =>
+          `<label class="field"><span>${t}</span><input class="input mono" type="number" min="1" data-as-budget="${k}" value="${esc(d.budget?.[k] ?? "")}" placeholder="inherit"></label>`).join("")}</div>
+        <div class="h3 ag-fam">How much it may do alone</div>
+        <div class="ag-form-grid">${AS.tiers.map(tierRow).join("")}</div>
+        <div class="h3 ag-fam">Tools</div>
+        <label class="ag-check"><input type="checkbox" id="as-own-tools" ${own ? "checked" : ""}> Choose its tools (otherwise it has the tools of the role it extends${d.extends ? "" : ", which is every tool"})</label>
+        ${own ? `<input class="input" id="as-tool-filter" placeholder="Filter tools" value="${esc(AS.filter)}">
+          <div class="ag-tool-grid">${tools.map(t => `<label class="ag-check" title="${esc(t.description)}"><input type="checkbox" data-as-tool="${esc(t.name)}" ${d.tools.includes(t.name) ? "checked" : ""}><code>${esc(t.name)}</code>${riskChip(t.risk)}</label>`).join("")}</div>` : ""}
+        <div class="h3 ag-fam">May start these roles as sub-agents</div>
+        <div class="ag-tool-grid">${AS.roles.map(r => `<label class="ag-check"><input type="checkbox" data-as-spawn="${esc(r.id)}" ${(d.canSpawn || []).includes(r.id) ? "checked" : ""}>${esc(r.name)}</label>`).join("")}</div>
+        <div class="ag-bar"><button class="btn primary" type="submit" ${AS.busy ? "disabled" : ""}>${icon("check")}Save role</button><button class="btn ghost" type="button" id="as-role-cancel">Cancel</button></div>
+      </form>`;
+  }
+
+  function readRoleForm() {
+    const d = AS.edit;
+    $$("[data-as-f]").forEach(el => { if (!el.disabled) d[el.dataset.asF] = el.value; });
+    d.budget = {};
+    $$("[data-as-budget]").forEach(el => { if (el.value) d.budget[el.dataset.asBudget] = +el.value; });
+    d.policy = {};
+    $$("[data-as-policy]").forEach(el => { if (el.value) d.policy[el.dataset.asPolicy] = el.value; });
+    if (d.tools != null) {
+      const shown = new Set($$("[data-as-tool]").map(el => el.dataset.asTool));
+      d.tools = [...d.tools.filter(t => !shown.has(t)), ...$$("[data-as-tool]").filter(el => el.checked).map(el => el.dataset.asTool)];
+    }
+    d.canSpawn = $$("[data-as-spawn]").filter(el => el.checked).map(el => el.dataset.asSpawn);
+  }
+
+  // rules
+  function rulesPanel() {
+    const row = (r, i) => `<div class="panel rule-row ${r.enabled ? "" : "off"}" data-rule="${i}">
+      <div class="rule-head"><span class="mono faint">${i + 1}</span>
+        <select class="input rule-effect ${r.effect}" data-rf="effect">${["allow", "ask", "deny"].map(v => `<option ${r.effect === v ? "selected" : ""}>${v}</option>`).join("")}</select>
+        <input class="input mono" data-rf="id" value="${esc(r.id)}" aria-label="Rule id">
+        <label class="ag-check"><input type="checkbox" data-rf="enabled" ${r.enabled ? "checked" : ""}> on</label>
+        <span class="grow"></span>
+        <button class="iconbtn sm" type="button" data-rule-up="${i}" aria-label="Move up" ${i ? "" : "disabled"}>${icon("chev", "rot-up")}</button>
+        <button class="iconbtn sm" type="button" data-rule-down="${i}" aria-label="Move down" ${i < AS.rules.length - 1 ? "" : "disabled"}>${icon("chev", "rot-down")}</button>
+        <button class="iconbtn sm" type="button" data-rule-del="${i}" aria-label="Delete rule">${icon("trash")}</button></div>
+      <div class="ag-form-grid">
+        <label class="field"><span>Tools <span class="faint">comma separated, * for any part; empty for all</span></span><input class="input mono" data-rf="tools" value="${esc((r.tools || []).join(", "))}" list="as-tool-names"></label>
+        <label class="field"><span>Risk tiers <span class="faint">empty for all</span></span><input class="input mono" data-rf="risks" value="${esc((r.risks || []).join(", "))}" placeholder="read, write, code…"></label>
+        <label class="field wide"><span>Paths <span class="faint">@project, @outside, or patterns such as ~/Documents/**; empty for any call</span></span><input class="input mono" data-rf="paths" value="${esc((r.paths || []).join(", "))}"></label>
+        <label class="field"><span>Reading or writing</span><select class="input" data-rf="access">${["any", "read", "write"].map(v => `<option ${r.access === v ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+        <label class="field"><span>Project <span class="faint">empty for all</span></span><input class="input mono" data-rf="project" value="${esc(r.project || "")}"></label>
+        <label class="field"><span>Role</span>${roleSelect("rr-" + i, r.role || "", { none: "every role", data: 'data-rf="role"' })}</label>
+        <label class="field wide"><span>Why</span><input class="input" data-rf="note" value="${esc(r.note || "")}"></label>
+      </div></div>`;
+    return `<div class="sect-head"><span class="h2">Rules</span><span class="muted">Every call an agent makes is checked against these rules from the top. The first rule that matches decides: allow, ask you, or deny. Calls no rule matches are judged by their risk tier, the role and the mode. Two things always ask, whatever the rules say: anything that leaves this PC (posts, mail, pushes), and anything that writes after an agent read text from the web, mail or another agent.</span></div>
+      <datalist id="as-tool-names">${AS.ruleTools.map(t => `<option value="${esc(t)}">`).join("")}</datalist>
+      <div class="ag-rules">${AS.rules.map(row).join("")}</div>
+      <div class="ag-bar"><button class="btn" type="button" id="as-rule-add">${icon("plus")}Add rule</button><span class="grow"></span>
+        <button class="btn ghost" type="button" id="as-rule-reset" title="Replace every rule with the ones the studio ships">${AS.resetting ? "Click again to reset" : "Reset to shipped rules"}</button>
+        <button class="btn primary" type="button" id="as-rule-save" ${AS.dirty && !AS.busy ? "" : "disabled"}>${icon("check")}Save rules</button></div>`;
+  }
+
+  function readRules() {
+    const list = s => s.split(",").map(x => x.trim()).filter(Boolean);
+    $$("[data-rule]").forEach(row => {
+      const r = AS.rules[+row.dataset.rule];
+      row.querySelectorAll("[data-rf]").forEach(el => {
+        const k = el.dataset.rf;
+        r[k] = el.type === "checkbox" ? el.checked : ["tools", "risks", "paths"].includes(k) ? list(el.value) : el.value;
+      });
+    });
+  }
+
+  // outside services
+  const SERVICES = [
+    ["search", "Web search", "For web_search. Brave Search needs a key; SearXNG needs its address; Ollama uses an Ollama key.", [["provider", "Provider", ["brave", "searxng", "ollama"]], ["url", "SearXNG address", "https://search.example.org"]], "API key"],
+    ["embeddings", "Meaning search", "index_files and search_knowledge find passages by meaning as well as by words. They use a sentence-embedding model downloaded here, such as BAAI/bge-small-en-v1.5, or an OpenAI-compatible embeddings API, such as Ollama's at http://localhost:11434/v1.", [["source", "Use", ["", "off"]], ["url", "API address", "empty for a model on this PC"], ["model", "API model", "nomic-embed-text"], ["folder", "Model folder", "found among downloads if empty"]], "API key"],
+    ["sandbox", "Code sandbox", "run_command runs in a Docker or Podman container on a copy of the project, never on this PC directly.", [["kind", "Engine", ["", "docker", "podman"]], ["image", "Image", "debian:stable-slim"], ["cpus", "CPUs", "2"], ["memory", "Memory", "4g"], ["network", "Network", ["none", "on"]], ["timeout", "Time limit, seconds", "600"]], null],
+    ["github", "GitHub", "For reading issues and, after you approve, opening issues and pull requests and commenting. A fine-grained token limited to the repositories agents may touch is best.", [["repo", "Repository", "owner/name; the project's origin if empty"], ["api", "API address", "https://api.github.com/"]], "Token"],
+    ["mastodon", "Mastodon", "For publish_post. Make an access token under Preferences, Development.", [["instance", "Server", "mastodon.social"]], "Access token"],
+    ["bluesky", "Bluesky", "For publish_post. Use an app password, not your account password.", [["handle", "Handle", "you.bsky.social"], ["service", "Server", "https://bsky.social"]], "App password"],
+    ["discord", "Discord", "Posts go to a channel through its webhook.", [], "Webhook address"],
+    ["webhook", "Webhook", "publish_post can send {text, media} as JSON to any address.", [["url", "Address", "https://…"]], null],
+    ["mail", "Mail", "read_mail reads over IMAP without marking anything; send_mail sends over SMTP after you approve.", [["imapHost", "IMAP server", "imap.example.org"], ["imapPort", "IMAP port", "993"], ["smtpHost", "SMTP server", "smtp.example.org"], ["smtpPort", "SMTP port", "587"], ["user", "User", "you@example.org"], ["from", "From", "You <you@example.org>"]], "Password"],
+    ["calendar", "Calendar", "calendar_events reads this iCalendar address, along with the project's calendar.ics.", [["url", "Calendar address", "https://…/basic.ics"]], null],
+  ];
+
+  addAgentSections();
+
+  function servicesPanel() {
+    const S = AS.services;
+    const card = ([id, title, blurb, fields, secret]) => {
+      const v = { ...(S[id] || {}), ...(AS.svcDraft[id] || {}) };
+      return `<form class="panel ag-svc" data-svc="${id}" autocomplete="off">
+        <div class="col-head"><b>${title}</b><span class="grow"></span>${S[id]?.hasSecret ? `<span class="chip c-ok">${icon("lock")}${esc(secret)} kept</span>` : ""}</div>
+        <div class="muted">${blurb}</div>
+        <div class="ag-form-grid">${fields.map(([k, label, hint]) => `<label class="field"><span>${label}</span>${Array.isArray(hint)
+          ? `<select class="input" data-sv="${k}">${hint.map(o => `<option value="${o}" ${(v[k] || "") === o ? "selected" : ""}>${o || "find one"}</option>`).join("")}</select>`
+          : `<input class="input mono" data-sv="${k}" value="${esc(v[k] || "")}" placeholder="${esc(hint)}">`}</label>`).join("")}
+          ${secret ? `<label class="field"><span>${secret}</span><input class="input mono" type="password" data-sv-secret placeholder="${S[id]?.hasSecret ? "kept; type to replace" : ""}" autocomplete="new-password"></label>` : ""}</div>
+        <div class="ag-bar"><button class="btn sm" type="submit">${icon("check")}Save</button></div></form>`;
+    };
+    return `<div class="sect-head"><span class="h2">Services</span><span class="muted">The outside services agent tools use. Passwords and tokens are kept with the studio's other keys and never shown again. FFmpeg, for audio and video, is ${S.ffmpeg ? `<b>found</b>` : `<b>not found</b>: install it or set BRAINIAC_FFMPEG`}.</span></div>
+      <div class="ag-svc-grid">${SERVICES.map(card).join("")}</div>`;
+  }
+
+  // the panel shown: the Agents page's tab, or the settings section open
+  const AS_SECTIONS = { "agent-roles": "roles", "agent-rules": "rules", "agent-services": "services" };
+  const asTab = () => state.view === "settings" ? AS_SECTIONS[S.tab] || "roles" : A.tab;
+  const asMissing = t => t === "roles" ? !AS.roles : t === "rules" ? !AS.rules : !AS.services;
+
+  async function loadAgentSettings() {
+    if (AS.loading) return;
+    AS.loading = true;
+    try {
+      if (asTab() === "roles") { const j = await api("/api/roles"); AS.roles = j.roles; AS.tiers = j.tiers; AS.tools = j.tools; A.roles = j.roles; }
+      if (asTab() === "rules") { const j = await api("/api/rules"); AS.rules = j.rules; AS.shipped = j.shipped; AS.ruleTools = j.tools; AS.dirty = false; }
+      if (asTab() === "services") AS.services = await api("/api/services");
+      AS.error = null;
+    } catch (e) { AS.error = String(e.message || e); }
+    AS.loading = false;
+    drawAgentSettings();
+  }
+
+  function drawAgentSettings() {
+    if (state.view === "settings") {
+      if (AS_SECTIONS[S.tab]) { renderSection(); if (AS.top) { AS.top = false; $(".set-inner")?.scrollTo({ top: 0, behavior: "smooth" }); } }
+      return;
+    }
+    const el = $("#ag-settings");
+    if (!el) return;
+    el.innerHTML = agentSettingsPanel();
+    if (AS.top) { AS.top = false; $(".ag-settings-page")?.scrollTo({ top: 0, behavior: "smooth" }); }
+    bindAgentSettings();
+  }
+
+  async function asDo(path, body, msg) {
+    AS.busy = true; AS.error = null; AS.msg = null;
+    try { const j = await postJson(path, body); AS.msg = msg; return j; }
+    catch (e) { AS.error = String(e.message || e); return null; }
+    finally { AS.busy = false; AS.top = true; }
+  }
+
+  function bindAgentTabs() {
+    $$("[data-ag-tab]").forEach(b => b.onclick = () => {
+      if (A.tab === b.dataset.agTab) return;
+      A.tab = b.dataset.agTab; AS.msg = null; AS.error = null; AS.edit = null;
+      render();
+      if (A.tab === "runs") loadAgents();
+    });
+  }
+
+  function bindAgentSettings() {
+    if (asTab() === "roles" && AS.roles) {
+      $("#as-role-new")?.addEventListener("click", () => { AS.edit = { isNew: true, id: "", name: "", family: "general", extends: "assistant", tools: null, canSpawn: [] }; AS.msg = null; drawAgentSettings(); });
+      $$("[data-as-copy]").forEach(b => b.onclick = () => {
+        const r = AS.roles.find(x => x.id === b.dataset.asCopy);
+        AS.edit = { isNew: true, id: r.id + "-mine", name: r.name + " (mine)", family: r.family, description: r.description, extends: r.id, instructions: "", tools: null, canSpawn: [...(r.canSpawn || [])] };
+        AS.msg = null; drawAgentSettings();
+      });
+      $$("[data-as-edit]").forEach(b => b.onclick = () => { const r = AS.roles.find(x => x.id === b.dataset.asEdit); AS.edit = JSON.parse(JSON.stringify(r)); AS.msg = null; drawAgentSettings(); });
+      $$("[data-as-del]").forEach(b => b.onclick = async () => {
+        const id = b.dataset.asDel;
+        if (AS.deleting !== id) { AS.deleting = id; drawAgentSettings(); return; }
+        AS.deleting = null;
+        const j = await asDo("/api/roles/delete", { id }, "Deleted the role " + id + ".");
+        if (j) { AS.roles = j.roles; A.roles = j.roles; }
+        drawAgentSettings();
+      });
+      const form = $("#as-role-form");
+      if (form) {
+        $("#as-role-cancel").onclick = () => { AS.edit = null; drawAgentSettings(); };
+        $("#as-own-tools").onchange = e => { readRoleForm(); AS.edit.tools = e.target.checked ? [] : null; drawAgentSettings(); };
+        const f = $("#as-tool-filter");
+        if (f) f.oninput = () => { readRoleForm(); AS.filter = f.value; const pos = f.selectionStart; drawAgentSettings(); const g = $("#as-tool-filter"); g.focus(); g.setSelectionRange(pos, pos); };
+        form.onsubmit = async e => {
+          e.preventDefault();
+          readRoleForm();
+          const { isNew, builtin, ...role } = AS.edit;
+          for (const k of ["extends", "mode", "model"]) if (!role[k]) delete role[k];
+          const j = await asDo("/api/roles/save", { role }, "Saved the role " + (role.name || role.id) + ".");
+          if (j) { AS.roles = j.roles; A.roles = j.roles; AS.edit = null; }
+          drawAgentSettings();
+        };
+      }
+    }
+    if (asTab() === "rules" && AS.rules) {
+      const changed = () => { AS.dirty = true; const s = $("#as-rule-save"); if (s) s.disabled = false; };
+      $$("[data-rf]").forEach(el => { el.oninput = changed; el.onchange = changed; });
+      const move = (i, j) => { readRules(); const r = AS.rules.splice(i, 1)[0]; AS.rules.splice(j, 0, r); AS.dirty = true; drawAgentSettings(); };
+      $$("[data-rule-up]").forEach(b => b.onclick = () => move(+b.dataset.ruleUp, +b.dataset.ruleUp - 1));
+      $$("[data-rule-down]").forEach(b => b.onclick = () => move(+b.dataset.ruleDown, +b.dataset.ruleDown + 1));
+      $$("[data-rule-del]").forEach(b => b.onclick = () => { readRules(); AS.rules.splice(+b.dataset.ruleDel, 1); AS.dirty = true; drawAgentSettings(); });
+      $("#as-rule-add").onclick = () => { readRules(); AS.rules.unshift({ id: "rule-" + Math.random().toString(36).slice(2, 6), effect: "ask", tools: [], risks: [], paths: [], access: "any", project: "", role: "", note: "", enabled: true }); AS.dirty = true; drawAgentSettings(); };
+      $("#as-rule-save").onclick = async () => {
+        readRules();
+        const j = await asDo("/api/rules/save", { rules: AS.rules }, "Saved " + AS.rules.length + " rules.");
+        if (j) { AS.rules = j.rules; AS.dirty = false; }
+        drawAgentSettings();
+      };
+      $("#as-rule-reset").onclick = async () => {
+        if (!AS.resetting) { AS.resetting = true; drawAgentSettings(); return; }
+        AS.resetting = false;
+        const j = await asDo("/api/rules/reset", {}, "The shipped rules are back.");
+        if (j) { AS.rules = j.rules; AS.dirty = false; }
+        drawAgentSettings();
+      };
+    }
+    if (asTab() === "services" && AS.services) {
+      $$("[data-svc]").forEach(form => form.onsubmit = async e => {
+        e.preventDefault();
+        const section = form.dataset.svc, values = {};
+        form.querySelectorAll("[data-sv]").forEach(el => { values[el.dataset.sv] = el.value; });
+        const secret = form.querySelector("[data-sv-secret]")?.value || null;
+        const j = await asDo("/api/services/save", { section, values, secret }, "Saved " + SERVICES.find(x => x[0] === section)[1] + ".");
+        if (j) { AS.services = j; delete AS.svcDraft[section]; }
+        drawAgentSettings();
+      });
+    }
   }
 
   // ---------- live data ----------
