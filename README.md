@@ -647,6 +647,10 @@ try (Wan wan = Wan.load(Path.of("models/wan2.1-t2v-1.3b"), Device.best(), DType.
 }
 ```
 
+```
+./gradlew :brainiac-examples:run --args="video models/wan2.1-t2v-1.3b 'a red fox runs through fresh snow' --frames 33"
+```
+
 - Frames are `1 + 4k` (81 is five seconds at 16 fps); width and height multiples of 16.
 - The VAE decodes one latent frame at a time, so memory does not grow with the length.
 - umT5, the transformer (with per-patch timesteps and image tokens for image-to-video), the
