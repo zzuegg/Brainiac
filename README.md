@@ -38,7 +38,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
 | `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and text-to-speech with VITS / MMS-TTS, Kokoro (voices and blends), F5-TTS (voice cloning) and Orpheus (emotion tags), from published weights, behind `SpeechToText` and `TextToSpeech` |
-| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights) |
+| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights); text-to-video with Wan 2.1 and 2.2 (umT5, video DiT, causal 3D VAE, UniPC) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -631,6 +631,28 @@ try (Flux flux = Flux.load(Path.of("models/FLUX.1-schnell"), Device.best(), DTyp
 - The transformer, T5, the tokenizer and whole dev and schnell runs were checked against
   diffusers and transformers on small random models (`flux_fixtures.py`).
 
+### Wan video
+
+`Wan` makes short videos with Alibaba's Wan 2.1 and 2.2 text-to-video models (Apache 2.0),
+from a diffusers folder or from single files such as ComfyUI's
+(`wan2.1_t2v_1.3B_fp16.safetensors`, `wan_2.1_vae.safetensors`, `umt5_xxl_fp16.safetensors`
+plus umT5's `tokenizer.json`, all in one folder). The 1.3B model makes 832x480 clips on a
+16 GB GPU; the 14B models and Wan 2.2's two experts (high and low noise) want a large GPU.
+
+```java
+try (Wan wan = Wan.load(Path.of("models/wan2.1-t2v-1.3b"), Device.best(), DType.BFLOAT16)) {
+    GeneratedVideo video = wan.generate(VideoRequest.of("a red fox runs through fresh snow")
+            .withFrames(33), Progress.NONE);
+    Files.write(Path.of("fox.png"), video.apng());   // animated PNG; video.avi() for players
+}
+```
+
+- Frames are `1 + 4k` (81 is five seconds at 16 fps); width and height multiples of 16.
+- The VAE decodes one latent frame at a time, so memory does not grow with the length.
+- umT5, the transformer (with per-patch timesteps and image tokens for image-to-video), the
+  VAE, UniPC and the whole pipeline were checked against diffusers on small random models
+  (`wan_fixtures.py`).
+
 ### The same layers in your own networks
 
 Stable Diffusion runs on ordinary brainiac-nn layers in `io.github.zzuegg.brainiac.nn.diffusion`.
@@ -648,6 +670,8 @@ model from them, or fine-tune a pretrained one:
 | `ClipTextEncoder` | CLIP's causal text transformer: last and penultimate layers, pooled embedding |
 | `T5Encoder` | T5's encoder: relative position biases, RMS norms, gated feed-forward |
 | `FluxTransformer` | a multimodal diffusion transformer (MMDiT): joint text-image blocks, single-stream blocks, axial rotary positions, adaLN-Zero |
+| `WanTransformer` | a video diffusion transformer: 3D patches and rotary positions, cross-attention to text (and image) tokens, adaLN |
+| `WanVae` | a causal 3D VAE that encodes and decodes video frame chunk by chunk |
 
 ```java
 UNet unet = new UNet(UNet.Settings.of(4, 4, new int[] {64, 128, 256}, 512), new SplittableRandom(1));
