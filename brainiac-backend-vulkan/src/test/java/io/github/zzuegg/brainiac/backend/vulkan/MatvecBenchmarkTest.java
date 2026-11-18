@@ -54,6 +54,7 @@ class MatvecBenchmarkTest {
     @Test
     void ggufFormats() {
         assumeTrue(Boolean.getBoolean("brainiac.bench"), "benchmark: -Pbench");
+        Device.available();   // loads the backends
         VulkanBackend backend = VulkanBackend.loaded().orElseThrow();
         System.out.println(backend.status() + "; " + backend.tuning());
         int[][] shapes = {{18944, 3584}, {3584, 3584}, {3584, 37888}, {3584, 4608}};
