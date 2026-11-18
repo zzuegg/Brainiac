@@ -45,6 +45,9 @@ import java.util.SplittableRandom;
  *     {@link TurnLevelCritic}) against trajectory-level GRPO, filtered behaviour cloning and
  *     CollabLLM's {@link MultiturnRewardTrainer}, on a guessing game against a
  *     {@link SimulatedUser}, as success against environment interactions.</li>
+ * <li>{@link #archerRecipe} (wave 9, 9.2.17): ArCHer with the paper's critic warm-up, slow
+ *     actor, Polyak rate, entropy bonus and clipped double Q, logging the critic's
+ *     over-estimation against Monte Carlo returns.</li>
  * </ul>
  */
 public final class ToolAgentBench {
@@ -972,6 +975,105 @@ public final class ToolAgentBench {
                 }
                 while (next < checkpoints && spent[0] >= budget * (next + 1) / checkpoints) {
                     rows[next++] = evaluateGame(lm, spent[0]);
+                }
+            }
+            out.put(name, rows);
+        }
+        return out;
+    }
+
+    /**
+     * One 9.2.17 checkpoint.
+     *
+     * @param row success and turns, as in {@link #multiTurn}
+     * @param overestimation the critic's mean {@code Q - MC return} on the turns played since the
+     *     last checkpoint (0 for trainers without a critic)
+     * @param tdError the critic's mean squared TD error since the last checkpoint
+     */
+    public record ArcherRow(TurnRow row, double overestimation, double tdError) {
+    }
+
+    /**
+     * Wave 9, 9.2.17: ArCHer with the paper's recipe (critic warm-up, a smaller actor than critic
+     * learning rate, a Polyak target rate of 0.01, more sampled utterances for the value baseline,
+     * an entropy bonus and clipped double Q), each change alone and all together, against the
+     * wave 8 configuration and trajectory-level GRPO, with the critic's over-estimation logged at
+     * every checkpoint.
+     *
+     * @param budget user replies per trainer
+     * @param checkpoints evaluations (evenly over the budget)
+     * @param seed the seed
+     * @return trainer name to one row per checkpoint
+     */
+    public static Map<String, ArcherRow[]> archerRecipe(long budget, int checkpoints, long seed) {
+        WindowLm start = randomPlayer(seed);
+        Map<String, ArcherRow[]> out = new LinkedHashMap<>();
+        String[] names = {"trajectory GRPO", "ArCHer (wave 8)", "ArCHer + critic warm-up", "ArCHer + double Q",
+            "ArCHer + slow actor, tau 0.01", "ArCHer, full recipe"};
+        int[] none = new int[0];
+        for (String name : names) {
+            WindowLm lm = start.copy();
+            SplittableRandom r = new SplittableRandom(seed + name.hashCode());
+            GuessingUser user = new GuessingUser();
+            boolean full = name.contains("full");
+            boolean slow = full || name.contains("slow");
+            TurnLevelCritic critic = TurnLevelCritic.of(GAME.size(), 1 + 3 * TURNS, 2, 64, 0.95f, 0.05f, seed + 3);
+            if (full || name.contains("double")) {
+                critic.doubleQ();
+            }
+            if (slow) {
+                critic.targetRate(0.01f);
+            }
+            Optimizer opt = Optimizer.adam(slow ? 1e-3f : 3e-3f);
+            Optimizer criticOpt = Optimizer.adam(1e-2f);
+            HierarchicalAgentTrainer<Integer> archer = HierarchicalAgentTrainer.of(lm, user, critic, 2, none, TURNS)
+                    .schedule(8, 64, full ? 8 : 4, 2048, 256, 1.0);
+            if (full || name.contains("warm-up")) {
+                archer.criticWarmup(10);
+            }
+            if (full) {
+                archer.entropyBonus(0.01f);
+            }
+            ArcherRow[] rows = new ArcherRow[checkpoints];
+            long[] spent = new long[1];
+            double over = 0;
+            double td = 0;
+            int count = 0;
+            int next = 0;
+            while (next < checkpoints) {
+                if (name.equals("trajectory GRPO")) {
+                    List<HierarchicalAgentTrainer.Episode> eps = HierarchicalAgentTrainer.play(lm, user, secrets(16, r),
+                            2, none, TURNS, 1.0, r, spent);
+                    float[] outcomes = new float[eps.size()];
+                    for (int i = 0; i < outcomes.length; i++) {
+                        outcomes[i] = eps.get(i).outcome();
+                    }
+                    float[] adv = GrpoTrainer.advantages(outcomes, true);
+                    List<int[]> cs = new ArrayList<>();
+                    List<int[]> us = new ArrayList<>();
+                    List<Float> as = new ArrayList<>();
+                    for (int i = 0; i < eps.size(); i++) {
+                        for (TurnLevelCritic.Transition t : eps.get(i).transitions()) {
+                            cs.add(t.context());
+                            us.add(t.utterance());
+                            as.add(adv[i]);
+                        }
+                    }
+                    ToolInterleavedRollout.policyGradient(lm, cs, us, as, opt);
+                } else {
+                    long before = archer.interactions();
+                    HierarchicalAgentTrainer.Stats st = archer.step(secrets(16, r), opt, criticOpt, r);
+                    spent[0] += archer.interactions() - before;
+                    over += st.overestimation();
+                    td += st.tdError();
+                    count++;
+                }
+                while (next < checkpoints && spent[0] >= budget * (next + 1) / checkpoints) {
+                    rows[next++] = new ArcherRow(evaluateGame(lm, spent[0]), count == 0 ? 0 : over / count,
+                            count == 0 ? 0 : td / count);
+                    over = 0;
+                    td = 0;
+                    count = 0;
                 }
             }
             out.put(name, rows);
