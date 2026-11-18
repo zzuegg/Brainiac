@@ -98,8 +98,9 @@ public final class InverseProblems {
     }
 
     /**
-     * Colour scenes {@code [3][side * side]}: a grey scene's regions mapped to two random colours,
-     * with a patch of fine oblique stripes (period 2-4 pixels) that makes demosaicing alias.
+     * Colour scenes {@code [3][side * side]}: a grey scene tinted by a random colour (channels
+     * positively correlated, as in natural images), with a patch of fine oblique stripes (period
+     * 2-4 pixels, another tint) that makes demosaicing alias.
      *
      * @param n the number of images
      * @param side the side
@@ -113,12 +114,11 @@ public final class InverseProblems {
         List<double[][]> out = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             double[] g = grey.get(i);
-            double[] c1 = {r.nextDouble(), r.nextDouble(), r.nextDouble()};
-            double[] c2 = {r.nextDouble(), r.nextDouble(), r.nextDouble()};
+            double[] tint = {0.6 + 0.4 * r.nextDouble(), 0.6 + 0.4 * r.nextDouble(), 0.6 + 0.4 * r.nextDouble()};
             double[][] img = new double[3][side * side];
             for (int p = 0; p < g.length; p++) {
                 for (int ch = 0; ch < 3; ch++) {
-                    img[ch][p] = 0.1 + 0.8 * (g[p] * c1[ch] + (1 - g[p]) * c2[ch]);
+                    img[ch][p] = 0.05 + 0.9 * g[p] * tint[ch];
                 }
             }
             if (stripes) {
@@ -126,13 +126,13 @@ public final class InverseProblems {
                 int y0 = r.nextInt(side / 2);
                 double period = 2 + 2 * r.nextDouble();
                 double angle = r.nextDouble() * Math.PI;
-                double[] sc = {r.nextDouble(), r.nextDouble(), r.nextDouble()};
+                double[] sc = {0.6 + 0.4 * r.nextDouble(), 0.6 + 0.4 * r.nextDouble(), 0.6 + 0.4 * r.nextDouble()};
                 for (int y = y0; y < y0 + side / 2; y++) {
                     for (int x = x0; x < x0 + side / 2; x++) {
                         double t = 0.5 + 0.5 * Math.sin(2 * Math.PI * (x * Math.cos(angle) + y * Math.sin(angle))
                                 / period);
                         for (int ch = 0; ch < 3; ch++) {
-                            img[ch][y * side + x] = 0.1 + 0.8 * (t * sc[ch] + (1 - t) * (1 - sc[ch]));
+                            img[ch][y * side + x] = 0.05 + 0.9 * t * sc[ch];
                         }
                     }
                 }

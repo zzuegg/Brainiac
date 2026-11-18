@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experiments.imaging;
 import io.github.zzuegg.brainiac.experimental.data.DegradedImages;
 import io.github.zzuegg.brainiac.experimental.data.InverseProblems;
 import io.github.zzuegg.brainiac.experimental.imaging.BlindDeconvolution;
+import io.github.zzuegg.brainiac.experimental.imaging.Demosaicing;
 import io.github.zzuegg.brainiac.experimental.imaging.EdgePreservingFilters;
 import io.github.zzuegg.brainiac.experimental.imaging.ImageMath;
 import io.github.zzuegg.brainiac.experimental.imaging.PrimalDual;
@@ -19,7 +20,7 @@ import java.util.SplittableRandom;
 /**
  * Image inverse problems on synthetic scenes (wave 13, items 13.4.4-13.4.6 and 13.4.9-13.4.12),
  * one table per technique, each against its classical or learned baselines:
- * {@link #blind} (13.4.4), {@link #variational}, {@link #impulse}, {@link #ramps} and
+ * {@link #blind} (13.4.4), {@link #demosaicing} (13.4.5), {@link #variational}, {@link #impulse}, {@link #ramps} and
  * {@link #tvSpeed} (13.4.9), {@link #wavelets} and {@link #waveletSignals} (13.4.10).
  */
 public final class ImageInverseProblems {
@@ -91,6 +92,52 @@ public final class ImageInverseProblems {
             }
             java.util.Arrays.sort(ratios);
             out.put(names[m], new double[] {s, p, ok / (double) images, ratios[images / 2]});
+        }
+        return out;
+    }
+
+    // ---------------------------------------------------------------- 13.4.5 demosaicing
+
+    /**
+     * Demosaicing of colour scenes with moiré-prone stripes.
+     *
+     * @param side the image side
+     * @param trainImages training images for the learned methods
+     * @param testImages test images
+     * @param sigma the mosaic noise level
+     * @param steps training steps
+     * @param seed the seed
+     * @return method to {CPSNR, mean RGB error on edge pixels}
+     */
+    public static Map<String, double[]> demosaicing(int side, int trainImages, int testImages, double sigma,
+            int steps, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        List<double[][]> train = InverseProblems.colourScenes(trainImages, side, true, seed + 1);
+        List<double[][]> test = InverseProblems.colourScenes(testImages, side, true, seed + 2);
+        List<double[]> trainMosaics = new java.util.ArrayList<>();
+        for (double[][] img : train) {
+            trainMosaics.add(InverseProblems.bayer(img, side, sigma, r));
+        }
+        Demosaicing.Learned mined = new Demosaicing.Learned(16, 4, seed + 3);
+        mined.fit(trainMosaics, train, side, steps, 4, true, 3e-3f, seed + 4);
+        Demosaicing.Learned plain = new Demosaicing.Learned(16, 4, seed + 3);
+        plain.fit(trainMosaics, train, side, steps, 4, false, 3e-3f, seed + 4);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (double[][] img : test) {
+            double[] mosaic = InverseProblems.bayer(img, side, sigma, r);
+            Map<String, double[][]> est = new LinkedHashMap<>();
+            for (Demosaicing.Method m : Demosaicing.Method.values()) {
+                if (m != Demosaicing.Method.LEARNED) {
+                    est.put(m.name(), Demosaicing.demosaic(m, mosaic, side));
+                }
+            }
+            est.put("LEARNED (hard mining)", mined.demosaic(mosaic, side));
+            est.put("LEARNED (no mining, same CNN)", plain.demosaic(mosaic, side));
+            for (Map.Entry<String, double[][]> e : est.entrySet()) {
+                double[] row = out.computeIfAbsent(e.getKey(), k -> new double[2]);
+                row[0] += Demosaicing.cpsnr(e.getValue(), img, side, 2) / testImages;
+                row[1] += Demosaicing.edgeColourError(e.getValue(), img, side) / testImages;
+            }
         }
         return out;
     }
