@@ -15,6 +15,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.agent;
     exports io.github.zzuegg.brainiac.experimental.anomaly;
     exports io.github.zzuegg.brainiac.experimental.autograd;
+    exports io.github.zzuegg.brainiac.experimental.causal;
     exports io.github.zzuegg.brainiac.experimental.compress;
     exports io.github.zzuegg.brainiac.experimental.data;
     exports io.github.zzuegg.brainiac.experimental.evolve;
@@ -30,6 +31,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.robust;
     exports io.github.zzuegg.brainiac.experimental.sciml;
     exports io.github.zzuegg.brainiac.experimental.serving;
+    exports io.github.zzuegg.brainiac.experimental.survival;
     exports io.github.zzuegg.brainiac.experimental.tensor;
     exports io.github.zzuegg.brainiac.experimental.timeseries;
     exports io.github.zzuegg.brainiac.experimental.train;
@@ -38,6 +40,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.agents;
     exports io.github.zzuegg.brainiac.experiments.attention;
     exports io.github.zzuegg.brainiac.experiments.audio;
+    exports io.github.zzuegg.brainiac.experiments.causal;
     exports io.github.zzuegg.brainiac.experiments.classic;
     exports io.github.zzuegg.brainiac.experiments.compression;
     exports io.github.zzuegg.brainiac.experiments.context;
@@ -66,6 +69,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
     exports io.github.zzuegg.brainiac.experiments.sequence;
     exports io.github.zzuegg.brainiac.experiments.serving;
+    exports io.github.zzuegg.brainiac.experiments.survival;
     exports io.github.zzuegg.brainiac.experiments.synthesis;
     exports io.github.zzuegg.brainiac.experiments.techniques;
     exports io.github.zzuegg.brainiac.experiments.timeseries;
