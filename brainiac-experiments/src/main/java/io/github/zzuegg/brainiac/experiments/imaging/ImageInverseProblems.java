@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experiments.imaging;
 import io.github.zzuegg.brainiac.experimental.data.DegradedImages;
 import io.github.zzuegg.brainiac.experimental.data.InverseProblems;
 import io.github.zzuegg.brainiac.experimental.imaging.BlindDeconvolution;
+import io.github.zzuegg.brainiac.experimental.imaging.DeepImagePrior;
 import io.github.zzuegg.brainiac.experimental.imaging.Demosaicing;
 import io.github.zzuegg.brainiac.experimental.imaging.EdgePreservingFilters;
 import io.github.zzuegg.brainiac.experimental.imaging.ImageMath;
@@ -20,7 +21,8 @@ import java.util.SplittableRandom;
 /**
  * Image inverse problems on synthetic scenes (wave 13, items 13.4.4-13.4.6 and 13.4.9-13.4.12),
  * one table per technique, each against its classical or learned baselines:
- * {@link #blind} (13.4.4), {@link #demosaicing} (13.4.5), {@link #variational}, {@link #impulse}, {@link #ramps} and
+ * {@link #blind} (13.4.4), {@link #demosaicing} (13.4.5), {@link #deepImagePrior} (13.4.6),
+ * {@link #variational}, {@link #impulse}, {@link #ramps} and
  * {@link #tvSpeed} (13.4.9), {@link #wavelets} and {@link #waveletSignals} (13.4.10).
  */
 public final class ImageInverseProblems {
@@ -137,6 +139,77 @@ public final class ImageInverseProblems {
                 double[] row = out.computeIfAbsent(e.getKey(), k -> new double[2]);
                 row[0] += Demosaicing.cpsnr(e.getValue(), img, side, 2) / testImages;
                 row[1] += Demosaicing.edgeColourError(e.getValue(), img, side) / testImages;
+            }
+        }
+        return out;
+    }
+
+    // ---------------------------------------------------------------- 13.4.6 deep image prior
+
+    /**
+     * The deep image prior on denoising and inpainting, by stopping rule, against single-image
+     * denoisers and TV inpainting.
+     *
+     * @param side the image side
+     * @param images the number of scenes per task
+     * @param iterations the DIP budget
+     * @param sigma the denoising noise level
+     * @param keep the observed share for inpainting
+     * @param seed the seed
+     * @return method to {denoising PSNR, inpainting PSNR, mean stopping iteration on denoising}; NaN where a
+     *     method does not apply
+     */
+    public static Map<String, double[]> deepImagePrior(int side, int images, int iterations, double sigma, double keep,
+            long seed) {
+        List<double[]> clean = InverseProblems.scenes(images, side, seed);
+        SplittableRandom r = new SplittableRandom(seed + 1);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        String[] names = {"DIP fixed iterations", "DIP oracle stop", "DIP ES-WMV", "noisy / observed",
+            "Gaussian filter", "median 3x3", "non-local means", "zero-shot Noise2Noise", "TV inpainting (PDHG)"};
+        for (String n : names) {
+            out.put(n, new double[] {Double.NaN, Double.NaN, Double.NaN});
+        }
+        double[][] acc = new double[names.length][3];
+        for (int t = 0; t < images; t++) {
+            double[] x = clean.get(t);
+            double[] y = InverseProblems.gaussian(x, sigma, r);
+            DeepImagePrior.Result d = DeepImagePrior.fit(DeepImagePrior.Task.DENOISING, y, null, side, x, iterations,
+                4, 20, 60, seed + 10 + t);
+            acc[0][0] += ImageMath.psnr(d.fixed(), x);
+            acc[1][0] += ImageMath.psnr(d.oracle(), x);
+            acc[1][2] += d.oracleIteration();
+            acc[2][0] += ImageMath.psnr(d.esWmv(), x);
+            acc[2][2] += d.esWmvIteration();
+            acc[0][2] += iterations;
+            acc[3][0] += ImageMath.psnr(y, x);
+            acc[4][0] += ImageMath.psnr(ImageMath.toDouble(Denoisers.gaussianFilter(ImageMath.toFloat(y), side, 1.0)),
+                x);
+            acc[5][0] += ImageMath.psnr(ImageMath.toDouble(Denoisers.medianFilter(ImageMath.toFloat(y), side, 1)), x);
+            acc[6][0] += ImageMath.psnr(nlm(y, side, sigma), x);
+            acc[7][0] += ImageMath.psnr(ImageMath.toDouble(io.github.zzuegg.brainiac.experimental.restore
+                .SelfSupervisedDenoising.zeroShotN2N(ImageMath.toFloat(y), side, 16, iterations / 2, seed + 20 + t)), x);
+            boolean[] mask = InverseProblems.pixelMask(side * side, keep, seed + 30 + t);
+            double[] obs = new double[side * side];
+            for (int i = 0; i < obs.length; i++) {
+                obs[i] = mask[i] ? x[i] : 0;
+            }
+            DeepImagePrior.Result in = DeepImagePrior.fit(DeepImagePrior.Task.INPAINTING, obs, mask, side, x,
+                iterations, 4, 20, 60, seed + 40 + t);
+            acc[0][1] += ImageMath.psnr(in.fixed(), x);
+            acc[1][1] += ImageMath.psnr(in.oracle(), x);
+            acc[2][1] += ImageMath.psnr(in.esWmv(), x);
+            acc[3][1] += ImageMath.psnr(obs, x);
+            acc[6][1] += ImageMath.psnr(nlm(obs, side, 0.1), x);
+            acc[8][1] += ImageMath.psnr(PrimalDual.tv(PrimalDual.inpaint(obs, mask), obs, side, 0.01, 300), x);
+        }
+        boolean[][] has = {{true, true, true}, {true, true, true}, {true, true, true}, {true, true, false},
+            {true, false, false}, {true, false, false}, {true, true, false}, {true, false, false},
+            {false, true, false}};
+        for (int m = 0; m < names.length; m++) {
+            for (int c = 0; c < 3; c++) {
+                if (has[m][c]) {
+                    out.get(names[m])[c] = acc[m][c] / images;
+                }
             }
         }
         return out;
