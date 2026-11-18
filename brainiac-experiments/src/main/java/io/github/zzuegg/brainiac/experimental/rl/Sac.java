@@ -67,6 +67,7 @@ public final class Sac implements Learner {
     private SplittableRandom random = new SplittableRandom(0);
     private ReplayBuffer buffer;
     private long updates;
+    private long taken;
     private double lastCriticLoss = Double.NaN;
     private final HlGaussValue valueHead;
 
@@ -255,8 +256,14 @@ public final class Sac implements Learner {
         return low == null ? unit : scale(unit);
     }
 
-    @Override
-    public RlResult fit(Environment env, long steps, RlListener listener) {
+    /**
+     * Prepares step-by-step driving on {@code env}: checks the spaces, takes the action bounds,
+     * creates the replay buffer on first use and restarts the warm-up counter. {@link #fit} calls it too.
+     *
+     * @param env the environment to act in
+     * @return this learner
+     */
+    public Sac begin(Environment env) {
         if (!(env.actionSpace() instanceof Space.Box box) || box.size() != actDims
                 || env.observationSpace().size() != obsDims) {
             throw new IllegalArgumentException("SAC needs " + obsDims + " observation values and a box of "
@@ -267,28 +274,79 @@ public final class Sac implements Learner {
         if (buffer == null) {
             buffer = new ReplayBuffer(bufferSize, obsDims, actDims);
         }
+        taken = 0;
+        return this;
+    }
+
+    /**
+     * The behaviour action in unit space {@code [-1, 1]}: uniform random during the warm-up, then
+     * a sample of the squashed Gaussian policy.
+     *
+     * @param observation the observation
+     * @return the unit action; pass it to {@link #toEnvironment} before stepping
+     */
+    public float[] actUnit(float[] observation) {
+        if (taken < learningStarts) {
+            float[] unit = new float[actDims];
+            for (int i = 0; i < actDims; i++) {
+                unit[i] = (float) random.nextDouble(-1, 1);
+            }
+            return unit;
+        }
+        return unitAction(act(observation, true));
+    }
+
+    /**
+     * @param unit an action in unit space
+     * @return the action scaled to the environment's box (call {@link #begin} first)
+     */
+    public float[] toEnvironment(float[] unit) {
+        return scale(unit);
+    }
+
+    /**
+     * Stores one transition (any behaviour policy may have produced it) and counts the step.
+     *
+     * @param observation the observation acted on
+     * @param unitAction the action taken, in unit space
+     * @param step the environment's answer
+     */
+    public void observe(float[] observation, float[] unitAction, Environment.Step step) {
+        taken++;
+        buffer.add(new Transition(observation, unitAction, step.reward(), step.observation(), step.terminated(), gamma));
+    }
+
+    /**
+     * The configured number of gradient steps, once the warm-up is over and the buffer holds a batch.
+     *
+     * @return whether updates ran
+     */
+    public boolean updateOnce() {
+        if (taken >= learningStarts && buffer.size() >= batchSize) {
+            for (int g = 0; g < gradientSteps; g++) {
+                update();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** @return the transitions observed since {@link #begin} */
+    public long stepsObserved() {
+        return taken;
+    }
+
+    @Override
+    public RlResult fit(Environment env, long steps, RlListener listener) {
+        begin(env);
         Tracker recorder = new Tracker(listener);
         float[] obs = env.reset(random.split());
-        long taken = 0;
         while (recorder.steps() < steps) {
-            float[] unit;
-            if (taken < learningStarts) {
-                unit = new float[actDims];
-                for (int i = 0; i < actDims; i++) {
-                    unit[i] = (float) random.nextDouble(-1, 1);
-                }
-            } else {
-                unit = unitAction(act(obs, true));
-            }
+            float[] unit = actUnit(obs);
             Environment.Step s = env.step(scale(unit));
-            taken++;
-            buffer.add(new Transition(obs, unit, s.reward(), s.observation(), s.terminated(), gamma));
+            observe(obs, unit, s);
             obs = recorder.step(s) ? env.reset(random.split()) : s.observation();
-            if (taken >= learningStarts && buffer.size() >= batchSize) {
-                for (int g = 0; g < gradientSteps; g++) {
-                    update();
-                }
-            }
+            updateOnce();
         }
         return recorder.result();
     }

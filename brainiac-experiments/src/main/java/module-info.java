@@ -42,6 +42,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.evolve;
     exports io.github.zzuegg.brainiac.experimental.explore;
     exports io.github.zzuegg.brainiac.experimental.geometry;
+    exports io.github.zzuegg.brainiac.experimental.games;
     exports io.github.zzuegg.brainiac.experimental.graph;
     exports io.github.zzuegg.brainiac.experimental.interp;
     exports io.github.zzuegg.brainiac.experimental.kernels;
@@ -59,6 +60,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.nn.diffusion;
     exports io.github.zzuegg.brainiac.experimental.online;
     exports io.github.zzuegg.brainiac.experimental.ood;
+    exports io.github.zzuegg.brainiac.experimental.ops;
     exports io.github.zzuegg.brainiac.experimental.panel;
     exports io.github.zzuegg.brainiac.experimental.parallel;
     exports io.github.zzuegg.brainiac.experimental.parse;
@@ -130,6 +132,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.multitask;
     exports io.github.zzuegg.brainiac.experiments.music;
     exports io.github.zzuegg.brainiac.experiments.numerics;
+    exports io.github.zzuegg.brainiac.experiments.operations;
     exports io.github.zzuegg.brainiac.experiments.optim;
     exports io.github.zzuegg.brainiac.experiments.parallel;
     exports io.github.zzuegg.brainiac.experiments.parsing;
