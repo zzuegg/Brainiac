@@ -88,6 +88,135 @@ public final class ExponentialSmoothing {
         return new ExponentialSmoothing(trend, period, p, filter(y, p, trend, period).logLikelihood(), y.length);
     }
 
+    /** How {@link #fit(double[], Trend, int, Method, int)} chooses the smoothing parameters. */
+    public enum Method {
+        /** L-BFGS on the exact Kalman likelihood (the default of {@link #fit(double[], Trend, int, int)}). */
+        LBFGS,
+        /**
+         * A coarse-to-fine grid over {@code alpha, beta, gamma, phi} minimising the sum of squared
+         * one-step residuals of the innovations recursion ({@link #residuals}); each level
+         * refines a grid of half the spacing around the previous best (a warm start), and the
+         * reported likelihood is the Kalman likelihood at the chosen parameters.
+         */
+        GRID_WARM
+    }
+
+    /**
+     * Fits one variant with the chosen method.
+     *
+     * @param y the series
+     * @param trend the trend
+     * @param period the season length, or 1 for none
+     * @param method the fitting method
+     * @param iterations L-BFGS iterations, or the number of grid refinements for
+     *     {@link Method#GRID_WARM} (for example 3)
+     * @return the fitted model
+     */
+    public static ExponentialSmoothing fit(double[] y, Trend trend, int period, Method method, int iterations) {
+        if (method == Method.LBFGS) {
+            return fit(y, trend, period, iterations);
+        }
+        // coordinates: alpha, beta / alpha, gamma / (1 - alpha), phi
+        boolean hasTrend = trend != Trend.NONE;
+        boolean damped = trend == Trend.DAMPED;
+        boolean seasonal = period > 1;
+        double[] best = {0.3, hasTrend ? 0.2 : 0, seasonal ? 0.1 : 0, damped ? 0.9 : hasTrend ? 1 : 0};
+        double[] lo = {0.02, 0, 0, 0.8};
+        double[] hi = {0.98, hasTrend ? 1 : 0, seasonal ? 0.98 : 0, damped ? 0.98 : best[3]};
+        double[] width = {0.24, hasTrend ? 0.25 : 0, seasonal ? 0.24 : 0, damped ? 0.045 : 0};
+        double bestSse = Double.POSITIVE_INFINITY;
+        for (int level = 0; level <= Math.max(0, iterations); level++) {
+            double[] centre = level == 0 ? new double[] {0.5, 0.5, 0.5, 0.89} : best.clone();
+            int half = level == 0 ? 2 : 1;
+            double[] step = width.clone();
+            if (level > 0) {
+                for (int k = 0; k < 4; k++) {
+                    step[k] = width[k] / (1 << level);
+                }
+            }
+            for (int i = -half; i <= half; i++) {
+                for (int j = hasTrend ? -half : 0; j <= (hasTrend ? half : 0); j++) {
+                    for (int k = seasonal ? -half : 0; k <= (seasonal ? half : 0); k++) {
+                        for (int l = damped ? -half : 0; l <= (damped ? half : 0); l++) {
+                            double[] c = {clip(centre[0] + i * step[0], lo[0], hi[0]),
+                                hasTrend ? clip(centre[1] + j * step[1], lo[1], hi[1]) : 0,
+                                seasonal ? clip(centre[2] + k * step[2], lo[2], hi[2]) : 0,
+                                damped ? clip(centre[3] + l * step[3], lo[3], hi[3]) : hasTrend ? 1 : 0};
+                            double sse = sumSquares(residuals(y, natural(c), trend, period));
+                            if (sse < bestSse) {
+                                bestSse = sse;
+                                best = c;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        double[] p = natural(best);
+        p[4] = Math.sqrt(bestSse / y.length) + 1e-9;
+        return new ExponentialSmoothing(trend, period, p, filter(y, p, trend, period).logLikelihood(), y.length);
+    }
+
+    private static double clip(double v, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    /** {alpha, beta/alpha, gamma/(1-alpha), phi} to {alpha, beta, gamma, phi, sigma = 1}. */
+    private static double[] natural(double[] c) {
+        return new double[] {c[0], c[0] * c[1], (1 - c[0]) * c[2], c[3], 1};
+    }
+
+    private static double sumSquares(double[] e) {
+        double s = 0;
+        for (double v : e) {
+            s += v * v;
+        }
+        return s;
+    }
+
+    /**
+     * The in-sample one-step residuals {@code e_t = y_t - (l_t-1 + phi b_t-1 + s_t-m)} of the
+     * innovations recursion with this model's parameters, started from the same heuristic
+     * initial states as the Kalman prior.
+     *
+     * @param y the series
+     * @return one residual per observation
+     */
+    public double[] residuals(double[] y) {
+        return residuals(y, new double[] {alpha, beta, gamma, phi, sigma}, trend, period);
+    }
+
+    private static double[] residuals(double[] y, double[] p, Trend trend, int period) {
+        StateSpaceFilter.LinearModel init = model(y, p, trend, period);
+        double[] x0 = init.x0();
+        double level = x0[0];
+        double slope = x0[1];
+        int m = Math.max(1, period);
+        double[] season = new double[m];
+        if (period > 1) {
+            for (int k = 0; k < period; k++) {
+                season[(period - 1 - k) % m] = x0[2 + k];
+            }
+        }
+        double a = p[0];
+        double b = p[1];
+        double g = p[2];
+        double ph = p[3];
+        double[] e = new double[y.length];
+        for (int t = 0; t < y.length; t++) {
+            int si = t % m;
+            double s = period > 1 ? season[si] : 0;
+            double err = y[t] - (level + ph * slope + s);
+            e[t] = err;
+            level = level + ph * slope + a * err;
+            slope = ph * slope + b * err;
+            if (period > 1) {
+                season[si] = s + g * err;
+            }
+        }
+        return e;
+    }
+
     /**
      * Fits every trend variant, with and without the season, and keeps the lowest AICc.
      *

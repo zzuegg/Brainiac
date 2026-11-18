@@ -44,12 +44,41 @@ public final class FederatedAlgorithms {
         SCAFFOLD
     }
 
+    /**
+     * The server's aggregation step: turns the clients' updates of one round into the single
+     * update handed to the {@link ServerOptimizer}. Plain FedAvg ({@link #FED_AVG}) is the
+     * sample-weighted mean; other aggregators (ensemble distillation, robust statistics) plug in
+     * with {@link FederatedAlgorithms#aggregator}. Without one, the algorithm keeps its built-in
+     * FedAvg or FedNova averaging, so existing runs are bit-identical.
+     */
+    @FunctionalInterface
+    public interface Aggregator {
+
+        /** Sample-weighted averaging, {@link FedNova#average}. */
+        Aggregator FED_AVG = (start, updates, weights, steps) -> FedNova.average(updates, weights);
+
+        /** FedNova's step-normalised averaging, {@link FedNova#aggregate}. */
+        Aggregator FED_NOVA = (start, updates, weights, steps) -> FedNova.aggregate(updates, weights, steps);
+
+        /**
+         * Aggregates one round.
+         *
+         * @param start the global parameter values the clients started from
+         * @param updates per selected client, {@code w_i - start} per parameter
+         * @param weights per selected client, its number of samples
+         * @param steps per selected client, its local steps
+         * @return the aggregate update, one tensor per parameter
+         */
+        Tensor[] aggregate(Tensor[] start, Tensor[][] updates, double[] weights, int[] steps);
+    }
+
     private final List<Var> global;
     private final List<FederatedClient> clients;
     private final Rule rule;
     private final float mu;
     private final SplittableRandom random;
     private ServerOptimizer server = ServerOptimizer.fedAvg();
+    private Aggregator aggregator;
     private boolean normalized;
     private Tensor[] serverControl;
     private Tensor[][] clientControl;
@@ -110,6 +139,16 @@ public final class FederatedAlgorithms {
      */
     public FederatedAlgorithms server(ServerOptimizer s) {
         this.server = Objects.requireNonNull(s);
+        return this;
+    }
+
+    /**
+     * @param a the aggregation step, which replaces the built-in averaging (and
+     *     {@link #normalized}); {@code null} restores it
+     * @return this
+     */
+    public FederatedAlgorithms aggregator(Aggregator a) {
+        this.aggregator = a;
         return this;
     }
 
@@ -185,7 +224,8 @@ public final class FederatedAlgorithms {
                 }
             }
         }
-        Tensor[] delta = normalized ? FedNova.aggregate(updates, weights, steps) : FedNova.average(updates, weights);
+        Tensor[] delta = aggregator != null ? aggregator.aggregate(start, updates, weights, steps)
+                : normalized ? FedNova.aggregate(updates, weights, steps) : FedNova.average(updates, weights);
         server.apply(global, delta);
         if (rule == Rule.SCAFFOLD) {
             float share = (float) selected.size() / clients.size();

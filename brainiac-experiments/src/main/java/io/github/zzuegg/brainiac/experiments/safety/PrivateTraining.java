@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experiments.safety;
 import io.github.zzuegg.brainiac.data.Dataset;
 import io.github.zzuegg.brainiac.experimental.dpmech.CorrelatedNoise;
 import io.github.zzuegg.brainiac.experimental.dpmech.DpFtrl;
+import io.github.zzuegg.brainiac.experimental.privacy.ClippingStrategies;
 import io.github.zzuegg.brainiac.experimental.train.DpSgd;
 import io.github.zzuegg.brainiac.experimental.train.MachineUnlearning;
 import io.github.zzuegg.brainiac.experimental.train.OneRunAudit;
@@ -37,6 +38,9 @@ import java.util.SplittableRandom;
  *
  * <p>{@link #dpFtrl} (wave 11, 11.1.15): {@link DpFtrl} with tree, banded and BLT
  * {@link CorrelatedNoise} against DP-SGD with and without amplification by sampling.
+ *
+ * <p>{@link #clipping} (wave 12, 12.2.13): adaptive, automatic and augmentation-multiplicity
+ * clipping ({@link ClippingStrategies}) against DP-SGD with a swept clip norm.
  *
  * <p>Abadi et al. 2016, <a href="https://arxiv.org/abs/1607.00133">arXiv:1607.00133</a>;
  * Steinke, Nasr and Jagielski 2023, <a href="https://arxiv.org/abs/2305.08846">arXiv:2305.08846</a>.
@@ -249,5 +253,90 @@ public final class PrivateTraining {
             out.add(new Ftrl(name, epsilon, sigma, f.epsilon(DELTA), MachineUnlearning.accuracy(m, test), n.state()));
         }
         return out;
+    }
+
+    /**
+     * One wave 12 (12.2.13) clipping row.
+     *
+     * @param method the clipping strategy and its setting
+     * @param targetEpsilon the budget
+     * @param epsilon the accountant's {@code ε} at the end
+     * @param accuracy test accuracy
+     * @param finalClipNorm the clip norm at the end ({@code NaN} for automatic clipping)
+     */
+    public record Clipping(String method, double targetEpsilon, double epsilon, double accuracy,
+            double finalClipNorm) {
+    }
+
+    /** A digit-safe augmentation: a random translation by at most one pixel, zero filled. */
+    static float[] translate(float[] x, SplittableRandom r) {
+        int dx = r.nextInt(3) - 1;
+        int dy = r.nextInt(3) - 1;
+        float[] out = new float[x.length];
+        for (int i = 0; i < SIDE; i++) {
+            for (int j = 0; j < SIDE; j++) {
+                int si = i - dy;
+                int sj = j - dx;
+                if (si >= 0 && si < SIDE && sj >= 0 && sj < SIDE) {
+                    out[i * SIDE + j] = x[si * SIDE + sj];
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Wave 12, 12.2.13: DP-SGD clipping strategies ({@link ClippingStrategies}: adaptive quantile
+     * clipping from a too-small and a too-large initial norm, automatic clipping, augmentation
+     * multiplicity with {@code K = 4} one-pixel translations) against {@link DpSgd} with the clip
+     * norm swept over {0.1, 0.5, 1, 5} (choosing the best of these is the optimistic,
+     * non-private baseline). All runs share the budget, steps, sampling rate and step size.
+     *
+     * @param epsilons the budgets
+     * @param perClass training glyphs per class
+     * @param epochs epochs (steps are {@code epochs / samplingRate})
+     * @param samplingRate the Poisson sampling rate
+     * @param seed the seed
+     * @return per budget: DP-SGD at each clip norm, then the strategies
+     */
+    public static List<Clipping> clipping(double[] epsilons, int perClass, int epochs, double samplingRate,
+            long seed) {
+        Dataset train = dataset(ToyTasks.digits(CLASSES, perClass, SIDE, 0.05, seed, seed + 1));
+        Dataset test = dataset(ToyTasks.digits(CLASSES, 50, SIDE, 0.05, seed, seed + 2));
+        int steps = (int) Math.round(epochs / samplingRate);
+        double sigmaB = Math.max(1, samplingRate * train.size() / 20);
+        List<Clipping> out = new ArrayList<>();
+        for (double eps : epsilons) {
+            double sigma = RdpAccountant.noiseMultiplierFor(eps, samplingRate, steps, DELTA);
+            for (double c : new double[] {0.1, 0.5, 1, 5}) {
+                Model m = model(seed);
+                DpSgd dp = DpSgd.of(m, Loss.CROSS_ENTROPY).clipNorm(c).noiseMultiplier(sigma).learningRate(LR)
+                        .samplingRate(samplingRate).seed(seed).train(train, steps);
+                out.add(new Clipping("DP-SGD, C = " + c, eps, dp.epsilon(DELTA), MachineUnlearning.accuracy(m, test),
+                        c));
+            }
+            out.add(strategy("adaptive quantile 0.1, C0 = 0.1", eps, train, test, steps, samplingRate, sigma, seed,
+                    s -> s.clipNorm(0.1).adaptive(0.1, 0.2, sigmaB)));
+            out.add(strategy("adaptive quantile 0.1, C0 = 5", eps, train, test, steps, samplingRate, sigma, seed,
+                    s -> s.clipNorm(5).adaptive(0.1, 0.2, sigmaB)));
+            out.add(strategy("automatic (g / (||g|| + 0.01))", eps, train, test, steps, samplingRate, sigma, seed,
+                    s -> s.stability(0.01)));
+            out.add(strategy("augmentation multiplicity K = 4, C = 1", eps, train, test, steps, samplingRate, sigma,
+                    seed, s -> s.clipNorm(1).augmentation(4, PrivateTraining::translate)));
+        }
+        return out;
+    }
+
+    private static Clipping strategy(String name, double eps, Dataset train, Dataset test, int steps, double q,
+            double sigma, long seed, java.util.function.UnaryOperator<ClippingStrategies> settings) {
+        ClippingStrategies.Strategy kind = name.startsWith("adaptive") ? ClippingStrategies.Strategy.ADAPTIVE_QUANTILE
+                : name.startsWith("automatic") ? ClippingStrategies.Strategy.AUTOMATIC
+                : ClippingStrategies.Strategy.AUG_MULTIPLICITY;
+        Model m = model(seed);
+        ClippingStrategies s = settings.apply(ClippingStrategies.of(m, Loss.CROSS_ENTROPY, kind)
+                .noiseMultiplier(sigma).learningRate(LR).samplingRate(q).seed(seed));
+        s.train(train, steps);
+        return new Clipping(name, eps, s.epsilon(DELTA), MachineUnlearning.accuracy(m, test),
+                kind == ClippingStrategies.Strategy.AUTOMATIC ? Double.NaN : s.currentClipNorm());
     }
 }

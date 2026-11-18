@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.experiments.sciml;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.data.ChaoticSeries;
 import io.github.zzuegg.brainiac.experimental.evolve.SymbolicRegression;
 import io.github.zzuegg.brainiac.experimental.ml.EntropicTransport;
 import io.github.zzuegg.brainiac.experimental.nn.EchoStateReservoir;
@@ -21,6 +22,7 @@ import io.github.zzuegg.brainiac.experimental.sciml.SdeSolver;
 import io.github.zzuegg.brainiac.experimental.sciml.Sindy;
 import io.github.zzuegg.brainiac.experimental.sciml.SymplecticIntegrator;
 import io.github.zzuegg.brainiac.experimental.sciml.UniversalDifferentialEquation;
+import io.github.zzuegg.brainiac.experimental.timeseries.AdaptiveNvar;
 import io.github.zzuegg.brainiac.experiments.exotic.ReservoirForecast;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
@@ -51,6 +53,8 @@ import java.util.function.UnaryOperator;
  *   <li>{@link #particles} (8.3.13): a graph network simulator with and without input noise,
  *       EGNN and a fixed-size MLP on spring chains, rolled out at the training size and at
  *       twice the particles.
+ *   <li>{@link #lorenz96Forecast} (wave 12, 12.2.10): adaptive NVAR against NG-RC, an ESN and an
+ *       MLP one-step model on Lorenz-96, clean and noisy.
  * </ul>
  */
 public final class DynamicsLearning {
@@ -1191,5 +1195,126 @@ public final class DynamicsLearning {
             }
         }
         return in;
+    }
+
+    // ---------------------------------------------------------------- wave 12, 12.2.10
+
+    /**
+     * One model forecasting Lorenz-96 in closed loop.
+     *
+     * @param sites the number of sites {@code n}
+     * @param noise the training observation noise, as a share of the series' standard deviation
+     * @param model the model
+     * @param forecastError the normalised MSE over the horizon against the clean trajectory
+     * @param validTime the valid prediction time in model time units (normalised error below 0.3;
+     *     one unit is about 1.7 Lyapunov times at {@code F = 8})
+     * @param parameters the trained parameters
+     * @param seconds the training time
+     */
+    public record Lorenz96Row(int sites, double noise, String model, double forecastError, double validTime,
+            long parameters, double seconds) {
+    }
+
+    /**
+     * 12.2.10: adaptive NVAR (a delay embedding into a small MLP plus a linear skip, trained
+     * with Adam) against NG-RC (fixed quadratic monomials and a ridge readout), an echo state
+     * network and a one-step MLP on Lorenz-96 ({@link ChaoticSeries#lorenz96}), clean and with
+     * observation noise; the noisy runs train on noisy samples and are scored against the clean
+     * trajectory.
+     *
+     * @param sites the numbers of sites
+     * @param noises the noise levels
+     * @param train training samples
+     * @param horizon forecast steps
+     * @param dt the sample interval
+     * @param epochs mini-batch Adam steps of adaptive NVAR and of the MLP
+     * @param seed the seed
+     * @return one row per setting and model
+     */
+    public static List<Lorenz96Row> lorenz96Forecast(int[] sites, double[] noises, int train, int horizon, double dt,
+            int epochs, long seed) {
+        List<Lorenz96Row> rows = new ArrayList<>();
+        for (int n : sites) {
+            double[][] clean = ChaoticSeries.lorenz96(n, train + horizon, 8, dt, 0, seed);
+            for (double noise : noises) {
+                double[][] data = noise > 0 ? ChaoticSeries.lorenz96(n, train + horizon, 8, dt, noise, seed + 1)
+                        : clean;
+                long t0 = System.nanoTime();
+                ReservoirForecast.Forecast ng = ReservoirForecast.nextGeneration(data, train, horizon, 2, 1, 1e-2);
+                long t1 = System.nanoTime();
+                long ngParams = (long) n * (1 + 2L * n + (2L * n) * (2L * n + 1) / 2);
+                rows.add(l96Row(n, noise, "NG-RC (2 taps, quadratic, ridge)", ng.predicted(), clean, train, dt,
+                        ngParams, t1 - t0));
+                t0 = System.nanoTime();
+                AdaptiveNvar an = AdaptiveNvar.fit(data, train, 2, 1, 64, epochs, 1e-2, seed);
+                double[][] af = an.forecast(data, train, horizon);
+                t1 = System.nanoTime();
+                rows.add(l96Row(n, noise, "adaptive NVAR (2 taps, MLP 64 + linear)", af, clean, train, dt,
+                        an.parameterCount(), t1 - t0));
+                t0 = System.nanoTime();
+                int units = Math.max(200, 20 * n);
+                EchoStateReservoir esn = EchoStateReservoir.of(n, units, 0.9, 0.5, 0.6, 0.05, seed);
+                ReservoirForecast.Forecast ef = ReservoirForecast.echoState(data, train, horizon, esn, 50, 1e-6);
+                t1 = System.nanoTime();
+                rows.add(l96Row(n, noise, "ESN (" + units + " units)", ef.predicted(), clean, train, dt,
+                        (long) n * (1 + units + n), t1 - t0));
+                t0 = System.nanoTime();
+                double[][] mf = mlpOneStep(data, train, horizon, epochs, seed);
+                t1 = System.nanoTime();
+                rows.add(l96Row(n, noise, "MLP one-step (64-64)", mf, clean, train, dt,
+                        (long) (n * 64 + 64) + 64 * 64 + 64 + 64L * n + n, t1 - t0));
+            }
+        }
+        return rows;
+    }
+
+    private static Lorenz96Row l96Row(int n, double noise, String name, double[][] predicted, double[][] clean,
+            int train, double dt, long params, long nanos) {
+        ForecastRow r = forecastRow(name, predicted, clean, train);
+        return new Lorenz96Row(n, noise, name, r.forecastError(), r.validSteps() * dt, params, nanos / 1e9);
+    }
+
+    private static double[][] mlpOneStep(double[][] series, int train, int horizon, int steps, long seed) {
+        int d = series[0].length;
+        double[] scale = new double[d];
+        for (int t = 0; t < train; t++) {
+            for (int j = 0; j < d; j++) {
+                scale[j] = Math.max(scale[j], Math.abs(series[t][j]));
+            }
+        }
+        double[][] norm = new double[train][d];
+        for (int t = 0; t < train; t++) {
+            for (int j = 0; j < d; j++) {
+                norm[t][j] = series[t][j] / scale[j];
+            }
+        }
+        SimpleMlp mlp = SimpleMlp.tanh(seed, d, 64, 64, d);
+        SplittableRandom r = new SplittableRandom(seed + 2);
+        Optimizer opt = Optimizer.adam(3e-3f);
+        for (int s = 0; s < steps; s++) {
+            double[][] a = new double[128][];
+            double[][] b = new double[128][];
+            for (int i = 0; i < 128; i++) {
+                int k = r.nextInt(train - 1);
+                a[i] = norm[k];
+                b[i] = norm[k + 1];
+            }
+            Tensor at = tensor(a);
+            mlp.forward(Var.of(at)).add(at).sub(tensor(b)).square().mean().backward();
+            opt.step(mlp.parameters());
+        }
+        double[][] out = new double[horizon][];
+        double[] cur = norm[train - 1];
+        for (int t = 0; t < horizon; t++) {
+            double[] dlt = rows(mlp.predict(tensor(new double[][] {cur})))[0];
+            double[] next = new double[d];
+            out[t] = new double[d];
+            for (int j = 0; j < d; j++) {
+                next[j] = cur[j] + dlt[j];
+                out[t][j] = next[j] * scale[j];
+            }
+            cur = next;
+        }
+        return out;
     }
 }
