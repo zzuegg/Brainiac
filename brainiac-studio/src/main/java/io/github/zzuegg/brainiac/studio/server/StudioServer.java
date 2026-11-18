@@ -42,6 +42,7 @@ public final class StudioServer implements AutoCloseable {
     private final Map<String, Route> api = new LinkedHashMap<>();
     private final TrainingService training;
     private volatile VastRentals rentals;
+    private volatile io.github.zzuegg.brainiac.studio.train.RlRuns rl;
     private volatile io.github.zzuegg.brainiac.studio.agent.PublishTools publish;
     private volatile AgentRuns agents;
     private volatile boolean closed;
@@ -96,6 +97,8 @@ public final class StudioServer implements AutoCloseable {
         new ChatRoutes(chat).register(server);
         new BuilderRoutes(chat.folder()).register(server);
         new TrainRoutes(server.training).register(server);
+        server.rl = new io.github.zzuegg.brainiac.studio.train.RlRuns();
+        new RlRoutes(server.rl).register(server);
         server.training.hosts().secrets(chat::secret);
         // the models the user's other machines serve show up as providers
         chat.hosts(() -> server.training.hosts().list().stream().map(h -> (io.github.zzuegg.brainiac.studio.chat.ChatProvider)
@@ -217,6 +220,9 @@ public final class StudioServer implements AutoCloseable {
         VastRentals r = rentals;
         if (r != null) {
             r.close();
+        }
+        if (rl != null) {
+            rl.close();
         }
         if (publish != null) {
             publish.close();
