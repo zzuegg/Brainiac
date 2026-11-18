@@ -15,6 +15,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experimental.autograd;
     exports io.github.zzuegg.brainiac.experimental.data;
     exports io.github.zzuegg.brainiac.experimental.evolve;
+    exports io.github.zzuegg.brainiac.experimental.graph;
     exports io.github.zzuegg.brainiac.experimental.llm;
     exports io.github.zzuegg.brainiac.experimental.ml;
     exports io.github.zzuegg.brainiac.experimental.nn;
