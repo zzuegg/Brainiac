@@ -739,6 +739,34 @@ public interface Backend {
     }
 
     /**
+     * Whether {@link #addRmsNorm} has a kernel for this type.
+     *
+     * @param type the element type
+     * @return whether to call it
+     */
+    default boolean hasAddRmsNorm(DType type) {
+        return false;
+    }
+
+    /**
+     * A residual add and the {@link #rmsNorm} after it in one pass, for inference:
+     * {@code sum = x + r} as an add stores it, and {@code out} the RMSNorm of {@code sum}.
+     *
+     * @param x {@code [rows, cols]}
+     * @param r {@code [rows, cols]}, added to {@code x}
+     * @param weight {@code [cols]}
+     * @param rows the rows
+     * @param cols the values per row
+     * @param eps added to the mean square
+     * @param sum {@code [rows, cols]}, receives {@code x + r}
+     * @param out {@code [rows, cols]}, receives the normalized sum
+     */
+    default void addRmsNorm(Storage x, Storage r, Storage weight, long rows, int cols, float eps, Storage sum,
+            Storage out) {
+        throw unsupported("fused add and RMSNorm");
+    }
+
+    /**
      * Whether {@link #attention} (and, when {@code backward}, {@link #attentionBackward}) are
      * worth using for these sizes; callers take another path when not.
      *

@@ -1,0 +1,40 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+layout(local_size_x = GROUP) in;
+// A residual add and the RMSNorm after it, one work group per row: s = x + r, rounded to the
+// storage type as the add alone stores it, and y = round(s / sqrt(mean(s^2) + eps)) * w.
+layout(push_constant) uniform P { In x; In r; In w; Buf s; Buf y; uint rows; uint cols; float eps; } p;
+shared float part[GROUP];
+#if defined(TYPE_F16)
+#define ROUND(v) float(float16_t(v))
+#elif defined(TYPE_BF16)
+#define ROUND(v) uintBitsToFloat(uint(to_bf16(v)) << 16)
+#else
+#define ROUND(v) (v)
+#endif
+void main() {
+    uint row = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (row >= p.rows) return;
+    uint lid = gl_LocalInvocationID.x;
+    uint base = row * p.cols;
+    float acc = 0.0;
+    for (uint t = lid; t < p.cols; t += GROUP) {
+        ACC v = ACC(LOAD(p.x, base + t)) + ACC(LOAD(p.r, base + t));
+        STORE(p.s, base + t, v);
+        float f = float(LOAD(p.s, base + t));   // as stored: this invocation's own write
+        acc += f * f;
+    }
+    part[lid] = acc;
+    barrier();
+    for (uint k = GROUP / 2; k > 0; k >>= 1) {
+        if (lid < k) part[lid] += part[lid + k];
+        barrier();
+    }
+    float d = sqrt(part[0] / float(p.cols) + p.eps);
+    for (uint t = lid; t < p.cols; t += GROUP) {
+        float f = float(LOAD(p.s, base + t));
+        float n = ROUND(f / d);
+        STORE(p.y, base + t, ACC(n * float(LOAD(p.w, t))));
+    }
+}

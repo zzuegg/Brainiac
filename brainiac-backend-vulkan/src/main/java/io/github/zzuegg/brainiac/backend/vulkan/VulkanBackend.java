@@ -114,22 +114,7 @@ public final class VulkanBackend implements Backend {
                 boolean statistics = Boolean.getBoolean("brainiac.vulkan.statistics");
                 boolean teardown = !"false".equals(System.getProperty("brainiac.vulkan.teardown"));
                 if (statistics || teardown) {
-                    VkContext context = vk;
-                    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                        synchronized (VulkanBackend.this) {
-                            if (statistics && vk == context && context.dispatches > 0) {
-                                System.err.println(name() + ": " + statistics());
-                            }
-                            if (teardown && vk == context) {
-                                vk = null;   // later calls fail plainly instead of using a destroyed device
-                                try {
-                                    context.shutdown();
-                                } catch (RuntimeException | LinkageError e) {
-                                    // exiting anyway
-                                }
-                            }
-                        }
-                    }, "vulkan-exit"));
+                    atExit(this, statistics, teardown);
                 }
                 String mode = System.getProperty("brainiac.vulkan.tune", "auto");
                 if (!mode.equals("false") && !mode.equals("off")) {
@@ -142,6 +127,64 @@ public final class VulkanBackend implements Backend {
             }
         }
         return vk != null;
+    }
+
+    /** The backends to tear down at exit, in the order they started. */
+    private static final List<VulkanBackend> EXITING = new java.util.ArrayList<>();
+
+    /**
+     * Registers a backend for the one exit hook. That hook prints statistics, then destroys
+     * every device (each after freeing what was made on it) and only then the instances, one
+     * after another: hooks run concurrently, and drivers whose libraries every instance shares
+     * (NVIDIA's) crashed when one context's instance went while another's device was live.
+     */
+    private static void atExit(VulkanBackend backend, boolean statistics, boolean teardown) {
+        synchronized (EXITING) {
+            if (EXITING.isEmpty()) {
+                Runtime.getRuntime().addShutdownHook(new Thread(() -> exit(statistics, teardown), "vulkan-exit"));
+            }
+            EXITING.add(backend);
+        }
+    }
+
+    private static void exit(boolean statistics, boolean teardown) {
+        List<VkContext> contexts = new java.util.ArrayList<>();
+        List<VulkanBackend> backends;
+        synchronized (EXITING) {
+            backends = List.copyOf(EXITING);
+        }
+        for (VulkanBackend b : backends) {
+            b.prefetcher.shutdownNow();
+            synchronized (b) {
+                VkContext context = b.vk;
+                if (context == null) {
+                    continue;
+                }
+                if (statistics && context.dispatches > 0) {
+                    System.err.println(b.name() + ": " + b.statistics());
+                }
+                if (teardown) {
+                    b.vk = null;   // later calls fail plainly instead of using a destroyed device
+                    contexts.add(context);
+                }
+            }
+        }
+        List<VkContext> destroyed = new java.util.ArrayList<>();
+        for (VkContext c : contexts) {
+            try {
+                c.destroyDevice();
+                destroyed.add(c);
+            } catch (RuntimeException | LinkageError e) {
+                // exiting anyway; its instance stays, as it may still hold the device
+            }
+        }
+        for (VkContext c : destroyed) {
+            try {
+                c.destroyInstance();
+            } catch (RuntimeException | LinkageError e) {
+                // exiting anyway
+            }
+        }
     }
 
     /**
@@ -932,10 +975,72 @@ public final class VulkanBackend implements Backend {
                 return;
             }
         }
+        if (vs(in).pending != null && inOffset == 0 && vs(in).dtype == z.dtype && n == vs(in).size
+                && Arrays.equals(inStrides, contiguous(shape)) && n < Integer.MAX_VALUE) {
+            int[] rows = rows(shape, outStrides);
+            if (rows != null) {
+                // a pending value written into part of an array (a key/value cache step): its
+                // shader stores there directly, without computing it into a temporary first
+                eager(z);
+                writePending(vs(in), z, outOffset, n, rows[0], rows[1]);
+                return;
+            }
+        }
         eager(vs(in), z);
         VkStorage x = as(vs(in), z.dtype);
         copy(x, inOffset, inStrides, shape, z, outOffset, outStrides, n);
         done(x, vs(in));
+    }
+
+    /**
+     * Where contiguous values of {@code shape} land in an array with {@code outStrides}, when
+     * that is rows of {@code inner} values {@code outerStride} apart: those two, else null.
+     */
+    private static int[] rows(int[] shape, long[] outStrides) {
+        int d = shape.length - 1;
+        long inner = 1;
+        while (d >= 0 && (shape[d] == 1 || outStrides[d] == inner)) {
+            inner *= shape[d];
+            d--;
+        }
+        long outer = -1;
+        long count = 1;
+        for (; d >= 0; d--) {
+            if (shape[d] == 1) {
+                continue;
+            }
+            if (outer < 0) {
+                outer = outStrides[d];
+            } else if (outStrides[d] != outer * count) {
+                return null;
+            }
+            count *= shape[d];
+        }
+        if (inner > Integer.MAX_VALUE || outer > Integer.MAX_VALUE) {
+            return null;
+        }
+        return new int[] {(int) inner, outer < 0 ? (int) inner : (int) outer};
+    }
+
+    /** Computes {@code in}'s pending value into rows of {@code z} (see {@link #rows}); {@code in} keeps it. */
+    private void writePending(VkStorage in, VkStorage z, long outOffset, long n, int inner, int outerStride) {
+        Fusion.Kernel k = Fusion.generate(in.pending, z.dtype, inner, outerStride);
+        String name = fusedPipeline(k.source(), z.dtype);
+        VkContext.Slot[] reads = new VkContext.Slot[k.loads().size()];
+        for (int i = 0; i < reads.length; i++) {
+            reads[i] = k.loads().get(i).slot();
+        }
+        long out = z.address(outOffset);
+        if (k.inPush()) {
+            ByteBuffer p = vk.push().putLong(out).putInt((int) n).putInt(0);
+            k.writeMeta(p, Fusion.Kernel.PUSH_TABLE);
+            p.position(Fusion.Kernel.PUSH_TABLE + k.metaBytes());
+        } else {
+            long meta = vk.hostData(k.metaBytes(), k::writeMeta);
+            vk.push().putLong(meta).putLong(out).putInt((int) n);
+        }
+        vk.dispatch(name, groups(n), z.slot(), reads);
+        fusedDispatches++;
     }
 
     private void copy(VkStorage x, long inOffset, long[] inStrides, int[] shape, VkStorage z, long outOffset,
@@ -1683,6 +1788,32 @@ public final class VulkanBackend implements Backend {
                 .putInt(cols).putFloat(eps);
         vk.dispatch(shader("rms_norm", z.dtype), rows, z.slot(), xx.slot(), xw.slot());
         done(xx, vs(x));
+        done(xw, vs(weight));
+    }
+
+    @Override
+    public boolean hasAddRmsNorm(DType type) {
+        return hasRmsNorm(type);
+    }
+
+    @Override
+    public synchronized void addRmsNorm(Storage x, Storage r, Storage weight, long rows, int cols, float eps,
+            Storage sum, Storage out) {
+        VkStorage z = vs(out);
+        VkStorage s = vs(sum);
+        if (!hasAddRmsNorm(z.dtype) || s.dtype != z.dtype) {
+            throw new UnsupportedOperationException("fused add and RMSNorm: " + z.dtype);
+        }
+        eager(vs(x), vs(r), vs(weight), s, z);
+        VkStorage xx = as(vs(x), z.dtype);
+        VkStorage xr = as(vs(r), z.dtype);
+        VkStorage xw = as(vs(weight), z.dtype);
+        vk.push().putLong(xx.address()).putLong(xr.address()).putLong(xw.address()).putLong(s.address())
+                .putLong(z.address()).putInt(Math.toIntExact(rows)).putInt(cols).putFloat(eps);
+        vk.dispatch(shader("add_rms_norm", z.dtype), rows, new VkContext.Slot[] {s.slot(), z.slot()}, xx.slot(),
+                xr.slot(), xw.slot());
+        done(xx, vs(x));
+        done(xr, vs(r));
         done(xw, vs(weight));
     }
 

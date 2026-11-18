@@ -196,6 +196,10 @@ final class VkContext {
     private final Map<Long, ArrayDeque<Slot>> free = new HashMap<>();
     private final ConcurrentLinkedQueue<Slot> released = new ConcurrentLinkedQueue<>();
     private final List<Block> dedicated = new ArrayList<>();
+    /** Every block allocated and not yet destroyed, for {@link #shutdown}. */
+    private final java.util.Set<Block> live = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    /** Every batch made, for {@link #shutdown}. */
+    private final List<Batch> batches = new ArrayList<>();
     /** The blocks small slots are cut from, the current {@link #chunk} last. */
     private final List<Block> chunks = new ArrayList<>();
     private Block chunk;
@@ -272,9 +276,44 @@ final class VkContext {
      * crashed in libEGL_nvidia while the JVM unloaded libraries under a live device.
      */
     void shutdown() {
+        destroyDevice();
+        destroyInstance();
+    }
+
+    /**
+     * At exit, first part: waits for the device, then frees everything made on it (memory,
+     * buffers, pipelines, fences, query pools, the command pool) before destroying it, as
+     * Vulkan asks; drivers that keep threads of their own (NVIDIA's) crashed tearing down a
+     * device that still held them.
+     */
+    void destroyDevice() {
         vkDeviceWaitIdle(device);
-        vkDestroyCommandPool(device, commandPool, null);
+        for (Block b : List.copyOf(live)) {
+            destroy(b);
+        }
+        for (Batch b : batches) {
+            vkDestroyFence(device, b.fence, null);
+            if (b.queries != 0) {
+                vkDestroyQueryPool(device, b.queries, null);
+            }
+        }
+        batches.clear();
+        idleBatches.clear();
+        inFlight.clear();
+        current = null;
+        for (Long p : pipelines.values()) {
+            if (p != null && p != 0) {
+                vkDestroyPipeline(device, p, null);
+            }
+        }
+        pipelines.clear();
+        vkDestroyPipelineLayout(device, pipelineLayout, null);
+        vkDestroyCommandPool(device, commandPool, null);   // frees its command buffers
         vkDestroyDevice(device, null);
+    }
+
+    /** At exit, last part: after every context's {@link #destroyDevice}. */
+    void destroyInstance() {
         vkDestroyInstance(instance, null);
     }
 
@@ -965,6 +1004,7 @@ final class VkContext {
             }
             b.memory = lp.get(0);
             allocations++;
+            live.add(b);
             check(vkBindBufferMemory(device, b.buffer, b.memory, 0), "vkBindBufferMemory");
             b.address = vkGetBufferDeviceAddress(device,
                     VkBufferDeviceAddressInfo.calloc(st).sType$Default().buffer(b.buffer));
@@ -983,6 +1023,7 @@ final class VkContext {
     }
 
     private void destroy(Block b) {
+        live.remove(b);
         if (b.mapped != 0) {
             vkUnmapMemory(device, b.memory);
         }
@@ -1098,6 +1139,7 @@ final class VkContext {
             try (MemoryStack st = stackPush()) {
                 if (b == null) {
                     b = new Batch();
+                    batches.add(b);
                     VkCommandBufferAllocateInfo ai = VkCommandBufferAllocateInfo.calloc(st).sType$Default()
                             .commandPool(commandPool).level(VK_COMMAND_BUFFER_LEVEL_PRIMARY).commandBufferCount(1);
                     PointerBuffer pp = st.mallocPointer(1);
