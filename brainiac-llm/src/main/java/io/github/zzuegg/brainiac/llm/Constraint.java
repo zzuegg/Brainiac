@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.llm;
 
 import io.github.zzuegg.brainiac.io.Json;
+import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -239,13 +240,16 @@ public final class Constraint {
          * @return the vocabulary
          */
         public static Vocabulary of(io.github.zzuegg.brainiac.data.Tokenizer tokenizer, int size) {
+            // special tokens have no text here: they end a sequence, they do not write it
+            java.util.function.Function<int[], String> decode = tokenizer instanceof PretrainedTokenizer p
+                    ? ids -> p.decode(ids, true) : tokenizer::decode;
             int[] ref = tokenizer.encode("a");
             int r = ref[ref.length - 1];
-            String base = tokenizer.decode(r);
+            String base = decode.apply(new int[] {r});
             String[] texts = new String[size];
             for (int t = 0; t < Math.min(size, tokenizer.size()); t++) {
-                String both = tokenizer.decode(r, t);
-                texts[t] = both.startsWith(base) ? both.substring(base.length()) : tokenizer.decode(t);
+                String both = decode.apply(new int[] {r, t});
+                texts[t] = both.startsWith(base) ? both.substring(base.length()) : decode.apply(new int[] {t});
             }
             return new Vocabulary(texts);
         }

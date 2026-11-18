@@ -118,9 +118,10 @@ final class Registry {
         simple("padding_mask", PaddingMask.class, PaddingMask::write, PaddingMask::read);
         simple("masked_pool", MaskedPool.class, MaskedPool::write, MaskedPool::read);
         simple("brain", Brain.class, Brain::write, Brain::read);
+        DiffusionCodecs.register();
         for (Activation a : new Activation[] {Activation.IDENTITY, Activation.RELU, Activation.SIGMOID,
-                Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.SOFTPLUS,
-                Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
+                Activation.TANH, Activation.SILU, Activation.GELU, Activation.GELU_TANH, Activation.QUICK_GELU,
+                Activation.SOFTPLUS, Activation.MISH, Activation.SELU, Activation.RELU6, Activation.HARD_TANH, Activation.HARD_SIGMOID,
                 Activation.HARD_SWISH, Activation.SOFTSIGN}) {
             activation(a.name(), c -> a);
         }

@@ -135,6 +135,23 @@ class AgentRunsTest {
     }
 
     @Test
+    void anAgentsReasoningIsAStepOfItsOwn() throws Exception {
+        script.turns.add("<think>\nThe user wants the data sets. A tool lists them.\n</think>\n\n"
+                + "<tool_call>\n{\"name\": \"list_datasets\", \"arguments\": {}}\n</tool_call>");
+        script.turns.add("<think>Spirals is one.</think>\n\nThere are built-in sets such as spirals.");
+        Map<String, Object> started = agents.start("Which data sets are there?", "script/bot", "auto", 5, null);
+        Map<String, Object> run = until((String) started.get("id"), r -> !"running".equals(r.get("state")));
+
+        assertEquals("done", run.get("state"));
+        assertEquals(List.of("goal", "think", "call", "result", "think", "answer"), kinds(run));
+        List<Map<String, Object>> steps = Json.array(run.get("steps")).stream().map(Json::object).toList();
+        assertEquals("The user wants the data sets. A tool lists them.", steps.get(1).get("text"));
+        assertEquals("There are built-in sets such as spirals.", run.get("answer"));
+        assertFalse(script.heard.get(1).messages().get(1).text().contains("think"),
+                "the reasoning is not sent back to the model");
+    }
+
+    @Test
     void anAgentCallsToolsAndAnswers() throws Exception {
         script.turns.add("Let me look.\n<tool_call>\n{\"name\": \"list_datasets\", \"arguments\": {}}\n</tool_call>\n"
                 + "<tool_response>\nmade up\n</tool_response>");

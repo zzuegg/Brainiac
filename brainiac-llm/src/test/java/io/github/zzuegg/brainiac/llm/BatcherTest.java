@@ -56,4 +56,48 @@ class BatcherTest {
     private static Generator.Options options(int n) {
         return Generator.Options.greedy(n).withStopTokens(Set.of(GeneratorTest.LETTERS.indexOf('q')));
     }
+
+    /** A model whose first step runs out of memory, then works. */
+    private static final class FailsOnce implements LanguageModel {
+        private final LanguageModel inner;
+        private boolean failed;
+
+        FailsOnce(LanguageModel inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public int vocabSize() {
+            return inner.vocabSize();
+        }
+
+        @Override
+        public State newState(int batch) {
+            return inner.newState(batch);
+        }
+
+        @Override
+        public io.github.zzuegg.brainiac.tensor.Tensor next(State state, int[][] tokens, boolean[][] padding) {
+            if (!failed) {
+                failed = true;
+                throw new OutOfMemoryError("test: device memory");
+            }
+            return inner.next(state, tokens, padding);
+        }
+    }
+
+    @Test
+    void anOutOfMemoryErrorFailsItsRequestsButNotTheBatcher() throws Exception {
+        Generator gen = new Generator(new FailsOnce(GeneratorTest.letters(5)),
+                new CharacterTokenizer(GeneratorTest.LETTERS));
+        try (Generator.Batcher batcher = gen.batcher(2)) {
+            CompletableFuture<Generator.Output> first = batcher.submit("abc", Generator.Options.greedy(4), null);
+            java.util.concurrent.ExecutionException e = org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.ExecutionException.class, () -> first.get(30, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(OutOfMemoryError.class, e.getCause().getClass());
+            Generator.Output second = batcher.submit("abc", Generator.Options.greedy(4), null)
+                    .get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(gen.generate("abc", Generator.Options.greedy(4)), second.text());
+        }
+    }
 }

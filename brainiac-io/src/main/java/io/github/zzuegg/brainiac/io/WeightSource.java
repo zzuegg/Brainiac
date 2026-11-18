@@ -132,7 +132,8 @@ public interface WeightSource extends AutoCloseable {
     /**
      * Opens weights at a path: a {@code .safetensors} file, a sharded model's {@code
      * *.safetensors.index.json}, or a directory holding either (a Hugging Face model
-     * download), or a {@code .gguf} file.
+     * download), or a {@code .gguf} file. A folder whose {@code config.json} says it was
+     * quantized with GPTQ or AWQ reads its layers as float weights, dequantized.
      *
      * @param path the file or directory
      * @return the weights
@@ -140,6 +141,23 @@ public interface WeightSource extends AutoCloseable {
      */
     static WeightSource open(Path path) {
         Objects.requireNonNull(path, "path");
+        WeightSource plain = openPlain(path);
+        Path config = Files.isDirectory(path) ? path.resolve("config.json") : null;
+        if (config != null && Files.isRegularFile(config)) {
+            try {
+                if (Json.object(Json.read(config)).get("quantization_config") instanceof Map<?, ?> q
+                        && ("gptq".equals(q.get("quant_method")) || "awq".equals(q.get("quant_method")))) {
+                    return new QuantizedCheckpoint(plain, Json.object(q));
+                }
+            } catch (IOException | RuntimeException e) {
+                plain.close();
+                throw e instanceof IOException io ? new UncheckedIOException(io) : (RuntimeException) e;
+            }
+        }
+        return plain;
+    }
+
+    private static WeightSource openPlain(Path path) {
         try {
             if (Files.isDirectory(path)) {
                 Path index = path.resolve("model.safetensors.index.json");
