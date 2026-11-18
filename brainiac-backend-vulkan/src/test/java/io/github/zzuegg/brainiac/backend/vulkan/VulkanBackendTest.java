@@ -952,6 +952,7 @@ class VulkanBackendTest {
         }
         choices.add(new String[] {"bigTileGroups", "1", "splitBelow", "100000"});
         choices.add(new String[] {"bigTileGroups", "100000", "splitBelow", "1"});
+        choices.add(new String[] {"packedWide", "1", "packedGroups", "1024", "packedPiece", "32"});
         for (String[] choice : choices) {
             for (int i = 0; i < choice.length; i += 2) {
                 System.setProperty("brainiac.vulkan." + choice[i], choice[i + 1]);
@@ -990,6 +991,32 @@ class VulkanBackendTest {
                     float[] actual = x.to(DType.FLOAT16).to(gpu).matmul(w.to(gpu)).toArray();
                     for (int j = 0; j < expected.length; j++) {
                         assertEquals(expected[j], actual[j], 0.05, String.join(" ", choice) + ", packed at " + j);
+                    }
+                }
+                // one row (decode), 144 columns as the wide kernel needs: 4-bit, 8-bit and codebook levels
+                for (int bits : new int[] {4, 8, 0}) {
+                    int wide = 144;
+                    byte[] lv = new byte[rows * wide];
+                    byte[] book = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+                    for (int j = 0; j < lv.length; j++) {
+                        lv[j] = bits == 0 ? book[r.nextInt(16)] : (byte) (r.nextInt(1 << bits) - (1 << (bits - 1)));
+                    }
+                    float[] sc = new float[rows / 32 * wide];
+                    for (int j = 0; j < sc.length; j++) {
+                        sc[j] = 0.001f * (1 + j % 7);
+                    }
+                    Tensor w1 = Tensor.packed(PackedMatrix.of(lv, sc, rows, wide, bits == 0 ? 8 : bits, 32), CPU);
+                    Tensor x1 = random(10, 1, rows);
+                    float[] want = x1.matmul(w1).toArray();
+                    for (DType type : List.of(DType.FLOAT32, DType.FLOAT16)) {
+                        if (!supported(type)) {
+                            continue;
+                        }
+                        float[] got = x1.to(type).to(gpu).matmul(w1.to(gpu)).toArray();
+                        for (int j = 0; j < want.length; j++) {
+                            assertEquals(want[j], got[j], type == DType.FLOAT16 ? 0.05 : 1e-3,
+                                    String.join(" ", choice) + ", one row, " + bits + " bits, " + type + " at " + j);
+                        }
                     }
                 }
             } finally {

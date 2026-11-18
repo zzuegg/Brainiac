@@ -81,6 +81,15 @@ class HubTest {
         files.put("Qwen/Qwen2.5-0.5B-Instruct/README.md", "# hi".getBytes(StandardCharsets.UTF_8));
         configs.put("Qwen/Qwen2.5-0.5B-Instruct", "{\"model_type\": \"qwen2\"}");
         files.put("meta-llama/Llama-3.2-1B/model.safetensors", new byte[10]);
+        files.put("openai/whisper-tiny/model.safetensors", new byte[3000]);
+        for (String f : List.of("tokenizer.json", "vocab.json", "preprocessor_config.json", "generation_config.json",
+                "normalizer.json", "added_tokens.json", "special_tokens_map.json", "tokenizer_config.json")) {
+            files.put("openai/whisper-tiny/" + f, "{}".getBytes(StandardCharsets.UTF_8));
+        }
+        files.put("openai/whisper-tiny/merges.txt", "#version: 0.2".getBytes(StandardCharsets.UTF_8));
+        files.put("openai/whisper-tiny/README.md", "# whisper".getBytes(StandardCharsets.UTF_8));
+        files.put("openai/whisper-tiny/flax_model.msgpack", new byte[10]);
+        configs.put("openai/whisper-tiny", "{\"model_type\": \"whisper\"}");
     }
 
     @AfterEach
@@ -102,6 +111,20 @@ class HubTest {
                 String q = ex.getRequestURI().getRawQuery();
                 assertTrue(q.contains("expand%5B%5D=gguf") && q.contains("expand%5B%5D=config"), q);
                 List<Object> out = new ArrayList<>();
+                if (q.contains("pipeline_tag=automatic-speech-recognition")) {
+                    out.add(Map.of("id", "openai/whisper-tiny", "downloads", 700, "tags", List.of("safetensors", "whisper"),
+                            "config", Map.of("model_type", "whisper")));
+                    out.add(Map.of("id", "onnx-community/whisper-tiny", "downloads", 900, "tags", List.of("onnx", "whisper"),
+                            "config", Map.of("model_type", "whisper")));
+                    send(ex, 200, Json.write(out).getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
+                if (q.contains("pipeline_tag=text-to-speech")) {
+                    out.add(Map.of("id", "facebook/mms-tts-eng", "downloads", 800, "tags", List.of("safetensors", "vits"),
+                            "config", Map.of("model_type", "vits")));
+                    send(ex, 200, Json.write(out).getBytes(StandardCharsets.UTF_8));
+                    return;
+                }
                 out.add(Map.of("id", "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "downloads", 900, "likes", 40,
                         "tags", List.of("gguf", "qwen2", "conversational"), "config", Map.of(),
                         "gguf", Map.of("architecture", "qwen2", "total", 630_167_424, "context_length", 32768)));
@@ -317,6 +340,29 @@ class HubTest {
         assertTrue(hub.delete("qwen2.5-0.5b-instruct-q8_0.gguf"));
         assertFalse(Files.exists(model));
         assertFalse(hub.delete("../keys.properties"));
+    }
+
+    @Test
+    void speechModelsAreFoundAndDownloadWithWhatTheyNeed() throws Exception {
+        Hub hub = hub();
+        Map<String, Object> found = hub.search("", "speech");
+        assertEquals(List.of("facebook/mms-tts-eng", "openai/whisper-tiny"), Json.array(found.get("models")).stream()
+                .map(o -> Json.object(o).get("id")).toList(), "most downloaded first, over both kinds");
+        assertEquals(1, found.get("hidden"), "ONNX weights do not run");
+        Map<String, Object> folder = Json.array(hub.files("openai/whisper-tiny").get("options")).stream().map(Json::object)
+                .filter(o -> "folder".equals(o.get("kind"))).findFirst().orElseThrow();
+        assertEquals(true, folder.get("supported"), folder.toString());
+        Map<String, Object> d = hub.download("openai/whisper-tiny", "folder");
+        await(hub, (String) d.get("id"));
+        Map<String, Object> done = hub.downloads().getFirst();
+        assertEquals("done", done.get("state"), done.toString());
+        assertEquals("whisper", done.get("family"));
+        Path dir = data.resolve("downloads/whisper-tiny");
+        for (String f : List.of("model.safetensors", "config.json", "tokenizer.json", "merges.txt", "preprocessor_config.json")) {
+            assertTrue(Files.exists(dir.resolve(f)), f);
+        }
+        assertFalse(Files.exists(dir.resolve("README.md")));
+        assertFalse(Files.exists(dir.resolve("flax_model.msgpack")));
     }
 
     @Test

@@ -1,0 +1,178 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "packed.glsl"
+// z = a x packed for one row of a, as matmul_packed with ROWS = 1, but each invocation computes
+// sixteen adjacent columns from one 16-byte load per row (8-bit levels) or per two rows (4-bit
+// levels and codebook indices), so a warp keeps four times the bytes in flight per load. Some
+// GPUs (NVIDIA's, 32 lanes) need that to reach their memory bandwidth on decode-sized products.
+// Needs n a multiple of 16 and levels in bytes, nibbles or codebook nibbles (no high planes).
+// A work group covers 16 * QUADS columns with SLICES invocations per sixteen columns, each over
+// its own run of rows; the z index picks a piece of `chunk` rows, added up as in matmul_packed.
+#define QUADS 32
+#define SLICES 8
+layout(local_size_x = QUADS, local_size_y = SLICES) in;
+#if defined(TYPE_F64)
+layout(buffer_reference, std430, buffer_reference_align = 32) coherent buffer Parts { dvec4 v[]; };
+#else
+layout(buffer_reference, std430, buffer_reference_align = 16) coherent buffer Parts { vec4 v[]; };
+#endif
+layout(buffer_reference, std430, buffer_reference_align = 4) coherent buffer Counters { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) restrict readonly buffer InQuads { uvec4 v[]; };
+shared bool lastPiece;
+layout(push_constant) uniform P {
+    In a; InWords q; InWords hi; InWords scaleCodes; InWords offsetCodes; InWords scales; InWords offsets; Buf z;
+    Parts parts; Counters counters;
+    uint m; uint k; uint n; uint group; uint flags; uint chunk; uint pieces; uint counter; uint perSuper; float shift;
+} p;
+shared ACC4 sums[SLICES][QUADS][4];
+shared int table[16];
+#include "packed_layout.glsl"
+
+// the super values (at i, a multiple of 4) and, with codes, the codes (at j) of four columns, multiplied
+vec4 factors4(InWords supers, InWords codes, bool hasCodes, uint i, uint j) {
+    vec4 v;
+    if ((p.flags & 16u) != 0) {
+        v = vec4(unpackHalf2x16(supers.v[i >> 1]), unpackHalf2x16(supers.v[(i >> 1) + 1]));
+    } else {
+        v = uintBitsToFloat(uvec4(supers.v[i], supers.v[i + 1], supers.v[i + 2], supers.v[i + 3]));
+    }
+    if (hasCodes) {
+        int w = int(codes.v[j >> 2]);
+        v *= vec4(bitfieldExtract(w, 0, 8), bitfieldExtract(w, 8, 8), bitfieldExtract(w, 16, 8), bitfieldExtract(w, 24, 8));
+    }
+    return v;
+}
+
+vec4 scales4(uint g, uint c) {
+    return factors4(p.scales, p.scaleCodes, (p.flags & 4u) != 0, (g / p.perSuper) * p.n + c, g * p.n + c);
+}
+
+vec4 offsets4(uint g, uint c, vec4 s) {
+    return factors4(p.offsets, p.offsetCodes, (p.flags & 8u) != 0, (g / p.perSuper) * p.n + c, g * p.n + c)
+            + s * p.shift;
+}
+
+// the four signed bytes of a word
+ACC4 bytes4(uint w) {
+    int s = int(w);
+    return ACC4(bitfieldExtract(s, 0, 8), bitfieldExtract(s, 8, 8), bitfieldExtract(s, 16, 8), bitfieldExtract(s, 24, 8));
+}
+
+// the low (h = 0) or high (h = 4) nibbles of a word's four bytes, signed, or through the table
+ACC4 nibbles4(uint w, int h, bool lookup) {
+    if (lookup) {
+        return ACC4(table[bitfieldExtract(w, h, 4)], table[bitfieldExtract(w, 8 + h, 4)],
+                    table[bitfieldExtract(w, 16 + h, 4)], table[bitfieldExtract(w, 24 + h, 4)]);
+    }
+    int s = int(w);
+    return ACC4(bitfieldExtract(s, h, 4), bitfieldExtract(s, 8 + h, 4), bitfieldExtract(s, 16 + h, 4),
+                bitfieldExtract(s, 24 + h, 4));
+}
+
+void main() {
+    uint quad = gl_LocalInvocationID.x;
+    uint slice = gl_LocalInvocationID.y;
+    uint c = (gl_WorkGroupID.x * QUADS + quad) * 16;
+    uint piece = gl_WorkGroupID.z;
+    uint from = piece * p.chunk;
+    uint to = min(p.k, from + p.chunk);
+    uint run = ((to - from + SLICES - 1) / SLICES + 1) & ~1u;
+    uint start = min(to, from + slice * run);
+    uint end = min(to, start + run);
+    bool lookup = (p.flags & 32u) != 0;
+    bool halves = lookup || (p.flags & 1u) != 0;
+    if (lookup && quad < 16 && slice == 0) {
+        table[quad] = tableAt(quad);
+    }
+    barrier();
+    InQuads levels = InQuads(uint64_t(p.q));
+    uint stride = p.n >> 4;   // 16-byte quads per row (per two rows with nibbles)
+    ACC4 total[4] = ACC4[4](ACC4(0.0), ACC4(0.0), ACC4(0.0), ACC4(0.0));
+    if (c < p.n) {
+        uint r = start;
+        while (r < end) {
+            uint g = r / p.group;
+            uint stop = min(end, (g + 1) * p.group);
+            ACC4 part[4] = ACC4[4](ACC4(0.0), ACC4(0.0), ACC4(0.0), ACC4(0.0));
+            ACC sum = ACC(0.0);
+            if (halves) {
+                // two rows per quad: low nibbles row r, high nibbles row r + 1
+                for (; r < stop; r += 2) {
+                    uvec4 w = levels.v[(r >> 1) * stride + (c >> 4)];
+                    ACC x0 = ACC(LOAD(p.a, r));
+                    ACC x1 = ACC(LOAD(p.a, r + 1));
+                    for (uint j = 0; j < 4; j++) {
+                        part[j] = fma(ACC4(x0), nibbles4(w[j], 0, lookup), part[j]);
+                        part[j] = fma(ACC4(x1), nibbles4(w[j], 4, lookup), part[j]);
+                    }
+                    sum += x0 + x1;
+                }
+            } else {
+                for (; r < stop; r++) {
+                    uvec4 w = levels.v[r * stride + (c >> 4)];
+                    ACC x = ACC(LOAD(p.a, r));
+                    for (uint j = 0; j < 4; j++) {
+                        part[j] = fma(ACC4(x), bytes4(w[j]), part[j]);
+                    }
+                    sum += x;
+                }
+            }
+            for (uint j = 0; j < 4; j++) {
+                vec4 sf = scales4(g, c + 4 * j);
+                total[j] = fma(part[j], ACC4(sf), total[j]);
+                if ((p.flags & 2u) != 0) {
+                    total[j] = fma(ACC4(sum), ACC4(offsets4(g, c + 4 * j, sf)), total[j]);
+                }
+            }
+        }
+    }
+    uint quads = p.n / 4;
+    for (uint j = 0; j < 4; j++) {
+        sums[slice][quad][j] = total[j];
+    }
+    barrier();
+    if (slice == 0 && c < p.n) {
+        for (uint j = 0; j < 4; j++) {
+            ACC4 t = sums[0][quad][j];
+            for (uint s = 1; s < SLICES; s++) {
+                t += sums[s][quad][j];
+            }
+            if (p.pieces > 1) {
+                p.parts.v[piece * quads + c / 4 + j] = t;
+            } else {
+                for (uint i = 0; i < 4; i++) {
+                    STORE(p.z, c + 4 * j + i, t[i]);
+                }
+            }
+        }
+    }
+    if (p.pieces == 1) {
+        return;
+    }
+    memoryBarrierBuffer();
+    barrier();
+    if (quad == 0 && slice == 0) {
+        uint done = atomicAdd(p.counters.v[p.counter + gl_WorkGroupID.x], 1u);
+        lastPiece = done == p.pieces - 1;
+    }
+    barrier();
+    if (!lastPiece) {
+        return;
+    }
+    memoryBarrierBuffer();
+    if (slice < 4 && c < p.n) {
+        // four invocations per sixteen columns add up the pieces
+        uint j = slice;
+        ACC4 t = ACC4(0.0);
+        for (uint q = 0; q < p.pieces; q++) {
+            t += p.parts.v[q * quads + c / 4 + j];
+        }
+        for (uint i = 0; i < 4; i++) {
+            STORE(p.z, c + 4 * j + i, t[i]);
+        }
+    }
+    if (quad == 0 && slice == 0) {
+        p.counters.v[p.counter + gl_WorkGroupID.x] = 0u;   // ready for the next product
+    }
+}

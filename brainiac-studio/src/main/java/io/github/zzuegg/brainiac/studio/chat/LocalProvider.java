@@ -35,6 +35,8 @@ final class LocalProvider implements ChatProvider {
     private final Path placesFile;
     private final List<Path> added = new ArrayList<>();
     private Loaded loaded;
+    private volatile LocalImages images;
+    private volatile LocalSpeech speech;
 
     private record Loaded(Path path, Generator generator, PretrainedTokenizer tokenizer, Set<Integer> stops) {
     }
@@ -137,7 +139,8 @@ final class LocalProvider implements ChatProvider {
 
     @Override
     public boolean ready() {
-        return !find().isEmpty();
+        return !find().isEmpty() || (images != null && !images.models().isEmpty())
+                || (speech != null && !speech.models().isEmpty());
     }
 
     @Override
@@ -149,6 +152,46 @@ final class LocalProvider implements ChatProvider {
         return folders;
     }
 
+    /**
+     * Also lists and draws with the Stable Diffusion models in the same places.
+     *
+     * @param hub where a single-file checkpoint's CLIP vocabulary is fetched from
+     */
+    void drawToo(java.util.function.Supplier<io.github.zzuegg.brainiac.io.HuggingFaceHub> hub) {
+        images = new LocalImages(() -> {
+            List<Path> places = new ArrayList<>(folders);
+            places.addAll(added());
+            return places;
+        }, hub);
+    }
+
+    /**
+     * Returns the image models' side, or null when this provider only chats.
+     *
+     * @return the image models
+     */
+    LocalImages images() {
+        return images;
+    }
+
+    /** Also lists, and speaks and transcribes with, the speech models in the same places. */
+    void speakToo() {
+        speech = new LocalSpeech(() -> {
+            List<Path> places = new ArrayList<>(folders);
+            places.addAll(added());
+            return places;
+        });
+    }
+
+    /**
+     * Returns the speech models' side, or null when this provider only chats.
+     *
+     * @return the speech models
+     */
+    LocalSpeech speech() {
+        return speech;
+    }
+
     @Override
     public List<ModelInfo> models() {
         List<ModelInfo> out = new ArrayList<>();
@@ -157,6 +200,12 @@ final class LocalProvider implements ChatProvider {
             boolean gguf = Files.isRegularFile(p);
             out.add(new ModelInfo(id(), e.getKey(), e.getKey(), List.of("text"), 0,
                     (gguf ? "GGUF" : "safetensors") + " · " + size(p)));
+        }
+        if (images != null) {
+            out.addAll(images.models());
+        }
+        if (speech != null) {
+            out.addAll(speech.models());
         }
         return out;
     }

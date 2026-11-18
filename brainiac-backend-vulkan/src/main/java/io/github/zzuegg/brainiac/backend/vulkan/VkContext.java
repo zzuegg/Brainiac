@@ -99,11 +99,12 @@ final class VkContext {
     private static final long CHUNK = 64L << 20;
     private static final long STAGING_CHUNK = 16L << 20;
     private static final int MAX_IN_FLIGHT = 3;
-    private static final int SUBMIT_EVERY = Integer.getInteger("brainiac.vulkan.submitEvery", 64);
+    /** Commands per submitted batch at most: 128 halved decode's submits for 2-6% (RX 9070 XT, 7B). */
+    private static final int SUBMIT_EVERY = Integer.getInteger("brainiac.vulkan.submitEvery", 128);
     /** {@code -Dbrainiac.vulkan.validate=true} turns on the Khronos validation layer. */
     private static final boolean VALIDATE = Boolean.getBoolean("brainiac.vulkan.validate");
     /** Below this many recorded commands, an idle queue still waits for more before a submit. */
-    private static final int SUBMIT_IDLE = Integer.getInteger("brainiac.vulkan.submitIdle", 8);
+    private static final int SUBMIT_IDLE = Integer.getInteger("brainiac.vulkan.submitIdle", 16);
 
     /** A block of memory bound to one buffer; host-visible blocks are mapped at {@link #mapped}. */
     static final class Block {

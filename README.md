@@ -37,6 +37,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
+| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and VITS / MMS-TTS text-to-speech, from Hugging Face folders, behind `SpeechToText` and `TextToSpeech` |
 | `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
@@ -494,6 +495,47 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `model.saveGguf(file, tok, true)` writes a GGUF file (float16 matrices) that llama.cpp and
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
+
+## Speech: speech-to-text and text-to-speech
+
+`brainiac-audio` reads WAV files and runs two published speech models from Hugging Face
+folders: OpenAI's Whisper (`openai/whisper-tiny` up to `large-v3`) for speech-to-text and
+VITS (Meta's MMS-TTS voices, `facebook/mms-tts-eng` and other languages) for text-to-speech.
+Both match transformers' outputs.
+
+```java
+try (TextToSpeech tts = SpeechModels.textToSpeech(Path.of("mms-tts-eng"), Device.cpu(), DType.FLOAT32);
+     SpeechToText stt = SpeechModels.speechToText(Path.of("whisper-base"), Device.cpu(), DType.FLOAT32)) {
+    Audio speech = tts.synthesize("The weather is nice today.", SpeechOptions.defaults(), chunk -> play(chunk));
+    Wav.write(speech, Path.of("weather.wav"));
+
+    Transcription t = stt.transcribe(Wav.read(Path.of("talk.wav")),           // any length, any sample rate
+            TranscriptionOptions.defaults().language(null),                    // detect the language
+            segment -> System.out.printf("%.1f-%.1f %s%n", segment.start(), segment.end(), segment.text()));
+}
+```
+
+Whisper decodes long audio 30 seconds at a time with timestamps, falls back to higher
+temperatures when a window repeats itself, skips silence, and can translate to English
+(`Task.TRANSLATE`). `SpeechModels.kind(folder)` tells which kind of model a folder holds
+without loading it. Both take a cancellation check.
+
+The building blocks are ordinary layers, so self-built models can use them too:
+`MelSpectrogram` (raw audio to log-mel, including `MelSpectrogram.whisper(80)`),
+`RelativeAttention` (windowed relative positions), `HifiGanBlock` (vocoder residual block),
+`WaveNet` (gated dilated stack with optional conditioning) and
+`Flows.rationalQuadraticSpline` (neural spline flows), with Slaney mel filters in `Signal`.
+
+```java
+Model keywordSpotter = Model.sequential()
+        .input(16_000)                          // one second of 16 kHz audio
+        .melSpectrogram(16_000, 400, 160, 40)   // [40 mels, 101 frames]
+        .conv1d(64, 3, Activation.GELU)
+        .hifiGanBlock(3, 1, 3, 5)
+        .globalAvgPool()
+        .dense(12, Activation.SOFTMAX)
+        .build();
+```
 
 ## Image generation: Stable Diffusion and Flux
 
@@ -1019,13 +1061,43 @@ with its 30 voices), with the same keys. The screens only show settings the chos
 Every picture and take is also saved to `outputs` in the data folder. A video added to the
 Voice screen plays in the browser under each take and is never uploaded.
 
+**Images on this PC**: a Stable Diffusion model (1.x, 2.x or XL, as a diffusers folder or a single
+`.safetensors` checkpoint) or a FLUX.1 dev or schnell diffusers folder in a model folder shows up as
+an image model of This PC, and Auto picks it before any provider. Stable Diffusion also takes what
+to leave out, the steps, the guidance, the seed and the sampler; FLUX.1 takes the steps and the seed
+(and dev the guidance), and the settings it ignores are not shown. FLUX.1 runs in bfloat16 on a GPU
+with its weights quantized as far as the GPU's memory needs; a model that cannot fit is refused,
+saying how much memory it needs. The picture shows a rough preview as it is drawn, **Stop** ends it, and each
+picture keeps its seed, so **Reuse seed** draws it again. A single checkpoint needs the CLIP
+vocabulary, which is fetched once from Hugging Face (about 1.6 MB) into
+`~/.cache/brainiac/clip-tokenizer`.
+
+**Voice on this PC**: a Kokoro folder (`hexgrad/Kokoro-82M`, with its `.pth` checkpoint and `voices`
+folder) or a VITS model (such as `facebook/mms-tts-eng`) in a model folder speaks on the Voice screen
+as a model of This PC, saving WAV files, and Auto picks it. Kokoro lists its 28 English voices by
+name, and **Blend with** mixes a second voice in at the share you pick (sent as
+`"voice": "af_heart*0.70+bm_george*0.30"`). A Whisper model (such as
+`openai/whisper-base`, with its `tokenizer.json`) writes down what is said: switch the Voice screen
+to **Transcribe**, then drop a recording (any audio or video the browser plays; it is turned into
+16 kHz mono in the browser) or **Record** one with the microphone. The text appears piece by piece,
+with times, in the spoken language or in English, and **To chat** puts it in the chat box.
+**Hugging Face → Speech** on the Models screen finds and downloads Whisper and VITS models with
+the files they need (Kokoro is not offered there yet: copy its folder in).
+
 ```
 GET  /api/models            providers, their keys (names only) and models, and what Auto picks
 POST /api/keys              {"provider":"anthropic","label":"work","key":"..."} ("remove" or "first": true)
 POST /api/chat              {"model":"auto","messages":[{"role":"user","text":"Hi"}]} -> event stream:
                             route, thinking, text ..., done or error
 POST /api/images            {"model":"auto","prompt":"...","aspect":"16:9","count":2}
+POST /api/images/draw       {"model":"local/sdxl","prompt":"...","negativePrompt":"","aspect":"1:1","count":2,
+                            "steps":30,"guidance":6,"seed":42,"sampler":"DPM_PP_2M_KARRAS"} -> event stream:
+                            route, step and preview ..., image per picture, done or error
+POST /api/images/options    {"model":"local/sdxl"} -> the samplers and the model's usual steps and guidance
 POST /api/speech            {"model":"auto","text":"...","voice":"coral","speed":1,"instructions":"calm"}
+POST /api/transcribe        {"model":"auto","audio":"<base64 WAV>","language":"de","translate":false} -> event
+                            stream: route, segment ..., done (text, language) or error
+POST /api/transcribe/options {"model":"local/whisper-base"} -> its languages and whether it translates
 POST /api/providers         {"provider":"huggingface","auto":true,"models":["openai/gpt-oss-120b"],
                             "url":"","options":{"billTo":"my-org"}} (models null shows all)
 POST /api/local             {"path":"D:/Models/qwen2.5-7b.gguf"} adds a model file or folder ("remove": true forgets it)
