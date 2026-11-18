@@ -307,6 +307,9 @@ public final class ChatService {
     }
 
     private LocalServing serving;
+    private LocalQuantizer quantizer;
+    private LocalFineTune fineTune;
+    private LocalEvaluation evaluation;
 
     /**
      * Returns what serves one of this PC's chat models to other programs with the OpenAI API.
@@ -318,6 +321,43 @@ public final class ChatService {
             serving = new LocalServing(local());
         }
         return serving;
+    }
+
+    /**
+     * Returns what makes smaller copies of this PC's chat models.
+     *
+     * @return it
+     */
+    public synchronized LocalQuantizer quantizer() {
+        if (quantizer == null) {
+            quantizer = new LocalQuantizer(local());
+        }
+        return quantizer;
+    }
+
+    /**
+     * Returns what teaches this PC's chat models from examples.
+     *
+     * @return it
+     */
+    public synchronized LocalFineTune fineTune() {
+        if (fineTune == null) {
+            fineTune = new LocalFineTune(local());
+        }
+        return fineTune;
+    }
+
+    /**
+     * Returns what measures this PC's chat models, its results kept next to the outputs folder
+     * in {@code evaluations.json}.
+     *
+     * @return it
+     */
+    public synchronized LocalEvaluation evaluation() {
+        if (evaluation == null) {
+            evaluation = new LocalEvaluation(local(), outputs.resolveSibling("evaluations.json"));
+        }
+        return evaluation;
     }
 
     private LocalProvider local() {
@@ -355,6 +395,7 @@ public final class ChatService {
         ChatService service = new ChatService(keys, ps, outputs);
         service.hub = new Hub(keys, downloads, bases.getOrDefault("hub", Hub.BASE));
         local.drawToo(() -> service.hub().core());
+        local.filmToo();
         service.vast = new VastAi(keys, bases.getOrDefault(VastAi.PROVIDER, VastAi.BASE));
         return service;
     }
@@ -561,6 +602,9 @@ public final class ChatService {
                 for (ModelInfo x : l.models()) {
                     Map<String, Object> j = x.toJson();
                     j.put("shown", shown(x));
+                    if (x.media().contains("video")) {
+                        j.put("makesVideo", p.makesVideo());
+                    }
                     if (x.media().contains("speech") && p instanceof RemoteProvider r) {
                         j.put("speech", r.speechOptions(x.id()).toJson());
                     } else if (x.media().contains("speech") && p.voiceOptions(x.id()) != null) {
@@ -571,7 +615,7 @@ public final class ChatService {
             }
         }
         Map<String, Object> auto = new LinkedHashMap<>();
-        for (String medium : List.of("text", "image", "speech")) {
+        for (String medium : List.of("text", "image", "speech", "video")) {
             ModelInfo m = pickAuto(lists, medium);
             if (m != null) {
                 auto.put(medium, m.key());
@@ -766,11 +810,69 @@ public final class ChatService {
     private Drawn drawHere(ModelInfo target, String prompt, LocalImages.Settings settings, LocalImages.Listener listener)
             throws IOException, InterruptedException {
         ChatProvider where = provider(target.provider());
+        if (where instanceof LocalProvider here && here.videos() != null) {
+            here.videos().close();   // a video model and an image model do not fit together
+        }
         List<LocalImages.Picture> pictures = logged(target, "image", () -> where.draw(target.id(), prompt, settings, listener),
                 r -> new long[] {-1, -1, r.size()});
         List<Media> media = pictures.stream().map(LocalImages.Picture::media).toList();
         return new Drawn(new Generated(target, media, save(media, "image")),
                 pictures.stream().map(LocalImages.Picture::seed).toList());
+    }
+
+    /**
+     * What a video clip run made.
+     *
+     * @param model the model that made it
+     * @param file where the clip was saved
+     * @param clip the clip
+     */
+    public record Filmed(ModelInfo model, Path file, LocalVideos.Clip clip) {
+    }
+
+    /**
+     * Makes a video clip, step by step, with a video model on this PC (or on a worker host
+     * whose provider makes videos), and saves it to the outputs folder as an animated PNG.
+     *
+     * @param model a video model's key ({@code local/name}) or {@value #AUTO}
+     * @param prompt what the clip shows
+     * @param settings the clip's shape, length and sampling
+     * @param listener hears each step and can stop the clip
+     * @param route told which model makes it, before it starts
+     * @return the clip
+     * @throws IOException if there is no such model or it cannot be loaded
+     * @throws InterruptedException if interrupted
+     * @throws java.util.concurrent.CancellationException if the listener stopped it
+     */
+    public Filmed video(String model, String prompt, LocalVideos.Settings settings, LocalVideos.Listener listener,
+            Consumer<ModelInfo> route) throws IOException, InterruptedException {
+        if (prompt == null || prompt.isBlank()) {
+            throw new IllegalArgumentException("describe the video first");
+        }
+        ModelInfo target = resolve(model, "video");
+        ChatProvider p = provider(target.provider());
+        if (!p.makesVideo()) {
+            throw new IllegalArgumentException(target.key() + " cannot make clips through the studio yet");
+        }
+        route.accept(target);
+        LocalVideos.Clip clip = logged(target, "video", () -> p.video(target.id(), prompt, settings, listener),
+                r -> new long[] {-1, -1, 1});
+        return new Filmed(target, save(List.of(clip.media()), "video").get(0), clip);
+    }
+
+    /**
+     * Describes a video model's usual settings and sizes, for the page.
+     *
+     * @param model a video model's key
+     * @return {@code {kind?, label?, steps?, guidance?, fps?, sizes?}}
+     */
+    public Map<String, Object> videoOptions(String model) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        LocalVideos videos = local().videos();
+        if (videos != null && model != null && model.startsWith("local/")) {
+            videos.describe(model.substring("local/".length())).ifPresent(out::putAll);
+        }
+        return out;
     }
 
     /**
@@ -983,6 +1085,7 @@ public final class ChatService {
                     case "image" -> "no image model is available: put a Stable Diffusion or FLUX.1 model in a model folder"
                             + " or add an OpenAI or Google API key";
                     case "transcribe" -> "no transcribing model is available: put a Whisper model in a model folder";
+                    case "video" -> "no video model is available: put a Wan 2.1 or 2.2 model in a model folder";
                     default -> "no speech model is available: put a Kokoro, F5-TTS, Orpheus or VITS (MMS-TTS) model"
                             + " in a model folder"
                             + " or add an OpenAI or Google API key";
@@ -1029,7 +1132,7 @@ public final class ChatService {
     private ModelInfo pickAuto(Map<String, Listing> lists, String medium) {
         for (ChatProvider p : providers()) {
             Listing l = lists.get(p.id());
-            if (p.ready() && l != null && settings.auto(p.id())) {
+            if (p.ready() && l != null && settings.auto(p.id()) && (!medium.equals("video") || p.makesVideo())) {
                 ModelInfo m = p.preferredFor(medium, l.models().stream().filter(this::shown).toList());
                 if (m != null) {
                     return m;

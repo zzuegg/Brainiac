@@ -4,7 +4,10 @@ import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.io.WeightSource;
 import io.github.zzuegg.brainiac.nn.Dense;
+import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.LayerNorm;
+import io.github.zzuegg.brainiac.nn.TransformerBlock;
+import io.github.zzuegg.brainiac.nn.diffusion.ClipVisionEncoder;
 import io.github.zzuegg.brainiac.nn.diffusion.T5Encoder;
 import io.github.zzuegg.brainiac.nn.diffusion.WanTransformer;
 import io.github.zzuegg.brainiac.nn.diffusion.WanVae;
@@ -128,6 +131,59 @@ final class WanPretrained {
         boolean crossNorm = source.contains(names.apply("blocks.0.norm2.weight"));
         return new WanTransformer.Settings(in, out, p, heads, d / heads, layers, ffn, text, freq, eps, crossNorm,
                 imageFeatures, 10000);
+    }
+
+    // ------------------------------------------------------------------------------- CLIP vision
+
+    /** The prefix of a CLIP vision model's weights: {@code vision_model.} (transformers, ComfyUI) or none. */
+    static String clipPrefix(WeightSource source) {
+        return source.contains("vision_model.embeddings.patch_embedding.weight") ? "vision_model." : "";
+    }
+
+    /** Whether a file holds a CLIP vision model in transformers' naming. */
+    static boolean clipVision(WeightSource source) {
+        return source.contains(clipPrefix(source) + "embeddings.patch_embedding.weight");
+    }
+
+    /**
+     * A CLIP vision model's shape, from transformers' config if there is one, otherwise from
+     * the weights: GELU (OpenCLIP's ViT-H/14, which Wan 2.1 uses) and heads of 80 features at
+     * width 1280, else of 64.
+     */
+    static ClipVisionEncoder.Settings clipSettings(WeightSource source, String prefix, Map<String, Object> config) {
+        Shape patch = source.shape(prefix + "embeddings.patch_embedding.weight");
+        int d = patch.dim(0);
+        int p = patch.dim(2);
+        int tokens = source.shape(prefix + "embeddings.position_embedding.weight").dim(0);
+        int grid = (int) Math.round(Math.sqrt(tokens - 1));
+        int ffn = source.shape(prefix + "encoder.layers.0.mlp.fc1.weight").dim(0);
+        int layers = 0;
+        while (source.contains(prefix + "encoder.layers." + layers + ".self_attn.q_proj.weight")) {
+            layers++;
+        }
+        int heads = config != null && config.get("num_attention_heads") != null
+                ? (int) Json.integer(config, "num_attention_heads", 16) : d == 1280 ? 16 : d / 64;
+        Activation act = config == null || "gelu".equals(Json.string(config, "hidden_act", "gelu"))
+                ? Activation.GELU : Activation.QUICK_GELU;
+        return new ClipVisionEncoder.Settings(grid * p, p, d, layers, heads, ffn, act);
+    }
+
+    /** Builds a CLIP vision encoder of {@code s.layers()} blocks and fills it; {@code w} is at the model's prefix. */
+    static ClipVisionEncoder clipVision(Weights w, ClipVisionEncoder.Settings s) {
+        ClipVisionEncoder e = Tensor.withoutValues(() -> new ClipVisionEncoder(s, new SplittableRandom(0)));
+        Tensor conv = w.get("embeddings.patch_embedding.weight");
+        int d = s.features();
+        w.set(e.patchEmbedding().weight(), conv.reshape(d, 3 * s.patch() * s.patch()).transpose(), conv);
+        w.zero(e.patchEmbedding().bias());
+        w.set(e.classEmbedding(), w.get("embeddings.class_embedding"));
+        w.set(e.positionEmbedding(), w.get("embeddings.position_embedding.weight"));
+        w.norm(e.preNorm(), "pre_layrnorm");
+        List<TransformerBlock> blocks = e.blocks();
+        for (int i = 0; i < blocks.size(); i++) {
+            Pretrained.clipLayer(w.at("encoder.layers." + i + "."), blocks.get(i));
+        }
+        w.checkFilled(e, "CLIP image encoder");
+        return e;
     }
 
     /** Builds a transformer and fills it; {@code w} sees the checkpoint under diffusers' names. */

@@ -20,6 +20,13 @@ import java.util.SplittableRandom;
  *
  * <p>The network is a two-layer perceptron over one-hot encodings of the context's last
  * {@code window} tokens and the utterance's first {@code utteranceTokens} tokens.
+ *
+ * <p>{@link #doubleQ} turns on clipped double Q-learning (Fujimoto et al. 2018,
+ * <a href="https://arxiv.org/abs/1802.09477">arXiv:1802.09477</a>), which the ArCHer paper uses
+ * against over-estimation: two independently initialized Q networks with their own target
+ * networks, both regressed onto {@code r + gamma min(Q1'(s', a'), Q2'(s', a'))}, and the
+ * minimum of the two as the critic's estimate. {@link #targetRate} changes the Polyak rate of
+ * the targets. Both are off (and unchanged) by default.
  */
 public final class TurnLevelCritic {
 
@@ -39,12 +46,17 @@ public final class TurnLevelCritic {
     private final int window;
     private final int utteranceTokens;
     private final float gamma;
-    private final float tau;
+    private float tau;
     private final Var w1;
     private final Var w2;
     private final float[] target1;
     private final float[] target2;
     private final int hidden;
+    private final long seed;
+    private Var v1;
+    private Var v2;
+    private float[] targetV1;
+    private float[] targetV2;
 
     private TurnLevelCritic(int vocab, int window, int utteranceTokens, int hidden, float gamma, float tau,
             long seed) {
@@ -54,6 +66,7 @@ public final class TurnLevelCritic {
         this.hidden = hidden;
         this.gamma = gamma;
         this.tau = tau;
+        this.seed = seed;
         SplittableRandom r = new SplittableRandom(seed);
         int in = inputs();
         this.w1 = Var.param(Tensor.of(Shape.of(in, hidden), gaussian(r, in * hidden, (float) Math.sqrt(2.0 / in))));
@@ -75,6 +88,43 @@ public final class TurnLevelCritic {
     public static TurnLevelCritic of(int vocab, int window, int utteranceTokens, int hidden, float gamma, float tau,
             long seed) {
         return new TurnLevelCritic(vocab, window, utteranceTokens, hidden, gamma, tau, seed);
+    }
+
+    /**
+     * Turns on clipped double Q-learning: a second Q network (seeded independently) and its
+     * target; the TD target and {@link #q} use the minimum of the two.
+     *
+     * @return this critic
+     */
+    public TurnLevelCritic doubleQ() {
+        if (v1 == null) {
+            SplittableRandom r = new SplittableRandom(seed ^ 0x9E3779B97F4A7C15L);
+            int in = inputs();
+            v1 = Var.param(Tensor.of(Shape.of(in, hidden), gaussian(r, in * hidden, (float) Math.sqrt(2.0 / in))));
+            v2 = Var.param(Tensor.of(Shape.of(hidden, 1), gaussian(r, hidden, (float) Math.sqrt(1.0 / hidden))));
+            targetV1 = v1.value().toArray();
+            targetV2 = v2.value().toArray();
+        }
+        return this;
+    }
+
+    /** @return whether clipped double Q-learning is on */
+    public boolean isDoubleQ() {
+        return v1 != null;
+    }
+
+    /**
+     * @param rate the target networks' Polyak tracking rate per update (ArCHer: about 0.01)
+     * @return this critic
+     */
+    public TurnLevelCritic targetRate(float rate) {
+        this.tau = rate;
+        return this;
+    }
+
+    /** @return the discount */
+    public float gamma() {
+        return gamma;
     }
 
     private int inputs() {
@@ -121,16 +171,34 @@ public final class TurnLevelCritic {
         if (contexts.isEmpty()) {
             return new float[0];
         }
-        return Var.noGrad(() -> forward(encode(contexts, utterances), w1, w2)).value().toArray();
+        Tensor x = encode(contexts, utterances);
+        float[] q = Var.noGrad(() -> forward(x, w1, w2)).value().toArray();
+        if (v1 != null) {
+            float[] q2 = Var.noGrad(() -> forward(x, v1, v2)).value().toArray();
+            for (int i = 0; i < q.length; i++) {
+                q[i] = Math.min(q[i], q2[i]);
+            }
+        }
+        return q;
     }
 
     private float[] targetQ(List<int[]> contexts, List<int[]> utterances) {
         if (contexts.isEmpty()) {
             return new float[0];
         }
+        Tensor x = encode(contexts, utterances);
         Var a = Var.of(Tensor.of(Shape.of(inputs(), hidden), target1));
         Var b = Var.of(Tensor.of(Shape.of(hidden, 1), target2));
-        return Var.noGrad(() -> forward(encode(contexts, utterances), a, b)).value().toArray();
+        float[] q = Var.noGrad(() -> forward(x, a, b)).value().toArray();
+        if (v1 != null) {
+            Var c = Var.of(Tensor.of(Shape.of(inputs(), hidden), targetV1));
+            Var d = Var.of(Tensor.of(Shape.of(hidden, 1), targetV2));
+            float[] q2 = Var.noGrad(() -> forward(x, c, d)).value().toArray();
+            for (int i = 0; i < q.length; i++) {
+                q[i] = Math.min(q[i], q2[i]);
+            }
+        }
+        return q;
     }
 
     /**
@@ -162,12 +230,21 @@ public final class TurnLevelCritic {
             cs.add(t.context());
             us.add(t.utterance());
         }
-        Var loss = forward(encode(cs, us), w1, w2).sub(Tensor.of(Shape.of(y.length, 1), y)).square().mean();
+        Tensor x = encode(cs, us);
+        Tensor target = Tensor.of(Shape.of(y.length, 1), y);
+        Var loss = forward(x, w1, w2).sub(target).square().mean();
         double value = loss.value().item();
+        if (v1 != null) {
+            loss = loss.add(forward(x, v1, v2).sub(target).square().mean());
+        }
         loss.backward();
         optimizer.step(parameters());
         track(target1, w1.value().toArray());
         track(target2, w2.value().toArray());
+        if (v1 != null) {
+            track(targetV1, v1.value().toArray());
+            track(targetV2, v2.value().toArray());
+        }
         return value;
     }
 
@@ -179,7 +256,7 @@ public final class TurnLevelCritic {
 
     /** @return the trainable parameters */
     public List<Var> parameters() {
-        return List.of(w1, w2);
+        return v1 == null ? List.of(w1, w2) : List.of(w1, w2, v1, v2);
     }
 
     @Override

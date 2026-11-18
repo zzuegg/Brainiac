@@ -262,18 +262,7 @@ final class Pretrained {
         t.set(e.positionEmbedding(), t.get("embeddings.position_embedding.weight"));
         List<TransformerBlock> blocks = e.blocks();
         for (int i = 0; i < blocks.size(); i++) {
-            Weights l = t.at("encoder.layers." + i + ".");
-            List<Var> p = blocks.get(i).parameters();
-            // self-attention (8), its norm (2), the feed-forward norm (2), up, down (2 each)
-            l.attention(p, 0, "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.out_proj");
-            l.set(p.get(8), l.get("layer_norm1.weight"));
-            l.set(p.get(9), l.get("layer_norm1.bias"));
-            l.set(p.get(10), l.get("layer_norm2.weight"));
-            l.set(p.get(11), l.get("layer_norm2.bias"));
-            l.matrix(p.get(12), "mlp.fc1.weight");
-            l.bias(p.get(13), "mlp.fc1.bias");
-            l.matrix(p.get(14), "mlp.fc2.weight");
-            l.bias(p.get(15), "mlp.fc2.bias");
+            clipLayer(t.at("encoder.layers." + i + "."), blocks.get(i));
         }
         t.norm(e.finalNorm(), "final_layer_norm");
         if (e.projection() != null) {
@@ -283,6 +272,21 @@ final class Pretrained {
         }
         w.checkFilled(e, "text encoder");
         return e;
+    }
+
+    /** One CLIP encoder layer in transformers' naming ({@code self_attn.q_proj}, {@code mlp.fc1}, ...). */
+    static void clipLayer(Weights l, TransformerBlock block) {
+        List<Var> p = block.parameters();
+        // self-attention (8), its norm (2), the feed-forward norm (2), up, down (2 each)
+        l.attention(p, 0, "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.out_proj");
+        l.set(p.get(8), l.get("layer_norm1.weight"));
+        l.set(p.get(9), l.get("layer_norm1.bias"));
+        l.set(p.get(10), l.get("layer_norm2.weight"));
+        l.set(p.get(11), l.get("layer_norm2.bias"));
+        l.matrix(p.get(12), "mlp.fc1.weight");
+        l.bias(p.get(13), "mlp.fc1.bias");
+        l.matrix(p.get(14), "mlp.fc2.weight");
+        l.bias(p.get(15), "mlp.fc2.bias");
     }
 
     /**

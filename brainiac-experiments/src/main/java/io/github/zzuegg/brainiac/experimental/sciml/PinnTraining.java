@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.experimental.sciml;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.train.Lbfgs;
+import io.github.zzuegg.brainiac.nn.Layer;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.train.Optimizer;
@@ -36,6 +37,12 @@ import java.util.function.Function;
  *       {@link CollocationSampler#residualAdaptive}: the collocation set is redrawn every few
  *       steps with density proportional to the residual.
  * </ul>
+ *
+ * <p>For problems that stay ill-conditioned with all four, {@link #curriculum} (coefficient
+ * curriculum), {@link #timeMarching} (sequence-to-sequence time windows) and
+ * {@link #periodicField} (exact periodic boundaries by a Fourier embedding) change the problem
+ * the optimiser sees; {@link PinnNaturalGradient} and {@link NystromNewtonCg} change the
+ * optimiser.
  */
 public final class PinnTraining {
 
@@ -446,5 +453,232 @@ public final class PinnTraining {
             loss = s.total().value().item();
         }
         return new Result(loss, (System.nanoTime() - start) / 1e6, s.weights.clone(), s.causalMin);
+    }
+
+    // ---------------------------------------------------------------- 9.5.14 curriculum, time marching, exact periodicity
+
+    /**
+     * Exact periodic boundary conditions by construction (Dong and Ni, 2021,
+     * <a href="https://arxiv.org/abs/2007.07442">arXiv:2007.07442</a>): the periodic coordinate
+     * enters the network only as {@code sin(2 pi (x - low) / period)} and
+     * {@code cos(2 pi (x - low) / period)}, so the field and all its derivatives along that axis
+     * are periodic for any weights, and the periodic loss term can be dropped
+     * ({@link #withoutTerm}). Derivatives with respect to {@code x} flow through the embedding
+     * by autograd as usual.
+     *
+     * @param inner the network over the {@code d + 1} embedded coordinates (the periodic one
+     *     replaced by its sine and cosine, first; the others in order)
+     * @param axis the periodic coordinate
+     * @param low the start of the period
+     * @param period the period length
+     * @return a field over the original {@code d} coordinates
+     */
+    public static Layer periodicField(Layer inner, int axis, double low, double period) {
+        float w = (float) (2 * Math.PI / period);
+        float lo = (float) low;
+        return new Layer() {
+            @Override
+            public Var forward(Var x) {
+                int d = x.shape().dim(1);
+                Var theta = x.slice(1, axis, axis + 1).sub(lo).mul(w);
+                List<Var> parts = new ArrayList<>();
+                parts.add(theta.sin());
+                parts.add(theta.cos());
+                for (int j = 0; j < d; j++) {
+                    if (j != axis) {
+                        parts.add(x.slice(1, j, j + 1));
+                    }
+                }
+                return inner.forward(Var.concat(1, parts.toArray(new Var[0])));
+            }
+
+            @Override
+            public List<Var> parameters() {
+                return inner.parameters();
+            }
+
+            @Override
+            public int outputSize(int inputSize) {
+                return inner.outputSize(inputSize + 1);
+            }
+
+            @Override
+            public String toString() {
+                return "PeriodicField(axis " + axis + ", " + inner + ")";
+            }
+        };
+    }
+
+    /**
+     * A problem with the condition terms of one name removed, for example the
+     * {@code "periodic"} term once {@link #periodicField} satisfies it exactly.
+     *
+     * @param problem the problem
+     * @param name the term name to drop
+     * @return the reduced problem
+     */
+    public static Problem withoutTerm(Problem problem, String name) {
+        List<Term> kept = new ArrayList<>();
+        for (Term t : problem.conditions()) {
+            if (!t.name().equals(name)) {
+                kept.add(t);
+            }
+        }
+        return new Problem(problem.residual(), problem.domain(), problem.timeAxis(), kept);
+    }
+
+    /**
+     * Curriculum regularisation (Krishnapriyan et al., NeurIPS 2021,
+     * <a href="https://arxiv.org/abs/2109.01050">arXiv:2109.01050</a>): train on an easy version
+     * of the PDE first (for advection, a small speed {@code beta}) and move through harder
+     * versions to the target, warm-starting each stage from the last. The loss landscape of the
+     * hard problem is badly conditioned; the curriculum starts the optimiser in the basin of the
+     * right solution. Each stage runs the full {@code options} recipe.
+     *
+     * @param pinn the network, trained in place
+     * @param stages the problems from easiest to the target
+     * @param options the recipe for every stage
+     * @param seed the seed
+     * @return the last stage's outcome, with the total time
+     */
+    public static Result curriculum(PhysicsInformedNetwork pinn, List<Problem> stages, Options options, long seed) {
+        double millis = 0;
+        Result last = null;
+        for (int i = 0; i < stages.size(); i++) {
+            last = train(pinn, stages.get(i), options, seed + i);
+            millis += last.millis();
+        }
+        if (last == null) {
+            throw new IllegalArgumentException("a curriculum needs at least one stage");
+        }
+        return new Result(last.loss(), millis, last.termWeights(), last.causalMinWeight());
+    }
+
+    /**
+     * The outcome of time marching.
+     *
+     * @param field the piecewise-in-time field over the whole domain
+     * @param loss the last window's final loss
+     * @param millis the total training time
+     */
+    public record Marched(Layer field, double loss, double millis) {
+    }
+
+    /**
+     * Sequence-to-sequence time marching (Krishnapriyan et al., 2021; also Wight and Zhao,
+     * 2020): the time axis is cut into {@code windows} equal slabs that are solved one after
+     * another, each by its own network (warm-started from the previous window's weights) whose
+     * initial condition is the previous window's prediction at the shared time. Each window is a
+     * short-time problem, which PINNs solve well; errors can only propagate forward in time.
+     *
+     * @param fields makes a fresh field network (all of the same architecture)
+     * @param problem the full problem; its condition terms are ignored and rebuilt per window
+     * @param initial the initial condition at a point
+     * @param boundaries the boundary terms for a window's box (empty when the field is
+     *     {@link #periodicField exactly periodic})
+     * @param windows the number of time windows
+     * @param initialPoints initial-condition points per window
+     * @param options the recipe for every window
+     * @param seed the seed
+     * @return the piecewise field and the cost
+     */
+    public static Marched timeMarching(java.util.function.Supplier<Layer> fields, Problem problem,
+            java.util.function.ToDoubleFunction<double[]> initial,
+            Function<CollocationSampler, List<Term>> boundaries, int windows, int initialPoints, Options options,
+            long seed) {
+        int ta = problem.timeAxis();
+        if (ta < 0) {
+            throw new IllegalArgumentException("time marching needs a time axis");
+        }
+        CollocationSampler domain = problem.domain();
+        int d = domain.dimension();
+        double t0 = domain.low(ta);
+        double t1 = domain.high(ta);
+        SplittableRandom random = new SplittableRandom(seed);
+        List<Layer> nets = new ArrayList<>();
+        double[] edges = new double[windows + 1];
+        double millis = 0;
+        double loss = Double.NaN;
+        Layer previous = null;
+        for (int k = 0; k <= windows; k++) {
+            edges[k] = t0 + (t1 - t0) * k / windows;
+        }
+        for (int k = 0; k < windows; k++) {
+            double[] low = new double[d];
+            double[] high = new double[d];
+            for (int a = 0; a < d; a++) {
+                low[a] = domain.low(a);
+                high[a] = domain.high(a);
+            }
+            low[ta] = edges[k];
+            high[ta] = edges[k + 1];
+            CollocationSampler box = CollocationSampler.box(low, high);
+            double[][] ic = box.face(ta, false, initialPoints, random);
+            double[] values;
+            if (previous == null) {
+                values = new double[ic.length];
+                for (int i = 0; i < ic.length; i++) {
+                    values[i] = initial.applyAsDouble(ic[i]);
+                }
+            } else {
+                values = PhysicsInformedNetwork.of(previous).predict(ic);
+            }
+            List<Term> terms = new ArrayList<>();
+            terms.add(dirichlet("initial", ic, values));
+            terms.addAll(boundaries.apply(box));
+            Layer field = fields.get();
+            if (previous != null) {
+                io.github.zzuegg.brainiac.experimental.train.CurvatureProducts.assign(field.parameters(),
+                        io.github.zzuegg.brainiac.experimental.train.CurvatureProducts.values(previous.parameters()));
+            }
+            Result r = train(PhysicsInformedNetwork.of(field), new Problem(problem.residual(), box, ta, terms), options,
+                    random.nextLong());
+            millis += r.millis();
+            loss = r.loss();
+            nets.add(field);
+            previous = field;
+        }
+        return new Marched(piecewiseInTime(nets, edges, ta), loss, millis);
+    }
+
+    /** One field per time slab, each used for the points whose time falls in its slab. */
+    private static Layer piecewiseInTime(List<Layer> nets, double[] edges, int axis) {
+        return new Layer() {
+            @Override
+            public Var forward(Var x) {
+                int n = x.shape().dim(0);
+                int d = x.shape().dim(1);
+                float[] v = x.value().toArray();
+                Var out = null;
+                for (int k = 0; k < nets.size(); k++) {
+                    float[] m = new float[n];
+                    for (int i = 0; i < n; i++) {
+                        double t = v[i * d + axis];
+                        boolean last = k == nets.size() - 1;
+                        m[i] = (t >= edges[k] || k == 0) && (t < edges[k + 1] || last) ? 1 : 0;
+                    }
+                    Var part = nets.get(k).forward(x).mul(Tensor.of(Shape.of(n, 1), m));
+                    out = out == null ? part : out.add(part);
+                }
+                return out;
+            }
+
+            @Override
+            public List<Var> parameters() {
+                List<Var> p = new ArrayList<>();
+                nets.forEach(l -> p.addAll(l.parameters()));
+                return p;
+            }
+
+            @Override
+            public int outputSize(int inputSize) {
+                return nets.get(0).outputSize(inputSize);
+            }
+
+            @Override
+            public String toString() {
+                return "TimeMarched(" + nets.size() + " windows)";
+            }
+        };
     }
 }

@@ -35,6 +35,18 @@ import java.util.Map;
  *   <li>{@code GET /api/serve} says whether one of this PC's chat models is served to other
  *       programs with the OpenAI API; {@code POST /api/serve} with {@code {"model": "local/qwen",
  *       "port": 8080, "network": false}} starts that, and with {@code {"stop": true}} stops it.
+ *   <li>{@code GET /api/quantize} gives the sizes a smaller copy of a chat model can have and the
+ *       copy being made; {@code POST /api/quantize} with {@code {"model": "local/qwen", "size":
+ *       "Q4_K_M"}} starts one: a quantized GGUF file next to the original.
+ *   <li>{@code GET /api/finetune} tells how teaching a chat model with LoRA is going; {@code POST
+ *       /api/finetune} with {@code {"model": "local/qwen", "name": "support", "data": "<JSON
+ *       lines>", "rank": 8, "alpha": 16, "epochs": 3, "learningRate": 0.0002, "length": 512,
+ *       "rows": 1}} starts it, and with {@code {"stop": true}} stops it after the current step.
+ *   <li>{@code GET /api/evaluate} lists the measurements of this PC's chat models, newest first;
+ *       {@code POST /api/evaluate} with {@code {"model": "local/qwen", "task": "arc.jsonl", "data":
+ *       "<JSON lines>", "limit": 100, "shots": 0}} scores a model on a benchmark file, with {@code
+ *       {"model": "local/qwen", "speed": true}} times its reading and writing, with {@code {"stop":
+ *       true}} stops the one under way and with {@code {"remove": "<id>"}} forgets one.
  *   <li>{@code POST /api/images} with {@code {"model": "auto", "prompt": "...", "aspect": "16:9",
  *       "count": 2}} draws pictures; {@code POST /api/speech} with {@code {"model": "auto", "text":
  *       "...", "voice": "coral", "speed": 1, "instructions": "calm", "format": "mp3"}} speaks.
@@ -48,6 +60,15 @@ import java.util.Map;
  *       stops the drawing. Leave {@code seed} out for a random one. {@code POST
  *       /api/images/options} with {@code {"model": "local/sdxl"}} gives the samplers and the
  *       model's usual steps and guidance.
+ *   <li>{@code POST /api/video} with {@code {"model": "local/wan2.1-t2v-1.3b", "prompt": "...",
+ *       "negativePrompt": "", "aspect": "16:9", "small": false, "seconds": 2, "steps": 30,
+ *       "guidance": 5, "seed": 42}} (optionally {@code "width"} and {@code "height"} of its own, and
+ *       {@code "image"}, a {@code data:} URL of the first frame for image-to-video models)
+ *       makes a clip with a Wan model, as a server-sent event stream:
+ *       {@code route}, {@code step} ({@code {step, total}}), one {@code video} ({@code {mime, data,
+ *       file, seed, width, height, frames, fps}}, an animated PNG), then {@code done} or
+ *       {@code error}. Closing the stream stops it. {@code POST /api/video/options} with
+ *       {@code {"model": "local/..."}} gives the model's usual steps, guidance, frame rate and sizes.
  *   <li>{@code POST /api/speech/voice} with {@code {"model": "local/f5-tts", "name": "Me", "audio":
  *       "<base64 WAV>", "transcript": "..."}} keeps a voice made from a recording, for a model that
  *       clones voices; leave {@code transcript} empty to have a Whisper model write it down. It
@@ -139,6 +160,71 @@ final class ChatRoutes {
                 throw new Exchanges.BadRequest(e.getMessage());
             }
         });
+        server.get("/api/quantize", ex -> Exchanges.json(ex, 200, chat.quantizer().state()));
+        server.post("/api/quantize", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 4096);
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                Exchanges.json(ex, 200, chat.quantizer().start(model, Json.string(body, "size", "Q4_K_M")));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model or size, the copy is there already, or one is being made: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
+        server.get("/api/finetune", ex -> Exchanges.json(ex, 200, chat.fineTune().state()));
+        server.post("/api/finetune", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            if (Boolean.TRUE.equals(body.get("stop"))) {
+                chat.fineTune().stop();
+                Exchanges.json(ex, 200, chat.fineTune().state());
+                return;
+            }
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                int rank = (int) Json.integer(body, "rank", 8);
+                Exchanges.json(ex, 200, chat.fineTune().start(model, Json.string(body, "name", ""),
+                        Json.string(body, "data", ""),
+                        new io.github.zzuegg.brainiac.studio.chat.LocalFineTune.Settings(rank,
+                                (float) Json.number(body, "alpha", 2.0 * rank), (int) Json.integer(body, "epochs", 3),
+                                (float) Json.number(body, "learningRate", 2e-4), (int) Json.integer(body, "length", 512),
+                                (int) Json.integer(body, "rows", 1))));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model, a bad setting or name, or another run: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
+        server.get("/api/evaluate", ex -> Exchanges.json(ex, 200, chat.evaluation().state()));
+        server.post("/api/evaluate", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            if (Boolean.TRUE.equals(body.get("stop"))) {
+                chat.evaluation().stop();
+                Exchanges.json(ex, 200, chat.evaluation().state());
+                return;
+            }
+            if (body.get("remove") instanceof String id) {
+                chat.evaluation().remove(id);
+                Exchanges.json(ex, 200, chat.evaluation().state());
+                return;
+            }
+            String model = Json.string(body, "model", "");
+            if (model.startsWith("local/")) {
+                model = model.substring(6);
+            }
+            try {
+                Exchanges.json(ex, 200, Boolean.TRUE.equals(body.get("speed")) ? chat.evaluation().startSpeed(model)
+                        : chat.evaluation().start(model, Json.string(body, "task", ""), Json.string(body, "data", ""),
+                                (int) Json.integer(body, "limit", 100), (int) Json.integer(body, "shots", 0)));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model, a file the studio cannot read, or another measurement: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
         server.post("/api/keys", this::keys);
         server.post("/api/providers", this::providers);
         server.get("/api/chats", ex -> Exchanges.json(ex, 200, Map.of("chats", chat.conversations().list())));
@@ -159,6 +245,9 @@ final class ChatRoutes {
         server.post("/api/chat", this::chat);
         server.post("/api/images", this::images);
         server.post("/api/images/draw", this::draw);
+        server.post("/api/video", this::video);
+        server.post("/api/video/options", ex -> Exchanges.json(ex, 200,
+                chat.videoOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
                 chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/transcribe", this::transcribe);
@@ -389,6 +478,88 @@ final class ChatRoutes {
                 }
                 LOG.log(System.Logger.Level.INFO, "drawing failed: " + e.getMessage());
                 events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+            }
+        } catch (IOException closed) {
+            // the page stopped reading
+        }
+    }
+
+    private void video(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+        String model = Json.string(body, "model", ChatService.AUTO);
+        String prompt = Json.string(body, "prompt", "");
+        if (prompt.isBlank()) {
+            throw new Exchanges.BadRequest("describe the video first");
+        }
+        io.github.zzuegg.brainiac.studio.chat.Media picture = null;
+        String image = Json.string(body, "image", "");
+        if (!image.isBlank()) {
+            // a data: URL from the page, or plain base64
+            int comma = image.indexOf(',');
+            String mime = image.startsWith("data:") && comma > 0
+                    ? image.substring(5, comma).replace(";base64", "") : "image/png";
+            try {
+                picture = new io.github.zzuegg.brainiac.studio.chat.Media(
+                        java.util.Base64.getDecoder().decode(image.substring(comma + 1).strip()), mime);
+            } catch (IllegalArgumentException e) {
+                throw new Exchanges.BadRequest("the start picture is not base64");
+            }
+        }
+        long seed = body.get("seed") instanceof Number n ? n.longValue() : new java.util.Random().nextLong(1L << 32);
+        io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings settings;
+        try {
+            settings = new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings(
+                    Json.string(body, "negativePrompt", ""), Json.string(body, "aspect", "16:9"),
+                    Boolean.TRUE.equals(body.get("small")), Json.number(body, "seconds", 2),
+                    (int) Json.integer(body, "steps", 30), Json.number(body, "guidance", 5), seed,
+                    (int) Json.integer(body, "width", 0), (int) Json.integer(body, "height", 0), picture);
+        } catch (IllegalArgumentException e) {
+            throw new Exchanges.BadRequest(e.getMessage());
+        }
+
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        ex.sendResponseHeaders(200, 0);
+        try (OutputStream out = ex.getResponseBody()) {
+            Events events = new Events(out);
+            long start = System.nanoTime();
+            try {
+                ChatService.Filmed f = chat.video(model, prompt, settings, (step, total) -> {
+                    events.sendQuietly("step", Map.of("step", step, "total", total));
+                    return !events.broken;   // the page went away: stop
+                }, m -> {
+                    Map<String, Object> route = new LinkedHashMap<>();
+                    route.put("key", m.key());
+                    route.put("name", m.name());
+                    route.put("seed", seed);
+                    events.sendQuietly("route", route);
+                });
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("mime", f.clip().media().mime());
+                m.put("data", java.util.Base64.getEncoder().encodeToString(f.clip().media().data()));
+                m.put("file", f.file().toString());
+                m.put("seed", f.clip().seed());
+                m.put("width", f.clip().width());
+                m.put("height", f.clip().height());
+                m.put("frames", f.clip().frames());
+                m.put("fps", f.clip().fps());
+                events.send("video", m);
+                events.send("done", Map.of("seconds", (System.nanoTime() - start) / 1e9));
+            } catch (java.util.concurrent.CancellationException e) {
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                events.sendQuietly("error", Map.of("message", "stopped"));
+            } catch (IOException | RuntimeException e) {
+                if (events.broken) {
+                    return;
+                }
+                LOG.log(System.Logger.Level.INFO, "video failed: " + e.getMessage());
+                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+            } catch (OutOfMemoryError e) {
+                LOG.log(System.Logger.Level.WARNING, "video ran out of memory");
+                events.sendQuietly("error", Map.of("message", "out of memory: try half size, a shorter clip or another device"));
             }
         } catch (IOException closed) {
             // the page stopped reading

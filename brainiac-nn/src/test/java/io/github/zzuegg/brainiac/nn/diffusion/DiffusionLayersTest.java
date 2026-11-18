@@ -302,4 +302,16 @@ class DiffusionLayersTest {
         float[] pieces = Var.noGrad(() -> FluxTransformer.attend(q, k, v, 10).value().toArray());
         assertArrayEquals(fused, pieces, 1e-5f);
     }
+
+    @Test
+    void wanAttentionInSlicesMatchesWhole() {
+        SplittableRandom r = new SplittableRandom(5);
+        Var q = Var.of(Tensor.normal(Shape.of(1, 3, 50, 8), 0, 1, r));
+        Var k = Var.of(Tensor.normal(Shape.of(1, 3, 50, 8), 0, 1, r));
+        Var v = Var.of(Tensor.normal(Shape.of(1, 3, 50, 8), 0, 1, r));
+        float[] whole = Var.noGrad(() -> WanTransformer.attend(q, k, v, Long.MAX_VALUE)).value().toArray();
+        // 16 queries a slice: four slices, the last of two
+        float[] sliced = Var.noGrad(() -> WanTransformer.attend(q, k, v, 3 * 16 * 50)).value().toArray();
+        assertArrayEquals(whole, sliced, 1e-5f);
+    }
 }

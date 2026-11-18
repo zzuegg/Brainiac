@@ -371,9 +371,43 @@ public final class UncertaintyBenchmark {
         return oneHot.argmax(1);
     }
 
+    private static final ThreadLocal<Predictions[]> CAPTURE = new ThreadLocal<>();
+
+    /**
+     * A method's in-distribution test predictions, for calibration studies.
+     *
+     * @param probs class probabilities {@code [n][classes]}
+     * @param labels the true labels
+     */
+    public record Predictions(double[][] probs, int[] labels) {
+    }
+
+    /**
+     * Trains and scores one method like {@link #classification} and returns its test
+     * predictions.
+     *
+     * @param method the method
+     * @param seed the seed
+     * @return the predictions on the in-distribution test set
+     */
+    public static Predictions predictions(Method method, long seed) {
+        Predictions[] box = new Predictions[1];
+        CAPTURE.set(box);
+        try {
+            classification(method, seed);
+        } finally {
+            CAPTURE.remove();
+        }
+        return box[0];
+    }
+
     private static Scores score(Images d, Function<Tensor, double[][]> probs, Function<Tensor, double[]> uncertainty,
             int passes) {
         double[][] p = probs.apply(d.testX());
+        Predictions[] box = CAPTURE.get();
+        if (box != null) {
+            box[0] = new Predictions(p, d.testLabels());
+        }
         double[][] q = probs.apply(d.oodX());
         double[] uIn = uncertainty == null ? entropy(p) : uncertainty.apply(d.testX());
         double[] uOut = uncertainty == null ? entropy(q) : uncertainty.apply(d.oodX());

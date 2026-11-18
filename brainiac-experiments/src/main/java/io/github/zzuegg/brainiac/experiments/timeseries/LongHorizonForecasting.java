@@ -167,6 +167,84 @@ public final class LongHorizonForecasting {
         return out;
     }
 
+    /** The names of the trained models of {@link #horizonCurves}, in order. */
+    public static final List<String> CURVE_LINEUP = List.of("DLinear", "PatchTST", "vanilla transformer",
+            "Autoformer", "FEDformer", "TimesNet", "N-HiTS", "N-BEATS", "iTransformer", "TiDE");
+
+    /**
+     * Learning curves of the univariate lineup (the trained models of {@link #horizons} plus
+     * the iTransformer on one variate and TiDE without covariates): test MSE after each
+     * checkpoint's number of steps, one run per model with a constant learning rate, so the
+     * value at a checkpoint equals a separate run of that budget.
+     *
+     * @param lookback input steps
+     * @param horizon the horizon
+     * @param checkpoints increasing step counts, starting at 0 or more
+     * @param models the names to train, a subset of {@link #CURVE_LINEUP}
+     * @param seed the series and initialisation seed
+     * @return model name to its test MSE at each checkpoint
+     */
+    public static Map<String, double[]> horizonCurves(int lookback, int horizon, int[] checkpoints,
+            List<String> models, long seed) {
+        int period = 24;
+        float[] series = SeasonalSeries.generate(1000 + 2 * lookback + 2 * horizon, period, 0.002, 1.0, 0.15, seed);
+        int split = 800 + lookback + horizon;
+        SeasonalSeries.MultiWindows train = univariateWindows(series, 0, split, lookback, horizon, 2);
+        SeasonalSeries.MultiWindows test = univariateWindows(series, split, series.length, lookback, horizon, 4);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        for (String name : models) {
+            Forecasters.Model m;
+            float lr = 0.003f;
+            switch (name) {
+                case "DLinear" -> {
+                    m = dlinear(lookback, horizon, period, seed);
+                    lr = 0.005f;
+                }
+                case "PatchTST" -> {
+                    m = patchTst(lookback, horizon, period, seed);
+                    lr = 0.005f;
+                }
+                case "vanilla transformer" -> m = Forecasters.transformer(name, Forecasters.Mixer.ATTENTION,
+                        lookback, horizon, 1, 16, 1, 25, seed);
+                case "Autoformer" -> m = Forecasters.transformer(name, Forecasters.Mixer.AUTO_CORRELATION, lookback,
+                        horizon, 1, 16, 1, 25, seed);
+                case "FEDformer" -> m = Forecasters.transformer(name, Forecasters.Mixer.FOURIER, lookback, horizon,
+                        1, 16, 1, 25, seed);
+                case "TimesNet" -> m = Forecasters.timesNet(lookback, horizon, 1, 8, 1, 2, seed);
+                case "N-HiTS" -> {
+                    NHits nhits = NHits.standard(lookback, horizon, 64, seed);
+                    m = new Forecasters.Model(name, Forecasters.channelIndependent(x -> nhits.forward(x, true)),
+                            nhits.parameters());
+                    lr = 0.002f;
+                }
+                case "N-BEATS" -> {
+                    NBeats nbeats = NBeats.generic(lookback, horizon, 3, 64, seed);
+                    m = normalised(name, v -> nbeats.forward(v, true), nbeats.parameters());
+                    lr = 0.002f;
+                }
+                case "iTransformer" -> {
+                    InvertedTransformer it = new InvertedTransformer(lookback, horizon, 1, 32, 1, 2,
+                            new SplittableRandom(seed));
+                    m = new Forecasters.Model(name, x -> it.forward(x, true), it.parameters());
+                }
+                case "TiDE" -> {
+                    Tide tide = new Tide(lookback, horizon, 1, 64, 4, 8, 1, new SplittableRandom(seed));
+                    m = new Forecasters.Model(name, x -> {
+                        int b = x.shape().dim(0);
+                        Var past = Var.of(Tensor.zeros(Shape.of(b, lookback, 1)));
+                        Var future = Var.of(Tensor.zeros(Shape.of(b, horizon, 1)));
+                        return tide.forward(List.of(x.reshape(b, lookback), past, future), true)
+                                .reshape(b, horizon, 1);
+                    }, tide.parameters());
+                }
+                default -> throw new IllegalArgumentException("unknown model " + name);
+            }
+            out.put(name, Forecasters.fitCurve(m, train.inputs(), train.targets(), test.inputs(), test.targets(),
+                    checkpoints, lr, seed));
+        }
+        return out;
+    }
+
     /**
      * Two incommensurate periods (12 and 31.4 steps), lookback 64, horizon 32.
      *

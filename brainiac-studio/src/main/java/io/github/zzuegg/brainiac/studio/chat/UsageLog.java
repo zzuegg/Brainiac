@@ -33,7 +33,7 @@ public final class UsageLog {
      * @param provider the provider id
      * @param key the name of the key used, or an empty string
      * @param model the provider's model id
-     * @param kind {@code chat}, {@code image} or {@code speech}
+     * @param kind {@code chat}, {@code image}, {@code speech} or {@code video}
      * @param in tokens read, or -1 if unknown
      * @param out tokens written, or -1 if unknown
      * @param units pictures made, or characters spoken; 0 for chat

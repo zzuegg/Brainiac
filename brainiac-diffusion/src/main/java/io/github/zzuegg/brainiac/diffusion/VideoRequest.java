@@ -15,9 +15,29 @@ import java.util.Objects;
  * @param shift the noise schedule's shift ({@code 0} for the model's default); higher spends
  *     more steps at high noise, which suits larger videos
  * @param seed the seed of the starting noise
+ * @param lowNoiseGuidance the guidance scale of Wan 2.2's low-noise expert, or 0 for
+ *     {@code guidance}
  */
 public record VideoRequest(String prompt, String negativePrompt, int width, int height, int frames, int steps,
-        float guidance, float shift, long seed) {
+        float guidance, float shift, long seed, float lowNoiseGuidance) {
+
+    /**
+     * A request with one guidance scale for both experts.
+     *
+     * @param prompt what the video shows
+     * @param negativePrompt what it should not show, or {@code null}
+     * @param width the width
+     * @param height the height
+     * @param frames the frames, {@code 1 + 4k}
+     * @param steps the steps
+     * @param guidance the guidance scale
+     * @param shift the schedule's shift, or 0
+     * @param seed the seed
+     */
+    public VideoRequest(String prompt, String negativePrompt, int width, int height, int frames, int steps,
+            float guidance, float shift, long seed) {
+        this(prompt, negativePrompt, width, height, frames, steps, guidance, shift, seed, 0);
+    }
 
     /** Checks the values. */
     public VideoRequest {
@@ -28,8 +48,8 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
         if (frames < 1 || (frames - 1) % 4 != 0) {
             throw new IllegalArgumentException("frames must be 1 + 4k (1, 5, 9, ..., 81), got " + frames);
         }
-        if (steps < 1 || shift < 0) {
-            throw new IllegalArgumentException("steps must be positive and the shift not negative");
+        if (steps < 1 || shift < 0 || lowNoiseGuidance < 0) {
+            throw new IllegalArgumentException("steps must be positive, the shift and guidance not negative");
         }
     }
 
@@ -49,7 +69,7 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that negative prompt
      */
     public VideoRequest withNegativePrompt(String negative) {
-        return new VideoRequest(prompt, negative, width, height, frames, steps, guidance, shift, seed);
+        return new VideoRequest(prompt, negative, width, height, frames, steps, guidance, shift, seed, lowNoiseGuidance);
     }
 
     /**
@@ -58,7 +78,7 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that size
      */
     public VideoRequest withSize(int w, int h) {
-        return new VideoRequest(prompt, negativePrompt, w, h, frames, steps, guidance, shift, seed);
+        return new VideoRequest(prompt, negativePrompt, w, h, frames, steps, guidance, shift, seed, lowNoiseGuidance);
     }
 
     /**
@@ -66,7 +86,7 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that length
      */
     public VideoRequest withFrames(int n) {
-        return new VideoRequest(prompt, negativePrompt, width, height, n, steps, guidance, shift, seed);
+        return new VideoRequest(prompt, negativePrompt, width, height, n, steps, guidance, shift, seed, lowNoiseGuidance);
     }
 
     /**
@@ -74,7 +94,7 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that many steps
      */
     public VideoRequest withSteps(int n) {
-        return new VideoRequest(prompt, negativePrompt, width, height, frames, n, guidance, shift, seed);
+        return new VideoRequest(prompt, negativePrompt, width, height, frames, n, guidance, shift, seed, lowNoiseGuidance);
     }
 
     /**
@@ -82,7 +102,7 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that guidance
      */
     public VideoRequest withGuidance(float g) {
-        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, g, shift, seed);
+        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, g, shift, seed, lowNoiseGuidance);
     }
 
     /**
@@ -90,7 +110,7 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that shift
      */
     public VideoRequest withShift(float s) {
-        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, guidance, s, seed);
+        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, guidance, s, seed, lowNoiseGuidance);
     }
 
     /**
@@ -98,6 +118,14 @@ public record VideoRequest(String prompt, String negativePrompt, int width, int 
      * @return a copy with that seed
      */
     public VideoRequest withSeed(long s) {
-        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, guidance, shift, s);
+        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, guidance, shift, s, lowNoiseGuidance);
+    }
+
+    /**
+     * @param g the low-noise expert's guidance scale, or 0 for {@link #guidance()}
+     * @return a copy with that scale
+     */
+    public VideoRequest withLowNoiseGuidance(float g) {
+        return new VideoRequest(prompt, negativePrompt, width, height, frames, steps, guidance, shift, seed, g);
     }
 }

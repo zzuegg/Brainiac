@@ -71,6 +71,37 @@ final class Forecasters {
         return predict(m, testX).sub(testY).square().mean().item();
     }
 
+    /**
+     * Trains like {@link #fit} (same batches, so the value at {@code checkpoints[i]} equals a
+     * {@code fit} of that many steps) and records the test MSE at each checkpoint.
+     */
+    static double[] fitCurve(Model m, Tensor trainX, Tensor trainY, Tensor testX, Tensor testY, int[] checkpoints,
+            float lr, long seed) {
+        Optimizer opt = Optimizer.adam(lr);
+        SplittableRandom r = new SplittableRandom(seed);
+        int n = trainX.shape().dim(0);
+        int b = Math.min(32, n);
+        double[] out = new double[checkpoints.length];
+        int next = 0;
+        int last = checkpoints[checkpoints.length - 1];
+        for (int s = 0; s <= last; s++) {
+            while (next < checkpoints.length && checkpoints[next] == s) {
+                out[next++] = predict(m, testX).sub(testY).square().mean().item();
+            }
+            if (s == last) {
+                break;
+            }
+            float[] idx = new float[b];
+            for (int i = 0; i < b; i++) {
+                idx[i] = r.nextInt(n);
+            }
+            Tensor sel = Tensor.of(Shape.of(b), idx);
+            m.forward().apply(Var.of(trainX.gather(0, sel))).sub(trainY.gather(0, sel)).square().mean().backward();
+            opt.step(m.parameters());
+        }
+        return out;
+    }
+
     /** Forecasts in chunks without gradients. */
     static Tensor predict(Model m, Tensor x) {
         int n = x.shape().dim(0);
