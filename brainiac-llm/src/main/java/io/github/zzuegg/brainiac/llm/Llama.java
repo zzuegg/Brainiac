@@ -1497,14 +1497,14 @@ public final class Llama implements LanguageModel {
     }
 
     @Override
-    public Tensor next(State state, Tensor tokens) {
+    public Tensor next(State state, Tensor tokens, boolean[][] padding) {
         int batch = ((Cache) Objects.requireNonNull(state, "state")).next.length;
         if (insert != null || tokens.size() != batch || !tokens.device().equals(device)) {
-            return LanguageModel.super.next(state, tokens);
+            return LanguageModel.super.next(state, tokens, padding);
         }
         deviceTokens = tokens.reshape(batch);
         try {
-            return read(state, new int[batch][1], null, false);
+            return read(state, new int[batch][1], padding, false);
         } finally {
             deviceTokens = null;
         }
