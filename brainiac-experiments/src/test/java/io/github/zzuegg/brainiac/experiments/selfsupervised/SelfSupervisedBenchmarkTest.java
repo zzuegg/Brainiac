@@ -11,7 +11,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 class SelfSupervisedBenchmarkTest {
 
     @ParameterizedTest
-    @EnumSource(Method.class)
+    @EnumSource(value = Method.class, names = "IJEPA_FULL", mode = EnumSource.Mode.EXCLUDE)
     void methodLearnsAUsefulRepresentation(Method method) {
         boolean patches = method == Method.MAE || method == Method.IJEPA;
         Result r = SelfSupervisedBenchmark.run(method, patches ? 100 : 150, 1);

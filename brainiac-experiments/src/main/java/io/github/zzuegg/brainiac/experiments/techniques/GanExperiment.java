@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.experiments.techniques;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.nn.GradientPenalty;
 import io.github.zzuegg.brainiac.experimental.nn.SpectralNormDense;
+import io.github.zzuegg.brainiac.experimental.train.MinMaxOptimizers;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Model;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -95,6 +96,64 @@ public final class GanExperiment {
             for (Var p : critic.parameters()) {
                 p.zeroGrad();
             }
+        }
+        return new float[] {before, distance(generator, r)};
+    }
+
+    /** The game optimisers {@link #minMax} compares. */
+    public enum MinMaxMethod {
+        /** Alternating Adam steps, one critic step per generator step. */
+        ALTERNATING_ADAM,
+        /** Simultaneous Adam steps. */
+        SIMULTANEOUS_ADAM,
+        /** Extragradient with Adam updates ({@link MinMaxOptimizers#extragradient}). */
+        EXTRAGRADIENT_ADAM,
+        /** Simultaneous optimistic Adam ({@link MinMaxOptimizers#optimisticAdam}). */
+        OPTIMISTIC_ADAM
+    }
+
+    /**
+     * Trains a WGAN-GP with one critic step per generator step, updated jointly by a game
+     * optimiser from {@link MinMaxOptimizers} (W7 5.5): the fairer-optimiser follow-up of the
+     * gradient-penalty negative above, at Adam(5e-4, 0.5, 0.9) for both players.
+     *
+     * @param method the game optimiser
+     * @param steps joint steps
+     * @param seed the seed
+     * @return {@code {distance before training, distance after}} to fresh data
+     */
+    public static float[] minMax(MinMaxMethod method, int steps, float lr, float lookahead, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        Model generator = Model.sequential().input(2).dense(64, Activation.RELU).dense(64, Activation.RELU)
+                .dense(2, Activation.IDENTITY).seed(seed).build();
+        Model critic = Model.sequential().input(2).seed(seed + 1).dense(64, Activation.leakyRelu(0.2f))
+                .dense(64, Activation.leakyRelu(0.2f)).dense(1, Activation.IDENTITY).build();
+        java.util.List<Var> g = generator.parameters();
+        java.util.List<Var> c = critic.parameters();
+        float cl = 4 * lr;
+        MinMaxOptimizers.Stepper stepper = switch (method) {
+            case ALTERNATING_ADAM -> MinMaxOptimizers.alternating(g, Optimizer.adam(lr, 0.5f, 0.9f, 1e-8f), c,
+                    Optimizer.adam(cl, 0.5f, 0.9f, 1e-8f));
+            case SIMULTANEOUS_ADAM -> MinMaxOptimizers.simultaneous(g, Optimizer.adam(lr, 0.5f, 0.9f, 1e-8f), c,
+                    Optimizer.adam(cl, 0.5f, 0.9f, 1e-8f));
+            case EXTRAGRADIENT_ADAM -> MinMaxOptimizers.extragradient(g, Optimizer.adam(lr, 0.5f, 0.9f, 1e-8f), c,
+                    Optimizer.adam(cl, 0.5f, 0.9f, 1e-8f), lookahead);
+            case OPTIMISTIC_ADAM -> MinMaxOptimizers.simultaneous(g, MinMaxOptimizers.optimisticAdam(lr, 0.5f, 0.9f), c,
+                    MinMaxOptimizers.optimisticAdam(cl, 0.5f, 0.9f));
+        };
+        float before = distance(generator, r);
+        for (int s = 0; s < steps; s++) {
+            Tensor real = data(64, r);
+            Tensor z = noise(64, r);
+            long penaltySeed = r.nextLong();
+            stepper.step(() -> {
+                Var fake = generator.forward(Var.of(z));
+                Var generatorLoss = critic.forward(fake).mean().neg();
+                Var criticLoss = critic.forward(fake.detach()).mean().sub(critic.forward(Var.of(real)).mean())
+                        .add(GradientPenalty.wgan(critic::forward, real, fake.value(), new SplittableRandom(penaltySeed))
+                        .mul(10f));
+                return new Var[] {generatorLoss, criticLoss};
+            });
         }
         return new float[] {before, distance(generator, r)};
     }

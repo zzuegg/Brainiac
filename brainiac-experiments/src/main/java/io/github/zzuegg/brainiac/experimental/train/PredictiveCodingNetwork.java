@@ -34,6 +34,13 @@ import java.util.SplittableRandom;
  * such as a {@link Brain}'s region graph ({@link #fromBrain}), it still learns, which
  * backprop cannot do without unrolling. Region update rules are applied with an
  * {@link Optimizer} by writing {@code dF/dW} into the weights' gradients.
+ *
+ * <p><b>Incremental mode</b> ({@link Builder#incremental}; Salvatori et al., "A Stable,
+ * Fast, and Fully Automatic Learning Algorithm for Predictive Coding Networks", ICLR 2024,
+ * <a href="https://arxiv.org/abs/2212.00720">arXiv:2212.00720</a>): instead of relaxing to
+ * equilibrium and then taking one weight step, the value neurons and the weights are
+ * updated together at every inference step, an incremental EM. It needs no tuning of the
+ * inference length and is reported to stay stable on cyclic graphs.
  */
 public final class PredictiveCodingNetwork implements LocalLearner {
 
@@ -60,6 +67,7 @@ public final class PredictiveCodingNetwork implements LocalLearner {
     private final int steps;
     private final float rate;
     private final Optimizer optimizer;
+    private final boolean incremental;
     private float lastEnergy;
 
     private PredictiveCodingNetwork(Builder b) {
@@ -73,6 +81,7 @@ public final class PredictiveCodingNetwork implements LocalLearner {
         }
         steps = b.steps;
         rate = b.rate;
+        incremental = b.incremental;
         optimizer = b.optimizer == null ? Optimizer.adam(0.005f) : b.optimizer;
         SplittableRandom r = new SplittableRandom(b.seed);
         edges = new ArrayList<>();
@@ -142,7 +151,25 @@ public final class PredictiveCodingNetwork implements LocalLearner {
      */
     public static PredictiveCodingNetwork fromBrain(Brain.Spec spec, int inputs, int classes, long seed,
             Optimizer optimizer) {
-        Builder b = builder().seed(seed).optimizer(optimizer).region(Brain.INPUT, inputs, Nonlinearity.LINEAR);
+        return fromBrain(spec, inputs, classes, seed, optimizer, false);
+    }
+
+    /**
+     * {@link #fromBrain(Brain.Spec, int, int, long, Optimizer)} with a choice of standard or
+     * incremental predictive coding.
+     *
+     * @param spec the brain's layout
+     * @param inputs the input size
+     * @param classes the number of classes
+     * @param seed the seed
+     * @param optimizer the weight optimizer
+     * @param incremental update the weights at every inference step ({@link Builder#incremental})
+     * @return the network
+     */
+    public static PredictiveCodingNetwork fromBrain(Brain.Spec spec, int inputs, int classes, long seed,
+            Optimizer optimizer, boolean incremental) {
+        Builder b = builder().seed(seed).optimizer(optimizer).incremental(incremental)
+                .region(Brain.INPUT, inputs, Nonlinearity.LINEAR);
         for (Brain.RegionSpec r : spec.regions()) {
             b.region(r.name(), r.capacity(), Nonlinearity.TANH);
         }
@@ -168,8 +195,21 @@ public final class PredictiveCodingNetwork implements LocalLearner {
         private float rate = 0.1f;
         private long seed = 1;
         private Optimizer optimizer;
+        private boolean incremental;
 
         private Builder() {
+        }
+
+        /**
+         * Switches to incremental predictive coding: one weight update after every inference
+         * step of a training batch, instead of one after the whole relaxation.
+         *
+         * @param on whether to update weights at every inference step
+         * @return this builder
+         */
+        public Builder incremental(boolean on) {
+            this.incremental = on;
+            return this;
         }
 
         /**
@@ -348,6 +388,10 @@ public final class PredictiveCodingNetwork implements LocalLearner {
     }
 
     private Tensor[] relax(Tensor inputs, Tensor target) {
+        return relax(inputs, target, steps);
+    }
+
+    private Tensor[] relax(Tensor inputs, Tensor target, int inferenceSteps) {
         int batch = inputs.shape().dim(0);
         Tensor[] x = new Tensor[sizes.length];
         for (int i = 0; i < x.length; i++) {
@@ -371,7 +415,15 @@ public final class PredictiveCodingNetwork implements LocalLearner {
         if (target != null) {
             x[output] = target;
         }
-        for (int s = 0; s < steps; s++) {
+        for (int s = 0; s < inferenceSteps; s++) {
+            inferenceStep(x, target != null);
+        }
+        return x;
+    }
+
+    /** Clamps nothing new; moves every free value neuron one step down the energy. */
+    private void inferenceStep(Tensor[] x, boolean clampOutput) {
+        {
             Tensor[] err = errors(x);
             Tensor[] down = new Tensor[x.length];
             for (Edge e : edges) {
@@ -381,7 +433,7 @@ public final class PredictiveCodingNetwork implements LocalLearner {
                 }
             }
             for (int i = 0; i < x.length; i++) {
-                if (i == input || (i == output && target != null)) {
+                if (i == input || (i == output && clampOutput)) {
                     continue;
                 }
                 Tensor grad = err[i] == null ? null : err[i];
@@ -395,7 +447,6 @@ public final class PredictiveCodingNetwork implements LocalLearner {
             }
             Tensor.evaluate(List.of(x));
         }
-        return x;
     }
 
     private Tensor[] errors(Tensor[] x) {
@@ -413,7 +464,19 @@ public final class PredictiveCodingNetwork implements LocalLearner {
     public float trainBatch(Tensor inputs, Tensor labels) {
         int batch = inputs.shape().dim(0);
         Tensor target = LearningMath.oneHot(labels, sizes[output]);
-        Tensor[] x = relax(inputs, target);
+        if (incremental) {
+            Tensor[] x = relax(inputs, target, 0);
+            for (int s = 0; s < steps; s++) {
+                inferenceStep(x, true);
+                weightStep(x, batch);
+            }
+            return lastEnergy;
+        }
+        return weightStep(relax(inputs, target), batch);
+    }
+
+    /** One local weight update at the current values; returns the energy before it. */
+    private float weightStep(Tensor[] x, int batch) {
         Tensor[] err = errors(x);
         double energy = 0;
         for (Tensor e : err) {
