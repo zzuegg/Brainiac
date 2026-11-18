@@ -41,6 +41,185 @@ public final class Graphs {
     }
 
     /**
+     * Connects every pair of points closer than a radius, both directions, without self
+     * loops: the neighbourhood graph of point clouds and molecules for equivariant layers.
+     *
+     * @param positions points {@code [n, d]}
+     * @param radius the largest distance of an edge
+     * @return the edges as {@code {sources, targets}}, each {@code [edges]} on the points' device
+     */
+    public static Tensor[] radiusGraph(Tensor positions, float radius) {
+        float[] d2 = io.github.zzuegg.brainiac.tensor.Linalg.squaredDistances(positions, positions)
+                .to(io.github.zzuegg.brainiac.tensor.DType.FLOAT32).toArray();
+        int n = positions.shape().dim(0);
+        float r2 = radius * radius;
+        java.util.List<Integer> src = new java.util.ArrayList<>();
+        java.util.List<Integer> dst = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                if (i != j && d2[i * n + j] <= r2) {
+                    src.add(j);
+                    dst.add(i);
+                }
+            }
+        }
+        return edges(src, dst, positions);
+    }
+
+    /**
+     * Connects every point to its {@code k} nearest other points, edges pointing to the point.
+     *
+     * @param positions points {@code [n, d]}
+     * @param k neighbours per point, less than {@code n}
+     * @return the edges as {@code {sources, targets}}, each {@code [n * k]}
+     */
+    public static Tensor[] knnGraph(Tensor positions, int k) {
+        int n = positions.shape().dim(0);
+        if (k < 1 || k >= n) {
+            throw new IllegalArgumentException(k + " neighbours among " + n + " points");
+        }
+        // k + 1 nearest include the point itself, which is dropped
+        float[] idx = io.github.zzuegg.brainiac.tensor.Linalg.nearestNeighbours(positions, positions, k + 1)[1]
+                .to(io.github.zzuegg.brainiac.tensor.DType.FLOAT32).toArray();
+        java.util.List<Integer> src = new java.util.ArrayList<>();
+        java.util.List<Integer> dst = new java.util.ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            int added = 0;
+            for (int j = 0; j <= k && added < k; j++) {
+                int other = (int) idx[i * (k + 1) + j];
+                if (other != i) {
+                    src.add(other);
+                    dst.add(i);
+                    added++;
+                }
+            }
+        }
+        return edges(src, dst, positions);
+    }
+
+    private static Tensor[] edges(java.util.List<Integer> src, java.util.List<Integer> dst, Tensor like) {
+        if (src.isEmpty()) {
+            throw new IllegalArgumentException("no edges: the radius is smaller than every distance");
+        }
+        float[] s = new float[src.size()];
+        float[] t = new float[dst.size()];
+        for (int i = 0; i < s.length; i++) {
+            s[i] = src.get(i);
+            t[i] = dst.get(i);
+        }
+        return new Tensor[] {Tensor.of(Shape.of(s.length), s, like.device()),
+            Tensor.of(Shape.of(t.length), t, like.device())};
+    }
+
+    /**
+     * The maximum flow from a source to a sink (Dinic's algorithm, {@code O(V^2 E)}), with
+     * the minimum cut it saturates.
+     *
+     * @param nodes the number of nodes
+     * @param from per edge its start
+     * @param to per edge its end
+     * @param capacity per edge its capacity, non-negative
+     * @param source the source node
+     * @param sink the sink node
+     * @return the flow
+     */
+    public static Flow maxFlow(int nodes, int[] from, int[] to, double[] capacity, int source, int sink) {
+        int m = from.length;
+        if (to.length != m || capacity.length != m) {
+            throw new IllegalArgumentException("edge arrays differ in length");
+        }
+        if (source == sink) {
+            throw new IllegalArgumentException("the source is the sink");
+        }
+        // residual graph: edge 2e forward, 2e + 1 backward
+        int[] head = new int[nodes];
+        java.util.Arrays.fill(head, -1);
+        int[] next = new int[2 * m];
+        int[] end = new int[2 * m];
+        double[] cap = new double[2 * m];
+        for (int e = 0; e < m; e++) {
+            if (!(capacity[e] >= 0)) {
+                throw new IllegalArgumentException("capacity " + capacity[e] + " of edge " + e);
+            }
+            end[2 * e] = to[e];
+            cap[2 * e] = capacity[e];
+            next[2 * e] = head[from[e]];
+            head[from[e]] = 2 * e;
+            end[2 * e + 1] = from[e];
+            next[2 * e + 1] = head[to[e]];
+            head[to[e]] = 2 * e + 1;
+        }
+        double total = 0;
+        int[] level = new int[nodes];
+        int[] it = new int[nodes];
+        while (true) {
+            java.util.Arrays.fill(level, -1);
+            level[source] = 0;
+            int[] queue = new int[nodes];
+            int qh = 0;
+            int qt = 0;
+            queue[qt++] = source;
+            while (qh < qt) {
+                int u = queue[qh++];
+                for (int e = head[u]; e >= 0; e = next[e]) {
+                    if (cap[e] > 1e-12 && level[end[e]] < 0) {
+                        level[end[e]] = level[u] + 1;
+                        queue[qt++] = end[e];
+                    }
+                }
+            }
+            if (level[sink] < 0) {
+                break;
+            }
+            System.arraycopy(head, 0, it, 0, nodes);
+            double pushed;
+            while ((pushed = push(source, sink, Double.POSITIVE_INFINITY, level, it, next, end, cap)) > 0) {
+                total += pushed;
+            }
+        }
+        double[] flow = new double[m];
+        for (int e = 0; e < m; e++) {
+            flow[e] = capacity[e] - cap[2 * e];
+        }
+        // the source side of the minimum cut: nodes still reachable in the residual graph
+        boolean[] sourceSide = new boolean[nodes];
+        for (int v = 0; v < nodes; v++) {
+            sourceSide[v] = level[v] >= 0;
+        }
+        return new Flow(total, flow, sourceSide);
+    }
+
+    private static double push(int u, int sink, double limit, int[] level, int[] it, int[] next, int[] end,
+            double[] cap) {
+        if (u == sink) {
+            return limit;
+        }
+        for (; it[u] >= 0; it[u] = next[it[u]]) {
+            int e = it[u];
+            int v = end[e];
+            if (cap[e] > 1e-12 && level[v] == level[u] + 1) {
+                double d = push(v, sink, Math.min(limit, cap[e]), level, it, next, end, cap);
+                if (d > 0) {
+                    cap[e] -= d;
+                    cap[e ^ 1] += d;
+                    return d;
+                }
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * A maximum flow.
+     *
+     * @param value the total flow from the source
+     * @param edgeFlow the flow on each edge
+     * @param sourceSide per node whether it lies on the source's side of a minimum cut
+     */
+    public record Flow(double value, double[] edgeFlow, boolean[] sourceSide) {
+    }
+
+    /**
      * Several graphs as one: nodes stacked, edge indices shifted, and per node the graph it
      * came from, for pooling one vector per graph with {@link #pool}.
      *
