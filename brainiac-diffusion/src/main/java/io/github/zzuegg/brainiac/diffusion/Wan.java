@@ -56,7 +56,11 @@ import java.util.stream.Stream;
  */
 public final class Wan implements AutoCloseable {
 
-    /** Wan's default negative prompt (in Chinese, as it was trained): garish colours, overexposure, stillness, blur, subtitles, low quality, deformities, extra fingers, crowded backgrounds. */
+    /**
+     * Wan's own negative prompt (in Chinese, as it was trained): garish colours, overexposure, stillness, blur,
+     * subtitles, low quality, deformities, extra fingers, crowded backgrounds. Not the default: diffusers' default
+     * negative is empty, and with this one the 14B at few steps drew a grid over the video. Pass it explicitly to use it.
+     */
     public static final String DEFAULT_NEGATIVE = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，"
             + "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
             + "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走";
@@ -936,7 +940,7 @@ public final class Wan implements AutoCloseable {
         Tensor latents;
         try {
             cond = encode(request.prompt());
-            uncond = guided ? encode(request.negativePrompt() == null ? DEFAULT_NEGATIVE : request.negativePrompt())
+            uncond = guided ? encode(request.negativePrompt() == null ? "" : request.negativePrompt())
                     : null;
             float shift = request.shift() > 0 ? request.shift() : defaultShift();
             latents = denoise(noise, cond, uncond, image, request.steps(), request.guidance(),
@@ -1208,7 +1212,7 @@ public final class Wan implements AutoCloseable {
         }
         boolean guided = request.guidance() > 1 || request.lowNoiseGuidance() > 1;
         Tensor cond = encode(request.prompt());
-        Tensor uncond = guided ? encode(request.negativePrompt() == null ? DEFAULT_NEGATIVE : request.negativePrompt())
+        Tensor uncond = guided ? encode(request.negativePrompt() == null ? "" : request.negativePrompt())
                 : null;
         try {
             float shift = request.shift() > 0 ? request.shift() : defaultShift();
