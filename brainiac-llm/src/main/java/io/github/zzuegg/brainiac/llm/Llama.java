@@ -463,7 +463,11 @@ public final class Llama implements LanguageModel {
     private static Linear linear(Gguf gguf, String name, String hfName, int[] order, Device device, DType dtype,
             Map<String, Var> named, Var bias) {
         if (gguf.packable(name)) {
-            return new Linear(Var.of(gguf.packedTransposed(name, device, order)), bias);
+            // projections fuseProjections may join wait in host memory: their parts then never
+            // reach the GPU, only the joined matrix
+            boolean joinable = device.kind() == Device.Kind.GPU && hfName.matches(
+                    "model\\.layers\\.\\d+\\.(self_attn\\.[qkv]_proj|mlp\\.(gate|up)_proj)");
+            return new Linear(Var.of(gguf.packedTransposed(name, device, order, joinable)), bias);
         }
         Tensor w = gguf.tensor(name, device, dtype);
         if (order != null) {
@@ -2341,6 +2345,14 @@ public final class Llama implements LanguageModel {
                     : join(p + "mlp.", List.of("gate_proj", "up_proj"), "gate_up_proj", List.of(b.gate, b.up));
             fused[i] = new Fused(qkv, gateUp);
         }
+        // weights that waited to be joined and were not (different formats) go to the device now
+        List<Tensor> weights = new ArrayList<>();
+        for (Linear l : linears.values()) {
+            if (l.weight != null && l.weight.value().isPacked()) {
+                weights.add(l.weight.value());
+            }
+        }
+        Tensor.evaluate(weights);
         return this;
     }
 

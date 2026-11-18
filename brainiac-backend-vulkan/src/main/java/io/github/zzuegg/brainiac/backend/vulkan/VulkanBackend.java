@@ -1754,17 +1754,35 @@ public final class VulkanBackend implements Backend {
     public PackedStorage pack(PackedMatrix matrix) {
         Deferred d = new Deferred(this, matrix);
         if (PREFETCH) {
-            prefetcher.execute(() -> {
-                if (!d.skip) {
-                    try {
-                        packed(d);
-                    } catch (RuntimeException e) {
-                        // out of memory or such: the first use tries again, and fails there
-                    }
-                }
-            });
+            fetch(d, false);
         }
         return d;
+    }
+
+    /** Packs a matrix that uploads on its first use or {@link #prefetch}, not in the background at once. */
+    @Override
+    public PackedStorage packLater(PackedMatrix matrix) {
+        return new Deferred(this, matrix);
+    }
+
+    @Override
+    public void prefetch(PackedStorage packed) {
+        if (packed instanceof Deferred d && d.owner == this) {
+            fetch(d, true);
+        }
+    }
+
+    /** Uploads in the background, unless it was unpacked to the host first and {@code always} is false. */
+    private void fetch(Deferred d, boolean always) {
+        prefetcher.execute(() -> {
+            if (always || !d.skip) {
+                try {
+                    packed(d);
+                } catch (RuntimeException e) {
+                    // out of memory or such: the first use tries again, and fails there
+                }
+            }
+        });
     }
 
     /** Whether packed matrices upload in the background ({@code -Dbrainiac.vulkan.prefetch=false}: on first use). */

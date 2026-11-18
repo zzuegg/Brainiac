@@ -546,7 +546,22 @@ public final class Tensor {
      * @return the tensor
      */
     public static Tensor packed(PackedMatrix matrix, Device device) {
-        return new Tensor(Shape.of(matrix.rows(), matrix.cols()), device, device.backend().pack(matrix));
+        return packed(matrix, device, false);
+    }
+
+    /**
+     * As {@link #packed(PackedMatrix, Device)}; {@code later} says the matrix may be joined
+     * with others ({@link #concat} along columns) before it is used, so a GPU can leave it in
+     * host memory until its first use or {@link #evaluate}, instead of uploading it at once.
+     *
+     * @param matrix the levels and scales
+     * @param device where to keep it
+     * @param later whether it may wait for its first use
+     * @return the tensor
+     */
+    public static Tensor packed(PackedMatrix matrix, Device device, boolean later) {
+        Backend b = device.backend();
+        return new Tensor(Shape.of(matrix.rows(), matrix.cols()), device, later ? b.packLater(matrix) : b.pack(matrix));
     }
 
     /**
@@ -728,7 +743,9 @@ public final class Tensor {
     public static void evaluate(java.util.List<Tensor> tensors) {
         Map<Device, java.util.List<Storage>> byDevice = new LinkedHashMap<>();
         for (Tensor t : tensors) {
-            if (!(t.storage instanceof PackedStorage)) {
+            if (t.storage instanceof PackedStorage p) {
+                t.device.backend().prefetch(p);   // on its way to the device, if it waited
+            } else {
                 byDevice.computeIfAbsent(t.device, d -> new java.util.ArrayList<>()).add(t.storage);
             }
         }

@@ -496,6 +496,21 @@ public final class Gguf implements WeightSource {
      * @return the packed {@code [in, out]} matrix
      */
     public Tensor packedTransposed(String name, Device device, int[] order) {
+        return packedTransposed(name, device, order, false);
+    }
+
+    /**
+     * As {@link #packedTransposed(String, Device, int[])}; {@code later} lets a GPU keep the
+     * matrix in host memory until its first use (see {@link Tensor#packed(PackedMatrix, Device,
+     * boolean)}), for a projection that will be joined with others.
+     *
+     * @param name the name of a {@linkplain #packable packable} matrix
+     * @param device where to put it
+     * @param order the stored row for each output, or {@code null} to keep the order
+     * @param later whether it may wait for its first use
+     * @return the packed {@code [in, out]} matrix
+     */
+    public Tensor packedTransposed(String name, Device device, int[] order, boolean later) {
         if (!packable(name)) {
             throw new IllegalArgumentException(name + " is " + format(name) + " " + shape(name)
                     + "; it cannot stay packed");
@@ -515,7 +530,7 @@ public final class Gguf implements WeightSource {
             column[order == null ? c : order[c]] = c;
         }
         if (!GgmlQuants.factored(e.format)) {
-            return packedPlain(e, name, device, column, group, bits, shifted, shift);
+            return packedPlain(e, name, device, column, group, bits, shifted, shift, later);
         }
         // scales and offsets as GGUF stores them: a small code per group times a value per
         // super-block of 256 inputs (k-quants), or a value per group (the others)
@@ -546,12 +561,12 @@ public final class Gguf implements WeightSource {
         }, levels, column, shift);
         PackedMatrix.Factors factors = new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets,
                 superGroup, shift);
-        return Tensor.packed(PackedMatrix.of(levels, factors, in, out, bits, group), device);
+        return Tensor.packed(PackedMatrix.of(levels, factors, in, out, bits, group), device, later);
     }
 
     /** As packedTransposed, with a float scale and offset per group. */
     private Tensor packedPlain(Entry e, String name, Device device, int[] column, int group, int bits, boolean shifted,
-            int shift) {
+            int shift, boolean later) {
         int out = e.shape.dim(0);
         int in = e.shape.dim(1);
         byte[] levels = new byte[in * out];
@@ -568,7 +583,7 @@ public final class Gguf implements WeightSource {
                 }
             }
         }, levels, column, shift);
-        return Tensor.packed(PackedMatrix.of(levels, scales, offsets, in, out, bits, group), device);
+        return Tensor.packed(PackedMatrix.of(levels, scales, offsets, in, out, bits, group), device, later);
     }
 
     /** Receives the scales of output {@code c} for inputs {@code r0} to {@code r0 + len}, decoded in {@code row}. */
