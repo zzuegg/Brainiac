@@ -2446,6 +2446,8 @@
   const chatModels = sel => (L.info?.models || []).filter(m => m.media.includes("text") && (m.shown !== false || m.key === sel));
   const modelByKey = k => (L.info?.models || []).find(m => m.key === k);
   const providerName = id => (L.info?.providers || []).find(p => p.id === id)?.name || id;
+  // a model that runs on a machine of the user's: this PC or a worker host
+  const onMachine = m => !!m && (m.provider === "local" || providerKind(m.provider) === "host");
   const providerKind = id => id === "local" ? "local" : (L.info?.providers || []).find(p => p.id === id)?.kind || "api";
   const mediaChip = { text: "c-text", vision: "c-vision", image: "c-image", speech: "c-speech", transcribe: "c-speech", video: "c-video" };
   const mediaName = { text: "Text", vision: "Vision", image: "Image", speech: "Speech", transcribe: "Transcribe", video: "Video" };
@@ -3128,6 +3130,12 @@
     </select>`;
   }
 
+  // where a model on a machine of the user's runs: this PC, or a worker host that is told what it needs
+  const onHost = m => !!m && providerKind(m.provider) === "host";
+  const machineName = m => onHost(m) ? providerName(m.provider) : "this PC";
+  function machineNote(m, verb, what, more = "") {
+    return `<div class="flag ok-note">${icon("lock")}<div><b>${verb} on ${esc(machineName(m))}.</b> ${onHost(m) ? `${what} goes to that worker host and nowhere else.` : "Nothing is sent anywhere."}${more}</div></div>`;
+  }
   function remoteNote(m, what) {
     if (!m) return "";
     return `<div class="flag">${icon("flask")}<div><b>Runs at ${esc(providerName(m.provider))}.</b> ${what} is sent to ${esc(providerName(m.provider))} and billed to your key. No local model offers this yet; one that does will show up here.</div></div>`;
@@ -3157,7 +3165,7 @@
 
   // the usual steps and guidance of a model on this PC, asked for once
   function drawOpts(m) {
-    if (!m || m.provider !== "local") return null;
+    if (!onMachine(m)) return null;
     const o = G.opts[m.key];
     if (!o) {
       G.opts[m.key] = { loading: true };
@@ -3174,7 +3182,7 @@
     const steps = G.steps[m.key] ?? o.steps ?? 25, guidance = G.guidance[m.key] ?? o.guidance ?? 7;
     // settings a model ignores are left out (FLUX.1 has no negative prompt or sampler choice, schnell no guidance)
     const neg = o.usesNegative !== false, guid = o.usesGuidance !== false, samp = o.usesSampler !== false;
-    return `<div class="flag ok-note">${icon("lock")}<div><b>Draws on this PC.</b> Nothing is sent anywhere.${o.label ? ` <span class="muted">${esc(o.label)}</span>` : ""}</div></div>
+    return `${machineNote(m, "Draws", "The prompt", o.label ? ` <span class="muted">${esc(o.label)}</span>` : "")}
       ${neg ? `<div class="field"><label for="img-neg">Leave out</label><input class="input" id="img-neg" placeholder="blurry, text, watermark" value="${esc(G.neg)}"></div>` : ""}
       <div class="img-grid">
         <div class="field"><label for="img-steps">Steps</label><input class="input mono" id="img-steps" type="number" min="1" max="150" value="${steps}"></div>
@@ -3206,7 +3214,7 @@
 
   function liveCreateView() {
     const m = pickedModel(G.imgModel, "image");
-    const local = m?.provider === "local";
+    const local = onMachine(m);
     const ratios = [["1:1", 14, 14], ["4:3", 16, 12], ["16:9", 18, 10], ["3:4", 12, 16], ["9:16", 10, 18]];
     return `
     <div class="create">
@@ -3295,7 +3303,7 @@
     const m = pickedModel(G.imgModel, "image");
     const prompt = ($("#img-prompt")?.value || "").trim();
     if (!m || !prompt || G.drawing) return;
-    if (m.provider === "local") return drawHere(m, prompt);
+    if (onMachine(m)) return drawHere(m, prompt);
     G.prompt = prompt;
     G.drawing = { prompt, model: m.name, aspect: G.aspect, count: G.count };
     render();
@@ -3331,7 +3339,7 @@
 
   function hue(name) { let h = 0; for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360; return `oklch(0.78 0.11 ${h})`; }
 
-  const trModels = () => mediaModels("transcribe").filter(m => m.provider === "local");
+  const trModels = () => mediaModels("transcribe").filter(onMachine);
   const trPicked = () => G.trModel === "auto" ? trModels()[0] : trModels().find(m => m.key === G.trModel);
   const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
   const modeSwitch = () => `<div class="seg vo-mode" role="group" aria-label="What to do"><button data-vomode="speak" aria-pressed="${G.mode === "speak"}">Speak</button><button data-vomode="listen" aria-pressed="${G.mode === "listen"}">Transcribe</button></div>`;
@@ -3373,7 +3381,7 @@
         ${!m ? `<div class="empty"><div class="flag">${icon("flask")}<div><b>No transcribing model yet.</b> Put a Whisper model (such as openai/whisper-base, a Hugging Face folder) in a model folder to write down what is said, on this PC.
           <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>` : `
         <div class="script tr-list" id="tr-drop">
-          ${!G.transcripts.length ? `<label class="video-drop" for="tr-file">${icon("speech")}<b>Drop a recording here, or record one</b><span class="muted">Any audio or video the browser plays. It is written down on this PC and never uploaded anywhere.</span></label>` : ""}
+          ${!G.transcripts.length ? `<label class="video-drop" for="tr-file">${icon("speech")}<b>Drop a recording here, or record one</b><span class="muted">Any audio or video the browser plays. ${onHost(m) ? `It is written down on ${esc(machineName(m))}, your worker host, and goes nowhere else.` : "It is written down on this PC and never uploaded anywhere."}</span></label>` : ""}
           ${G.transcripts.map(transcriptHtml).join("")}
         </div>`}
       </section>
@@ -3385,7 +3393,7 @@
           <option value="auto">Detect it</option>${(o.languages || []).map(l => `<option value="${esc(l)}" ${l === G.trLang ? "selected" : ""}>${esc(langName(l))}</option>`).join("")}</select></div>
         <label class="check"><input type="checkbox" id="tr-translate" ${G.trTranslate ? "checked" : ""} ${o.translate ? "" : "disabled"}> Write it in English${o.translate ? "" : ` <output>not offered</output>`}</label>
         <label class="check"><input type="checkbox" id="tr-times" ${G.trTimes ? "checked" : ""}> Show times</label>
-        <p class="muted" style="font-size:12px;margin:0">The recording is turned into 16 kHz mono in this browser, then written down by ${m ? esc(m.name) : "the model"} on this PC.</p>
+        <p class="muted" style="font-size:12px;margin:0">The recording is turned into 16 kHz mono in this browser, then written down by ${m ? esc(m.name) : "the model"} on ${esc(machineName(m))}.</p>
       </aside>
     </div>`;
   }
@@ -3507,14 +3515,14 @@
           <div class="vcard ${v === G.voice ? "active" : ""}" data-voice="${esc(v)}" tabindex="0" role="button" aria-pressed="${v === G.voice}">
             <div class="vface" style="background:${hue(v)}">${esc(n[0].toUpperCase())}</div>
             <div style="min-width:0"><div class="n">${esc(n)}${v === G.blend ? ` <span class="mono faint">blended in</span>` : ""}</div><div class="d">${esc(d ? d + " · " + providerName(m.provider) : providerName(m.provider))}</div></div>
-            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(n)}" title="${local ? "Speaks one short sentence" : "Speaks one short sentence, billed to your key"}">${icon("play")}</button>
+            <button class="iconbtn" data-preview="${esc(v)}" aria-label="Hear ${esc(n)}" title="${onMachine(m) ? "Speaks one short sentence" : "Speaks one short sentence, billed to your key"}">${icon("play")}</button>
           </div>`; }).join("")}
       </aside>
       <section style="display:flex;flex-direction:column;min-height:0;min-width:0">
         <div class="stage-head"><span class="title">Voice</span>${modeSwitch()}${m ? `<span class="chip c-speech">${esc(m.name)}</span>` : ""}<span class="grow"></span>
           <label class="btn" for="vo-video-file">${icon("video")}${G.video ? "Change video" : "Add a video"}</label><input type="file" id="vo-video-file" accept="video/*" hidden>
           <button class="btn primary" id="vo-go" ${!m || G.speaking ? "disabled" : ""}>${icon("speech")}${G.speaking ? "Speaking…" : "Speak"}</button></div>
-        ${m ? `<div style="padding:14px 24px 0">${local ? `<div class="flag ok-note">${icon("lock")}<div><b>Speaks on this PC.</b> The text is not sent anywhere.</div></div>` : remoteNote(m, "The text")}</div>` : ""}
+        ${m ? `<div style="padding:14px 24px 0">${onMachine(m) ? machineNote(m, "Speaks", "The text") : remoteNote(m, "The text")}</div>` : ""}
         ${!mediaModels("speech").length ? noModel("speech") : `
         <div class="vo-split">
           <div class="script">

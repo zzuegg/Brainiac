@@ -213,6 +213,45 @@ final class LocalProvider implements ChatProvider {
     }
 
     @Override
+    public boolean runsMedia() {
+        return true;
+    }
+
+    @Override
+    public List<LocalImages.Picture> draw(String model, String prompt, LocalImages.Settings settings,
+            LocalImages.Listener listener) throws IOException {
+        if (images == null) {
+            throw new IOException("this studio does not draw on this PC");
+        }
+        return images.draw(model, prompt, settings, listener);
+    }
+
+    @Override
+    public Media speak(String model, String text, String voice, double speed, java.util.function.BooleanSupplier stop)
+            throws IOException {
+        if (speech == null) {
+            throw new IOException("this studio does not speak on this PC");
+        }
+        return speech.speak(model, text, voice, speed, stop);
+    }
+
+    @Override
+    public io.github.zzuegg.brainiac.audio.Transcription transcribe(String model, byte[] wav,
+            LocalSpeech.Listening listening,
+            java.util.function.Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment,
+            java.util.function.BooleanSupplier stop) throws IOException {
+        if (speech == null) {
+            throw new IOException("this studio does not transcribe on this PC");
+        }
+        return speech.transcribe(model, wav, listening, onSegment, stop);
+    }
+
+    @Override
+    public Map<String, Object> voiceOptions(String model) {
+        return speech == null ? null : speech.options(model).toJson();
+    }
+
+    @Override
     public List<ModelInfo> models() {
         List<ModelInfo> out = new ArrayList<>();
         for (Map.Entry<String, Path> e : find().entrySet()) {
