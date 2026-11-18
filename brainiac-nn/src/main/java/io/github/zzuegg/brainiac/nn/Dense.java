@@ -20,6 +20,24 @@ public final class Dense implements Layer {
     private final Activation activation;
     private final Var weight;
     private final Var bias;
+    private volatile Capture capture;
+
+    /**
+     * Receives, for each backward pass, what second-order optimizers such as K-FAC and
+     * Shampoo collect per layer.
+     */
+    @FunctionalInterface
+    public interface Capture {
+
+        /**
+         * Called during {@code backward()}.
+         *
+         * @param input the layer's input {@code [*, inputSize]} of that forward pass
+         * @param preActivationGradient the gradient of {@code input x weight + bias},
+         *     {@code [*, units]}
+         */
+        void accept(Tensor input, Tensor preActivationGradient);
+    }
 
     /**
      * Creates a layer with initialized weights and zero bias.
@@ -104,7 +122,26 @@ public final class Dense implements Layer {
             throw new IllegalArgumentException(
                     "Dense(" + units + ") expects input [*, " + inputSize + "], got " + s);
         }
-        return activation.forward(input.matmul(weight).add(bias), training);
+        Var pre = input.matmul(weight).add(bias);
+        Capture c = capture;
+        if (c != null && pre.requiresGrad()) {
+            Tensor x = input.value();
+            pre.onGradient(g -> {
+                c.accept(x, g);
+                return null;
+            });
+        }
+        return activation.forward(pre, training);
+    }
+
+    /**
+     * Captures the layer's inputs and pre-activation gradients on each later forward and
+     * backward pass, or stops with {@code null}.
+     *
+     * @param capture what receives them, or {@code null}
+     */
+    public void capture(Capture capture) {
+        this.capture = capture;
     }
 
     @Override
