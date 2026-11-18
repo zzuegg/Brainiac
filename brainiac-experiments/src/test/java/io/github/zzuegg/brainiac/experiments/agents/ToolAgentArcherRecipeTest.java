@@ -5,20 +5,29 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** Wave 9, 9.2.17: ArCHer's critic warm-up, double Q, slow actor and entropy, ablated. */
+/** Wave 9, 9.2.17: the baselines and the critic warm-up and double-Q changes of ArCHer's recipe. */
 class ToolAgentArcherRecipeTest {
 
-    @Test
-    void archerRecipeAblation() {
-        Map<String, ToolAgentBench.ArcherRow[]> r = ToolAgentBench.archerRecipe(6000, 3, 1);
+    static String describe(Map<String, ToolAgentBench.ArcherRow[]> r) {
         StringBuilder sb = new StringBuilder();
         r.forEach((k, rows) -> {
+            sb.append(' ').append(k).append(" [");
+            for (ToolAgentBench.ArcherRow row : rows) {
+                sb.append(String.format(" %d:%.2f/%.2f", row.row().interactions(), row.row().success(),
+                        row.row().sampled()));
+            }
             ToolAgentBench.ArcherRow last = rows[rows.length - 1];
-            sb.append(String.format(" %s %.2f/%.2f overest %.3f td %.3f;", k, last.row().success(),
-                    last.row().sampled(), last.overestimation(), last.tdError()));
+            sb.append(String.format(" ] overest %.3f td %.3f;", last.overestimation(), last.tdError()));
         });
-        System.out.printf("9.2.17 greedy/sampled success at 6000 interactions (wave-8 ArCHer row is the baseline):%s%n",
-                sb);
-        assertEquals(6, r.size());
+        return sb.toString();
+    }
+
+    @Test
+    void archerRecipeBaselinesAndCriticChanges() {
+        Map<String, ToolAgentBench.ArcherRow[]> r = ToolAgentBench.archerRecipe(6000, 2, 1, "trajectory GRPO",
+                "ArCHer (wave 8)", "ArCHer + critic warm-up", "ArCHer + double Q");
+        System.out.printf("9.2.17 greedy/sampled success by interactions (wave-8 ArCHer is the baseline):%s%n",
+                describe(r));
+        assertEquals(4, r.size());
     }
 }

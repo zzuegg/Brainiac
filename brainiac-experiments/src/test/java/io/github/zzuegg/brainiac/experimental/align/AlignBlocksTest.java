@@ -4,6 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -39,6 +42,14 @@ class AlignBlocksTest {
         float[] b = TokenPolicyGradient.broadcast(List.of(new int[] {1, 2}, new int[] {3}), new float[] {5, 7});
         assertArrayEquals(new float[] {5, 5, 7}, b);
         assertArrayEquals(new int[] {2, 4, 5}, TokenPolicyGradient.stepEnds(new int[] {1, 9, 2, 9, 3}, 9));
+    }
+
+    @Test
+    void lengthRegularizedDpoCreditsTheLongerWinner() {
+        Var zero = Var.of(Tensor.of(Shape.of(1, 1), new float[] {0}));
+        float loss = LengthRegularizedDpo.loss(zero, zero, zero, zero, new float[] {3}, new float[] {1}, 0.1f, 0.5f)
+                .value().item();
+        assertEquals(Math.log1p(Math.exp(-1)), loss, 1e-5);
     }
 
     @Test

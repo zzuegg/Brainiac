@@ -16,9 +16,9 @@ import java.util.Objects;
  * the longer answer independently of quality, and DPO exploits this: the implicit reward
  * rises with length, so the tuned policy writes ever longer answers without getting better.
  * R-DPO derives DPO from an RLHF objective with a length penalty, which adds a length-difference
- * term to the margin, {@code -log sigmoid(beta h - alpha (|y_w| - |y_l|))}: a pair won by the
- * longer answer must now be won by more than its length advantage, so length alone no longer
- * pays.
+ * term to the margin, {@code -log sigmoid(beta h + alpha (|y_w| - |y_l|))}: a pair won by the
+ * longer answer counts as already partly explained by its length, so its gradient shrinks, and
+ * length alone no longer pays.
  */
 public final class LengthRegularizedDpo {
 
@@ -91,7 +91,7 @@ public final class LengthRegularizedDpo {
             d[i] = alpha * (chosenLength[i] - rejectedLength[i]);
         }
         Var h = PreferenceLosses.margin(policyChosen, policyRejected, refChosen, refRejected);
-        return PreferenceLosses.logSigmoid(h.mul(beta).sub(Tensor.of(h.shape(), reshape(d, h.shape())))).mean()
+        return PreferenceLosses.logSigmoid(h.mul(beta).add(Tensor.of(h.shape(), reshape(d, h.shape())))).mean()
                 .neg();
     }
 

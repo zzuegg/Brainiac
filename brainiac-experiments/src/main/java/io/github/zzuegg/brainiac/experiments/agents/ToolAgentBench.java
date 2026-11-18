@@ -993,6 +993,10 @@ public final class ToolAgentBench {
     public record ArcherRow(TurnRow row, double overestimation, double tdError) {
     }
 
+    /** The trainers of {@link #archerRecipe}. */
+    public static final List<String> ARCHER_ARMS = List.of("trajectory GRPO", "ArCHer (wave 8)",
+            "ArCHer + critic warm-up", "ArCHer + double Q", "ArCHer + slow actor, tau 0.01", "ArCHer, full recipe");
+
     /**
      * Wave 9, 9.2.17: ArCHer with the paper's recipe (critic warm-up, a smaller actor than critic
      * learning rate, a Polyak target rate of 0.01, more sampled utterances for the value baseline,
@@ -1003,15 +1007,18 @@ public final class ToolAgentBench {
      * @param budget user replies per trainer
      * @param checkpoints evaluations (evenly over the budget)
      * @param seed the seed
+     * @param arms the trainers to run, from {@link #ARCHER_ARMS} (all of them when empty)
      * @return trainer name to one row per checkpoint
      */
-    public static Map<String, ArcherRow[]> archerRecipe(long budget, int checkpoints, long seed) {
+    public static Map<String, ArcherRow[]> archerRecipe(long budget, int checkpoints, long seed, String... arms) {
         WindowLm start = randomPlayer(seed);
         Map<String, ArcherRow[]> out = new LinkedHashMap<>();
-        String[] names = {"trajectory GRPO", "ArCHer (wave 8)", "ArCHer + critic warm-up", "ArCHer + double Q",
-            "ArCHer + slow actor, tau 0.01", "ArCHer, full recipe"};
+        List<String> names = arms.length == 0 ? ARCHER_ARMS : List.of(arms);
         int[] none = new int[0];
         for (String name : names) {
+            if (!ARCHER_ARMS.contains(name)) {
+                throw new IllegalArgumentException("unknown arm " + name);
+            }
             WindowLm lm = start.copy();
             SplittableRandom r = new SplittableRandom(seed + name.hashCode());
             GuessingUser user = new GuessingUser();

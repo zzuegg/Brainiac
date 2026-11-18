@@ -367,8 +367,8 @@ public final class PreferenceShootout {
 
     private static final int[] XPO_PROMPT = TOK.encode("?=");
     private static final int SYMBOLS = 5;
-    private static final int LENGTH = 3;
-    private static final int[] TARGET = {4, 2, 4};
+    private static final int LENGTH = 2;
+    private static final int[] TARGET = {4, 2};
 
     /**
      * The gold reward of 9.2.7: 1 for the rare target, 0.3 times the share of the reference's
@@ -392,7 +392,7 @@ public final class PreferenceShootout {
         return 0.3 * ones / LENGTH;
     }
 
-    /** A reference that writes {@code 111#} 90% of the time and random symbols otherwise. */
+    /** A reference that writes {@code 1} for each symbol 90% of the time and a random one otherwise. */
     static WindowLm explorationStart(long seed) {
         WindowLm lm = WindowLm.of(TOK.size(), 4, 32, seed);
         SplittableRandom r = new SplittableRandom(seed + 1);

@@ -25,11 +25,12 @@ import java.util.SplittableRandom;
  * the gold reward against the KL from the reference (the over-optimization curve of Gao et al.,
  * <a href="https://arxiv.org/abs/2210.10760">arXiv:2210.10760</a>): best-of-n selection, whose
  * KL is {@code log n - (n - 1) / n}, and GRPO with no KL penalty. The proxies are one
- * {@link RewardModel}; a {@link RewardEnsemble} of four seeds combined by mean, worst case and
+ * {@link RewardModel}; a {@link RewardEnsemble} of three seeds combined by mean, worst case and
  * uncertainty penalty (Coste et al., <a href="https://arxiv.org/abs/2310.02743">arXiv:2310.02743</a>);
  * and a {@link WeightAveragedReward} (WARM, <a href="https://arxiv.org/abs/2401.12187">
- * arXiv:2401.12187</a>) of four fine-tunes of one initialization. Baselines are the single
- * proxy under a KL-penalty sweep and {@link PpoLmTrainer} against the single proxy.
+ * arXiv:2401.12187</a>) of three fine-tunes of one initialization, against the single proxy and
+ * the gold reward itself. {@link #klSweep} adds the single proxy under a KL-penalty sweep and
+ * {@link PpoLmTrainer} against it.
  *
  * <p>{@link #bond} (9.2.2) distils best-of-N of the supervised policy under the single proxy
  * into the policy with {@link BestOfNDistiller} and compares, at one sample per query, with
@@ -93,8 +94,10 @@ public final class RewardOveroptimization {
     }
 
     private static final int[] BON = {1, 4, 16, 64};
-    private static final int RM_STEPS = 60;
-    private static final int RM_BATCH = 64;
+    private static final int RM_STEPS = 40;
+    private static final int RM_BATCH = 32;
+    /** Reward models per ensemble and fine-tunes per WARM average. */
+    private static final int MEMBERS = 3;
 
     private RewardOveroptimization() {
     }
@@ -110,7 +113,7 @@ public final class RewardOveroptimization {
         GoldRewardHarness.Pairs test = GoldRewardHarness.pairs(sft, split.test(), 256, 1e-6, random);
         List<RewardEnsemble.BatchScorer> members = new ArrayList<>();
         Map<String, Double> acc = new LinkedHashMap<>();
-        for (int m = 0; m < (all ? 4 : 1); m++) {
+        for (int m = 0; m < (all ? MEMBERS : 1); m++) {
             RewardModel rm = GoldRewardHarness.rewardModel(seed + 100 + m);
             WeightAveragedReward.train(rm, train.chosen(), train.rejected(), RM_STEPS, RM_BATCH, 3e-3f,
                     new SplittableRandom(seed + 200 + m));
@@ -131,7 +134,7 @@ public final class RewardOveroptimization {
         if (!all) {
             return new Proxies(ens.member(0), ens, ens, acc, 0);
         }
-        // WARM: a shared initialization, briefly trained on all pairs, then four fine-tunes
+        // WARM: a shared initialization, briefly trained on all pairs, then MEMBERS fine-tunes
         RewardModel shared = GoldRewardHarness.rewardModel(seed + 300);
         WeightAveragedReward.train(shared, train.chosen(), train.rejected(), RM_STEPS / 2, RM_BATCH, 3e-3f,
                 new SplittableRandom(seed + 301));
@@ -150,7 +153,7 @@ public final class RewardOveroptimization {
     private static WeightAveragedReward.Result fineTunes(RewardModel shared, GoldRewardHarness.Pairs train, long seed) {
         List<RewardModel> members = new ArrayList<>();
         SplittableRandom random = new SplittableRandom(seed + 400);
-        for (int m = 0; m < 4; m++) {
+        for (int m = 0; m < MEMBERS; m++) {
             RewardModel rm = GoldRewardHarness.rewardModel(seed + 300);
             copy(shared, rm);
             // each member sees its own bootstrap half of the pairs
@@ -212,21 +215,57 @@ public final class RewardOveroptimization {
             gold[i] = GoldRewardHarness.GOLD.score(ps[i], outs[i]);
         }
         Map<String, Curves> curves = new LinkedHashMap<>();
+        // the ensemble members score the pool once; each combination reuses their scores
+        float[][] members = px.ensemble().memberScores(Arrays.asList(ps), Arrays.asList(outs));
+        Map<String, float[]> pooled = new LinkedHashMap<>();
+        pooled.put("single RM", members[0]);
+        pooled.put("ensemble mean", combineAll(members, RewardEnsemble.Mode.MEAN, 0));
+        pooled.put("ensemble worst", combineAll(members, RewardEnsemble.Mode.WORST, 0));
+        pooled.put("ensemble mean-std", combineAll(members, RewardEnsemble.Mode.UNCERTAINTY, 1));
+        pooled.put("WARM", px.warm().scoreAll(Arrays.asList(ps), Arrays.asList(outs)));
         for (Map.Entry<String, RewardEnsemble> e : rewards.entrySet()) {
-            float[] proxy = e.getValue().scoreAll(Arrays.asList(ps), Arrays.asList(outs));
+            float[] proxy = pooled.get(e.getKey());
             List<Point> bon = bestOfN(gold, proxy, split.test().size(), pool);
             List<Point> rl = rl(sft, split, e.getValue(), 0, rlSteps, checkpoints, seed);
             curves.put(e.getKey(), new Curves(bon, rl));
         }
         curves.put("gold (oracle)", new Curves(bestOfN(gold, toFloat(gold), split.test().size(), pool),
                 rl(sft, split, null, 0, rlSteps, checkpoints, seed)));
-        for (float beta : new float[] {0.05f, 0.2f}) {
-            curves.put("single RM, KL " + beta, new Curves(List.of(), rl(sft, split, px.single(), beta, rlSteps,
-                    checkpoints, seed)));
-        }
-        curves.put("single RM, PpoLmTrainer KL 0.05", new Curves(List.of(), ppo(sft, split, px.single(), rlSteps,
-                checkpoints, seed)));
         return new Result(curves, px.accuracy(), px.warmMembers());
+    }
+
+    /**
+     * The baselines of 9.2.1: GRPO against the single proxy without and with a KL penalty, and
+     * {@link PpoLmTrainer} with a KL penalty.
+     *
+     * @param pairs preference pairs the proxy learns from
+     * @param rlSteps RL steps
+     * @param checkpoints RL checkpoints
+     * @param seed the seed (the same as {@link #run}'s gives the same proxy)
+     * @return run name to its RL curve, the start first
+     */
+    public static Map<String, List<Point>> klSweep(int pairs, int rlSteps, int checkpoints, long seed) {
+        GoldRewardHarness.Split split = GoldRewardHarness.split(seed);
+        WindowLm sft = GoldRewardHarness.supervised(split.train(), seed);
+        Proxies px = proxies(split, sft, pairs, false, seed);
+        Map<String, List<Point>> out = new LinkedHashMap<>();
+        for (float beta : new float[] {0, 0.05f, 0.2f}) {
+            out.put("single RM, KL " + beta, rl(sft, split, px.single(), beta, rlSteps, checkpoints, seed));
+        }
+        out.put("single RM, PpoLmTrainer KL 0.05", ppo(sft, split, px.single(), rlSteps, checkpoints, seed));
+        return out;
+    }
+
+    private static float[] combineAll(float[][] members, RewardEnsemble.Mode mode, float lambda) {
+        float[] out = new float[members[0].length];
+        float[] column = new float[members.length];
+        for (int i = 0; i < out.length; i++) {
+            for (int m = 0; m < members.length; m++) {
+                column[m] = members[m][i];
+            }
+            out[i] = RewardEnsemble.combine(column, mode, lambda);
+        }
+        return out;
     }
 
     private static float[] toFloat(double[] v) {
