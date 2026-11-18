@@ -46,6 +46,68 @@ class MatvecBenchmarkTest {
         System.clearProperty("brainiac.vulkan.packedWide");
     }
 
+    /**
+     * A 7B model's (Qwen2.5-7B) products in its GGUF formats, factored as Gguf.packedTransposed
+     * keeps them: Q4_K (4-bit levels in groups of 32 with offsets) and Q6_K (6-bit levels, a
+     * nibble and a 2-bit plane, in groups of 16), eight distinct matrices each.
+     */
+    @Test
+    void ggufFormats() {
+        assumeTrue(Boolean.getBoolean("brainiac.bench"), "benchmark: -Pbench");
+        VulkanBackend backend = VulkanBackend.loaded().orElseThrow();
+        System.out.println(backend.status() + "; " + backend.tuning());
+        int[][] shapes = {{18944, 3584}, {3584, 3584}, {3584, 37888}, {3584, 4608}};
+        for (int[] s : shapes) {
+            for (int bits : new int[] {4, 6}) {
+                List<PackedStorage> weights = new ArrayList<>();
+                List<Runnable> calls = new ArrayList<>();
+                Storage x = f16(backend, s[0], 3);
+                Storage z = backend.allocate(s[1], DType.FLOAT16);
+                for (int copy = 0; copy < 8; copy++) {
+                    PackedStorage w = backend.pack(factored(s[0], s[1], bits, copy));
+                    weights.add(w);
+                    calls.add(() -> backend.matmulPacked(x, w, 1, s[0], s[1], z));
+                }
+                int group = bits == 4 ? 32 : 16;
+                long bytes = (long) s[0] * s[1] * bits / 8 + (long) s[0] / group * s[1] * (bits == 4 ? 2 : 1);
+                report(backend, s[0] + " x " + s[1] + (bits == 4 ? " Q4_K" : " Q6_K"), calls, bytes * 8, 8);
+                weights.forEach(backend::release);
+                backend.release(x);
+                backend.release(z);
+            }
+        }
+    }
+
+    /** Random levels with Q4_K's or Q6_K's factored scales (and Q4_K's offsets). */
+    private static PackedMatrix factored(int rows, int cols, int bits, long seed) {
+        SplittableRandom r = new SplittableRandom(seed * 131 + rows + cols + bits);
+        boolean q4 = bits == 4;
+        int group = q4 ? 32 : 16;
+        int shift = 1 << (bits - 1);
+        byte[] levels = new byte[rows * cols];
+        for (int i = 0; i < levels.length; i++) {
+            levels[i] = (byte) (r.nextInt(2 * shift) - shift);
+        }
+        byte[] scaleCodes = new byte[rows / group * cols];
+        for (int i = 0; i < scaleCodes.length; i++) {
+            scaleCodes[i] = (byte) (q4 ? r.nextInt(64) : r.nextInt(-32, 32));
+        }
+        float[] superScales = new float[rows / 256 * cols];
+        java.util.Arrays.fill(superScales, 0.001f);
+        byte[] offsetCodes = null;
+        float[] superOffsets = null;
+        if (q4) {
+            offsetCodes = new byte[scaleCodes.length];
+            for (int i = 0; i < offsetCodes.length; i++) {
+                offsetCodes[i] = (byte) r.nextInt(64);
+            }
+            superOffsets = new float[superScales.length];
+            java.util.Arrays.fill(superOffsets, -0.002f);
+        }
+        return PackedMatrix.of(levels, new PackedMatrix.Factors(scaleCodes, superScales, offsetCodes, superOffsets, 256,
+                q4 ? shift : 0), rows, cols, bits, group);
+    }
+
     private static void products(VulkanBackend backend) {
         for (int bits : new int[] {8, 4}) {
             List<Storage> owned = new ArrayList<>();
