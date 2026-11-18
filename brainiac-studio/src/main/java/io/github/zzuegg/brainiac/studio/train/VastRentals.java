@@ -381,8 +381,10 @@ public final class VastRentals implements AutoCloseable {
             Rental r = new Rental("r" + counter.incrementAndGet(), offer, seenPrice,
                     System.currentTimeMillis() + (long) (hours * 3_600_000));
             rentals.put(r.key, r);
+            // what was asked for, before the setup moves it on
+            Map<String, Object> first = r.toJson();
             r.thread = Thread.ofVirtual().name("studio-vast-" + r.key).start(() -> setUp(r));
-            return r.toJson();
+            return first;
         }
     }
 
