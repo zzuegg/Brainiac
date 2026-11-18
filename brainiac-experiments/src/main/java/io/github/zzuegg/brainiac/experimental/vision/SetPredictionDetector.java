@@ -1,0 +1,426 @@
+package io.github.zzuegg.brainiac.experimental.vision;
+
+import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.nn.MinibatchOptimalTransport;
+import io.github.zzuegg.brainiac.nn.Activation;
+import io.github.zzuegg.brainiac.nn.Boxes;
+import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.nn.Layer;
+import io.github.zzuegg.brainiac.tensor.Shape;
+import io.github.zzuegg.brainiac.tensor.Tensor;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.SplittableRandom;
+import java.util.random.RandomGenerator;
+
+/**
+ * DETR-lite: object detection as direct set prediction (Carion et al., 2020), with optional
+ * denoising queries (DN-DETR, Li et al., 2022). A {@link ConvBackbone} map (stride 4) plus
+ * learned positions forms the memory; {@code N} learned object queries pass through a small
+ * transformer decoder (self-attention among queries, cross-attention to the memory, MLP) and
+ * each emits a class distribution over the classes plus "no object" and a normalised box.
+ *
+ * <p>The loss first finds the optimal one-to-one assignment between predictions and ground
+ * truth with the Hungarian algorithm ({@link MinibatchOptimalTransport#assignCost}) on a
+ * cost of {@code -p(class) + 5 L1 + 2 (1 - GIoU)}, then trains every query on its assignment
+ * (unmatched ones on "no object", weighted 0.1), so duplicates are penalised and no NMS is
+ * needed. With denoising, each image's ground-truth boxes, jittered (centre up to 40% of the
+ * size, size up to 40%) and with 20% of labels flipped, are fed as extra queries that must
+ * reconstruct the clean box and label; an attention mask stops the matching queries from
+ * seeing them. Those queries have a fixed target, so they give the decoder a stable
+ * box-refinement signal while the matching is still erratic.
+ *
+ * <p>As a {@link Layer} it maps images to {@code [batch, N, classes + 1 + 4]}.
+ *
+ * <p>Papers: Carion et al., "End-to-End Object Detection with Transformers" (2020),
+ * <a href="https://arxiv.org/abs/2005.12872">arXiv:2005.12872</a>; Li et al., "DN-DETR:
+ * Accelerate DETR Training by Introducing Query DeNoising" (2022),
+ * <a href="https://arxiv.org/abs/2203.01305">arXiv:2203.01305</a>.
+ */
+public final class SetPredictionDetector implements Layer {
+
+    private final int side;
+    private final int classes;
+    private final int queries;
+    private final int dim;
+    private final int heads;
+    private final boolean denoising;
+    private final int maxObjects;
+    private final ConvBackbone backbone;
+    private final Var project;
+    private final Var projectBias;
+    private final Var positions;
+    private final Var queryEmbed;
+    private final Var dnBox;
+    private final Var dnLabel;
+    private final List<Var[]> layers = new ArrayList<>();
+    private final Var clsW;
+    private final Var clsB;
+    private final Var box1;
+    private final Var box1b;
+    private final Var box2;
+    private final Var box2b;
+    private final SplittableRandom noise;
+
+    /**
+     * Creates the detector.
+     *
+     * @param side the image side, divisible by 8
+     * @param classes the object classes
+     * @param queries the object queries, at least the most objects per image
+     * @param dim the model width
+     * @param layers the decoder layers
+     * @param denoising whether to train with denoising queries
+     * @param maxObjects the most objects per image (denoising query slots)
+     * @param random the source of initial weights and of the denoising noise
+     */
+    public SetPredictionDetector(int side, int classes, int queries, int dim, int layers, boolean denoising,
+            int maxObjects, SplittableRandom random) {
+        this.side = side;
+        this.classes = classes;
+        this.queries = queries;
+        this.dim = dim;
+        this.heads = 4;
+        this.denoising = denoising;
+        this.maxObjects = maxObjects;
+        this.backbone = new ConvBackbone(1, new int[] {8, 16, 24}, random);
+        this.project = VisionOps.convWeight(random, dim, 24, 1);
+        this.projectBias = VisionOps.zeros(dim);
+        int tokens = (side / 4) * (side / 4);
+        this.positions = Var.param(Tensor.normal(Shape.of(1, tokens, dim), 0, 0.1f, random));
+        this.queryEmbed = Var.param(Tensor.normal(Shape.of(1, queries, dim), 0, 1f, random));
+        this.dnBox = matrix(random, 4, dim);
+        this.dnLabel = Var.param(Tensor.normal(Shape.of(classes + 1, dim), 0, 1f, random));
+        for (int l = 0; l < layers; l++) {
+            this.layers.add(new Var[] {
+                matrix(random, dim, 3 * dim), matrix(random, dim, dim), // self attention
+                matrix(random, dim, dim), matrix(random, dim, 2 * dim), matrix(random, dim, dim), // cross attention
+                matrix(random, dim, 2 * dim), VisionOps.zeros(2 * dim), matrix(random, 2 * dim, dim), VisionOps.zeros(dim),
+                ones(dim), VisionOps.zeros(dim), ones(dim), VisionOps.zeros(dim), ones(dim), VisionOps.zeros(dim)});
+        }
+        this.clsW = matrix(random, dim, classes + 1);
+        this.clsB = VisionOps.zeros(classes + 1);
+        this.box1 = matrix(random, dim, dim);
+        this.box1b = VisionOps.zeros(dim);
+        this.box2 = Var.param(Tensor.normal(Shape.of(dim, 4), 0, 0.01f, random));
+        this.box2b = VisionOps.zeros(4);
+        this.noise = random.split();
+    }
+
+    private static Var matrix(RandomGenerator r, int in, int out) {
+        return Var.param(Tensor.normal(Shape.of(in, out), 0, (float) Math.sqrt(1.0 / in), r));
+    }
+
+    private static Var ones(int n) {
+        return Var.param(Tensor.ones(Shape.of(n)));
+    }
+
+    private static Var norm(Var x, Var gain, Var bias) {
+        int last = x.shape().rank() - 1;
+        Var c = x.sub(x.mean(last, true));
+        return c.div(c.square().mean(last, true).add(1e-5f).sqrt()).mul(gain).add(bias);
+    }
+
+    private Var attend(Var q, Var k, Var v, Tensor bias) {
+        int b = q.shape().dim(0);
+        int tq = q.shape().dim(1);
+        int tk = k.shape().dim(1);
+        int dh = dim / heads;
+        Var qh = q.reshape(b, tq, heads, dh).permute(0, 2, 1, 3);
+        Var kh = k.reshape(b, tk, heads, dh).permute(0, 2, 1, 3);
+        Var vh = v.reshape(b, tk, heads, dh).permute(0, 2, 1, 3);
+        return Functional.attention(qh, kh, vh, bias, (float) (1 / Math.sqrt(dh)), 0f, null).permute(0, 2, 1, 3)
+                .reshape(b, tq, dim);
+    }
+
+    private Var memory(Var images) {
+        Var f = backbone.features(images).get(1);
+        Var m = VisionOps.conv(f, project, projectBias);
+        int b = m.shape().dim(0);
+        int t = m.shape().dim(2) * m.shape().dim(3);
+        return m.reshape(b, dim, t).permute(0, 2, 1).add(positions);
+    }
+
+    /** Runs the decoder on query contents {@code [b, q, dim]} with an optional self-attention mask. */
+    private Var decode(Var memory, Var x, Tensor mask) {
+        Var mem = memory;
+        for (Var[] p : layers) {
+            Var h = norm(x, p[9], p[10]);
+            Var qkv = h.matmul(p[0]);
+            x = x.add(attend(qkv.slice(2, 0, dim), qkv.slice(2, dim, 2 * dim), qkv.slice(2, 2 * dim, 3 * dim), mask)
+                    .matmul(p[1]));
+            h = norm(x, p[11], p[12]);
+            Var kv = mem.matmul(p[3]);
+            x = x.add(attend(h.matmul(p[2]), kv.slice(2, 0, dim), kv.slice(2, dim, 2 * dim), null).matmul(p[4]));
+            h = norm(x, p[13], p[14]);
+            x = x.add(h.matmul(p[5]).add(p[6]).relu().matmul(p[7]).add(p[8]));
+        }
+        Var logits = x.matmul(clsW).add(clsB);
+        Var box = x.matmul(box1).add(box1b).relu().matmul(box2).add(box2b).sigmoid();
+        return Var.concat(2, logits, box);
+    }
+
+    /**
+     * Runs the detector.
+     *
+     * @param images {@code [batch, 1, side, side]}
+     * @return {@code [batch, queries, classes + 1 + 4]}: logits (last is "no object"), then
+     *     the box as normalised centre x, centre y, width, height
+     */
+    @Override
+    public Var forward(Var images) {
+        int b = images.shape().dim(0);
+        Var x = queryEmbed.expand(Shape.of(b, queries, dim));
+        return decode(memory(images), x, null);
+    }
+
+    @Override
+    public Shape outputShape(Shape input) {
+        return Shape.of(queries, classes + 5);
+    }
+
+    /**
+     * The training loss of a batch: Hungarian-matched class and box losses, plus the
+     * denoising reconstruction loss when enabled.
+     *
+     * @param images {@code [batch, 1, side, side]}
+     * @param boxes per image the boxes, {@code 4 k} values in pixels
+     * @param labels per image the classes
+     * @return the loss
+     */
+    public Var loss(Tensor images, float[][] boxes, int[][] labels) {
+        int b = images.shape().dim(0);
+        Var mem = memory(Var.of(images));
+        Var x = queryEmbed.expand(Shape.of(b, queries, dim));
+        int dn = denoising ? maxObjects : 0;
+        Tensor mask = null;
+        float[] dnTargets = null;
+        float[] dnValid = null;
+        float[] dnLabels = null;
+        if (dn > 0) {
+            float[] noisyBox = new float[b * dn * 4];
+            float[] noisyLabel = new float[b * dn];
+            dnTargets = new float[b * dn * 4];
+            dnValid = new float[b * dn];
+            dnLabels = new float[b * dn];
+            int total = queries + dn;
+            float[] bias = new float[b * total * total];
+            for (int i = 0; i < b; i++) {
+                for (int j = 0; j < dn; j++) {
+                    int s = i * dn + j;
+                    boolean real = j < labels[i].length;
+                    float[] c = real ? centres(boxes[i], j) : new float[] {0.5f, 0.5f, 0.1f, 0.1f};
+                    System.arraycopy(c, 0, dnTargets, 4 * s, 4);
+                    dnValid[s] = real ? 1 : 0;
+                    dnLabels[s] = real ? labels[i][j] : classes;
+                    noisyBox[4 * s] = clamp(c[0] + (float) (noise.nextDouble() * 2 - 1) * 0.4f * c[2] / 2);
+                    noisyBox[4 * s + 1] = clamp(c[1] + (float) (noise.nextDouble() * 2 - 1) * 0.4f * c[3] / 2);
+                    noisyBox[4 * s + 2] = clamp(c[2] * (1 + (float) (noise.nextDouble() * 2 - 1) * 0.4f));
+                    noisyBox[4 * s + 3] = clamp(c[3] * (1 + (float) (noise.nextDouble() * 2 - 1) * 0.4f));
+                    noisyLabel[s] = !real ? classes : noise.nextDouble() < 0.2 ? noise.nextInt(classes) : labels[i][j];
+                }
+                for (int q = 0; q < total; q++) {
+                    for (int k = 0; k < total; k++) {
+                        boolean blocked = q < queries && k >= queries
+                                || k >= queries && k - queries >= labels[i].length;
+                        bias[(i * total + q) * total + k] = blocked ? -1e9f : 0f;
+                    }
+                }
+            }
+            Var dnQueries = Var.of(Tensor.of(Shape.of(b, dn, 4), noisyBox)).matmul(dnBox)
+                    .add(dnLabel.gather(0, Tensor.of(Shape.of(b * dn), noisyLabel)).reshape(b, dn, dim));
+            x = Var.concat(1, x, dnQueries);
+            mask = Tensor.of(Shape.of(b, 1, total, total), bias);
+        }
+        Var out = decode(mem, x, mask);
+        Var match = dn > 0 ? out.slice(1, 0, queries) : out;
+        float[] o = match.value().toArray();
+        int stride = classes + 5;
+        float[] clsTarget = new float[b * queries];
+        float[] clsWeight = new float[b * queries];
+        List<Integer> matched = new ArrayList<>();
+        List<float[]> matchedBoxes = new ArrayList<>();
+        for (int i = 0; i < b; i++) {
+            int g = labels[i].length;
+            double[][] cost = new double[queries][queries];
+            for (int q = 0; q < queries; q++) {
+                int base = (i * queries + q) * stride;
+                double[] p = softmax(o, base, classes + 1);
+                float[] pb = {o[base + classes + 1], o[base + classes + 2], o[base + classes + 3], o[base + classes + 4]};
+                for (int j = 0; j < g; j++) {
+                    float[] t = centres(boxes[i], j);
+                    double l1 = 0;
+                    for (int d = 0; d < 4; d++) {
+                        l1 += Math.abs(pb[d] - t[d]);
+                    }
+                    cost[q][j] = -p[labels[i][j]] + 5 * l1 + 2 * (1 - giou(corners(pb), corners(t)));
+                }
+            }
+            int[] assign = MinibatchOptimalTransport.assignCost(cost);
+            for (int q = 0; q < queries; q++) {
+                int s = i * queries + q;
+                if (assign[q] < g) {
+                    clsTarget[s] = labels[i][assign[q]];
+                    clsWeight[s] = 1;
+                    matched.add(s);
+                    matchedBoxes.add(centres(boxes[i], assign[q]));
+                } else {
+                    clsTarget[s] = classes;
+                    clsWeight[s] = 0.1f;
+                }
+            }
+        }
+        Var flat = match.reshape(b * queries, stride);
+        Var loss = weightedCe(flat.slice(1, 0, classes + 1), clsTarget, clsWeight);
+        if (!matched.isEmpty()) {
+            loss = loss.add(boxLoss(flat, matched, matchedBoxes));
+        }
+        if (dn > 0) {
+            Var dnOut = out.slice(1, queries, queries + dn).reshape(b * dn, stride);
+            List<Integer> real = new ArrayList<>();
+            List<float[]> realBoxes = new ArrayList<>();
+            for (int s = 0; s < b * dn; s++) {
+                if (dnValid[s] > 0) {
+                    real.add(s);
+                    realBoxes.add(new float[] {dnTargets[4 * s], dnTargets[4 * s + 1], dnTargets[4 * s + 2],
+                        dnTargets[4 * s + 3]});
+                }
+            }
+            if (!real.isEmpty()) {
+                loss = loss.add(weightedCe(dnOut.slice(1, 0, classes + 1), dnLabels, dnValid))
+                        .add(boxLoss(dnOut, real, realBoxes));
+            }
+        }
+        return loss;
+    }
+
+    private Var weightedCe(Var logits, float[] target, float[] weight) {
+        int n = target.length;
+        Var logp = Activation.LOG_SOFTMAX.forward(logits);
+        float[] onehot = new float[n * (classes + 1)];
+        double total = 0;
+        for (int i = 0; i < n; i++) {
+            onehot[i * (classes + 1) + (int) target[i]] = weight[i];
+            total += weight[i];
+        }
+        return logp.mul(Tensor.of(Shape.of(n, classes + 1), onehot)).sum().mul((float) (-1 / Math.max(1e-6, total)));
+    }
+
+    private Var boxLoss(Var flat, List<Integer> rows, List<float[]> targets) {
+        int p = rows.size();
+        float[] idx = new float[p];
+        float[] t = new float[4 * p];
+        for (int i = 0; i < p; i++) {
+            idx[i] = rows.get(i);
+            System.arraycopy(targets.get(i), 0, t, 4 * i, 4);
+        }
+        Var pred = flat.slice(1, classes + 1, classes + 5).gather(0, Tensor.of(Shape.of(p), idx));
+        Var target = Var.of(Tensor.of(Shape.of(p, 4), t));
+        Var l1 = pred.sub(target).abs().mean().mul(4 * 5f);
+        return l1.add(Boxes.giouLoss(Boxes.toCorners(pred), Boxes.toCorners(target)).mul(2));
+    }
+
+    private float[] centres(float[] boxes, int j) {
+        float s = side;
+        return new float[] {(boxes[4 * j] + boxes[4 * j + 2]) / 2 / s, (boxes[4 * j + 1] + boxes[4 * j + 3]) / 2 / s,
+            (boxes[4 * j + 2] - boxes[4 * j]) / s, (boxes[4 * j + 3] - boxes[4 * j + 1]) / s};
+    }
+
+    private static float clamp(float v) {
+        return Math.max(0.01f, Math.min(0.99f, v));
+    }
+
+    private static float[] corners(float[] c) {
+        return new float[] {c[0] - c[2] / 2, c[1] - c[3] / 2, c[0] + c[2] / 2, c[1] + c[3] / 2};
+    }
+
+    private static double giou(float[] a, float[] b) {
+        double iou = DetectionMetrics.iou(a, b);
+        double iw = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]));
+        double ih = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+        double union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - iw * ih;
+        double hull = (Math.max(a[2], b[2]) - Math.min(a[0], b[0])) * (Math.max(a[3], b[3]) - Math.min(a[1], b[1]));
+        return hull <= 0 ? iou : iou - (hull - union) / hull;
+    }
+
+    private static double[] softmax(float[] v, int off, int n) {
+        double max = Double.NEGATIVE_INFINITY;
+        for (int i = 0; i < n; i++) {
+            max = Math.max(max, v[off + i]);
+        }
+        double[] p = new double[n];
+        double sum = 0;
+        for (int i = 0; i < n; i++) {
+            p[i] = Math.exp(v[off + i] - max);
+            sum += p[i];
+        }
+        for (int i = 0; i < n; i++) {
+            p[i] /= sum;
+        }
+        return p;
+    }
+
+    /**
+     * Detects objects: every query whose best real class beats "no object" in score order,
+     * with no NMS.
+     *
+     * @param images {@code [batch, 1, side, side]}
+     * @param firstImage the image index of the first image
+     * @return one detection per query, scored by its best real class probability
+     */
+    public List<DetectionMetrics.Detection> detect(Tensor images, int firstImage) {
+        int b = images.shape().dim(0);
+        float[] o = Var.noGrad(() -> forward(Var.of(images))).value().toArray();
+        int stride = classes + 5;
+        List<DetectionMetrics.Detection> dets = new ArrayList<>();
+        for (int i = 0; i < b; i++) {
+            for (int q = 0; q < queries; q++) {
+                int base = (i * queries + q) * stride;
+                double[] p = softmax(o, base, classes + 1);
+                int best = 0;
+                for (int c = 1; c < classes; c++) {
+                    best = p[c] > p[best] ? c : best;
+                }
+                float[] c = {o[base + classes + 1], o[base + classes + 2], o[base + classes + 3], o[base + classes + 4]};
+                float[] box = corners(c);
+                for (int d = 0; d < 4; d++) {
+                    box[d] *= side;
+                }
+                dets.add(new DetectionMetrics.Detection(firstImage + i, best, (float) p[best], box));
+            }
+        }
+        return dets;
+    }
+
+    /** @return the multiply-adds of one image (backbone and decoder) */
+    public long macs() {
+        int t = (side / 4) * (side / 4);
+        long m = backbone.macs(side) + VisionOps.convMacs(24, dim, 1, side / 4, side / 4);
+        long perLayer = (long) queries * dim * 3 * dim + (long) queries * queries * dim * 2 + (long) queries * dim * dim
+                + (long) queries * dim * dim + (long) t * dim * 2 * dim + (long) queries * t * dim * 2
+                + (long) queries * dim * dim + (long) queries * dim * 4 * dim;
+        return m + layers.size() * perLayer + (long) queries * dim * (classes + 1 + dim + 4);
+    }
+
+    @Override
+    public List<Var> parameters() {
+        List<Var> p = new ArrayList<>(backbone.parameters());
+        p.addAll(List.of(project, projectBias, positions, queryEmbed));
+        if (denoising) {
+            p.add(dnBox);
+            p.add(dnLabel);
+        }
+        for (Var[] l : layers) {
+            p.addAll(List.of(l));
+        }
+        p.addAll(List.of(clsW, clsB, box1, box1b, box2, box2b));
+        return p;
+    }
+
+    @Override
+    public String toString() {
+        return "SetPredictionDetector(" + queries + " queries, " + layers.size() + " layers"
+                + (denoising ? ", denoising" : "") + ")";
+    }
+}
