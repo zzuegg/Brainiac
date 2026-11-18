@@ -43,6 +43,17 @@ public final class MinibatchOptimalTransport {
                 cost[i][j] = s;
             }
         }
+        return assignCost(cost);
+    }
+
+    /**
+     * Solves the linear assignment problem for a square cost matrix (Hungarian algorithm).
+     *
+     * @param cost the costs {@code [n][n]}
+     * @return {@code p}: row {@code i} is assigned to column {@code p[i]}, minimising the total
+     */
+    public static int[] assignCost(double[][] cost) {
+        int n = cost.length;
         // Jonker-Volgenant style shortest augmenting paths with potentials (1-indexed)
         double[] u = new double[n + 1];
         double[] v = new double[n + 1];
