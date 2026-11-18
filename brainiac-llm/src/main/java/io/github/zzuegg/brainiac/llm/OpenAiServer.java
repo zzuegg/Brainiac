@@ -35,7 +35,9 @@ import java.util.concurrent.Executors;
  * asks for several answers; {@code top_k}, {@code min_p} and {@code repetition_penalty} are read
  * as llama.cpp's server reads them. A thinking model's {@code <think>} part comes back apart, as
  * {@code reasoning_content}. {@code GET /health} answers once the server is up, and
- * {@code POST /tokenize} and {@code /detokenize} convert text. With {@link #requireApiKey}, every
+ * {@code POST /tokenize} and {@code /detokenize} convert text. {@link #withEmbedder} and
+ * {@link #withReranker} add encoder models: their embeddings at {@code /v1/embeddings} and
+ * cross-encoder scores at {@code POST /v1/rerank}. With {@link #requireApiKey}, every
  * request needs {@code Authorization: Bearer <key>}. Requests are answered one at a time, or,
  * with a batch size above one, decoded together by {@link Generator#batcher continuous
  * batching}.
@@ -113,6 +115,8 @@ public final class OpenAiServer implements AutoCloseable {
             http.createContext("/tokenize", e -> s.guarded(e, s::tokenize));
             http.createContext("/v1/embeddings", e -> s.guarded(e, s::embeddings));
             http.createContext("/detokenize", e -> s.guarded(e, s::detokenize));
+            http.createContext("/v1/rerank", e -> s.guarded(e, s::rerank));
+            http.createContext("/rerank", e -> s.guarded(e, s::rerank));
             http.setExecutor(s.worker);
             http.start();
             return s;
@@ -210,11 +214,19 @@ public final class OpenAiServer implements AutoCloseable {
             error(e, 405, "use GET");
             return;
         }
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", model);
-        m.put("object", "model");
-        m.put("owned_by", "brainiac");
-        json(e, 200, Map.of("object", "list", "data", List.of(m)));
+        List<Object> data = new ArrayList<>();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        names.add(model);
+        names.addAll(embedders.keySet());
+        names.addAll(rerankers.keySet());
+        for (String n : names) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", n);
+            m.put("object", "model");
+            m.put("owned_by", "brainiac");
+            data.add(m);
+        }
+        json(e, 200, Map.of("object", "list", "data", data));
     }
 
     /**
@@ -225,6 +237,21 @@ public final class OpenAiServer implements AutoCloseable {
      */
     private void embeddings(HttpExchange e) throws IOException {
         try (e) {
+            Map<String, Object> req;
+            try {
+                req = body(e);
+            } catch (RuntimeException ex) {
+                error(e, 400, ex.getMessage());
+                return;
+            }
+            Embedder embedder = embedders.get(Json.string(req, "model", ""));
+            if (embedder == null && !(generator.model() instanceof Llama) && !embedders.isEmpty()) {
+                embedder = embedders.values().iterator().next();
+            }
+            if (embedder != null) {
+                encoderEmbeddings(e, req, embedder);
+                return;
+            }
             if (!(generator.model() instanceof Llama llama)) {
                 error(e, 400, "this model cannot make embeddings");
                 return;
@@ -233,7 +260,6 @@ public final class OpenAiServer implements AutoCloseable {
             Llama.Pooling pooling;
             int dimensions;
             try {
-                Map<String, Object> req = body(e);
                 inputs = embeddingInputs(req.get("input"));
                 String p = Json.string(req, "pooling", "last");
                 pooling = switch (p) {
@@ -294,6 +320,201 @@ public final class OpenAiServer implements AutoCloseable {
             res.put("object", "list");
             res.put("data", data);
             res.put("model", model);
+            res.put("usage", Map.of("prompt_tokens", tokens, "total_tokens", tokens));
+            json(e, 200, res);
+        }
+    }
+
+    /** An encoder serving embeddings or reranking under a model name. */
+    private record Embedder(String name, Encoder encoder, PretrainedTokenizer tokenizer, Encoder.Pooling pooling) {
+    }
+
+    private final Map<String, Embedder> embedders = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Embedder> rerankers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Also serves an encoder's sentence embeddings at {@code /v1/embeddings}, for requests
+     * whose {@code model} is {@code name} (or every embeddings request, when the generator's
+     * model cannot embed).
+     *
+     * @param name the model name clients ask for
+     * @param encoder the embedding model, such as bge-small or multilingual-e5
+     * @param tokenizer its tokenizer
+     * @param pooling how its token vectors become one
+     * @return this server
+     */
+    public OpenAiServer withEmbedder(String name, Encoder encoder, PretrainedTokenizer tokenizer,
+            Encoder.Pooling pooling) {
+        embedders.put(Objects.requireNonNull(name, "name"), new Embedder(name, Objects.requireNonNull(encoder),
+                Objects.requireNonNull(tokenizer), Objects.requireNonNull(pooling)));
+        return this;
+    }
+
+    /**
+     * Also serves a cross-encoder reranker at {@code POST /v1/rerank} (the API of llama.cpp,
+     * Jina and Cohere): {@code query}, {@code documents} (strings or {@code {"text": ...}}),
+     * optional {@code top_n} and {@code return_documents}; the answer's {@code results} hold
+     * each document's {@code index} and {@code relevance_score} (the model's logit), best
+     * first.
+     *
+     * @param name the model name clients ask for
+     * @param reranker a model with a classification head, such as bge-reranker
+     * @param tokenizer its tokenizer
+     * @return this server
+     */
+    public OpenAiServer withReranker(String name, Encoder reranker, PretrainedTokenizer tokenizer) {
+        if (!reranker.hasClassifier()) {
+            throw new IllegalArgumentException("a reranker needs a classification head");
+        }
+        rerankers.put(Objects.requireNonNull(name, "name"), new Embedder(name, reranker,
+                Objects.requireNonNull(tokenizer), Encoder.Pooling.CLS));
+        return this;
+    }
+
+    private void encoderEmbeddings(HttpExchange e, Map<String, Object> req, Embedder embedder) throws IOException {
+        List<String> texts = new ArrayList<>();
+        Object input = req.get("input");
+        for (Object o : input instanceof List<?> l ? l : input == null ? List.of() : List.of(input)) {
+            if (!(o instanceof String s)) {
+                error(e, 400, "input must be a string or a list of strings for " + embedder.name);
+                return;
+            }
+            texts.add(s);
+        }
+        if (texts.isEmpty() || texts.size() > 2048) {
+            error(e, 400, "input must hold 1 to 2048 strings");
+            return;
+        }
+        int dimensions = (int) Json.integer(req, "dimensions", 0);
+        float[][] vectors;
+        try {
+            vectors = encoderTask(() -> embedder.encoder.embed(embedder.tokenizer, texts, embedder.pooling, true));
+        } catch (RuntimeException ex) {
+            LOG.log(System.Logger.Level.ERROR, "embeddings failed", ex);
+            error(e, 500, String.valueOf(ex.getMessage()));
+            return;
+        }
+        List<Object> data = new ArrayList<>();
+        int tokens = 0;
+        for (int i = 0; i < vectors.length; i++) {
+            float[] v = vectors[i];
+            if (dimensions > 0 && dimensions < v.length) {
+                v = java.util.Arrays.copyOf(v, dimensions);
+                double sq = 0;
+                for (float x : v) {
+                    sq += (double) x * x;
+                }
+                float inv = (float) (1 / Math.max(Math.sqrt(sq), 1e-12));
+                for (int j = 0; j < v.length; j++) {
+                    v[j] *= inv;
+                }
+            }
+            List<Object> values = new ArrayList<>(v.length);
+            for (float x : v) {
+                values.add((double) x);
+            }
+            data.add(Map.of("object", "embedding", "index", i, "embedding", values));
+            tokens += embedder.tokenizer.encode(texts.get(i)).length;
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("object", "list");
+        res.put("data", data);
+        res.put("model", embedder.name);
+        res.put("usage", Map.of("prompt_tokens", tokens, "total_tokens", tokens));
+        json(e, 200, res);
+    }
+
+    /** Runs encoder work on the batcher's thread when there is one, so it never meets decoding. */
+    private float[][] encoderTask(java.util.function.Supplier<float[][]> task) {
+        if (batcher == null) {
+            return task.get();
+        }
+        try {
+            return batcher.run(task).get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", ex);
+        } catch (java.util.concurrent.ExecutionException ex) {
+            throw ex.getCause() instanceof RuntimeException r ? r : new IllegalStateException(ex.getCause());
+        }
+    }
+
+    private void rerank(HttpExchange e) throws IOException {
+        try (e) {
+            if (!e.getRequestMethod().equals("POST")) {
+                error(e, 405, "use POST");
+                return;
+            }
+            Map<String, Object> req;
+            String query;
+            List<String> docs = new ArrayList<>();
+            Embedder reranker;
+            int top;
+            boolean returnDocuments;
+            try {
+                req = body(e);
+                reranker = rerankers.get(Json.string(req, "model", ""));
+                if (reranker == null && rerankers.size() == 1) {
+                    reranker = rerankers.values().iterator().next();
+                }
+                if (reranker == null) {
+                    throw new BadRequest(rerankers.isEmpty() ? "no reranker is served"
+                            : "model must be one of " + rerankers.keySet());
+                }
+                query = Json.string(req, "query", null);
+                if (query == null) {
+                    throw new BadRequest("query is required");
+                }
+                if (!(req.get("documents") instanceof List<?> list) || list.isEmpty() || list.size() > 1024) {
+                    throw new BadRequest("documents must be a list of 1 to 1024 texts");
+                }
+                for (Object d : list) {
+                    if (d instanceof String s) {
+                        docs.add(s);
+                    } else if (d instanceof Map<?, ?> m && m.get("text") instanceof String s) {
+                        docs.add(s);
+                    } else {
+                        throw new BadRequest("each document must be a string or {\"text\": ...}");
+                    }
+                }
+                top = (int) Json.integer(req, "top_n", docs.size());
+                returnDocuments = Boolean.TRUE.equals(req.get("return_documents"));
+            } catch (RuntimeException ex) {
+                error(e, 400, ex.getMessage());
+                return;
+            }
+            float[] scores;
+            try {
+                Embedder r = reranker;
+                scores = encoderTask(() -> new float[][] {r.encoder.rerank(r.tokenizer, query, docs)})[0];
+            } catch (RuntimeException ex) {
+                LOG.log(System.Logger.Level.ERROR, "rerank failed", ex);
+                error(e, 500, String.valueOf(ex.getMessage()));
+                return;
+            }
+            Integer[] order = new Integer[docs.size()];
+            for (int i = 0; i < order.length; i++) {
+                order[i] = i;
+            }
+            java.util.Arrays.sort(order, (a, b) -> Float.compare(scores[b], scores[a]));
+            List<Object> results = new ArrayList<>();
+            for (int i = 0; i < Math.min(Math.max(top, 0), order.length); i++) {
+                Map<String, Object> r = new LinkedHashMap<>();
+                r.put("index", order[i]);
+                r.put("relevance_score", (double) scores[order[i]]);
+                if (returnDocuments) {
+                    r.put("document", Map.of("text", docs.get(order[i])));
+                }
+                results.add(r);
+            }
+            int tokens = reranker.tokenizer.encode(query).length * docs.size();
+            for (String d : docs) {
+                tokens += reranker.tokenizer.encode(d).length;
+            }
+            Map<String, Object> res = new LinkedHashMap<>();
+            res.put("model", reranker.name);
+            res.put("object", "list");
+            res.put("results", results);
             res.put("usage", Map.of("prompt_tokens", tokens, "total_tokens", tokens));
             json(e, 200, res);
         }

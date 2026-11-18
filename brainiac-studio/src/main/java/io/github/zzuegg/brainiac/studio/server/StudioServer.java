@@ -7,6 +7,7 @@ import io.github.zzuegg.brainiac.studio.agent.AgentRuns;
 import io.github.zzuegg.brainiac.studio.agent.StudioTools;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
+import io.github.zzuegg.brainiac.studio.train.VastRentals;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -39,6 +40,7 @@ public final class StudioServer implements AutoCloseable {
     private final Set<String> hosts;
     private final Map<String, Route> api = new LinkedHashMap<>();
     private final TrainingService training;
+    private volatile VastRentals rentals;
 
     /** Answers one API call. */
     @FunctionalInterface
@@ -90,6 +92,8 @@ public final class StudioServer implements AutoCloseable {
         // the models the user's other machines serve show up as providers
         chat.hosts(() -> server.training.hosts().list().stream().map(h -> (io.github.zzuegg.brainiac.studio.chat.ChatProvider)
                 new io.github.zzuegg.brainiac.studio.train.HostProvider(h, server.training.hosts().client(h))).toList());
+        server.rentals = rentals(chat, server.training);
+        new VastRoutes(chat.vast(), server.rentals).register(server);
         new AgentRoutes(new AgentRuns(chat, new StudioTools(chat, server.training), chat.folder().resolve("agents")))
                 .register(server);
         http.start();
@@ -140,9 +144,32 @@ public final class StudioServer implements AutoCloseable {
         return token;
     }
 
+    // machines rented on Vast.ai become hosts; renting needs the key and this checkout to send
+    private static VastRentals rentals(ChatService chat, TrainingService training) {
+        java.util.Optional<java.nio.file.Path> repo = VastRentals.findRepo(System.getenv());
+        String unavailable = chat.vast() == null ? "Vast.ai is not set up in this studio"
+                : repo.isEmpty() ? "renting needs the studio to run from a Brainiac checkout (or BRAINIAC_REPO naming one), "
+                        + "which is what the machine builds"
+                : !VastRentals.hasSsh(System.getenv()) ? "renting needs the ssh command (the OpenSSH client), "
+                        + "which is not on this machine's PATH" : null;
+        VastRentals.ClientSource client = () -> {
+            if (chat.vast() == null) {
+                throw new IOException("Vast.ai is not set up in this studio");
+            }
+            return chat.vast().client();
+        };
+        return new VastRentals(training.hosts(), VastRentals.vast(client, repo.orElse(null)),
+                chat.folder().resolve("vast"), unavailable,
+                chat.vast() == null ? io.github.zzuegg.brainiac.cloud.VastBadHosts.load() : chat.vast().badHosts());
+    }
+
     @Override
     public void close() {
         http.stop(0);
+        VastRentals r = rentals;
+        if (r != null) {
+            r.close();
+        }
         training.close();
         executor.shutdownNow();
     }

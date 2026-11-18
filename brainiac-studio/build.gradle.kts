@@ -7,6 +7,7 @@ plugins {
 // HTML, CSS and JavaScript served from this module's resources.
 dependencies {
     implementation(project(":brainiac"))
+    implementation(project(":brainiac-cloud"))
     runtimeOnly(project(":brainiac-backend-vulkan"))
     runtimeOnly(project(":brainiac-experiments"))
     testRuntimeOnly(project(":brainiac-backend-cpu"))

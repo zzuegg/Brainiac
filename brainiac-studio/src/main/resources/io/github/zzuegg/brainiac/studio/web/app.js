@@ -1661,7 +1661,7 @@
   function renderTrainLive() {
     if (state.view !== "train" || !T.loaded) return;
     const set = (id, html) => { const el = $("#" + id); if (el) el.innerHTML = html; };
-    const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key");
+    const typing = !!document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours");
     if (!typing) set("train-hosts", trainHosts());
     set("train-runs", trainRunsTable()); set("train-detail", trainDetail());
     const crumb = $("#crumb .muted"); if (crumb) crumb.textContent = `· ${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}`;
@@ -1739,9 +1739,14 @@
     $("#train-start")?.addEventListener("click", startTraining);
   }
 
-  // ----- Vast.ai: GPU machines to rent. The studio only reads here; renting will ask each time.
+  // ----- Vast.ai: GPU machines to rent. Renting shows the price and asks each time; a rented
+  // machine is set up as a worker host and destroyed after the hours chosen.
   const V = { status: null, loading: false, error: null, busy: false, keyError: null, removing: false, open: false,
-    filters: { gpu: "", minGpuRam: 0, gpus: 1, maxPrice: 0 }, offers: null, searching: false, offerError: null };
+    filters: { gpu: "", minGpuRam: 0, gpus: 1, maxPrice: 0 }, offers: null, searching: false, offerError: null,
+    rentals: [], rentUnavailable: null, maxHours: 48, confirm: null, renting: false, rentError: null, destroying: null, poll: 0, cardError: null };
+  const RENT_STAGE = { renting: "renting", starting: "starting up", copying: "copying the studio", building: "building the worker",
+    ready: "ready as a host", destroying: "destroying", destroyed: "destroyed", failed: "failed" };
+  const rentalActive = r => !r.ended;
   const usd = n => n == null ? "—" : "$" + (n < 1 ? n.toFixed(3) : n.toFixed(2));
 
   async function loadVast() {
@@ -1749,8 +1754,45 @@
     V.loading = true;
     try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
     finally { V.loading = false; }
+    await loadRentals(false);
     if (state.view === "train" && T.loaded) renderHosts();
     else if (state.view === "library") render();
+  }
+
+  // the machines rented from the studio; watched while any is being set up or runs
+  async function loadRentals(draw = true) {
+    try { takeRentals(await api("/api/vast/rentals")); } catch (e) { console.warn(e); }
+    if (draw && state.view === "train" && T.loaded && !document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours")) renderHosts();
+    watchRentals();
+  }
+  function takeRentals(r) {
+    const was = V.rentals.filter(x => x.stage === "ready").length;
+    V.rentals = r.rentals || []; V.rentUnavailable = r.unavailable || null; V.maxHours = r.maxHours || 48;
+    // a machine that just became ready is a new host
+    if (V.rentals.filter(x => x.stage === "ready").length !== was) api("/api/hosts").then(h => { T.hosts = h.hosts || []; T.hostsAt = Date.now(); if (state.view === "train" && T.loaded) renderHosts(); }).catch(() => {});
+  }
+  function watchRentals() {
+    clearTimeout(V.poll);
+    if (!V.rentals.some(rentalActive)) return;
+    const settingUp = V.rentals.some(r => rentalActive(r) && r.stage !== "ready");
+    V.poll = setTimeout(() => { if (state.view === "train" || state.view === "library") loadRentals(); else watchRentals(); }, settingUp ? 4000 : 20000);
+  }
+  const hoursLeft = r => Math.max(0, (r.until - Date.now()) / 3600000);
+  const fmtHours = h => h >= 1 ? `${h.toFixed(h >= 10 ? 0 : 1)} h` : `${Math.max(1, Math.round(h * 60))} min`;
+
+  function rentalRow(r) {
+    const active = rentalActive(r);
+    const tone = r.stage === "ready" ? "ok" : r.stage === "failed" ? "bad" : active ? "warn" : "muted";
+    const btn = !active || r.stage === "destroying" ? ""
+      : r.instance ? `<button class="btn sm ${V.destroying === r.instance ? "danger" : "ghost"}" data-vast-destroy="${r.instance}">${V.destroying === r.instance ? "Click to destroy" : "Destroy"}</button>`
+      : `<button class="btn sm ghost" data-vast-cancel="${esc(r.key)}">Cancel</button>`;
+    return `<div class="rental ${active ? "" : "ended"}">
+        <div class="rental-head"><span class="dot ${active && r.stage !== "ready" ? "pulse" : ""}" style="--c:var(--${tone})"></span><b title="${esc(r.gpu)}">${esc(r.gpu)}</b><span class="grow"></span>
+          <span class="mono tnum" title="Cost so far at ${usd(r.pricePerHour)} an hour">${usd(r.cost)}</span>${btn}</div>
+        <div class="faint rental-sub"><span class="chip plain">${esc(RENT_STAGE[r.stage] || r.stage)}</span>${active && r.stage !== "destroying" ? `<span>${usd(r.pricePerHour)}/h · destroyed in ${fmtHours(hoursLeft(r))}${r.instance ? ` · #${r.instance}` : ""}</span>` : ""}</div>
+        ${r.last ? `<div class="mono faint rental-log" title="${esc(r.last)}">${esc(r.last)}</div>` : ""}
+        ${r.error ? `<div class="flag bad">${icon("alert")}<span>${esc(r.error)}</span></div>` : ""}
+      </div>`;
   }
 
   function vastCard() {
@@ -1764,12 +1806,17 @@
         ${V.keyError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.keyError)}</span></div>` : ""}
       </form>`;
     const ins = s.instances || [];
+    const mine = new Set(V.rentals.filter(r => r.instance && rentalActive(r)).map(r => r.instance));
+    const others = ins.filter(i => !mine.has(i.id));
     return `<div class="host vast">
         <div class="host-head"><span class="dot" style="--c:var(--${s.error ? "bad" : "ok"})"></span><b>Vast.ai</b><span class="chip plain" title="Key ${esc(s.key.source === "environment" ? "from " + s.key.label : "saved in keys.properties")}">${esc(s.key.hint)}</span>
           <span class="grow"></span>${s.balance != null ? `<span class="mono tnum" title="Balance on Vast.ai">${usd(s.balance)}</span>` : ""}
           ${s.key.source === "saved" ? `<button class="iconbtn sm" id="vast-remove" aria-label="Remove the Vast.ai key" title="${V.removing ? "Click again to remove the key" : "Remove the key"}">${V.removing ? icon("check") : icon("trash")}</button>` : ""}</div>
         ${s.error ? `<div class="flag bad">${icon("alert")}<span>${esc(s.error)}</span></div>` : ""}
-        ${ins.map(i => `<div class="dev-row"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span></div>`).join("")}
+        ${V.cardError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.cardError)}</span></div>` : ""}
+        ${V.rentals.map(rentalRow).join("")}
+        ${others.map(i => `<div class="dev-row vast-other"><span>${esc(i.gpu)}${i.gpus > 1 ? " × " + i.gpus : ""}</span><span class="mono faint">${esc(i.status || "")}</span><span class="mono tnum">${usd(i.pricePerHour)}/h</span>
+          <button class="iconbtn sm ${V.destroying === i.id ? "armed" : ""}" data-vast-destroy="${i.id}" aria-label="Destroy instance ${i.id}" title="${V.destroying === i.id ? "Click again to destroy it; billing ends" : `Destroy instance ${i.id}`}">${V.destroying === i.id ? icon("check") : icon("trash")}</button></div>`).join("")}
         <div class="host-foot"><span class="muted">${ins.length ? `${ins.length} rented machine${ins.length === 1 ? "" : "s"}` : "No machines rented."}</span><span class="grow"></span>
           <button class="btn sm" id="vast-open" aria-expanded="${V.open}">${icon("search")}${V.open ? "Hide offers" : "Find GPUs"}</button></div>
       </div>`;
@@ -1795,10 +1842,12 @@
     if (!V.open || !V.status?.key) return "";
     const f = V.filters, o = V.offers;
     const rows = !o ? "" : !o.length ? `<div class="faint pad">No offers match. Loosen the filters.</div>`
-      : `<div class="tablebox vast-table"><table class="models"><thead><tr><th>GPU</th><th>Memory</th><th>$/hour</th><th>Reliability</th><th>Where</th><th>CUDA</th><th>CPU · RAM</th><th>Download</th></tr></thead><tbody>
-        ${o.map(x => `<tr><td><b>${esc(x.gpu)}</b>${x.gpus > 1 ? ` <span class="faint">× ${x.gpus}</span>` : ""}</td><td class="mono tnum">${x.gpuRamGb ?? "?"} GB</td><td class="mono tnum">${usd(x.pricePerHour)}</td>
+      : `<div class="tablebox vast-table"><table class="models"><thead><tr><th>GPU</th><th>Memory</th><th>$/hour</th><th>Reliability</th><th>Where</th><th>CUDA</th><th>CPU · RAM</th><th>Download</th><th aria-label="Rent"></th></tr></thead><tbody>
+        ${o.map(x => `<tr class="${V.confirm?.id === x.id ? "sel" : ""}"><td><b>${esc(x.gpu)}</b>${x.gpus > 1 ? ` <span class="faint">× ${x.gpus}</span>` : ""}</td><td class="mono tnum">${x.gpuRamGb ?? "?"} GB</td><td class="mono tnum">${usd(x.pricePerHour)}</td>
           <td class="mono tnum">${x.reliability != null ? (x.reliability * 100).toFixed(1) + "%" : "—"}</td><td>${esc(x.location || "—")}</td><td class="mono">${x.cuda ?? "—"}</td>
-          <td class="mono tnum">${x.cpuCores != null ? Math.round(x.cpuCores) : "?"} · ${x.ramGb ?? "?"} GB</td><td class="mono tnum">${x.downMbps != null ? Math.round(x.downMbps) + " Mb/s" : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+          <td class="mono tnum">${x.cpuCores != null ? Math.round(x.cpuCores) : "?"} · ${x.ramGb ?? "?"} GB</td><td class="mono tnum">${x.downMbps != null ? Math.round(x.downMbps) + " Mb/s" : "—"}</td>
+          <td><button class="btn sm" data-vast-rent="${x.id}" ${V.rentUnavailable ? `disabled title="${esc(V.rentUnavailable)}"` : ""}>Rent…</button></td></tr>
+          ${V.confirm?.id === x.id ? `<tr class="rent-confirm"><td colspan="9">${rentConfirm(x)}</td></tr>` : ""}`).join("")}</tbody></table></div>`;
     return `<div class="panel vast-panel">
       <div class="col-head"><span class="h3">GPUs on Vast.ai</span><span class="muted" style="font-size:12px">verified machines you can rent now, cheapest first</span><span class="grow"></span>
         <button class="iconbtn sm" id="vast-close" aria-label="Close">${icon("x")}</button></div>
@@ -1811,8 +1860,35 @@
       </form>
       ${V.offerError ? `<div class="flag bad" style="margin:0 16px 12px">${icon("alert")}<span>${esc(V.offerError)}</span></div>` : ""}
       ${rows}
-      <p class="muted vast-note">Renting from the studio comes next: it will show the price and ask you each time before anything is billed, then add the machine as a host.</p>
+      ${V.rentUnavailable ? `<div class="flag warn" style="margin:12px 16px 0">${icon("alert")}<span>${esc(V.rentUnavailable)}</span></div>` : ""}
+      <p class="muted vast-note">Renting asks you each time, with the price. The machine gets this checkout of the studio, builds it, and joins as a host through an SSH tunnel, which takes 10 to 20 minutes and is billed too. It logs in with your SSH key from <code>~/.ssh</code>, which must be added at <a href="https://cloud.vast.ai/manage-keys/" target="_blank" rel="noopener">cloud.vast.ai</a>. It is destroyed after the hours you choose, when you destroy it, or when the studio closes.</p>
     </div>`;
+  }
+
+  function rentConfirm(x) {
+    const h = V.confirm.hours, total = x.pricePerHour * h;
+    return `<form class="rent-box" id="vast-rent-form" autocomplete="off">
+        <div><b>Rent ${x.gpus > 1 ? x.gpus + " × " : ""}${esc(x.gpu)} for ${usd(x.pricePerHour)} an hour?</b></div>
+        <div class="muted">Billing starts as soon as Vast.ai rents it to you and runs until it is destroyed. Storage is billed on top, usually a few cents an hour.</div>
+        <div class="rent-row"><label>Destroy it after<input class="input mono" id="vast-hours" type="number" min="0.25" max="${V.maxHours}" step="0.25" value="${h}"> hours</label>
+          <span class="muted">at most <b class="mono tnum">${usd(total)}</b> for the machine</span><span class="grow"></span>
+          <button class="btn ghost" type="button" id="vast-rent-cancel">Cancel</button>
+          <button class="btn primary" type="submit" ${V.renting ? "disabled" : ""}>${V.renting ? "Renting…" : `Rent for ${usd(x.pricePerHour)}/h`}</button></div>
+        ${V.rentError ? `<div class="flag bad">${icon("alert")}<span>${esc(V.rentError)}</span></div>` : ""}
+      </form>`;
+  }
+
+  async function rentOffer() {
+    const x = (V.offers || []).find(o => o.id === V.confirm?.id); if (!x) return;
+    const hours = +($("#vast-hours")?.value || V.confirm.hours);
+    if (!(hours > 0) || hours > V.maxHours) { V.rentError = `Choose up to ${V.maxHours} hours.`; renderVast(); return; }
+    V.confirm.hours = hours; V.renting = true; V.rentError = null; renderVast();
+    try {
+      takeRentals(await postJson("/api/vast/rent", { offer: x.id, pricePerHour: x.pricePerHour, hours }));
+      V.confirm = null; V.offers = V.offers.filter(o => o.id !== x.id);
+      loadVast();
+    } catch (e) { V.rentError = String(e.message || e); }
+    V.renting = false; renderVast(); renderHosts(); watchRentals();
   }
 
   function renderVast() {
@@ -1844,10 +1920,36 @@
       renderHosts(); renderVast();
     });
     $("#vast-open")?.addEventListener("click", () => { V.open = !V.open; renderHosts(); renderVast(); if (V.open && !V.offers) searchVast(); });
+    $$("[data-vast-destroy]").forEach(b => b.addEventListener("click", async () => {
+      const id = +b.dataset.vastDestroy;
+      // two clicks: the first arms it
+      if (V.destroying !== id) { V.destroying = id; renderHosts(); setTimeout(() => { if (V.destroying === id) { V.destroying = null; renderHosts(); } }, 4000); return; }
+      V.destroying = null; b.disabled = true;
+      try { takeRentals(await postJson("/api/vast/destroy", { id })); V.cardError = null; }
+      catch (e) { V.cardError = String(e.message || e); }
+      loadVast();
+    }));
+    $$("[data-vast-cancel]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { takeRentals(await postJson("/api/vast/cancel", { key: b.dataset.vastCancel })); V.cardError = null; } catch (e) { V.cardError = String(e.message || e); }
+      renderHosts(); watchRentals();
+    }));
   }
 
   function bindVastPanel() {
-    $("#vast-close")?.addEventListener("click", () => { V.open = false; renderHosts(); renderVast(); });
+    $("#vast-close")?.addEventListener("click", () => { V.open = false; V.confirm = null; renderHosts(); renderVast(); });
+    $$("[data-vast-rent]").forEach(b => b.addEventListener("click", () => {
+      const id = +b.dataset.vastRent;
+      V.confirm = V.confirm?.id === id ? null : { id, hours: V.confirm?.hours || 2 }; V.rentError = null; renderVast();
+      $("#vast-hours")?.focus();
+    }));
+    $("#vast-rent-cancel")?.addEventListener("click", () => { V.confirm = null; V.rentError = null; renderVast(); });
+    $("#vast-rent-form")?.addEventListener("submit", e => { e.preventDefault(); rentOffer(); });
+    $("#vast-hours")?.addEventListener("input", e => {
+      const x = (V.offers || []).find(o => o.id === V.confirm?.id), h = +e.target.value;
+      const out = $("#vast-rent-form .rent-row .muted b");
+      if (x && out && h > 0) { V.confirm.hours = h; out.textContent = usd(x.pricePerHour * h); }
+    });
     $("#vast-filters")?.addEventListener("submit", e => {
       e.preventDefault();
       V.filters = { gpu: $("#vf-gpu").value.trim(), minGpuRam: +$("#vf-mem").value || 0, gpus: +$("#vf-gpus").value || 1, maxPrice: +$("#vf-price").value || 0 };

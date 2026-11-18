@@ -132,7 +132,8 @@ public interface WeightSource extends AutoCloseable {
     /**
      * Opens weights at a path: a {@code .safetensors} file, a sharded model's {@code
      * *.safetensors.index.json}, or a directory holding either (a Hugging Face model
-     * download), or a {@code .gguf} file. A folder whose {@code config.json} says it was
+     * download), or a {@code .gguf} file. PyTorch checkpoints ({@code pytorch_model.bin},
+     * sharded or not) are read when a folder has no safetensors files. A folder whose {@code config.json} says it was
      * quantized with GPTQ or AWQ reads its layers as float weights, dequantized.
      *
      * @param path the file or directory
@@ -173,7 +174,15 @@ public interface WeightSource extends AutoCloseable {
                     files = list.filter(p -> p.getFileName().toString().endsWith(".safetensors")).sorted().toList();
                 }
                 if (files.isEmpty()) {
-                    throw new IllegalArgumentException("no .safetensors files in " + path);
+                    Path binIndex = path.resolve("pytorch_model.bin.index.json");
+                    if (Files.isRegularFile(binIndex)) {
+                        return open(binIndex);
+                    }
+                    Path bin = path.resolve("pytorch_model.bin");
+                    if (Files.isRegularFile(bin)) {
+                        return PyTorchCheckpoint.open(bin);
+                    }
+                    throw new IllegalArgumentException("no .safetensors or pytorch_model.bin files in " + path);
                 }
                 return of(files.stream().map(SafeTensors::open).map(WeightSource.class::cast).toList());
             }
@@ -190,12 +199,15 @@ public interface WeightSource extends AutoCloseable {
                 Path dir = path.toAbsolutePath().getParent();
                 List<WeightSource> opened = new ArrayList<>();
                 for (String s : shards) {
-                    opened.add(SafeTensors.open(dir.resolve(s)));
+                    opened.add(s.endsWith(".bin") ? PyTorchCheckpoint.open(dir.resolve(s)) : SafeTensors.open(dir.resolve(s)));
                 }
                 return of(opened);
             }
             if (file.endsWith(".gguf")) {
                 return Gguf.open(path);
+            }
+            if (file.endsWith(".bin") || file.endsWith(".pt") || file.endsWith(".pth")) {
+                return PyTorchCheckpoint.open(path);
             }
             return SafeTensors.open(path);
         } catch (IOException e) {

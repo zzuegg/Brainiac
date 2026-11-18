@@ -37,7 +37,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
-| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance |
+| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -495,7 +495,7 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
 
-## Image generation: Stable Diffusion
+## Image generation: Stable Diffusion and Flux
 
 `brainiac-diffusion` runs pretrained Stable Diffusion 1.x, 2.x and XL models. It loads a
 Hugging Face diffusers folder (`model_index.json` with `unet`, `vae`, `text_encoder` and
@@ -537,6 +537,34 @@ the SD 1.x and SDXL pipelines (`brainiac-diffusion/src/test/python` makes the fi
 ./gradlew :brainiac-examples:run --args="image models/stable-diffusion-v1-5 'a lighthouse at dusk' --steps 25"
 ```
 
+### Flux
+
+`Flux` runs Black Forest Labs' FLUX.1 dev and schnell from a diffusers folder: a multimodal
+diffusion transformer sampled by flow matching, conditioned on T5-XXL and CLIP. In bfloat16 the
+transformer takes about 24 GB and T5 about 9.5 GB; `Flux.Options.bits(8, 8)` stores both in
+8 bits (4 bits quarters them), so it fits smaller GPUs. `Flux.Options.fitting(path, device,
+dtype)` picks the most precise weights that leave room to generate on a device.
+
+```java
+try (Flux flux = Flux.load(Path.of("models/FLUX.1-schnell"), Device.best(), DType.BFLOAT16,
+        Flux.Options.bits(8, 8))) {
+    GeneratedImage image = flux.generate(ImageRequest.of("a red fox in snow, golden hour")
+            .steps(4).build(), Progress.NONE).get(0);
+}
+```
+
+- Schnell makes an image in 1 to 4 steps. Dev takes 20 to 50 steps and a guidance scale
+  (about 3.5) that is an input to the model, so each step is one pass.
+- Flux has no negative prompt and always steps with Euler.
+- `ImageGenerator.load(path, device)` loads either family behind one interface. It picks the
+  type (float32 on the CPU, bfloat16 for Flux and float16 for Stable Diffusion on a GPU) and
+  quantizes Flux as far as the device's memory needs. A model that cannot fit fails before
+  loading, with a message that says how much it needs. `detect(path)` names the family
+  without loading, and `defaults()` gives each model's steps and guidance and whether it uses
+  a negative prompt or a sampler choice.
+- The transformer, T5, the tokenizer and whole dev and schnell runs were checked against
+  diffusers and transformers on small random models (`flux_fixtures.py`).
+
 ### The same layers in your own networks
 
 Stable Diffusion runs on ordinary brainiac-nn layers in `io.github.zzuegg.brainiac.nn.diffusion`.
@@ -552,6 +580,8 @@ model from them, or fine-tune a pretrained one:
 | `UNet` | the full denoising UNet; also a `Denoiser` for `Diffusion.loss` |
 | `AutoencoderKL` | the VAE: `encode`, `decode`, `toLatents`, `loss` (reconstruction + KL) |
 | `ClipTextEncoder` | CLIP's causal text transformer: last and penultimate layers, pooled embedding |
+| `T5Encoder` | T5's encoder: relative position biases, RMS norms, gated feed-forward |
+| `FluxTransformer` | a multimodal diffusion transformer (MMDiT): joint text-image blocks, single-stream blocks, axial rotary positions, adaLN-Zero |
 
 ```java
 UNet unet = new UNet(UNet.Settings.of(4, 4, new int[] {64, 128, 256}, 512), new SplittableRandom(1));
@@ -564,6 +594,17 @@ double[] sigmas = SigmaSampler.karras(diffusion.schedule(), 25);
 Tensor start = Tensor.normal(shape, 0, 1, random).mul((float) sigmas[0]);
 Tensor images = SigmaSampler.sample(SigmaSampler.model(model, diffusion.schedule(), Diffusion.Prediction.NOISE),
         start, sigmas, SigmaSampler.Method.DPM_PP_2M, random, SigmaSampler.Listener.NONE);
+```
+
+Flow matching works the same way: `FlowSampler.loss(model, data, random)` trains a velocity model,
+and `FlowSampler.sample(...)` walks from noise to data with Euler steps on a shifted schedule.
+
+```java
+FluxTransformer dit = new FluxTransformer(FluxTransformer.Settings.of(16, 8, 64, 4, 8, 512, 512, false), random);
+Denoiser model = dit.denoiser(textTokens, pooledText, 0);
+Var loss = FlowSampler.loss(model, latents, random);
+Tensor out = FlowSampler.sample(FlowSampler.model(model), noise, FlowSampler.sigmas(28, 3),
+        SigmaSampler.Listener.NONE);
 ```
 
 Inference runs inside `Var.noGrad(...)`, which records no graph: intermediate values are freed
@@ -958,8 +999,16 @@ call the same tools over `/api/tools` with the studio's token.
 **Vast.ai** rents GPU machines by the hour. Paste an API key on the Training screen (it is kept in
 `keys.properties`, or comes from `VAST_API_KEY`, and is sent only to Vast.ai) to see your balance,
 the machines you rent, and verified offers to rent, cheapest first, filtered by GPU, memory, count
-and price. The studio only reads there for now; renting will ask you each time before anything is
-billed.
+and price. **Rent…** on an offer shows its price and asks you each time, with the hours after
+which the studio destroys the machine (2 by default, at most 48). The price is looked up again
+before renting, and the studio refuses if it went up. A rented machine gets this checkout (its
+`HEAD` commit), builds it with `cloud/vast/setup.sh` and runs a worker there, reached through an
+SSH tunnel and added as a host, which takes 10 to 20 minutes and is billed too. Renting needs the
+`ssh` command and your SSH key added at cloud.vast.ai, and the studio to run from a Brainiac
+checkout (or `BRAINIAC_REPO` naming one). The Vast.ai card shows each machine's stage and cost so
+far; **Destroy** ends it (and any other instance of your account). Machines are also destroyed when
+setting them up fails and when the studio closes, and the setup's output is kept in `vast/` in the
+data folder. The studio rents at most 3 machines at once.
 
 **Ctrl K** finds anything: a screen, a conversation, a chat model, a saved model in the
 builder, a training run, or a command such as a new conversation, a new model or another layout.
@@ -990,6 +1039,9 @@ GET  /api/hub/downloads     every download with its progress; POST /api/hub/canc
 GET  /api/vast              the Vast.ai key (last 4 characters), balance and rented machines
 POST /api/vast/key          {"key":"..."} saves the Vast.ai key in keys.properties ("remove": true removes it)
 POST /api/vast/offers       {"gpu":"4090","minGpuRam":24,"gpus":1,"maxPrice":0.5} -> machines to rent, cheapest first
+GET  /api/vast/rentals      the machines rented from the studio: stage, cost so far, host, error
+POST /api/vast/rent         {"offer":123,"pricePerHour":0.36,"hours":2} rents it, unless it now costs more
+POST /api/vast/destroy      {"id":456} destroys an instance; POST /api/vast/cancel {"key":"r1"} stops a setup
 POST /api/hub/token         {"token":"hf_..."} saves the Hugging Face token to ~/.brainiac/hf_token ("remove": true
                             deletes it); GET /api/hub/downloads says which token is used, by its last 4 characters
 GET  /api/usage             calls and tokens per provider, key, model and day, and the latest calls

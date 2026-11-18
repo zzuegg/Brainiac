@@ -508,6 +508,10 @@ class LlamaTest {
                     assertEquals("Q6_K", g.format("blk.1.attn_v.weight"));
                 }
                 assertEquals("F32", g.format("blk.0.attn_norm.weight"));
+                // the output layer stays at 6 bits under 4-bit types
+                String head = g.contains("output.weight") ? "output.weight" : "token_embd.weight";
+                assertEquals(type == io.github.zzuegg.brainiac.io.GgufWriter.Type.Q8_0 ? "Q8_0" : "Q6_K",
+                        g.format(head), type + " " + head);
             }
             float[] got = Llama.load(f, DEVICE, DType.FLOAT32).forward(prompt).value().toArray();
             double err = 0;
@@ -515,7 +519,7 @@ class LlamaTest {
                 err += (got[i] - expected[i]) * (got[i] - expected[i]);
             }
             double rel = Math.sqrt(err / norm);
-            // Q4_0 quantizes every matrix, the output layer too; Q4_K keeps the sensitive ones in 6 or 8 bits
+            // Q4_0 quantizes every other matrix; Q4_K keeps the sensitive ones in 6 or 8 bits
             assertTrue(rel < switch (type) {
                 case Q8_0 -> 0.02;
                 case Q4_K -> 0.15;

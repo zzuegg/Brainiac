@@ -257,4 +257,45 @@ class OpenAiServerTest {
         assertEquals(3, Json.array(lp.get("token_logprobs")).size());
         assertEquals(choice.get("text"), String.join("", Json.array(lp.get("tokens")).stream().map(String::valueOf).toList()));
     }
+
+    @Test
+    void servesEncoderEmbeddingsAndReranking() throws IOException {
+        Encoder bert = Encoder.load(LlamaTest.resource("bert"), LlamaTest.DEVICE, DType.FLOAT32);
+        PretrainedTokenizer bertTok = PretrainedTokenizer.load(LlamaTest.resource("bert"));
+        Encoder reranker = Encoder.load(LlamaTest.resource("bert-rerank"), LlamaTest.DEVICE, DType.FLOAT32);
+        PretrainedTokenizer rerankTok = PretrainedTokenizer.load(LlamaTest.resource("bert-rerank"));
+        server.withEmbedder("bert", bert, bertTok, Encoder.Pooling.MEAN).withReranker("rr", reranker, rerankTok);
+        String models = call("GET", "/v1/models", null);
+        assertTrue(models.contains("\"id\":\"bert\"") && models.contains("\"id\":\"rr\""), models);
+
+        String r = call("POST", "/v1/embeddings", "{\"model\":\"bert\",\"input\":[\"the cat sat\",\"a dog ran fast .\"]}");
+        assertTrue(r.startsWith("200 "), r);
+        List<Object> data = Json.array(Json.object(Json.parse(r.substring(4))).get("data"));
+        float[][] expected = bert.embed(bertTok, List.of("the cat sat", "a dog ran fast ."), Encoder.Pooling.MEAN, true);
+        for (int i = 0; i < 2; i++) {
+            List<Object> v = Json.array(Json.object(data.get(i)).get("embedding"));
+            for (int j = 0; j < expected[i].length; j++) {
+                assertEquals(expected[i][j], ((Number) v.get(j)).floatValue(), 1e-6f);
+            }
+        }
+
+        List<String> docs = List.of("stock market", "the cat sat on the mat .", "a dog");
+        float[] scores = reranker.rerank(rerankTok, "where is the cat ?", docs);
+        String rr = call("POST", "/v1/rerank", "{\"query\":\"where is the cat ?\",\"documents\":[\"stock market\","
+                + "{\"text\":\"the cat sat on the mat .\"},\"a dog\"],\"top_n\":2,\"return_documents\":true}");
+        assertTrue(rr.startsWith("200 "), rr);
+        List<Object> results = Json.array(Json.object(Json.parse(rr.substring(4))).get("results"));
+        assertEquals(2, results.size());
+        double previous = Double.POSITIVE_INFINITY;
+        for (Object o : results) {
+            Map<String, Object> res = Json.object(o);
+            int index = ((Number) res.get("index")).intValue();
+            double score = ((Number) res.get("relevance_score")).doubleValue();
+            assertEquals(scores[index], score, 1e-6);
+            assertTrue(score <= previous);
+            previous = score;
+            assertEquals(docs.get(index), Json.object(res.get("document")).get("text"));
+        }
+        assertTrue(call("POST", "/v1/rerank", "{\"documents\":[\"x\"]}").startsWith("400 "));
+    }
 }
