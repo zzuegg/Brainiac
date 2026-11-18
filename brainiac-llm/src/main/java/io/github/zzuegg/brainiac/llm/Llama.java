@@ -2215,55 +2215,24 @@ public final class Llama implements LanguageModel {
                     .permute(0, 2, 1, 3);
             Var kNope = up.slice(-1, 0, nope);
             Var v = up.slice(-1, nope, nope + mla.valueDim());
-            Tensor bias = mask != null ? mask
-                    : steps > 1 ? Functional.causalMask(steps, steps, h.value().device()).to(h.dtype()) : null;
-            a = latentScores(qNope, kNope, qRope, kRope, bias, scale).matmul(v);
+            // every head's key: its own non-rotary part, then the rotary part all heads share
+            Var k = Var.concat(-1, kNope, kRope.expand(Shape.of(batch, heads, steps, mla.rope())));
+            Var qq = Var.concat(-1, qNope, qRope);
+            a = mask != null ? Functional.attention(qq, k, v, mask, scale, 0, null)
+                    : Functional.attention(qq, k, v, steps > 1, scale);
         } else {
             cache.keys[l].write(2, cache.length, latent.value());
             cache.values[l].write(2, cache.length, kRope.value());
             Tensor[] w = absorbed(l, lat);
             Var qLatent = Var.of(qNope.value()).matmul(Var.of(w[0]));   // [batch, heads, steps, kvRank]
             Var c = Var.of(cache.keys[l]);
-            Var out = latentAttend(qLatent, Var.of(qRope.value()), c, Var.of(cache.values[l]), mask, scale);
+            Var out = Functional.latentAttention(qLatent, Var.of(qRope.value()), c, Var.of(cache.values[l]), mask,
+                    scale);
             a = out.matmul(Var.of(w[1]));   // [batch, heads, steps, valueDim]
         }
         a = a.permute(0, 2, 1, 3).reshape(batch, steps, heads * mla.valueDim());
         return blk.o.apply(a);
     }
-
-    /**
-     * The attention weights of queries split in a part matched against per-head keys and a
-     * rotary part matched against one key all heads share: {@code softmax(scale (qn kn^T + qr
-     * kr^T) + bias)}.
-     */
-    private static Var latentScores(Var qNope, Var kNope, Var qRope, Var kRope, Tensor bias, float scale) {
-        Var scores = qNope.matmul(kNope.transpose()).add(qRope.matmul(kRope.transpose())).mul(scale);
-        if (bias != null) {
-            scores = scores.add(bias);
-        }
-        return Activation.SOFTMAX.forward(scores);
-    }
-
-    /**
-     * Attention over cached latents: {@code softmax(scale (qLatent C^T + qRope R^T) + bias) C}
-     * for queries {@code [batch, heads, steps, kvRank]} and {@code [batch, heads, steps, rope]}
-     * against the cache's {@code C} {@code [batch, 1, keys, kvRank]} and {@code R} {@code [batch,
-     * 1, keys, rope]}. Where the backend has a fused kernel for it, it runs in one pass.
-     */
-    private static Var latentAttend(Var qLatent, Var qRope, Var c, Var r, Tensor bias, float scale) {
-        if (LATENT_FUSED && Tensor.hasLatentAttention(qLatent.value(), qRope.value(), c.value(), r.value())) {
-            try {
-                return Var.of(Tensor.latentAttention(qLatent.value(), qRope.value(), c.value(), r.value(), bias,
-                        scale));
-            } catch (UnsupportedOperationException e) {
-                // this backend, type or size has no fused kernel
-            }
-        }
-        return latentScores(qLatent, c, qRope, r, bias, scale).matmul(c);
-    }
-
-    /** {@code -Dbrainiac.llm.fusedLatent=false}: latent attention from separate operations. */
-    private static final boolean LATENT_FUSED = !"false".equals(System.getProperty("brainiac.llm.fusedLatent"));
 
     /** Per block, the latent up projection it was split from and its two halves per head. */
     private final Map<Integer, Tensor[]> absorbed = new java.util.concurrent.ConcurrentHashMap<>();
@@ -2284,15 +2253,13 @@ public final class Llama implements LanguageModel {
         LlamaConfig.Mla mla = config.extras().mla();
         int heads = config.heads();
         int nope = mla.nope();
-        int per = nope + mla.valueDim();
-        int kr = mla.kvRank();
         Tensor w = plain(source);   // [kvRank, heads * (nope + valueDim)]
         if (kvB.loraA != null) {
             w = w.add(kvB.loraA.value().matmul(kvB.loraB.value()).mul(kvB.loraScale).to(w.dtype()));
         }
-        Tensor perHead = w.reshape(kr, heads, per).permute(1, 0, 2);   // [heads, kvRank, nope + valueDim]
-        Tensor uk = perHead.slice(2, 0, nope).permute(0, 2, 1).reshape(1, heads, nope, kr);
-        Tensor uv = perHead.slice(2, nope, per).reshape(1, heads, kr, mla.valueDim());
+        Tensor[] split = Functional.absorbLatentUp(w, heads, nope, mla.valueDim());
+        Tensor uk = split[0];
+        Tensor uv = split[1];
         Tensor.evaluate(List.of(uk, uv));
         if (have != null) {
             have[2].release();
@@ -2353,8 +2320,8 @@ public final class Llama implements LanguageModel {
         Var flat = h.reshape(n, hidden);
         Var logits = m.router().apply(flat).to(DType.FLOAT32);
         Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
-        int[] chosen = choose(probs.value().toArray(), m.choiceBias() == null ? null : m.choiceBias().value().toArray(),
-                n, count, k, routing);
+        int[] chosen = Functional.chooseExperts(probs.value().toArray(),
+                m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n, count, k, groups(routing));
         int[] picked = new int[n * k];
         for (int i = 0; i < picked.length; i++) {
             picked[i] = i / k * count + chosen[i];
@@ -2368,36 +2335,13 @@ public final class Llama implements LanguageModel {
         if (routing.scale() != 1) {
             weights = weights.mul(routing.scale());
         }
-        // the rows of each expert, in expert order; then where each (token, slot) landed
-        List<Var> outs = new ArrayList<>();
-        int[] place = new int[n * k];
-        int rows = 0;
+        List<java.util.function.Function<Var, Var>> nets = new ArrayList<>();
         for (int e = 0; e < count; e++) {
-            List<Integer> slots = new ArrayList<>();
-            for (int i = 0; i < chosen.length; i++) {
-                if (chosen[i] == e) {
-                    slots.add(i);
-                }
-            }
-            if (slots.isEmpty()) {
-                continue;
-            }
-            int[] tokens = new int[slots.size()];
-            int[] slotIds = new int[slots.size()];
-            for (int i = 0; i < tokens.length; i++) {
-                slotIds[i] = slots.get(i);
-                tokens[i] = slotIds[i] / k;
-                place[slotIds[i]] = rows + i;
-            }
-            rows += tokens.length;
-            Var xe = flat.gather(0, indices(tokens, dev));
-            Var y = m.down()[e].apply(m.gate()[e].apply(xe).activation(config.extras().activation(), 0)
-                    .mul(m.up()[e].apply(xe)));
-            Var w = weights.gather(0, indices(slotIds, dev)).reshape(tokens.length, 1).to(y.dtype());
-            outs.add(y.mul(w));
+            int at = e;
+            nets.add(xe -> m.down()[at].apply(m.gate()[at].apply(xe).activation(config.extras().activation(), 0)
+                    .mul(m.up()[at].apply(xe))));
         }
-        Var all = outs.size() == 1 ? outs.getFirst() : Var.concat(0, outs.toArray(Var[]::new));
-        Var out = all.gather(0, indices(place, dev)).reshape(n, k, hidden).sum(1, false);
+        Var out = Functional.routedExperts(flat, chosen, weights, k, nets);
         if (m.sharedGate() != null) {
             Var shared = m.sharedDown().apply(m.sharedGate().apply(flat).activation(config.extras().activation(), 0)
                     .mul(m.sharedUp().apply(flat)));
@@ -2407,64 +2351,11 @@ public final class Llama implements LanguageModel {
         return out.reshape(s[0], s[1], hidden);
     }
 
-    /**
-     * Each token's {@code k} experts from the router's scores {@code [n, count]}, largest first:
-     * by the scores plus {@code bias} where there is one (DeepSeek-V3), among the experts of
-     * the token's {@code topGroups} best groups where the experts are grouped. V3 ranks a group
-     * by the sum of its two best biased scores, V2 by its best score.
-     */
-    static int[] choose(float[] scores, float[] bias, int n, int count, int k, LlamaConfig.Routing routing) {
-        int[] chosen = new int[n * k];
-        int groups = routing.groups();
-        int size = count / groups;
-        float[] by = new float[count];
-        for (int t = 0; t < n; t++) {
-            for (int e = 0; e < count; e++) {
-                by[e] = scores[t * count + e] + (bias == null ? 0 : bias[e]);
-            }
-            boolean[] allowed = new boolean[count];
-            if (groups > 1 && routing.topGroups() < groups) {
-                float[] rank = new float[groups];
-                for (int g = 0; g < groups; g++) {
-                    float best = Float.NEGATIVE_INFINITY;
-                    float second = Float.NEGATIVE_INFINITY;
-                    for (int e = g * size; e < (g + 1) * size; e++) {
-                        if (by[e] > best) {
-                            second = best;
-                            best = by[e];
-                        } else if (by[e] > second) {
-                            second = by[e];
-                        }
-                    }
-                    rank[g] = routing.sigmoid() ? best + (size > 1 ? second : 0) : best;
-                }
-                boolean[] groupTaken = new boolean[groups];
-                for (int j = 0; j < routing.topGroups(); j++) {
-                    int top = -1;
-                    for (int g = 0; g < groups; g++) {
-                        if (!groupTaken[g] && (top < 0 || rank[g] > rank[top])) {
-                            top = g;
-                        }
-                    }
-                    groupTaken[top] = true;
-                    java.util.Arrays.fill(allowed, top * size, (top + 1) * size, true);
-                }
-            } else {
-                java.util.Arrays.fill(allowed, true);
-            }
-            boolean[] taken = new boolean[count];
-            for (int j = 0; j < k; j++) {
-                int best = -1;
-                for (int e = 0; e < count; e++) {
-                    if (allowed[e] && !taken[e] && (best < 0 || by[e] > by[best])) {
-                        best = e;
-                    }
-                }
-                taken[best] = true;
-                chosen[t * k + j] = best;
-            }
-        }
-        return chosen;
+    /** The routing's expert groups as the core routing takes them. */
+    static Functional.ExpertGroups groups(LlamaConfig.Routing routing) {
+        return routing.groups() > 1 && routing.topGroups() < routing.groups()
+                ? new Functional.ExpertGroups(routing.groups(), routing.topGroups(), routing.sigmoid())
+                : Functional.ExpertGroups.NONE;
     }
 
     /** Rotates the first {@code rotary} features of each head; the rest pass (partial rotary, Phi). */

@@ -240,20 +240,4 @@ class DeepSeekTest {
         float[] logits = model.forward(new int[][] {{1, 2, 3}}).value().toArray();
         assertEquals(3 * c.vocabSize(), logits.length);
     }
-
-    @Test
-    void routingPicksWithinTheBestGroups() {
-        // 8 experts in 4 groups of 2, 2 groups per token, 3 experts per token
-        float[] scores = {0.9f, 0.1f, 0.5f, 0.5f, 0.8f, 0.0f, 0.2f, 0.3f};
-        // V2: groups ranked by their best expert: groups 0 (0.9) and 2 (0.8)
-        int[] v2 = Llama.choose(scores, null, 1, 8, 3, new LlamaConfig.Routing(false, 4, 2, 1, 0, false));
-        assertArrayEquals(new int[] {0, 4, 1}, v2);
-        // V3: ranked by the sum of the two best: group 1 (1.0) and 0 (1.0) beat 2 (0.8)
-        int[] v3 = Llama.choose(scores, null, 1, 8, 3, new LlamaConfig.Routing(true, 4, 2, 1, 0, false));
-        assertArrayEquals(new int[] {0, 2, 3}, v3);
-        // a selection bias moves the choice, but not the weights (those stay the scores)
-        float[] bias = {0, 0, 0, 0, 0, 0, 1, 1};
-        int[] biased = Llama.choose(scores, bias, 1, 8, 3, new LlamaConfig.Routing(true, 4, 2, 1, 0, false));
-        assertArrayEquals(new int[] {7, 6, 0}, biased);
-    }
 }

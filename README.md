@@ -444,6 +444,10 @@ fused kernels on the CPU, Vulkan and CUDA. Their experts follow DeepSeek's routi
 experts, group-limited choice, softmax (V2) or sigmoid with a selection bias (V3), and
 YaRN for long context. Tiny random models check the logits against transformers and the
 GGUF reading against llama.cpp.
+The reusable parts live in core: the `LatentAttention` layer (trainable, saved with a
+model, with a latent cache for decoding), `Functional.latentAttention` and
+`Functional.absorbLatentUp`, and `Functional.chooseExperts` (group-limited, with a
+selection bias) with `Functional.routedExperts` for any mixture of experts.
 
 ```java
 Path dir = Path.of("Qwen2.5-0.5B-Instruct");
