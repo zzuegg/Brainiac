@@ -7,6 +7,9 @@ import io.github.zzuegg.brainiac.experimental.imaging.DeepImagePrior;
 import io.github.zzuegg.brainiac.experimental.imaging.Demosaicing;
 import io.github.zzuegg.brainiac.experimental.imaging.EdgePreservingFilters;
 import io.github.zzuegg.brainiac.experimental.imaging.ImageMath;
+import io.github.zzuegg.brainiac.experimental.imaging.LinearOperator;
+import io.github.zzuegg.brainiac.experimental.imaging.OperatorPlugAndPlay;
+import io.github.zzuegg.brainiac.experimental.imaging.ParameterChoice;
 import io.github.zzuegg.brainiac.experimental.imaging.PrimalDual;
 import io.github.zzuegg.brainiac.experimental.imaging.Wavelets;
 import io.github.zzuegg.brainiac.experimental.restore.Denoisers;
@@ -17,13 +20,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SplittableRandom;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Image inverse problems on synthetic scenes (wave 13, items 13.4.4-13.4.6 and 13.4.9-13.4.12),
  * one table per technique, each against its classical or learned baselines:
  * {@link #blind} (13.4.4), {@link #demosaicing} (13.4.5), {@link #deepImagePrior} (13.4.6),
  * {@link #variational}, {@link #impulse}, {@link #ramps} and
- * {@link #tvSpeed} (13.4.9), {@link #wavelets} and {@link #waveletSignals} (13.4.10).
+ * {@link #tvSpeed} (13.4.9), {@link #wavelets} and {@link #waveletSignals} (13.4.10),
+ * {@link #parameterChoice} (13.4.11).
  */
 public final class ImageInverseProblems {
 
@@ -213,6 +218,122 @@ public final class ImageInverseProblems {
             }
         }
         return out;
+    }
+
+    // ---------------------------------------------------------------- 13.4.11 parameter choice
+
+    private static void choiceRows(Map<String, double[]> out, String task, ParameterChoice.Sweep sw, double[] x,
+            double sigma, double fixed, double extraLambda, String extraName, int images) {
+        int n = sw.lambdas().length;
+        double[] p = new double[n];
+        int oracle = 0;
+        for (int i = 0; i < n; i++) {
+            p[i] = ImageMath.psnr(sw.estimates()[i], x);
+            if (p[i] > p[oracle]) {
+                oracle = i;
+            }
+        }
+        Map<String, Integer> picks = new LinkedHashMap<>();
+        picks.put("oracle", oracle);
+        picks.put("fixed default", nearest(sw.lambdas(), fixed));
+        for (ParameterChoice.Rule rule : ParameterChoice.Rule.values()) {
+            picks.put(rule.toString(), sw.choose(rule, sigma).index());
+        }
+        picks.put("DISCREPANCY, sigma x1.2", sw.choose(ParameterChoice.Rule.DISCREPANCY, 1.2 * sigma).index());
+        picks.put("MC_SURE, sigma x1.2", sw.choose(ParameterChoice.Rule.MC_SURE, 1.2 * sigma).index());
+        if (extraName != null) {
+            picks.put(extraName, nearest(sw.lambdas(), extraLambda));
+        }
+        for (Map.Entry<String, Integer> pick : picks.entrySet()) {
+            double[] row = out.computeIfAbsent(task + " / " + pick.getKey(), k -> new double[3]);
+            int i = pick.getValue();
+            row[0] += p[i] / images;
+            row[1] += (p[oracle] - p[i]) / images;
+            row[2] += Math.log(sw.lambdas()[i] / sw.lambdas()[oracle]) / images;
+        }
+    }
+
+    private static int nearest(double[] grid, double value) {
+        int e = 0;
+        for (int i = 1; i < grid.length; i++) {
+            if (Math.abs(Math.log(grid[i] / value)) < Math.abs(Math.log(grid[e] / value))) {
+                e = i;
+            }
+        }
+        return e;
+    }
+
+    /**
+     * Regularisation-parameter choice without ground truth: the discrepancy principle, the
+     * L-curve, GCV and Monte-Carlo SURE against the oracle, a fixed default and (Tikhonov) the
+     * marginal likelihood, on Tikhonov deblurring, TV denoising, wavelet soft thresholding and
+     * PnP-HQS deblurring with a non-local-means prior.
+     *
+     * @param side the image side
+     * @param images the number of scenes
+     * @param sigmaDenoise the noise level of the denoising tasks
+     * @param sigmaBlur the noise level of the deblurring tasks
+     * @param seed the seed
+     * @return task / rule to {PSNR, PSNR loss to the oracle lambda, geometric-mean ratio of the chosen lambda to
+     *     the oracle's}
+     */
+    public static Map<String, double[]> parameterChoice(int side, int images, double sigmaDenoise, double sigmaBlur,
+            long seed) {
+        List<double[]> clean = InverseProblems.scenes(images, side, seed);
+        SplittableRandom r = new SplittableRandom(seed + 1);
+        Map<String, double[]> out = new LinkedHashMap<>();
+        double eps = 0.01;
+        ToDoubleFunction<double[]> grad2 = v -> {
+            double[] gx = ImageMath.gradX(v, side);
+            double[] gy = ImageMath.gradY(v, side);
+            return ImageMath.dot(gx, gx) + ImageMath.dot(gy, gy);
+        };
+        ToDoubleFunction<double[]> tv = v -> ImageMath.totalVariation(v, side);
+        for (int t = 0; t < images; t++) {
+            double[] x = clean.get(t);
+            double[] kernel = InverseProblems.blurKernel(7, t % 2 == 0, r);
+            LinearOperator blur = LinearOperator.blur(kernel, 7, side);
+            double[] yb = InverseProblems.gaussian(blur.apply(x), sigmaBlur, r);
+            double[] grid = ParameterChoice.logGrid(1e-4, 1, 13);
+            ParameterChoice.Sweep tik = ParameterChoice.sweep(
+                    (y, l) -> ParameterChoice.tikhonovDeblur(y, side, kernel, 7, l), blur, yb, grid, grad2, eps,
+                    seed + t);
+            int ml = 0;
+            for (int i = 1; i < grid.length; i++) {
+                if (ParameterChoice.tikhonovEvidence(yb, side, kernel, 7, sigmaBlur, grid[i])
+                        > ParameterChoice.tikhonovEvidence(yb, side, kernel, 7, sigmaBlur, grid[ml])) {
+                    ml = i;
+                }
+            }
+            choiceRows(out, "Tikhonov deblur", tik, x, sigmaBlur, 0.01, grid[ml], "marginal likelihood", images);
+            double[] yd = InverseProblems.gaussian(x, sigmaDenoise, r);
+            ParameterChoice.Sweep tvs = ParameterChoice.sweep(
+                    (y, l) -> PrimalDual.denoise(PrimalDual.Model.TV_L2, y, side, l, 150), null, yd,
+                    ParameterChoice.logGrid(0.005, 0.5, 13), tv, eps, seed + 10 + t);
+            choiceRows(out, "TV denoise", tvs, x, sigmaDenoise, 0.1, 0, null, images);
+            ParameterChoice.Sweep wav = ParameterChoice.sweep(
+                    (y, l) -> Wavelets.denoise2d(y, side, Wavelets.Wavelet.DB4, 3, Wavelets.Rule.VISU_SHRINK, true,
+                        sigmaDenoise, l), null, yd, ParameterChoice.logGrid(0.05, 2, 13),
+                    v -> sumAbs(Wavelets.forward2d(v, side, Wavelets.Wavelet.DB4, 3)), eps, seed + 20 + t);
+            choiceRows(out, "wavelet threshold scale", wav, x, sigmaDenoise, 1, 0, null, images);
+            OperatorPlugAndPlay.Prior nlmPrior = (v, s) -> nlm(v, side, s);
+            ParameterChoice.Sweep pnp = ParameterChoice.sweep(
+                    (y, l) -> OperatorPlugAndPlay.hqs(blur, y, sigmaBlur, nlmPrior, 8, l, y, 10), blur, yb,
+                    ParameterChoice.logGrid(0.01, 10, 9), tv, eps, seed + 30 + t);
+            choiceRows(out, "PnP-HQS deblur", pnp, x, sigmaBlur, 0.25, 0, null, images);
+        }
+        for (double[] row : out.values()) {
+            row[2] = Math.exp(row[2]);
+        }
+        return out;
+    }
+
+    private static double sumAbs(double[] v) {
+        double s = 0;
+        for (double e : v) {
+            s += Math.abs(e);
+        }
+        return s;
     }
 
     // ---------------------------------------------------------------- 13.4.9 variational and filters
