@@ -54,7 +54,10 @@ final class ProjectRoutes {
             if (p == null) {
                 throw new Exchanges.BadRequest("send the project as {\"project\": {...}}");
             }
-            Project saved = projects.save(Project.fromJson(Json.object(p)), Boolean.TRUE.equals(body.get("create")));
+            Project project = Project.fromJson(Json.object(p));
+            // a runner that cannot be rented is refused now, not when a task needs it
+            project.runners().values().forEach(io.github.zzuegg.brainiac.studio.train.VastRunners.Runner::fromJson);
+            Project saved = projects.save(project, Boolean.TRUE.equals(body.get("create")));
             Map<String, Object> out = new LinkedHashMap<>(projects.toJson());
             out.put("saved", saved.id());
             Exchanges.json(ex, 200, out);

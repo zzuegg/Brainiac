@@ -116,6 +116,12 @@ public final class StudioServer implements AutoCloseable {
             }
         });
         server.rentals.recover();   // machines a killed studio left renting
+        // a route that sends tasks to vast:<runner> rents and sets up that machine when it is first needed
+        io.github.zzuegg.brainiac.studio.train.VastRunners vastRunners = new io.github.zzuegg.brainiac.studio.train.VastRunners(
+                () -> server.rentals, chat::vast, server.training.hosts());
+        chat.runners((scope, name, runner) -> vastRunners.ensure(
+                (scope instanceof io.github.zzuegg.brainiac.studio.project.Project p ? p.id() : "studio") + "/" + name,
+                io.github.zzuegg.brainiac.studio.train.VastRunners.Runner.fromJson(runner), () -> false));
         return server;
     }
 

@@ -26,7 +26,8 @@ import java.util.Optional;
  *     {@code speech}, {@code transcribe}, {@code video})
  */
 public record Project(String id, String name, String description, Path folder, List<String> tools,
-        List<String> models, Map<String, ChatService.Route> routes) implements ChatService.Scope {
+        List<String> models, Map<String, ChatService.Route> routes, Map<String, Map<String, Object>> runners)
+        implements ChatService.Scope {
 
     /** The project everything belongs to unless another is chosen: it limits nothing. */
     public static final String DEFAULT = "default";
@@ -55,6 +56,39 @@ public record Project(String id, String name, String description, Path folder, L
             }
         }
         routes = java.util.Collections.unmodifiableMap(rs);
+        Map<String, Map<String, Object>> rn = new LinkedHashMap<>();
+        if (runners != null) {
+            for (Map.Entry<String, Map<String, Object>> e : runners.entrySet()) {
+                if (!e.getKey().matches("[A-Za-z0-9_-]{1,40}")) {
+                    throw new IllegalArgumentException("a runner's name is up to 40 letters, digits, _ and -");
+                }
+                if (e.getValue() != null) {
+                    rn.put(e.getKey(), Map.copyOf(new LinkedHashMap<>(e.getValue())));
+                }
+            }
+        }
+        runners = java.util.Collections.unmodifiableMap(rn);
+    }
+
+    /**
+     * Makes a project without runners.
+     *
+     * @param id its id
+     * @param name its name
+     * @param description what it is for
+     * @param folder the folder its agents may read, or null
+     * @param tools the tools allowed, or null for all
+     * @param models the models allowed, or null for all
+     * @param routes the routes by medium
+     */
+    public Project(String id, String name, String description, Path folder, List<String> tools, List<String> models,
+            Map<String, ChatService.Route> routes) {
+        this(id, name, description, folder, tools, models, routes, Map.of());
+    }
+
+    @Override
+    public Map<String, Object> runner(String name) {
+        return runners.get(name);
     }
 
     /**
@@ -144,6 +178,7 @@ public record Project(String id, String name, String description, Path folder, L
             rs.put(e.getKey(), r);
         }
         m.put("routes", rs);
+        m.put("runners", runners);
         return m;
     }
 
@@ -177,8 +212,17 @@ public record Project(String id, String name, String description, Path folder, L
                         policy.isBlank() ? null : GpuResidency.Policy.of(policy), fallback.isBlank() ? null : fallback));
             }
         }
+        Map<String, Map<String, Object>> runners = new LinkedHashMap<>();
+        if (m.get("runners") != null) {
+            for (Map.Entry<String, Object> e : Json.object(m.get("runners")).entrySet()) {
+                if (e.getValue() != null) {
+                    runners.put(e.getKey(), Json.object(e.getValue()));
+                }
+            }
+        }
         return new Project(id, Json.string(m, "name", id), Json.string(m, "description", ""),
-                folder.isBlank() ? null : Path.of(folder), strings(m.get("tools")), strings(m.get("models")), routes);
+                folder.isBlank() ? null : Path.of(folder), strings(m.get("tools")), strings(m.get("models")), routes,
+                runners);
     }
 
     private static List<String> strings(Object o) {

@@ -2288,10 +2288,12 @@
     return head + projectForm(p, !!PJ.editing);
   }
 
-  function modelOptions(medium, chosen, remoteOnly) {
+  function modelOptions(medium, chosen, remoteOnly, runners) {
     const ms = (L.info?.models || []).filter(m => (m.media || []).includes(medium) && (!remoteOnly || m.provider !== "local"));
-    const known = ms.some(m => m.key === chosen);
+    const rs = remoteOnly ? Object.keys(runners || {}).map(n => "vast:" + n) : [];
+    const known = ms.some(m => m.key === chosen) || rs.includes(chosen);
     return `<option value="">${remoteOnly ? "none" : "Auto, as the studio picks"}</option>`
+      + rs.map(k => `<option value="${esc(k)}" ${k === chosen ? "selected" : ""}>Vast.ai runner ${esc(k.slice(5))} · rented when needed</option>`).join("")
       + (chosen && !known ? `<option value="${esc(chosen)}" selected>${esc(chosen)}</option>` : "")
       + ms.map(m => `<option value="${esc(m.key)}" ${m.key === chosen ? "selected" : ""}>${esc(m.name)} · ${esc(m.provider === "local" ? "this PC" : providerName(m.provider))}</option>`).join("");
   }
@@ -2305,7 +2307,7 @@
         <td><select class="input" data-route="${m}" data-rf="model" ${dis} aria-label="${MEDIUM_NAMES[m]} model">${modelOptions(m, r.model || "", false)}</select></td>
         <td><select class="input" data-route="${m}" data-rf="policy" ${dis} aria-label="When the GPU is full">
           <option value="">Studio's choice (${esc(GP.data?.policies?.[m === "text" ? "chat" : m] || "swap")})</option>${POLICIES.map(([k, n, d]) => `<option value="${k}" ${r.policy === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></td>
-        <td><select class="input" data-route="${m}" data-rf="fallback" ${dis} aria-label="Remote runner">${modelOptions(m, r.fallback || "", true)}</select></td></tr>`;
+        <td><select class="input" data-route="${m}" data-rf="fallback" ${dis} aria-label="Remote runner">${modelOptions(m, r.fallback || "", true, p.runners)}</select></td></tr>`;
     };
     return `<form class="panel proj-form" id="proj-form" autocomplete="off">
       <div class="proj-grid">
@@ -2317,6 +2319,11 @@
       <p class="muted" style="margin:0;font-size:12.5px">Auto in this project uses the model below. When it runs on this PC and the GPU is full, the policy decides; Remote sends it to the runner on the right (a worker host or a rented machine).</p>
       <div class="tablebox"><table class="models routes"><thead><tr><th>Task</th><th>Model</th><th>When the GPU is full</th><th>Remote runner</th></tr></thead>
         <tbody>${["text", "image", "speech", "transcribe", "video"].map(routeRow).join("")}</tbody></table></div>
+      <div class="h3">Vast.ai runners</div>
+      <p class="muted" style="margin:0;font-size:12.5px">A runner is a GPU machine rented when a route first sends it a task: the cheapest verified offer within your price, built into a worker host, with the model fetched from Hugging Face. It stays rented for the hours set, so later tasks reuse it, then it is destroyed. Pick it as a route's remote runner above.</p>
+      <div class="tablebox"><table class="models runners"><thead><tr><th>Name</th><th>GPU</th><th>GB at least</th><th>Most $/hour</th><th>Hours</th><th>Model repository</th><th>File, or folder</th><th></th></tr></thead><tbody>
+        ${Object.entries(p.runners || {}).map(([n, r]) => runnerRow(n, r, dis)).join("")}
+        ${editing ? runnerRow("", { hours: 2, option: "folder" }, "", true) : ""}</tbody></table></div>
       <div class="h3">Agents may use</div>
       <div class="proj-tools"><label class="check"><input type="checkbox" data-pf-alltools ${p.tools == null ? "checked" : ""} ${dis}> every tool</label>
         ${p.tools == null ? "" : tools.map(t => `<label class="check" title="${esc(t.description || "")}"><input type="checkbox" data-pf-tool="${esc(t.name)}" ${p.tools.includes(t.name) ? "checked" : ""} ${dis}> <span class="mono">${esc(t.name)}</span>${t.acts ? ` <span class="faint">acts</span>` : ""}</label>`).join("")}</div>
@@ -2329,6 +2336,14 @@
     </form>`;
   }
 
+  function runnerRow(n, r, dis, adding) {
+    const f = (k, type, ph, w) => `<input class="input ${type === "number" ? "mono" : ""}" data-rn="${k}" ${type === "number" ? `type="number" min="0" step="any"` : ""} value="${esc(r[k] ?? "")}" placeholder="${esc(ph)}" ${dis} style="min-width:${w}px">`;
+    return `<tr data-runner-row="${adding ? "new" : esc(n)}"><td><input class="input" data-rn="name" value="${esc(n)}" placeholder="${adding ? "new runner, such as video" : ""}" ${dis} style="min-width:90px"></td>
+      <td>${f("gpu", "text", "4090, A100…", 80)}</td><td>${f("minGpuRam", "number", "24", 50)}</td><td>${f("maxPrice", "number", "0.60", 60)}</td><td>${f("hours", "number", "2", 45)}</td>
+      <td>${f("repo", "text", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 160)}</td><td>${f("option", "text", "folder", 70)}</td>
+      <td>${dis || adding ? "" : `<button class="iconbtn sm" type="button" data-runner-remove="${esc(n)}" aria-label="Remove runner ${esc(n)}">${icon("trash")}</button>`}</td></tr>`;
+  }
+
   function readProjectForm() {
     const d = { ...PJ.draft };
     $$("[data-pf]").forEach(el => { d[el.dataset.pf] = el.value; });
@@ -2338,14 +2353,22 @@
     const routes = {};
     $$("[data-route]").forEach(el => { (routes[el.dataset.route] ||= {})[el.dataset.rf] = el.value || null; });
     d.routes = routes;
+    const runners = {};
+    $$("[data-runner-row]").forEach(tr => {
+      const r = {}; tr.querySelectorAll("[data-rn]").forEach(i => { r[i.dataset.rn] = i.type === "number" ? (i.value === "" ? null : +i.value) : i.value.trim(); });
+      const name = r.name; delete r.name;
+      if (name) runners[name] = r;
+    });
+    d.runners = runners;
     return d;
   }
 
   function bindProjects() {
     $$("[data-proj-use]").forEach(b => b.addEventListener("click", () => { PJ.editing = null; activateProject(b.dataset.projUse); }));
-    $("[data-proj-new]")?.addEventListener("click", () => { PJ.editing = "new"; PJ.draft = { name: "New project", description: "", folder: "", tools: null, models: null, routes: {} }; PJ.error = null; render(); $("[data-pf=name]")?.select(); });
+    $("[data-proj-new]")?.addEventListener("click", () => { PJ.editing = "new"; PJ.draft = { name: "New project", description: "", folder: "", tools: null, models: null, routes: {}, runners: {} }; PJ.error = null; render(); $("[data-pf=name]")?.select(); });
     $("[data-proj-edit]")?.addEventListener("click", () => { PJ.editing = activeProject().id; PJ.draft = JSON.parse(JSON.stringify(activeProject())); PJ.error = null; render(); });
     $("[data-proj-cancel]")?.addEventListener("click", () => { PJ.editing = null; PJ.error = null; render(); });
+    $$("[data-runner-remove]").forEach(b => b.addEventListener("click", () => { $(`[data-runner-row="${CSS.escape(b.dataset.runnerRemove)}"]`)?.remove(); }));
     $("[data-pf-alltools]")?.addEventListener("change", e => { PJ.draft = readProjectForm(); PJ.draft.tools = e.target.checked ? null : (A.tools || []).map(t => t.name); render(); });
     $("[data-proj-delete]")?.addEventListener("click", async () => {
       if (!PJ.deleting) { PJ.deleting = true; render(); setTimeout(() => { PJ.deleting = false; if (state.view === "settings") render(); }, 4000); return; }

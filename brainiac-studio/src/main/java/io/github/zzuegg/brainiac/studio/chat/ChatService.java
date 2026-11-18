@@ -249,6 +249,56 @@ public final class ChatService {
          * @return whether the project allows it
          */
         boolean allows(String key);
+
+        /**
+         * Returns a runner a route names with {@code vast:<name>}.
+         *
+         * @param name the runner's name
+         * @return what to rent and fetch, as JSON, or null if there is none
+         */
+        default Map<String, Object> runner(String name) {
+            return null;
+        }
+    }
+
+    /** Sets a runner up and names the model on it, as {@code provider/id}. */
+    @FunctionalInterface
+    public interface Runners {
+        /**
+         * Sets it up.
+         *
+         * @param scope the project
+         * @param name the runner's name
+         * @param runner what to rent and fetch
+         * @return the model's key on it
+         * @throws IOException if it cannot be set up
+         * @throws InterruptedException if interrupted while waiting
+         */
+        String ensure(Scope scope, String name, Map<String, Object> runner) throws IOException, InterruptedException;
+    }
+
+    private volatile Runners runners;
+
+    /**
+     * Sets up the runners routes name with {@code vast:<name>}.
+     *
+     * @param runners sets them up
+     */
+    public void runners(Runners runners) {
+        this.runners = runners;
+    }
+
+    // a route's fallback: a model key, or a runner that is set up first
+    private ModelInfo fallback(String fallback, String medium) throws IOException, InterruptedException {
+        if (fallback.startsWith("vast:")) {
+            String name = fallback.substring(5);
+            Map<String, Object> r = SCOPE.isBound() ? SCOPE.get().runner(name) : null;
+            if (r == null || runners == null) {
+                throw new IOException("there is no runner " + name + " in this project");
+            }
+            return resolveAny(runners.ensure(SCOPE.get(), name, r), medium);
+        }
+        return resolve(fallback, medium);
     }
 
     /** The project the requests made now belong to; unbound, nothing is limited or routed. */
@@ -278,7 +328,7 @@ public final class ChatService {
         } catch (GpuResidency.NoRoom e) {
             if (e.policy() == GpuResidency.Policy.REMOTE && r != null && r.fallback() != null && !r.fallback().isBlank()) {
                 LOG.log(System.Logger.Level.INFO, "sending the " + medium + " task to " + r.fallback() + ": " + e.getMessage());
-                return body.run(resolve(r.fallback(), medium));
+                return body.run(fallback(r.fallback(), medium));
             }
             throw e;
         }

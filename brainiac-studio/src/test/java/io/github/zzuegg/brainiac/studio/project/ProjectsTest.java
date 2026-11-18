@@ -66,4 +66,20 @@ class ProjectsTest {
         ps.delete(a.id());
         assertEquals(Project.DEFAULT, ps.active().id());
     }
+
+    @Test
+    void aRunnerIsKeptAndChecked() throws IOException {
+        Projects ps = new Projects(dir.resolve("projects.json"));
+        ps.save(Project.fromJson(Map.of("name", "B",
+                "routes", Map.of("video", Map.of("policy", "remote", "fallback", "vast:video")),
+                "runners", Map.of("video", Map.of("gpu", "4090", "maxPrice", 0.6, "hours", 2,
+                        "repo", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")))), true);
+        Project b = new Projects(dir.resolve("projects.json")).get("b").orElseThrow();
+        var r = io.github.zzuegg.brainiac.studio.train.VastRunners.Runner.fromJson(b.runner("video"));
+        assertEquals("Wan2.1-T2V-1.3B-Diffusers", r.modelName());
+        assertEquals("4090", r.gpu());
+        assertTrue(b.allows("vast:video"));
+        assertThrows(IllegalArgumentException.class,
+                () -> io.github.zzuegg.brainiac.studio.train.VastRunners.Runner.fromJson(Map.of("gpu", "4090")));
+    }
 }

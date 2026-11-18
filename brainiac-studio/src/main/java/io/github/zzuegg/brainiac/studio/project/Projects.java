@@ -120,7 +120,7 @@ public final class Projects {
             for (int n = 2; projects.containsKey(id); n++) {
                 id = p.id() + "-" + n;
             }
-            p = new Project(id, p.name(), p.description(), p.folder(), p.tools(), p.models(), p.routes());
+            p = new Project(id, p.name(), p.description(), p.folder(), p.tools(), p.models(), p.routes(), p.runners());
         }
         if (p.folder() != null && !Files.isDirectory(p.folder())) {
             throw new IllegalArgumentException("there is no folder " + p.folder());
