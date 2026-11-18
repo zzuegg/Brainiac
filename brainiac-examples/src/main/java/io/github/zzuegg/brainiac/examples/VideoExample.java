@@ -1,5 +1,6 @@
 package io.github.zzuegg.brainiac.examples;
 
+import io.github.zzuegg.brainiac.diffusion.GeneratedImage;
 import io.github.zzuegg.brainiac.diffusion.GeneratedVideo;
 import io.github.zzuegg.brainiac.diffusion.VideoRequest;
 import io.github.zzuegg.brainiac.diffusion.Wan;
@@ -13,8 +14,9 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 /**
- * Generates a short video from text with Wan 2.1 or 2.2: a diffusers folder or a folder of
- * single files (ComfyUI's transformer, VAE and umT5 files plus umT5's tokenizer).
+ * Generates a short video from text, or from a picture and text, with Wan 2.1 or 2.2: a
+ * diffusers folder or a folder of single files (ComfyUI's transformer, VAE and umT5 files plus
+ * umT5's tokenizer, and {@code clip_vision_h.safetensors} for Wan 2.1's image-to-video models).
  *
  * <pre>
  * ./gradlew :brainiac-examples:run --args="video models/wan2.1-t2v-1.3b 'a red fox runs through fresh snow' --frames 33"
@@ -24,7 +26,9 @@ import java.util.Locale;
  * {@code --steps N}, {@code --guidance G}, {@code --shift S}, {@code --seed S},
  * {@code --device cpu|vulkan|<part of a name>}, {@code --dtype f32|f16|bf16},
  * {@code --bits T,E} (transformer and text encoder bits, 0 for full), {@code --out folder},
- * {@code --avi} (also write an uncompressed AVI).
+ * {@code --avi} (also write an uncompressed AVI), {@code --image file} (the first frame, PNG or
+ * JPEG, for image-to-video models and Wan 2.2 TI2V-5B), {@code --low-guidance G} (Wan 2.2's
+ * low-noise expert's guidance).
  */
 public final class VideoExample {
 
@@ -40,7 +44,7 @@ public final class VideoExample {
         if (args.length < 2) {
             System.out.println("Usage: video <model folder> <prompt> [--negative text] [--size WxH] [--frames N]"
                     + " [--steps N] [--guidance G] [--shift S] [--seed S] [--device name] [--dtype f32|f16|bf16]"
-                    + " [--bits T,E] [--out folder] [--avi]");
+                    + " [--bits T,E] [--out folder] [--avi] [--image file] [--low-guidance G]");
             return;
         }
         Path path = Path.of(args[0]);
@@ -50,6 +54,7 @@ public final class VideoExample {
         Wan.Options options = null;
         Path out = Path.of(".");
         boolean avi = false;
+        GeneratedImage image = null;
         try {
             for (int i = 2; i < args.length; i++) {
                 switch (args[i]) {
@@ -75,6 +80,8 @@ public final class VideoExample {
                     }
                     case "--out" -> out = Path.of(args[++i]);
                     case "--avi" -> avi = true;
+                    case "--image" -> image = read(Path.of(args[++i]));
+                    case "--low-guidance" -> request = request.withLowNoiseGuidance(Float.parseFloat(args[++i]));
                     default -> throw new IllegalArgumentException("unknown option " + args[i]);
                 }
             }
@@ -93,7 +100,7 @@ public final class VideoExample {
             try (Wan wan = Wan.load(files, device, dtype, options)) {
                 System.out.printf("Loaded %s in %.1f s%n", wan, (System.nanoTime() - start) / 1e9);
                 long t0 = System.nanoTime();
-                GeneratedVideo video = wan.generate(request, (step, total, preview) -> {
+                GeneratedVideo video = wan.generate(request, image, (step, total, preview) -> {
                     System.out.printf("\rstep %d / %d  (%.0f s)", step, total, (System.nanoTime() - t0) / 1e9);
                     return true;
                 });
@@ -112,6 +119,24 @@ public final class VideoExample {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** A PNG or JPEG file as 8-bit RGB. */
+    private static GeneratedImage read(Path file) throws IOException {
+        java.awt.image.BufferedImage b = javax.imageio.ImageIO.read(file.toFile());
+        if (b == null) {
+            throw new IOException(file + " is not an image ImageIO reads (PNG, JPEG, BMP, GIF)");
+        }
+        int w = b.getWidth();
+        int h = b.getHeight();
+        int[] argb = b.getRGB(0, 0, w, h, null, 0, w);
+        byte[] rgb = new byte[w * h * 3];
+        for (int i = 0; i < argb.length; i++) {
+            rgb[i * 3] = (byte) (argb[i] >> 16);
+            rgb[i * 3 + 1] = (byte) (argb[i] >> 8);
+            rgb[i * 3 + 2] = (byte) argb[i];
+        }
+        return new GeneratedImage(w, h, rgb, -1);
     }
 
     private static Device device(String want) {

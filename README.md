@@ -38,7 +38,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
 | `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and text-to-speech with VITS / MMS-TTS, Kokoro (voices and blends), F5-TTS (voice cloning) and Orpheus (emotion tags), from published weights, behind `SpeechToText` and `TextToSpeech` |
-| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights); text-to-video with Wan 2.1 and 2.2 (umT5, video DiT, causal 3D VAE, UniPC) |
+| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights); text- and image-to-video with Wan 2.1 and 2.2 (umT5, CLIP vision, video DiT, causal 3D VAE, UniPC) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -653,11 +653,29 @@ try (Wan wan = Wan.load(Path.of("models/wan2.1-t2v-1.3b"), Device.best(), DType.
 ./gradlew :brainiac-examples:run --args="video models/wan2.1-t2v-1.3b 'a red fox runs through fresh snow' --frames 33"
 ```
 
+Image-to-video starts from a picture, which is scaled to cover the video's size and cut to it:
+
+```java
+GeneratedVideo video = wan.generate(VideoRequest.of("the waves roll in").withSize(1280, 704),
+        picture, Progress.NONE);   // wan.input() says TEXT, TEXT_OR_IMAGE or IMAGE
+```
+
+| Model | How the picture conditions | Files |
+| --- | --- | --- |
+| Wan 2.2 TI2V-5B | replaces the first latent frame, held at noise level 0 | the same as for text |
+| Wan 2.2 I2V-A14B | a mask and the latents of the picture plus black frames as extra channels; two experts | high and low noise transformers |
+| Wan 2.1 I2V 14B (480p, 720p) | the same channels, and cross-attention to the picture's CLIP ViT-H/14 features | plus `clip_vision_h.safetensors` |
+
+```
+./gradlew :brainiac-examples:run --args="video models/wan2.2-ti2v-5b 'the waves roll in' --image beach.jpg --size 1280x704 --frames 121"
+```
+
 - Frames are `1 + 4k` (81 is five seconds at 16 fps); width and height multiples of 16.
 - The VAE decodes one latent frame at a time, so memory does not grow with the length.
 - umT5, the transformer (with per-patch timesteps and image tokens for image-to-video), both
   autoencoders, UniPC and the whole pipeline were checked against diffusers on small random
-  models (`wan_fixtures.py`, `wan22_fixtures.py`).
+  models (`wan_fixtures.py`, `wan22_fixtures.py`); the three image-to-video pipelines,
+  CLIP vision and Pillow's bicubic and Lanczos resizing too (`wan_i2v_fixtures.py`).
 
 ### The same layers in your own networks
 
@@ -674,6 +692,7 @@ model from them, or fine-tune a pretrained one:
 | `UNet` | the full denoising UNet; also a `Denoiser` for `Diffusion.loss` |
 | `AutoencoderKL` | the VAE: `encode`, `decode`, `toLatents`, `loss` (reconstruction + KL) |
 | `ClipTextEncoder` | CLIP's causal text transformer: last and penultimate layers, pooled embedding |
+| `ClipVisionEncoder` | CLIP's vision transformer: patches, class token, pre-norm blocks |
 | `T5Encoder` | T5's encoder: relative position biases, RMS norms, gated feed-forward |
 | `FluxTransformer` | a multimodal diffusion transformer (MMDiT): joint text-image blocks, single-stream blocks, axial rotary positions, adaLN-Zero |
 | `WanTransformer` | a video diffusion transformer: 3D patches and rotary positions, cross-attention to text (and image) tokens, adaLN |

@@ -1,0 +1,38 @@
+{
+  "_class_name": "WanImageToVideoPipeline",
+  "_diffusers_version": "0.43.0",
+  "boundary_ratio": 0.9,
+  "expand_timesteps": false,
+  "image_encoder": [
+    null,
+    null
+  ],
+  "image_processor": [
+    null,
+    null
+  ],
+  "scheduler": [
+    "diffusers",
+    "UniPCMultistepScheduler"
+  ],
+  "text_encoder": [
+    "transformers",
+    "UMT5EncoderModel"
+  ],
+  "tokenizer": [
+    "transformers",
+    "T5Tokenizer"
+  ],
+  "transformer": [
+    "diffusers",
+    "WanTransformer3DModel"
+  ],
+  "transformer_2": [
+    "diffusers",
+    "WanTransformer3DModel"
+  ],
+  "vae": [
+    "diffusers",
+    "AutoencoderKLWan"
+  ]
+}
