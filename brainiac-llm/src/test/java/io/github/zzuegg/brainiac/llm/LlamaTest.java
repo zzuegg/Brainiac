@@ -97,6 +97,16 @@ class LlamaTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"qwen2-gptq", "qwen2-awq"})
+    void readsGptqAndAwqCheckpoints(String name) throws IOException {
+        // packed as AutoGPTQ (v1 zeros, act-order g_idx) and AutoAWQ (GEMM) pack them; see make_quantized.py
+        Map<String, Object> e = expected(name + "/expected.json");
+        Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
+        float[] logits = model.forward(new int[][] {ints(e.get("ids"))}).value().toArray();
+        assertArrayEquals(rows(e.get("logits")), logits, 1e-4f, name);
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"qwen3", "phi3", "gemma2", "gemma3", "qwen3moe", "qwen2moe"})
     void readsOtherFamiliesFromGguf(String name) throws IOException {
         Map<String, Object> e = expected(name + ".gguf.expected.json");
@@ -473,6 +483,46 @@ class LlamaTest {
         Path f = dir.resolve("q.gguf");
         q.saveGguf(f, null, false);
         assertArrayEquals(expected, Llama.load(f, DEVICE, DType.FLOAT32).forward(prompt).value().toArray(), 1e-4f);
+    }
+
+    @Test
+    void quantizedGgufExportStaysClose(@TempDir Path dir) {
+        Llama model = Llama.random(LlamaConfig.small(64, 256, 2, 4, 2), 23, DEVICE, DType.FLOAT32);
+        int[][] prompt = {{1, 2, 3, 4, 5, 6}};
+        float[] expected = model.forward(prompt).value().toArray();
+        double norm = 0;
+        for (float f : expected) {
+            norm += f * f;
+        }
+        for (io.github.zzuegg.brainiac.io.GgufWriter.Type type : new io.github.zzuegg.brainiac.io.GgufWriter.Type[] {
+            io.github.zzuegg.brainiac.io.GgufWriter.Type.Q8_0, io.github.zzuegg.brainiac.io.GgufWriter.Type.Q4_K,
+            io.github.zzuegg.brainiac.io.GgufWriter.Type.Q4_0}) {
+            Path f = dir.resolve(type + ".gguf");
+            model.saveGguf(f, null, type);
+            try (io.github.zzuegg.brainiac.io.Gguf g = io.github.zzuegg.brainiac.io.Gguf.open(f)) {
+                assertEquals(type.name(), g.format("blk.0.attn_q.weight"));
+                // Q4_K_M keeps the down projection in Q6_K, here Q8_0 since its rows are not 256 long
+                assertEquals(type == io.github.zzuegg.brainiac.io.GgufWriter.Type.Q4_K ? "Q8_0" : type.name(),
+                        g.format("blk.1.ffn_down.weight"));
+                if (type == io.github.zzuegg.brainiac.io.GgufWriter.Type.Q4_K) {
+                    assertEquals("Q6_K", g.format("blk.1.attn_v.weight"));
+                }
+                assertEquals("F32", g.format("blk.0.attn_norm.weight"));
+            }
+            float[] got = Llama.load(f, DEVICE, DType.FLOAT32).forward(prompt).value().toArray();
+            double err = 0;
+            for (int i = 0; i < got.length; i++) {
+                err += (got[i] - expected[i]) * (got[i] - expected[i]);
+            }
+            double rel = Math.sqrt(err / norm);
+            // Q4_0 quantizes every matrix, the output layer too; Q4_K keeps the sensitive ones in 6 or 8 bits
+            assertTrue(rel < switch (type) {
+                case Q8_0 -> 0.02;
+                case Q4_K -> 0.15;
+                default -> 0.3;
+            },
+                    type + ": relative logit error " + rel);
+        }
     }
 
     @Test

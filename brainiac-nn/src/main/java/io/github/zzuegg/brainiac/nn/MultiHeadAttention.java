@@ -357,6 +357,22 @@ public final class MultiHeadAttention implements MultiInputLayer {
 
     @Override
     public Var forward(List<Var> inputs, boolean training) {
+        return forward(inputs, null, training);
+    }
+
+    /**
+     * Attention with an extra additive bias on the scores, on top of the causal mask, ALiBi
+     * and padding mask the settings ask for: a custom mask (such as block-causal attention,
+     * {@code -inf} or a large negative number where a query must not look) or learned
+     * relative-position biases.
+     *
+     * @param inputs as for {@link #forward(List, boolean)}
+     * @param extra added to the {@code [batch, heads, queries, keys]} scores, broadcasting
+     *     (so {@code [queries, keys]} applies to every head), or {@code null}
+     * @param training whether dropout is on
+     * @return the output
+     */
+    public Var forward(List<Var> inputs, Tensor extra, boolean training) {
         Settings s = settings;
         int data = inputs.size() - (s.keyMask() ? 1 : 0);
         Var query = inputs.get(0);
@@ -378,13 +394,14 @@ public final class MultiHeadAttention implements MultiInputLayer {
             k = Functional.rotary(k, s.rotaryBase(), 0);
         }
         float scale = s.scale() != 0 ? s.scale() : (float) (1 / Math.sqrt(s.headSize()));
-        if (!s.alibi() && !s.keyMask() && (!training || s.dropout() == 0)) {
+        if (extra == null && !s.alibi() && !s.keyMask() && (!training || s.dropout() == 0)) {
             return output(Functional.attention(q, k, v, s.causal(), scale), n, tq);
         }
         Device device = query.value().device();
-        Tensor bias = null;
+        Tensor bias = extra;
         if (s.causal()) {
-            bias = Functional.causalMask(tq, tk, device);
+            Tensor c = Functional.causalMask(tq, tk, device);
+            bias = bias == null ? c : bias.add(c);
         }
         if (s.alibi()) {
             Tensor a = Functional.alibi(s.heads(), tq, tk, device);

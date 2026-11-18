@@ -82,6 +82,24 @@ public interface LearningRateSchedule {
     }
 
     /**
+     * Like {@link #warmup(int, LearningRateSchedule)}, optionally with the following schedule
+     * starting at its own first epoch when warm-up ends, so a cosine of {@code n} epochs
+     * after {@code w} epochs of warm-up runs whole, ending at epoch {@code w + n}.
+     *
+     * @param epochs the warm-up length
+     * @param then the schedule after warm-up
+     * @param shift {@code true} to count {@code then} from the end of warm-up (epoch
+     *     {@code epochs + 1} is its epoch 1), {@code false} from the first epoch
+     * @return the schedule
+     */
+    static LearningRateSchedule warmup(int epochs, LearningRateSchedule then, boolean shift) {
+        if (!shift) {
+            return warmup(epochs, then);
+        }
+        return warmup(epochs, (epoch, base) -> then.rate(epoch - epochs, base));
+    }
+
+    /**
      * Lowers the rate in a straight line from the base to {@code minRate} over
      * {@code totalEpochs}, then stays there: the default of Hugging Face's trainer.
      *
