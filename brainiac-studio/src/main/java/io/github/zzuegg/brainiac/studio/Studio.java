@@ -148,6 +148,9 @@ public final class Studio implements AutoCloseable {
      * @throws IOException if the port cannot be opened
      */
     public static Studio start(Settings settings) throws IOException {
+        // before anything opens the GPU: the core reads its memory limit once
+        io.github.zzuegg.brainiac.studio.chat.LocalDevice.applyMemoryLimit(settings.outputs()
+                .resolveSibling(io.github.zzuegg.brainiac.studio.chat.LocalDevice.MEMORY_FILE));
         CapabilityRegistry capabilities = CapabilityRegistry.discover();
         Keys keys = new Keys(settings.keyFile(), settings.environment(),
                 Keys.standardFiles(Path.of(System.getProperty("user.home")), settings.environment()));

@@ -33,7 +33,7 @@ final class LocalProvider implements ChatProvider {
     private static final System.Logger LOG = System.getLogger(LocalProvider.class.getName());
     private static final Set<String> TYPES = io.github.zzuegg.brainiac.llm.LlamaConfig.MODEL_TYPES;
     /** The model types that look at pictures: LLaVA 1.5, Gemma 3 and Qwen2-VL / Qwen2.5-VL. */
-    private static final Set<String> SEEING = Set.of("llava", "gemma3", "qwen2_vl", "qwen2_5_vl");
+    static final Set<String> SEEING = Set.of("llava", "gemma3", "qwen2_vl", "qwen2_5_vl");
 
     private final List<Path> folders;
     private final Path placesFile;
@@ -286,6 +286,15 @@ final class LocalProvider implements ChatProvider {
         } catch (IOException e) {
             return null;
         }
+        // a projector the studio downloaded is named for its model: "mmproj-" and the model's file name
+        Path own = model.resolveSibling("mmproj-" + model.getFileName());
+        if (Files.isRegularFile(own)) {
+            return own;
+        }
+        found = found.stream().filter(p -> {
+            Path other = p.resolveSibling(p.getFileName().toString().replaceFirst("(?i)^mmproj-", ""));
+            return other.equals(p) || !Files.isRegularFile(other);
+        }).toList();
         if (found.size() <= 1) {
             return found.isEmpty() ? null : found.getFirst();
         }
@@ -372,8 +381,19 @@ final class LocalProvider implements ChatProvider {
             VisionLanguageModel vision = null;
             if (sees(path)) {
                 Path projector = mmproj(path);
-                vision = projector != null ? VisionLanguageModel.load(path, projector, device, dtype)
-                        : VisionLanguageModel.load(path, device, dtype);
+                if (projector == null) {
+                    vision = VisionLanguageModel.load(path, device, dtype);
+                } else {
+                    try {
+                        vision = VisionLanguageModel.load(path, projector, device, dtype);
+                    } catch (RuntimeException e) {
+                        // a projector the core cannot read must not take the model's text chat with it
+                        LOG.log(System.Logger.Level.WARNING, path.getFileName() + " runs without pictures: "
+                                + projector.getFileName() + " cannot be read (" + e.getMessage() + ")");
+                    }
+                }
+            }
+            if (vision != null) {
                 model = vision;
             } else {
                 Llama llama = Llama.load(path, device, dtype);
