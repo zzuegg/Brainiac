@@ -202,36 +202,63 @@ final class VectorBlockKernels {
                 | ((sb(lo, hi, ib + 4) >>> 4) | ((sb(lo, hi, ib) >>> 6) << 4)) << 8;
     }
 
+    /**
+     * Q6_K: per half (128 values) and 16 positions {@code l}, the values at {@code l + 32 g}
+     * (g 0 to 3) come from the same bytes: low 4 bits from {@code ql[l]} (g 0, 2) and
+     * {@code ql[l + 32]} (g 1, 3), the top 2 from bits {@code 2 g} of {@code qh[l]}. Each 8 of
+     * those bytes is loaded once and gives 32 values, with constant byte shifts and masks.
+     */
     private static float q6k(MemorySegment m, long row, float[] x, int at, int k) {
-        FloatVector acc = FloatVector.zero(F8);
+        float sum = 0;
         for (int b = 0; b < k / 256; b++) {
             long o = row + 210L * b;
             float d = f16(m, o + 208);
-            for (int i = 0; i < 16; i++) {
-                // half (128 values), c (16 positions l), g: the values at l + 32 g
-                int half = i >>> 3;
-                int c = (i >>> 2) & 1;
-                int g = i & 3;
-                long ql = o + 64L * half + 16 * c + 32 * (g & 1);
-                long qh = o + 128 + 32L * half + 16 * c;
-                int xo = at + 256 * b + 128 * half + 16 * c + 32 * g;
-                float scale = d * m.get(ValueLayout.JAVA_BYTE, o + 192 + 8L * half + 2 * g + c);
-                FloatVector v = f8(q6k8(m, ql, 4 * (g >> 1), qh, 2 * g)).mul(xs(x, xo));
-                v = f8(q6k8(m, ql + 8, 4 * (g >> 1), qh + 8, 2 * g)).fma(xs(x, xo + 8), v);
-                acc = v.fma(FloatVector.broadcast(F8, scale), acc);
+            for (int i = 0; i < 4; i++) {
+                int half = i >>> 1;
+                int c = i & 1;
+                long sc = o + 192 + 8L * half + c;
+                sum += q6kGroup(m, o + 64L * half + 16 * c, o + 128 + 32L * half + 16 * c, x,
+                        at + 256 * b + 128 * half + 16 * c, d * m.get(ValueLayout.JAVA_BYTE, sc),
+                        d * m.get(ValueLayout.JAVA_BYTE, sc + 2), d * m.get(ValueLayout.JAVA_BYTE, sc + 4),
+                        d * m.get(ValueLayout.JAVA_BYTE, sc + 6));
             }
         }
-        return acc.reduceLanes(VectorOperators.ADD);
+        return sum;
     }
 
-    /** 8 of Q6_K's values, {@code -32} to {@code 31}: 4 low bits at {@code lowShift}, 2 high at {@code highShift}. */
-    private static ByteVector q6k8(MemorySegment m, long ql, int lowShift, long qh, int highShift) {
-        ByteVector low = ByteVector.fromMemorySegment(B8, m, ql, LE).lanewise(VectorOperators.LSHR, lowShift)
-                .and((byte) 0x0F);
-        ByteVector high = ByteVector.fromMemorySegment(B8, m, qh, LE).lanewise(VectorOperators.LSHR, highShift)
-                .and((byte) 0x03).lanewise(VectorOperators.LSHL, 4);
-        return low.or(high).sub((byte) 32);
+    /**
+     * 64 of a Q6_K block's values (16 positions, 4 groups 32 apart) times x, the groups scaled
+     * by {@code s0} to {@code s3}. Kept apart from {@link #q6k} and returning a float, with no
+     * helper calls taking or returning vectors: measured on JDK 27, either made the JIT box the
+     * vectors, and the kernel ran 2 times slower.
+     */
+    private static float q6kGroup(MemorySegment m, long ql, long qh, float[] x, int xo, float s0, float s1, float s2,
+            float s3) {
+        FloatVector v = FloatVector.zero(F8);
+        for (int j = 0; j < 16; j += 8) {
+            ByteVector a = ByteVector.fromMemorySegment(B8, m, ql + j, LE);
+            ByteVector bb = ByteVector.fromMemorySegment(B8, m, ql + 32 + j, LE);
+            ByteVector h = ByteVector.fromMemorySegment(B8, m, qh + j, LE);
+            // written out, not through helpers taking vectors: a small helper the JIT compiled on
+            // its own was not inlined again here, and its vectors were boxed (measured, 2x slower)
+            ByteVector q0 = a.and((byte) 0x0F).or(h.lanewise(VectorOperators.LSHL, 4).and((byte) 0x30)).sub((byte) 32);
+            ByteVector q1 = bb.and((byte) 0x0F).or(h.lanewise(VectorOperators.LSHL, 2).and((byte) 0x30)).sub((byte) 32);
+            ByteVector q2 = a.lanewise(VectorOperators.LSHR, 4).or(h.and((byte) 0x30)).sub((byte) 32);
+            ByteVector q3 = bb.lanewise(VectorOperators.LSHR, 4)
+                    .or(h.lanewise(VectorOperators.LSHR, 2).and((byte) 0x30)).sub((byte) 32);
+            int xj = xo + j;
+            v = ((FloatVector) q0.convertShape(VectorOperators.B2F, F8, 0)).mul(FloatVector.fromArray(F8, x, xj))
+                    .fma(FloatVector.broadcast(F8, s0), v);
+            v = ((FloatVector) q1.convertShape(VectorOperators.B2F, F8, 0)).mul(FloatVector.fromArray(F8, x, xj + 32))
+                    .fma(FloatVector.broadcast(F8, s1), v);
+            v = ((FloatVector) q2.convertShape(VectorOperators.B2F, F8, 0)).mul(FloatVector.fromArray(F8, x, xj + 64))
+                    .fma(FloatVector.broadcast(F8, s2), v);
+            v = ((FloatVector) q3.convertShape(VectorOperators.B2F, F8, 0)).mul(FloatVector.fromArray(F8, x, xj + 96))
+                    .fma(FloatVector.broadcast(F8, s3), v);
+        }
+        return v.reduceLanes(VectorOperators.ADD);
     }
+
 
     /** As {@link BlockKernels#dot}, two vectors of running sums at a time. */
     static float dot(float[] x, int at, float[] y, int k) {
