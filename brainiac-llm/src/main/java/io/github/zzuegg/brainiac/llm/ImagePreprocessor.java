@@ -59,8 +59,8 @@ final class ImagePreprocessor {
         return new double[] {otherwise, otherwise, otherwise};
     }
 
-    /** @return {@code [3, height, width]} values, channels first */
-    float[] apply(BufferedImage image, int[] outSize) {
+    /** @return the image's channels, 0 to 255, row-major */
+    static double[][] channels(BufferedImage image) {
         int h = image.getHeight();
         int w = image.getWidth();
         double[][] rgb = new double[3][h * w];
@@ -72,6 +72,33 @@ final class ImagePreprocessor {
                 rgb[2][y * w + x] = argb & 0xFF;
             }
         }
+        return rgb;
+    }
+
+    /**
+     * Resizes channels as Pillow does (antialiased, rounded to 8 bits after each pass).
+     *
+     * @param rgb the channels, row-major, replaced by the resized ones
+     * @param resample Pillow's filter: 0 nearest, 2 bilinear, 3 bicubic
+     */
+    static void resize(double[][] rgb, int h, int w, int th, int tw, int resample) {
+        ImagePreprocessor p = new ImagePreprocessor(Map.of("resample", resample), 1);
+        for (int c = 0; c < rgb.length; c++) {
+            double[] across = p.pass(rgb[c], h, w, tw, true);
+            rgb[c] = p.pass(across, h, tw, th, false);
+        }
+    }
+
+    /** @return the mean and standard deviation per channel, and the rescale factor */
+    double[][] normalization() {
+        return new double[][] {mean, std, {rescale ? factor : 1}, {normalize ? 1 : 0}};
+    }
+
+    /** @return {@code [3, height, width]} values, channels first */
+    float[] apply(BufferedImage image, int[] outSize) {
+        int h = image.getHeight();
+        int w = image.getWidth();
+        double[][] rgb = channels(image);
         if (resize) {
             int th;
             int tw;

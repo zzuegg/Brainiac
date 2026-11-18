@@ -3,6 +3,7 @@ package io.github.zzuegg.brainiac.llm;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.WeightSource;
 import io.github.zzuegg.brainiac.data.CharacterTokenizer;
 import io.github.zzuegg.brainiac.tensor.DType;
@@ -148,6 +149,41 @@ class VisionLanguageModelTest {
                 Object message = io.github.zzuegg.brainiac.io.Json.object(choice.get("message")).get("content");
                 assertEquals(want, message == null ? "" : message, "batch " + batch);
             }
+        }
+    }
+
+    @Test
+    void qwen25VlMatchesTransformers() throws IOException {
+        VisionLanguageModel qwen = VisionLanguageModel.load(LlamaTest.resource("vlm-qwen25"), LlamaTest.DEVICE,
+                DType.FLOAT32);
+        assertEquals(VisionLanguageModel.Kind.QWEN_VL, qwen.kind());
+        BufferedImage image = ImageIO.read(LlamaTest.resource("vision-image.png").toFile());
+        // resized to 24 x 32 within the pixel budget: 6 x 8 patches of 4 pixels, 3 x 4 tokens
+        QwenVision.Patches mine = qwen.qwen().patches(image);
+        assertEquals(6, mine.height());
+        assertEquals(8, mine.width());
+        float[] px = expected("vlm-qwen25", "pixel_values");
+        close(px, mine.values(), 0.05f, "patches");
+        QwenVision.Patches theirs = new QwenVision.Patches(Tensor.of(io.github.zzuegg.brainiac.tensor.Shape.of(48, 96),
+                px, LlamaTest.DEVICE), 6, 8);
+        Tensor features = qwen.qwen().features(theirs);
+        close(expected("vlm-qwen25", "features"), features, 1e-4f, "features");
+        float[] ids = expected("vlm-qwen25", "ids");
+        int[] prompt = new int[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            prompt[i] = (int) ids[i];
+        }
+        // 3D positions: the image at its start in time, rows and columns from there
+        close(expected("vlm-qwen25", "logits"), Var.noGrad(() -> qwen.language().forward(new int[][] {prompt},
+                qwen.imageToken(), features, new int[][] {{3, 4}})).value(), 1e-4f, "logits");
+        int[] expanded = qwen.prompt(new int[] {1, 5, 9, 60, qwen.imageToken(), 62, 17, 23, 4}, List.of(image));
+        assertArrayEquals(prompt, expanded);
+        float[] want = expected("vlm-qwen25", "generated");
+        Generator g = new Generator(qwen, new CharacterTokenizer(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,"));
+        int[] got = g.generate(new int[][] {expanded}, Generator.Options.greedy(want.length), null).getFirst().tokens();
+        for (int i = 0; i < want.length; i++) {
+            assertEquals((int) want[i], got[i], "token " + i);
         }
     }
 }

@@ -47,7 +47,12 @@ public final class VisionLanguageModel implements LanguageModel {
          * Gemma 3 ({@code gemma3}): SigLIP patches average-pooled to 256 tokens, normalized and
          * projected; an image's tokens see each other both ways.
          */
-        GEMMA3
+        GEMMA3,
+        /**
+         * Qwen2-VL and Qwen2.5-VL ({@code qwen2_vl}, {@code qwen2_5_vl}): images at their own
+         * aspect ratio, a windowed vision transformer and 3D rotary positions in the decoder.
+         */
+        QWEN_VL
     }
 
     private final Kind kind;
@@ -68,6 +73,9 @@ public final class VisionLanguageModel implements LanguageModel {
     private final DType dtype;
     /** Image features queued by {@link #prompt}, taken by the calls that read placeholders. */
     private final Deque<Tensor> pending = new ArrayDeque<>();
+    /** Qwen: the queued images' grids in tokens, {height, width}. */
+    private final Deque<int[]> pendingGrids = new ArrayDeque<>();
+    private final QwenVision qwen;
 
     private VisionLanguageModel(Map<String, Object> c, Map<String, Object> processor, WeightSource raw, Device device,
             DType dtype) {
@@ -75,11 +83,40 @@ public final class VisionLanguageModel implements LanguageModel {
         kind = switch (type) {
             case "llava" -> Kind.LLAVA;
             case "gemma3" -> Kind.GEMMA3;
-            default -> throw new IllegalArgumentException("not a LLaVA or Gemma 3 model: model_type " + type);
+            case "qwen2_vl", "qwen2_5_vl" -> Kind.QWEN_VL;
+            default -> throw new IllegalArgumentException("not a LLaVA, Gemma 3 or Qwen-VL model: model_type " + type);
         };
         this.device = device;
         this.dtype = dtype;
         WeightSource w = raw.renamed(VisionLanguageModel::canonical);
+        if (kind == Kind.QWEN_VL) {
+            // the decoder's settings sit in text_config or, in older files, at the top
+            Map<String, Object> text = new java.util.LinkedHashMap<>(c.get("text_config") instanceof Map<?, ?> m
+                    ? Json.object(m) : c);
+            text.remove("vision_config");
+            text.put("model_type", "qwen2");
+            text.putIfAbsent("attention_bias", true);
+            language = Llama.load(w.renamed(n -> n.startsWith("model.") || n.startsWith("lm_head.") ? n : null),
+                    LlamaConfig.fromHuggingFace(text), device, dtype);
+            Map<String, Object> rope = text.get("rope_parameters") instanceof Map<?, ?> m ? Json.object(m)
+                    : text.get("rope_scaling") instanceof Map<?, ?> m2 ? Json.object(m2) : Map.of();
+            if (!(rope.get("mrope_section") instanceof List<?> sec)) {
+                throw new IllegalArgumentException("a Qwen-VL config needs rope_parameters.mrope_section");
+            }
+            language.ropeSections(sec.stream().mapToInt(o -> ((Number) o).intValue()).toArray());
+            qwen = new QwenVision(type.equals("qwen2_5_vl"), Json.object(c.get("vision_config")), processor, w, device,
+                    dtype);
+            imageToken = (int) Json.integer(c, "image_token_id", Json.integer(text, "image_token_id", 151655));
+            vision = null;
+            softNorm = proj1 = proj1Bias = proj2 = proj2Bias = null;
+            act = null;
+            softEps = 0;
+            tokensPerImage = 0;
+            featureLayer = 0;
+            dropClass = false;
+            return;
+        }
+        qwen = null;
         Map<String, Object> textConfig = new java.util.LinkedHashMap<>(Json.object(c.get("text_config")));
         if (kind == Kind.GEMMA3) {
             textConfig.putIfAbsent("model_type", "gemma3_text");
@@ -147,6 +184,9 @@ public final class VisionLanguageModel implements LanguageModel {
         if (n.startsWith("vision_tower.")) {
             return "vision_model." + n.substring("vision_tower.".length());
         }
+        if (n.startsWith("model.visual.")) {
+            return n.substring("model.".length());
+        }
         if (n.startsWith("multi_modal_projector.")) {
             return "projector." + n.substring("multi_modal_projector.".length());
         }
@@ -193,6 +233,9 @@ public final class VisionLanguageModel implements LanguageModel {
      * @return {@code [3, height, width]}
      */
     public Tensor pixels(BufferedImage image) {
+        if (qwen != null) {
+            throw new UnsupportedOperationException("Qwen-VL images become patches of their own size; use prompt()");
+        }
         return vision.pixels(image);
     }
 
@@ -203,6 +246,9 @@ public final class VisionLanguageModel implements LanguageModel {
      * @return {@code [batch * tokens per image, hidden]} in the decoder's width
      */
     public Tensor imageFeatures(Tensor pixels) {
+        if (qwen != null) {
+            throw new UnsupportedOperationException("Qwen-VL images become patches of their own size; use prompt()");
+        }
         if (kind == Kind.GEMMA3) {
             return Var.noGrad(() -> Var.of(gemmaFeatures(pixels))).value();
         }
@@ -291,8 +337,15 @@ public final class VisionLanguageModel implements LanguageModel {
                 out.add(id);
                 continue;
             }
-            Tensor px = pixels(images.get(image++));
-            Tensor f = imageFeatures(px.reshape(1, px.shape().dim(0), px.shape().dim(1), px.shape().dim(2)));
+            Tensor f;
+            if (qwen != null) {
+                QwenVision.Patches p = qwen.patches(images.get(image++));
+                f = qwen.features(p);
+                pendingGrids.add(qwen.tokenGrid(p));
+            } else {
+                Tensor px = pixels(images.get(image++));
+                f = imageFeatures(px.reshape(1, px.shape().dim(0), px.shape().dim(1), px.shape().dim(2)));
+            }
             pending.add(f);
             for (int i = 0; i < f.shape().dim(0); i++) {
                 out.add(imageToken);
@@ -311,6 +364,11 @@ public final class VisionLanguageModel implements LanguageModel {
     public Tensor logits(int[][] ids, Tensor pixels) {
         Tensor f = imageFeatures(pixels);
         return Var.noGrad(() -> language.forward(ids, imageToken, f, kind == Kind.GEMMA3)).value();
+    }
+
+    /** Qwen-VL: the image as the tower reads it (for tests against transformers' patches). */
+    QwenVision qwen() {
+        return qwen;
     }
 
     @Override
@@ -346,9 +404,16 @@ public final class VisionLanguageModel implements LanguageModel {
         }
         // the queued features, as many rows as placeholders
         List<Tensor> parts = new ArrayList<>();
+        List<int[]> grids = new ArrayList<>();
         int have = 0;
         while (have < count) {
             Tensor f = pending.poll();
+            if (qwen != null && f != null) {
+                if (f.shape().dim(0) > count - have) {
+                    throw new IllegalArgumentException("a Qwen-VL image must be read in one call");
+                }
+                grids.add(pendingGrids.poll());
+            }
             if (f == null) {
                 throw new IllegalStateException("the tokens hold " + count + " image tokens; prepare them with prompt()");
             }
@@ -360,11 +425,15 @@ public final class VisionLanguageModel implements LanguageModel {
             have += take;
         }
         Tensor rows = parts.size() == 1 ? parts.getFirst() : Tensor.concat(0, parts.toArray(Tensor[]::new));
+        if (qwen != null) {
+            return language.next(state, tokens, imageToken, rows, grids.toArray(int[][]::new));
+        }
         return language.next(state, tokens, imageToken, rows, kind == Kind.GEMMA3);
     }
 
     @Override
     public String toString() {
-        return "VisionLanguageModel[" + kind + ", " + vision.kind() + " " + vision.depth() + " blocks, " + language + "]";
+        return "VisionLanguageModel[" + kind + ", " + (vision != null ? vision.kind() + " " + vision.depth() + " blocks, "
+                : "") + language + "]";
     }
 }
