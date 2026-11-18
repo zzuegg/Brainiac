@@ -58,6 +58,8 @@ public final class Var {
     /** For {@link #gradients} with a graph: {@code null} when this operation has no such form. */
     private final Higher higher;
     private Tensor grad;
+    /** Called with this value's gradient during {@link #backward(Tensor)}, see {@link #onGradient}. */
+    private List<java.util.function.UnaryOperator<Tensor>> hooks;
     /** Gradients computed by {@link #backward(Tensor)} from this value, for {@link #release()}. */
     private List<Tensor> backwardValues;
     /** The parameters' gradients {@link #backward(Tensor)} computed: never released here. */
@@ -335,6 +337,30 @@ public final class Var {
     }
 
     /**
+     * Registers a hook that sees this value's whole gradient during {@link #backward(Tensor)},
+     * once every contribution to it has been added up, as {@code register_hook} in PyTorch.
+     * It can capture the gradient (K-FAC and Shampoo statistics, per-layer gradient noise)
+     * or replace it (clipping inside the graph). Hooks run in the order they were added;
+     * {@link #gradients} does not call them.
+     *
+     * @param hook given the gradient, returns the gradient to pass on, or {@code null} to
+     *     keep it unchanged
+     * @return this value
+     * @throws IllegalStateException if this value does not need a gradient
+     */
+    public Var onGradient(java.util.function.UnaryOperator<Tensor> hook) {
+        Objects.requireNonNull(hook, "hook");
+        if (!requiresGrad) {
+            throw new IllegalStateException("this value does not depend on any parameter, so it gets no gradient");
+        }
+        if (hooks == null) {
+            hooks = new ArrayList<>(1);
+        }
+        hooks.add(hook);
+        return this;
+    }
+
+    /**
      * Back-propagates a given output gradient: computes {@code seed . d(this)/d(param)}
      * for every parameter this value depends on and adds it to their {@link #grad()}.
      *
@@ -359,6 +385,18 @@ public final class Var {
                 }
                 // a gradient always has its value's number format
                 g = g.to(node.value.dtype());
+                if (node.hooks != null) {
+                    for (java.util.function.UnaryOperator<Tensor> h : node.hooks) {
+                        Tensor r = h.apply(g);
+                        if (r != null) {
+                            if (!r.shape().equals(g.shape())) {
+                                throw new IllegalStateException("a gradient hook returned shape " + r.shape()
+                                        + " for a gradient of shape " + g.shape());
+                            }
+                            g = r.to(node.value.dtype());
+                        }
+                    }
+                }
                 if (node.backward == null) {
                     node.grad = node.grad == null ? g : node.grad.add(g).to(node.value.dtype());
                     continue;

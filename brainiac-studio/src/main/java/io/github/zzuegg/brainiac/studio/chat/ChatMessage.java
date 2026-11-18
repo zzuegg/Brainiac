@@ -52,7 +52,7 @@ public record ChatMessage(String role, String text, List<Media> images) {
      * @param image the picture
      * @return its bytes in base64
      */
-    static String base64(Media image) {
+    public static String base64(Media image) {
         return Base64.getEncoder().encodeToString(image.data());
     }
 }
