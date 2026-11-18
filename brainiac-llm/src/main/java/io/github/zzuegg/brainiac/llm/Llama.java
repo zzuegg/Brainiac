@@ -1137,7 +1137,21 @@ public final class Llama implements LanguageModel {
      * @return logits {@code [batch, steps, vocab]} in the model's type
      */
     public Var forward(int[][] tokens, int placeholder, Tensor embeddings) {
-        return inserting(placeholder, embeddings, () -> forward(tokens));
+        return inserting(placeholder, embeddings, false, () -> forward(tokens));
+    }
+
+    /**
+     * As {@link #forward(int[][], int, Tensor)}, optionally with each run of consecutive
+     * placeholders attending to itself both ways (as Gemma 3 reads an image).
+     *
+     * @param tokens {@code [batch][steps]} token ids, all sequences the same length
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}
+     * @param bidirectional whether a run of placeholders sees all of itself
+     * @return logits {@code [batch, steps, vocab]} in the model's type
+     */
+    public Var forward(int[][] tokens, int placeholder, Tensor embeddings, boolean bidirectional) {
+        return inserting(placeholder, embeddings, bidirectional, () -> forward(tokens));
     }
 
     /**
@@ -1152,29 +1166,76 @@ public final class Llama implements LanguageModel {
      * @return the next-token logits {@code [batch, vocab]}, float32
      */
     public Tensor next(State state, int[][] tokens, int placeholder, Tensor embeddings) {
-        return inserting(placeholder, embeddings, () -> next(state, tokens, null));
+        return inserting(placeholder, embeddings, false, () -> next(state, tokens, null));
+    }
+
+    /**
+     * As {@link #next(State, int[][], int, Tensor)}, optionally with each run of consecutive
+     * placeholders attending to itself both ways (as Gemma 3 reads an image; a run must not
+     * cross a {@linkplain #prefillChunk prefill chunk}).
+     *
+     * @param state the state; updated
+     * @param tokens the new tokens per sequence
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}, in order
+     * @param bidirectional whether a run of placeholders sees all of itself
+     * @return the next-token logits {@code [batch, vocab]}, float32
+     */
+    public Tensor next(State state, int[][] tokens, int placeholder, Tensor embeddings, boolean bidirectional) {
+        return inserting(placeholder, embeddings, bidirectional, () -> next(state, tokens, null));
     }
 
     /** Embeddings that replace a placeholder token, consumed in order across prefill chunks. */
     private static final class Insert {
         final int token;
         final Tensor rows;
+        final boolean bidirectional;
         int used;
 
-        Insert(int token, Tensor rows) {
+        Insert(int token, Tensor rows, boolean bidirectional) {
             this.token = token;
             this.rows = rows;
+            this.bidirectional = bidirectional;
         }
     }
 
     private Insert insert;
 
-    private <T> T inserting(int placeholder, Tensor embeddings, java.util.function.Supplier<T> body) {
+    /**
+     * Per token, the index of its run of placeholders that attends both ways, or -1; {@code
+     * null} when no run does.
+     */
+    private int[][] runs(int[][] tokens) {
+        if (insert == null || !insert.bidirectional) {
+            return null;
+        }
+        int[][] out = new int[tokens.length][];
+        boolean any = false;
+        for (int b = 0; b < tokens.length; b++) {
+            out[b] = new int[tokens[b].length];
+            int run = -1;
+            for (int t = 0; t < tokens[b].length; t++) {
+                if (tokens[b][t] == insert.token) {
+                    if (t == 0 || tokens[b][t - 1] != insert.token) {
+                        run++;
+                    }
+                    out[b][t] = run;
+                    any = true;
+                } else {
+                    out[b][t] = -1;
+                }
+            }
+        }
+        return any ? out : null;
+    }
+
+    private <T> T inserting(int placeholder, Tensor embeddings, boolean bidirectional,
+            java.util.function.Supplier<T> body) {
         if (embeddings.shape().rank() != 2 || embeddings.shape().dim(1) != config.hidden()) {
             throw new IllegalArgumentException("embeddings must be [n, " + config.hidden() + "], got "
                     + embeddings.shape());
         }
-        Insert in = new Insert(placeholder, embeddings.to(device).to(dtype));
+        Insert in = new Insert(placeholder, embeddings.to(device).to(dtype), bidirectional);
         insert = in;
         try {
             T out = body.get();
@@ -1492,6 +1553,7 @@ public final class Llama implements LanguageModel {
             }
         }
         // causal, padding and the buffer's unused end: [batch, 1, steps, capacity]; one per window
+        int[][] runs = runs(tokens);
         Tensor[] masks = new Tensor[blocks.size()];
         Map<String, Tensor> byWindow = new java.util.HashMap<>();
         for (int l = 0; l < masks.length; l++) {
@@ -1499,7 +1561,7 @@ public final class Llama implements LanguageModel {
             Device d = deviceOf(l);
             DType t = typeOf(l);
             masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t,
-                    k -> cacheMask(cache, keysPad, steps, window, d, t));
+                    k -> cacheMask(cache, keysPad, steps, window, d, t, runs));
         }
         Var[] hidden = new Var[1];
         Var logits = run(tokens, positions, cache, masks, hidden);
@@ -1518,7 +1580,8 @@ public final class Llama implements LanguageModel {
         return out;
     }
 
-    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window, Device device, DType dtype) {
+    private Tensor cacheMask(Cache cache, boolean[][] keysPad, int steps, int window, Device device, DType dtype,
+            int[][] runs) {
         int batch = keysPad.length;
         int keys = cache.capacity;
         float[] m = new float[batch * steps * keys];
@@ -1526,7 +1589,10 @@ public final class Llama implements LanguageModel {
             for (int t = 0; t < steps; t++) {
                 int row = (b * steps + t) * keys;
                 for (int k = 0; k < keys; k++) {
-                    if (k > cache.length + t || keysPad[b][Math.min(k, keysPad[b].length - 1)]
+                    int at = k - cache.length;
+                    boolean together = runs != null && at > t && at < steps && runs[b][t] >= 0
+                            && runs[b][at] == runs[b][t];
+                    if (k > cache.length + t && !together || keysPad[b][Math.min(k, keysPad[b].length - 1)]
                             || window > 0 && k <= cache.length + t - window) {
                         m[row + k] = -1e9f;
                     }
@@ -1600,6 +1666,17 @@ public final class Llama implements LanguageModel {
                 insert.used += count;
                 x = Var.concat(0, x.reshape(n, config.hidden()), rows).gather(0, indices(from, device))
                         .reshape(batch, steps, config.hidden());
+            }
+        }
+        int[][] runs = masks == null ? runs(tokens) : null;
+        if (runs != null) {
+            masks = new Tensor[blocks.size()];
+            Map<String, Tensor> byWindow = new java.util.HashMap<>();
+            for (int l = 0; l < blocks.size(); l++) {
+                int window = windowOf(l);
+                Device d = deviceOf(l);
+                DType t = typeOf(l);
+                masks[l] = byWindow.computeIfAbsent(window + " " + d + " " + t, k -> runMask(runs, window, d, t));
             }
         }
         if (masks == null) {
@@ -1849,6 +1926,27 @@ public final class Llama implements LanguageModel {
             return set;
         }
         return config.extras().local(layer) ? config.extras().slidingWindow() : 0;
+    }
+
+    /**
+     * Causal, within a window when {@code window > 0}, with each run seeing all of itself:
+     * {@code [batch, 1, steps, steps]}.
+     */
+    private static Tensor runMask(int[][] runs, int window, Device device, DType dtype) {
+        int batch = runs.length;
+        int steps = runs[0].length;
+        float[] m = new float[batch * steps * steps];
+        for (int b = 0; b < batch; b++) {
+            for (int t = 0; t < steps; t++) {
+                for (int k = 0; k < steps; k++) {
+                    boolean together = runs[b][t] >= 0 && runs[b][k] == runs[b][t];
+                    if (k > t && !together || window > 0 && k <= t - window) {
+                        m[(b * steps + t) * steps + k] = -1e9f;
+                    }
+                }
+            }
+        }
+        return Tensor.of(Shape.of(batch, 1, steps, steps), m, device).to(dtype);
     }
 
     /** A causal mask over {@code steps} steps where each sees only the last {@code window}. */

@@ -19,9 +19,9 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A vision-language model from a Hugging Face folder: LLaVA 1.5 style, where an image
- * tower (CLIP or SigLIP), a projector and a decoder ({@link Llama}, any family it loads)
- * answer questions about images. Each image becomes a run of placeholder tokens in the
+ * A vision-language model from a Hugging Face folder: LLaVA 1.5 and Gemma 3, where an
+ * image tower (CLIP or SigLIP), a projector and a decoder ({@link Llama}, any family it
+ * loads) answer questions about images. Each image becomes a run of placeholder tokens in the
  * prompt, whose embeddings are the projected image features. Results match transformers.
  *
  * <p>The model is a {@link LanguageModel}, so a {@link Generator} drives it: {@link #prompt}
@@ -39,6 +39,18 @@ import java.util.Map;
  */
 public final class VisionLanguageModel implements LanguageModel {
 
+    /** The model families. */
+    public enum Kind {
+        /** LLaVA 1.5 ({@code llava}): a CLIP or SigLIP layer's patches through a two-layer MLP. */
+        LLAVA,
+        /**
+         * Gemma 3 ({@code gemma3}): SigLIP patches average-pooled to 256 tokens, normalized and
+         * projected; an image's tokens see each other both ways.
+         */
+        GEMMA3
+    }
+
+    private final Kind kind;
     private final Llama language;
     private final VisionEncoder vision;
     private final Tensor proj1;
@@ -46,6 +58,9 @@ public final class VisionLanguageModel implements LanguageModel {
     private final Tensor proj2;
     private final Tensor proj2Bias;
     private final ActivationOp act;
+    private final Tensor softNorm;
+    private final float softEps;
+    private final int tokensPerImage;
     private final int imageToken;
     private final int featureLayer;
     private final boolean dropClass;
@@ -57,17 +72,40 @@ public final class VisionLanguageModel implements LanguageModel {
     private VisionLanguageModel(Map<String, Object> c, Map<String, Object> processor, WeightSource raw, Device device,
             DType dtype) {
         String type = Json.string(c, "model_type", "");
-        if (!type.equals("llava")) {
-            throw new IllegalArgumentException("not a LLaVA model: model_type " + type);
-        }
+        kind = switch (type) {
+            case "llava" -> Kind.LLAVA;
+            case "gemma3" -> Kind.GEMMA3;
+            default -> throw new IllegalArgumentException("not a LLaVA or Gemma 3 model: model_type " + type);
+        };
         this.device = device;
         this.dtype = dtype;
         WeightSource w = raw.renamed(VisionLanguageModel::canonical);
-        Map<String, Object> textConfig = Json.object(c.get("text_config"));
+        Map<String, Object> textConfig = new java.util.LinkedHashMap<>(Json.object(c.get("text_config")));
+        if (kind == Kind.GEMMA3) {
+            textConfig.putIfAbsent("model_type", "gemma3_text");
+        }
         language = Llama.load(w.renamed(n -> n.startsWith("model.") || n.startsWith("lm_head.") ? n : null),
                 LlamaConfig.fromHuggingFace(textConfig), device, dtype);
-        vision = VisionEncoder.tower(Json.object(c.get("vision_config")), processor,
+        Map<String, Object> visionConfig = new java.util.LinkedHashMap<>(Json.object(c.get("vision_config")));
+        visionConfig.putIfAbsent("model_type", kind == Kind.GEMMA3 ? "siglip_vision_model" : "clip_vision_model");
+        vision = VisionEncoder.tower(visionConfig, processor,
                 w.renamed(n -> n.startsWith("vision_model.") ? n : null), device, dtype);
+        if (kind == Kind.GEMMA3) {
+            // x / rms(x) * (1 + w), then one matrix stored [vision, text]
+            softNorm = w.tensor("projector.mm_soft_emb_norm.weight", Device.cpu(), DType.FLOAT32).add(1f).to(device);
+            softEps = (float) Json.number(visionConfig, "layer_norm_eps", 1e-6);
+            proj1 = w.tensor("projector.mm_input_projection_weight", device, dtype);
+            proj1Bias = proj2 = proj2Bias = null;
+            act = null;
+            tokensPerImage = (int) Json.integer(c, "mm_tokens_per_image", 256);
+            imageToken = (int) Json.integer(c, "image_token_index", Json.integer(c, "image_token_id", 262144));
+            featureLayer = -1;
+            dropClass = false;
+            return;
+        }
+        softNorm = null;
+        softEps = 0;
+        tokensPerImage = 0;
         proj1 = w.tensor("projector.linear_1.weight", device, dtype).transpose();
         proj2 = w.tensor("projector.linear_2.weight", device, dtype).transpose();
         proj1Bias = w.contains("projector.linear_1.bias") ? w.tensor("projector.linear_1.bias", device, dtype) : null;
@@ -133,6 +171,11 @@ public final class VisionLanguageModel implements LanguageModel {
         }
     }
 
+    /** @return the model family */
+    public Kind kind() {
+        return kind;
+    }
+
     /** @return the decoder */
     public Llama language() {
         return language;
@@ -160,6 +203,9 @@ public final class VisionLanguageModel implements LanguageModel {
      * @return {@code [batch * tokens per image, hidden]} in the decoder's width
      */
     public Tensor imageFeatures(Tensor pixels) {
+        if (kind == Kind.GEMMA3) {
+            return Var.noGrad(() -> Var.of(gemmaFeatures(pixels))).value();
+        }
         return Var.noGrad(() -> {
             Var f = vision.features(pixels, featureLayer);
             if (dropClass) {
@@ -173,6 +219,41 @@ public final class VisionLanguageModel implements LanguageModel {
             h = h.activation(act, 0).matmul(proj2);
             return Var.of(proj2Bias != null ? h.add(proj2Bias) : h);
         }).value();
+    }
+
+    /** Gemma 3: the patch grid average-pooled to {@code tokensPerImage}, normalized, projected. */
+    private Tensor gemmaFeatures(Tensor pixels) {
+        Tensor s = vision.states(pixels).value();
+        int b = s.shape().dim(0);
+        int n = s.shape().dim(1);
+        int d = s.shape().dim(2);
+        int side = (int) Math.round(Math.sqrt(n));
+        int out = (int) Math.round(Math.sqrt(tokensPerImage));
+        int k = side / out;
+        // [b, side, side, d] -> [b, out, k, out, k, d] -> mean over both k
+        Tensor pooled = s.to(DType.FLOAT32).reshape(b, out, k, out, k, d).mean(4, false).mean(2, false)
+                .reshape(b * out * out, d);
+        Tensor r = pooled.mul(pooled).mean(-1, true).add(softEps).sqrt();
+        return pooled.div(r).mul(softNorm).to(dtype).matmul(proj1);
+    }
+
+    /**
+     * Tokenizes a prompt with images marked as the model's processor marks them ({@code
+     * <image>} for LLaVA, {@code <start_of_image>} for Gemma 3), expands each image into its
+     * tokens and queues the images' features, as {@link #prompt(int[], List)} does.
+     *
+     * @param tokenizer the model's tokenizer
+     * @param text the prompt, with one marker per image
+     * @param images the images, in prompt order
+     * @return the expanded prompt
+     */
+    public int[] prompt(io.github.zzuegg.brainiac.io.PretrainedTokenizer tokenizer, String text,
+            List<BufferedImage> images) {
+        if (kind == Kind.GEMMA3) {
+            text = text.replace("<start_of_image>",
+                    "\n\n<start_of_image><image_soft_token><end_of_image>\n\n");
+        }
+        return prompt(tokenizer.encode(text), images);
     }
 
     /**
@@ -218,7 +299,7 @@ public final class VisionLanguageModel implements LanguageModel {
      */
     public Tensor logits(int[][] ids, Tensor pixels) {
         Tensor f = imageFeatures(pixels);
-        return Var.noGrad(() -> language.forward(ids, imageToken, f)).value();
+        return Var.noGrad(() -> language.forward(ids, imageToken, f, kind == Kind.GEMMA3)).value();
     }
 
     @Override
@@ -267,11 +348,11 @@ public final class VisionLanguageModel implements LanguageModel {
             have += take;
         }
         Tensor rows = parts.size() == 1 ? parts.getFirst() : Tensor.concat(0, parts.toArray(Tensor[]::new));
-        return language.next(state, tokens, imageToken, rows);
+        return language.next(state, tokens, imageToken, rows, kind == Kind.GEMMA3);
     }
 
     @Override
     public String toString() {
-        return "VisionLanguageModel[llava, " + vision.kind() + " " + vision.depth() + " blocks, " + language + "]";
+        return "VisionLanguageModel[" + kind + ", " + vision.kind() + " " + vision.depth() + " blocks, " + language + "]";
     }
 }

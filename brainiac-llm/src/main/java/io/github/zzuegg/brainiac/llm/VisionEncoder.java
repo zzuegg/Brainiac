@@ -394,6 +394,11 @@ public final class VisionEncoder {
         return run(vision, embeddings(pixels), false, stop);
     }
 
+    /** The image tower's final states, after its final norm (SigLIP's {@code last_hidden_state}). */
+    Var states(Tensor pixels) {
+        return visionStates(pixels);
+    }
+
     private Var embeddings(Tensor pixels) {
         int b = pixels.shape().dim(0);
         int h = pixels.shape().dim(2) / patch;
