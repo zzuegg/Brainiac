@@ -187,6 +187,104 @@ public interface Loss {
     Var compute(Var prediction, Tensor target);
 
     /**
+     * The loss's own trainable parameters, such as the class centres of an ArcFace or proxy
+     * loss; a {@code Trainer} optimizes them together with the model's. Most losses have none.
+     *
+     * @return the parameters
+     */
+    default java.util.List<Var> parameters() {
+        return java.util.List.of();
+    }
+
+    /**
+     * A loss with trainable parameters of its own.
+     *
+     * @param loss computes the loss, reading the parameters
+     * @param parameters the parameters it reads
+     * @return the loss
+     */
+    static Loss withParameters(Loss loss, java.util.List<Var> parameters) {
+        java.util.List<Var> own = java.util.List.copyOf(parameters);
+        return new Loss() {
+            @Override
+            public Var compute(Var prediction, Tensor target) {
+                return loss.compute(prediction, target);
+            }
+
+            @Override
+            public java.util.List<Var> parameters() {
+                return own;
+            }
+        };
+    }
+
+    /**
+     * Multiclass focal loss from logits (Lin et al., 2017): cross-entropy with each row scaled
+     * by {@code (1 - p_y)^gamma}, so well-classified rows count less. Targets are class ids or
+     * one-hot (or soft) rows.
+     *
+     * @param gamma the focusing power; 0 is cross-entropy
+     * @return the loss, averaged over rows
+     */
+    static Loss focalFromLogits(float gamma) {
+        return (p, t) -> {
+            Tensor target = targetRows(p, t);
+            Var logp = p.logSoftmax(-1);
+            Var focus = logp.exp().neg().add(1).maximum(0).pow(gamma);
+            int rows = Math.toIntExact(p.shape().size() / p.shape().dim(-1));
+            return focus.mul(logp).mul(target).sum().mul(-1f / rows);
+        };
+    }
+
+    /**
+     * Generalized cross-entropy from logits (Zhang and Sabuncu, 2018), robust to noisy labels:
+     * {@code (1 - p_y^q) / q}, between cross-entropy (as {@code q -> 0}) and mean absolute error
+     * ({@code q = 1}).
+     *
+     * @param q in {@code (0, 1]}; 0.7 in the paper
+     * @return the loss, averaged over rows
+     */
+    static Loss generalizedCrossEntropy(float q) {
+        if (!(q > 0 && q <= 1)) {
+            throw new IllegalArgumentException("q must be in (0, 1]: " + q);
+        }
+        return (p, t) -> {
+            Var py = p.softmax(-1).mul(targetRows(p, t)).sum(-1, false);
+            return py.add(EPSILON).pow(q).neg().add(1).mul(1 / q).mean();
+        };
+    }
+
+    /**
+     * Symmetric cross-entropy from logits (Wang et al., 2019), robust to noisy labels:
+     * {@code alpha * CE + beta * RCE}, where the reverse cross-entropy takes {@code log 0} as
+     * {@code log 1e-4}.
+     *
+     * @param alpha the weight of cross-entropy
+     * @param beta the weight of reverse cross-entropy
+     * @return the loss, averaged over rows
+     */
+    static Loss symmetricCrossEntropy(float alpha, float beta) {
+        return (p, t) -> {
+            Tensor target = targetRows(p, t);
+            int rows = Math.toIntExact(p.shape().size() / p.shape().dim(-1));
+            Var logp = p.logSoftmax(-1);
+            Var ce = logp.mul(target).sum().mul(-1f / rows);
+            Tensor logTarget = target.maximum(1e-4f).log();
+            Var rce = logp.exp().mul(logTarget).sum().mul(-1f / rows);
+            return ce.mul(alpha).add(rce.mul(beta));
+        };
+    }
+
+    // class ids become one-hot rows in the logits' type; full rows are checked
+    private static Tensor targetRows(Var logits, Tensor target) {
+        if (classIds(logits.shape(), target.shape())) {
+            return oneHot(target, logits.shape()).to(logits.dtype());
+        }
+        checked(logits, target);
+        return target;
+    }
+
+    /**
      * The loss of each example rather than their mean, for weighting, mixup, per-sample
      * gradients or picking hard examples: a vector {@code [batch]} whose mean is
      * {@code loss.compute(prediction, target)}. {@link #MSE}, {@link #CROSS_ENTROPY} and

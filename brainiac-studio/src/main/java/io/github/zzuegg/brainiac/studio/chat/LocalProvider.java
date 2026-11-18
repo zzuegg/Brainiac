@@ -39,9 +39,11 @@ final class LocalProvider implements ChatProvider {
     private final Path placesFile;
     private final List<Path> added = new ArrayList<>();
     private final LocalDevice device;
-    private Loaded loaded;
+    private volatile Loaded loaded;
+    private final GpuSlot slot;
     private volatile LocalImages images;
     private volatile LocalSpeech speech;
+    private final LocalTexts texts;
     private volatile LocalVideos videos;
 
     record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
@@ -56,6 +58,7 @@ final class LocalProvider implements ChatProvider {
         this.folders = List.copyOf(folders);
         this.placesFile = placesFile;
         this.device = new LocalDevice(placesFile == null ? null : placesFile.resolveSibling("local-device.txt"));
+        this.slot = new GpuSlot("chat", device.residency());
         if (placesFile != null && Files.isRegularFile(placesFile)) {
             try {
                 for (String line : Files.readAllLines(placesFile)) {
@@ -67,6 +70,11 @@ final class LocalProvider implements ChatProvider {
                 LOG.log(System.Logger.Level.WARNING, "cannot read " + placesFile, e);
             }
         }
+        texts = new LocalTexts(() -> {
+            List<Path> places = new ArrayList<>(this.folders);
+            places.addAll(added());
+            return places;
+        }, device);
     }
 
     /**
@@ -148,7 +156,8 @@ final class LocalProvider implements ChatProvider {
     @Override
     public boolean ready() {
         return !find().isEmpty() || (images != null && !images.models().isEmpty())
-                || (speech != null && !speech.models().isEmpty()) || (videos != null && !videos.models().isEmpty());
+                || (speech != null && !speech.models().isEmpty()) || (videos != null && !videos.models().isEmpty())
+                || !texts.models().isEmpty();
     }
 
     @Override
@@ -204,6 +213,11 @@ final class LocalProvider implements ChatProvider {
     }
 
     @Override
+    public Map<String, Object> videoOptions(String model) {
+        return videos == null ? null : videos.describe(model).orElse(null);
+    }
+
+    @Override
     public LocalVideos.Clip video(String model, String prompt, LocalVideos.Settings settings,
             LocalVideos.Listener listener) throws IOException {
         if (videos == null) {
@@ -250,6 +264,15 @@ final class LocalProvider implements ChatProvider {
      */
     LocalSpeech speech() {
         return speech;
+    }
+
+    /**
+     * Returns the text-to-text models' side: BART, Marian and T5.
+     *
+     * @return the text-to-text models
+     */
+    LocalTexts texts() {
+        return texts;
     }
 
     @Override
@@ -314,6 +337,7 @@ final class LocalProvider implements ChatProvider {
         if (videos != null) {
             out.addAll(videos.models());
         }
+        out.addAll(texts.models());
         return out;
     }
 
@@ -454,17 +478,25 @@ final class LocalProvider implements ChatProvider {
     }
 
     @Override
-    public synchronized ChatResult chat(ChatRequest request, ChatListener listener) throws IOException {
+    public ChatResult chat(ChatRequest request, ChatListener listener) throws IOException {
         Path path = find().get(request.model());
         if (path == null) {
             throw new IOException("no local model named " + request.model() + " in " + folders);
         }
-        Device device = this.device.device();
-        if (loaded == null || !loaded.path().equals(path) || !loaded.device().name().equals(device.name())) {
-            loaded = null;   // let the old weights go before loading new ones
-            loaded = load(path, device);
+        // answers are written one at a time; the scheduler may unload the model while none is
+        slot.lock();
+        try {
+            Device device = this.device.device();
+            Loaded l = loaded;
+            if (l == null || !l.path().equals(path) || !l.device().name().equals(device.name())) {
+                // the old weights go before the new ones load, and room is made as the policy says
+                loaded = slot.load(request.model(), path, device, () -> false, () -> load(path, device),
+                        () -> loaded = null);
+            }
+            return answer(request, listener);
+        } finally {
+            slot.unlock();
         }
-        return answer(request, listener);
     }
 
     /**

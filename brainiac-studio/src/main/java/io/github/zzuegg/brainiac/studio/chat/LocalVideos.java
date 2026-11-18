@@ -163,9 +163,10 @@ public final class LocalVideos {
     private final Map<Path, Found> seen = new ConcurrentHashMap<>();
     private final LocalDevice where;
     private final Runnable makeRoom;
-    private Wan loaded;
-    private Path loadedPath;
-    private String loadedOn;
+    private volatile Wan loaded;
+    private volatile Path loadedPath;
+    private volatile String loadedOn;
+    private final GpuSlot slot;
 
     /**
      * @param places where to look for models
@@ -176,6 +177,7 @@ public final class LocalVideos {
         this.places = places;
         this.where = where;
         this.makeRoom = makeRoom;
+        this.slot = new GpuSlot("video", where.residency());
     }
 
     /**
@@ -300,7 +302,17 @@ public final class LocalVideos {
      * @throws IOException if the model cannot be loaded
      * @throws java.util.concurrent.CancellationException if the listener stopped it
      */
-    synchronized Clip make(String id, String prompt, Settings s, Listener listener) throws IOException {
+    Clip make(String id, String prompt, Settings s, Listener listener) throws IOException {
+        // one clip at a time; the scheduler may unload the model while none is made
+        slot.lock();
+        try {
+            return makeHolding(id, prompt, s, listener);
+        } finally {
+            slot.unlock();
+        }
+    }
+
+    private Clip makeHolding(String id, String prompt, Settings s, Listener listener) throws IOException {
         Path path = find().get(id);
         if (path == null) {
             throw new IOException("no video model named " + id + " on this PC");
@@ -344,17 +356,30 @@ public final class LocalVideos {
         if (loaded != null && path.equals(loadedPath) && device.name().equals(loadedOn)) {
             return loaded;
         }
-        close();
         makeRoom.run();
-        DType dtype = device.kind() != Device.Kind.GPU ? DType.FLOAT32
-                : device.supports(DType.BFLOAT16) ? DType.BFLOAT16
-                : device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
-        loaded = Wan.load(path, device, dtype);
-        loadedPath = path;
-        loadedOn = device.name();
-        LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + loaded + ", " + dtype + ") on "
-                + device);
-        return loaded;
+        return slot.load(path.getFileName().toString(), path, device, () -> false, () -> {
+            DType dtype = device.kind() != Device.Kind.GPU ? DType.FLOAT32
+                    : device.supports(DType.BFLOAT16) ? DType.BFLOAT16
+                    : device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
+            Wan w = Wan.load(path, device, dtype);
+            loaded = w;
+            loadedPath = path;
+            loadedOn = device.name();
+            LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + w + ", " + dtype + ") on "
+                    + device);
+            return w;
+        }, this::let);
+    }
+
+    // lets the loaded model go; the slot is held
+    private void let() {
+        Wan w = loaded;
+        loaded = null;
+        loadedPath = null;
+        loadedOn = null;
+        if (w != null) {
+            w.close();
+        }
     }
 
     /**
@@ -387,11 +412,13 @@ public final class LocalVideos {
     }
 
     /** Lets the loaded model's memory go. */
-    synchronized void close() {
-        if (loaded != null) {
-            loaded.close();
-            loaded = null;
-            loadedPath = null;
+    void close() {
+        slot.lock();
+        try {
+            slot.forget();
+            let();
+        } finally {
+            slot.unlock();
         }
     }
 }

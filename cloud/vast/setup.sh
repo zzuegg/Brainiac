@@ -94,22 +94,34 @@ container does not have). Brainiac needs Vulkan: destroy this instance and pick 
 jdk() {
     local version=$1 dir="$OPT/jdk-$1"
     if [[ -x "$dir/bin/java" ]]; then echo "$dir"; return; fi
-    mkdir -p "$dir"
-    local url
+    local tgz=/tmp/jdk-$version.tar.gz attempt
+    # a download can arrive cut off or corrupt (seen on rented hosts): test the archive and
+    # download it again instead of failing later inside tar or with a broken JDK
+    for attempt in 1 2 3; do
+        rm -f "$tgz"
+        jdk_download "$version" "$tgz" && gzip -t "$tgz" 2>/dev/null && tar -tzf "$tgz" >/dev/null 2>&1 && break
+        echo "JDK $version download $attempt was incomplete or corrupt; trying again" >&2
+        [[ $attempt -lt 3 ]] || fail "no intact JDK $version download after 3 tries"
+        sleep 5
+    done
+    rm -rf "$dir" && mkdir -p "$dir"
+    tar -xzf "$tgz" -C "$dir" --strip-components=1
+    rm -f "$tgz"
+    [[ -x "$dir/bin/java" ]] || fail "JDK $version unpacked without bin/java"
+    echo "$dir"
+}
+
+# Downloads JDK $1 to the file $2: Adoptium's newest GA or EA build, else OpenJDK's newest
+# early-access build on jdk.java.net
+jdk_download() {
+    local version=$1 out=$2 url
     for kind in ga ea; do
         url="https://api.adoptium.net/v3/binary/latest/$version/$kind/linux/x64/jdk/hotspot/normal/eclipse"
-        if curl -fsSL --retry 3 "$url" -o /tmp/jdk-$version.tar.gz 2>/dev/null; then break; fi
-        url=""
+        if curl -fsSL --retry 3 "$url" -o "$out" 2>/dev/null; then return 0; fi
     done
-    if [[ -z "$url" ]]; then
-        # OpenJDK's early-access builds, newest build on jdk.java.net
-        url=$(curl -fsSL "https://jdk.java.net/$version/" | grep -oE "https://download.java.net/[^\"]+linux-x64_bin.tar.gz" | head -n1)
-        [[ -n "$url" ]] || fail "no JDK $version download found"
-        curl -fsSL --retry 3 "$url" -o /tmp/jdk-$version.tar.gz
-    fi
-    tar -xzf /tmp/jdk-$version.tar.gz -C "$dir" --strip-components=1
-    rm -f /tmp/jdk-$version.tar.gz
-    echo "$dir"
+    url=$(curl -fsSL "https://jdk.java.net/$version/" | grep -oE "https://download.java.net/[^\"]+linux-x64_bin.tar.gz" | head -n1)
+    [[ -n "$url" ]] || { echo "no JDK $version download found" >&2; return 1; }
+    curl -fsSL --retry 3 "$url" -o "$out"
 }
 
 jdks() {
@@ -122,6 +134,9 @@ jdks() {
     # more room on LWJGL's thread stack (64 KB by default) for drivers that report a lot,
     # passed on to every JVM Gradle starts (tests, run tasks)
     export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Dorg.lwjgl.system.stackSize=512"
+    # NVIDIA's threaded-optimization worker crashed every JVM that had loaded Vulkan at exit
+    # (SIGSEGV in libEGL_nvidia); the driver reads this when it loads, so it is set up front
+    export __GL_THREADED_OPTIMIZATIONS="${__GL_THREADED_OPTIMIZATIONS:-0}"
     export PATH="$JAVA_HOME/bin:$PATH"
     # so that any ./gradlew (for example in "run CMD") finds JDK 27 without extra flags
     mkdir -p ~/.gradle

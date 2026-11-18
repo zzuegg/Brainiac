@@ -6,6 +6,10 @@ import io.github.zzuegg.brainiac.studio.chat.ChatListener;
 import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
 import io.github.zzuegg.brainiac.studio.chat.ChatResult;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.chat.Format;
+import io.github.zzuegg.brainiac.studio.chat.Sampler;
+import io.github.zzuegg.brainiac.studio.project.Project;
+import io.github.zzuegg.brainiac.studio.project.Projects;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
@@ -41,6 +45,9 @@ public final class AgentRuns {
     /** The most model turns a run may take, unless asked for fewer. */
     public static final int MAX_STEPS = 30;
 
+    /** What a model is told when its final answer must have a form. */
+    static final String SHAPE_ASK = "Now give your final answer as one JSON object and nothing else. Call no tool.";
+
     private static final int TURN_TOKENS = 2048;
     private static final int RESULT_CHARS = 6000;
 
@@ -52,6 +59,7 @@ public final class AgentRuns {
     private final Path folder;
     private final Map<String, StudioTools.Entry> tools = new LinkedHashMap<>();
     private final Map<String, Run> runs = new ConcurrentHashMap<>();
+    private final Projects projects;
     private int counter;
 
     /** A user's answer to a tool waiting for approval. */
@@ -67,6 +75,10 @@ public final class AgentRuns {
         final int maxSteps;
         final List<String> allowed;
         final long created;
+        /** The project it works in. */
+        String project = Project.DEFAULT;
+        /** The form its final answer must have. */
+        Format format = Format.NONE;
         final List<Map<String, Object>> steps = new ArrayList<>();
         final List<ChatMessage> messages = new ArrayList<>();
         String state = "running";
@@ -113,9 +125,13 @@ public final class AgentRuns {
                 m.put("by", by);
             }
             m.put("mode", mode);
+            m.put("project", project);
             m.put("maxSteps", maxSteps);
             if (allowed != null) {
                 m.put("tools", allowed);
+            }
+            if (!format.none()) {
+                m.put("format", format.toJson());
             }
             m.put("state", state);
             m.put("created", created);
@@ -157,6 +173,19 @@ public final class AgentRuns {
      * @param folder where runs are kept
      */
     public AgentRuns(ChatService chat, StudioTools tools, Path folder) {
+        this(chat, tools, folder, null);
+    }
+
+    /**
+     * Opens the runs kept in a folder, each working in its project.
+     *
+     * @param chat the models agents think with
+     * @param tools the tools they may call
+     * @param folder where runs are kept
+     * @param projects the projects runs belong to, or null for none
+     */
+    public AgentRuns(ChatService chat, StudioTools tools, Path folder, Projects projects) {
+        this.projects = projects;
         this.chat = chat;
         this.folder = folder;
         for (StudioTools.Entry e : tools.entries()) {
@@ -210,8 +239,28 @@ public final class AgentRuns {
      * @param allowed the tools it may use, or null for all
      * @return the run
      */
+    public Map<String, Object> start(String goal, String model, String mode, int maxSteps, List<String> allowed) {
+        return start(goal, model, mode, maxSteps, allowed, Format.NONE);
+    }
+
+    /**
+     * Starts an agent whose final answer has a given form. It works in free text, as its tool
+     * calls need, and writes the answer in that form in a turn of its own at the end.
+     *
+     * @param goal what it should do
+     * @param model the chat model key, or {@code auto}
+     * @param mode {@code ask} to wait for approval before tools that act, {@code auto} to call them alone
+     * @param maxSteps the most model turns
+     * @param allowed the tools it may use, or null for all
+     * @param format free text, a JSON object, or JSON that fits a schema
+     * @return the run
+     */
     public synchronized Map<String, Object> start(String goal, String model, String mode, int maxSteps,
-            List<String> allowed) {
+            List<String> allowed, Format format) {
+        if (format.kind().equals("grammar")) {
+            throw new IllegalArgumentException("an agent answers in free text, JSON, or JSON that fits a schema");
+        }
+        format.constraint();   // a schema that cannot be used is refused before the agent works
         if (goal == null || goal.isBlank()) {
             throw new IllegalArgumentException("say what the agent should do");
         }
@@ -228,11 +277,26 @@ public final class AgentRuns {
                 }
             }
         }
+        Project in = current();
+        if (in != null) {
+            for (String t : allowed == null ? List.<String>of() : allowed) {
+                if (!in.allowsTool(t)) {
+                    throw new IllegalArgumentException("the project " + in.name() + " does not allow the tool " + t);
+                }
+            }
+            if (allowed == null && in.tools() != null) {
+                allowed = in.tools().stream().filter(tools::containsKey).toList();
+            }
+        }
         if (runs.values().stream().filter(Run::active).count() >= MAX_ACTIVE) {
             throw new IllegalArgumentException(MAX_ACTIVE + " agents are working already; stop one or wait");
         }
         Run r = new Run(String.valueOf(++counter), goal.strip(), model == null || model.isBlank() ? ChatService.AUTO
                 : model, mode, maxSteps, allowed == null ? null : List.copyOf(allowed), System.currentTimeMillis());
+        if (in != null) {
+            r.project = in.id();
+        }
+        r.format = format;
         r.messages.add(new ChatMessage("user", r.goal));
         r.step("goal", Map.of("text", r.goal));
         runs.put(r.id, r);
@@ -361,9 +425,24 @@ public final class AgentRuns {
 
     // ---------------------------------------------------------------- the loop
 
+    // the project a call belongs to, if any
+    private static Project current() {
+        return ChatService.SCOPE.isBound() && ChatService.SCOPE.get() instanceof Project p ? p : null;
+    }
+
+    // works in its project: its routes and limits hold for every model and tool it uses
     private void work(Run r) {
+        Project p = projects == null ? null : projects.get(r.project).orElse(null);
+        if (p == null) {
+            workIn(r, null);
+        } else {
+            ScopedValue.where(ChatService.SCOPE, p).run(() -> workIn(r, p));
+        }
+    }
+
+    private void workIn(Run r, Project p) {
         try {
-            String system = system(r);
+            String system = system(r, p);
             int turns = 0;
             while (true) {
                 if (r.stopping) {
@@ -419,6 +498,18 @@ public final class AgentRuns {
                     r.outputTokens += Math.max(0, result.outputTokens());
                     r.messages.add(new ChatMessage("assistant", turn.isEmpty() ? "(nothing)" : turn));
                 }
+                if (calls.isEmpty() && !r.format.none()) {
+                    if (!said.isEmpty()) {
+                        r.step("say", Map.of("text", said));
+                    }
+                    String shaped = shaped(r, system);
+                    r.step("answer", Map.of("text", shaped, "json", true));
+                    synchronized (r) {
+                        r.answer = shaped;
+                    }
+                    end(r, "done", null);
+                    return;
+                }
                 if (calls.isEmpty()) {
                     r.step("answer", Map.of("text", said));
                     synchronized (r) {
@@ -465,10 +556,39 @@ public final class AgentRuns {
         }
     }
 
+    /** Has the model write its answer again in the run's format, in a turn that calls no tool. */
+    private String shaped(Run r, String system) throws IOException, InterruptedException {
+        List<ChatMessage> history;
+        synchronized (r) {
+            r.messages.add(new ChatMessage("user", SHAPE_ASK));
+            history = List.copyOf(r.messages);
+        }
+        StringBuilder text = new StringBuilder();
+        ChatResult result = chat.chat(r.model, system, history, TURN_TOKENS, null, null, Sampler.NONE, r.format,
+                m -> { synchronized (r) { r.by = m.key(); } },
+                piece -> {
+                    if (r.stopping) {
+                        throw new IOException("stopped");
+                    }
+                    text.append(piece);
+                });
+        String shaped = text.toString().strip();
+        if (shaped.isEmpty()) {
+            throw new IOException("the model wrote no answer in the form asked for; its context may be full");
+        }
+        synchronized (r) {
+            r.inputTokens += Math.max(0, result.inputTokens());
+            r.outputTokens += Math.max(0, result.outputTokens());
+            r.messages.add(new ChatMessage("assistant", shaped));
+        }
+        return shaped;
+    }
+
     /** Runs one call, after asking the user if it acts; null if the agent was stopped meanwhile. */
     private String call(Run r, String name, Map<String, Object> args) throws InterruptedException {
         StudioTools.Entry e = tools.get(name);
-        if (e == null || (r.allowed != null && !r.allowed.contains(name))) {
+        Project in = current();
+        if (e == null || (r.allowed != null && !r.allowed.contains(name)) || (in != null && !in.allowsTool(name))) {
             return "error: there is no tool named " + name;
         }
         if (e.acts() != null && r.mode.equals("ask")) {
@@ -540,17 +660,28 @@ public final class AgentRuns {
         return t.strip();
     }
 
-    private String system(Run r) {
+    private String system(Run r, Project p) {
         StringBuilder s = new StringBuilder();
+        Project in = p;
         s.append("You are an agent inside Brainiac Studio, an app on the user's PC for chatting with, building, ")
                 .append("downloading and training AI models. Work towards the user's goal with the tools below. ")
                 .append("Call a tool when you need a fact or want to act, and never guess what a tool would return. ")
                 .append("If a call fails, read the error and try something else. When the goal is reached, or ")
-                .append("cannot be reached, answer in a few plain sentences without a tool call.\n\n")
+                .append("cannot be reached, answer in a few plain sentences without a tool call.\n\n");
+        if (in != null && !Project.DEFAULT.equals(in.id())) {
+            s.append("# Project\n\nYou work in the project \"").append(in.name()).append("\".");
+            if (!in.description().isBlank()) {
+                s.append(' ').append(in.description());
+            }
+            s.append(in.folder() == null ? " It has no folder of files."
+                    : " Its files are in a folder you can list and read with list_project_files and read_project_file;"
+                    + " you cannot read anything outside it.").append("\n\n");
+        }
+        s
                 .append("# Tools\n\nYou may call one or more functions to assist with the user query.\n\n")
                 .append("You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n");
         for (StudioTools.Entry e : tools.values()) {
-            if (r.allowed != null && !r.allowed.contains(e.tool().name())) {
+            if ((r.allowed != null && !r.allowed.contains(e.tool().name())) || (in != null && !in.allowsTool(e.tool().name()))) {
                 continue;
             }
             Map<String, Object> f = new LinkedHashMap<>();
@@ -635,6 +766,12 @@ public final class AgentRuns {
                 Json.string(m, "mode", "ask"), (int) Json.integer(m, "maxSteps", 12), allowed,
                 Json.integer(m, "created", 0));
         r.state = Json.string(m, "state", "stopped");
+        r.project = Json.string(m, "project", Project.DEFAULT);
+        try {
+            r.format = Format.of(m);
+        } catch (IllegalArgumentException e) {
+            r.format = Format.NONE;
+        }
         r.by = Json.string(m, "by", null);
         r.answer = Json.string(m, "answer", null);
         r.error = Json.string(m, "error", null);

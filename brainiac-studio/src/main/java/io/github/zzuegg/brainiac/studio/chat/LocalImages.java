@@ -107,9 +107,10 @@ public final class LocalImages {
     private final Supplier<HuggingFaceHub> hub;
     private final Map<Path, Found> seen = new ConcurrentHashMap<>();
     private final LocalDevice where;
-    private ImageGenerator loaded;
-    private Path loadedPath;
-    private String loadedOn;
+    private volatile ImageGenerator loaded;
+    private volatile Path loadedPath;
+    private volatile String loadedOn;
+    private final GpuSlot slot;
 
     LocalImages(Supplier<List<Path>> places, Supplier<HuggingFaceHub> hub) {
         this(places, hub, new LocalDevice(null));
@@ -119,6 +120,7 @@ public final class LocalImages {
         this.places = places;
         this.hub = hub;
         this.where = where;
+        this.slot = new GpuSlot("image", where.residency());
     }
 
     /**
@@ -236,7 +238,17 @@ public final class LocalImages {
      * @throws IOException if the model cannot be loaded
      * @throws java.util.concurrent.CancellationException if the listener stopped it
      */
-    synchronized List<Picture> draw(String id, String prompt, Settings s, Listener listener) throws IOException {
+    List<Picture> draw(String id, String prompt, Settings s, Listener listener) throws IOException {
+        // one drawing at a time; the scheduler may unload the model while none is drawn
+        slot.lock();
+        try {
+            return drawHolding(id, prompt, s, listener);
+        } finally {
+            slot.unlock();
+        }
+    }
+
+    private List<Picture> drawHolding(String id, String prompt, Settings s, Listener listener) throws IOException {
         Path path = find().get(id);
         if (path == null) {
             throw new IOException("no image model named " + id + " on this PC");
@@ -276,26 +288,36 @@ public final class LocalImages {
         if (loaded != null && path.equals(loadedPath) && device.name().equals(loadedOn)) {
             return loaded;
         }
-        if (loaded != null) {
-            loaded.close();   // let the old weights go before loading new ones
-            loaded = null;
-            loadedPath = null;
+        // the old weights go first (the slot lets them go), then room is made as the policy says
+        return slot.load(path.getFileName().toString(), path, device, () -> false, () -> {
+            // a single checkpoint has no CLIP vocabulary of its own; it is fetched once (about 1.6 MB)
+            if (Files.isRegularFile(path) && !Files.isDirectory(path.resolveSibling("tokenizer"))
+                    && !Files.isRegularFile(StableDiffusion.tokenizerCache().resolve("vocab.json"))) {
+                LOG.log(System.Logger.Level.INFO, "fetching the CLIP vocabulary that single-file checkpoints need");
+                StableDiffusion.downloadTokenizer(hub.get());
+            }
+            // the type suits the family and device; Flux's weights are quantized as far as memory needs,
+            // and a model that cannot fit is refused before anything is loaded, saying how much it needs
+            DType dtype = ImageGenerator.dtype(path, device);
+            ImageGenerator g = ImageGenerator.load(path, device, dtype);
+            loaded = g;
+            loadedPath = path;
+            loadedOn = device.name();
+            LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + label(g.family()) + ", " + dtype
+                    + ") on " + device);
+            return g;
+        }, this::let);
+    }
+
+    // lets the loaded model go; the slot is held
+    private void let() {
+        ImageGenerator g = loaded;
+        loaded = null;
+        loadedPath = null;
+        loadedOn = null;
+        if (g != null) {
+            g.close();
         }
-        // a single checkpoint has no CLIP vocabulary of its own; it is fetched once (about 1.6 MB)
-        if (Files.isRegularFile(path) && !Files.isDirectory(path.resolveSibling("tokenizer"))
-                && !Files.isRegularFile(StableDiffusion.tokenizerCache().resolve("vocab.json"))) {
-            LOG.log(System.Logger.Level.INFO, "fetching the CLIP vocabulary that single-file checkpoints need");
-            StableDiffusion.downloadTokenizer(hub.get());
-        }
-        // the type suits the family and device; Flux's weights are quantized as far as memory needs,
-        // and a model that cannot fit is refused before anything is loaded, saying how much it needs
-        DType dtype = ImageGenerator.dtype(path, device);
-        loaded = ImageGenerator.load(path, device, dtype);
-        loadedPath = path;
-        loadedOn = device.name();
-        LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + label(loaded.family()) + ", " + dtype
-                + ") on " + device);
-        return loaded;
     }
 
     /**
@@ -323,11 +345,13 @@ public final class LocalImages {
         return Optional.of(m);
     }
 
-    synchronized void close() {
-        if (loaded != null) {
-            loaded.close();
-            loaded = null;
-            loadedPath = null;
+    void close() {
+        slot.lock();
+        try {
+            slot.forget();
+            let();
+        } finally {
+            slot.unlock();
         }
     }
 }

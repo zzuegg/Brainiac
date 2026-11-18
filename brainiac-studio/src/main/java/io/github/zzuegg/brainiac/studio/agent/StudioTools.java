@@ -5,10 +5,13 @@ import io.github.zzuegg.brainiac.llm.Agent;
 import io.github.zzuegg.brainiac.llm.Tools;
 import io.github.zzuegg.brainiac.studio.chat.ChatMessage;
 import io.github.zzuegg.brainiac.studio.chat.ChatService;
+import io.github.zzuegg.brainiac.studio.project.Project;
 import io.github.zzuegg.brainiac.studio.train.TrainingRun;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -159,6 +162,152 @@ public final class StudioTools {
             throw new IllegalStateException("interrupted");
         }
         return answer.toString();
+    }
+
+    /**
+     * Summarizes or translates with a text-to-text model.
+     *
+     * @param text the input
+     * @param model the model key
+     * @param task the model's task
+     * @return {@code {model, text, task}}
+     */
+    @Tools.Tool(name = "rewrite_text", value = "Summarizes, translates or otherwise rewrites a text with a BART, Marian "
+            + "or T5 model on this PC. list_models shows them with the media 'rewrite'.")
+    @Acts("runs a text-to-text model on this PC")
+    public Map<String, Object> rewriteText(@Tools.Param("the text") String text,
+            @Tools.Param("a model from list_models with the media 'rewrite', or 'auto'") Optional<String> model,
+            @Tools.Param("one of the model's tasks, such as 'summarization' or 'translation_en_to_de'") Optional<String> task) {
+        ChatService.Rewritten r = call(() -> chat.rewrite(model.orElse(ChatService.AUTO), text, task.orElse(""), 0));
+        return Map.of("model", r.model(), "text", r.text(), "task", r.task());
+    }
+
+    // ---------------------------------------------------------------- making media
+
+    /**
+     * Draws pictures with the project's image route.
+     *
+     * @param prompt what they show
+     * @param aspect the shape
+     * @param count how many
+     * @return the model used and where the pictures were saved
+     */
+    @Tools.Tool(name = "draw_image", value = "Draws pictures and saves them. 'auto' uses the project's image route: "
+            + "its model and runner, on this PC or a remote machine.")
+    @Acts("draws pictures, which uses the GPU or a paid provider")
+    public Map<String, Object> drawImage(@Tools.Param("what the picture shows") String prompt,
+            @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
+            @Tools.Param("1:1, 4:3, 3:4, 16:9 or 9:16") Optional<String> aspect,
+            @Tools.Param("how many, 1 to 4") Optional<Integer> count) {
+        try {
+            return made(chat.images(model.orElse(ChatService.AUTO), prompt, aspect.orElse("1:1"),
+                    Math.clamp(count.orElse(1), 1, 4), null));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted");
+        }
+    }
+
+    /**
+     * Speaks text with the project's speech route.
+     *
+     * @param text the words
+     * @param voice the voice
+     * @return the model used and where the audio was saved
+     */
+    @Tools.Tool(name = "make_speech", value = "Speaks text and saves the audio. 'auto' uses the project's speech route: "
+            + "its model and runner, on this PC or a remote machine.")
+    @Acts("makes audio, which uses the GPU or a paid provider")
+    public Map<String, Object> makeSpeech(@Tools.Param("the words to say") String text,
+            @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
+            @Tools.Param("the voice's name, if the model has voices") Optional<String> voice) {
+        try {
+            return made(chat.speech(model.orElse(ChatService.AUTO), text, voice.orElse(""), 1, "", "wav", null));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted");
+        }
+    }
+
+    private static Map<String, Object> made(ChatService.Generated g) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("model", g.model().key());
+        m.put("files", g.files().stream().map(Path::toString).toList());
+        return m;
+    }
+
+    // ---------------------------------------------------------------- the project's files
+
+    /**
+     * Lists files in the project's folder.
+     *
+     * @param path a folder inside it
+     * @return the entries
+     */
+    @Tools.Tool(name = "list_project_files", value = "Lists the files and folders in the project's folder, or in a "
+            + "folder inside it. Agents can only read inside their project's folder.")
+    public Map<String, Object> listProjectFiles(@Tools.Param("a folder inside the project's folder; empty for the top")
+            Optional<String> path) {
+        Path dir = project().inFolder(path.orElse(""));
+        if (!Files.isDirectory(dir)) {
+            throw new IllegalArgumentException(path.orElse("") + " is not a folder");
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        try (java.util.stream.Stream<Path> s = Files.list(dir)) {
+            for (Path p : s.sorted().limit(500).toList()) {
+                Map<String, Object> e = new LinkedHashMap<>();
+                e.put("name", p.getFileName().toString());
+                e.put("folder", Files.isDirectory(p));
+                if (Files.isRegularFile(p)) {
+                    e.put("bytes", Files.size(p));
+                }
+                out.add(e);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+        return Map.of("folder", dir.toString(), "entries", out);
+    }
+
+    /**
+     * Reads a text file in the project's folder.
+     *
+     * @param path the file inside it
+     * @return the text, cut at {@value #READ_CHARS} characters
+     */
+    @Tools.Tool(name = "read_project_file", value = "Reads a text file in the project's folder (the first "
+            + READ_CHARS + " characters).")
+    public String readProjectFile(@Tools.Param("the file, inside the project's folder") String path) {
+        Path f = project().inFolder(path);
+        if (!Files.isRegularFile(f)) {
+            throw new IllegalArgumentException("there is no file " + path + " in the project's folder");
+        }
+        try (java.io.Reader r = Files.newBufferedReader(f, java.nio.charset.StandardCharsets.UTF_8)) {
+            char[] buf = new char[READ_CHARS];
+            int n = 0;
+            for (int k; n < buf.length && (k = r.read(buf, n, buf.length - n)) > 0; ) {
+                n += k;
+            }
+            return new String(buf, 0, n);
+        } catch (java.nio.charset.MalformedInputException e) {
+            throw new IllegalArgumentException(path + " is not a text file");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+    }
+
+    private static final int READ_CHARS = 20_000;
+
+    // the project the call belongs to
+    private static Project project() {
+        if (ChatService.SCOPE.isBound() && ChatService.SCOPE.get() instanceof Project p) {
+            return p;
+        }
+        throw new IllegalArgumentException("this call belongs to no project");
     }
 
     // ---------------------------------------------------------------- Hugging Face

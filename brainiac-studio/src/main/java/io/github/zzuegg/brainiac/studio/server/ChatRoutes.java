@@ -35,6 +35,10 @@ import java.util.Map;
  *   <li>{@code GET /api/serve} says whether one of this PC's chat models is served to other
  *       programs with the OpenAI API; {@code POST /api/serve} with {@code {"model": "local/qwen",
  *       "port": 8080, "network": false}} starts that, and with {@code {"stop": true}} stops it.
+ *   <li>{@code GET /api/merge} gives the ways chat models can be merged and the merge under way;
+ *       {@code POST /api/merge} with {@code {"way": "ties", "base": "local/qwen", "models":
+ *       ["local/qwen-math", "local/qwen-code"], "weights": [1, 1], "density": 0.5, "name":
+ *       "qwen-both"}} starts one: a new model folder next to the first model.
  *   <li>{@code GET /api/quantize} gives the sizes a smaller copy of a chat model can have and the
  *       copy being made; {@code POST /api/quantize} with {@code {"model": "local/qwen", "size":
  *       "Q4_K_M"}} starts one: a quantized GGUF file next to the original.
@@ -160,6 +164,22 @@ final class ChatRoutes {
                 throw new Exchanges.BadRequest(e.getMessage());
             }
         });
+        server.get("/api/merge", ex -> Exchanges.json(ex, 200, chat.merger().state()));
+        server.post("/api/merge", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            java.util.function.UnaryOperator<String> id = m -> m.startsWith("local/") ? m.substring(6) : m;
+            try {
+                Exchanges.json(ex, 200, chat.merger().start(Json.string(body, "way", "linear"),
+                        id.apply(Json.string(body, "base", "")),
+                        Json.array(body.getOrDefault("models", List.of())).stream().map(m -> id.apply(String.valueOf(m))).toList(),
+                        Json.array(body.getOrDefault("weights", List.of())).stream()
+                                .map(x -> x instanceof Number n ? n.doubleValue() : Double.NaN).toList(),
+                        Json.number(body, "balance", 0.5), Json.number(body, "density", 0.5), Json.string(body, "name", "").strip()));
+            } catch (IOException | IllegalArgumentException e) {
+                // no such model, a GGUF file, a taken name or another merge: the caller's to fix
+                throw new Exchanges.BadRequest(e.getMessage());
+            }
+        });
         server.get("/api/quantize", ex -> Exchanges.json(ex, 200, chat.quantizer().state()));
         server.post("/api/quantize", ex -> {
             Map<String, Object> body = Exchanges.body(ex, 4096);
@@ -251,6 +271,18 @@ final class ChatRoutes {
         server.post("/api/images/options", ex -> Exchanges.json(ex, 200,
                 chat.drawOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
         server.post("/api/transcribe", this::transcribe);
+        server.post("/api/rewrite", this::rewrite);
+        server.post("/api/rewrite/options", ex -> {
+            try {
+                List<Map<String, Object>> tasks = new java.util.ArrayList<>();
+                for (var t : chat.rewriteTasks(Json.string(Exchanges.body(ex, 8192), "model", ""))) {
+                    tasks.add(Map.of("name", t.name(), "prefix", t.prefix(), "maxTokens", t.maxTokens()));
+                }
+                Exchanges.json(ex, 200, Map.of("tasks", tasks));
+            } catch (IOException e) {
+                Exchanges.error(ex, 404, String.valueOf(e.getMessage()));
+            }
+        });
         server.post("/api/speech/voice", this::voice);
         server.post("/api/transcribe/options", ex -> Exchanges.json(ex, 200,
                 chat.transcribeOptions(Json.string(Exchanges.body(ex, 8192), "model", ""))));
@@ -465,7 +497,7 @@ final class ChatRoutes {
                     return;
                 }
                 LOG.log(System.Logger.Level.INFO, "drawing failed: " + e.getMessage());
-                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+                events.send("error", failure(e));
             }
         } catch (IOException closed) {
             // the page stopped reading
@@ -632,11 +664,31 @@ final class ChatRoutes {
                     return;
                 }
                 LOG.log(System.Logger.Level.INFO, "transcribing failed: " + e.getMessage());
-                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+                events.send("error", failure(e));
             }
         } catch (IOException closed) {
             // the page stopped reading
         }
+    }
+
+    // one text into another with a BART, Marian or T5 model on this PC
+    private void rewrite(HttpExchange ex) throws IOException {
+        Map<String, Object> body = Exchanges.body(ex, 1024 * 1024);
+        long start = System.nanoTime();
+        ChatService.Rewritten r;
+        try {
+            r = chat.rewrite(Json.string(body, "model", ChatService.AUTO), Json.string(body, "text", ""),
+                    Json.string(body, "task", ""), (int) Json.integer(body, "maxTokens", 0));
+        } catch (IOException e) {
+            Exchanges.error(ex, 404, String.valueOf(e.getMessage()));
+            return;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("model", r.model());
+        out.put("text", r.text());
+        out.put("task", r.task());
+        out.put("seconds", (System.nanoTime() - start) / 1e9);
+        Exchanges.json(ex, 200, out);
     }
 
     private void speech(HttpExchange ex) throws IOException {
@@ -834,7 +886,7 @@ final class ChatRoutes {
                     return;   // the page went away; nothing to tell
                 }
                 LOG.log(System.Logger.Level.INFO, "chat failed: " + e.getMessage());
-                events.send("error", Map.of("message", String.valueOf(e.getMessage())));
+                events.send("error", failure(e));
             }
         } catch (IOException closed) {
             // the page stopped reading
@@ -880,5 +932,15 @@ final class ChatRoutes {
                 throw e;
             }
         }
+    }
+
+    // what went wrong, with the choices when a model did not fit in GPU memory
+    private static Map<String, Object> failure(Exception e) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("message", String.valueOf(e.getMessage()));
+        if (e instanceof io.github.zzuegg.brainiac.studio.chat.GpuResidency.NoRoom nr) {
+            m.put("noRoom", nr.toJson());
+        }
+        return m;
     }
 }

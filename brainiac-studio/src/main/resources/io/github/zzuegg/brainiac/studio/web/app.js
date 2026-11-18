@@ -1368,8 +1368,8 @@
       loadVast();
       await pollRuns(true);
       checkTrain();
-      if (state.view === "train") render();
-    } catch (e) { T.error = String(e.message || e); console.warn("cannot load training", e); if (state.view === "train") render(); }
+      if (state.view === "train" || state.view === "settings") render();
+    } catch (e) { T.error = String(e.message || e); console.warn("cannot load training", e); if (state.view === "train" || state.view === "settings") render(); }
     finally { T.loading = false; }
   }
 
@@ -1405,8 +1405,7 @@
       <div class="muted">${T.error ? esc(T.error) : "Looking for models, data and every optimizer the installed modules offer…"}</div></div></div>`;
     return `
     <div class="train live-train">
-      <section class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</section>
-      <section id="train-vast" aria-label="GPUs to rent">${vastPanel()}</section>
+      <div class="sect-head train-note"><span class="h3">Runs on ${T.hosts.length ? `this PC and ${T.hosts.length} host${T.hosts.length === 1 ? "" : "s"}` : "this PC"}</span><span class="muted">Add worker hosts and rent GPUs in <a href="#settings" data-go-settings data-go-section="set-hosts">Settings, Machines</a>.</span></div>
       <div class="train-body">
         <aside class="launch panel" id="train-form" aria-label="Start a training run">${trainForm()}</aside>
         <section class="runs-col">
@@ -1428,6 +1427,7 @@
       ${devs.map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${run && run.device === d.name && run.samplesPerSecond ? fmtCount(run.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
       <div class="host-foot"><span class="muted">${run ? `${esc(run.name)} · epoch ${run.epoch + (run.state === "running" ? 1 : 0)} of ${run.epochs}` : "Ready for a run."}</span></div>
     </div>`;
+    const lent = h => (h.lend || []).includes("huggingface");
     const remote = T.hosts.map(h => {
       const st = !h.online ? ["c-bad", "offline", "bad"] : h.active ? ["c-text", "training", "accent"] : ["c-ok", "idle", "ok"];
       const tr = h.training;
@@ -1436,7 +1436,9 @@
           <span class="mono faint" title="Token ${esc(h.token)}">${esc(h.url.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</span>
           <button class="iconbtn sm" data-host-remove="${esc(h.id)}" aria-label="Forget ${esc(h.name)}" title="${T.removing === h.id ? "Click again to forget it" : "Forget this host"}">${T.removing === h.id ? icon("check") : icon("trash")}</button></div>
         ${(h.devices || []).map(d => `<div class="dev-row"><span>${esc(d.name)}</span><span class="mono faint">${d.kind === "gpu" ? "GPU" : d.name.toLowerCase() === "cpu" ? "" : "CPU"}</span><span class="mono tnum">${tr && tr.samplesPerSecond && d.kind === "gpu" ? fmtCount(tr.samplesPerSecond) + "/s" : ""}</span></div>`).join("")}
-        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span></div>
+        <div class="host-foot"><span class="muted">${!h.online ? esc(h.error || "does not answer") : tr ? `${esc(tr.name)} · epoch ${tr.epoch + 1} of ${tr.epochs}` : h.queued ? `${h.queued} queued` : "Ready for a run."}</span><span class="grow"></span>
+          ${h.lendable ? `<button class="btn sm ${lent(h) ? "serving" : ""}" data-host-lend="${esc(h.id)}" aria-pressed="${lent(h)}" ${T.lending === h.id ? "disabled" : ""} title="${lent(h) ? "This host holds your Hugging Face token in its memory, for gated models. It was sent sealed, is not written to its disk or log, and is gone when its worker stops. Click to take it back." : "Lend this host your Hugging Face token, so it can download gated models. It is sent sealed, held in the worker's memory only, and never written to its disk or log. Whoever controls the machine could still read its memory, so lend it only to machines you trust."}">${icon("lock")}${lent(h) ? "Holds your HF token" : "Lend HF token"}</button>` : ""}</div>
+        ${T.lendError && T.lendError.id === h.id ? `<div class="flag bad">${icon("alert")}<span>${esc(T.lendError.text)}</span></div>` : ""}
       </div>`;
     }).join("");
     const add = T.addingHost ? `<form class="host add-form" id="host-form" autocomplete="off">
@@ -1800,27 +1802,27 @@
     try { V.status = await api("/api/vast"); V.error = null; } catch (e) { V.error = String(e.message || e); }
     finally { V.loading = false; }
     await loadRentals(false);
-    if (state.view === "train" && T.loaded) renderHosts();
-    else if (state.view === "library") render();
+    if ((state.view === "train" || state.view === "settings") && T.loaded) renderHosts();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
 
   // the machines rented from the studio; watched while any is being set up or runs
   async function loadRentals(draw = true) {
     try { takeRentals(await api("/api/vast/rentals")); } catch (e) { console.warn(e); }
-    if (draw && state.view === "train" && T.loaded && !document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours")) renderHosts();
+    if (draw && (state.view === "train" || state.view === "settings") && T.loaded && !document.activeElement?.matches?.("#host-form input, #vast-key, #vast-hours")) renderHosts();
     watchRentals();
   }
   function takeRentals(r) {
     const was = V.rentals.filter(x => x.stage === "ready").length;
     V.rentals = r.rentals || []; V.rentUnavailable = r.unavailable || null; V.maxHours = r.maxHours || 48;
     // a machine that just became ready is a new host
-    if (V.rentals.filter(x => x.stage === "ready").length !== was) api("/api/hosts").then(h => { T.hosts = h.hosts || []; T.hostsAt = Date.now(); if (state.view === "train" && T.loaded) renderHosts(); }).catch(() => {});
+    if (V.rentals.filter(x => x.stage === "ready").length !== was) api("/api/hosts").then(h => { T.hosts = h.hosts || []; T.hostsAt = Date.now(); if ((state.view === "train" || state.view === "settings") && T.loaded) renderHosts(); }).catch(() => {});
   }
   function watchRentals() {
     clearTimeout(V.poll);
     if (!V.rentals.some(rentalActive)) return;
     const settingUp = V.rentals.some(r => rentalActive(r) && r.stage !== "ready");
-    V.poll = setTimeout(() => { if (state.view === "train" || state.view === "library") loadRentals(); else watchRentals(); }, settingUp ? 4000 : 20000);
+    V.poll = setTimeout(() => { if (state.view === "train" || state.view === "library" || state.view === "settings") loadRentals(); else watchRentals(); }, settingUp ? 4000 : 20000);
   }
   const hoursLeft = r => Math.max(0, (r.until - Date.now()) / 3600000);
   const fmtHours = h => h >= 1 ? `${h.toFixed(h >= 10 ? 0 : 1)} h` : `${Math.max(1, Math.round(h * 60))} min`;
@@ -1871,7 +1873,7 @@
   // Vast.ai on the Models screen, under Compute: the account at a glance; renting and offers are on Training.
   function vastCompute() {
     const s = V.status;
-    const open = `<button class="btn sm" data-vast-train>${icon("search")}${s?.key ? "Find GPUs on Training" : "Add the key on Training"}</button>`;
+    const open = `<button class="btn sm" data-vast-train>${icon("search")}${s?.key ? "Find GPUs" : "Add the key"}</button>`;
     if (!s) return `<div class="prov off"><div style="display:flex;gap:10px;align-items:center"><span class="plogo">V</span><b>Vast.ai</b><span class="grow"></span>${V.error ? `<span class="chip plain">unreachable</span>` : `<span class="typing"><i></i><i></i><i></i></span>`}</div></div>`;
     const ins = s.instances || [];
     return `<div class="prov ${s.key && !s.error ? "on" : "off"}">
@@ -2024,6 +2026,14 @@
       } catch (err) { T.hostError = String(err.message || err).replace(/^\/api\/hosts: /, ""); }
       finally { T.hostBusy = false; renderHosts(T.addingHost ? "#host-token" : null); }
     });
+    $$("[data-host-lend]").forEach(b => b.addEventListener("click", async () => {
+      const id = b.dataset.hostLend, h = T.hosts.find(x => x.id === id);
+      if (!h || T.lending) return;
+      T.lending = id; T.lendError = null; renderHosts();
+      try { T.hosts = (await postJson("/api/hosts/secret", { host: id, name: "huggingface", lend: !(h.lend || []).includes("huggingface") })).hosts || T.hosts; T.hostsAt = Date.now(); }
+      catch (err) { T.lendError = { id, text: String(err.message || err).replace(/^\/api\/hosts\/secret: /, "") }; }
+      T.lending = null; renderHosts();
+    }));
     $$("[data-host-remove]").forEach(b => b.addEventListener("click", async () => {
       const id = b.dataset.hostRemove;
       if (T.removing !== id) { T.removing = id; renderHosts(); setTimeout(() => { if (T.removing === id) { T.removing = null; renderHosts(); } }, 4000); return; }
@@ -2091,12 +2101,13 @@
     return `
     <div class="library"><div class="lib-inner">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="h2">Models</span>${isLive() && P.note ? `<span class="chip c-ok" role="status">${esc(P.note)}</span>` : ""}<span class="grow"></span>
-        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn ${isLive() && EV.state?.running ? "serving" : ""}" id="eval-open" aria-expanded="${!!(isLive() && EV.open)}" title="Score a chat model on this PC with a file of questions, and time how fast it reads and writes">${icon("flask")}${isLive() && EV.state?.running ? "Measuring…" : "Evaluate"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
+        <button class="btn" id="hub-open" aria-expanded="${!!(isLive() && H.open)}">${icon("download")}Hugging Face</button><button class="btn" id="add-place" aria-expanded="${!!(isLive() && P.open)}">${icon("plus")}Add folder or GGUF</button><button class="btn ${isLive() && SV.state?.running ? "serving" : ""}" id="serve-open" aria-expanded="${!!(isLive() && SV.open)}" title="Let other programs use a model on this PC through the OpenAI API">${icon("plug")}${isLive() && SV.state?.running ? "Serving " + esc(SV.state.model) : "Serve"}</button><button class="btn ${isLive() && quantBusy() ? "serving" : ""}" id="quant-open" aria-expanded="${!!(isLive() && QZ.open)}" title="Make a smaller copy of a chat model on this PC: a quantized GGUF file">${icon("copy")}${isLive() && quantBusy() ? "Making a smaller copy…" : "Make smaller"}</button><button class="btn ${isLive() && tuneBusy() ? "serving" : ""}" id="tune-open" aria-expanded="${!!(isLive() && FT.open)}" title="Teach a chat model on this PC from your own examples, with LoRA">${icon("train")}${isLive() && tuneBusy() ? "Teaching " + esc(FT.state.job.model) : "Fine-tune"}</button><button class="btn ${isLive() && mergeBusy() ? "serving" : ""}" id="merge-open" aria-expanded="${!!(isLive() && MG.open)}" title="Merge chat models on this PC that share an architecture, such as two fine-tunes of one base model, into a new model">${icon("branch")}${isLive() && mergeBusy() ? "Merging…" : "Merge"}</button><button class="btn ${isLive() && EV.state?.running ? "serving" : ""}" id="eval-open" aria-expanded="${!!(isLive() && EV.open)}" title="Score a chat model on this PC with a file of questions, and time how fast it reads and writes">${icon("flask")}${isLive() && EV.state?.running ? "Measuring…" : "Evaluate"}</button><button class="btn primary" id="new-model">${icon("build")}New model</button></div>
       ${isLive() && H.open ? hubPanel() : isLive() && allDownloads().length ? `<div id="hub-box">${hubDownloads()}</div>` : ""}
       ${isLive() && P.open ? placePanel() : ""}
       ${isLive() && SV.open ? servePanel() : ""}
       ${isLive() && QZ.open ? quantPanel() : ""}
       ${isLive() && FT.open ? tunePanel() : ""}
+      ${isLive() && MG.open ? mergePanel() : ""}
       ${isLive() && EV.open ? evalPanel() : ""}
       ${isLive() ? liveModelsTable() : `<div class="tablebox"><table class="models">
         <thead><tr><th>Model</th><th>Can</th><th>Format</th><th>Size</th><th>Context</th><th>Fits on</th><th>State</th></tr></thead>
@@ -2107,7 +2118,7 @@
           <td>${m.state === "loaded" ? `<span class="chip c-ok">loaded · ${m.tps}</span>` : m.state === "remote" ? `<span class="chip c-agent">remote · your key</span>` : m.state === "planned" ? `<span class="chip c-warn">planned</span>` : m.state === "draft" ? `<span class="chip c-text">draft model</span>` : `<button class="btn" style="height:26px;font-size:12px">Load</button>`}</td>
         </tr>`).join("")}</tbody></table></div>`}
       ${isLive() ? "" : `<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap"><span class="h2">Providers</span><span class="muted">Remote models sit next to local ones in routing; their model lists come from each provider.</span></div>`}
-      ${isLive() ? liveProviders() : `<div class="providers">${M.providers.map(p => `
+      ${isLive() ? `<div class="sect-head"><span class="h2">Providers and machines</span><span class="muted">API keys, worker hosts and rented GPUs are set up in <a href="#settings" data-go-settings>Settings</a> (Ctrl ,).</span></div>` : `<div class="providers">${M.providers.map(p => `
         <div class="prov ${p.state}">
           <div style="display:flex;gap:10px;align-items:center"><span class="plogo">${esc(p.name[0])}</span><b>${esc(p.name)}</b><span class="grow"></span>
             ${p.key === "local" ? `<span class="chip c-ok">always on</span>` : `<label class="switch"><input type="checkbox" ${p.state === "on" ? "checked" : ""} aria-label="Use ${esc(p.name)}"><i></i></label>`}</div>
@@ -2212,16 +2223,495 @@
     </div>`;
   }
 
+  // ---------- SETTINGS, PROJECTS AND GPU SCHEDULING ----------
+  // One page for everything that is set once: the project and its routes, how this PC's GPU is
+  // shared, the machines and providers that run models. The palette (Ctrl K) reaches most of it too.
+  const PJ = { data: null, view: null, editing: null, draft: null, dirty: false, error: null, note: null, oneShot: null };
+  const GP = { data: null, error: null, timer: 0 };
+  const KIND_NAMES = { chat: "Chat", image: "Images", speech: "Speech", transcribe: "Transcription", video: "Video" };
+  const MEDIUM_NAMES = { text: "Chat", image: "Images", speech: "Speech", transcribe: "Transcription", video: "Video" };
+  const POLICIES = [
+    ["swap", "Swap", "Unload idle models of other kinds to make room"],
+    ["queue", "Queue", "Wait until there is room"],
+    ["remote", "Remote", "Send it to the route's remote runner"],
+    ["ask", "Ask", "Ask me each time"],
+    ["spill", "Spill", "Load anyway; what does not fit goes to slower system memory"],
+  ];
+  const gb = b => b == null ? "?" : (b / 1073741824).toFixed(b >= 10 * 1073741824 ? 0 : 1) + " GB";
+  const activeProject = () => PJ.data?.projects.find(p => p.id === PJ.data.active) || null;
+
+  async function loadProjects() {
+    try { PJ.data = await api("/api/projects"); PJ.error = null; } catch (e) { PJ.error = String(e.message || e); }
+    renderProjectChip();
+    if (state.view === "settings") render();
+  }
+  async function loadGpu() {
+    clearTimeout(GP.timer);
+    try { GP.data = await api("/api/gpu"); GP.error = null; } catch (e) { GP.error = String(e.message || e); }
+    if (state.view === "settings") { const box = $("#set-gpu"); if (box && !box.contains(document.activeElement)) renderSection(); else renderNavStatus(); }
+    // something loading or waiting: look again soon
+    if (state.view === "settings") GP.timer = setTimeout(loadGpu, GP.data?.waiting?.length || GP.data?.slots?.some(s => s.busy) ? 2000 : 8000);
+  }
+  async function activateProject(id) {
+    try { PJ.data = await postJson("/api/projects/activate", { id }); } catch (e) { PJ.error = String(e.message || e); }
+    renderProjectChip();
+    loadAgents?.();
+    if (state.view === "settings" || state.view === "agents") render();
+  }
+
+  function renderProjectChip() {
+    let chip = $("#project-chip");
+    if (!tokenMeta) return;
+    if (!chip) {
+      $("#crumb")?.insertAdjacentHTML("beforebegin", `<button class="chip plain linkchip" id="project-chip" title="The project this window works in (Ctrl K, then type project)"></button>`);
+      chip = $("#project-chip");
+      chip.addEventListener("click", () => openCmdk("project "));
+    }
+    const p = activeProject();
+    chip.innerHTML = `${icon("folder")}<span>${esc(p ? p.name : "Default")}</span>`;
+  }
+
+  // ---- the settings page: one section at a time, picked on the left or found by typing
+  // Other parts of the page add their own section with addSettingsSection: an entry is
+  // {id, title, icon, blurb, keywords, status(), render(), bind()}, and render returns the
+  // section's HTML (setHead gives it the shared heading).
+  const S = { tab: store.get("setTab", "project"), q: "" };
+  const SET_ALIASES = { "set-project": "project", "set-gpu": "gpu", "set-hosts": "machines", "set-providers": "providers", "set-look": "look" };
+  const MEDIUM_CAP = { text: "text", image: "image", speech: "speech", transcribe: "vision", video: "video" };
+  const KIND_CAP = { chat: "text", image: "image", speech: "speech", transcribe: "vision", video: "video" };
+  const SETTINGS_SECTIONS = [
+    { id: "project", title: "Projects", icon: "folder", keywords: "project folder description routes route runner vast tools models agents access scope new delete active",
+      status: () => PJ.data ? `${activeProject()?.name || "Default"} is active · ${PJ.data.projects.length} in all` : "Scope, routes and runners",
+      render: projectSection, bind: bindProjects },
+    { id: "gpu", title: "GPU and scheduling", icon: "flask", keywords: "gpu vram memory unload pin pinned policy swap queue remote ask spill idle device loaded full",
+      status: () => { const g = GP.data; if (!g) return "What is loaded, and what waits"; const n = g.slots.filter(s => s.model).length; return `${g.device || "no device"} · ${n ? `${n} loaded` : "nothing loaded"}${g.waiting.length ? ` · ${g.waiting.length} waiting` : ""}`; },
+      render: gpuSection, bind: bindGpu },
+    { id: "machines", title: "Machines", icon: "plug", keywords: "host hosts worker vast rent rental gpu machine model folders gguf this pc offers",
+      status: () => T.loaded ? `This PC${T.hosts.length ? ` and ${T.hosts.length} host${T.hosts.length === 1 ? "" : "s"}` : ""}${(V.rentals || []).length ? ` · ${V.rentals.length} rented` : ""}` : "Workers and rented GPUs",
+      render: machinesSection, bind: bindMachines },
+    { id: "providers", title: "Model APIs and keys", icon: "lock", keywords: "api key keys provider providers routing usage balance tokens anthropic openai google gemini hugging face deepseek qwen kimi glm minimax mistral xai grok groq openrouter",
+      status: () => { if (!L.info) return "Keys for hosted models"; const n = L.info.providers.filter(p => p.kind === "api" && p.keys.length).length; return n ? `${n} provider${n === 1 ? "" : "s"} with a key` : "No key yet"; },
+      render: () => setHead("Model APIs and keys", "Hosted models you reach with an API key. Auto tries them after your own machines.") + liveProviders("apis"),
+      bind: () => { bindLiveLibrary(); bindSettingsJumps($("#set-providers")); } },
+    { id: "look", title: "Appearance", icon: "sun", keywords: "theme light dark system layout density compact comfortable size scale zoom ultrawide keyboard shortcuts data folder",
+      status: () => `${themeName()} · ${state.layout === "auto" ? "auto layout" : state.layout + " layout"}`, render: lookSection, bind: bindLook },
+  ];
+  function addSettingsSection(sec, after) {
+    const i = SETTINGS_SECTIONS.findIndex(s => s.id === sec.id);
+    if (i >= 0) SETTINGS_SECTIONS.splice(i, 1);
+    const at = SETTINGS_SECTIONS.findIndex(s => s.id === after);
+    SETTINGS_SECTIONS.splice(at < 0 ? SETTINGS_SECTIONS.length : at + 1, 0, sec);
+  }
+  const setHead = (title, text, actions = "") => `<header class="set-head"><div><h2 class="h2">${esc(title)}</h2>${text ? `<p class="muted">${text}</p>` : ""}</div>${actions ? `<div class="set-actions">${actions}</div>` : ""}</header>`;
+  const currentSection = () => SETTINGS_SECTIONS.find(s => s.id === S.tab) || SETTINGS_SECTIONS[0];
+  const sectionMatches = (s, q) => { const words = q.toLowerCase().split(/\s+/).filter(Boolean); const hay = `${s.title} ${s.blurb || ""} ${s.keywords || ""}`.toLowerCase(); return words.every(w => hay.includes(w)); };
+
+  function openSettings(id, then) {
+    id = SET_ALIASES[id] || id;
+    if (SETTINGS_SECTIONS.some(s => s.id === id)) { S.tab = id; store.set("setTab", id); }
+    if (state.view !== "settings") go("settings"); else render();
+    $(".set-inner")?.scrollTo?.({ top: 0 });
+    if (then) setTimeout(then, 30);
+  }
+
+  function settingsView() {
+    if (!isLive()) return `<div class="settings"><div class="set-inner"><span class="h2">Settings</span><p class="muted">Start the studio to change settings; this is example data.</p></div></div>`;
+    if (!PJ.data && !PJ.error) loadProjects();
+    if (!GP.data && !GP.error) loadGpu();
+    if (!T.loaded && !T.loading) loadTrain();
+    const cur = currentSection();
+    return `<div class="settings">
+      <nav class="set-nav" aria-label="Settings sections">
+        <label class="set-search">${icon("search")}<input id="set-q" type="search" placeholder="Find a setting" value="${esc(S.q)}" aria-label="Find a setting" autocomplete="off"></label>
+        <div class="set-tabs">${SETTINGS_SECTIONS.map(s => `<button class="set-tab" type="button" data-set-tab="${esc(s.id)}" ${s === cur ? `aria-current="page"` : ""} ${S.q && !sectionMatches(s, S.q) ? "hidden" : ""}>
+            <span class="set-ico">${icon(s.icon)}</span><span class="set-tab-t"><b>${esc(s.title)}</b><small>${esc(s.status?.() || s.blurb || "")}</small></span></button>`).join("")}
+          <p class="faint set-none" ${S.q && !SETTINGS_SECTIONS.some(s => sectionMatches(s, S.q)) ? "" : "hidden"}>Nothing matches. The palette (Ctrl K) knows more.</p></div>
+        <div class="set-keys"><div><span class="kbd">Ctrl K</span> any setting, from anywhere</div><div><span class="kbd">Ctrl ,</span> this page</div></div>
+      </nav>
+      <div class="set-inner"><section id="set-${esc(cur.id)}" class="set-sect">${cur.render()}</section></div></div>`;
+  }
+
+  // re-renders the open section alone, so the left side and what is typed elsewhere stay
+  function renderSection() {
+    const cur = currentSection(), box = $("#set-" + cur.id);
+    if (!box) return render();
+    box.innerHTML = cur.render(); cur.bind?.();
+    $$(".set-tab").forEach(b => { const s = SETTINGS_SECTIONS.find(x => x.id === b.dataset.setTab); const sm = b.querySelector("small"); if (s && sm) sm.textContent = s.status?.() || s.blurb || ""; });
+  }
+
+  // ---- projects: the list on the left of the section, the one picked on the right
+  function medDots(p) {
+    return Object.keys(MEDIUM_NAMES).filter(m => p.routes?.[m]).map(m => `<span class="dot" style="--c:var(--cap-${MEDIUM_CAP[m]})" title="${MEDIUM_NAMES[m]} has a route"></span>`).join("");
+  }
+  function projectSection() {
+    const newBtn = `<button class="btn" type="button" data-proj-new>${icon("plus")}New project</button>`;
+    const head = setHead("Projects", "A project scopes its agents: the tools and models they may use, the one folder they may read, and where each kind of task runs.", newBtn);
+    if (PJ.error && !PJ.data) return head + `<div class="flag bad">${icon("alert")}<span>${esc(PJ.error)}</span></div>`;
+    if (!PJ.data) return head + `<div class="set-card"><span class="muted">Reading the projects…</span></div>`;
+    const ps = PJ.data.projects;
+    if (PJ.editing !== "new" && !ps.some(p => p.id === PJ.view)) PJ.view = PJ.data.active;
+    if (PJ.editing !== "new" && (!PJ.draft || PJ.draft.id !== PJ.view)) { PJ.draft = JSON.parse(JSON.stringify(ps.find(p => p.id === PJ.view))); PJ.dirty = false; }
+    const card = p => `<button class="proj-card" type="button" data-proj-view="${esc(p.id)}" ${p.id === PJ.view && PJ.editing !== "new" ? `aria-current="true"` : ""}>
+        <span class="proj-card-top"><b>${esc(p.name)}</b>${p.id === PJ.data.active ? `<span class="chip c-ok">active</span>` : ""}</span>
+        <span class="mono faint proj-card-f">${p.folder ? esc(p.folder) : "no folder"}</span>
+        <span class="proj-card-m">${medDots(p)}<span class="faint">${Object.keys(p.routes || {}).length ? `${Object.keys(p.routes).length} route${Object.keys(p.routes).length === 1 ? "" : "s"}` : "no routes"}${Object.keys(p.runners || {}).length ? ` · ${Object.keys(p.runners).length} runner${Object.keys(p.runners).length === 1 ? "" : "s"}` : ""}</span></span></button>`;
+    return head + `<div class="proj-layout">
+      <div class="proj-list" role="list">${ps.map(card).join("")}${PJ.editing === "new" ? `<div class="proj-card" aria-current="true"><span class="proj-card-top"><b>${esc(PJ.draft.name || "New project")}</b><span class="chip c-text">new</span></span><span class="faint">not saved yet</span></div>` : ""}</div>
+      ${projectForm(PJ.draft)}</div>`;
+  }
+
+  function modelOptions(medium, chosen, remoteOnly, runners) {
+    const ms = (L.info?.models || []).filter(m => (m.media || []).includes(medium) && (!remoteOnly || m.provider !== "local"));
+    const rs = remoteOnly ? Object.keys(runners || {}).map(n => "vast:" + n) : [];
+    const known = ms.some(m => m.key === chosen) || rs.includes(chosen);
+    return `<option value="">${remoteOnly ? "None" : "Auto, as the studio picks"}</option>`
+      + rs.map(k => `<option value="${esc(k)}" ${k === chosen ? "selected" : ""}>${esc(k.slice(5))} · Vast.ai runner</option>`).join("")
+      + (chosen && !known ? `<option value="${esc(chosen)}" selected>${esc(chosen)}</option>` : "")
+      + ms.map(m => `<option value="${esc(m.key)}" ${m.key === chosen ? "selected" : ""}>${esc(m.name)} · ${esc(m.provider === "local" ? "this PC" : providerName(m.provider))}</option>`).join("");
+  }
+
+  function projectForm(p) {
+    const isNew = PJ.editing === "new", active = !isNew && p.id === PJ.data.active;
+    const tools = A.tools || [];
+    const routeRow = m => {
+      const r = (p.routes || {})[m] || {};
+      return `<div class="route-row" style="--c:var(--cap-${MEDIUM_CAP[m]})">
+        <span class="route-name"><span class="dot"></span><b>${MEDIUM_NAMES[m]}</b></span>
+        <label><span class="route-l">Model</span><select class="input" data-route="${m}" data-rf="model" aria-label="${MEDIUM_NAMES[m]} model">${modelOptions(m, r.model || "", false)}</select></label>
+        <label><span class="route-l">When the GPU is full</span><select class="input" data-route="${m}" data-rf="policy" aria-label="${MEDIUM_NAMES[m]}: when the GPU is full">
+          <option value="">Studio's choice (${esc((POLICIES.find(x => x[0] === (GP.data?.policies?.[m === "text" ? "chat" : m] || "swap")) || POLICIES[0])[1].toLowerCase())})</option>${POLICIES.map(([k, n, d]) => `<option value="${k}" ${r.policy === k ? "selected" : ""} title="${esc(d)}">${n}</option>`).join("")}</select></label>
+        <label><span class="route-l">Remote runner</span><select class="input" data-route="${m}" data-rf="fallback" aria-label="${MEDIUM_NAMES[m]} remote runner">${modelOptions(m, r.fallback || "", true, p.runners)}</select></label></div>`;
+    };
+    const runners = Object.entries(p.runners || {});
+    return `<form class="proj-main" id="proj-form" autocomplete="off">
+      <div class="proj-title">
+        <div><div class="h2">${esc(p.name || "New project")}</div>
+          <div class="muted" style="font-size:12.5px">${isNew ? "A new project. Save it to start working in it." : active ? "The project this window works in now." : "Not active: its routes and limits apply once you work in it."}</div></div>
+        <span class="grow"></span>
+        ${isNew ? "" : active ? `<span class="chip c-ok">active</span>` : `<button class="btn primary" type="button" data-proj-use="${esc(p.id)}">${icon("check")}Work in this project</button>`}
+        ${isNew || p.id === "default" ? "" : `<button class="btn ghost ${PJ.deleting ? "danger" : ""}" type="button" data-proj-delete>${icon("trash")}${PJ.deleting ? "Click again to delete" : "Delete"}</button>`}
+      </div>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">About</span><span class="muted">Agents read the description; they may read and list files in the folder, and nothing outside it.</span></div>
+        <div class="proj-grid">
+          <label class="field"><span>Name</span><input class="input" data-pf="name" value="${esc(p.name || "")}" maxlength="60" required></label>
+          <label class="field"><span>Folder agents may read</span><input class="input mono" data-pf="folder" value="${esc(p.folder || "")}" placeholder="none, such as D:/Films/A"></label>
+          <label class="field wide"><span>What it is about</span><textarea class="input" data-pf="description" rows="2" placeholder="A short film about…; agents get this with every task">${esc(p.description || "")}</textarea></label>
+        </div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">Routes</span><span class="muted">Auto in this project uses the model set here. When it runs on this PC and the GPU is full, the policy decides; Remote sends it to the runner.</span></div>
+        <div class="routes">${Object.keys(MEDIUM_NAMES).map(routeRow).join("")}</div>
+      </section>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">Vast.ai runners</span><span class="muted">A GPU machine rented when a route first sends it a task: the cheapest verified offer within your price, with the model fetched from Hugging Face. It stays rented for the hours set, so later tasks reuse it.</span>
+          <button class="btn sm" type="button" data-runner-add>${icon("plus")}Add runner</button></div>
+        ${runners.length ? `<div class="runners">${runners.map(([n, r]) => runnerCard(n, r)).join("")}</div>`
+          : `<div class="set-empty">${icon("plug")}<span>No runners. Add one, then pick it as a route's remote runner above.</span></div>`}
+      </section>
+
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">What agents may use</span><span class="muted">Tools marked <i>acts</i> change something outside the studio.</span></div>
+        <label class="switch-row"><input type="checkbox" class="switch" data-pf-alltools ${p.tools == null ? "checked" : ""}><span><b>Every tool</b><span class="muted"> · new tools are allowed as they appear</span></span></label>
+        ${p.tools == null ? "" : `<div class="toolpills">${tools.map(t => `<label class="pill" title="${esc(t.description || "")}"><input type="checkbox" data-pf-tool="${esc(t.name)}" ${p.tools.includes(t.name) ? "checked" : ""}><span class="mono">${esc(t.name)}</span>${t.acts ? `<span class="pill-acts">acts</span>` : ""}</label>`).join("") || `<span class="muted">Reading the tools…</span>`}</div>`}
+        <label class="field"><span>Models allowed: one per line, <code>provider/id</code>, or <code>local/</code> for every model of a provider. Empty allows all.</span>
+          <textarea class="input mono" data-pf="models" rows="2" placeholder="local/&#10;anthropic/claude-sonnet-5-5">${esc((p.models || []).join("\n"))}</textarea></label>
+      </section>
+
+      <div class="savebar" ${PJ.dirty || isNew || PJ.error ? "" : "hidden"} role="region" aria-label="Unsaved changes">
+        ${PJ.error ? `<span class="savebar-err">${icon("alert")}${esc(PJ.error)}</span>` : `<span class="savebar-t"><span class="dot" style="--c:var(--warn)"></span>${isNew ? "New project, not saved yet" : `Unsaved changes to ${esc(p.name)}`}</span>`}
+        <span class="grow"></span>
+        <button class="btn ghost" type="button" data-proj-cancel>${isNew ? "Discard" : "Undo changes"}</button>
+        <button class="btn primary" type="submit">${icon("check")}${isNew ? "Make project" : "Save"}</button>
+      </div>
+      ${PJ.note ? `<div class="toast" role="status">${esc(PJ.note)}</div>` : ""}
+    </form>`;
+  }
+
+  function runnerCard(n, r) {
+    const f = (k, label, ph, type = "text", cls = "") => `<label class="field ${cls}"><span>${label}</span><input class="input ${type === "number" ? "mono" : ""}" data-rn="${k}" ${type === "number" ? `type="number" min="0" step="any"` : ""} value="${esc(r[k] ?? "")}" placeholder="${esc(ph)}"></label>`;
+    return `<div class="runner" data-runner-row="${esc(n)}">
+      <div class="runner-h"><span class="runner-tag mono">vast:</span><input class="input runner-name" data-rn="name" value="${esc(n)}" aria-label="Runner name" placeholder="name">
+        <span class="grow"></span><button class="iconbtn sm" type="button" data-runner-remove="${esc(n)}" aria-label="Remove runner ${esc(n)}" title="Remove this runner">${icon("trash")}</button></div>
+      <div class="runner-grid">
+        ${f("gpu", "GPU", "any, or 4090")}${f("minGpuRam", "GB at least", "24", "number")}${f("maxPrice", "Max $/hour", "0.60", "number")}${f("hours", "Hours rented", "2", "number")}
+        ${f("repo", "Hugging Face repository", "Wan-AI/Wan2.1-T2V-1.3B-Diffusers", "text", "wide")}${f("option", "File or folder", "folder", "text", "half")}
+      </div></div>`;
+  }
+
+  function readProjectForm() {
+    const form = $("#proj-form"); if (!form) return PJ.draft;
+    const d = { ...PJ.draft };
+    $$("[data-pf]", form).forEach(el => { d[el.dataset.pf] = el.value; });
+    d.models = String(d.models || "").split(/\n|,/).map(s => s.trim()).filter(Boolean);
+    if (!d.models.length) d.models = null;
+    const all = $("[data-pf-alltools]", form);
+    d.tools = all?.checked ? null : $$("[data-pf-tool]", form).filter(c => c.checked).map(c => c.dataset.pfTool);
+    const routes = {};
+    $$("[data-route]", form).forEach(el => { (routes[el.dataset.route] ||= {})[el.dataset.rf] = el.value || null; });
+    for (const m in routes) if (!routes[m].model && !routes[m].policy && !routes[m].fallback) delete routes[m];
+    d.routes = routes;
+    const runners = {};
+    $$("[data-runner-row]", form).forEach(tr => {
+      const r = {}; tr.querySelectorAll("[data-rn]").forEach(i => { const v = i.value.trim(); if (v !== "") r[i.dataset.rn] = i.type === "number" ? +v : v; });
+      const name = r.name; delete r.name;
+      if (name) runners[name] = r;
+    });
+    d.runners = runners;
+    return d;
+  }
+
+  function startNewProject() {
+    PJ.editing = "new"; PJ.dirty = true; PJ.error = null;
+    PJ.draft = { name: "New project", description: "", folder: "", tools: null, models: null, routes: {}, runners: {} };
+    openSettings("project", () => { const n = $("[data-pf=name]"); n?.focus(); n?.select(); });
+  }
+  function discardProject() { PJ.editing = null; PJ.draft = null; PJ.dirty = false; PJ.error = null; PJ.deleting = false; }
+  function nudgeSavebar() {
+    const bar = $(".savebar"); if (!bar) return;
+    bar.hidden = false; bar.classList.remove("nudge"); void bar.offsetWidth; bar.classList.add("nudge");
+    toast("Save or undo the changes first.");
+  }
+
+  function bindProjects() {
+    const form = $("#proj-form");
+    $("[data-proj-new]")?.addEventListener("click", () => { if (PJ.dirty && PJ.editing !== "new") return nudgeSavebar(); startNewProject(); });
+    $$("[data-proj-view]").forEach(b => b.addEventListener("click", () => {
+      if (b.dataset.projView === PJ.view && PJ.editing !== "new") return;
+      if (PJ.dirty) return nudgeSavebar();
+      discardProject(); PJ.view = b.dataset.projView; renderSection();
+    }));
+    $$("[data-proj-use]").forEach(b => b.addEventListener("click", async () => {
+      if (PJ.dirty) return nudgeSavebar();
+      await activateProject(b.dataset.projUse); toast(`Working in ${activeProject()?.name || "it"} now.`);
+    }));
+    if (!form) return;
+    const changed = () => { PJ.draft = readProjectForm(); if (!PJ.dirty) { PJ.dirty = true; PJ.error = null; } const bar = $(".savebar", form); if (bar) bar.hidden = false; };
+    form.addEventListener("input", e => { if (!e.target.matches("[data-pf-alltools]")) changed(); });
+    form.addEventListener("change", e => { if (!e.target.matches("[data-pf-alltools]")) changed(); });
+    $("[data-pf-alltools]", form)?.addEventListener("change", e => {
+      PJ.draft = readProjectForm(); PJ.draft.tools = e.target.checked ? null : (A.tools || []).map(t => t.name); PJ.dirty = true; renderSection();
+    });
+    $("[data-runner-add]", form)?.addEventListener("click", () => {
+      const d = readProjectForm(); let n = "runner"; for (let i = 2; d.runners[n]; i++) n = "runner-" + i;
+      d.runners[n] = { hours: 2, option: "folder" }; PJ.draft = d; PJ.dirty = true; renderSection();
+      const inp = $(`[data-runner-row="${CSS.escape(n)}"] [data-rn=name]`); inp?.focus(); inp?.select();
+    });
+    $$("[data-runner-remove]", form).forEach(b => b.addEventListener("click", () => {
+      $(`[data-runner-row="${CSS.escape(b.dataset.runnerRemove)}"]`, form)?.remove(); PJ.draft = readProjectForm(); PJ.dirty = true; renderSection();
+    }));
+    $("[data-proj-cancel]", form)?.addEventListener("click", () => { const wasNew = PJ.editing === "new"; discardProject(); if (wasNew) PJ.view = PJ.data.active; renderSection(); });
+    $("[data-proj-delete]", form)?.addEventListener("click", async () => {
+      if (!PJ.deleting) { PJ.deleting = true; renderSection(); setTimeout(() => { if (PJ.deleting) { PJ.deleting = false; if (state.view === "settings" && S.tab === "project") renderSection(); } }, 4000); return; }
+      const gone = PJ.draft.name;
+      try { PJ.data = await postJson("/api/projects/delete", { id: PJ.view }); discardProject(); PJ.view = PJ.data.active; toast(`${gone} deleted; its agents now belong to the default project.`); }
+      catch (e) { PJ.error = String(e.message || e); PJ.deleting = false; }
+      renderProjectChip(); renderSection();
+    });
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      const d = readProjectForm(), create = PJ.editing === "new";
+      try {
+        const r = await postJson("/api/projects", { project: d, create });
+        PJ.data = r; discardProject();
+        if (create) { PJ.view = r.saved; await activateProject(r.saved); toast(`${d.name} made; you work in it now.`); }
+        else { PJ.view = d.id; toast("Saved."); }
+        renderProjectChip();
+      } catch (err) { PJ.error = String(err.message || err).replace(/^\/api\/projects: /, ""); PJ.draft = d; }
+      renderSection();
+    });
+  }
+
+  // ---- this PC's GPU: what is loaded, what waits, and the studio's own policies
+  function gpuSection() {
+    const g = GP.data;
+    const head = setHead("GPU and scheduling", "Chat, images, speech, transcription and video each keep one model loaded on this PC. When the next one does not fit, the policy for its kind decides; a project's route can choose another.",
+      g ? `<button class="btn" type="button" data-gpu-unload="all">${icon("x")}Unload all idle</button>` : "");
+    if (!g) return head + `<div class="set-card"><span class="muted">${GP.error ? esc(GP.error) : "Asking this PC…"}</span></div>`;
+    const budget = g.budget, used = g.inUse;
+    const segs = budget ? g.slots.filter(s => s.model && s.bytes).map(s => `<i style="--c:var(--cap-${KIND_CAP[s.kind] || "text"});width:${Math.max(0.6, 100 * s.bytes / budget)}%" title="${esc(KIND_NAMES[s.kind])} · ${esc(s.model)} · ${gb(s.bytes)}"></i>`).join("") : "";
+    const other = budget ? Math.max(0, used - g.slots.reduce((a, s) => a + (s.model ? s.bytes || 0 : 0), 0)) : 0;
+    const hero = `<div class="set-card gpu-hero">
+        <div class="gpu-top"><span class="set-ico big">${icon("flask")}</span><div><b>${esc(g.device || "No device")}</b>
+          <div class="muted" style="font-size:12.5px">${budget ? `${gb(used)} of ${gb(budget)} in use · ${gb(Math.max(0, budget - used))} free` : "This device does not count its memory: everything fits."}</div></div>
+          <span class="grow"></span><span class="faint" style="font-size:12px">Device and memory limit: the buttons in the top bar.</span></div>
+        ${budget ? `<div class="gpu-bar" role="img" aria-label="${gb(used)} of ${gb(budget)} in use">${segs}${other > budget * 0.005 ? `<i style="--c:var(--faint);width:${100 * other / budget}%" title="Other use · ${gb(other)}"></i>` : ""}</div>` : ""}
+      </div>`;
+    const slot = s => `<div class="gpu-slot ${s.model ? "on" : ""}" style="--c:var(--cap-${KIND_CAP[s.kind] || "text"})">
+        <div class="gpu-slot-h"><span class="dot"></span><b>${esc(KIND_NAMES[s.kind] || s.kind)}</b><span class="grow"></span>
+          ${s.busy ? `<span class="chip c-text">working</span>` : ""}${s.pinned ? `<span class="chip plain">${icon("lock")}pinned</span>` : ""}</div>
+        <div class="gpu-model">${s.model ? `<span class="mono" title="${esc(s.model)}">${esc(s.model)}</span><span class="mono faint">${gb(s.bytes)}</span>` : `<span class="faint">Nothing loaded</span>`}</div>
+        <div class="route-l">When the GPU is full</div>
+        <div class="seg gpu-seg" role="group" aria-label="${esc(KIND_NAMES[s.kind])}: when the GPU is full">${POLICIES.map(([k, n, d]) => `<button type="button" data-gpu-policy="${s.kind}" data-v="${k}" aria-pressed="${g.policies[s.kind] === k}" title="${esc(d)}">${n}</button>`).join("")}</div>
+        <div class="gpu-slot-f"><label class="switch-row sm" title="A pinned model is never unloaded to make room"><input type="checkbox" class="switch" data-gpu-pin="${s.kind}" ${s.pinned ? "checked" : ""}><span>Keep loaded</span></label>
+          <span class="grow"></span>${s.model ? `<button class="btn ghost sm" type="button" data-gpu-unload="${s.kind}" ${s.busy ? "disabled" : ""}>Unload</button>` : ""}</div>
+      </div>`;
+    return head + hero
+      + (g.waiting.length ? `<div class="flag warn">${icon("alert")}<span>Waiting for room: ${g.waiting.map(w => `${esc(KIND_NAMES[w.kind] || w.kind)} · ${esc(w.model)} (${gb(w.need)})`).join(", ")}. Unload a model to let it start.</span></div>` : "")
+      + `<div class="gpu-slots">${g.slots.map(slot).join("")}</div>
+      <section class="set-card">
+        <div class="set-card-h"><span class="h3">Idle models</span></div>
+        <label class="gpu-idle">Unload a model after <input class="input mono sm" type="number" min="0" max="1440" step="5" data-gpu-idle value="${g.idleMinutes}" aria-label="Idle minutes"> idle minutes <span class="faint">· 0 keeps it until the room is needed</span></label>
+        <dl class="policy-key">${POLICIES.map(([, n, d]) => `<dt>${n}</dt><dd>${esc(d)}</dd>`).join("")}</dl>
+      </section>`;
+  }
+  async function changeGpu(body) {
+    try { GP.data = await postJson("/api/gpu", body); GP.error = null; } catch (e) { GP.error = String(e.message || e); toast(GP.error); }
+    if (state.view === "settings" && S.tab === "gpu") renderSection();
+  }
+  async function unloadGpu(kind) {
+    try { GP.data = await postJson("/api/gpu/unload", { kind }); } catch (e) { GP.error = String(e.message || e); }
+    if (state.view === "settings" && S.tab === "gpu") renderSection();
+  }
+  function bindGpu() {
+    $$("[data-gpu-policy]").forEach(b => b.addEventListener("click", () => changeGpu({ policies: { [b.dataset.gpuPolicy]: b.dataset.v } })));
+    $$("[data-gpu-pin]").forEach(c => c.addEventListener("change", () => changeGpu({ pinned: $$("[data-gpu-pin]").filter(x => x.checked).map(x => x.dataset.gpuPin) })));
+    $$("[data-gpu-unload]").forEach(b => b.addEventListener("click", () => unloadGpu(b.dataset.gpuUnload)));
+    $("[data-gpu-idle]")?.addEventListener("change", e => changeGpu({ idleMinutes: Math.max(0, Math.round(+e.target.value || 0)) }));
+  }
+
+  // ---- machines: worker hosts, rented GPUs and the folders this PC reads models from
+  function machinesSection() {
+    const head = setHead("Machines", "Your other machines running as workers, and GPUs rented by the hour. Their models show up next to this PC's, and routes can send tasks to them.");
+    if (!T.loaded) return head + `<div class="set-card"><span class="muted">${T.error ? esc(T.error) : "Asking the hosts…"}</span></div>`;
+    return head + `<div class="hosts" id="train-hosts" aria-label="Hosts">${trainHosts()}</div>
+      <div id="train-vast" aria-label="GPUs to rent">${vastPanel()}</div>
+      <section class="set-card"><div class="set-card-h"><span class="h3">Models on this PC</span><span class="muted">Where the studio looks for model folders and GGUF files. Add more in Models.</span>
+        <button class="btn sm" type="button" data-go="library">${icon("library")}Models</button></div>${liveProviders("local")}</section>`;
+  }
+  function bindMachines() {
+    if (T.loaded) { bindHosts(); bindVastCard(); bindVastPanel(); }
+    bindLiveLibrary();
+    $$("#set-machines [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
+  }
+
+  // ---- appearance
+  const themeName = () => ({ light: "Light", dark: "Dark" })[document.documentElement.dataset.theme] || "System theme";
+  function lookSection() {
+    const seg = (k, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button type="button" data-look="${k}" data-v="${v}" aria-pressed="${(k === "theme" ? document.documentElement.dataset.theme || "system" : state[k]) === v}">${l}</button>`).join("")}</div>`;
+    return setHead("Appearance", "How the studio looks on this screen. Kept in this browser.") + `<section class="set-card look">
+        <div class="look-row"><div><b>Theme</b><div class="muted">System follows your computer's light or dark setting.</div></div>${seg("theme", [["system", "System"], ["light", "Light"], ["dark", "Dark"]])}</div>
+        <div class="look-row"><div><b>Layout</b><div class="muted">Auto picks Ultrawide from 2200 px: threads, conversation, agent and media side by side.</div></div>${seg("layout", [["auto", "Auto"], ["focus", "Focus"], ["wide", "Wide"], ["ultra", "Ultrawide"]])}</div>
+        <div class="look-row"><div><b>Density</b></div>${seg("density", [["cozy", "Comfortable"], ["compact", "Compact"]])}</div>
+        <div class="look-row"><div><b>Interface size</b> <output class="mono faint" id="look-scale-out">${Math.round(state.scale * 100)}%</output></div><input type="range" id="look-scale" min="0.8" max="1.6" step="0.05" value="${state.scale}" aria-label="Interface size"></div>
+      </section>
+      <section class="set-card look">
+        <div class="set-card-h"><span class="h3">Keys</span></div>
+        <dl class="policy-key"><dt><span class="kbd">Ctrl K</span></dt><dd>Run anything: switch project, change a GPU policy, unload a model, add a key, open a conversation.</dd>
+          <dt><span class="kbd">Ctrl ,</span></dt><dd>Open this page.</dd><dt><span class="kbd">Esc</span></dt><dd>Close a dialog or the provider editor.</dd></dl>
+        ${dataFolder ? `<div class="look-row"><div><b>Kept in</b><div class="muted">Keys, conversations, projects, settings and every picture and take. Start with <code>--data &lt;folder&gt;</code> to use another one.</div></div><code class="datafolder">${esc(dataFolder)}</code></div>` : ""}
+      </section>`;
+  }
+  function bindLook() {
+    $$("[data-look]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.look, v = b.dataset.v;
+      if (k === "theme") { if (v === "system") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = v; store.set("theme", v); paintAll(); }
+      else { state[k] = v; store.set(k, v); }
+      render();
+    }));
+    $("#look-scale")?.addEventListener("input", e => { $("#look-scale-out").textContent = Math.round(e.target.value * 100) + "%"; });
+    $("#look-scale")?.addEventListener("change", e => { state.scale = +e.target.value; store.set("scale", state.scale); render(); });
+  }
+  { const t = store.get("theme", "system"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; }
+
+  // the open section's cards change without wiping what is typed on the page
+  function refreshProviders() {
+    if (!["providers", "machines"].includes(S.tab)) { renderNavStatus(); return; }
+    const box = $("#set-" + S.tab);
+    if (!box || (box.contains(document.activeElement) && document.activeElement.matches("input, textarea, select"))) return;
+    renderSection();
+  }
+  function renderNavStatus() { $$(".set-tab").forEach(b => { const s = SETTINGS_SECTIONS.find(x => x.id === b.dataset.setTab); const sm = b.querySelector("small"); if (s && sm) sm.textContent = s.status?.() || s.blurb || ""; }); }
+  function bindSettingsJumps(root = document) {
+    $$("[data-jump]", root || document).forEach(a => a.addEventListener("click", e => { e.preventDefault(); openSettings(a.dataset.jump); }));
+  }
+
+  function bindSettings() {
+    $$("[data-set-tab]").forEach(b => b.addEventListener("click", () => {
+      if (b.dataset.setTab === S.tab) return;
+      if (S.tab === "project" && PJ.dirty) { PJ.draft = readProjectForm(); }
+      S.tab = b.dataset.setTab; store.set("setTab", S.tab); render();
+    }));
+    const q = $("#set-q");
+    q?.addEventListener("input", () => {
+      S.q = q.value;
+      let first = null;
+      $$(".set-tab").forEach(b => { const s = SETTINGS_SECTIONS.find(x => x.id === b.dataset.setTab); const ok = !S.q || sectionMatches(s, S.q); b.hidden = !ok; if (ok && !first) first = b; });
+      $(".set-none").hidden = !!first || !S.q;
+      if (first && S.q && !sectionMatches(currentSection(), S.q)) { S.tab = first.dataset.setTab; const pos = q.selectionStart; render(); const nq = $("#set-q"); nq.focus(); nq.setSelectionRange(pos, pos); }
+    });
+    q?.addEventListener("keydown", e => { if (e.key === "Escape" && q.value) { e.stopPropagation(); q.value = ""; q.dispatchEvent(new Event("input")); } });
+    currentSection().bind?.();
+    if (!A.tools?.length) api("/api/agents").then(d => { A.tools = d.tools || []; if (S.tab === "project" && state.view === "settings" && PJ.draft?.tools) { PJ.draft = readProjectForm(); renderSection(); } }).catch(() => {});
+    if (!GP.timer) loadGpu();
+  }
+
+  // ---- a model that does not fit: the page asks once, and the choice holds for the next try
+  function noRoomCard(nr) {
+    if (!nr || document.querySelector(".noroom-back")) return;
+    const back = document.createElement("div");
+    back.className = "cmdk-back noroom-back";
+    const kind = KIND_NAMES[nr.kind] || nr.kind, medium = nr.kind === "chat" ? "text" : nr.kind;
+    const hasRunner = !!activeProject()?.routes?.[medium]?.fallback;
+    back.innerHTML = `<div class="cmdk noroom" role="dialog" aria-label="Not enough GPU memory">
+      <div class="pad"><b>${esc(kind)} does not fit in the GPU memory that is free</b><p class="muted" style="margin:6px 0 0">${esc(nr.message || "")}</p></div>
+      <ul role="listbox">
+        <li data-room="swap">${icon("retry")}<span class="grow">Unload the other models and try again</span><span class="faint">pinned ones too stay</span></li>
+        <li data-room="queue">${icon("pause")}<span class="grow">Wait here until there is room</span></li>
+        <li data-room="remote" ${hasRunner ? "" : `class="none"`}>${icon("plug")}<span class="grow">Run it on the remote runner</span><span class="faint">${hasRunner ? esc(activeProject().routes[medium].fallback) : "set one in Settings, Project"}</span></li>
+        <li data-room="spill">${icon("layout")}<span class="grow">Load anyway and spill to system memory</span><span class="faint">slow</span></li>
+      </ul>
+      <label class="check pad"><input type="checkbox" id="noroom-keep"> do this every time for ${esc(kind.toLowerCase())} in ${esc(activeProject()?.name || "this project")}</label></div>`;
+    document.body.appendChild(back);
+    back.addEventListener("click", async e => {
+      if (e.target === back) { back.remove(); return; }
+      const li = e.target.closest("li[data-room]"); if (!li || li.classList.contains("none")) return;
+      const policy = li.dataset.room;
+      if ($("#noroom-keep").checked && activeProject()) {
+        const p = JSON.parse(JSON.stringify(activeProject()));
+        (p.routes[medium] ||= {}).policy = policy;
+        try { PJ.data = await postJson("/api/projects", { project: p }); } catch (err) { console.warn(err); }
+      } else {
+        PJ.oneShot = policy;   // the next request carries it
+      }
+      back.remove();
+      toast(policy === "remote" ? "It goes to the remote runner: send it again." : "Choice set: send it again.");
+    });
+  }
+  function toast(text) {
+    const t = document.createElement("div"); t.className = "toast"; t.setAttribute("role", "status"); t.textContent = text;
+    document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
+  }
+
+  // every API call carries the project it belongs to, and once the choice for a full GPU
+  if (tokenMetaEarly()) {
+    const plain = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === "string" ? input : input.url;
+      if (url && url.startsWith("/api/") && PJ.data) {
+        const h = new Headers(init.headers || {});
+        h.set("X-Studio-Project", PJ.data.active);
+        if (PJ.oneShot && !url.startsWith("/api/gpu") && !url.startsWith("/api/projects") && !url.startsWith("/api/state")) { h.set("X-Studio-Policy", PJ.oneShot); PJ.oneShot = null; }
+        init = { ...init, headers: h };
+      }
+      return plain(input, init);
+    };
+  }
+  function tokenMetaEarly() { return !!document.querySelector('meta[name="studio-token"]'); }
+
   // ---------- render ----------
-  const views = { chat: chatView, agents: () => isLive() ? liveAgentsView() : agentsView(), create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView };
+  const views = { chat: chatView, agents: () => isLive() ? liveAgentsView() : agentsView(), create: createView, voice: voiceView, builder: () => isLive() ? liveBuilderView() : builderView(), train: () => isLive() ? liveTrainView() : trainView(), library: libraryView, mcp: mcpView, settings: settingsView };
   const crumbs = {
     chat: `Chat <span class="muted">· Voiceover for the builder demo</span>`, agents: `Agents <span class="muted">· 4 running · 2 waiting for you</span>`, create: `Images <span class="muted">· thumb-dit-64</span>`,
     voice: `Voice <span class="muted">· Builder demo voiceover</span>`, builder: `Model builder <span class="muted">· resnet-s</span>`,
-    train: `Training <span class="muted">· 3 hosts · 2 runs live</span>`, library: `Models <span class="muted">· 6 on this machine</span>`, mcp: `MCP <span class="muted">· 2 agents connected</span>`,
+    train: `Training <span class="muted">· 3 hosts · 2 runs live</span>`, library: `Models <span class="muted">· 6 on this machine</span>`, settings: `Settings`, mcp: `MCP <span class="muted">· 2 agents connected</span>`,
   };
   const routes = {
     chat: ["c-text", "Qwen2.5 7B Instruct"], agents: ["c-agent", "per agent"], create: ["c-image", "thumb-dit-64"], voice: ["c-speech", "OpenAI speech · remote"],
-    builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "2 hosts busy"], library: ["c-text", "Qwen2.5 7B Instruct"], mcp: ["c-agent", "per call"],
+    builder: ["c-train", "resnet-s (unsaved)"], train: ["c-train", "2 hosts busy"], library: ["c-text", "Qwen2.5 7B Instruct"], settings: ["c-agent", "per project"], mcp: ["c-agent", "per call"],
   };
 
   let builderLoading = false;
@@ -2240,7 +2730,7 @@
       : liveLib ? `Models <span class="muted">· ${L.info ? `${L.info.models.length} from ${ready} provider${ready === 1 ? "" : "s"}` : "looking…"}</span>`
       : liveBuilder ? `Model builder <span class="muted">· ${esc(B.graph.name || "Untitled")}</span>`
       : liveTrain ? `Training <span class="muted">· ${T.loaded ? `${T.runs.length} run${T.runs.length === 1 ? "" : "s"}${T.active ? `, ${T.active} active` : ""}` : "looking…"}</span>`
-      : liveAgents ? agentCrumb() : crumbs[state.view];
+      : liveAgents ? agentCrumb() : state.view === "settings" && isLive() ? `Settings <span class="muted">· ${esc(activeProject()?.name || "Default")} project</span>` : crumbs[state.view];
     const picked = liveChat ? paneModel(L.active) : "auto";
     const autoModel = (liveChat || liveLib) && L.info ? modelByKey(picked === "auto" ? L.info.auto.text : picked) : null;
     const mediaModel = liveMedia ? (state.view === "create" ? pickedModel(G.imgModel, "image") : pickedModel(G.voModel, "speech")) : null;
@@ -2261,6 +2751,7 @@
     if (state.view === "train" && isLive()) { if (T.loaded) bindLiveTrain(); else loadTrain(); }
     if (state.view === "chat") bindChat();
     if (state.view === "library" && isLive()) bindLiveLibrary();
+    if (state.view === "settings" && isLive()) bindSettings();
     if (state.view === "create" && isLive()) bindLiveCreate();
     if (state.view === "voice" && isLive()) bindLiveVoice();
     if (liveAgents) { if (A.loaded) bindLiveAgents(); if (!A.loading && !A.timer) loadAgents(); }
@@ -2339,7 +2830,7 @@
       { label: "Go to Chat", icon: "chat", run: () => go("chat") }, { label: "Go to Images", icon: "image", run: () => go("create") },
       { label: "Go to Voice", icon: "speech", run: () => go("voice") }, { label: "Go to Model builder", icon: "build", run: () => go("builder") },
       { label: "Go to Training", icon: "train", run: () => go("train") }, { label: "Go to Models", icon: "library", run: () => go("library") },
-      { label: "Go to Agents", icon: "agent", run: () => go("agents") },
+      { label: "Go to Agents", icon: "agent", run: () => go("agents") }, { label: "Open settings", hint: "Ctrl ,", icon: "gear", run: () => go("settings") },
     ];
     if (!isLive()) return [...out, { label: "Go to MCP server", icon: "plug", run: () => go("mcp") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide")];
@@ -2349,7 +2840,13 @@
       { label: "Start an agent", icon: "agent", run: () => { go("agents"); setTimeout(() => $("#ag-goal")?.focus(), 300); } },
       { label: "Add models from a folder or GGUF file…", icon: "folder", run: () => { P.open = true; P.error = null; go("library"); $("#place-path")?.focus(); if (!P.list) browsePlace(""); } },
       { label: "Download a model from Hugging Face…", icon: "download", run: () => { H.open = true; go("library"); $("#hub-q")?.focus(); pollHub(); } },
-      { label: "Add an API key…", icon: "lock", run: () => { go("library"); $("[data-add-key]")?.scrollIntoView({ block: "center" }); } },
+      { label: "Add an API key…", icon: "lock", run: () => openSettings("providers") },
+      { label: "Settings: GPU and scheduling", icon: "flask", run: () => openSettings("gpu") },
+      { label: "Settings: appearance", icon: "sun", run: () => openSettings("look") },
+      { label: "Add a worker host or rent a GPU…", icon: "plug", run: () => openSettings("machines") },
+      { label: "New project…", icon: "folder", run: () => startNewProject() },
+      { label: "Edit this project's routes and tools…", icon: "edit", run: () => { if (!PJ.dirty) { PJ.view = PJ.data?.active; PJ.draft = null; } openSettings("project"); } },
+      { label: "Unload every idle model from the GPU", icon: "x", run: () => unloadGpu("all").then(() => toast("Idle models unloaded.")) },
       { label: "Start a training run…", icon: "train", run: () => go("train") },
       layout("auto", "Auto"), layout("focus", "Focus"), layout("wide", "Wide"), layout("ultra", "Ultrawide"),
       { label: "Switch light or dark", icon: "sun", run: () => $("#theme-btn").click() },
@@ -2361,9 +2858,21 @@
       run: () => { if (state.view !== "chat") go("chat"); newChat(false); L.panes[L.active].model = m.key; L.model = m.key; store.set("chatModel", m.key); savePanes(); render(); } }));
     B.graphs.forEach(g => out.push({ label: `Open ${g.name} in the builder`, hint: g.built ? "built" : "drawing", icon: "build", run: () => openGraph(g.name) }));
     T.runs.slice(0, 30).forEach(r => out.push({ label: `Run ${r.id}: ${r.name}`, hint: r.state, icon: "train", run: () => { T.sel = r.id; store.set("trainSel", r.id); go("train"); } }));
+    (PJ.data?.projects || []).forEach(p => out.push({ label: `Switch to project ${p.name}`, hint: p.id === PJ.data.active ? "active project" : "project", icon: "folder", run: () => activateProject(p.id).then(() => toast(`Working in ${p.name}.`)) }));
+    // quick GPU choices without opening settings
+    Object.keys(KIND_NAMES).forEach(k => {
+      POLICIES.forEach(([key, n, d]) => out.push({ label: `${KIND_NAMES[k]} when the GPU is full: ${n}`, hint: d, icon: "layout",
+        run: () => postJson("/api/gpu", { policies: { [k]: key } }).then(g => { GP.data = g; toast(`${KIND_NAMES[k]}: ${n.toLowerCase()} when the GPU is full.`); }) }));
+      out.push({ label: `Unload the ${KIND_NAMES[k].toLowerCase()} model`, icon: "x", run: () => unloadGpu(k) });
+      out.push({ label: `Pin or unpin the ${KIND_NAMES[k].toLowerCase()} model`, hint: "a pinned model stays loaded", icon: "lock",
+        run: async () => { const g = GP.data || await api("/api/gpu"); const pins = new Set(g.pinned); pins.has(k) ? pins.delete(k) : pins.add(k);
+          GP.data = await postJson("/api/gpu", { pinned: [...pins] }); toast(`${KIND_NAMES[k]} ${pins.has(k) ? "pinned" : "unpinned"}.`); } });
+    });
+    (M.system?.devices || []).forEach(d => out.push({ label: `Run this PC's models on ${d.name}`, icon: d.kind === "gpu" ? "flask" : "layout",
+      run: () => postJson("/api/local/device", { device: d.name }).then(x => { M.localDevice = x; renderDevices(); toast(`Models now run on ${d.name}.`); }) }));
     return out;
   }
-  function openCmdk() {
+  function openCmdk(query) {
     if (document.querySelector(".cmdk-back")) { $("#cmdk-in")?.focus(); return; }
     const back = document.createElement("div");
     back.className = "cmdk-back";
@@ -2380,6 +2889,7 @@
       $("#cmdk-list li.on")?.scrollIntoView({ block: "nearest" });
     };
     const run = c => { back.remove(); if (c) c.run(); };
+    if (typeof query === "string") $("#cmdk-in").value = query;
     list();
     $("#cmdk-in").focus();
     $("#cmdk-in").addEventListener("input", () => { sel = 0; list(); });
@@ -2401,7 +2911,12 @@
   window.addEventListener("resize", () => { const before = $("#app").dataset.layout; applyFrame(); if ($("#app").dataset.layout !== before) render(); else if (state.view === "builder") { if (isLive()) drawLiveEdges(); else fitWorld(); } else if (state.view === "train" && isLive()) drawLossChart(); else if (state.view === "chat" && isLive() && L.sel !== "example" && L.panes.length > maxPanes()) render(); });
   document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openCmdk(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape" && L.editing && !document.querySelector(".cmdk-back")) { L.editing = null; L.draft = null; render(); } });
-  $("#cmdk-open").addEventListener("click", openCmdk);
+  $("#cmdk-open").addEventListener("click", () => openCmdk());
+  document.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && e.key === ",") { e.preventDefault(); go("settings"); } });
+  document.addEventListener("click", e => {
+    const a = e.target.closest("[data-go-settings]"); if (!a) return;
+    e.preventDefault(); openSettings(a.dataset.goSection || S.tab);
+  });
   $("#theme-btn").addEventListener("click", () => {
     const root = document.documentElement;
     const dark = root.dataset.theme ? root.dataset.theme === "dark" : !matchMedia("(prefers-color-scheme: light)").matches;
@@ -2966,7 +3481,7 @@ reason ::= [a-z ]+`;
       else if (event === "text") a.text += d.text;
       else if (event === "thinking") a.thinking += d.text;
       else if (event === "done") a.stats = d;
-      else if (event === "error") a.error = d.message;
+      else if (event === "error") { a.error = d.message; if (d.noRoom) noRoomCard(d.noRoom); }
       paintMsg(c, i);
     };
     try {
@@ -3218,6 +3733,7 @@ reason ::= [a-z ]+`;
   async function postJson(path, body) {
     const r = await fetch(path, { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
+    if (r.status === 409 && j.noRoom) noRoomCard(j.noRoom);
     if (!r.ok) throw new Error(j.error || `the studio answered ${r.status}`);
     return j;
   }
@@ -3354,7 +3870,7 @@ reason ::= [a-z ]+`;
         else if (event === "preview") G.drawing.preview = "data:image/png;base64," + d.data;
         else if (event === "image") { const it = { url: blobUrl(d), file: d.file, seed: d.seed }; batch.items.push(it); G.drawing.items.push(it); }
         else if (event === "done") batch.seconds = d.seconds;
-        else if (event === "error") { batch.error = d.message; batch.stopped = d.message === "stopped"; }
+        else if (event === "error") { batch.error = d.message; batch.stopped = d.message === "stopped"; if (d.noRoom) noRoomCard(d.noRoom); }
         // a preview a few times a second is plenty
         const now = performance.now();
         if (event !== "step" || now - last > 120) { last = now; paintDrawing(); }
@@ -3536,7 +4052,7 @@ reason ::= [a-z ]+`;
         else if (event === "step") { if (d.step === 1) VID.making.first = performance.now(); VID.making.step = d.step; VID.making.total = d.total; }
         else if (event === "video") Object.assign(clip, { url: blobUrl(d), file: d.file, seed: d.seed, width: d.width, height: d.height, frames: d.frames });
         else if (event === "done") clip.seconds = d.seconds;
-        else if (event === "error") { clip.error = d.message; clip.stopped = d.message === "stopped"; }
+        else if (event === "error") { clip.error = d.message; clip.stopped = d.message === "stopped"; if (d.noRoom) noRoomCard(d.noRoom); }
         const box = $("#vmaking");
         if (box && VID.making) box.innerHTML = makingHtml();
       });
@@ -3680,7 +4196,7 @@ reason ::= [a-z ]+`;
         if (event === "route") t.model = d.name;
         else if (event === "segment") t.segments.push(d);
         else if (event === "done") Object.assign(t, { text: d.text, language: d.language, seconds: d.seconds });
-        else if (event === "error") t.error = d.message;
+        else if (event === "error") { t.error = d.message; if (d.noRoom) noRoomCard(d.noRoom); }
         paint();
       });
       if (!t.text && t.segments.length) t.text = t.segments.map(g => g.text.trim()).join(" ");
@@ -4062,7 +4578,7 @@ reason ::= [a-z ]+`;
     </div>`;
   }
 
-  function liveProviders() {
+  function liveProviders(part) {
     if (!L.info) return `<div class="providers"><div class="prov"><span class="muted">Asking the providers…</span></div></div>`;
     const apis = L.info.providers.filter(p => p.kind === "api");
     const ready = apis.filter(p => p.keys.length);
@@ -4083,7 +4599,7 @@ reason ::= [a-z ]+`;
           <div class="muted" style="font-size:12.5px">A machine of yours running <code>brainiac-studio --worker</code>. Its models answer with its own engine and hardware.</div>
           ${p.error ? `<div class="keyerr">${esc(p.error)}</div>` : ""}
           <div class="provset"><span class="mono faint" style="font-size:11px">free · your machine${L.usage && L.usage.providers[p.id] ? " · " + esc(usageLine(L.usage.providers[p.id])) : ""}</span><span class="grow"></span>
-            <button class="btn sm" data-go="train">${icon("train")}Hosts on Training</button></div></div>`;
+            <button class="btn sm" data-jump="set-hosts">${icon("plug")}Machines</button></div></div>`;
       }
       if (p.local) {
         return `<div class="prov ${p.ready ? "on" : "off"}">${head}
@@ -4115,12 +4631,14 @@ reason ::= [a-z ]+`;
         ${form(p, true)}
         <span class="mono faint" style="font-size:11px">${total && p.keys.length > 1 ? esc(usageLine(total)) + " in all · " : ""}several keys: tried in order, the next one takes over when a key is refused or out of credit</span></div>`;
     };
-    return `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
+    if (part === "local") return `<div class="providers">${local.map(card).join("")}</div>`;
+    return `${part === "apis" ? "" : `<div class="sect-head"><span class="h2">Compute</span><span class="muted">Machines that run models: this PC, your other machines running as workers, and GPUs you rent.</span></div>
       <div class="providers">${local.map(card).join("")}${hosts.map(card).join("")}${hosts.length ? "" : `<div class="prov off hint-card">
           <b>Another machine of yours</b>
-          <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it on Training. Its models show up here and answer in Chat; it can also train.</div>
-          <div class="provset"><span class="grow"></span><button class="btn sm" data-go="train">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
-      <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>
+          <div class="muted" style="font-size:12.5px">Run <code>brainiac-studio --worker</code> on it, then add it under Machines below. Its models show up here and answer in Chat; it can also train.</div>
+          <div class="provset"><span class="grow"></span><button class="btn sm" data-jump="set-hosts">${icon("plus")}Add a host</button></div></div>`}${vastCompute()}</div>
+      <div class="sect-head"><span class="h2">Model APIs</span><span class="muted">Hosted models you reach with an API key. Auto tries them after your own machines.</span></div>`}
+      ${part === "apis" && !ready.length && !more.length ? `<div class="set-card muted">No provider takes a key.</div>` : ""}
       ${ready.length ? `<div class="providers">${ready.map(card).join("")}</div>` : ""}
       ${more.length ? `<div class="more-head"><span class="h3">Add a provider</span><span class="muted">${more.length} more take an API key. Each also reads its key from the environment variable shown.</span></div>
       <div class="more">${more.map(p => `<div class="prov-row ${L.adding === p.id ? "open" : ""}">
@@ -4353,6 +4871,84 @@ reason ::= [a-z ]+`;
     if (!FT.loaded) { FT.loaded = true; loadTune(); }
   }
 
+  // Merging: chat models of this PC that share an architecture become one new model folder.
+  const MG = { open: false, state: null, way: "linear", base: "", picked: {}, weights: {}, balance: 0.5, density: 0.5, name: "", busy: false, error: null, loaded: false, timer: null };
+  const mergeBusy = () => MG.state?.job?.state === "merging";
+  // a single GGUF file cannot be merged: only model folders are offered
+  const mergeModels = () => quantModels().filter(m => !/\.gguf$/i.test(m.id));
+  function mergePanel() {
+    const s = MG.state, j = s?.job, models = mergeModels(), ways = s?.ways || [];
+    const way = ways.find(w => w.id === MG.way) || ways[0];
+    const base = models.some(m => m.id === MG.base) ? MG.base : "";
+    const picked = models.filter(m => MG.picked[m.id] && !(way?.base && m.id === base));
+    const status = !j ? "" : j.state === "done" ? `<div class="flag ok-note">${icon("check")}<span><b>${esc(j.name)}</b> is in the model list now: ${esc(j.models.join(" and "))}, merged. <span class="faint">${esc(j.folder)}</span></span></div>`
+      : j.state === "failed" ? `<div class="flag bad">${icon("alert")}<span>${esc(j.name)} was not made: ${esc(j.error || "it failed")}</span></div>`
+      : `<div class="flag">${icon("flask")}<span><b>Merging ${esc(j.models.join(" and "))} into ${esc(j.name)}</b> for ${Math.round(j.seconds)} s. This runs on the CPU, a tensor at a time. You can leave this screen.</span></div>`;
+    return `<form class="placebox servebox tunebox mergebox" id="merge-form" autocomplete="off" novalidate>
+      <div class="place-head"><div><b>Merge models into a new one</b> <span class="muted">Models that share an architecture, such as two fine-tunes of one base model, are combined weight by weight, with the methods mergekit offers. The result is a new model folder next to the first; the models you merge stay as they are. Model folders only: a single GGUF file cannot be merged.</span></div>
+        <button type="button" class="iconbtn sm" id="merge-close" aria-label="Close">${icon("x")}</button></div>
+      ${models.length > 1 ? `<div class="place-path serve-form">
+        <select class="input" id="merge-way" aria-label="How to merge" style="flex:0 1 200px">${ways.map(w => `<option value="${esc(w.id)}" ${w.id === way?.id ? "selected" : ""}>${esc(w.label)}</option>`).join("")}</select>
+        ${way?.base ? `<select class="input" id="merge-base" aria-label="Base model" style="flex:1 1 180px;min-width:150px"><option value="">Base model: choose…</option>${models.map(m => `<option value="${esc(m.id)}" ${m.id === base ? "selected" : ""}>Base: ${esc(m.name)}</option>`).join("")}</select>` : ""}
+        <input class="input" id="merge-name" aria-label="Name of the merged model" placeholder="Name of the new model" maxlength="60" value="${esc(MG.name)}" style="flex:1 1 200px">
+      </div>
+      <div class="muted" style="font-size:12.5px">${way ? esc(way.label + ": " + way.note + ".") : ""}</div>
+      <div class="merge-list" role="group" aria-label="Models to merge">${models.map(m => {
+        const isBase = way?.base && m.id === base, on = !!MG.picked[m.id] && !isBase;
+        return `<label class="merge-row ${isBase ? "off" : ""}"><input type="checkbox" data-merge-pick="${esc(m.id)}" ${on ? "checked" : ""} ${isBase ? "disabled" : ""}><span class="grow">${esc(m.name)}${isBase ? ' <span class="faint">the base</span>' : ""}</span>
+          ${on && way?.id !== "slerp" ? `<span class="faint">weight</span><input class="input mono" type="number" step="any" data-merge-weight="${esc(m.id)}" aria-label="Weight of ${esc(m.name)}" placeholder="${way?.id === "linear" ? "equal" : "1"}" value="${esc(MG.weights[m.id] ?? "")}">` : ""}</label>`;
+      }).join("")}</div>
+      <div class="tune-nums">
+        ${way?.id === "slerp" ? `<label class="tune-num" title="0 is the first model you ticked, 1 the second.">Balance<input class="input mono" id="merge-balance" type="number" min="0" max="1" step="0.05" value="${esc(MG.balance)}"></label>` : ""}
+        ${way?.id === "ties" || way?.id === "dare" ? `<label class="tune-num" title="The share of each model's changes from the base that is kept.">Share kept<input class="input mono" id="merge-density" type="number" min="0.05" max="1" step="0.05" value="${esc(MG.density)}"></label>` : ""}
+        <span class="grow"></span>
+        <button class="btn primary" type="submit" ${MG.busy || mergeBusy() || picked.length < 2 ? "disabled" : ""}>${icon("branch")}${mergeBusy() ? "Merging…" : picked.length < 2 ? "Tick two or more models" : "Merge " + picked.length + " models"}</button>
+      </div>`
+      : `<div class="muted">Merging needs two or more chat models on this PC that are model folders. Download fine-tunes of one base model from Hugging Face, or teach a model with Fine-tune.</div>`}
+      ${status}
+      ${MG.error ? `<div class="flag bad">${icon("alert")}<span>${esc(MG.error)}</span></div>` : ""}
+    </form>`;
+  }
+  async function loadMerge() {
+    const was = mergeBusy();
+    try { MG.state = await api("/api/merge"); } catch (e) { console.warn("cannot read the merging state", e); }
+    clearTimeout(MG.timer);
+    if (mergeBusy()) MG.timer = setTimeout(loadMerge, 1500);
+    else if (was) await loadModels(true);   // the merged model is a model now
+    // while it runs the form is left alone, so it keeps its focus
+    if (state.view === "library" && !(was && mergeBusy())) render();
+  }
+  function bindMerge() {
+    $("#merge-open")?.addEventListener("click", () => { MG.open = !MG.open; MG.error = null; render(); });
+    $("#merge-close")?.addEventListener("click", () => { MG.open = false; MG.error = null; render(); });
+    $("#merge-way")?.addEventListener("change", e => { MG.way = e.target.value; render(); });
+    $("#merge-base")?.addEventListener("change", e => { MG.base = e.target.value; render(); });
+    $("#merge-name")?.addEventListener("input", e => { MG.name = e.target.value; });
+    $("#merge-balance")?.addEventListener("input", e => { MG.balance = e.target.value; });
+    $("#merge-density")?.addEventListener("input", e => { MG.density = e.target.value; });
+    $$("[data-merge-pick]").forEach(c => c.addEventListener("change", () => { MG.picked[c.dataset.mergePick] = c.checked; render(); }));
+    $$("[data-merge-weight]").forEach(t => t.addEventListener("input", () => { MG.weights[t.dataset.mergeWeight] = t.value; }));
+    $("#merge-form")?.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (MG.busy || mergeBusy()) return;
+      const ways = MG.state?.ways || [], way = ways.find(w => w.id === MG.way) || ways[0];
+      const base = way?.base ? ($("#merge-base")?.value || "") : "";
+      const models = mergeModels().filter(m => MG.picked[m.id] && m.id !== base).map(m => m.id);
+      const given = models.map(id => String(MG.weights[id] ?? "").trim());
+      if (way?.base && !base) { MG.error = way.label + " needs the base model the others were tuned from."; render(); return; }
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,59}$/.test(MG.name.trim())) { MG.error = "Name it with up to 60 letters, digits, dots, dashes or underscores."; render(); return; }
+      if (given.some(w => w) && given.some(w => !w || !isFinite(+w))) { MG.error = "Give every ticked model a weight, or none of them."; render(); return; }
+      MG.busy = true; MG.error = null; render();
+      try { MG.state = await postJson("/api/merge", { way: way.id, base, models, weights: given.some(w => w) ? given.map(Number) : [], balance: +MG.balance, density: +MG.density, name: MG.name.trim() }); }
+      catch (err) { MG.error = String(err.message || err).replace(/^\/api\/merge: /, ""); }
+      MG.busy = false;
+      clearTimeout(MG.timer);
+      if (mergeBusy()) MG.timer = setTimeout(loadMerge, 1000); else if (!MG.error) loadMerge();
+      if (state.view === "library") render();
+    });
+    if (!MG.loaded) { MG.loaded = true; loadMerge(); }
+  }
+
   // Evaluating: a chat model on this PC is scored on a file of questions, or timed.
   const EV = { open: false, state: null, model: "", data: "", file: "", lines: 0, limit: 100, shots: 0, busy: false, error: null, loaded: false, timer: null };
   const evalBusy = () => !!EV.state?.running;
@@ -4533,7 +5129,7 @@ reason ::= [a-z ]+`;
   }
   async function loadServe() {
     try { SV.state = await api("/api/serve"); } catch (e) { console.warn("cannot read the serving state", e); }
-    if (state.view === "library") render();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
   function bindServe() {
     $("#serve-open")?.addEventListener("click", () => { SV.open = !SV.open; SV.error = null; render(); });
@@ -4550,14 +5146,14 @@ reason ::= [a-z ]+`;
       try { SV.state = await postJson("/api/serve", { model, port: Math.floor(+SV.port) || 8080, network: SV.network }); }
       catch (err) { SV.error = err.message || String(err); }
       SV.busy = false;
-      if (state.view === "library") render();
+      if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
     });
     $("#serve-stop")?.addEventListener("click", async () => {
       SV.busy = true; SV.error = null; render();
       try { SV.state = await postJson("/api/serve", { stop: true }); }
       catch (err) { SV.error = err.message || String(err); }
       SV.busy = false;
-      if (state.view === "library") render();
+      if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
     });
     if (!SV.loaded) { SV.loaded = true; loadServe(); }
   }
@@ -4604,7 +5200,7 @@ reason ::= [a-z ]+`;
         const r = await postJson("/api/local", { path: P.path.trim() });
         P.open = false; P.busy = false; P.path = ""; P.list = null;
         P.note = r.models ? `Added ${r.models} model${r.models === 1 ? "" : "s"}; they are under This PC below.` : "Added. Models put there later show up too.";
-        setTimeout(() => { P.note = null; if (state.view === "library") render(); }, 8000);
+        setTimeout(() => { P.note = null; if (state.view === "library") render(); else if (state.view === "settings") refreshProviders(); }, 8000);
         await loadModels(false);
       } catch (err) { P.busy = false; P.error = err.message; renderPlace(); }
     });
@@ -4867,16 +5463,17 @@ reason ::= [a-z ]+`;
     bindServe();
     bindQuant();
     bindTune();
+    bindMerge();
     bindEval();
     if (!V.status && !V.loading && !V.error) loadVast();
     $$(".providers [data-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.go)));
     $("[data-vast-train]")?.addEventListener("click", () => {
       if (V.status?.key) { V.open = true; if (!V.offers) searchVast(); }
-      go("train");
+      openSettings("machines");
     });
     $$("[data-place-remove]").forEach(b => b.addEventListener("click", async () => {
       const f = b.dataset.placeRemove;
-      if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); } }, 4000); return; }
+      if (P.removing !== f) { P.removing = f; render(); setTimeout(() => { if (P.removing === f) { P.removing = null; if (state.view === "library") render(); else if (state.view === "settings") refreshProviders(); } }, 4000); return; }
       P.removing = null;
       try { await postJson("/api/local", { path: f, remove: true }); } catch (e) { console.warn(e); }
       await loadModels(false);
@@ -4945,7 +5542,7 @@ reason ::= [a-z ]+`;
 
   async function loadUsage() {
     try { L.usage = await api("/api/usage"); } catch (e) { console.warn("cannot read usage", e); L.usage = { providers: {}, keys: {}, models: {}, daily: [], recent: [] }; }
-    if (state.view === "library") render();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
 
   let balancesBusy = false;
@@ -4954,7 +5551,7 @@ reason ::= [a-z ]+`;
     balancesBusy = true;
     try { L.balances = await api("/api/balances"); } catch (e) { console.warn("cannot read balances", e); L.balances = {}; }
     balancesBusy = false;
-    if (state.view === "library") render();
+    if (state.view === "library") render(); else if (state.view === "settings") refreshProviders();
   }
 
   async function loadModels(refresh) {
@@ -4971,7 +5568,7 @@ reason ::= [a-z ]+`;
   // Agents the user starts: a goal, a chat model and the studio's tools. In Ask mode a tool
   // that acts (downloads, training, asking a paid model) waits here for Allow or Deny.
   const A = { loaded: false, loading: false, error: null, runs: [], tools: [], maxSteps: 30, sel: null, detail: null,
-    model: "auto", mode: "ask", steps: 12, goal: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
+    model: "auto", mode: "ask", steps: 12, goal: "", format: "", schema: "", busy: false, formError: null, notes: {}, reply: "", removing: null,
     open: new Set(), toolsOpen: false, timer: 0, asksKey: "", detailKey: "" };
   const agentStates = { running: ["working", "c-text"], waiting: ["needs you", "c-warn"], done: ["done", "c-ok"], failed: ["failed", "c-bad"],
     stopped: ["stopped", "c-warn"], "out of steps": ["out of steps", "c-warn"] };
@@ -5026,6 +5623,13 @@ reason ::= [a-z ]+`;
           <button type="button" data-ag-mode="auto" aria-pressed="${A.mode === "auto"}" title="It calls every tool itself">Auto</button></div>
         <label class="muted ag-steps">Steps <input class="input mono" id="ag-steps" type="number" min="1" max="${A.maxSteps}" value="${A.steps}"></label>
       </div>
+      <div class="field"><label for="ag-format" title="The agent works in free text, as its tool calls need, and writes its final answer in this form in a turn of its own.">Answers as</label>
+        <select class="input" id="ag-format">
+          <option value="" ${A.format === "" ? "selected" : ""}>Free text</option>
+          <option value="json" ${A.format === "json" ? "selected" : ""}>A JSON object</option>
+          <option value="schema" ${A.format === "schema" ? "selected" : ""}>JSON that fits a schema</option>
+        </select>
+        ${A.format === "schema" ? `<textarea class="input mono" id="ag-schema" rows="5" spellcheck="false" aria-label="JSON schema" placeholder="${esc(SCHEMA_EXAMPLE)}">${esc(A.schema)}</textarea>` : ""}</div>
       ${A.formError ? `<div class="flag bad">${icon("alert")}<span>${esc(A.formError)}</span></div>` : ""}
       <button class="btn primary" type="submit" ${A.busy ? "disabled" : ""}>${icon("play")}${A.busy ? "Starting…" : "Start"}</button>
     </form>`;
@@ -5059,7 +5663,7 @@ reason ::= [a-z ]+`;
       case "call": return `<div class="st st-call">${icon("plug")}<span>Calls <code>${esc(s.tool)}</code>${argText(s.arguments) ? ` <span class="mono muted">${esc(argText(s.arguments))}</span>` : ""}</span></div>`;
       case "result": return `<details class="st st-result ${s.ok ? "" : "bad"}" data-ag-open="${i}" ${A.open.has(i) ? "open" : ""}><summary>${s.ok ? icon("check") : icon("alert")}<span><code>${esc(s.tool)}</code> ${s.ok ? "answered" : "failed"}</span><span class="mono faint">${fmtCount((s.text || "").length)} chars</span></summary><pre>${esc(s.text || "")}</pre></details>`;
       case "decision": return `<div class="st st-decision">${icon(s.allow ? "check" : "x")}<span>You ${s.allow ? "allowed" : "did not allow"} <code>${esc(s.tool)}</code>${s.note ? `: “${esc(s.note)}”` : ""}</span></div>`;
-      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${md(s.text || "")}</div></div>`;
+      case "answer": return `<div class="st st-answer"><span class="eyebrow">Answer</span><div class="md-body">${s.json && s.text ? jsonAnswer(s.text) : md(s.text || "")}</div></div>`;
       case "error": return `<div class="flag bad">${icon("alert")}<span>${esc(s.text || "")}</span></div>`;
       default: return "";
     }
@@ -5205,13 +5809,17 @@ reason ::= [a-z ]+`;
     goal.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#ag-form").requestSubmit(); };
     $("#ag-model").onchange = e => { A.model = e.target.value; };
     $("#ag-steps").oninput = e => { A.steps = Math.max(1, Math.min(A.maxSteps, +e.target.value || 12)); };
+    $("#ag-format").onchange = e => { A.format = e.target.value; A.formError = null; render(); };
+    if ($("#ag-schema")) $("#ag-schema").oninput = e => { A.schema = e.target.value; };
     $$("[data-ag-mode]").forEach(b => b.onclick = () => { A.mode = b.dataset.agMode; $$("[data-ag-mode]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
     $("#ag-form").onsubmit = async e => {
       e.preventDefault();
       if (!A.goal.trim()) { A.formError = "Say what the agent should do."; render(); return; }
+      const wrong = formatError(A);
+      if (wrong) { A.formError = wrong; render(); return; }
       A.busy = true; A.formError = null; render();
       try {
-        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps });
+        const r = await postJson("/api/agents/start", { goal: A.goal, model: A.model, mode: A.mode, maxSteps: A.steps, format: formatOf(A) });
         A.goal = ""; A.sel = r.id; A.detail = null; A.open = new Set();
       } catch (err) {
         A.formError = String(err.message || err);
@@ -5232,7 +5840,7 @@ reason ::= [a-z ]+`;
   const tokenMeta = document.querySelector('meta[name="studio-token"]');
   const mediumToCap = { text: "text", image: "image", speech: "speech", vision: "vision", video: "vision", training: "train", agent: "agent" };
   // screens that show only real data
-  const showsLiveData = () => ["library", "create", "voice", "builder", "train", "agents"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
+  const showsLiveData = () => ["library", "create", "voice", "builder", "train", "agents", "settings"].includes(state.view) || (state.view === "chat" && L.sel !== "example");
 
   async function api(path) {
     const r = await fetch(path, { headers: { "X-Studio-Token": tokenMeta.content } });
@@ -5323,6 +5931,7 @@ reason ::= [a-z ]+`;
       loadModels(false);
       loadConvos();
       loadAgents();
+      loadProjects();
     } catch (e) {
       console.warn("studio API not reachable, showing example data", e);
     }

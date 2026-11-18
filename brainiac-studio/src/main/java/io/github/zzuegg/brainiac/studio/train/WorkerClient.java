@@ -127,6 +127,36 @@ public final class WorkerClient {
     }
 
     /**
+     * Lends the worker a secret, sealed so that only this worker can open it, or takes it back.
+     * The worker holds it in memory only.
+     *
+     * @param name what it is, such as {@code huggingface}
+     * @param value the secret, or empty to take it back
+     * @return the names of the secrets the worker now holds
+     * @throws IOException if it cannot be reached, is too old to be lent secrets, or refuses
+     */
+    public List<String> lend(String name, String value) throws IOException {
+        Map<String, Object> offer = json(request("worker/secrets").timeout(Duration.ofSeconds(10)).GET().build());
+        if (!(offer.get("public") instanceof String theirs)) {
+            throw new IOException("this worker is too old to be lent secrets: update it");
+        }
+        java.security.KeyPair pair = SealedSecret.pair();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("id", Json.string(offer, "id", ""));
+        body.put("public", SealedSecret.publicText(pair));
+        body.put("name", name);
+        try {
+            body.put("sealed", SealedSecret.seal(SealedSecret.key(pair.getPrivate(), theirs, token), name, value));
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IOException("the worker's one-time key is not a key");
+        }
+        Map<String, Object> m = json(request("worker/secrets").timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body))).build());
+        return Json.array(m.getOrDefault("names", List.of())).stream().map(String::valueOf).toList();
+    }
+
+    /**
      * Tells the worker to download a model from Hugging Face into its own downloads folder.
      *
      * @param repo the repository, such as {@code Qwen/Qwen2.5-0.5B-Instruct-GGUF}
@@ -308,6 +338,73 @@ public final class WorkerClient {
             return true;
         });
         return out;
+    }
+
+    /**
+     * Asks the worker for a video model's usual settings and sizes.
+     *
+     * @param model the worker's model id
+     * @return what the worker says, or null if it cannot be asked or does not know the model
+     */
+    public Map<String, Object> videoOptions(String model) {
+        try {
+            Map<String, Object> m = json(request("worker/video/options").timeout(Duration.ofSeconds(10))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(Json.write(Map.of("model", model)))).build());
+            return m.isEmpty() ? null : m;
+        } catch (IOException e) {
+            return null;   // an older worker, or one that is off: the page shows the usual settings
+        }
+    }
+
+    /**
+     * Has the worker make a video clip with one of its video models.
+     *
+     * @param model the worker's model id
+     * @param prompt what the clip shows
+     * @param s size, length, steps, guidance, seed and the first frame
+     * @param listener hears each step and can stop the clip
+     * @return the clip
+     * @throws IOException if the worker fails
+     */
+    public io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip video(String model, String prompt,
+            io.github.zzuegg.brainiac.studio.chat.LocalVideos.Settings s,
+            io.github.zzuegg.brainiac.studio.chat.LocalVideos.Listener listener) throws IOException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", model);
+        body.put("prompt", prompt);
+        body.put("negativePrompt", s.negativePrompt());
+        body.put("aspect", s.aspect());
+        body.put("small", s.small());
+        body.put("seconds", s.seconds());
+        body.put("steps", s.steps());
+        body.put("guidance", s.guidance());
+        body.put("seed", s.seed());
+        body.put("width", s.width());
+        body.put("height", s.height());
+        if (s.start() != null) {
+            body.put("start", Map.of("type", s.start().mime(),
+                    "data", java.util.Base64.getEncoder().encodeToString(s.start().data())));
+        }
+        io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip[] clip = {null};
+        stream("worker/video", body, "video", (event, d) -> {
+            if (event.equals("step")) {
+                return listener.step((int) Json.integer(d, "step", 0), (int) Json.integer(d, "total", 0));
+            }
+            if (event.equals("video")) {
+                clip[0] = new io.github.zzuegg.brainiac.studio.chat.LocalVideos.Clip(
+                        new io.github.zzuegg.brainiac.studio.chat.Media(
+                                java.util.Base64.getDecoder().decode(Json.string(d, "data", "")),
+                                Json.string(d, "mime", "image/apng")), Json.integer(d, "seed", 0),
+                        (int) Json.integer(d, "width", 0), (int) Json.integer(d, "height", 0),
+                        (int) Json.integer(d, "frames", 0), (int) Json.integer(d, "fps", 0));
+            }
+            return true;
+        });
+        if (clip[0] == null) {
+            throw new IOException("the worker sent no clip");
+        }
+        return clip[0];
     }
 
     /**

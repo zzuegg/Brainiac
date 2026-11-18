@@ -1,8 +1,12 @@
 package io.github.zzuegg.brainiac.experiments.synthesis;
 
 import io.github.zzuegg.brainiac.autograd.Var;
+import io.github.zzuegg.brainiac.experimental.evolve.BottomUpSynthesis;
+import io.github.zzuegg.brainiac.experimental.evolve.Bustle;
+import io.github.zzuegg.brainiac.experimental.evolve.CrossBeam;
 import io.github.zzuegg.brainiac.experimental.evolve.GuidedEnumerator;
 import io.github.zzuegg.brainiac.experimental.evolve.LibraryLearner;
+import io.github.zzuegg.brainiac.experimental.evolve.Probe;
 import io.github.zzuegg.brainiac.experimental.evolve.ProgramEvolution;
 import io.github.zzuegg.brainiac.experimental.llm.ProgramGenerator;
 import io.github.zzuegg.brainiac.experimental.nn.TransformerSeq2Seq;
@@ -34,7 +38,12 @@ import java.util.function.Predicate;
  *   <li>{@link Method#ROBUSTFILL}: neural program generation ({@link ProgramGenerator})
  *       with execution-filtered beam search, at beam widths 1 and 16;</li>
  *   <li>{@link Method#INDUCTION}: neural program induction, a transformer that maps two
- *       examples and a new input straight to the output, with no program in between.</li>
+ *       examples and a new input straight to the output, with no program in between;</li>
+ *   <li>{@link #bottomUp} (items 11.2.12-11.2.13): weighted bottom-up enumeration
+ *       ({@link Method#BOTTOM_UP}), BUSTLE's learned value weights ({@link Method#BUSTLE}),
+ *       CrossBeam's learned search policy ({@link Method#CROSSBEAM}) and Probe's
+ *       just-in-time grammar ({@link Method#PROBE}), against plain enumeration and
+ *       DeepCoder's ordered search at several budgets.</li>
  * </ul>
  *
  * <p>Training programs have 1-4 primitives; test programs 2-5, so length 5 is longer than
@@ -59,7 +68,15 @@ public final class ProgramSynthesisShootout {
         /** Seq2seq program generation with beam search and execution filtering. */
         ROBUSTFILL,
         /** Direct output prediction (program induction). */
-        INDUCTION
+        INDUCTION,
+        /** Unguided weighted bottom-up enumeration ({@link BottomUpSynthesis}). */
+        BOTTOM_UP,
+        /** Bottom-up with BUSTLE's learned value reweighting. */
+        BUSTLE,
+        /** Bottom-up with CrossBeam's learned argument-selection policy. */
+        CROSSBEAM,
+        /** Bottom-up with Probe's just-in-time grammar learning (no pretraining). */
+        PROBE
     }
 
     /**
@@ -262,6 +279,101 @@ public final class ProgramSynthesisShootout {
                     (System.nanoTime() - t0) / 1_000_000));
         }
         return rows;
+    }
+
+    /** One search's result on one task: programs tried and the program, if any. */
+    private record Attempt(long cost, List<String> program) {
+    }
+
+    /**
+     * The bottom-up family (items 11.2.12-11.2.13) against plain enumeration and DeepCoder's
+     * ordered search. Every search is deterministic and only truncated by the budget, so each
+     * runs once at the largest budget and the smaller budgets are read off the cost at which
+     * it succeeded.
+     *
+     * @param tasks the test tasks
+     * @param budgets the budgets to report, ascending
+     * @param predictorSteps training steps of DeepCoder's predictor
+     * @param bustleSteps training steps of BUSTLE's usefulness model (16 programs each)
+     * @param crossBeamSteps CrossBeam training programs
+     * @param seed the seed
+     * @return per method one row per budget (label {@code "budget B"}) and one for the tasks
+     *     of length 4-5 at the largest budget (label {@code "len 4-5"})
+     */
+    public static List<Row> bottomUp(List<Task> tasks, long[] budgets, int predictorSteps, int bustleSteps,
+            int crossBeamSteps, long seed) {
+        GuidedEnumerator g = enumerator();
+        BottomUpSynthesis bu = new BottomUpSynthesis(ListPrograms.primitives(), ListPrograms::apply);
+        long max = budgets[budgets.length - 1];
+        GuidedEnumerator.AttributePredictor predictor = trainPredictor(predictorSteps, seed);
+        Bustle bustle = new Bustle(bu, 32, 3.0, seed);
+        bustle.train(g, bustleSteps, 16, 4, SHOWN, 3e-3f, new SplittableRandom(seed + 11));
+        CrossBeam crossBeam = new CrossBeam(bu, 32, seed);
+        crossBeam.train(g, crossBeamSteps, 4, SHOWN, 2, 3e-3f, new SplittableRandom(seed + 12));
+        Probe probe = new Probe(bu, 8);
+        List<Row> rows = new ArrayList<>();
+        for (Method m : new Method[] {Method.ENUMERATE, Method.DEEPCODER_ORDERED, Method.BOTTOM_UP, Method.BUSTLE,
+                Method.CROSSBEAM, Method.PROBE}) {
+            long t0 = System.nanoTime();
+            List<Attempt> attempts = new ArrayList<>();
+            for (Task t : tasks) {
+                attempts.add(switch (m) {
+                    case ENUMERATE -> {
+                        GuidedEnumerator.Result r = g.enumerate(t.inputs(), t.outputs(), 5, max);
+                        yield new Attempt(r.evaluated(), r.program());
+                    }
+                    case DEEPCODER_ORDERED -> {
+                        GuidedEnumerator.Result r = g.enumerate(t.inputs(), t.outputs(), 5, g.primitives(),
+                                predictor.predict(t.inputs(), t.outputs()), max);
+                        yield new Attempt(r.evaluated(), r.program());
+                    }
+                    case BOTTOM_UP -> {
+                        BottomUpSynthesis.Result r = bu.search(t.inputs(), t.outputs(), 5, max);
+                        yield new Attempt(r.evaluated(), r.program());
+                    }
+                    case BUSTLE -> {
+                        BottomUpSynthesis.Result r = bustle.search(t.inputs(), t.outputs(), 5, max);
+                        yield new Attempt(r.evaluated(), r.program());
+                    }
+                    case CROSSBEAM -> {
+                        CrossBeam.Result r = crossBeam.search(t.inputs(), t.outputs(), 5, 8, max);
+                        yield new Attempt(r.evaluated(), r.program());
+                    }
+                    default -> {
+                        Probe.Result r = probe.search(t.inputs(), t.outputs(), 5, max);
+                        yield new Attempt(r.evaluated(), r.program());
+                    }
+                });
+            }
+            long millis = (System.nanoTime() - t0) / 1_000_000;
+            for (long b : budgets) {
+                rows.add(score(m, "budget " + b, tasks, attempts, b, millis, 0));
+            }
+            rows.add(score(m, "len 4-5", tasks, attempts, max, millis, 4));
+        }
+        return rows;
+    }
+
+    private static Row score(Method m, String label, List<Task> tasks, List<Attempt> attempts, long budget, long millis,
+            int minLength) {
+        double solved = 0;
+        double consistent = 0;
+        double tried = 0;
+        int count = 0;
+        for (int i = 0; i < tasks.size(); i++) {
+            Task t = tasks.get(i);
+            if (t.hidden().size() < minLength) {
+                continue;
+            }
+            count++;
+            Attempt a = attempts.get(i);
+            boolean found = a.program() != null && a.cost() <= budget;
+            tried += found ? a.cost() : budget;
+            consistent += found ? 1 : 0;
+            solved += found && t.generalises(a.program()) ? 1 : 0;
+        }
+        int c = Math.max(1, count);
+        return new Row(m, label, solved / c, consistent / c, tried / c, millis);
     }
 
     private static LibraryLearner trainLibrary(long seed, int budget) {

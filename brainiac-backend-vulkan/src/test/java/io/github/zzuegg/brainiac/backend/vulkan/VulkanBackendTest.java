@@ -725,8 +725,9 @@ class VulkanBackendTest {
         Tensor c = random(49, 2, 1, 3, 4);
         Tensor cpu = Tensor.zeros(Shape.of(2, 3, 5, 4), DType.FLOAT32, Device.cpu());
         Tensor dev = Tensor.zeros(Shape.of(2, 3, 5, 4), DType.FLOAT32, gpu);
-        cpu.write(2, 2, a.mul(b).add(1f));
-        dev.write(2, 2, a.to(gpu).mul(b.to(gpu)).add(1f));
+        // a sum doubled: exact everywhere, where a product plus a constant may be one fused multiply-add
+        cpu.write(2, 2, a.add(b).mul(2f));
+        dev.write(2, 2, a.to(gpu).add(b.to(gpu)).mul(2f));
         cpu.write(2, 4, c.permute(0, 2, 1, 3));   // a view
         dev.write(2, 4, c.to(gpu).permute(0, 2, 1, 3));
         Tensor whole = random(50, 2, 3, 5, 4);
