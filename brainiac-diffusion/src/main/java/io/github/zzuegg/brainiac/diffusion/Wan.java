@@ -52,8 +52,11 @@ public final class Wan implements AutoCloseable {
             + "低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，"
             + "静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走";
 
-    /** Frames per second of Wan 2.1's training videos. */
+    /** Frames per second of Wan 2.1's (and Wan 2.2 14B's) training videos. */
     public static final int FPS = 16;
+
+    /** Frames per second of Wan 2.2 TI2V-5B, the model with the 16x autoencoder. */
+    public static final int FPS_5B = 24;
 
     /**
      * How to load the weights.
@@ -466,6 +469,11 @@ public final class Wan implements AutoCloseable {
         return (float) Json.number(files.scheduler(), "flow_shift", 5.0);
     }
 
+    /** @return the frame rate the model was trained at: {@link #FPS_5B} with Wan 2.2's 16x autoencoder, else {@link #FPS} */
+    public int fps() {
+        return vae.settings().residual() ? FPS_5B : FPS;
+    }
+
     // ------------------------------------------------------------------------------- generation
 
     /**
@@ -473,13 +481,18 @@ public final class Wan implements AutoCloseable {
      *
      * @param request what to generate
      * @param progress hears every step and can stop the run
-     * @return the video at {@link #FPS} frames per second
+     * @return the video at {@link #fps()} frames per second
      * @throws java.util.concurrent.CancellationException if the progress stopped it
      */
     public synchronized GeneratedVideo generate(VideoRequest request, Progress progress) {
         int z = vae.settings().latentChannels();
         int tf = vae.settings().temporalFactor();
         int sf = vae.settings().spatialFactor();
+        int side = sf * transformers.get(0).settings().patch()[1];
+        if (request.width() % side != 0 || request.height() % side != 0) {
+            throw new IllegalArgumentException(this + " makes videos whose sides are multiples of " + side + ", not "
+                    + request.width() + "x" + request.height());
+        }
         Shape shape = Shape.of(1, z, (request.frames() - 1) / tf + 1, request.height() / sf, request.width() / sf);
         Tensor noise = StableDiffusion.gaussian(shape, new SplittableRandom(request.seed()), device);
         try {
@@ -507,7 +520,7 @@ public final class Wan implements AutoCloseable {
             }
         }
         try {
-            return new GeneratedVideo(decode(latents), FPS, request.seed());
+            return new GeneratedVideo(decode(latents), fps(), request.seed());
         } finally {
             latents.release();
         }

@@ -215,24 +215,28 @@ final class WanPretrained {
      */
     static WanVae.Settings vaeSettings(WeightSource source, String prefix, Map<String, Object> config) {
         if (config != null && config.get("base_dim") != null) {
-            if (Boolean.TRUE.equals(config.get("is_residual"))) {
-                throw new IllegalArgumentException("the Wan 2.2 autoencoder (residual blocks) is not supported yet");
-            }
             int z = (int) Json.integer(config, "z_dim", 16);
-            return new WanVae.Settings((int) Json.integer(config, "base_dim", 96), z,
+            int base = (int) Json.integer(config, "base_dim", 96);
+            Object decoderBase = config.get("decoder_base_dim");
+            Object patch = config.get("patch_size");
+            return new WanVae.Settings(base, z,
                     Json.array(config.get("dim_mult")).stream().mapToInt(o -> ((Number) o).intValue()).toArray(),
                     (int) Json.integer(config, "num_res_blocks", 2), booleans(config.get("temperal_downsample")),
-                    floats(config.get("latents_mean"), z), floats(config.get("latents_std"), z));
+                    floats(config.get("latents_mean"), z), floats(config.get("latents_std"), z),
+                    decoderBase == null ? base : ((Number) decoderBase).intValue(),
+                    Boolean.TRUE.equals(config.get("is_residual")), patch == null ? 1 : ((Number) patch).intValue());
         }
         String in = source.contains(prefix + "decoder.conv_in.weight") ? "decoder.conv_in.weight"
                 : "decoder.conv1.weight";
         Shape s = source.shape(prefix + in);
-        WanVae.Settings w = WanVae.Settings.wan21();
-        if (s.dim(1) != w.latentChannels() || s.dim(0) != w.base() * 4) {
-            throw new IllegalArgumentException("a VAE with " + s.dim(1) + " latent channels is not Wan 2.1's; give "
-                    + "its diffusers config");
+        for (WanVae.Settings w : List.of(WanVae.Settings.wan21(), WanVae.Settings.wan22())) {
+            int[] m = w.multipliers();
+            if (s.dim(1) == w.latentChannels() && s.dim(0) == w.decoderBase() * m[m.length - 1]) {
+                return w;
+            }
         }
-        return w;
+        throw new IllegalArgumentException("a VAE with " + s.dim(1) + " latent channels and " + s.dim(0)
+                + " decoder channels is neither Wan 2.1's nor Wan 2.2's; give its diffusers config");
     }
 
     private static boolean[] booleans(Object v) {
@@ -272,6 +276,57 @@ final class WanPretrained {
     private static void coder(Weights w, WanVae.Coder c, boolean diffusers, int resBlocks) {
         conv(w, c.in(), diffusers ? "conv_in" : "conv1");
         List<WanVae.Stage> stages = c.stages();
+        if (stages.stream().anyMatch(s -> s instanceof WanVae.Level)) {
+            levels(w, c, diffusers);
+        } else {
+            plain(w, c, diffusers, resBlocks);
+        }
+        List<WanVae.Stage> middle = c.middle();
+        String[] mid = diffusers ? new String[] {"mid_block.resnets.0.", "mid_block.attentions.0.", "mid_block.resnets.1."}
+                : new String[] {"middle.0.", "middle.1.", "middle.2."};
+        for (int i = 0; i < 3; i++) {
+            stage(w.at(mid[i]), middle.get(i), diffusers);
+        }
+        w.set(c.headNorm().gamma(), gamma(w, diffusers ? "norm_out.gamma" : "head.0.gamma"));
+        conv(w, c.head(), diffusers ? "conv_out" : "head.2");
+    }
+
+    /**
+     * Wan 2.2's levels: diffusers' {@code down_blocks.i.resnets.j} and {@code .downsampler}
+     * ({@code up_blocks.i.resnets.j}, {@code .upsampler}); Wan's own
+     * {@code downsamples.i.downsamples.j} with the resampler last (decoder: {@code upsamples}).
+     */
+    private static void levels(Weights w, WanVae.Coder c, boolean diffusers) {
+        String kind = c.isEncoder() ? "down" : "up";
+        List<WanVae.Stage> stages = c.stages();
+        int level = 0;
+        for (int i = 0; i < stages.size(); level++) {
+            List<WanVae.Stage> body;
+            if (stages.get(i) instanceof WanVae.Level l) {
+                body = l.body();
+                i++;
+            } else {
+                // the decoder's last level has no shortcut: its blocks stand in the chain
+                body = stages.subList(i, stages.size());
+                i = stages.size();
+            }
+            for (int j = 0; j < body.size(); j++) {
+                WanVae.Stage s = body.get(j);
+                String name;
+                if (!diffusers) {
+                    name = kind + "samples." + level + "." + kind + "samples." + j + ".";
+                } else if (s instanceof WanVae.Resample) {
+                    name = kind + "_blocks." + level + "." + kind + "sampler.";
+                } else {
+                    name = kind + "_blocks." + level + ".resnets." + j + ".";
+                }
+                stage(w.at(name), s, diffusers);
+            }
+        }
+    }
+
+    private static void plain(Weights w, WanVae.Coder c, boolean diffusers, int resBlocks) {
+        List<WanVae.Stage> stages = c.stages();
         int perLevel = resBlocks + 2;   // the decoder's residual blocks and a resampler
         for (int i = 0; i < stages.size(); i++) {
             String name;
@@ -286,14 +341,6 @@ final class WanPretrained {
             }
             stage(w.at(name), stages.get(i), diffusers);
         }
-        List<WanVae.Stage> middle = c.middle();
-        String[] mid = diffusers ? new String[] {"mid_block.resnets.0.", "mid_block.attentions.0.", "mid_block.resnets.1."}
-                : new String[] {"middle.0.", "middle.1.", "middle.2."};
-        for (int i = 0; i < 3; i++) {
-            stage(w.at(mid[i]), middle.get(i), diffusers);
-        }
-        w.set(c.headNorm().gamma(), gamma(w, diffusers ? "norm_out.gamma" : "head.0.gamma"));
-        conv(w, c.head(), diffusers ? "conv_out" : "head.2");
     }
 
     private static void stage(Weights w, WanVae.Stage stage, boolean diffusers) {
@@ -314,6 +361,7 @@ final class WanPretrained {
                 w.matrix(a.proj(), "proj.weight");
                 w.bias(a.projBias(), "proj.bias");
             }
+            case WanVae.Level l -> throw new IllegalStateException("levels are filled by their parts");
             case WanVae.Resample r -> {
                 w.set(r.weight(), w.get("resample.1.weight"));
                 w.bias(r.bias(), "resample.1.bias");

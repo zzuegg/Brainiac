@@ -637,7 +637,9 @@ try (Flux flux = Flux.load(Path.of("models/FLUX.1-schnell"), Device.best(), DTyp
 from a diffusers folder or from single files such as ComfyUI's
 (`wan2.1_t2v_1.3B_fp16.safetensors`, `wan_2.1_vae.safetensors`, `umt5_xxl_fp16.safetensors`
 plus umT5's `tokenizer.json`, all in one folder). The 1.3B model makes 832x480 clips on a
-16 GB GPU; the 14B models and Wan 2.2's two experts (high and low noise) want a large GPU.
+16 GB GPU. Wan 2.2 TI2V-5B, with its 16x autoencoder (48 latent channels, 2x2 patches), makes
+1280x704 clips at 24 fps; the 14B models and Wan 2.2's two experts (high and low noise) want
+a large GPU.
 
 ```java
 try (Wan wan = Wan.load(Path.of("models/wan2.1-t2v-1.3b"), Device.best(), DType.BFLOAT16)) {
@@ -653,9 +655,9 @@ try (Wan wan = Wan.load(Path.of("models/wan2.1-t2v-1.3b"), Device.best(), DType.
 
 - Frames are `1 + 4k` (81 is five seconds at 16 fps); width and height multiples of 16.
 - The VAE decodes one latent frame at a time, so memory does not grow with the length.
-- umT5, the transformer (with per-patch timesteps and image tokens for image-to-video), the
-  VAE, UniPC and the whole pipeline were checked against diffusers on small random models
-  (`wan_fixtures.py`).
+- umT5, the transformer (with per-patch timesteps and image tokens for image-to-video), both
+  autoencoders, UniPC and the whole pipeline were checked against diffusers on small random
+  models (`wan_fixtures.py`, `wan22_fixtures.py`).
 
 ### The same layers in your own networks
 
@@ -675,7 +677,7 @@ model from them, or fine-tune a pretrained one:
 | `T5Encoder` | T5's encoder: relative position biases, RMS norms, gated feed-forward |
 | `FluxTransformer` | a multimodal diffusion transformer (MMDiT): joint text-image blocks, single-stream blocks, axial rotary positions, adaLN-Zero |
 | `WanTransformer` | a video diffusion transformer: 3D patches and rotary positions, cross-attention to text (and image) tokens, adaLN |
-| `WanVae` | a causal 3D VAE that encodes and decodes video frame chunk by chunk |
+| `WanVae` | a causal 3D VAE that encodes and decodes video frame chunk by chunk (Wan 2.1's 8x and Wan 2.2's 16x) |
 
 ```java
 UNet unet = new UNet(UNet.Settings.of(4, 4, new int[] {64, 128, 256}, 512), new SplittableRandom(1));
