@@ -632,6 +632,18 @@ public final class ScienceSims {
         public int generators() {
             return genBus.length;
         }
+
+        /**
+         * @param factor a multiplier for every line limit
+         * @return the same grid with scaled line limits
+         */
+        public PowerGrid withLimitsScaled(double factor) {
+            double[] l = limit.clone();
+            for (int k = 0; k < l.length; k++) {
+                l[k] *= factor;
+            }
+            return new PowerGrid(buses, from, to, reactance, l, genBus, genCost, genMax, baseLoad);
+        }
     }
 
     /**
