@@ -95,20 +95,23 @@ public final class VisionEncoder {
     private final ImagePreprocessor preprocessor;
     private final Map<Long, Tensor> interpolated = new HashMap<>();
 
-    private VisionEncoder(Path dir, Map<String, Object> config, WeightSource w, Device device, DType dtype)
+    private VisionEncoder(Map<String, Object> processor, Map<String, Object> config, WeightSource w, Device device,
+            DType dtype)
             throws IOException {
         this.device = device;
         this.dtype = dtype;
         String type = Json.string(config, "model_type", "");
         kind = switch (type) {
-            case "clip" -> Kind.CLIP;
-            case "siglip" -> Kind.SIGLIP;
+            case "clip", "clip_vision_model" -> Kind.CLIP;
+            case "siglip", "siglip_vision_model" -> Kind.SIGLIP;
             case "vit" -> Kind.VIT;
             case "dinov2" -> Kind.DINOV2;
             default -> throw new IllegalArgumentException("not a CLIP, SigLIP, ViT or DINOv2 model: model_type " + type);
         };
+        // CLIP and SigLIP with their text towers, or their image towers alone (as in LLaVA)
+        boolean pair = type.equals("clip") || type.equals("siglip");
         boolean towers = kind == Kind.CLIP || kind == Kind.SIGLIP;
-        Map<String, Object> vc = towers ? Json.object(config.get("vision_config")) : config;
+        Map<String, Object> vc = pair ? Json.object(config.get("vision_config")) : config;
         String vp = towers ? "vision_model." : kind == Kind.VIT && w.contains("vit.embeddings.cls_token") ? "vit." : "";
         Function<String, Tensor> t = name -> w.tensor(name, device, dtype);
         patch = (int) Json.integer(vc, "patch_size", 16);
@@ -139,7 +142,8 @@ public final class VisionEncoder {
         String fin = towers ? vp + "post_layernorm." : vp + "layernorm.";
         finalNorm = t.apply(fin + "weight");
         finalNormBias = t.apply(fin + "bias");
-        projection = kind == Kind.CLIP ? t.apply("visual_projection.weight").transpose() : null;
+        projection = kind == Kind.CLIP && w.contains("visual_projection.weight")
+                ? t.apply("visual_projection.weight").transpose() : null;
         if (kind == Kind.SIGLIP && w.contains(vp + "head.probe")) {
             String h = vp + "head.";
             Tensor in = t.apply(h + "attention.in_proj_weight");
@@ -171,7 +175,7 @@ public final class VisionEncoder {
             }
         }
         labels = List.copyOf(names);
-        if (towers) {
+        if (pair) {
             Map<String, Object> tc = Json.object(config.get("text_config"));
             text = tower(w, t, tc, "text_model.", false);
             tokens = t.apply("text_model.embeddings.token_embedding.weight");
@@ -197,9 +201,7 @@ public final class VisionEncoder {
             eos = pad = textLength = 0;
             logitScale = logitBias = 0;
         }
-        Path pre = dir.resolve("preprocessor_config.json");
-        preprocessor = new ImagePreprocessor(Files.isRegularFile(pre) ? Json.object(Json.read(pre)) : Map.of(),
-                imageSize);
+        preprocessor = new ImagePreprocessor(processor, imageSize);
     }
 
     private Tower tower(WeightSource w, Function<String, Tensor> t, Map<String, Object> c, String prefix,
@@ -257,10 +259,17 @@ public final class VisionEncoder {
      */
     public static VisionEncoder load(Path dir, Device device, DType dtype) {
         try (WeightSource w = WeightSource.open(dir)) {
-            return new VisionEncoder(dir, Json.object(Json.read(dir.resolve("config.json"))), w, device, dtype);
+            return new VisionEncoder(processorConfig(dir), Json.object(Json.read(dir.resolve("config.json"))), w,
+                    device, dtype);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** @return the folder's {@code preprocessor_config.json}, or an empty map */
+    static Map<String, Object> processorConfig(Path dir) throws IOException {
+        Path pre = dir.resolve("preprocessor_config.json");
+        return Files.isRegularFile(pre) ? Json.object(Json.read(pre)) : Map.of();
     }
 
     /** @return the model family */
@@ -344,7 +353,48 @@ public final class VisionEncoder {
                 vision.hidden).matmul(classifier).add(classifierBias)).value(), false);
     }
 
-    private Var visionStates(Tensor pixels) {
+    /**
+     * Loads the image tower of a larger model (a vision-language model's) from its weights.
+     *
+     * @param config the tower's config ({@code model_type} {@code clip_vision_model} or
+     *     {@code siglip_vision_model})
+     * @param preprocessor the processor config, or an empty map
+     * @param w the weights, named from {@code vision_model.}
+     */
+    static VisionEncoder tower(Map<String, Object> config, Map<String, Object> preprocessor, WeightSource w,
+            Device device, DType dtype) {
+        try {
+            return new VisionEncoder(preprocessor, config, w, device, dtype);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** @return the width of the image tower's states */
+    int width() {
+        return vision.hidden;
+    }
+
+    /** @return the image tower's block count */
+    int depth() {
+        return vision.blocks.size();
+    }
+
+    /**
+     * The image tower's states after {@code layer} blocks, as transformers' {@code
+     * hidden_states[layer]}: 0 for the embeddings, negative from the end ({@code -1} after the
+     * last block, before any final norm).
+     */
+    Var features(Tensor pixels, int layer) {
+        int n = vision.blocks.size();
+        int stop = layer < 0 ? n + 1 + layer : layer;
+        if (stop < 0 || stop > n) {
+            throw new IllegalArgumentException("layer " + layer + " of a " + n + "-block tower");
+        }
+        return run(vision, embeddings(pixels), false, stop);
+    }
+
+    private Var embeddings(Tensor pixels) {
         int b = pixels.shape().dim(0);
         int h = pixels.shape().dim(2) / patch;
         int w = pixels.shape().dim(3) / patch;
@@ -363,7 +413,11 @@ public final class VisionEncoder {
         if (preNorm != null) {
             s = norm(s, preNorm, preNormBias, vision.eps);
         }
-        s = run(vision, s, false);
+        return s;
+    }
+
+    private Var visionStates(Tensor pixels) {
+        Var s = run(vision, embeddings(pixels), false);
         if (kind == Kind.CLIP) {
             return s;
         }
@@ -617,13 +671,17 @@ public final class VisionEncoder {
     // ------------------------------------------------------------------ blocks
 
     private Var run(Tower tower, Var x, boolean causal) {
+        return run(tower, x, causal, tower.blocks.size());
+    }
+
+    private Var run(Tower tower, Var x, boolean causal, int stop) {
         int b = x.shape().dim(0);
         int n = x.shape().dim(1);
         int d = tower.hidden;
         int dh = d / tower.heads;
         float scale = (float) (1 / Math.sqrt(dh));
         Var h = x.reshape(b * n, d);
-        for (Block l : tower.blocks) {
+        for (Block l : tower.blocks.subList(0, stop)) {
             Var a = norm(h, l.norm1, l.norm1b, tower.eps);
             Var q = a.matmul(l.q).add(l.qb).reshape(b, n, tower.heads, dh).permute(0, 2, 1, 3);
             Var k = a.matmul(l.k).add(l.kb).reshape(b, n, tower.heads, dh).permute(0, 2, 1, 3);

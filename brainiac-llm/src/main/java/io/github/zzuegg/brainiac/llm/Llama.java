@@ -1127,6 +1127,68 @@ public final class Llama implements LanguageModel {
     }
 
     /**
+     * As {@link #forward(int[][])}, with outside embeddings (image features from a
+     * vision-language model's projector) in place of a placeholder token: each occurrence of
+     * {@code placeholder}, row by row, takes the next row of {@code embeddings}.
+     *
+     * @param tokens {@code [batch][steps]} token ids, all sequences the same length
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}
+     * @return logits {@code [batch, steps, vocab]} in the model's type
+     */
+    public Var forward(int[][] tokens, int placeholder, Tensor embeddings) {
+        return inserting(placeholder, embeddings, () -> forward(tokens));
+    }
+
+    /**
+     * As {@link #next}, with outside embeddings in place of a placeholder token (see
+     * {@link #forward(int[][], int, Tensor)}): how a vision-language model reads a prompt
+     * with images. The calls that follow read tokens as usual.
+     *
+     * @param state the state; updated
+     * @param tokens the new tokens per sequence
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}, in order
+     * @return the next-token logits {@code [batch, vocab]}, float32
+     */
+    public Tensor next(State state, int[][] tokens, int placeholder, Tensor embeddings) {
+        return inserting(placeholder, embeddings, () -> next(state, tokens, null));
+    }
+
+    /** Embeddings that replace a placeholder token, consumed in order across prefill chunks. */
+    private static final class Insert {
+        final int token;
+        final Tensor rows;
+        int used;
+
+        Insert(int token, Tensor rows) {
+            this.token = token;
+            this.rows = rows;
+        }
+    }
+
+    private Insert insert;
+
+    private <T> T inserting(int placeholder, Tensor embeddings, java.util.function.Supplier<T> body) {
+        if (embeddings.shape().rank() != 2 || embeddings.shape().dim(1) != config.hidden()) {
+            throw new IllegalArgumentException("embeddings must be [n, " + config.hidden() + "], got "
+                    + embeddings.shape());
+        }
+        Insert in = new Insert(placeholder, embeddings.to(device).to(dtype));
+        insert = in;
+        try {
+            T out = body.get();
+            if (in.used != embeddings.shape().dim(0)) {
+                throw new IllegalArgumentException("the tokens hold " + in.used + " placeholders for "
+                        + embeddings.shape().dim(0) + " embeddings");
+            }
+            return out;
+        } finally {
+            insert = null;
+        }
+    }
+
+    /**
      * The next-token cross-entropy of sequences, for training: the mean over every step but
      * the last of {@code -log p(next token)}. The output layer runs a few thousand rows at a
      * time (see {@link Functional#linearCrossEntropy}), so the {@code [tokens, vocab]} logits
@@ -1520,6 +1582,25 @@ public final class Llama implements LanguageModel {
         if (e.scaleEmbeddings()) {
             // as Gemma: the factor rounded to the model's type first
             x = x.mul(Tensor.full(Shape.of(), (float) Math.sqrt(config.hidden()), Device.cpu()).to(dtype).item());
+        }
+        if (insert != null) {
+            // the placeholders read rows appended after the token embeddings
+            int[] from = new int[flat.length];
+            int n = flat.length;
+            int count = 0;
+            for (int i = 0; i < flat.length; i++) {
+                from[i] = flat[i] == insert.token ? n + count++ : i;
+            }
+            if (count > 0) {
+                if (insert.used + count > insert.rows.shape().dim(0)) {
+                    throw new IllegalArgumentException("more placeholders than the " + insert.rows.shape().dim(0)
+                            + " embeddings given");
+                }
+                Var rows = Var.of(insert.rows.slice(0, insert.used, insert.used + count));
+                insert.used += count;
+                x = Var.concat(0, x.reshape(n, config.hidden()), rows).gather(0, indices(from, device))
+                        .reshape(batch, steps, config.hidden());
+            }
         }
         if (masks == null) {
             masks = new Tensor[blocks.size()];
