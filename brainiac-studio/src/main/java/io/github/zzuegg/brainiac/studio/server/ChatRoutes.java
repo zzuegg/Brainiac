@@ -100,6 +100,11 @@ final class ChatRoutes {
     void register(StudioServer server) {
         server.get("/api/models", ex -> Exchanges.json(ex, 200,
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
+        server.get("/api/local/device", ex -> Exchanges.json(ex, 200, localDevice()));
+        server.post("/api/local/device", ex -> {
+            chat.localDevice().choose(Json.string(Exchanges.body(ex, 4096), "device", ""));
+            Exchanges.json(ex, 200, localDevice());
+        });
         server.post("/api/keys", this::keys);
         server.post("/api/providers", this::providers);
         server.get("/api/chats", ex -> Exchanges.json(ex, 200, Map.of("chats", chat.conversations().list())));
@@ -464,6 +469,14 @@ final class ChatRoutes {
             chat.addKey(provider, label, Json.string(body, "key", ""));
         }
         Exchanges.json(ex, 200, chat.describe(false));
+    }
+
+    private Map<String, Object> localDevice() {
+        io.github.zzuegg.brainiac.studio.chat.LocalDevice d = chat.localDevice();
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("choice", d.choice());
+        out.put("device", d.device().name());
+        return out;
     }
 
     /**

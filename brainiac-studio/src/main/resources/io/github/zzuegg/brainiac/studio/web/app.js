@@ -4533,8 +4533,25 @@
   function renderDevices() {
     const box = $("#devices");
     if (!M.system) return;   // keep the example meters
-    box.innerHTML = M.system.devices.map(d => `<span class="dev" title="${d.kind === "gpu" ? "GPU" : "Processor"} found by a Brainiac backend">
-      <span class="dot" style="--c:${d.kind === "gpu" ? "var(--ok)" : "var(--muted)"}"></span>${esc(d.name)}</span>`).join("");
+    // the device this PC's models run on is marked; a click chooses another, and a click on a chosen one goes back to the best
+    const ld = M.localDevice, pinned = ld && ld.choice !== "best";
+    box.innerHTML = M.system.devices.map(d => {
+      const on = ld && ld.device === d.name;
+      const what = d.kind === "gpu" ? "GPU" : "Processor";
+      const tip = !ld ? `${what} found by a Brainiac backend`
+        : on ? (pinned ? `Models on this PC run here, as you chose. Click to go back to the best device.` : `Models on this PC run here, the best device found. Click to keep them here.`)
+        : `${what}. Click to run this PC's chat, image and voice models here instead.`;
+      return `<button type="button" class="dev ${on ? "on" : ""} ${on && pinned ? "pinned" : ""}" data-local-device="${esc(d.name)}" aria-pressed="${on}" title="${esc(tip)}">
+      <span class="dot" style="--c:${d.kind === "gpu" ? "var(--ok)" : "var(--muted)"}"></span>${esc(d.name)}${on && pinned ? `<span class="faint">chosen</span>` : ""}</button>`;
+    }).join("");
+    $$("[data-local-device]", box).forEach(b => b.addEventListener("click", async () => {
+      if (!M.localDevice) return;
+      const name = b.dataset.localDevice;
+      const next = M.localDevice.choice === name ? "best" : name;
+      try { M.localDevice = await postJson("/api/local/device", { device: next }); }
+      catch (e) { console.warn("cannot choose the device", e); }
+      renderDevices();
+    }));
   }
 
   function renderDataNote() {
@@ -4551,6 +4568,7 @@
         key: c.key, cap: mediumToCap[c.medium] || "agent", what: c.description, source: c.source, note: c.note, missing: c.status === "planned",
       }));
       M.system = sys;
+      api("/api/local/device").then(d => { M.localDevice = d; renderDevices(); }).catch(() => {});
       renderDevices();
       render();
       loadModels(false);

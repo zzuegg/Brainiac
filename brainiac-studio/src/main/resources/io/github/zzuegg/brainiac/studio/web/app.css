@@ -1211,3 +1211,10 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .try-bars .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
 .try-bars .bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
 .try-bars .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+
+/* ---------- the device this PC's models run on ---------- */
+button.dev { cursor: pointer; font-family: inherit; }
+button.dev:hover { border-color: var(--line); color: var(--fg); }
+.dev.on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft)); color: var(--fg); }
+.dev.pinned { background: color-mix(in srgb, var(--accent) 9%, var(--panel)); }
+.dev .faint { font-size: 11px; }

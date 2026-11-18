@@ -58,9 +58,17 @@ public final class LocalSpeech {
     private Path voicePath;
     private SpeechToText ears;
     private Path earsPath;
+    private String voiceOn;
+    private String earsOn;
+    private final LocalDevice where;
 
     LocalSpeech(Supplier<List<Path>> places) {
+        this(places, new LocalDevice(null));
+    }
+
+    LocalSpeech(Supplier<List<Path>> places, LocalDevice where) {
         this.places = places;
+        this.where = where;
     }
 
     /**
@@ -177,8 +185,8 @@ public final class LocalSpeech {
         return p;
     }
 
-    private static Device device() {
-        return Device.best();
+    private Device device() {
+        return where.device();
     }
 
     // speech models are small, and 16-bit weights are not checked for them yet, so full precision everywhere
@@ -239,14 +247,15 @@ public final class LocalSpeech {
 
     private TextToSpeech loadVoice(String id) throws IOException {
         Path p = path(id, SpeechModels.Kind.TEXT_TO_SPEECH);
-        if (voice != null && p.equals(voicePath)) {
+        Device d = device();
+        if (voice != null && p.equals(voicePath) && d.name().equals(voiceOn)) {
             return voice;
         }
         if (voice != null) {
             voice.close();
             voice = null;
         }
-        Device d = device();
+        voiceOn = d.name();
         voice = SpeechModels.textToSpeech(p, d, dtype(d));
         voicePath = p;
         LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to speak on " + d);
@@ -305,14 +314,15 @@ public final class LocalSpeech {
 
     private SpeechToText loadEars(String id) throws IOException {
         Path p = path(id, SpeechModels.Kind.SPEECH_TO_TEXT);
-        if (ears != null && p.equals(earsPath)) {
+        Device d = device();
+        if (ears != null && p.equals(earsPath) && d.name().equals(earsOn)) {
             return ears;
         }
         if (ears != null) {
             ears.close();
             ears = null;
         }
-        Device d = device();
+        earsOn = d.name();
         ears = SpeechModels.speechToText(p, d, dtype(d));
         earsPath = p;
         LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to transcribe on " + d);

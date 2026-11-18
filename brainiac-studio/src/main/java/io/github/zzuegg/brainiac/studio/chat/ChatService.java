@@ -297,6 +297,15 @@ public final class ChatService {
         return out;
     }
 
+    /**
+     * Returns where this PC's models run, which the user can change.
+     *
+     * @return the choice
+     */
+    public LocalDevice localDevice() {
+        return local().device();
+    }
+
     private LocalProvider local() {
         return providers().stream().filter(LocalProvider.class::isInstance).map(LocalProvider.class::cast).findFirst()
                 .orElseThrow(() -> new IllegalStateException("no local provider"));
