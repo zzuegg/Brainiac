@@ -717,6 +717,27 @@ class VulkanBackendTest {
         }
     }
 
+    /** A pending value written into part of an array (a cache step) lands where a copy puts it. */
+    @Test
+    void pendingValuesWrittenIntoPartOfAnArrayMatchTheCpu() {
+        Tensor a = random(47, 2, 3, 1, 4);
+        Tensor b = random(48, 2, 3, 1, 4);
+        Tensor c = random(49, 2, 1, 3, 4);
+        Tensor cpu = Tensor.zeros(Shape.of(2, 3, 5, 4), DType.FLOAT32, Device.cpu());
+        Tensor dev = Tensor.zeros(Shape.of(2, 3, 5, 4), DType.FLOAT32, gpu);
+        cpu.write(2, 2, a.mul(b).add(1f));
+        dev.write(2, 2, a.to(gpu).mul(b.to(gpu)).add(1f));
+        cpu.write(2, 4, c.permute(0, 2, 1, 3));   // a view
+        dev.write(2, 4, c.to(gpu).permute(0, 2, 1, 3));
+        Tensor whole = random(50, 2, 3, 5, 4);
+        Tensor cpu2 = Tensor.zeros(Shape.of(2, 3, 5, 4), DType.FLOAT32, Device.cpu());
+        Tensor dev2 = Tensor.zeros(Shape.of(2, 3, 5, 4), DType.FLOAT32, gpu);
+        cpu2.write(0, 0, whole.mul(2f));
+        dev2.write(0, 0, whole.to(gpu).mul(2f));
+        assertArrayEquals(cpu.toArray(), dev.toArray());
+        assertArrayEquals(cpu2.toArray(), dev2.toArray());
+    }
+
     /** The residual add and RMSNorm in one kernel give what the add and the norm give apart. */
     @ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"1, 896", "3, 1000", "2, 7", "1, 3584"})
@@ -734,7 +755,7 @@ class VulkanBackendTest {
             float[] expectedSum = sum.toArray();
             float[] expected = sum.rmsNorm(w.to(gpu), 1e-5f).toArray();
             Tensor[] fused = x.addRmsNorm(r, w.to(gpu), 1e-5f);
-            org.junit.jupiter.api.Assertions.assertArrayEquals(expectedSum, fused[0].toArray(), type.toString());
+            assertArrayEquals(expectedSum, fused[0].toArray(), type.toString());
             float[] got = fused[1].toArray();
             // the mean square may round differently (contracted multiply-adds): a unit in the last place
             float tolerance = type == DType.FLOAT32 ? 1e-6f : type == DType.FLOAT16 ? 2e-3f : 1.6e-2f;
@@ -903,8 +924,8 @@ class VulkanBackendTest {
                 scale = Math.max(scale, Math.abs(v));
             }
             String what = "table levels, " + m + " x " + rows + " x " + cols;
-            org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
-            org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(),
+            assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
+            assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(),
                     (float) (5e-5 * scale), what);
             assertTrue(onGpu.bytes()
                     < (long) rows * cols * 3 / 4, what + ": 4-bit indices and float16 scales");
@@ -973,7 +994,7 @@ class VulkanBackendTest {
         String what = bits + " bits, groups of " + group + ", " + m + " x " + rows + " x " + cols
                 + (factored ? ", factored" : "");
         assertTrue(onGpu.isPacked());
-        org.junit.jupiter.api.Assertions.assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
+        assertArrayEquals(onCpu.toArray(), onGpu.toArray(), 1e-6f, what);
         float[] expected = x.matmul(onCpu).toArray();
         double scale = 1;
         for (float v : expected) {
@@ -981,8 +1002,8 @@ class VulkanBackendTest {
         }
         // sums in another order: errors grow with the largest value
         float close = (float) (5e-5 * scale);
-        org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), close, what);
-        org.junit.jupiter.api.Assertions.assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(),
+        assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), close, what);
+        assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(),
                 close, what);
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {

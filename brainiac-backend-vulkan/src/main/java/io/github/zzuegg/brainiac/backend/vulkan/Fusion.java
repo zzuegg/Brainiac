@@ -286,8 +286,24 @@ final class Fusion {
 
     /** Generates the shader computing {@code root} at every index of the output. */
     static Kernel generate(Expr root, io.github.zzuegg.brainiac.tensor.DType type) {
+        return generate(root, type, 0, 0);
+    }
+
+    /**
+     * Generates the shader computing {@code root}, storing index {@code i} at
+     * {@code (i / inner) * outerStride + i % inner} of the output: a write into rows of a
+     * larger array, such as a step of a key/value cache. An {@code inner} of 0 stores at {@code i}.
+     */
+    static Kernel generate(Expr root, io.github.zzuegg.brainiac.tensor.DType type, int inner, int outerStride) {
         Gen g = new Gen(type);
         String v = g.eval(root, "i0");
+        String at = "i0";
+        if (inner > 0) {
+            int w = g.words.size();
+            g.words.add(inner);
+            g.words.add(outerStride);
+            at = "(i0 / uint(m.w[" + w + "])) * uint(m.w[" + (w + 1) + "]) + i0 % uint(m.w[" + w + "])";
+        }
         StringBuilder src = new StringBuilder();
         src.append("layout(local_size_x = GROUP) in;\n");
         String table = " uint64_t p[" + Math.max(1, g.pointers.size()) + "]; float c["
@@ -325,7 +341,7 @@ final class Fusion {
         src.append("void main() {\n    uint i0 = gid();\n    if (i0 >= pc.n) return;\n");
         src.append(inPush ? "#define m pc\n" : "    Meta m = pc.m;\n");
         src.append(g.body);
-        src.append("    STORE(pc.out_, i0, ").append(v).append(");\n}\n");
+        src.append("    STORE(pc.out_, ").append(at).append(", ").append(v).append(");\n}\n");
         return new Kernel(src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
                 List.copyOf(g.words), inPush);
     }

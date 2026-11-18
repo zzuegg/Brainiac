@@ -932,10 +932,72 @@ public final class VulkanBackend implements Backend {
                 return;
             }
         }
+        if (vs(in).pending != null && inOffset == 0 && vs(in).dtype == z.dtype && n == vs(in).size
+                && Arrays.equals(inStrides, contiguous(shape)) && n < Integer.MAX_VALUE) {
+            int[] rows = rows(shape, outStrides);
+            if (rows != null) {
+                // a pending value written into part of an array (a key/value cache step): its
+                // shader stores there directly, without computing it into a temporary first
+                eager(z);
+                writePending(vs(in), z, outOffset, n, rows[0], rows[1]);
+                return;
+            }
+        }
         eager(vs(in), z);
         VkStorage x = as(vs(in), z.dtype);
         copy(x, inOffset, inStrides, shape, z, outOffset, outStrides, n);
         done(x, vs(in));
+    }
+
+    /**
+     * Where contiguous values of {@code shape} land in an array with {@code outStrides}, when
+     * that is rows of {@code inner} values {@code outerStride} apart: those two, else null.
+     */
+    private static int[] rows(int[] shape, long[] outStrides) {
+        int d = shape.length - 1;
+        long inner = 1;
+        while (d >= 0 && (shape[d] == 1 || outStrides[d] == inner)) {
+            inner *= shape[d];
+            d--;
+        }
+        long outer = -1;
+        long count = 1;
+        for (; d >= 0; d--) {
+            if (shape[d] == 1) {
+                continue;
+            }
+            if (outer < 0) {
+                outer = outStrides[d];
+            } else if (outStrides[d] != outer * count) {
+                return null;
+            }
+            count *= shape[d];
+        }
+        if (inner > Integer.MAX_VALUE || outer > Integer.MAX_VALUE) {
+            return null;
+        }
+        return new int[] {(int) inner, outer < 0 ? (int) inner : (int) outer};
+    }
+
+    /** Computes {@code in}'s pending value into rows of {@code z} (see {@link #rows}); {@code in} keeps it. */
+    private void writePending(VkStorage in, VkStorage z, long outOffset, long n, int inner, int outerStride) {
+        Fusion.Kernel k = Fusion.generate(in.pending, z.dtype, inner, outerStride);
+        String name = fusedPipeline(k.source(), z.dtype);
+        VkContext.Slot[] reads = new VkContext.Slot[k.loads().size()];
+        for (int i = 0; i < reads.length; i++) {
+            reads[i] = k.loads().get(i).slot();
+        }
+        long out = z.address(outOffset);
+        if (k.inPush()) {
+            ByteBuffer p = vk.push().putLong(out).putInt((int) n).putInt(0);
+            k.writeMeta(p, Fusion.Kernel.PUSH_TABLE);
+            p.position(Fusion.Kernel.PUSH_TABLE + k.metaBytes());
+        } else {
+            long meta = vk.hostData(k.metaBytes(), k::writeMeta);
+            vk.push().putLong(meta).putLong(out).putInt((int) n);
+        }
+        vk.dispatch(name, groups(n), z.slot(), reads);
+        fusedDispatches++;
     }
 
     private void copy(VkStorage x, long inOffset, long[] inStrides, int[] shape, VkStorage z, long outOffset,
