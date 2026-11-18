@@ -527,6 +527,23 @@ final class VkContext {
         }
     }
 
+    /**
+     * The driver's room ({@link #deviceRoom}) at the first allocation, or -1 before it. Under
+     * Windows the budget can grow past what is free when other programs hold device memory
+     * (an RX 9070 XT with 6.5 GB free let a 14B model allocate 11 GB, paged by the system,
+     * until even spilling failed), so this process takes at most what was free when it began.
+     */
+    private long startRoom = -1;
+
+    /** @return device-heap bytes this process may still allocate: the budget's room, at most what was free at the start */
+    private long room() {
+        long now = deviceRoom();
+        if (startRoom < 0) {
+            startRoom = now;
+        }
+        return startRoom == Long.MAX_VALUE ? now : Math.min(now, startRoom - allocated);
+    }
+
     /** @return device-heap bytes this process may still allocate by the driver's budget; MAX_VALUE if unknown */
     private long deviceRoom() {
         if (!memoryBudget) {
@@ -859,9 +876,9 @@ final class VkContext {
             if (!spill && type == deviceLocalType && simulatedLimit > 0 && allocated + size > simulatedLimit) {
                 throw new OutOfDeviceMemory("simulated: out of device memory");
             }
-            if (!spill && type == deviceLocalType && spillType >= 0 && deviceRoom() < size + HEADROOM) {
+            if (!spill && type == deviceLocalType && spillType >= 0 && room() < size + HEADROOM) {
                 throw new OutOfDeviceMemory("device memory budget reached allocating " + (size >> 20) + " MB ("
-                        + (allocated >> 20) + " MB allocated)");
+                        + (allocated >> 20) + " MB allocated, " + (room() >> 20) + " MB room)");
             }
             VkBufferCreateInfo bci = VkBufferCreateInfo.calloc(st).sType$Default().size(size)
                     .usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
@@ -892,7 +909,9 @@ final class VkContext {
                 if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
                     throw new OutOfDeviceMemory("out of Vulkan memory allocating " + (size >> 20) + " MB ("
                             + (allocated >> 20) + " MB allocated, " + (spilled >> 20) + " MB spilled; memory type "
-                            + type + (spill ? ", spilling" : "") + ", result " + r + ", " + allocations + " allocations)");
+                            + type + (spill ? ", spilling" : "") + ", result " + r + ", " + allocations + " allocations, "
+                            + (deviceRoom() == Long.MAX_VALUE ? "no budget" : (deviceRoom() >> 20) + " MB left by the budget, "
+                            + (startRoom >> 20) + " MB at the start") + ")");
                 }
                 check(r, "vkAllocateMemory");
             }

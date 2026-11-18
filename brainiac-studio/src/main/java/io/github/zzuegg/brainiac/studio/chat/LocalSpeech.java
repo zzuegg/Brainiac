@@ -66,6 +66,9 @@ public final class LocalSpeech {
     private Path voicePath;
     private SpeechToText ears;
     private Path earsPath;
+    private String voiceOn;
+    private String earsOn;
+    private final LocalDevice where;
 
     LocalSpeech(Supplier<List<Path>> places) {
         this(places, null);
@@ -79,8 +82,20 @@ public final class LocalSpeech {
      *     {@code .txt}), or null for none
      */
     LocalSpeech(Supplier<List<Path>> places, Path saved) {
+        this(places, saved, new LocalDevice(null));
+    }
+
+    /**
+     * Finds speech models in some places and runs them on the device chosen.
+     *
+     * @param places the model folders
+     * @param saved where voices made from recordings go, or null for none
+     * @param where the device this PC's models run on
+     */
+    LocalSpeech(Supplier<List<Path>> places, Path saved, LocalDevice where) {
         this.places = places;
         this.saved = saved;
+        this.where = where;
     }
 
     /**
@@ -331,8 +346,8 @@ public final class LocalSpeech {
         return p;
     }
 
-    private static Device device() {
-        return Device.best();
+    private Device device() {
+        return where.device();
     }
 
     // most speech models are small and checked only in full precision; Orpheus (3B, released in
@@ -412,14 +427,15 @@ public final class LocalSpeech {
 
     private TextToSpeech loadVoice(String id) throws IOException {
         Path p = path(id, SpeechModels.Kind.TEXT_TO_SPEECH);
-        if (voice != null && p.equals(voicePath)) {
+        Device d = device();
+        if (voice != null && p.equals(voicePath) && d.name().equals(voiceOn)) {
             return voice;
         }
         if (voice != null) {
             voice.close();
             voice = null;
         }
-        Device d = device();
+        voiceOn = d.name();
         voice = SpeechModels.textToSpeech(p, d, dtype(d, family(p)));
         voicePath = p;
         if (voice instanceof F5Speech f5) {
@@ -483,14 +499,15 @@ public final class LocalSpeech {
 
     private SpeechToText loadEars(String id) throws IOException {
         Path p = path(id, SpeechModels.Kind.SPEECH_TO_TEXT);
-        if (ears != null && p.equals(earsPath)) {
+        Device d = device();
+        if (ears != null && p.equals(earsPath) && d.name().equals(earsOn)) {
             return ears;
         }
         if (ears != null) {
             ears.close();
             ears = null;
         }
-        Device d = device();
+        earsOn = d.name();
         ears = SpeechModels.speechToText(p, d, dtype(d));
         earsPath = p;
         LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to transcribe on " + d);

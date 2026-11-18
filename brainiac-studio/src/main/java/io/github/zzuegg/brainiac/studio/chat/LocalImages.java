@@ -106,12 +106,19 @@ public final class LocalImages {
     private final Supplier<List<Path>> places;
     private final Supplier<HuggingFaceHub> hub;
     private final Map<Path, Found> seen = new ConcurrentHashMap<>();
+    private final LocalDevice where;
     private ImageGenerator loaded;
     private Path loadedPath;
+    private String loadedOn;
 
     LocalImages(Supplier<List<Path>> places, Supplier<HuggingFaceHub> hub) {
+        this(places, hub, new LocalDevice(null));
+    }
+
+    LocalImages(Supplier<List<Path>> places, Supplier<HuggingFaceHub> hub, LocalDevice where) {
         this.places = places;
         this.hub = hub;
+        this.where = where;
     }
 
     /**
@@ -265,7 +272,8 @@ public final class LocalImages {
     }
 
     private ImageGenerator load(Path path) throws IOException {
-        if (loaded != null && path.equals(loadedPath)) {
+        Device device = where.device();
+        if (loaded != null && path.equals(loadedPath) && device.name().equals(loadedOn)) {
             return loaded;
         }
         if (loaded != null) {
@@ -279,12 +287,12 @@ public final class LocalImages {
             LOG.log(System.Logger.Level.INFO, "fetching the CLIP vocabulary that single-file checkpoints need");
             StableDiffusion.downloadTokenizer(hub.get());
         }
-        Device device = Device.best();
         // the type suits the family and device; Flux's weights are quantized as far as memory needs,
         // and a model that cannot fit is refused before anything is loaded, saying how much it needs
         DType dtype = ImageGenerator.dtype(path, device);
         loaded = ImageGenerator.load(path, device, dtype);
         loadedPath = path;
+        loadedOn = device.name();
         LOG.log(System.Logger.Level.INFO, "loaded " + path.getFileName() + " (" + label(loaded.family()) + ", " + dtype
                 + ") on " + device);
         return loaded;

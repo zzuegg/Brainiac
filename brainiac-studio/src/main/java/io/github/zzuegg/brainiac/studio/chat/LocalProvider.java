@@ -34,11 +34,13 @@ final class LocalProvider implements ChatProvider {
     private final List<Path> folders;
     private final Path placesFile;
     private final List<Path> added = new ArrayList<>();
+    private final LocalDevice device;
     private Loaded loaded;
     private volatile LocalImages images;
     private volatile LocalSpeech speech;
 
-    private record Loaded(Path path, Generator generator, PretrainedTokenizer tokenizer, Set<Integer> stops) {
+    private record Loaded(Path path, Device device, Generator generator, PretrainedTokenizer tokenizer,
+            Set<Integer> stops) {
     }
 
     LocalProvider(List<Path> folders) {
@@ -48,6 +50,7 @@ final class LocalProvider implements ChatProvider {
     LocalProvider(List<Path> folders, Path placesFile) {
         this.folders = List.copyOf(folders);
         this.placesFile = placesFile;
+        this.device = new LocalDevice(placesFile == null ? null : placesFile.resolveSibling("local-device.txt"));
         if (placesFile != null && Files.isRegularFile(placesFile)) {
             try {
                 for (String line : Files.readAllLines(placesFile)) {
@@ -162,7 +165,16 @@ final class LocalProvider implements ChatProvider {
             List<Path> places = new ArrayList<>(folders);
             places.addAll(added());
             return places;
-        }, hub);
+        }, hub, device);
+    }
+
+    /**
+     * Returns where this PC's models run.
+     *
+     * @return the choice
+     */
+    LocalDevice device() {
+        return device;
     }
 
     /**
@@ -184,7 +196,7 @@ final class LocalProvider implements ChatProvider {
             List<Path> places = new ArrayList<>(folders);
             places.addAll(added());
             return places;
-        }, voices);
+        }, voices, device);
     }
 
     /**
@@ -285,9 +297,9 @@ final class LocalProvider implements ChatProvider {
         if (path == null) {
             throw new IOException("no local model named " + request.model() + " in " + folders);
         }
-        if (loaded == null || !loaded.path().equals(path)) {
+        Device device = this.device.device();
+        if (loaded == null || !loaded.path().equals(path) || !loaded.device().name().equals(device.name())) {
             loaded = null;   // let the old weights go before loading new ones
-            Device device = Device.best();
             DType dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16
                     : DType.FLOAT32;
             Llama model = Llama.load(path, device, dtype);
@@ -302,7 +314,7 @@ final class LocalProvider implements ChatProvider {
             PretrainedTokenizer tok = PretrainedTokenizer.load(path);
             // a chat sends its whole history each turn; only the new part is read again
             Generator generator = new Generator(model, tok).cachePrefixes(4);
-            loaded = new Loaded(path, generator, tok, Generator.stopTokens(path, tok));
+            loaded = new Loaded(path, device, generator, tok, Generator.stopTokens(path, tok));
         }
         List<Map<String, Object>> history = new ArrayList<>();
         if (!request.system().isBlank()) {

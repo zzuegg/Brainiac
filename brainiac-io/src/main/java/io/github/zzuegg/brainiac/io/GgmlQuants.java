@@ -28,13 +28,58 @@ final class GgmlQuants {
     }
 
     /** A sink that keeps the levels of a row and the scale and offset of each of its groups. */
-    record Row(byte[] levels, float[] scales, float[] offsets, int group, byte[] scaleCodes, byte[] offsetCodes,
-            float[] d, float[] m) implements Sink {
+    static final class Row implements Sink {
+        private final byte[] levels;
+        private final float[] scales;
+        private final float[] offsets;
+        private final byte[] scaleCodes;
+        private final byte[] offsetCodes;
+        private final float[] d;
+        private final float[] m;
+        private final int group;
+        // groups are powers of two (16 or 32) in every format: a mask and a shift, not a
+        // division per value, which made decoding 1.4 to 2.5 times slower
+        private final int shift;
 
         Row(int length, int group) {
-            this(new byte[length], new float[length / group], new float[length / group], group,
-                    new byte[length / group], new byte[length / group], new float[length / group],
-                    new float[length / group]);
+            int groups = length / group;
+            this.levels = new byte[length];
+            this.scales = new float[groups];
+            this.offsets = new float[groups];
+            this.scaleCodes = new byte[groups];
+            this.offsetCodes = new byte[groups];
+            this.d = new float[groups];
+            this.m = new float[groups];
+            this.group = group;
+            this.shift = Integer.bitCount(group) == 1 ? Integer.numberOfTrailingZeros(group) : -1;
+        }
+
+        byte[] levels() {
+            return levels;
+        }
+
+        float[] scales() {
+            return scales;
+        }
+
+        float[] offsets() {
+            return offsets;
+        }
+
+        byte[] scaleCodes() {
+            return scaleCodes;
+        }
+
+        byte[] offsetCodes() {
+            return offsetCodes;
+        }
+
+        float[] d() {
+            return d;
+        }
+
+        float[] m() {
+            return m;
         }
 
         @Override
@@ -55,14 +100,18 @@ final class GgmlQuants {
             }
         }
 
-        // groups are powers of two (16 or 32) in every format: a mask and a shift, not a
-        // division per value, which made decoding 1.4 to 2.5 times slower
+        /** Sets the scale and offset of the group starting at {@code i}. */
+        void group(int i, float scale, float offset) {
+            scales[groupOf(i)] = scale;
+            offsets[groupOf(i)] = offset;
+        }
+
         private boolean startsGroup(int i) {
-            return Integer.bitCount(group) == 1 ? (i & (group - 1)) == 0 : i % group == 0;
+            return shift >= 0 ? (i & (group - 1)) == 0 : i % group == 0;
         }
 
         private int groupOf(int i) {
-            return Integer.bitCount(group) == 1 ? i >>> Integer.numberOfTrailingZeros(group) : i / group;
+            return shift >= 0 ? i >>> shift : i / group;
         }
     }
 
@@ -145,6 +194,23 @@ final class GgmlQuants {
     /** Reads every value as a level, a scale and an offset. */
     static void levels(Gguf.Format format, MemorySegment m, long count, Sink y) {
         int blocks = (int) (count / format.block);
+        if (y instanceof Row row && (format == Gguf.Format.Q4_K || format == Gguf.Format.Q6_K
+                || format == Gguf.Format.Q8_0)) {
+            // the formats of most models, decoded from an array copy of the blocks: no bounds
+            // check and no call per value
+            byte[] b = new byte[Math.toIntExact((long) blocks * format.bytes)];
+            MemorySegment.copy(m, ValueLayout.JAVA_BYTE, 0, b, 0, b.length);
+            for (int k = 0; k < blocks; k++) {
+                int at = k * format.bytes;
+                int o = k * format.block;
+                switch (format) {
+                    case Q4_K -> q4k(b, at, row, o);
+                    case Q6_K -> q6k(b, at, row, o);
+                    default -> q80(b, at, row, o);
+                }
+            }
+            return;
+        }
         for (int b = 0; b < blocks; b++) {
             long at = (long) b * format.bytes;
             int o = b * format.block;
@@ -510,6 +576,85 @@ final class GgmlQuants {
         }
         return new int[] {(u8(m, q + j + 4) & 0xF) | ((u8(m, q + j - 4) >>> 6) << 4),
                 (u8(m, q + j + 4) >>> 4) | ((u8(m, q + j) >>> 6) << 4)};
+    }
+
+    private static float f16(byte[] b, int at) {
+        return Float.float16ToFloat((short) ((b[at] & 0xFF) | (b[at + 1] << 8)));
+    }
+
+    private static void q80(byte[] b, int at, Row y, int o) {
+        float d = f16(b, at);
+        y.factors(o, 1, 0, d, 0);
+        y.group(o, d, 0);
+        System.arraycopy(b, at + 2, y.levels, o, 32);
+    }
+
+    /** As q4k, from an array into a row. */
+    private static void q4k(byte[] b, int at, Row y, int o) {
+        float d = f16(b, at);
+        float min = f16(b, at + 2);
+        int scales = at + 4;
+        int q = at + 16;
+        byte[] levels = y.levels;
+        int out = o;
+        for (int is = 0; is < 8; is += 2) {
+            int s0;
+            int m0;
+            int s1;
+            int m1;
+            if (is < 4) {
+                s0 = b[scales + is] & 63;
+                m0 = b[scales + is + 4] & 63;
+                s1 = b[scales + is + 1] & 63;
+                m1 = b[scales + is + 5] & 63;
+            } else {
+                s0 = (b[scales + is + 4] & 0xF) | (((b[scales + is - 4] & 0xFF) >>> 6) << 4);
+                m0 = ((b[scales + is + 4] & 0xFF) >>> 4) | (((b[scales + is] & 0xFF) >>> 6) << 4);
+                s1 = (b[scales + is + 5] & 0xF) | (((b[scales + is - 3] & 0xFF) >>> 6) << 4);
+                m1 = ((b[scales + is + 5] & 0xFF) >>> 4) | (((b[scales + is + 1] & 0xFF) >>> 6) << 4);
+            }
+            y.factors(out, s0, m0, d, -min);
+            y.group(out, d * s0, -(min * m0));
+            y.factors(out + 32, s1, m1, d, -min);
+            y.group(out + 32, d * s1, -(min * m1));
+            for (int l = 0; l < 32; l++) {
+                int v = b[q + l];
+                levels[out + l] = (byte) (v & 0xF);
+                levels[out + 32 + l] = (byte) ((v >>> 4) & 0xF);
+            }
+            out += 64;
+            q += 32;
+        }
+    }
+
+    /** As q6k, from an array into a row. */
+    private static void q6k(byte[] b, int at, Row y, int o) {
+        int ql = at;
+        int qh = at + 128;
+        int sc = at + 192;
+        float d = f16(b, at + 208);
+        byte[] levels = y.levels;
+        int out = o;
+        for (int n = 0; n < 256; n += 128) {
+            for (int g = 0; g < 8; g++) {
+                int code = b[sc + (g % 2) + (g / 2) * 2];
+                y.factors(out + g * 16, code, 0, d, 0);
+                y.group(out + g * 16, d * code, 0);
+            }
+            for (int l = 0; l < 32; l++) {
+                int h = b[qh + l] & 0xFF;
+                int lo = b[ql + l] & 0xFF;
+                int hi = b[ql + l + 32] & 0xFF;
+                levels[out + l] = (byte) (((lo & 0xF) | ((h & 3) << 4)) - 32);
+                levels[out + l + 32] = (byte) (((hi & 0xF) | (((h >>> 2) & 3) << 4)) - 32);
+                levels[out + l + 64] = (byte) (((lo >>> 4) | (((h >>> 4) & 3) << 4)) - 32);
+                levels[out + l + 96] = (byte) (((hi >>> 4) | (((h >>> 6) & 3) << 4)) - 32);
+            }
+            out += 128;
+            ql += 64;
+            qh += 32;
+            sc += 8;
+        }
     }
 
     private static void q4k(MemorySegment m, long at, Sink y, int o) {

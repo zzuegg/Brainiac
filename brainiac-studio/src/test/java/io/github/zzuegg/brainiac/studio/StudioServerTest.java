@@ -100,6 +100,25 @@ class StudioServerTest {
         }
     }
 
+    private static HttpResponse<String> post(String path, String json) throws Exception {
+        return HTTP.send(HttpRequest.newBuilder(studio.uri().resolve(path)).header("X-Studio-Token", studio.token())
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(json)).build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    void theDeviceThisPcsModelsRunOnCanBeChosenAndIsKept() throws Exception {
+        Map<String, Object> first = Json.object(Json.parse(get("/api/local/device", true).body()));
+        assertEquals("best", first.get("choice"));
+        String cpu = io.github.zzuegg.brainiac.tensor.Device.cpu().name();
+        Map<String, Object> chosen = Json.object(Json.parse(post("/api/local/device", Json.write(Map.of("device", cpu))).body()));
+        assertEquals(cpu, chosen.get("choice"));
+        assertEquals(cpu, chosen.get("device"));
+        assertEquals(400, post("/api/local/device", "{\"device\": \"no such card\"}").statusCode());
+        assertEquals(cpu, Json.object(Json.parse(get("/api/local/device", true).body())).get("choice"));
+        assertEquals(200, post("/api/local/device", "{\"device\": \"best\"}").statusCode());
+    }
+
     @Test
     void listsCapabilitiesOfThePresentModules() throws Exception {
         Map<String, Object> body = Json.object(Json.parse(get("/api/capabilities", true).body()));
