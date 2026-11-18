@@ -174,6 +174,8 @@ public final class VastRentals implements AutoCloseable {
         volatile boolean asking;
         volatile Tunnel tunnel;
         volatile Thread thread;
+        /** The runner that rented it, or null when the user did. */
+        volatile String tag;
 
         Rental(String key, VastOffer offer, double pricePerHour, long until) {
             this.key = key;
@@ -225,6 +227,9 @@ public final class VastRentals implements AutoCloseable {
                 m.put("leftover", true);
             }
             m.put("gpu", gpu);
+            if (tag != null) {
+                m.put("tag", tag);
+            }
             m.put("pricePerHour", pricePerHour);
             m.put("stage", stage);
             m.put("started", started);
@@ -400,6 +405,19 @@ public final class VastRentals implements AutoCloseable {
      * @throws IllegalStateException if renting cannot work here
      */
     public Map<String, Object> rent(VastOffer offer, double agreedPrice, double hours) {
+        return rent(offer, agreedPrice, hours, null);
+    }
+
+    /**
+     * Rents a machine for a runner, which finds it again by its tag.
+     *
+     * @param offer the offer
+     * @param agreedPrice the price per hour agreed to
+     * @param hours how long it may run before it is destroyed
+     * @param tag the runner's name, or null
+     * @return the rental
+     */
+    public Map<String, Object> rent(VastOffer offer, double agreedPrice, double hours, String tag) {
         double seenPrice = offer.dollarsPerHour();
         if (unavailable != null) {
             throw new IllegalStateException(unavailable);
@@ -418,6 +436,7 @@ public final class VastRentals implements AutoCloseable {
             }
             Rental r = new Rental("r" + counter.incrementAndGet(), offer, seenPrice,
                     System.currentTimeMillis() + (long) (hours * 3_600_000));
+            r.tag = tag;
             rentals.put(r.key, r);
             // what was asked for, before the setup moves it on
             Map<String, Object> first = r.toJson();

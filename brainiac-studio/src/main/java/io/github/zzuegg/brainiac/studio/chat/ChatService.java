@@ -25,6 +25,8 @@ import java.util.function.Consumer;
  */
 public final class ChatService {
 
+    private static final System.Logger LOG = System.getLogger(ChatService.class.getName());
+
     /** The model key that lets the studio choose. */
     public static final String AUTO = "auto";
 
@@ -212,6 +214,124 @@ public final class ChatService {
     @FunctionalInterface
     private interface Call<T> {
         T run() throws IOException, InterruptedException;
+    }
+
+    /**
+     * How a project runs one kind of task.
+     *
+     * @param model the model Auto means, as {@code provider/id}, or null to pick as usual
+     * @param policy what to do when a model on this PC does not fit in GPU memory, or null for the
+     *     studio's own choice
+     * @param fallback the model ({@code provider/id}, such as one on a worker host or a rented
+     *     machine) a task goes to when the policy sends it elsewhere, or null for none
+     */
+    public record Route(String model, GpuResidency.Policy policy, String fallback) {
+    }
+
+    /** What a project allows and how it routes its tasks, for the requests made in it. */
+    public interface Scope {
+
+        /** @return the project's name, for messages */
+        String name();
+
+        /**
+         * Returns the route for a kind of task.
+         *
+         * @param medium {@code text}, {@code image}, {@code speech}, {@code transcribe} or {@code video}
+         * @return the route, or null to run it as the studio does
+         */
+        Route route(String medium);
+
+        /**
+         * Says whether a model may be used.
+         *
+         * @param key the model, {@code provider/id}
+         * @return whether the project allows it
+         */
+        boolean allows(String key);
+
+        /**
+         * Returns a runner a route names with {@code vast:<name>}.
+         *
+         * @param name the runner's name
+         * @return what to rent and fetch, as JSON, or null if there is none
+         */
+        default Map<String, Object> runner(String name) {
+            return null;
+        }
+    }
+
+    /** Sets a runner up and names the model on it, as {@code provider/id}. */
+    @FunctionalInterface
+    public interface Runners {
+        /**
+         * Sets it up.
+         *
+         * @param scope the project
+         * @param name the runner's name
+         * @param runner what to rent and fetch
+         * @return the model's key on it
+         * @throws IOException if it cannot be set up
+         * @throws InterruptedException if interrupted while waiting
+         */
+        String ensure(Scope scope, String name, Map<String, Object> runner) throws IOException, InterruptedException;
+    }
+
+    private volatile Runners runners;
+
+    /**
+     * Sets up the runners routes name with {@code vast:<name>}.
+     *
+     * @param runners sets them up
+     */
+    public void runners(Runners runners) {
+        this.runners = runners;
+    }
+
+    // a route's fallback: a model key, or a runner that is set up first
+    private ModelInfo fallback(String fallback, String medium) throws IOException, InterruptedException {
+        if (fallback.startsWith("vast:")) {
+            String name = fallback.substring(5);
+            Map<String, Object> r = SCOPE.isBound() ? SCOPE.get().runner(name) : null;
+            if (r == null || runners == null) {
+                throw new IOException("there is no runner " + name + " in this project");
+            }
+            return resolveAny(runners.ensure(SCOPE.get(), name, r), medium);
+        }
+        return resolve(fallback, medium);
+    }
+
+    /** The project the requests made now belong to; unbound, nothing is limited or routed. */
+    public static final ScopedValue<Scope> SCOPE = ScopedValue.newInstance();
+
+    @FunctionalInterface
+    private interface Body<T> {
+        T run(ModelInfo target) throws IOException, InterruptedException;
+    }
+
+    // runs a task on its model with the project's scheduling policy; when the policy sends it
+    // elsewhere and the route names where, it goes there
+    private <T> T routed(String medium, ModelInfo target, Body<T> body) throws IOException, InterruptedException {
+        Route r = SCOPE.isBound() ? SCOPE.get().route(medium) : null;
+        try {
+            // a policy chosen for this call (the user's answer to a full GPU) wins over the route's
+            if (r == null || r.policy() == null || GpuResidency.POLICY.isBound()) {
+                return body.run(target);
+            }
+            try {
+                return ScopedValue.where(GpuResidency.POLICY, r.policy()).call(() -> body.run(target));
+            } catch (IOException | InterruptedException | RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(e);
+            }
+        } catch (GpuResidency.NoRoom e) {
+            if (e.policy() == GpuResidency.Policy.REMOTE && r != null && r.fallback() != null && !r.fallback().isBlank()) {
+                LOG.log(System.Logger.Level.INFO, "sending the " + medium + " task to " + r.fallback() + ": " + e.getMessage());
+                return body.run(fallback(r.fallback(), medium));
+            }
+            throw e;
+        }
     }
 
     /**
@@ -710,24 +830,25 @@ public final class ChatService {
     public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
             Float temperature, Sampler sampler, Format format, Consumer<ModelInfo> route, ChatListener listener)
             throws IOException, InterruptedException {
-        ModelInfo target = resolve(model, "text");
-        ChatProvider p = provider(target.provider());
-        if ("grammar".equals(format.kind()) && !p.takesGrammar()) {
-            throw new IOException(p.name() + " takes no grammar: use a JSON schema with it, or a model on this PC"
-                    + " or a worker host");
-        }
-        // a JSON answer is asked for in words too: some providers can only be asked
-        String instructions = format.kind().equals("json") && !system.toLowerCase(java.util.Locale.ROOT).contains("json")
-                ? (system.isBlank() ? "" : system.strip() + "\n\n") + Format.JSON_HINT : system;
-        route.accept(target);
-        // reasoning models that think in plain text: their <think> block goes to the thinking
-        ThinkSplitter split = new ThinkSplitter(listener, false);
-        return logged(target, "chat", () -> {
-            ChatResult r = p.chat(new ChatRequest(target.id(), instructions, messages, maxTokens, key, temperature, sampler,
-                    format), split);
-            split.finish();
-            return r;
-        }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
+        return routed("text", resolve(model, "text"), target -> {
+            ChatProvider p = provider(target.provider());
+            if ("grammar".equals(format.kind()) && !p.takesGrammar()) {
+                throw new IOException(p.name() + " takes no grammar: use a JSON schema with it, or a model on this PC"
+                        + " or a worker host");
+            }
+            // a JSON answer is asked for in words too: some providers can only be asked
+            String instructions = format.kind().equals("json") && !system.toLowerCase(java.util.Locale.ROOT).contains("json")
+                    ? (system.isBlank() ? "" : system.strip() + "\n\n") + Format.JSON_HINT : system;
+            route.accept(target);
+            // reasoning models that think in plain text: their <think> block goes to the thinking
+            ThinkSplitter split = new ThinkSplitter(listener, false);
+            return logged(target, "chat", () -> {
+                ChatResult r = p.chat(new ChatRequest(target.id(), instructions, messages, maxTokens, key, temperature, sampler,
+                        format), split);
+                split.finish();
+                return r;
+            }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
+        });
     }
 
     /**
@@ -744,15 +865,16 @@ public final class ChatService {
      */
     public Generated images(String model, String prompt, String aspect, int count, String key)
             throws IOException, InterruptedException {
-        ModelInfo target = resolve(model, "image");
-        if (provider(target.provider()).runsMedia()) {
-            return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), (step, total, preview) -> true)
-                    .generated();
-        }
-        ImageRequest request = new ImageRequest(target.id(), prompt, aspect, count, key);
-        List<Media> media = logged(target, "image", () -> remote(target).images(request),
-                r -> new long[] {-1, -1, r.size()});
-        return new Generated(target, media, save(media, "image"));
+        return routed("image", resolve(model, "image"), target -> {
+            if (provider(target.provider()).runsMedia()) {
+                return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), (step, total, preview) -> true)
+                        .generated();
+            }
+            ImageRequest request = new ImageRequest(target.id(), prompt, aspect, count, key);
+            List<Media> media = logged(target, "image", () -> remote(target).images(request),
+                    r -> new long[] {-1, -1, r.size()});
+            return new Generated(target, media, save(media, "image"));
+        });
     }
 
     /**
@@ -783,12 +905,13 @@ public final class ChatService {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("describe the picture first");
         }
-        ModelInfo target = resolve(model, "image");
-        if (!provider(target.provider()).runsMedia()) {
-            throw new IllegalArgumentException(target.key() + " does not run on this PC or on a worker host");
-        }
-        route.accept(target);
-        return drawHere(target, prompt, settings, listener);
+        return routed("image", resolve(model, "image"), target -> {
+            if (!provider(target.provider()).runsMedia()) {
+                throw new IllegalArgumentException(target.key() + " does not run on this PC or on a worker host");
+            }
+            route.accept(target);
+            return drawHere(target, prompt, settings, listener);
+        });
     }
 
     /**
@@ -849,15 +972,16 @@ public final class ChatService {
         if (prompt == null || prompt.isBlank()) {
             throw new IllegalArgumentException("describe the video first");
         }
-        ModelInfo target = resolve(model, "video");
-        ChatProvider p = provider(target.provider());
-        if (!p.makesVideo()) {
-            throw new IllegalArgumentException(target.key() + " cannot make clips through the studio yet");
-        }
-        route.accept(target);
-        LocalVideos.Clip clip = logged(target, "video", () -> p.video(target.id(), prompt, settings, listener),
-                r -> new long[] {-1, -1, 1});
-        return new Filmed(target, save(List.of(clip.media()), "video").get(0), clip);
+        return routed("video", resolve(model, "video"), target -> {
+            ChatProvider p = provider(target.provider());
+            if (!p.makesVideo()) {
+                throw new IllegalArgumentException(target.key() + " cannot make clips through the studio yet");
+            }
+            route.accept(target);
+            LocalVideos.Clip clip = logged(target, "video", () -> p.video(target.id(), prompt, settings, listener),
+                    r -> new long[] {-1, -1, 1});
+            return new Filmed(target, save(List.of(clip.media()), "video").get(0), clip);
+        });
     }
 
     /**
@@ -891,17 +1015,18 @@ public final class ChatService {
      */
     public Generated speech(String model, String text, String voice, double speed, String instructions, String format,
             String key) throws IOException, InterruptedException {
-        ModelInfo target = resolve(model, "speech");
-        ChatProvider where = provider(target.provider());
-        if (where.runsMedia()) {
-            Media wav = logged(target, "speech", () -> where.speak(target.id(), text, voice, speed, () -> false),
+        return routed("speech", resolve(model, "speech"), target -> {
+            ChatProvider where = provider(target.provider());
+            if (where.runsMedia()) {
+                Media wav = logged(target, "speech", () -> where.speak(target.id(), text, voice, speed, () -> false),
+                        r -> new long[] {-1, -1, text.length()});
+                return new Generated(target, List.of(wav), save(List.of(wav), "speech"));
+            }
+            SpeechRequest request = new SpeechRequest(target.id(), text, voice, speed, instructions, format, key);
+            Media audio = logged(target, "speech", () -> remote(target).speech(request),
                     r -> new long[] {-1, -1, text.length()});
-            return new Generated(target, List.of(wav), save(List.of(wav), "speech"));
-        }
-        SpeechRequest request = new SpeechRequest(target.id(), text, voice, speed, instructions, format, key);
-        Media audio = logged(target, "speech", () -> remote(target).speech(request),
-                r -> new long[] {-1, -1, text.length()});
-        return new Generated(target, List.of(audio), save(List.of(audio), "speech"));
+            return new Generated(target, List.of(audio), save(List.of(audio), "speech"));
+        });
     }
 
     /**
@@ -930,15 +1055,16 @@ public final class ChatService {
     public Transcribed transcribe(String model, byte[] wav, LocalSpeech.Listening listening,
             Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment, Consumer<ModelInfo> route,
             java.util.function.BooleanSupplier stop) throws IOException, InterruptedException {
-        ModelInfo target = AUTO.equals(model) ? firstTranscriber() : resolve(model, "transcribe");
-        ChatProvider where = provider(target.provider());
-        if (!where.runsMedia()) {
-            throw new IllegalArgumentException(target.key() + " does not transcribe on this PC or on a worker host");
-        }
-        route.accept(target);
-        return logged(target, "transcribe",
-                () -> new Transcribed(target, where.transcribe(target.id(), wav, listening, onSegment, stop)),
-                r -> new long[] {-1, -1, Math.round(r.transcription().seconds())});
+        return routed("transcribe", AUTO.equals(model) && routeFor("transcribe") == null ? firstTranscriber() : resolve(model, "transcribe"), target -> {
+            ChatProvider where = provider(target.provider());
+            if (!where.runsMedia()) {
+                throw new IllegalArgumentException(target.key() + " does not transcribe on this PC or on a worker host");
+            }
+            route.accept(target);
+            return logged(target, "transcribe",
+                    () -> new Transcribed(target, where.transcribe(target.id(), wav, listening, onSegment, stop)),
+                    r -> new long[] {-1, -1, Math.round(r.transcription().seconds())});
+        });
     }
 
     /**
@@ -1026,7 +1152,26 @@ public final class ChatService {
     }
 
     private ModelInfo resolve(String model, String medium) throws IOException {
+        ModelInfo target = resolveAny(model, medium);
+        if (SCOPE.isBound() && !SCOPE.get().allows(target.key())) {
+            throw new IllegalArgumentException("the project " + SCOPE.get().name() + " does not allow " + target.key()
+                    + ": allow it in the project's settings or pick another model");
+        }
+        return target;
+    }
+
+    // the route's model when Auto is asked for in a project that routes this kind of task
+    private Route routeFor(String medium) {
+        Route r = SCOPE.isBound() ? SCOPE.get().route(medium) : null;
+        return r == null || r.model() == null || r.model().isBlank() ? null : r;
+    }
+
+    private ModelInfo resolveAny(String model, String medium) throws IOException {
         ModelInfo target;
+        Route routed = AUTO.equals(model) ? routeFor(medium) : null;
+        if (routed != null && !AUTO.equals(routed.model())) {
+            return resolveAny(routed.model(), medium);
+        }
         if (AUTO.equals(model)) {
             target = pickAuto(listAll(false), medium);
             if (target == null) {
