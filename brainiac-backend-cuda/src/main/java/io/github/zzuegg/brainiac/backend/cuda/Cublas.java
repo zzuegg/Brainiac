@@ -158,6 +158,7 @@ final class Cublas {
             case FLOAT64 -> CUDA_R_64F;
             case FLOAT16 -> CUDA_R_16F;
             case BFLOAT16 -> CUDA_R_16BF;
+            default -> throw new IllegalArgumentException("cuBLAS has no " + dtype + " products");
         };
     }
 

@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.io.Json;
 import io.github.zzuegg.brainiac.studio.train.Hosts;
 import io.github.zzuegg.brainiac.studio.train.TrainingRun;
 import io.github.zzuegg.brainiac.studio.train.TrainingService;
+import io.github.zzuegg.brainiac.studio.train.WorkerClient;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,10 @@ import java.util.Map;
  *   <li>{@code GET /api/hosts}: the other machines runs can train on, and how each is; {@code POST
  *       /api/hosts {name, url, token}} adds one after checking it answers, and {@code {id, remove: true}}
  *       forgets one. Tokens are never sent back.
+ *   <li>{@code POST /api/train/predict {model, values? | data?, index?}} runs a saved model on one sample.
+ *   <li>{@code POST /api/hosts/download {host, repo, option}} has a host download a Hugging Face model
+ *       itself, so it can chat with it; {@code POST /api/hosts/downloads {host}} lists that host's
+ *       downloads and {@code POST /api/hosts/cancel {host, id}} stops one.
  * </ul>
  */
 final class TrainRoutes {
@@ -35,6 +40,28 @@ final class TrainRoutes {
         this.training = training;
     }
 
+    private interface HostCall {
+        Object answer(WorkerClient client, Map<String, Object> body) throws java.io.IOException;
+    }
+
+    // a call passed on to one worker host: 404 for a host that is not known, 400 with the worker's own words
+    private void onHost(com.sun.net.httpserver.HttpExchange ex, HostCall call) throws java.io.IOException {
+        Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+        Hosts.Host host = training.hosts().find(Json.string(body, "host", "")).orElse(null);
+        if (host == null) {
+            Exchanges.error(ex, 404, "no such host");
+            return;
+        }
+        Object out;
+        try {
+            out = call.answer(training.hosts().client(host), body);
+        } catch (java.io.IOException e) {
+            Exchanges.error(ex, 400, host.name() + ": " + e.getMessage());
+            return;
+        }
+        Exchanges.json(ex, 200, out);
+    }
+
     void register(StudioServer server) {
         server.get("/api/train/options", ex -> Exchanges.json(ex, 200, training.optionsJson()));
         server.get("/api/train/data", ex -> Exchanges.json(ex, 200, training.data().list()));
@@ -42,6 +69,14 @@ final class TrainRoutes {
         server.post("/api/train/check", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             Exchanges.json(ex, 200, training.check(Json.object(body.get("spec"))));
+        });
+        server.post("/api/train/predict", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            try {
+                Exchanges.json(ex, 200, training.predict(body));
+            } catch (java.io.IOException e) {
+                Exchanges.error(ex, 400, e.getMessage());
+            }
         });
         server.post("/api/train/start", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
@@ -74,6 +109,11 @@ final class TrainRoutes {
                 Exchanges.error(ex, 400, e.getMessage());
             }
         });
+        server.post("/api/hosts/download", ex -> onHost(ex, (client, body) ->
+                client.hubDownload(Json.string(body, "repo", "").strip(), Json.string(body, "option", ""))));
+        server.post("/api/hosts/downloads", ex -> onHost(ex, (client, body) -> Map.of("downloads", client.hubDownloads())));
+        server.post("/api/hosts/cancel", ex -> onHost(ex, (client, body) ->
+                Map.of("ok", client.hubCancel(Json.string(body, "id", "")))));
         server.get("/api/train/runs", ex -> {
             List<TrainingRun> runs = training.runs();
             Map<String, Object> out = new LinkedHashMap<>();

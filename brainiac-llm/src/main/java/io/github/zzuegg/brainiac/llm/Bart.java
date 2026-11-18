@@ -75,6 +75,8 @@ public final class Bart {
     private final Tensor lmHead;
     private final Tensor logitsBias;
     private final int start;
+    /** the token every generation must begin with ({@code forced_bos_token_id}), or -1 */
+    private final int forcedFirst;
     private final int eos;
 
     private Bart(Map<String, Object> c, WeightSource w, Device device, DType dtype) {
@@ -98,6 +100,7 @@ public final class Bart {
         preNorm = type.equals("mbart");
         embedScale = Boolean.TRUE.equals(c.get("scale_embedding")) ? (float) Math.sqrt(dModel) : 1f;
         start = (int) Json.integer(c, "decoder_start_token_id", 2);
+        forcedFirst = c.get("forced_bos_token_id") instanceof Number f ? f.intValue() : -1;
         eos = (int) Json.integer(c, "eos_token_id", 2);
         String root = w.contains("model.shared.weight") || w.contains("model.encoder.layers.0.fc1.weight") ? "model."
                 : "";
@@ -330,6 +333,12 @@ public final class Bart {
                     x = block(x, l.ffNorm, h -> l.fc2.apply(l.fc1.apply(h).activation(act, 0)));
                 }
                 float[] best = head(x).argmax(-1).toArray();
+                if (step == 0 && forcedFirst >= 0) {
+                    // as transformers: the first token is forced (bart-large-cnn's <s>) and,
+                    // being a special token, is not part of the text
+                    Arrays.fill(next, forcedFirst);
+                    continue;
+                }
                 boolean all = true;
                 for (int i = 0; i < b; i++) {
                     next[i] = (int) best[i];

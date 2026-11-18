@@ -506,6 +506,7 @@ public final class VulkanBackend implements Backend {
             case FLOAT64 -> "_f64";
             case FLOAT16 -> "_f16";
             case BFLOAT16 -> "_bf16";
+            default -> throw new IllegalArgumentException("no Vulkan shaders for " + dtype);
         };
     }
 
@@ -1886,6 +1887,16 @@ public final class VulkanBackend implements Backend {
     @Override
     public synchronized PackedStorage quantize(Storage values, int rows, int cols, int bits, int group) {
         VkStorage x = vs(values);
+        if (bits <= 4 && rows % group == 0 && group % 2 == 0 && x.dtype == DType.FLOAT32
+                && x.size == (long) rows * cols) {
+            // levels on the host, two per byte on the device; no host copy is kept, so a large
+            // model quantized at load takes no Java heap
+            PackedMatrix m = PackedMatrix.quantize(download(values), rows, cols, bits, group);
+            VkStorage levels = uploadBytes(m.data());
+            VkStorage scales = vs(upload(m.scales()));
+            return new Packed(rows, cols, bits, group, Packed.NIBBLES, 1, 0, null, levels, null, null, null, scales,
+                    null);
+        }
         if (bits != 8 || cols % 4 != 0 || rows % group != 0 || x.dtype != DType.FLOAT32 || x.size != (long) rows * cols) {
             return Backend.super.quantize(values, rows, cols, bits, group);
         }
@@ -1909,9 +1920,23 @@ public final class VulkanBackend implements Backend {
             float[] scales = download(p.scales());
             float[] offsets = p.offsets() == null ? null : download(p.offsets());
             byte[] levels = new byte[(int) p.size()];
-            synchronized (this) {
-                eager(p.levels());
-                vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
+            if ((p.flags() & Packed.NIBBLES) != 0) {
+                byte[] data = new byte[p.rows() / 2 * p.cols()];
+                synchronized (this) {
+                    eager(p.levels());
+                    vk.download(p.levels().slot(), p.levels().bytes()).get(data);
+                }
+                for (int r = 0; r < p.rows(); r++) {
+                    for (int c = 0; c < p.cols(); c++) {
+                        int b = data[r / 2 * p.cols() + c];
+                        levels[r * p.cols() + c] = (byte) ((r & 1) == 0 ? (b << 28) >> 28 : (b << 24) >> 28);
+                    }
+                }
+            } else {
+                synchronized (this) {
+                    eager(p.levels());
+                    vk.download(p.levels().slot(), p.levels().bytes()).get(levels);
+                }
             }
             return PackedMatrix.of(levels, scales, offsets, p.rows(), p.cols(), p.bits(), p.group());
         }

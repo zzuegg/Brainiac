@@ -60,6 +60,7 @@ class VulkanBackendTest {
             case FLOAT32 -> 2e-5;
             case FLOAT16 -> 2e-2;
             case BFLOAT16 -> 8e-2;
+            default -> 0;
         };
     }
 
@@ -91,7 +92,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void everyOperationMatchesTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         Tensor x = random(1, 5, 7);
@@ -131,7 +132,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void customKernelsMatchTheirJavaVersion(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         io.github.zzuegg.brainiac.tensor.Kernel k = io.github.zzuegg.brainiac.tensor.Kernel.of("mix", 2, """
@@ -160,7 +161,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void sortsLikeTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // short rows, a non-power-of-two width, a vocabulary-sized row; ties from rounding
@@ -180,7 +181,7 @@ class VulkanBackendTest {
     }
 
     @ParameterizedTest
-    @EnumSource(DType.class)
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void uploadsRawValuesFromNativeMemory(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         // small (inline update), mid-size (staging ring) and large (own staging block)
@@ -547,7 +548,7 @@ class VulkanBackendTest {
         String status = Device.available().stream().map(Device::name).filter(n -> n.startsWith("vulkan"))
                 .findFirst().orElseThrow();
         assertTrue(status.length() > "vulkan".length(), status);
-        assertTrue(List.of(DType.values()).size() == 4);
+        assertTrue(List.of(DType.values()).stream().filter(DType::floating).count() == 4);
     }
 
     @ParameterizedTest
@@ -794,6 +795,26 @@ class VulkanBackendTest {
         assertArrayEquals(actual, back.toArray(), 0f);
         Tensor again = Tensor.packed(PackedMatrix.quantize(new float[rows * cols], rows, cols, 8, group), gpu);
         assertArrayEquals(new float[rows * cols], again.toArray(), 0f);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"4, 32, 64, 96, 5", "4, 32, 64, 96, 70", "3, 16, 48, 40, 3",
+        "2, 8, 16, 24, 130"})
+    void quantizesFewBitsWithoutAHostCopy(int bits, int group, int rows, int cols, int m) {
+        Tensor x = random(13, rows, cols).mul(2);
+        PackedMatrix expected = PackedMatrix.quantize(x.toArray(), rows, cols, bits, group);
+        Tensor q = x.to(gpu).quantized(bits, group);
+        assertTrue(q.isPacked());
+        float[] values = new float[rows * cols];
+        expected.dequantize(values);
+        assertArrayEquals(values, q.toArray(), 0f);
+        assertArrayEquals(values, q.to(CPU).toArray(), 0f);   // nibbles read back from the device
+        Tensor a = random(14, m, rows);
+        float[] want = a.matmul(Tensor.of(Shape.of(rows, cols), values, CPU)).toArray();
+        float[] got = a.to(gpu).matmul(q).toArray();
+        for (int i = 0; i < want.length; i++) {
+            assertEquals(want[i], got[i], 1e-3 * Math.sqrt(rows) + Math.abs(want[i]) * 1e-3, bits + " bits at " + i);
+        }
     }
 
     @ParameterizedTest

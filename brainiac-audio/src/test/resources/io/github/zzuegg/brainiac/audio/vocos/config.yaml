@@ -1,0 +1,22 @@
+feature_extractor:
+  class_path: vocos.feature_extractors.MelSpectrogramFeatures
+  init_args:
+    sample_rate: 24000
+    n_fft: 256
+    hop_length: 64
+    n_mels: 8
+    padding: center
+backbone:
+  class_path: vocos.models.VocosBackbone
+  init_args:
+    input_channels: 8
+    dim: 16
+    intermediate_dim: 48
+    num_layers: 2
+head:
+  class_path: vocos.heads.ISTFTHead
+  init_args:
+    dim: 16
+    n_fft: 256
+    hop_length: 64
+    padding: center

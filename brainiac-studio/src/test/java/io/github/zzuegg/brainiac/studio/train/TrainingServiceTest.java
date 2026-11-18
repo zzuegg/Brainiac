@@ -72,6 +72,35 @@ class TrainingServiceTest {
         }
     }
 
+    @Test
+    void aSavedModelAnswersASampleOfTheDataAndValuesTypedIn() throws Exception {
+        buildModel("tiny", 2, 3);
+        try (TrainingService t = new TrainingService(folder)) {
+            Map<String, Object> sample = t.predict(Json.object(Json.parse(
+                    "{\"model\": \"tiny\", \"data\": {\"kind\": \"builtin\", \"name\": \"spirals\"}, \"index\": 7}")));
+            assertEquals(7, sample.get("index"));
+            assertEquals(900, sample.get("samples"));
+            assertEquals(3, Json.array(sample.get("output")).size());
+            int best = ((Number) sample.get("best")).intValue();
+            assertTrue(best >= 0 && best < 3, sample.toString());
+            int want = ((Number) sample.get("expectedBest")).intValue();
+            assertTrue(want >= 0 && want < 3, sample.toString());
+            Json.write(sample);
+
+            Map<String, Object> own = t.predict(Json.object(Json.parse("{\"model\": \"tiny\", \"values\": [0.5, -0.25]}")));
+            assertEquals(2, Json.array(own.get("input")).size());
+            assertFalse(own.containsKey("expected"));
+            double sum = Json.array(own.get("output")).stream().mapToDouble(v -> ((Number) v).doubleValue()).sum();
+            assertEquals(1.0, sum, 1e-4, "a softmax output sums to one");
+
+            IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                    () -> t.predict(Json.object(Json.parse("{\"model\": \"tiny\", \"values\": [1, 2, 3]}"))));
+            assertTrue(wrong.getMessage().contains("takes 2 values"), wrong.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> t.predict(Json.object(Json.parse("{\"model\": \"missing\", \"values\": [1, 2]}"))));
+        }
+    }
+
     private static List<String> keys(Object list) {
         return Json.array(list).stream().map(e -> String.valueOf(Json.object(e).get("key"))).toList();
     }

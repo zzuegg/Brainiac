@@ -37,7 +37,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
-| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and VITS / MMS-TTS text-to-speech, from Hugging Face folders, behind `SpeechToText` and `TextToSpeech` |
+| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and text-to-speech with VITS / MMS-TTS, Kokoro (voices and blends), F5-TTS (voice cloning) and Orpheus (emotion tags), from published weights, behind `SpeechToText` and `TextToSpeech` |
 | `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
@@ -498,10 +498,17 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 
 ## Speech: speech-to-text and text-to-speech
 
-`brainiac-audio` reads WAV files and runs two published speech models from Hugging Face
-folders: OpenAI's Whisper (`openai/whisper-tiny` up to `large-v3`) for speech-to-text and
-VITS (Meta's MMS-TTS voices, `facebook/mms-tts-eng` and other languages) for text-to-speech.
-Both match transformers' outputs.
+`brainiac-audio` reads WAV files and runs published speech models: OpenAI's Whisper
+(`openai/whisper-tiny` up to `large-v3`) for speech-to-text, and four text-to-speech models:
+
+| Model | Folder | What it adds |
+|---|---|---|
+| VITS | `facebook/mms-tts-eng` (and other MMS languages) | small, many languages |
+| Kokoro | `hexgrad/Kokoro-82M` | 28 English voices, blends such as `"af_heart*0.7+bm_george*0.3"`, custom style packs (`addVoice`), a built-in English phonemizer |
+| F5-TTS | `SWivid/F5-TTS` (`F5TTS_v1_Base`) with `charactr/vocos-mel-24khz` next to it | clones a voice from a few seconds of audio and its transcript |
+| Orpheus | `canopylabs/orpheus-3b-0.1-ft` with `hubertsiuzdak/snac_24khz` next to it | eight voices and emotion tags in the text: `<laugh>`, `<sigh>`, `<gasp>`... |
+
+Each matches its reference implementation on tiny random models.
 
 ```java
 try (TextToSpeech tts = SpeechModels.textToSpeech(Path.of("mms-tts-eng"), Device.cpu(), DType.FLOAT32);
@@ -520,11 +527,28 @@ temperatures when a window repeats itself, skips silence, and can translate to E
 (`Task.TRANSLATE`). `SpeechModels.kind(folder)` tells which kind of model a folder holds
 without loading it. Both take a cancellation check.
 
+`TextToSpeech` says what a model can do: `voices()`, `canMixVoices()`, `canClone()` and
+`tags()`. Cloning takes the reference in the options; F5-TTS also lists `name.wav` /
+`name.txt` pairs in a `voices` folder next to its checkpoint as voices.
+
+```java
+try (TextToSpeech f5 = SpeechModels.textToSpeech(Path.of("models/f5-tts"), Device.cpu(), DType.FLOAT32);
+     TextToSpeech orpheus = SpeechModels.textToSpeech(Path.of("models/orpheus-3b"), gpu, DType.BFLOAT16)) {
+    Audio me = Wav.read(Path.of("me.wav"));
+    Audio clone = f5.synthesize("This is not really me talking.",
+            SpeechOptions.defaults().reference(me, "What I said in me.wav."), null);
+    Audio fun = orpheus.synthesize("That is hilarious <laugh> really.", SpeechOptions.defaults().voice("leo"), null);
+}
+```
+
 The building blocks are ordinary layers, so self-built models can use them too:
 `MelSpectrogram` (raw audio to log-mel, including `MelSpectrogram.whisper(80)`),
 `RelativeAttention` (windowed relative positions), `HifiGanBlock` (vocoder residual block),
-`WaveNet` (gated dilated stack with optional conditioning) and
-`Flows.rationalQuadraticSpline` (neural spline flows), with Slaney mel filters in `Signal`.
+`WaveNet` (gated dilated stack with optional conditioning),
+`Flows.rationalQuadraticSpline` (neural spline flows), style-conditioned `StyleNorm`,
+`AdainResBlock` and `AdainSnakeBlock` (StyleTTS2), `ConvNeXt1d` (with optional GRN and layer
+scale), `DitBlock` (adaLN-Zero diffusion transformer block with rotary positions) and
+`Snake`, with Slaney mel filters, `Signal.istftSame` and `Functional.rotaryInterleaved`.
 
 ```java
 Model keywordSpotter = Model.sequential()

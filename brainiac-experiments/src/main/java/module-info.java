@@ -26,6 +26,7 @@ module io.github.zzuegg.brainiac.experiments {
     // the experiments: toy tasks, comparisons and demos built from those blocks
     exports io.github.zzuegg.brainiac.experiments.agents;
     exports io.github.zzuegg.brainiac.experiments.attention;
+    exports io.github.zzuegg.brainiac.experiments.audio;
     exports io.github.zzuegg.brainiac.experiments.classic;
     exports io.github.zzuegg.brainiac.experiments.context;
     exports io.github.zzuegg.brainiac.experiments.control;
@@ -46,6 +47,7 @@ module io.github.zzuegg.brainiac.experiments {
     exports io.github.zzuegg.brainiac.experiments.safety;
     exports io.github.zzuegg.brainiac.experiments.selfsupervised;
     exports io.github.zzuegg.brainiac.experiments.sequence;
+    exports io.github.zzuegg.brainiac.experiments.synthesis;
     exports io.github.zzuegg.brainiac.experiments.techniques;
     exports io.github.zzuegg.brainiac.experiments.timeseries;
     exports io.github.zzuegg.brainiac.experiments.vision;

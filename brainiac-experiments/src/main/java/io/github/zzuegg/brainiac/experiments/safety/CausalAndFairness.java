@@ -3,6 +3,8 @@ package io.github.zzuegg.brainiac.experiments.safety;
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.experimental.data.ShapeImages;
 import io.github.zzuegg.brainiac.experimental.ml.CausalEstimators;
+import io.github.zzuegg.brainiac.experimental.ml.Dagma;
+import io.github.zzuegg.brainiac.experimental.ml.GreedyEquivalenceSearch;
 import io.github.zzuegg.brainiac.experimental.ml.Notears;
 import io.github.zzuegg.brainiac.experimental.nn.TreatmentEffectNet;
 import io.github.zzuegg.brainiac.experimental.train.FairnessInterventions;
@@ -35,7 +37,11 @@ import java.util.SplittableRandom;
  * <p><b>Structure</b> ({@link #structure}): a random linear-Gaussian DAG on eight nodes;
  * NOTEARS ({@link Notears}) against the skeleton phase of the PC algorithm (partial
  * correlation tests with conditioning sets of up to two neighbours). Scores: the
- * structural Hamming distance and the skeleton distance.
+ * structural Hamming distance and the skeleton distance. The follow-up
+ * ({@link #structureShootout}) adds DAGMA ({@link Dagma}) and greedy equivalence search
+ * ({@link GreedyEquivalenceSearch}) on Erdos-Renyi DAGs of 10-20 nodes with linear or
+ * non-linear ({@code tanh}) mechanisms, scoring SHD, true and false positive rates and
+ * wall time.
  *
  * <p><b>Group fairness</b> ({@link #fairness}): a protected attribute {@code a} shifts
  * the historical labels and leaks into the features through proxies. ERM against
@@ -46,7 +52,8 @@ import java.util.SplittableRandom;
  * <p><b>Spurious correlation</b> ({@link #spurious}): two-channel "coloured" shapes
  * (horizontal against vertical bars from {@link ShapeImages}), drawn in the channel that
  * matches the class 90% (environment 1) or 80% (environment 2) of the time in training and
- * independently at test. ERM against IRM and GroupDRO ({@link GroupRobustTraining});
+ * independently at test. ERM against IRM, GroupDRO, V-REx and Just Train Twice
+ * ({@link GroupRobustTraining}; JTT is the only one that needs neither group nor environment labels);
  * score: worst-group test accuracy over the four (class, colour) groups.
  */
 public final class CausalAndFairness {
@@ -274,6 +281,94 @@ public final class CausalAndFairness {
         double[][] est = new Notears(0.05, 0.3, 400, 12).fit(x);
         return new StructureScores(Notears.shd(w, est), Notears.skeletonDistance(w, est),
                 Notears.skeletonDistance(w, pcSkeleton(x, 0.01)), edges);
+    }
+
+    /** Structure learners compared by {@link #structureShootout}. */
+    public enum StructureMethod {
+        /** NOTEARS, the trace-of-matrix-power acyclicity with an augmented Lagrangian. */
+        NOTEARS,
+        /** DAGMA, the log-determinant acyclicity on a central path. */
+        DAGMA,
+        /** Greedy forward-backward search with the BIC score. */
+        GES,
+        /** The PC algorithm's skeleton (undirected, so SHD counts every edge it finds once). */
+        PC_SKELETON
+    }
+
+    /**
+     * One structure learner's scores on one graph.
+     *
+     * @param method the learner
+     * @param shd the structural Hamming distance (a reversed edge counts once)
+     * @param skeleton the skeleton distance (directions ignored)
+     * @param tpr the share of true edges found, direction ignored
+     * @param fpr the share of absent pairs wrongly connected
+     * @param millis wall time
+     * @param edges the true number of edges
+     */
+    public record StructureRow(StructureMethod method, int shd, int skeleton, double tpr, double fpr, long millis,
+            int edges) {
+    }
+
+    /**
+     * Compares the structure learners on an Erdos-Renyi DAG with two expected parents per node.
+     *
+     * @param d the number of nodes
+     * @param nonlinear use {@code x_j = sum w tanh(2 x_k) + noise} instead of a linear SEM
+     * @param seed the seed
+     * @return one row per {@link StructureMethod}
+     */
+    public static List<StructureRow> structureShootout(int d, boolean nonlinear, long seed) {
+        SplittableRandom r = new SplittableRandom(seed);
+        int n = 1000;
+        int[] order = r.ints(0, d).distinct().limit(d).toArray();
+        double[][] w = new double[d][d];
+        int edges = 0;
+        double p = 2.0 / (d - 1);
+        for (int a = 0; a < d; a++) {
+            for (int b = a + 1; b < d; b++) {
+                if (r.nextDouble() < p) {
+                    w[order[a]][order[b]] = (0.5 + 1.5 * r.nextDouble()) * (r.nextBoolean() ? 1 : -1);
+                    edges++;
+                }
+            }
+        }
+        double[][] x = new double[n][d];
+        for (int i = 0; i < n; i++) {
+            for (int a = 0; a < d; a++) {
+                int j = order[a];
+                double v = r.nextGaussian();
+                for (int k = 0; k < d; k++) {
+                    v += (nonlinear ? Math.tanh(2 * x[i][k]) : x[i][k]) * w[k][j];
+                }
+                x[i][j] = v;
+            }
+        }
+        List<StructureRow> rows = new ArrayList<>();
+        for (StructureMethod m : StructureMethod.values()) {
+            long t0 = System.nanoTime();
+            double[][] est = switch (m) {
+                case NOTEARS -> new Notears(0.05, 0.3, 400, 12).fit(x);
+                case DAGMA -> new Dagma(0.05, 0.3, 1500, 4).fit(x);
+                case GES -> new GreedyEquivalenceSearch(1, 4).fit(x);
+                case PC_SKELETON -> pcSkeleton(x, 0.01);
+            };
+            long ms = (System.nanoTime() - t0) / 1_000_000;
+            int tp = 0;
+            int fp = 0;
+            for (int i = 0; i < d; i++) {
+                for (int j = i + 1; j < d; j++) {
+                    boolean t = w[i][j] != 0 || w[j][i] != 0;
+                    boolean e = est[i][j] != 0 || est[j][i] != 0;
+                    tp += t && e ? 1 : 0;
+                    fp += !t && e ? 1 : 0;
+                }
+            }
+            int pairs = d * (d - 1) / 2;
+            rows.add(new StructureRow(m, Notears.shd(w, est), Notears.skeletonDistance(w, est),
+                    edges == 0 ? 1 : tp / (double) edges, fp / (double) Math.max(1, pairs - edges), ms, edges));
+        }
+        return rows;
     }
 
     /** The PC algorithm's skeleton: drop i-j when a set of up to two neighbours makes them independent. */
@@ -510,7 +605,11 @@ public final class CausalAndFairness {
         /** IRMv1 over the two environments. */
         IRM,
         /** GroupDRO over the four (class, colour) groups. */
-        GROUP_DRO
+        GROUP_DRO,
+        /** V-REx: risk plus the variance of the two environments' risks (environment labels only). */
+        VREX,
+        /** Just Train Twice: upsample a short ERM run's training errors (no group or environment labels). */
+        JTT
     }
 
     /**
@@ -568,6 +667,9 @@ public final class CausalAndFairness {
         GroupRobustTraining.GroupDro dro = new GroupRobustTraining.GroupDro(4, 0.01);
         SplittableRandom r = new SplittableRandom(seed);
         int half = 50;
+        GroupRobustTraining.JustTrainTwice jtt = method == RobustMethod.JTT ? identifyErrors(env1, env2, seed) : null;
+        Tensor pooledX = Tensor.concat(0, env1.x(), env2.x());
+        Tensor pooledY = Tensor.concat(0, env1.y(), env2.y());
         for (int s = 0; s < 1500; s++) {
             int f1 = r.nextInt(1000 - half);
             int f2 = r.nextInt(1000 - half);
@@ -590,6 +692,18 @@ public final class CausalAndFairness {
                     if (weight > 1) {
                         loss = loss.mul(1f / weight);   // keep the step size comparable
                     }
+                }
+                case VREX -> {
+                    Var r1 = Functional.crossEntropy(m.forward(Var.of(x1), true), y1);
+                    Var r2 = Functional.crossEntropy(m.forward(Var.of(x2), true), y2);
+                    float weight = s < 500 ? 1f : 100f;   // the paper's penalty warm-up
+                    loss = r1.add(r2).mul(0.5f).add(GroupRobustTraining.vrexPenalty(List.of(r1, r2)).mul(weight))
+                            .mul(1f / weight);
+                }
+                case JTT -> {
+                    Tensor idx = rowsTensor(jtt.sample(2 * half, r));
+                    loss = Functional.crossEntropy(m.forward(Var.of(pooledX.gather(0, idx)), true),
+                            pooledY.gather(0, idx));
                 }
                 default -> {
                     Tensor bx = Tensor.concat(0, x1, x2);
@@ -630,6 +744,35 @@ public final class CausalAndFairness {
             worst = Math.min(worst, hit[g] / cnt[g]);
         }
         return new RobustScores(correct / (double) y.length, worst);
+    }
+
+    /** JTT's first run: 300 steps of pooled ERM, then its training mistakes, upsampled 20 times. */
+    private static GroupRobustTraining.JustTrainTwice identifyErrors(Coloured env1, Coloured env2, long seed) {
+        Tensor x = Tensor.concat(0, env1.x(), env2.x());
+        Tensor y = Tensor.concat(0, env1.y(), env2.y());
+        Model id = Model.sequential().input(128).dense(64, Activation.RELU).dense(2, Activation.IDENTITY)
+                .seed(seed + 7).build();
+        Optimizer opt = Optimizer.adam(1e-3f);
+        SplittableRandom r = new SplittableRandom(seed + 7);
+        int n = x.shape().dim(0);
+        for (int s = 0; s < 300; s++) {
+            int[] rows = new int[100];
+            for (int i = 0; i < rows.length; i++) {
+                rows[i] = r.nextInt(n);
+            }
+            Tensor idx = rowsTensor(rows);
+            Functional.crossEntropy(id.forward(Var.of(x.gather(0, idx)), true), y.gather(0, idx)).backward();
+            opt.step(id.parameters());
+        }
+        float[] pred = id.forward(Var.of(x)).value().argmax(1).toArray();
+        float[] truth = y.toArray();
+        int[] p = new int[n];
+        int[] t = new int[n];
+        for (int i = 0; i < n; i++) {
+            p[i] = (int) pred[i];
+            t[i] = (int) truth[i];
+        }
+        return new GroupRobustTraining.JustTrainTwice(GroupRobustTraining.JustTrainTwice.errorSet(p, t), 20);
     }
 
     private static Tensor rowsTensor(int[] rows) {

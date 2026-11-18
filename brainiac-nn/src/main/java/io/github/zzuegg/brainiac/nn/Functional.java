@@ -185,15 +185,31 @@ public final class Functional {
             int last = (y1 - 1) * stride[0] - pad + dilation[0] * (kernel[0] - 1) + 1;
             int a = Math.max(0, first);
             int e = Math.min(h, last);
-            Tensor part = a == 0 && e == h ? x : x.slice(2, a, e);
             ConvGeometry rows = new ConvGeometry(n, c, new int[] {e - a, g.image()[1]}, kernel, stride,
                     new int[] {a - first, g.padBefore()[1]}, dilation, new int[] {y1 - y0, wo});
-            Tensor y = part.im2col(rows, 0f).matmul(w).reshape(n, (y1 - y0) * wo, f).transpose()
-                    .reshape(n, f, y1 - y0, wo);
-            Tensor.evaluate(List.of(y));
-            parts.add(y);
+            int top = y0;
+            int bottom = y1;
+            Tensor[] y = new Tensor[1];
+            // each band's unrolled columns are freed before the next: left to the end, a 1024px
+            // decoder held every band of a block at once
+            List<Tensor> made = Tensor.created(() -> {
+                Tensor part = a == 0 && e == h ? x : x.slice(2, a, e);
+                y[0] = part.im2col(rows, 0f).matmul(w).reshape(n, (bottom - top) * wo, f).transpose()
+                        .reshape(n, f, bottom - top, wo);
+                Tensor.evaluate(List.of(y[0]));
+            });
+            Tensor.releaseCreated(made, List.of(y[0]));
+            parts.add(y[0]);
         }
-        return parts.size() == 1 ? parts.get(0) : Tensor.concat(2, parts.toArray(Tensor[]::new));
+        if (parts.size() == 1) {
+            return parts.get(0);
+        }
+        Tensor out = Tensor.concat(2, parts.toArray(Tensor[]::new));
+        Tensor.evaluate(List.of(out));
+        for (Tensor t : parts) {
+            t.release();
+        }
+        return out;
     }
 
     /**
@@ -1609,6 +1625,47 @@ public final class Functional {
         Var x1 = x.slice(-1, 0, half);
         Var x2 = x.slice(-1, half, d);
         return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn)));
+    }
+
+    /**
+     * Rotary position embedding with the rotated pairs interleaved, {@code (x0, x1)},
+     * {@code (x2, x3)} and so on, as GPT-J, x-transformers and F5-TTS lay them out; {@link #rotary}
+     * pairs feature {@code i} with feature {@code i + d / 2} instead. Pair {@code i} at step
+     * {@code t} turns by {@code (t + offset) * base^(-2i / d)}.
+     *
+     * @param x {@code [..., steps, d]} with even {@code d}
+     * @param base the frequency base, usually 10000
+     * @param offset the position of the first step
+     * @return the rotated values
+     */
+    public static Var rotaryInterleaved(Var x, float base, int offset) {
+        Shape s = x.shape();
+        int rank = s.rank();
+        int steps = s.dim(-2);
+        int d = s.dim(-1);
+        if (d % 2 != 0) {
+            throw new IllegalArgumentException("rotary embedding needs an even feature size, got " + d);
+        }
+        int half = d / 2;
+        float[] cos = new float[steps * half];
+        float[] sin = new float[steps * half];
+        for (int t = 0; t < steps; t++) {
+            for (int i = 0; i < half; i++) {
+                double angle = (t + offset) * Math.pow(base, -2.0 * i / d);
+                cos[t * half + i] = (float) Math.cos(angle);
+                sin[t * half + i] = (float) Math.sin(angle);
+            }
+        }
+        Device device = x.value().device();
+        Tensor c = Tensor.of(Shape.of(steps, half, 1), cos, device).to(x.value().dtype());
+        Tensor sn = Tensor.of(Shape.of(steps, half, 1), sin, device).to(x.value().dtype());
+        int[] pairs = java.util.Arrays.copyOf(s.toArray(), rank + 1);
+        pairs[rank - 1] = half;
+        pairs[rank] = 2;
+        Var p = x.reshape(pairs);
+        Var x1 = p.slice(-1, 0, 1);
+        Var x2 = p.slice(-1, 1, 2);
+        return Var.concat(-1, x1.mul(c).sub(x2.mul(sn)), x2.mul(c).add(x1.mul(sn))).reshape(s.toArray());
     }
 
     /**

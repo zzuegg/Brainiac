@@ -36,10 +36,35 @@ class SafeTensorsTest {
         return Tensor.uniform(Shape.of(dims), -2, 2, new SplittableRandom(seed));
     }
 
+    private static final List<DType> FLOATING = java.util.Arrays.stream(DType.values()).filter(DType::floating).toList();
+
+    @Test
+    void roundTripsWholeNumbersExactly() {
+        Device cpu = Device.cpu();
+        long big = (1L << 40) + 7;   // past float32's 2^24
+        Map<String, Tensor> out = new LinkedHashMap<>();
+        out.put("ids", Tensor.of(Shape.of(2, 2), new long[] {big, -3, 0, 151655}, DType.INT64, cpu));
+        out.put("small", Tensor.ofInts(Shape.of(3), new int[] {-2, 70000, 5}, cpu));
+        out.put("bytes", Tensor.of(Shape.of(3), new long[] {0, 200, 255}, DType.UINT8, cpu));
+        out.put("mask", Tensor.of(Shape.of(3), new long[] {1, 0, 1}, DType.BOOL, cpu));
+        Path file = dir.resolve("ints.safetensors");
+        SafeTensors.write(file, out);
+        try (SafeTensors in = SafeTensors.open(file)) {
+            assertEquals("I64", in.format("ids"));
+            assertEquals("I32", in.format("small"));
+            assertEquals("U8", in.format("bytes"));
+            assertEquals("BOOL", in.format("mask"));
+            assertArrayEquals(new long[] {big, -3, 0, 151655}, in.tensor("ids", cpu, DType.INT64).toLongArray());
+            assertArrayEquals(new long[] {-2, 70000, 5}, in.tensor("small", cpu, DType.INT32).toLongArray());
+            assertArrayEquals(new long[] {0, 200, 255}, in.tensor("bytes", cpu, DType.UINT8).toLongArray());
+            assertArrayEquals(new long[] {1, 0, 1}, in.tensor("mask", cpu, DType.BOOL).toLongArray());
+        }
+    }
+
     @Test
     void roundTripsEveryType() {
         Map<String, Tensor> out = new LinkedHashMap<>();
-        for (DType t : DType.values()) {
+        for (DType t : FLOATING) {
             out.put("w_" + t, random(t.ordinal(), 3, 5).to(t));
         }
         out.put("scalar", Tensor.scalar(4.5f));
@@ -49,7 +74,7 @@ class SafeTensorsTest {
             assertEquals(List.copyOf(out.keySet()), in.names());
             assertEquals(Map.of("format", "pt"), in.metadata());
             assertEquals("BF16", in.format("w_BFLOAT16"));
-            for (DType t : DType.values()) {
+            for (DType t : FLOATING) {
                 String n = "w_" + t;
                 assertEquals(Shape.of(3, 5), in.shape(n));
                 assertEquals(t, in.naturalType(n));

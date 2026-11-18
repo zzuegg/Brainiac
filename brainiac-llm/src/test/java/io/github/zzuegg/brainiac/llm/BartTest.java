@@ -11,6 +11,7 @@ import io.github.zzuegg.brainiac.tensor.Tensor;
 
 import java.util.stream.IntStream;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -53,5 +54,21 @@ class BartTest {
             assertArrayEquals(want, generated[i], name + " row " + i);
         }
         assertTrue(model.toString().contains("2+3 layers"));
+    }
+
+    @Test
+    void forcesTheFirstToken(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws java.io.IOException {
+        // as bart-large-cnn: forced_bos_token_id 0; transformers generates [2, 0, 40, 40, 40, 40, 40]
+        // and [2, 0, 55, ...] for this model, and the <s> is not text
+        java.nio.file.Path from = LlamaTest.resource("bart");
+        for (String f : new String[] {"model.safetensors", "generation_config.json"}) {
+            java.nio.file.Files.copy(from.resolve(f), dir.resolve(f));
+        }
+        String config = java.nio.file.Files.readString(from.resolve("config.json"))
+                .replaceFirst("\\{", "{\"forced_bos_token_id\": 0,");
+        java.nio.file.Files.writeString(dir.resolve("config.json"), config);
+        int[][] generated = Bart.load(dir, LlamaTest.DEVICE, DType.FLOAT32).generate(IDS, MASK, 6);
+        assertArrayEquals(new int[] {40, 40, 40, 40, 40}, generated[0]);
+        assertArrayEquals(new int[] {55, 55, 55, 55, 55}, generated[1]);
     }
 }

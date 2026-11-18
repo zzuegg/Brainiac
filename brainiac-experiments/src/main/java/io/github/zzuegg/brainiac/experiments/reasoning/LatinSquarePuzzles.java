@@ -16,6 +16,11 @@ import java.util.function.Function;
  * digit), outputs are four logits per cell. {@link #train} runs deep supervision for any
  * model that returns one prediction per supervision step, so the Tiny Recursive Model, the
  * Hierarchical Reasoning Model and a plain MLP train with the same loop.
+ *
+ * <p>Wave 7 adds two rows: an MLP whose loss adds the semantic loss of the Latin-square
+ * constraints ({@code SemanticLoss}, through the regularised {@link #train} overload), and
+ * SATNet ({@code SatNetLayer}), a differentiable MAXSAT layer trained on the 64 cell-value
+ * bits by {@link #trainBits}.
  */
 public final class LatinSquarePuzzles {
 
@@ -125,6 +130,23 @@ public final class LatinSquarePuzzles {
      */
     public static void train(Function<Var, List<Var>> model, List<Var> parameters, List<Puzzle> train, int steps,
             int batchSize, long seed) {
+        train(model, parameters, train, steps, batchSize, seed, null);
+    }
+
+    /**
+     * {@link #train(Function, List, List, int, int, long)} with an extra term on the last
+     * step's logits, such as a {@code SemanticLoss} on the Latin-square constraints.
+     *
+     * @param model maps a batch to one logits tensor {@code [batch, 64]} per step
+     * @param parameters the model's parameters
+     * @param train the training puzzles
+     * @param steps optimizer steps
+     * @param batchSize puzzles per step
+     * @param seed the seed
+     * @param regularizer maps the last logits to a scalar added to the loss, or {@code null}
+     */
+    public static void train(Function<Var, List<Var>> model, List<Var> parameters, List<Puzzle> train, int steps,
+            int batchSize, long seed, Function<Var, Var> regularizer) {
         SplittableRandom random = new SplittableRandom(seed);
         Optimizer opt = Optimizer.adamW(3e-3f, 1e-4f);
         for (int s = 0; s < steps; s++) {
@@ -134,13 +156,92 @@ public final class LatinSquarePuzzles {
             }
             Tensor ids = targets(batch);
             Var loss = null;
+            Var last = null;
             for (Var logits : model.apply(Var.of(inputs(batch)))) {
                 Var l = Functional.crossEntropy(logits.reshape(batch.size() * CELLS, 4), ids);
                 loss = loss == null ? l : loss.add(l);
+                last = logits;
+            }
+            if (regularizer != null) {
+                loss = loss.add(regularizer.apply(last));
             }
             loss.backward();
             opt.step(parameters);
         }
+    }
+
+    /**
+     * The SATNet input for a batch: 64 cell-value bits (one-hot givens), then 64 flags that
+     * mark the bits of given cells as clamped.
+     *
+     * @param batch the puzzles
+     * @return {@code [batch, 128]}
+     */
+    public static Tensor satNetInputs(List<Puzzle> batch) {
+        float[] x = new float[batch.size() * 2 * OUTPUTS];
+        for (int i = 0; i < batch.size(); i++) {
+            int[] g = batch.get(i).givens();
+            for (int c = 0; c < CELLS; c++) {
+                if (g[c] >= 0) {
+                    x[i * 2 * OUTPUTS + c * 4 + g[c]] = 1;
+                    for (int v = 0; v < 4; v++) {
+                        x[i * 2 * OUTPUTS + OUTPUTS + c * 4 + v] = 1;
+                    }
+                }
+            }
+        }
+        return Tensor.of(Shape.of(batch.size(), 2 * OUTPUTS), x);
+    }
+
+    /**
+     * Trains a {@code SatNetLayer} (or any layer with the same input layout) with binary
+     * cross-entropy on the bits of the blank cells, as the SATNet paper does for Sudoku.
+     *
+     * @param layer maps {@link #satNetInputs} to 64 bit values in {@code [0, 1]}
+     * @param parameters its parameters
+     * @param train the training puzzles
+     * @param steps optimizer steps
+     * @param batchSize puzzles per step
+     * @param learningRate Adam's learning rate
+     * @param seed the seed
+     */
+    public static void trainBits(Function<Var, Var> layer, List<Var> parameters, List<Puzzle> train, int steps,
+            int batchSize, float learningRate, long seed) {
+        SplittableRandom random = new SplittableRandom(seed);
+        Optimizer opt = Optimizer.adam(learningRate);
+        for (int s = 0; s < steps; s++) {
+            List<Puzzle> batch = new ArrayList<>();
+            for (int i = 0; i < batchSize; i++) {
+                batch.add(train.get(random.nextInt(train.size())));
+            }
+            float[] y = new float[batch.size() * OUTPUTS];
+            float[] free = new float[batch.size() * OUTPUTS];
+            for (int i = 0; i < batch.size(); i++) {
+                for (int c = 0; c < CELLS; c++) {
+                    y[i * OUTPUTS + c * 4 + batch.get(i).solution()[c]] = 1;
+                    for (int v = 0; v < 4; v++) {
+                        free[i * OUTPUTS + c * 4 + v] = batch.get(i).givens()[c] < 0 ? 1 : 0;
+                    }
+                }
+            }
+            Var p = layer.apply(Var.of(satNetInputs(batch))).clamp(1e-4f, 1 - 1e-4f);
+            Tensor yt = Tensor.of(Shape.of(batch.size(), OUTPUTS), y);
+            Var bce = p.log().mul(yt).add(p.neg().add(1f).log().mul(yt.neg().add(1f))).neg();
+            bce.mul(Tensor.of(Shape.of(batch.size(), OUTPUTS), free)).sum().mul(1f / batch.size()).backward();
+            opt.step(parameters);
+        }
+    }
+
+    /**
+     * Scores a bit-level solver: each blank cell takes its highest bit.
+     *
+     * @param layer maps {@link #satNetInputs} to 64 bit values
+     * @param test the puzzles
+     * @return blank-cell accuracy and solved rate (one step)
+     */
+    public static Evaluation evaluateBits(Function<Var, Var> layer, List<Puzzle> test) {
+        Var bits = Var.noGrad(() -> layer.apply(Var.of(satNetInputs(test))));
+        return evaluate(x -> List.of(bits), test);
     }
 
     /**

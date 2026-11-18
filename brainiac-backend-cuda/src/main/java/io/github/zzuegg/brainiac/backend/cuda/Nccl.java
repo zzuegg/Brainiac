@@ -115,6 +115,9 @@ final class Nccl {
             case FLOAT32 -> 7;
             case FLOAT64 -> 8;
             case BFLOAT16 -> 9;
+            case INT32 -> 2;
+            case INT64 -> 4;
+            case UINT8, BOOL -> 1;
         };
     }
 

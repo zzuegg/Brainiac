@@ -127,6 +127,47 @@ public final class WorkerClient {
     }
 
     /**
+     * Tells the worker to download a model from Hugging Face into its own downloads folder.
+     *
+     * @param repo the repository, such as {@code Qwen/Qwen2.5-0.5B-Instruct-GGUF}
+     * @param option a GGUF file's path in it, or {@code folder} for the whole model folder
+     * @return the download, as the worker describes it
+     * @throws IOException if it cannot be reached, or it refuses the download
+     */
+    public Map<String, Object> hubDownload(String repo, String option) throws IOException {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("repo", repo);
+        body.put("option", option);
+        return json(request("worker/hub/download").timeout(Duration.ofSeconds(60)).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(body))).build());
+    }
+
+    /**
+     * Lists the worker's model downloads since it started, newest first.
+     *
+     * @return the downloads
+     * @throws IOException if it cannot be reached
+     */
+    public List<Object> hubDownloads() throws IOException {
+        Map<String, Object> m = json(request("worker/hub/downloads").timeout(Duration.ofSeconds(5)).GET().build());
+        return Json.array(m.getOrDefault("downloads", List.of()));
+    }
+
+    /**
+     * Stops one of the worker's downloads; what it fetched is kept, so starting it again resumes.
+     *
+     * @param id the download's id on the worker
+     * @return whether it was running
+     * @throws IOException if it cannot be reached
+     */
+    public boolean hubCancel(String id) throws IOException {
+        Map<String, Object> m = json(request("worker/hub/cancel").timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(Json.write(Map.of("id", id)))).build());
+        return Boolean.TRUE.equals(m.get("ok"));
+    }
+
+    /**
      * Lists the chat models the worker serves.
      *
      * @return the models, with the worker's own provider id
@@ -160,6 +201,9 @@ public final class WorkerClient {
         body.put("model", request.model());
         body.put("system", request.system());
         body.put("maxTokens", request.maxTokens());
+        if (request.temperature() != null) {
+            body.put("temperature", request.temperature());
+        }
         body.put("messages", request.messages().stream().map(m -> Map.of("role", m.role(), "text", m.text())).toList());
         // the answer streams, so only the wait for its first line is limited
         HttpResponse<InputStream> r = send(request("worker/chat").timeout(Duration.ofMinutes(10))

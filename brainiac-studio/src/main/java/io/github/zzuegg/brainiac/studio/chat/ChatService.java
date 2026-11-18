@@ -562,13 +562,34 @@ public final class ChatService {
      */
     public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
             Consumer<ModelInfo> route, ChatListener listener) throws IOException, InterruptedException {
+        return chat(model, system, messages, maxTokens, key, null, route, listener);
+    }
+
+    /**
+     * Answers a conversation at a chosen temperature.
+     *
+     * @param model a model key ({@code provider/id}) or {@value #AUTO}
+     * @param system instructions for the whole conversation, or an empty string
+     * @param messages the conversation, ending with the user's turn
+     * @param maxTokens the most tokens the answer may have
+     * @param key the name of the API key to use, or null to try the provider's keys in order
+     * @param temperature from 0 (always the likeliest word) to 2, or null for the model's default
+     * @param route told which model answers, before the answer starts
+     * @param listener receives the answer
+     * @return how the answer ended
+     * @throws IOException if no model can answer or the provider fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
+            Float temperature, Consumer<ModelInfo> route, ChatListener listener)
+            throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "text");
         ChatProvider p = provider(target.provider());
         route.accept(target);
         // reasoning models that think in plain text: their <think> block goes to the thinking
         ThinkSplitter split = new ThinkSplitter(listener, false);
         return logged(target, "chat", () -> {
-            ChatResult r = p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key), split);
+            ChatResult r = p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key, temperature), split);
             split.finish();
             return r;
         }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});

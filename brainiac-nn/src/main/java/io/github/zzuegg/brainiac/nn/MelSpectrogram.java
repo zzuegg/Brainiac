@@ -27,6 +27,11 @@ public final class MelSpectrogram implements Layer {
         /** {@code ln(mel + 1e-6)}, with {@code samples / hop + 1} frames. */
         LOG,
         /**
+         * The mel of the magnitude (not the power) spectrum, {@code ln(max(mel, 1e-5))}, with
+         * {@code samples / hop + 1} frames: the features of Vocos and F5-TTS.
+         */
+        LOG_AMPLITUDE,
+        /**
          * Whisper's: {@code log10} clamped at {@code 1e-10}, floored at 8 below the maximum,
          * {@code (x + 4) / 4}, with the last frame dropped ({@code samples / hop} frames).
          */
@@ -81,6 +86,20 @@ public final class MelSpectrogram implements Layer {
     }
 
     /**
+     * The log-amplitude mel features of Vocos and F5-TTS (torchaudio's {@code MelSpectrogram}
+     * with {@code power=1}, HTK mels, no filter norm, then {@code ln(max(x, 1e-5))}).
+     *
+     * @param sampleRate the sample rate, 24000 for both
+     * @param nFft the frame length, 1024
+     * @param hop the step between frames, 256
+     * @param mels the bands, 100
+     * @return the layer
+     */
+    public static MelSpectrogram vocos(int sampleRate, int nFft, int hop, int mels) {
+        return new MelSpectrogram(sampleRate, nFft, hop, mels, Signal.MelScale.HTK, false, Compression.LOG_AMPLITUDE);
+    }
+
+    /**
      * Whisper's front end for 16 kHz audio (see {@link Signal#whisperLogMel}).
      *
      * @param mels 80, or 128 for large-v3
@@ -108,6 +127,9 @@ public final class MelSpectrogram implements Layer {
         Tensor fb = Signal.melFilterbank(sampleRate, nFft, mels, 0, sampleRate / 2.0, scale, slaneyNorm)
                 .to(input.value().device()).to(input.dtype());
         Var p = Signal.power(Signal.stft(input, nFft, hop));
+        if (compression == Compression.LOG_AMPLITUDE) {
+            p = p.add(1e-20f).sqrt();
+        }
         int rank = p.shape().rank();
         if (compression == Compression.WHISPER) {
             p = p.slice(rank - 2, 0, p.shape().dim(rank - 2) - 1);
@@ -116,6 +138,8 @@ public final class MelSpectrogram implements Layer {
         Var out;
         if (compression == Compression.LOG) {
             out = mel.add(1e-6f).log();
+        } else if (compression == Compression.LOG_AMPLITUDE) {
+            out = mel.maximum(1e-5f).log();
         } else {
             Var log = mel.maximum(1e-10f).log().mul((float) (1 / Math.log(10)));
             Var max = log.max(rank - 1, true).max(rank - 2, true);
