@@ -562,7 +562,16 @@ final class LocalProvider implements ChatProvider {
         if (vision != null) {
             model = vision;
         } else {
-            Llama llama = Llama.load(path, device, dtype);
+            Llama llama;
+            if (Llama.expertsBelongOnCpu(path, device)) {
+                // a mixture of experts too large for the GPU: the experts run on the CPU, read
+                // in place from the file (RAM caches them; the disk serves the rest)
+                LOG.log(System.Logger.Level.INFO, path.getFileName() + " is larger than " + device
+                        + " can hold: its experts run on the CPU");
+                llama = Llama.loadExpertsOnCpu(path, device, dtype, 0);
+            } else {
+                llama = Llama.load(path, device, dtype);
+            }
             if (device.kind() == Device.Kind.GPU) {
                 // two products per block instead of five: the same answers, much less GPU overhead
                 try {

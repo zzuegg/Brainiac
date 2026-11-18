@@ -118,6 +118,79 @@ class GgufTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"Q8_0", "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K", "Q8_K", "IQ4_NL",
+        "IQ4_XS", "MXFP4", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ1_S", "IQ1_M"})
+    void readsMatricesInPlace(String format) {
+        Device cpu = Device.cpu();
+        try (Gguf g = Gguf.open(file)) {
+            String name = "q." + format;
+            Tensor dense = g.tensor("expected." + format, cpu);
+            if (dense.shape().rank() != 2) {
+                assertFalse(g.mappable(name));
+                return;
+            }
+            assertTrue(g.mappable(name));
+            Tensor blocks = g.blocks(name);
+            assertTrue(blocks.isPacked());
+            assertEquals(g.raw(name).byteSize(), blocks.bytes(), "takes the file's bytes");
+            assertEquals(dense.transpose().shape(), blocks.shape(), format);
+            assertArrayEquals(dense.transpose().toArray(), blocks.unpacked().toArray(), 1e-6f, format);
+            // row by row (few left rows) and unpacked first (many)
+            for (int rows : new int[] {1, 3, 70}) {
+                Tensor x = Tensor.uniform(Shape.of(rows, blocks.shape().dim(0)), -1, 1,
+                        new java.util.SplittableRandom(rows));
+                float[] expected = x.matmul(dense.transpose()).toArray();
+                float largest = 1;
+                for (float v : expected) {
+                    largest = Math.max(largest, Math.abs(v));
+                }
+                assertArrayEquals(expected, x.matmul(blocks).toArray(), 1e-5f * largest, format + " x" + rows);
+            }
+            // elsewhere the values are requantized to 8 bits and packed
+            Tensor moved = blocks.to(DEVICE);
+            assertTrue(moved.isPacked());
+            assertArrayEquals(dense.transpose().toArray(), moved.unpacked().to(cpu).toArray(),
+                    DEVICE.equals(cpu) ? 1e-6f : 0.02f * largest(dense), format);
+        }
+    }
+
+    @Test
+    void readsPlainMatricesInPlace() {
+        try (Gguf g = Gguf.open(file, true)) {
+            for (String name : new String[] {"plain.f32", "plain.f16", "plain.bf16"}) {
+                if (g.shape(name).rank() != 2) {
+                    assertFalse(g.mappable(name));
+                    continue;
+                }
+                Tensor dense = g.tensor(name, Device.cpu(), DType.FLOAT32);
+                assertArrayEquals(dense.transpose().toArray(), g.blocks(name).unpacked().toArray(), 1e-6f, name);
+            }
+            assertFalse(g.mappable("plain.i32"));
+            assertThrows(IllegalArgumentException.class, () -> g.blocks("plain.i32"));
+        }
+    }
+
+    @Test
+    void aRetainedFileStaysMappedForItsTensors() {
+        Tensor blocks;
+        float[] expected;
+        try (Gguf g = Gguf.open(file, true)) {
+            expected = g.tensor("expected.Q4_K", Device.cpu()).transpose().toArray();
+            blocks = g.blocks("q.Q4_K");
+        }
+        // closed, but the mapping stays while the tensor uses it
+        assertArrayEquals(expected, blocks.unpacked().toArray(), 1e-6f);
+    }
+
+    private static float largest(Tensor t) {
+        float m = 0;
+        for (float v : t.toArray()) {
+            m = Math.max(m, Math.abs(v));
+        }
+        return m;
+    }
+
     @Test
     void rejectsOtherFiles() throws IOException {
         Path bad = dir.resolve("bad.gguf");

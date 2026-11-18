@@ -395,6 +395,19 @@ public interface Backend {
     }
 
     /**
+     * Takes a matrix kept in a GGUF file's blocks (see {@link GgmlBlocks}). On the CPU the
+     * default keeps it where it is, in the file's mapping, which the default {@link #unpack}
+     * and {@link #matmulPacked} read and the CPU backend multiplies by directly. Elsewhere it
+     * requantizes the values to 8 bits and {@linkplain #pack packs} them.
+     *
+     * @param blocks the stored blocks
+     * @return storage for it
+     */
+    default PackedStorage packBlocks(GgmlBlocks blocks) {
+        return kind() == Device.Kind.CPU ? blocks : pack(unpackToHost(blocks));
+    }
+
+    /**
      * As {@link #pack}, for a matrix that may be joined with others ({@link #unpackToHost})
      * before it is used, such as a projection {@code Llama.fuseProjections} joins: a backend
      * that moves matrices to its device in the background can leave this one until its first
@@ -442,6 +455,12 @@ public interface Backend {
         if (packed instanceof PackedMatrix m) {
             return m;
         }
+        if (packed instanceof GgmlBlocks blocks) {
+            // to move it to a backend without a kernel for the blocks: requantized to 8 bits
+            float[] values = new float[Math.toIntExact(blocks.size())];
+            blocks.dequantize(values);
+            return PackedMatrix.quantize(values, blocks.rows(), blocks.cols(), 8, 32);
+        }
         throw unsupported("reading back " + packed);
     }
 
@@ -455,6 +474,8 @@ public interface Backend {
         float[] values = new float[Math.toIntExact(packed.size())];
         if (packed instanceof QuantizedRows rows) {
             rows.dequantize(values);
+        } else if (packed instanceof GgmlBlocks blocks) {
+            blocks.dequantize(values);
         } else {
             unpackToHost(packed).dequantize(values);
         }

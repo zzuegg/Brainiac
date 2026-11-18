@@ -14,6 +14,7 @@ import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
 import io.github.zzuegg.brainiac.tensor.spi.ActivationOp;
+import io.github.zzuegg.brainiac.tensor.spi.GgmlBlocks;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -59,6 +60,8 @@ public final class Llama implements LanguageModel {
         private float loraScale;
         /** Whether the weight and bias are constants: only the adapter learns. */
         private boolean frozen;
+        /** The file blocks a weight read in place multiplies from, or null. */
+        private GgmlBlocks mapped;
 
         Linear(Var weight, Var bias) {
             this.weight = weight;
@@ -423,6 +426,62 @@ public final class Llama implements LanguageModel {
      * @return the model
      */
     public static Llama load(Gguf gguf, Device device, DType dtype) {
+        return load(gguf, device, dtype, -1);
+    }
+
+    /**
+     * Loads a mixture-of-experts model from a GGUF file with its experts on the CPU, read in
+     * place from the file, and everything else (attention, router, shared experts, norms,
+     * embeddings, output layer and cache) on {@code device}, as llama.cpp's {@code
+     * --n-cpu-moe} does. The experts are most of such a model's weights but each token reads
+     * only a few of them, so a model several times larger than the GPU's memory runs at the
+     * speed of system memory. The experts stay in the file's 2 to 8.5 bits per weight and are
+     * never copied: the operating system keeps them in RAM as a cache over the file and pages
+     * them in from disk when RAM is short, so even a model larger than RAM runs, more slowly.
+     *
+     * <p>{@code gpuExpertLayers} moves the experts of the first blocks to {@code device} too,
+     * to fill the GPU memory left over.
+     *
+     * @param path the {@code .gguf} file, or one shard of a split model
+     * @param device where everything but the experts runs, usually a GPU
+     * @param dtype the type of the other weights and of the activations there
+     * @param gpuExpertLayers how many of the first blocks keep their experts on {@code device}
+     * @return the model
+     * @throws IllegalArgumentException if the model has no experts
+     */
+    public static Llama loadExpertsOnCpu(Path path, Device device, DType dtype, int gpuExpertLayers) {
+        if (gpuExpertLayers < 0) {
+            throw new IllegalArgumentException("gpuExpertLayers is " + gpuExpertLayers);
+        }
+        // the mapping must outlive this call: the experts are read from it
+        Gguf gguf = Gguf.open(path, true);
+        if (!LlamaConfig.fromGguf(gguf).extras().moe().present()) {
+            throw new IllegalArgumentException(path.getFileName() + " has no experts to keep on the CPU");
+        }
+        return load(gguf, device, dtype, gpuExpertLayers);
+    }
+
+    /**
+     * Returns whether a model should run with {@linkplain #loadExpertsOnCpu its experts on the
+     * CPU}: a mixture of experts in a {@code .gguf} file whose weights take more than 80% of
+     * what a GPU {@code device} may hold.
+     *
+     * @param path a model directory or {@code .gguf} file
+     * @param device where it would run
+     * @return {@code true} if its experts had better stay on the CPU
+     */
+    public static boolean expertsBelongOnCpu(Path path, Device device) {
+        if (device.kind() != Device.Kind.GPU || !path.getFileName().toString().endsWith(".gguf")) {
+            return false;
+        }
+        try (Gguf gguf = Gguf.open(path)) {
+            return device.tooSmallFor(gguf.bytes(), 0.8) && LlamaConfig.GGUF_ARCHITECTURES.contains(gguf.architecture())
+                    && LlamaConfig.fromGguf(gguf).extras().moe().present();
+        }
+    }
+
+    /** As load(Gguf, Device, DType); experts of blocks from {@code gpuExpertLayers} on stay in the file, -1 for none. */
+    private static Llama load(Gguf gguf, Device device, DType dtype, int gpuExpertLayers) {
         LlamaConfig config = LlamaConfig.fromGguf(gguf);
         if (gguf.contains("rope_freqs.weight")) {
             float[] f = gguf.tensor("rope_freqs.weight", Device.cpu(), DType.FLOAT32).toArray();
@@ -468,13 +527,22 @@ public final class Llama implements LanguageModel {
                 String[] stored = {"ffn_gate", "ffn_up", "ffn_down"};
                 linears.put(p + n[0] + "gate", linear(gguf, g + "ffn_gate_inp.weight", p + n[0] + "gate", null, device,
                         dtype, named, null));
+                boolean inPlace = gpuExpertLayers >= 0 && i >= gpuExpertLayers;
                 for (int x = 0; x < moe.experts(); x++) {
                     for (int k = 0; k < 3; k++) {
                         // a stack of all experts, or (older files) one matrix each
                         String stack = g + stored[k] + "_exps.weight";
                         String w = gguf.contains(stack) ? gguf.slice(stack, x) : g + stored[k] + "." + x + ".weight";
                         String hf = p + n[0] + "experts." + x + "." + n[k + 1];
-                        linears.put(hf, linear(gguf, w, hf, null, device, dtype, named, null));
+                        if (inPlace && gguf.mappable(w)) {
+                            GgmlBlocks b = gguf.mapped(w);
+                            Linear l = new Linear(Var.of(Tensor.packed(b, Device.cpu())), null);
+                            l.mapped = b;
+                            linears.put(hf, l);
+                        } else {
+                            linears.put(hf, linear(gguf, w, hf, null, inPlace ? Device.cpu() : device,
+                                    inPlace ? DType.FLOAT32 : dtype, named, null));
+                        }
                     }
                 }
                 if (moe.sharedFfn() > 0) {
@@ -2320,6 +2388,14 @@ public final class Llama implements LanguageModel {
         Var flat = h.reshape(n, hidden);
         Var logits = m.router().apply(flat).to(DType.FLOAT32);
         Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
+        // experts kept elsewhere (on the CPU, see loadExpertsOnCpu) run there, in float32, on
+        // a copy of the tokens; the shared expert stays here and is queued first
+        Device home = m.gate()[0].weight().value().device();
+        boolean split = !home.equals(dev);
+        Var shared = null;
+        if (split && m.sharedGate() != null) {
+            shared = sharedExpert(m, flat);
+        }
         int[] chosen = Functional.chooseExperts(probs.value().toArray(),
                 m.choiceBias() == null ? null : m.choiceBias().value().toArray(), n, count, k, groups(routing));
         int[] picked = new int[n * k];
@@ -2335,20 +2411,51 @@ public final class Llama implements LanguageModel {
         if (routing.scale() != 1) {
             weights = weights.mul(routing.scale());
         }
+        Var src = flat;
+        if (split) {
+            prefetch(m, chosen);
+            src = flat.to(home).to(DType.FLOAT32);
+            weights = weights.to(home);
+        }
         List<java.util.function.Function<Var, Var>> nets = new ArrayList<>();
         for (int e = 0; e < count; e++) {
             int at = e;
             nets.add(xe -> m.down()[at].apply(m.gate()[at].apply(xe).activation(config.extras().activation(), 0)
                     .mul(m.up()[at].apply(xe))));
         }
-        Var out = Functional.routedExperts(flat, chosen, weights, k, nets);
+        Var out = Functional.routedExperts(src, chosen, weights, k, nets);
+        if (split) {
+            out = out.to(dev).to(h.dtype());
+        }
         if (m.sharedGate() != null) {
-            Var shared = m.sharedDown().apply(m.sharedGate().apply(flat).activation(config.extras().activation(), 0)
-                    .mul(m.sharedUp().apply(flat)));
-            out = out.add(m.sharedScale() == null ? shared
-                    : shared.mul(m.sharedScale().apply(flat).activation(ActivationOp.SIGMOID, 0)));
+            out = out.add(shared != null ? shared : sharedExpert(m, flat));
         }
         return out.reshape(s[0], s[1], hidden);
+    }
+
+    /** The shared expert's output for {@code flat}, scaled by its sigmoid gate. */
+    private Var sharedExpert(Experts m, Var flat) {
+        Var shared = m.sharedDown().apply(m.sharedGate().apply(flat).activation(config.extras().activation(), 0)
+                .mul(m.sharedUp().apply(flat)));
+        return m.sharedScale() == null ? shared
+                : shared.mul(m.sharedScale().apply(flat).activation(ActivationOp.SIGMOID, 0));
+    }
+
+    /** Reads the chosen experts' weights from disk at once where they are mapped and not all in memory. */
+    private static void prefetch(Experts m, int[] chosen) {
+        List<GgmlBlocks> used = new ArrayList<>();
+        boolean[] seen = new boolean[m.gate().length];
+        for (int e : chosen) {
+            if (!seen[e]) {
+                seen[e] = true;
+                for (Linear l : new Linear[] {m.gate()[e], m.up()[e], m.down()[e]}) {
+                    if (l.mapped != null) {
+                        used.add(l.mapped);
+                    }
+                }
+            }
+        }
+        GgmlBlocks.loadAll(used);
     }
 
     /** The routing's expert groups as the core routing takes them. */

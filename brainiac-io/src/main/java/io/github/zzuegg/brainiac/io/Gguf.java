@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
 import io.github.zzuegg.brainiac.tensor.Tensor;
+import io.github.zzuegg.brainiac.tensor.spi.GgmlBlocks;
 import io.github.zzuegg.brainiac.tensor.spi.PackedMatrix;
 import io.github.zzuegg.brainiac.tensor.spi.RawValues;
 
@@ -213,6 +214,19 @@ public final class Gguf implements WeightSource {
      * @throws IllegalArgumentException if it is not a valid GGUF file, or a shard is missing
      */
     public static Gguf open(Path file) {
+        return open(file, false);
+    }
+
+    /**
+     * As {@link #open(Path)}; with {@code retained}, the mapping is not undone by {@link
+     * #close()} but once nothing uses it any more: neither this object nor a tensor read
+     * with {@link #blocks}. For a model that runs from the file.
+     *
+     * @param file the {@code .gguf} file, or one shard of a split model
+     * @param retained whether the mapping stays while tensors read in place use it
+     * @return the opened file
+     */
+    public static Gguf open(Path file, boolean retained) {
         Objects.requireNonNull(file, "file");
         Matcher shard = SHARD.matcher(file.getFileName().toString());
         List<Path> paths = new ArrayList<>();
@@ -227,7 +241,7 @@ public final class Gguf implements WeightSource {
         } else {
             paths.add(file);
         }
-        Arena arena = Arena.ofShared();
+        Arena arena = retained ? Arena.ofAuto() : Arena.ofShared();
         try {
             Part first = null;
             Map<String, Entry> entries = new LinkedHashMap<>();
@@ -259,8 +273,19 @@ public final class Gguf implements WeightSource {
             }
             return new Gguf(paths.getFirst(), arena, first.version, first.metadata, entries, paths.size());
         } catch (RuntimeException e) {
-            arena.close();
+            close(arena);
             throw e;
+        }
+    }
+
+    /** Closes an arena that can be closed: an automatic one is left to the garbage collector. */
+    private static void close(Arena arena) {
+        if (arena.scope().isAlive()) {
+            try {
+                arena.close();
+            } catch (UnsupportedOperationException automatic) {
+                // freed once unreachable
+            }
         }
     }
 
@@ -452,6 +477,64 @@ public final class Gguf implements WeightSource {
     }
 
     /**
+     * Returns whether {@link #blocks} can read a tensor in place: a matrix in any format but
+     * the integer ones and {@code F64}.
+     *
+     * @param name the name
+     * @return {@code true} if it can
+     */
+    public boolean mappable(String name) {
+        Entry e = entry(name);
+        return e.shape.rank() == 2 && switch (e.format) {
+            case I8, I16, I32, I64, F64 -> false;
+            default -> true;
+        };
+    }
+
+    /**
+     * Reads a weight matrix in place, as a {@linkplain GgmlBlocks packed} {@code [in, out]}
+     * tensor on the CPU over this file's mapping: nothing is copied or expanded, so the matrix
+     * takes its file size in memory, and the operating system reads it from disk when it is
+     * first used (and may drop it again when memory runs short). The tensor stays valid while
+     * this file is open; see {@link #open(Path, boolean)} for a file that stays mapped as long
+     * as its tensors are in use.
+     *
+     * @param name the name of a {@linkplain #mappable mappable} matrix
+     * @return the packed {@code [in, out]} matrix
+     * @throws IllegalArgumentException if the tensor is not mappable
+     */
+    public Tensor blocks(String name) {
+        return Tensor.packed(mapped(name), Device.cpu());
+    }
+
+    /**
+     * As {@link #blocks}, the storage itself: the stored blocks over this file's mapping.
+     *
+     * @param name the name of a {@linkplain #mappable mappable} matrix
+     * @return the blocks
+     * @throws IllegalArgumentException if the tensor is not mappable
+     */
+    public GgmlBlocks mapped(String name) {
+        if (!mappable(name)) {
+            throw new IllegalArgumentException(name + " is " + format(name) + " " + shape(name)
+                    + "; it cannot be read in place");
+        }
+        Entry e = entry(name);
+        Format f = e.format;
+        return new GgmlBlocks(raw(name), f.name(), e.shape.dim(0), e.shape.dim(1), f.block, f.bytes,
+                (m, count, out, at) -> GgmlQuants.decodeFloats(f, m, count, out, at));
+    }
+
+    /** @return the bytes of all tensors, as stored: about the memory the model takes in its file's formats */
+    public long bytes() {
+        long n = 0;
+        for (Entry e : entries.values()) {
+            n += e.bytes;
+        }
+        return n;
+    }
+
+    /**
      * Returns whether {@link #packedTransposed} can keep a tensor packed: a matrix in {@code
      * Q8_0}, {@code Q4_0}, {@code Q4_1}, {@code Q5_0}, {@code Q5_1}, {@code Q2_K}, {@code
      * Q3_K}, {@code Q4_K}, {@code Q5_K}, {@code Q6_K}, an i-quant or {@code MXFP4}. The
@@ -640,9 +723,7 @@ public final class Gguf implements WeightSource {
 
     @Override
     public void close() {
-        if (arena.scope().isAlive()) {
-            arena.close();
-        }
+        close(arena);
     }
 
     @Override

@@ -159,6 +159,21 @@ public final class Device {
         return Optional.ofNullable(backend.memory());
     }
 
+    /**
+     * Returns whether {@code bytes} take more than {@code share} of the memory this device's
+     * backend means to take ({@link Memory#budget()}), for deciding where a large model runs.
+     *
+     * @param bytes the bytes to hold
+     * @param share the part of the budget they may take, such as 0.8 to leave room for
+     *     activations and a cache
+     * @return {@code true} if they do; {@code false} also for a device that does not count
+     *     its memory, such as the CPU
+     */
+    public boolean tooSmallFor(long bytes, double share) {
+        Memory m = backend.memory();
+        return m != null && m.budget() > 0 && bytes > share * m.budget();
+    }
+
     /** Starts measuring the peak in {@link #memory()} again from the current use. */
     public void resetPeakMemory() {
         backend.resetPeakMemory();

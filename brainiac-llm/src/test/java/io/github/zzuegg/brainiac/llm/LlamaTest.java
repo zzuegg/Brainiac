@@ -119,6 +119,32 @@ class LlamaTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"qwen3moe", "qwen2moe"})
+    void runsExpertsOnTheCpuFromTheFile(String name) throws IOException {
+        Map<String, Object> e = expected(name + ".gguf.expected.json");
+        int[][] ids = {ints(e.get("ids"))};
+        Llama all = Llama.load(resource(name + ".gguf"), DEVICE, DType.FLOAT32);
+        float[] logits = all.forward(ids).value().toArray();
+        int layers = all.config().layers();
+        for (int onDevice : new int[] {0, 1, layers}) {
+            Llama split = Llama.loadExpertsOnCpu(resource(name + ".gguf"), DEVICE, DType.FLOAT32, onDevice);
+            assertArrayEquals(rows(e.get("logits")), split.forward(ids).value().toArray(), 2e-3f, name + " " + onDevice);
+            assertArrayEquals(logits, split.forward(ids).value().toArray(), 1e-4f, name + " " + onDevice);
+            // decoding token by token through the cache gives the same last logits
+            LanguageModel.State state = split.newState(1);
+            Tensor last = null;
+            for (int t = 0; t < ids[0].length; t++) {
+                last = split.next(state, new int[][] {{ids[0][t]}}, null);
+            }
+            float[] lastExpected = java.util.Arrays.copyOfRange(logits, logits.length - split.config().vocabSize(),
+                    logits.length);
+            assertArrayEquals(lastExpected, last.to(DType.FLOAT32).toArray(), 1e-3f, name + " cached " + onDevice);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> Llama.loadExpertsOnCpu(resource("qwen3.gguf"), DEVICE, DType.FLOAT32, 0));
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"phi3", "gemma2", "gemma3", "qwen2moe", "mixtral"})
     void otherFamiliesSaveAndLoad(String name, @TempDir Path dir) {
         Llama model = Llama.load(resource(name), DEVICE, DType.FLOAT32);
