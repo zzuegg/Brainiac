@@ -10,7 +10,7 @@ class GenerativeRetrievalTest {
 
     @Test
     void semanticIdsGenerateNextItemsIncludingColdOnes() {
-        Map<String, GenerativeRetrieval.Score> r = new GenerativeRetrieval(250, 150, 16, 4, 1).run(170);
+        Map<String, GenerativeRetrieval.Score> r = new GenerativeRetrieval(250, 150, 16, 4, 1).run(150);
         StringBuilder line = new StringBuilder("generative retrieval recall@10 all/cold (collisions):");
         r.forEach((k, v) -> line.append(String.format(" %s %.3f/%.3f (%.2f)", k, v.recall(), v.coldRecall(),
                 v.collisions())));

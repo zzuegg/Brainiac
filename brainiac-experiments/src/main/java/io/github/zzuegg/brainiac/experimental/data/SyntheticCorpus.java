@@ -111,7 +111,12 @@ public final class SyntheticCorpus {
         for (int t = 0; t < topics; t++) {
             int base = firstWord + t * wordsPerTopic;
             int made = 0;
+            int attempts = 0;
             while (made < docsPerTopic) {
+                if (++attempts > 100_000) {
+                    throw new IllegalArgumentException(wordsPerTopic + " words cannot make " + docsPerTopic
+                            + " distinct documents per topic");
+                }
                 int[] group = pick(r, wordsPerTopic, 3);
                 List<int[]> siblings = new ArrayList<>();
                 siblings.add(group);
@@ -127,13 +132,13 @@ public final class SyntheticCorpus {
                 }
                 boolean fresh = true;
                 for (int[] s : siblings) {
-                    fresh &= !used.contains(key(s));
+                    fresh &= !used.contains(t + ":" + key(s));
                 }
                 if (!fresh || new HashSet<>(siblings.stream().map(SyntheticCorpus::key).toList()).size() < 3) {
                     continue;
                 }
                 for (int[] s : siblings) {
-                    used.add(key(s));
+                    used.add(t + ":" + key(s));
                     int[] asp = new int[3];
                     for (int i = 0; i < 3; i++) {
                         asp[i] = base + s[i];
