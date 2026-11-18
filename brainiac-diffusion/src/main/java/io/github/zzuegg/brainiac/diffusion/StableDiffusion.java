@@ -44,7 +44,7 @@ import java.util.stream.Stream;
  * overflows in float16. One instance is meant to stay loaded and serve many requests, one
  * at a time.
  */
-public final class StableDiffusion implements AutoCloseable {
+public final class StableDiffusion implements ImageGenerator {
 
     /** The model families. */
     public enum Kind {
@@ -278,11 +278,23 @@ public final class StableDiffusion implements AutoCloseable {
         return kind;
     }
 
+    @Override
+    public String family() {
+        return kind.name();
+    }
+
+    /** 25 steps, guidance 7 (SDXL 5), a negative prompt, any sampler. */
+    @Override
+    public Defaults defaults() {
+        return new Defaults(25, kind == Kind.SDXL ? 5f : 7f, true, true);
+    }
+
     /**
      * Returns the device the model runs on.
      *
      * @return the device
      */
+    @Override
     public Device device() {
         return device;
     }
@@ -292,6 +304,7 @@ public final class StableDiffusion implements AutoCloseable {
      *
      * @return 512, 768 or 1024
      */
+    @Override
     public int nativeSize() {
         return nativeSize;
     }
@@ -302,6 +315,7 @@ public final class StableDiffusion implements AutoCloseable {
      * @param ratio the shape
      * @return {@code {width, height}}
      */
+    @Override
     public int[] size(AspectRatio ratio) {
         return ratio.size(nativeSize);
     }
@@ -329,6 +343,7 @@ public final class StableDiffusion implements AutoCloseable {
      * @return the images, {@link ImageRequest#count()} of them
      * @throws CancellationException if {@code progress} asked to stop
      */
+    @Override
     public synchronized List<GeneratedImage> generate(ImageRequest request, Progress progress) {
         int width = request.width() == 0 ? nativeSize : request.width();
         int height = request.height() == 0 ? nativeSize : request.height();
@@ -436,6 +451,11 @@ public final class StableDiffusion implements AutoCloseable {
 
     /** Decodes latents into images {@code [batch, 3, h, w]} with values in {@code [0, 1]}. */
     Tensor decode(Tensor latents) {
+        return decode(vae, latents);
+    }
+
+    /** Decodes latents with {@code vae} into images {@code [batch, 3, h, w]} with values in {@code [0, 1]}. */
+    static Tensor decode(AutoencoderKL vae, Tensor latents) {
         Tensor image = Var.noGrad(() -> vae.fromLatents(Var.of(latents)).value());
         Tensor[] out = new Tensor[1];
         List<Tensor> made = Tensor.created(() -> out[0] = image.mul(0.5f).add(0.5f)
@@ -514,6 +534,11 @@ public final class StableDiffusion implements AutoCloseable {
     }
 
     private Tensor gaussian(Shape shape, SplittableRandom random) {
+        return gaussian(shape, random, device);
+    }
+
+    /** Standard normal values drawn on the host, so that a seed gives the same image on every device. */
+    static Tensor gaussian(Shape shape, SplittableRandom random, Device device) {
         float[] v = new float[Math.toIntExact(shape.size())];
         for (int i = 0; i < v.length; i++) {
             v[i] = (float) random.nextGaussian();
@@ -521,7 +546,7 @@ public final class StableDiffusion implements AutoCloseable {
         return Tensor.of(shape, v, device);
     }
 
-    private static GeneratedImage toImage(Tensor image, long seed) {
+    static GeneratedImage toImage(Tensor image, long seed) {
         Shape s = image.shape();
         int h = s.dim(2);
         int w = s.dim(3);

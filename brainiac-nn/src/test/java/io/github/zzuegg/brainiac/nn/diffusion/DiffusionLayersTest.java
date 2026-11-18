@@ -219,4 +219,76 @@ class DiffusionLayersTest {
         assertTrue(shell.parameters().size() > 50);
         assertEquals(Shape.of(32, 4, 3, 3), shell.convIn().weight().shape());
     }
+
+    @Test
+    void fluxTransformerTrainsWithFlowMatchingAndGivesTheSameValuesWithoutGradients() {
+        SplittableRandom r = new SplittableRandom(20);
+        FluxTransformer dit = new FluxTransformer(FluxTransformer.Settings.of(2, 2, 16, 1, 1, 6, 5, true), r);
+        Tensor x = uniform(r, 3, 2, 4, 6);
+        Tensor ctx = uniform(r, 3, 4, 6);
+        Tensor pooled = uniform(r, 3, 5);
+        Tensor sigmas = Tensor.of(Shape.of(3), new float[] {0.1f, 0.5f, 1}, CPU);
+        Tensor guidance = Tensor.of(Shape.of(3), new float[] {3.5f, 3.5f, 1}, CPU);
+        Var withGrad = dit.forward(Var.of(x), sigmas, Var.of(ctx), Var.of(pooled), guidance, false);
+        Var without = Var.noGrad(() -> dit.forward(Var.of(x), sigmas, Var.of(ctx), Var.of(pooled), guidance, false));
+        assertArrayEquals(withGrad.value().toArray(), without.value().toArray(), 1e-5f);
+        Denoiser model = dit.denoiser(ctx, pooled, 3.5f);
+        mse(model.apply(Var.of(x), sigmas), uniform(r, 3, 2, 4, 6)).backward();
+        for (Var p : dit.parameters()) {
+            assertNotNull(p.grad(), "every parameter gets a gradient");
+            p.zeroGrad();
+        }
+        // the same noise levels and noise each time, so that the loss only falls if the model learns
+        fits(dit, () -> FlowSampler.loss(model, x, new SplittableRandom(21)), 300, 0.05f);
+    }
+
+    @Test
+    void t5EncoderFitsAndItsPositionBiasesLearn() {
+        SplittableRandom r = new SplittableRandom(22);
+        T5Encoder t5 = new T5Encoder(T5Encoder.Settings.of(20, 16, 2, 2, 8, 32), r);
+        Tensor ids = Tensor.of(Shape.of(2, 5), new float[] {1, 5, 7, 19, 0, 3, 3, 3, 2, 1}, CPU);
+        Var out = t5.encode(Var.of(ids), false);
+        assertEquals(Shape.of(2, 5, 16), out.shape());
+        assertArrayEquals(out.value().toArray(), Var.noGrad(() -> t5.encode(Var.of(ids), false)).value().toArray(),
+                1e-5f);
+        Tensor target = uniform(r, 2, 5, 16);
+        fits(t5, () -> mse(t5.encode(Var.of(ids), true), target), 300, 0.1f);
+    }
+
+    @Test
+    void flowSamplingReachesThePointAndFollowsTheDistribution() {
+        // a single data point: the velocity is (x - point) / sigma
+        double[] sigmas = FlowSampler.dynamicSigmas(8, FlowSampler.mu(1024));
+        Tensor noise = Tensor.normal(Shape.of(16, 2), 0, 1, new SplittableRandom(23));
+        Tensor out = FlowSampler.sample((x, sigma, step) -> x.sub(1.5f).mul((float) (1 / sigma)), noise, sigmas,
+                SigmaSampler.Listener.NONE);
+        for (float f : out.toArray()) {
+            assertEquals(1.5, f, 1e-4);
+        }
+        // Gaussian data N(-0.7, 0.4^2): the exact velocity is (x - E[data | x]) / sigma
+        double m = -0.7;
+        double sd = 0.4;
+        Tensor many = Tensor.normal(Shape.of(4000, 1), 0, 1, new SplittableRandom(24));
+        Tensor samples = FlowSampler.sample((x, sigma, step) -> {
+            double a = 1 - sigma;
+            double var = a * a * sd * sd + sigma * sigma;
+            Tensor mean = x.sub((float) (a * m)).mul((float) (a * sd * sd / var)).add((float) m);
+            return x.sub(mean).mul((float) (1 / sigma));
+        }, many, FlowSampler.sigmas(100, 3), SigmaSampler.Listener.NONE);
+        double[] ms = DiffusionTest.meanAndStd(samples);
+        assertEquals(m, ms[0], 0.03);
+        assertEquals(sd, ms[1], 0.03);
+    }
+
+    @Test
+    void flowSchedulesShiftTowardsNoise() {
+        double[] plain = FlowSampler.sigmas(4, 1);
+        assertArrayEquals(new double[] {1, 0.75, 0.5, 0.25, 0}, plain, 1e-7);
+        double[] shifted = FlowSampler.sigmas(4, 3);
+        assertEquals(0.9, shifted[1], 1e-6);   // 3 * 0.75 / (1 + 2 * 0.75)
+        assertEquals(0.5, FlowSampler.mu(256), 1e-12);
+        assertEquals(1.15, FlowSampler.mu(4096), 1e-12);
+        double[] dynamic = FlowSampler.dynamicSigmas(4, 1.15);
+        assertEquals(Math.exp(1.15) / (Math.exp(1.15) + 1 / 0.75 - 1), dynamic[1], 1e-6);
+    }
 }

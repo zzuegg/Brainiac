@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
- * Generates an image with every Stable Diffusion model in the folder {@code -PtestModels=...}
+ * Generates an image with every Stable Diffusion and Flux model in the folder {@code -PtestModels=...}
  * names, and writes it to {@code build/pretrained-images}. Skipped without models.
  */
 class PretrainedDiffusionTest {
@@ -34,18 +34,26 @@ class PretrainedDiffusionTest {
         }
         int ran = 0;
         for (Path p : candidates) {
-            Optional<StableDiffusion.Kind> kind = StableDiffusion.detect(p);
-            if (kind.isEmpty()) {
+            Optional<String> family = ImageGenerator.detect(p);
+            if (family.isEmpty()) {
                 continue;
             }
+            boolean flux = family.get().startsWith("FLUX");
             long t0 = System.nanoTime();
-            try (StableDiffusion sd = StableDiffusion.load(p, device, dtype)) {
+            // Flux overflows in float16; -PtestFluxBits=8,4 stores the transformer and T5 in fewer bits
+            String[] bits = System.getProperty("brainiac.test.fluxBits", "0,0").split(",");
+            try (ImageGenerator model = flux
+                    ? Flux.load(p, device, dtype == DType.FLOAT32 ? dtype : DType.BFLOAT16,
+                            Flux.Options.bits(Integer.parseInt(bits[0].trim()), Integer.parseInt(bits[1].trim())))
+                    : StableDiffusion.load(p, device, dtype)) {
                 long t1 = System.nanoTime();
+                ImageGenerator.Defaults d = model.defaults();
                 ImageRequest r = ImageRequest.of("a photo of a red fox sitting in fresh snow, golden hour, detailed fur")
-                        .negativePrompt("blurry, low quality").steps(25).seed(42).build();
-                GeneratedImage img = sd.generate(r, Progress.NONE).get(0);
+                        .negativePrompt("blurry, low quality").steps(d.steps()).guidance(d.guidance()).seed(42)
+                        .build();
+                GeneratedImage img = model.generate(r, Progress.NONE).get(0);
                 long t2 = System.nanoTime();
-                assertEquals(sd.nativeSize(), img.width());
+                assertEquals(model.nativeSize(), img.width());
                 double mean = 0;
                 double sq = 0;
                 for (byte b : img.rgb()) {
@@ -57,11 +65,11 @@ class PretrainedDiffusionTest {
                 assertTrue(std > 10, "the image is almost flat (std " + std + ")");
                 Path file = out.resolve(p.getFileName().toString().replace(".safetensors", "") + ".png");
                 Files.write(file, img.png());
-                System.out.printf("%s: %s, loaded in %.1f s, 25 steps + decode in %.1f s -> %s%n", p.getFileName(),
-                        sd, (t1 - t0) / 1e9, (t2 - t1) / 1e9, file.toAbsolutePath());
+                System.out.printf("%s: %s, loaded in %.1f s, %d steps + decode in %.1f s -> %s%n", p.getFileName(),
+                        model, (t1 - t0) / 1e9, d.steps(), (t2 - t1) / 1e9, file.toAbsolutePath());
                 ran++;
             }
         }
-        assertTrue(ran > 0, "no Stable Diffusion model in " + folder);
+        assertTrue(ran > 0, "no image model in " + folder);
     }
 }

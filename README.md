@@ -36,7 +36,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
-| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance |
+| `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
 | `brainiac` | Facade: depend on this one module to get the whole API |
@@ -493,7 +493,7 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 `Llama.load` read back. `Evaluation` measures a model: `perplexity`, `logLikelihood`,
 `multipleChoice` and `needleInHaystack`.
 
-## Image generation: Stable Diffusion
+## Image generation: Stable Diffusion and Flux
 
 `brainiac-diffusion` runs pretrained Stable Diffusion 1.x, 2.x and XL models. It loads a
 Hugging Face diffusers folder (`model_index.json` with `unet`, `vae`, `text_encoder` and
@@ -535,6 +535,29 @@ the SD 1.x and SDXL pipelines (`brainiac-diffusion/src/test/python` makes the fi
 ./gradlew :brainiac-examples:run --args="image models/stable-diffusion-v1-5 'a lighthouse at dusk' --steps 25"
 ```
 
+### Flux
+
+`Flux` runs Black Forest Labs' FLUX.1 dev and schnell from a diffusers folder: a multimodal
+diffusion transformer sampled by flow matching, conditioned on T5-XXL and CLIP. In bfloat16 the
+transformer takes about 24 GB and T5 about 9.5 GB; `Flux.Options.bits(8, 8)` stores both in
+8 bits (4 bits quarters them), so it fits smaller GPUs.
+
+```java
+try (Flux flux = Flux.load(Path.of("models/FLUX.1-schnell"), Device.best(), DType.BFLOAT16,
+        Flux.Options.bits(8, 8))) {
+    GeneratedImage image = flux.generate(ImageRequest.of("a red fox in snow, golden hour")
+            .steps(4).build(), Progress.NONE).get(0);
+}
+```
+
+- Schnell makes an image in 1 to 4 steps. Dev takes 20 to 50 steps and a guidance scale
+  (about 3.5) that is an input to the model, so each step is one pass.
+- Flux has no negative prompt and always steps with Euler.
+- `ImageGenerator.load(path, device, dtype)` loads either family behind one interface, and
+  `defaults()` gives each model's steps and guidance.
+- The transformer, T5, the tokenizer and whole dev and schnell runs were checked against
+  diffusers and transformers on small random models (`flux_fixtures.py`).
+
 ### The same layers in your own networks
 
 Stable Diffusion runs on ordinary brainiac-nn layers in `io.github.zzuegg.brainiac.nn.diffusion`.
@@ -550,6 +573,8 @@ model from them, or fine-tune a pretrained one:
 | `UNet` | the full denoising UNet; also a `Denoiser` for `Diffusion.loss` |
 | `AutoencoderKL` | the VAE: `encode`, `decode`, `toLatents`, `loss` (reconstruction + KL) |
 | `ClipTextEncoder` | CLIP's causal text transformer: last and penultimate layers, pooled embedding |
+| `T5Encoder` | T5's encoder: relative position biases, RMS norms, gated feed-forward |
+| `FluxTransformer` | a multimodal diffusion transformer (MMDiT): joint text-image blocks, single-stream blocks, axial rotary positions, adaLN-Zero |
 
 ```java
 UNet unet = new UNet(UNet.Settings.of(4, 4, new int[] {64, 128, 256}, 512), new SplittableRandom(1));
@@ -562,6 +587,17 @@ double[] sigmas = SigmaSampler.karras(diffusion.schedule(), 25);
 Tensor start = Tensor.normal(shape, 0, 1, random).mul((float) sigmas[0]);
 Tensor images = SigmaSampler.sample(SigmaSampler.model(model, diffusion.schedule(), Diffusion.Prediction.NOISE),
         start, sigmas, SigmaSampler.Method.DPM_PP_2M, random, SigmaSampler.Listener.NONE);
+```
+
+Flow matching works the same way: `FlowSampler.loss(model, data, random)` trains a velocity model,
+and `FlowSampler.sample(...)` walks from noise to data with Euler steps on a shifted schedule.
+
+```java
+FluxTransformer dit = new FluxTransformer(FluxTransformer.Settings.of(16, 8, 64, 4, 8, 512, 512, false), random);
+Denoiser model = dit.denoiser(textTokens, pooledText, 0);
+Var loss = FlowSampler.loss(model, latents, random);
+Tensor out = FlowSampler.sample(FlowSampler.model(model), noise, FlowSampler.sigmas(28, 3),
+        SigmaSampler.Listener.NONE);
 ```
 
 Inference runs inside `Var.noGrad(...)`, which records no graph: intermediate values are freed
