@@ -643,13 +643,44 @@ public final class ChatService {
     public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
             Float temperature, Sampler sampler, Consumer<ModelInfo> route, ChatListener listener)
             throws IOException, InterruptedException {
+        return chat(model, system, messages, maxTokens, key, temperature, sampler, Format.NONE, route, listener);
+    }
+
+    /**
+     * Answers a conversation in a given form.
+     *
+     * @param model a model key ({@code provider/id}) or {@value #AUTO}
+     * @param system instructions for the whole conversation, or an empty string
+     * @param messages the conversation, ending with the user's turn
+     * @param maxTokens the most tokens the answer may have
+     * @param key the name of the API key to use, or null to try the provider's keys in order
+     * @param temperature from 0 to 2, or null for the model's own default
+     * @param sampler top-p, top-k and the repeat penalty, each left to the model when not set
+     * @param format the form the answer must have
+     * @param route told which model answers, before the answer starts
+     * @param listener receives the answer
+     * @return how the answer ended
+     * @throws IOException if no model can answer, the provider fails or it cannot keep to the format
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public ChatResult chat(String model, String system, List<ChatMessage> messages, int maxTokens, String key,
+            Float temperature, Sampler sampler, Format format, Consumer<ModelInfo> route, ChatListener listener)
+            throws IOException, InterruptedException {
         ModelInfo target = resolve(model, "text");
         ChatProvider p = provider(target.provider());
+        if ("grammar".equals(format.kind()) && !p.takesGrammar()) {
+            throw new IOException(p.name() + " takes no grammar: use a JSON schema with it, or a model on this PC"
+                    + " or a worker host");
+        }
+        // a JSON answer is asked for in words too: some providers can only be asked
+        String instructions = format.kind().equals("json") && !system.toLowerCase(java.util.Locale.ROOT).contains("json")
+                ? (system.isBlank() ? "" : system.strip() + "\n\n") + Format.JSON_HINT : system;
         route.accept(target);
         // reasoning models that think in plain text: their <think> block goes to the thinking
         ThinkSplitter split = new ThinkSplitter(listener, false);
         return logged(target, "chat", () -> {
-            ChatResult r = p.chat(new ChatRequest(target.id(), system, messages, maxTokens, key, temperature, sampler), split);
+            ChatResult r = p.chat(new ChatRequest(target.id(), instructions, messages, maxTokens, key, temperature, sampler,
+                    format), split);
             split.finish();
             return r;
         }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});

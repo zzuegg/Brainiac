@@ -189,4 +189,23 @@ class ConstraintTest {
             assertTrue(brackets.matches(out.text()) || out.finish() == Generator.Finish.LENGTH, out.text());
         }
     }
+
+    @Test
+    void anyJsonObjectIsAcceptedAndNothingElse() {
+        Constraint json = Constraint.jsonObject();
+        for (String ok : List.of("{}", "{\"a\":1}", "{\"a\": 1, \"b\": [true, null, -2.5e3, \"x\\\"y\\u00e9\"]}",
+                "{\n  \"nested\": {\"deep\": [[], {}]},\n  \"s\": \"\"\n}")) {
+            assertTrue(json.matches(ok), ok);
+        }
+        for (String bad : List.of("", "[1]", "\"text\"", "{\"a\":}", "{a:1}", "{\"a\":01}", "{\"a\":1,}", "{\"a\":1} and more")) {
+            assertFalse(json.matches(bad), bad);
+        }
+        // an unfinished object can still be finished, text that left JSON cannot
+        Constraint.Matcher m = json.start();
+        for (char c : "{\"a\": [1, ".toCharArray()) {
+            m = m.feed(c);
+        }
+        assertTrue(m.canContinue());
+        assertFalse(m.accepting());
+    }
 }

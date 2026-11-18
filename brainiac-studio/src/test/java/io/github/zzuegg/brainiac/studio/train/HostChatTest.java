@@ -134,6 +134,17 @@ class HostChatTest {
                     });
             assertEquals(new io.github.zzuegg.brainiac.studio.chat.Sampler(0.8f, 40, 1.1f), echo.heard.getLast().sampler());
 
+            // the form the answer must have reaches the host, a grammar too
+            io.github.zzuegg.brainiac.studio.chat.Format grammar =
+                    new io.github.zzuegg.brainiac.studio.chat.Format("grammar", null, "root ::= \"yes\" | \"no\"");
+            chat.chat("host-" + h.id() + "/qwen-0.5b", "", List.of(new ChatMessage("user", "sure?")), 64, null, null,
+                    io.github.zzuegg.brainiac.studio.chat.Sampler.NONE, grammar, x -> { }, new ChatListener() {
+                        @Override
+                        public void text(String text) {
+                        }
+                    });
+            assertEquals(grammar, echo.heard.getLast().format());
+
             // a picture on a message reaches the host's model as it was sent
             byte[] png = {(byte) 0x89, 'P', 'N', 'G', 1, 2, 3};
             chat.chat("host-" + h.id() + "/qwen-0.5b", "", List.of(new ChatMessage("user", "what is this?",

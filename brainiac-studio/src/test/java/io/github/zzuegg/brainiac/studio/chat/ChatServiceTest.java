@@ -172,6 +172,72 @@ class ChatServiceTest {
     }
 
     @Test
+    void anAnswersFormatIsAskedOfEachProviderInItsOwnWay() throws Exception {
+        ChatService chat = apis.service(keys(Map.of("ANTHROPIC_API_KEY", "a", "OPENAI_API_KEY", "o",
+                "GEMINI_API_KEY", "g")), List.of());
+        Map<String, Object> open = Json.object(Json.parse(
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},"
+                        + "\"where\":{\"type\":\"object\",\"properties\":{\"lat\":{\"type\":\"number\"}}}}}"));
+        Format schema = new Format("schema", open, null);
+
+        // a JSON object: OpenAI's JSON mode, and the instructions say so for the providers that can only be asked
+        chat.chat("openai/gpt-5", "Be brief.", HELLO, 50, null, null, Sampler.NONE, Format.JSON, m -> { }, new Heard());
+        Map<String, Object> o = Json.object(Json.parse(apis.bodies.get("o POST")));
+        assertEquals(Map.of("type", "json_object"), o.get("response_format"));
+        assertTrue(o.get("messages").toString().contains("Be brief.\n\n" + Format.JSON_HINT), o.get("messages").toString());
+        chat.chat("anthropic/claude-opus-5-5", "", HELLO, 50, null, null, Sampler.NONE, Format.JSON, m -> { }, new Heard());
+        Map<String, Object> a = Json.object(Json.parse(apis.bodies.get("a POST")));
+        assertEquals(Format.JSON_HINT, a.get("system"));
+        assertFalse(a.containsKey("output_config"));
+
+        // a schema: each API's structured output; strict at OpenAI only for a schema that is closed already
+        chat.chat("openai/gpt-5", "", HELLO, 50, null, null, Sampler.NONE, schema, m -> { }, new Heard());
+        Map<String, Object> format = Json.object(Json.object(Json.parse(apis.bodies.get("o POST"))).get("response_format"));
+        assertEquals("json_schema", format.get("type"));
+        assertEquals(open, Json.object(format.get("json_schema")).get("schema"));
+        assertFalse(Json.object(format.get("json_schema")).containsKey("strict"));
+        Format closed = new Format("schema", schema.closedSchema(), null);
+        chat.chat("openai/gpt-5", "", HELLO, 50, null, null, Sampler.NONE, closed, m -> { }, new Heard());
+        format = Json.object(Json.object(Json.parse(apis.bodies.get("o POST"))).get("response_format"));
+        assertEquals(true, Json.object(format.get("json_schema")).get("strict"));
+
+        chat.chat("google/gemini-3-pro", "", HELLO, 50, null, null, Sampler.NONE, schema, m -> { }, new Heard());
+        Map<String, Object> config = Json.object(Json.object(Json.parse(apis.bodies.get("g POST"))).get("generationConfig"));
+        assertEquals("application/json", config.get("responseMimeType"));
+        assertEquals(open, config.get("responseJsonSchema"));
+
+        // Claude wants every object closed, so the studio closes them
+        chat.chat("anthropic/claude-opus-5-5", "", HELLO, 50, null, null, Sampler.NONE, schema, m -> { }, new Heard());
+        a = Json.object(Json.parse(apis.bodies.get("a POST")));
+        Map<String, Object> sent = Json.object(Json.object(Json.object(a.get("output_config")).get("format")).get("schema"));
+        assertEquals("json_schema", Json.object(Json.object(a.get("output_config")).get("format")).get("type"));
+        assertEquals(false, sent.get("additionalProperties"));
+        assertEquals(false, Json.object(Json.object(sent.get("properties")).get("where")).get("additionalProperties"));
+        assertFalse(a.containsKey("system"), "a schema needs no asking in words");
+
+        // no provider takes a grammar, and says so before anything is sent
+        int before = apis.calls.values().stream().mapToInt(Integer::intValue).sum();
+        IOException e = assertThrows(IOException.class, () -> chat.chat("openai/gpt-5", "", HELLO, 50, null, null,
+                Sampler.NONE, new Format("grammar", null, "root ::= \"yes\" | \"no\""), m -> { }, new Heard()));
+        assertTrue(e.getMessage().contains("takes no grammar"), e.getMessage());
+        assertEquals(before, apis.calls.values().stream().mapToInt(Integer::intValue).sum());
+
+        // reading a request's format
+        assertTrue(Format.of(Map.of()).none());
+        assertEquals(Format.JSON, Format.of(Map.of("format", Map.of("type", "json"))));
+        assertEquals(open, Format.of(Map.of("format", Map.of("type", "schema", "schema", Json.write(open)))).schema());
+        assertEquals(schema, Format.of(Map.of("format", schema.toJson())));
+        assertThrows(IllegalArgumentException.class, () -> Format.of(Map.of("format", Map.of("type", "schema"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> Format.of(Map.of("format", Map.of("type", "schema", "schema", "{not json"))));
+        assertThrows(IllegalArgumentException.class, () -> Format.of(Map.of("format", Map.of("type", "grammar"))));
+        assertThrows(IllegalArgumentException.class, () -> Format.of(Map.of("format", Map.of("type", "yaml"))));
+        assertThrows(IllegalArgumentException.class, () -> new Format("grammar", null, "root ::= (").constraint());
+        assertTrue(Format.JSON.constraint().matches("{\"a\": 1}"));
+        assertFalse(Format.JSON.constraint().matches("[1]"));
+    }
+
+    @Test
     void modelListsAreSortedIntoMediaAndAutoPicksTheFirstReadyProvider() {
         ChatService chat = apis.service(keys(Map.of("OPENAI_API_KEY", "o", "GEMINI_API_KEY", "g")), List.of(dir));
         Map<String, Object> d = chat.describe(false);

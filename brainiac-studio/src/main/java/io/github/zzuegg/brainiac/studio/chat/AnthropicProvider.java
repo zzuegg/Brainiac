@@ -115,6 +115,11 @@ final class AnthropicProvider extends RemoteProvider {
             // the default display leaves thinking blocks empty; the chat shows a summary instead
             body.put("thinking", Map.of("type", "adaptive", "display", "summarized"));
         }
+        if (request.format().schema() != null) {
+            // structured output; a plain JSON answer has no setting here and is asked for in the instructions
+            body.put("output_config", Map.of("format",
+                    Map.of("type", "json_schema", "schema", request.format().closedSchema())));
+        }
         List<String> headers = List.of();
         if (request.model().startsWith("claude-fable-")) {
             body.put("fallbacks", "default");

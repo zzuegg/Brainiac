@@ -58,6 +58,11 @@ public final class HostProvider implements ChatProvider {
     }
 
     @Override
+    public boolean takesGrammar() {
+        return true;
+    }
+
+    @Override
     public boolean runsMedia() {
         return true;
     }

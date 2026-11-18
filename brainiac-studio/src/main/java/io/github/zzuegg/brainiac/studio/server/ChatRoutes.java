@@ -600,6 +600,21 @@ final class ChatRoutes {
         }
     }
 
+    /**
+     * Reads a request's {@code format}, the form its answer must have.
+     *
+     * @param body the request
+     * @return the format; free text when the request has none
+     * @throws Exchanges.BadRequest if it is not a format
+     */
+    static io.github.zzuegg.brainiac.studio.chat.Format format(Map<String, Object> body) {
+        try {
+            return io.github.zzuegg.brainiac.studio.chat.Format.of(body);
+        } catch (IllegalArgumentException e) {
+            throw new Exchanges.BadRequest(e.getMessage());
+        }
+    }
+
     private void chat(HttpExchange ex) throws IOException {
         Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
         String model = Json.string(body, "model", ChatService.AUTO);
@@ -613,6 +628,7 @@ final class ChatRoutes {
         }
         Float temperature = temperature(body);
         io.github.zzuegg.brainiac.studio.chat.Sampler sampler = sampler(body);
+        io.github.zzuegg.brainiac.studio.chat.Format format = format(body);
         if (messages.isEmpty() || !"user".equals(messages.getLast().role()) || maxTokens < 1) {
             throw new Exchanges.BadRequest("send at least one message, ending with the user's, and maxTokens >= 1");
         }
@@ -625,7 +641,7 @@ final class ChatRoutes {
             Events events = new Events(out);
             long start = System.nanoTime();
             try {
-                ChatResult r = chat.chat(model, system, messages, maxTokens, key, temperature, sampler, m -> {
+                ChatResult r = chat.chat(model, system, messages, maxTokens, key, temperature, sampler, format, m -> {
                     Map<String, Object> route = new LinkedHashMap<>();
                     route.put("key", m.key());
                     route.put("provider", m.provider());

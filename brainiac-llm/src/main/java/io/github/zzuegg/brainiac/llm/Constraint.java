@@ -127,6 +127,28 @@ public final class Constraint {
         return new Constraint(b.toString());
     }
 
+    /** Any JSON object, in GBNF: nested values of every kind, with a little white space between them. */
+    private static final String JSON_OBJECT = """
+            root   ::= object
+            value  ::= object | array | string | number | "true" | "false" | "null"
+            object ::= "{" ws ( member ( ws "," ws member )* ws )? "}"
+            member ::= string ws ":" ws value
+            array  ::= "[" ws ( value ( ws "," ws value )* ws )? "]"
+            string ::= "\\"" ( [^"\\\\\\x00-\\x1f] | "\\\\" ( ["\\\\/bfnrt] | "u" [0-9a-fA-F]{4} ) )* "\\""
+            number ::= "-"? ( "0" | [1-9] [0-9]* ) ( "." [0-9]+ )? ( [eE] [-+]? [0-9]+ )?
+            ws     ::= "\\n"? " "{0,16}
+            """;
+
+    /**
+     * Any JSON object, whatever its members: what an API's "JSON mode" promises. A schema of
+     * {@code {"type": "object"}} is not this, since an object takes only its listed properties.
+     *
+     * @return the constraint
+     */
+    public static Constraint jsonObject() {
+        return grammar(JSON_OBJECT);
+    }
+
     /**
      * JSON that a schema accepts. Supported: {@code type} string, integer, number, boolean,
      * null, array ({@code items}, {@code minItems}, {@code maxItems}) and object

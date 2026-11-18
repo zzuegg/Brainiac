@@ -410,6 +410,9 @@ public final class WorkerClient {
             messages.add(message);
         }
         body.put("messages", messages);
+        if (!request.format().none()) {
+            body.put("format", request.format().toJson());
+        }
         // the answer streams, so only the wait for its first line is limited
         HttpResponse<InputStream> r = send(request("worker/chat").timeout(Duration.ofMinutes(10))
                 .header("Content-Type", "application/json")

@@ -137,6 +137,12 @@ final class GoogleProvider extends RemoteProvider {
         if (request.sampler().topK() != null) {
             config.put("topK", request.sampler().topK());
         }
+        if (request.format().json()) {
+            config.put("responseMimeType", "application/json");
+            if (request.format().schema() != null) {
+                config.put("responseJsonSchema", request.format().schema());
+            }
+        }
         if (request.model().startsWith("gemini-") && version(request.model()) >= 2.5) {
             config.put("thinkingConfig", Map.of("includeThoughts", true));   // summaries of its reasoning
         }

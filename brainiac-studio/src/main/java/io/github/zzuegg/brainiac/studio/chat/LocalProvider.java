@@ -213,6 +213,11 @@ final class LocalProvider implements ChatProvider {
     }
 
     @Override
+    public boolean takesGrammar() {
+        return true;
+    }
+
+    @Override
     public boolean runsMedia() {
         return true;
     }
@@ -528,8 +533,18 @@ final class LocalProvider implements ChatProvider {
         }
         Generator.Options options = new Generator.Options(request.maxTokens(),
                 sampling(request.temperature(), request.sampler()), System.nanoTime(), loaded.stops(), List.of());
-        // a template that opens the think block itself (DeepSeek-R1, Qwen3 with thinking on) starts the answer inside it
-        ThinkSplitter split = new ThinkSplitter(listener, prompt.stripTrailing().endsWith("<think>"));
+        boolean formed = !request.format().none();
+        if (formed) {
+            try {
+                // only words that keep the answer in the format can be chosen
+                options = options.withConstraint(request.format().constraint());
+            } catch (IllegalArgumentException e) {
+                throw new IOException(e.getMessage(), e);
+            }
+        }
+        // a template that opens the think block itself (DeepSeek-R1, Qwen3 with thinking on) starts the answer inside it;
+        // an answer held to a format has no think block
+        ThinkSplitter split = new ThinkSplitter(listener, !formed && prompt.stripTrailing().endsWith("<think>"));
         Generator.Output out;
         Generator.Listener pieces = (row, piece) -> {
             try {
