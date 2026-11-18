@@ -8,19 +8,21 @@ import java.util.SplittableRandom;
 
 /**
  * A fixed-size memory of past transitions; the oldest is overwritten when full. Sampling
- * random batches from it breaks the correlation between consecutive steps.
+ * random batches from it breaks the correlation between consecutive steps. Its storage grows
+ * as it fills, so a large capacity costs memory only once it is used.
  */
 public class ReplayBuffer {
 
     private final int capacity;
     private final int observationSize;
     private final int actionSize;
-    final float[] observations;
-    final float[] actions;
-    final float[] rewards;
-    final float[] next;
-    final float[] notDone;
-    final float[] discounts;
+    private float[] observations;
+    private float[] actions;
+    private float[] rewards;
+    private float[] next;
+    private float[] notDone;
+    private float[] discounts;
+    private int allocated;
     private int size;
     private int position;
 
@@ -36,12 +38,17 @@ public class ReplayBuffer {
         this.capacity = capacity;
         this.observationSize = observationSize;
         this.actionSize = actionSize;
-        observations = new float[capacity * observationSize];
-        actions = new float[capacity * actionSize];
-        rewards = new float[capacity];
-        next = new float[capacity * observationSize];
-        notDone = new float[capacity];
-        discounts = new float[capacity];
+        grow(Math.min(capacity, 1024));
+    }
+
+    private void grow(int slots) {
+        observations = java.util.Arrays.copyOf(observations == null ? new float[0] : observations, Math.multiplyExact(slots, observationSize));
+        actions = java.util.Arrays.copyOf(actions == null ? new float[0] : actions, Math.multiplyExact(slots, actionSize));
+        rewards = java.util.Arrays.copyOf(rewards == null ? new float[0] : rewards, slots);
+        next = java.util.Arrays.copyOf(next == null ? new float[0] : next, Math.multiplyExact(slots, observationSize));
+        notDone = java.util.Arrays.copyOf(notDone == null ? new float[0] : notDone, slots);
+        discounts = java.util.Arrays.copyOf(discounts == null ? new float[0] : discounts, slots);
+        allocated = slots;
     }
 
     /**
@@ -52,6 +59,9 @@ public class ReplayBuffer {
      */
     public int add(Transition t) {
         int i = position;
+        if (i >= allocated) {
+            grow((int) Math.min(capacity, 2L * allocated));
+        }
         System.arraycopy(t.observation(), 0, observations, i * observationSize, observationSize);
         System.arraycopy(t.action(), 0, actions, i * actionSize, actionSize);
         rewards[i] = t.reward();
@@ -71,6 +81,65 @@ public class ReplayBuffer {
     /** @return the most transitions it holds */
     public int capacity() {
         return capacity;
+    }
+
+    /**
+     * Gives each stored transition a new reward, as from a learned reward model (PEBBLE) or a
+     * goal changed in hindsight (HIRO, HER).
+     *
+     * @param reward the new reward of a transition from its observation, action and next
+     *     observation (fresh copies)
+     */
+    public void relabel(RewardFunction reward) {
+        for (int i = 0; i < size; i++) {
+            Transition t = transition(i);
+            rewards[i] = reward.reward(t.observation(), t.action(), t.nextObservation());
+        }
+    }
+
+    /**
+     * Gives one stored transition a new reward.
+     *
+     * @param slot the slot, below {@link #size()}
+     * @param reward the reward
+     */
+    public void setReward(int slot, float reward) {
+        check(slot);
+        rewards[slot] = reward;
+    }
+
+    /**
+     * Returns a copy of a stored transition.
+     *
+     * @param slot the slot, below {@link #size()}
+     * @return the transition
+     */
+    public Transition transition(int slot) {
+        check(slot);
+        return new Transition(
+                java.util.Arrays.copyOfRange(observations, slot * observationSize, (slot + 1) * observationSize),
+                java.util.Arrays.copyOfRange(actions, slot * actionSize, (slot + 1) * actionSize), rewards[slot],
+                java.util.Arrays.copyOfRange(next, slot * observationSize, (slot + 1) * observationSize),
+                notDone[slot] == 0, discounts[slot]);
+    }
+
+    private void check(int slot) {
+        if (slot < 0 || slot >= size) {
+            throw new IndexOutOfBoundsException("slot " + slot + " of " + size);
+        }
+    }
+
+    /** A reward computed from a transition's parts. */
+    @FunctionalInterface
+    public interface RewardFunction {
+
+        /**
+         * @param observation the observation
+         * @param action the action
+         * @param nextObservation the next observation
+         * @return the reward
+         */
+        float reward(float[] observation, float[] action, float[] nextObservation);
     }
 
     /**
@@ -94,7 +163,15 @@ public class ReplayBuffer {
         return gather(idx, w, device);
     }
 
-    Batch gather(int[] idx, float[] weights, Device device) {
+    /**
+     * Collects the given slots into a batch, for custom sampling schemes.
+     *
+     * @param idx the slots, each below {@link #size()}
+     * @param weights one importance weight per slot
+     * @param device where to put the tensors
+     * @return the batch
+     */
+    public Batch gather(int[] idx, float[] weights, Device device) {
         int b = idx.length;
         float[] o = new float[b * observationSize];
         float[] a = new float[b * actionSize];

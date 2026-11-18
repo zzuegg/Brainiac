@@ -1318,6 +1318,18 @@ public final class Tensor {
     }
 
     /**
+     * @param low the lower bound
+     * @param high the upper bound, at least {@code low}
+     * @return each value limited to {@code [low, high]}
+     */
+    public Tensor clamp(float low, float high) {
+        if (!(low <= high)) {
+            throw new IllegalArgumentException("clamp needs low <= high, got " + low + " and " + high);
+        }
+        return maximum(low).minimum(high);
+    }
+
+    /**
      * Compares element-wise with broadcasting.
      *
      * @param other the other tensor
@@ -1722,6 +1734,27 @@ public final class Tensor {
         }
         Tensor out = new Tensor(shape, device, backend().fft(storage(), size() / (2L * n), n, inverse));
         return out.dtype() == dtype() ? out : out.to(dtype());
+    }
+
+    /**
+     * The two-dimensional discrete Fourier transform of complex values {@code [..., h, w, 2]}:
+     * {@link #fft} along the columns, then along the rows, as {@code numpy.fft.fft2}.
+     *
+     * @param inverse whether to compute the inverse
+     * @return the transform, of this shape and type
+     */
+    public Tensor fft2(boolean inverse) {
+        int r = shape.rank();
+        if (r < 3 || shape.dim(r - 1) != 2) {
+            throw new IllegalArgumentException("fft2 takes complex values [..., h, w, 2], not " + shape);
+        }
+        int[] swap = new int[r];
+        for (int i = 0; i < r; i++) {
+            swap[i] = i;
+        }
+        swap[r - 3] = r - 2;
+        swap[r - 2] = r - 3;
+        return fft(inverse).permute(swap).fft(inverse).permute(swap);
     }
 
     /**

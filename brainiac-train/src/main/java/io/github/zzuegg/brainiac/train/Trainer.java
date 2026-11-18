@@ -485,7 +485,7 @@ public final class Trainer {
         }
         Device device = model.device();
         // refreshed before each step: layers may add or replace parameters while training
-        List<Var> params = new ArrayList<>(model.parameters());
+        List<Var> params = new ArrayList<>(trainable());
         List<Quantization.Weight> quantized = quantization == null ? List.of() : Quantization.weights(model);
         List<EpochResult> history = new ArrayList<>();
         List<Batch> fixedBatches = shuffle || augmentation != null ? null : data.batches(batchSize, device);
@@ -742,6 +742,17 @@ public final class Trainer {
         return s.equals(targets.shape()) || s.size() != targets.size() ? targets : targets.reshape(s);
     }
 
+    // the model's parameters, then the loss's own (an ArcFace margin's class centres, say)
+    private List<Var> trainable() {
+        List<Var> own = loss.parameters();
+        if (own.isEmpty()) {
+            return model.parameters();
+        }
+        List<Var> all = new ArrayList<>(model.parameters());
+        all.addAll(own);
+        return all;
+    }
+
     /**
      * Picks up parameters the model added or replaced since the last step; the optimizer
      * forgets the state of those that are gone.
@@ -749,7 +760,7 @@ public final class Trainer {
      * @return whether the set changed
      */
     private boolean refreshParameters(List<Var> params) {
-        List<Var> current = model.parameters();
+        List<Var> current = trainable();
         boolean same = current.size() == params.size();
         for (int i = 0; same && i < current.size(); i++) {
             same = current.get(i) == params.get(i);

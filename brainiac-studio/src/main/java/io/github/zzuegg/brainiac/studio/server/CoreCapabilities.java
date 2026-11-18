@@ -28,6 +28,10 @@ public final class CoreCapabilities implements CapabilityProvider {
             out.add(Capability.available("model.finetune", Medium.TRAINING, "Fine-tune",
                     "LoRA and QLoRA on Llama-family models", "brainiac-llm"));
         }
+        if (present("io.github.zzuegg.brainiac.llm.Bart")) {
+            out.add(Capability.available("text.rewrite", Medium.TEXT, "Summarize and translate",
+                    "BART and mBART summaries, Marian translations and T5 tasks with models on this PC", "brainiac-llm"));
+        }
         if (present("io.github.zzuegg.brainiac.diffusion.StableDiffusion")) {
             out.add(Capability.available("image.generate", Medium.IMAGE, "Generate images",
                     "Stable Diffusion and FLUX.1 models from a model folder, with samplers, seeds and guidance",
@@ -72,8 +76,14 @@ public final class CoreCapabilities implements CapabilityProvider {
             out.add(Capability.planned("speech.transcribe", Medium.SPEECH, "Transcribe",
                     "Turn speech into text with timings"));
         }
-        out.add(Capability.planned("vision.describe", Medium.VISION, "Describe images",
-                "Answer questions about pictures and video frames"));
+        if (present("io.github.zzuegg.brainiac.llm.VisionLanguageModel")) {
+            out.add(Capability.available("vision.describe", Medium.VISION, "Describe images",
+                    "Attach pictures in a chat with LLaVA, Gemma 3 or Qwen2-VL on this PC, or with a remote model",
+                    "brainiac-llm").withNote("No video frames yet"));
+        } else {
+            out.add(Capability.planned("vision.describe", Medium.VISION, "Describe images",
+                    "Answer questions about pictures and video frames"));
+        }
         out.add(Capability.available("agent.run", Medium.AGENT, "Agents",
                 "An agent works toward a goal with the studio's tools, asking first before it changes anything if you want",
                 "brainiac-studio"));
