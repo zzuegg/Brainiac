@@ -167,7 +167,7 @@ class LlamaTest {
         }
         // copies of the most used experts on the device, refreshed every few uses, give the same
         Llama cached = Llama.loadExpertsOnCpu(resource(name + ".gguf"), DEVICE, DType.FLOAT32, 0);
-        cached.cacheExperts(DEVICE, 1 << 16, 1, 5, Long.MAX_VALUE);
+        cached.cacheExperts(DEVICE, 1 << 16, 1, 5, Long.MAX_VALUE, Runnable::run);
         for (int pass = 0; pass < 3; pass++) {
             assertArrayEquals(logits, cached.forward(ids).value().toArray(), 1e-4f, name + " expert cache " + pass);
         }

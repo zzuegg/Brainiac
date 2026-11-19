@@ -61,6 +61,20 @@ class HotCacheTest {
     }
 
     @Test
+    void copiesMadeElsewhereJoinWhenReady() {
+        List<Runnable> queued = new ArrayList<>();
+        HotCache<String, String> c = new HotCache<>(10, k -> 10, k -> "copy of " + k, unloaded::add, 1, 100, 0,
+                queued::add);
+        assertNull(c.use("a", 1));   // fills: the copy is on its way
+        assertEquals(1, c.loading());
+        assertNull(c.use("a", 1));
+        queued.forEach(Runnable::run);
+        assertEquals("copy of a", c.use("a", 1));
+        assertEquals(0, c.loading());
+        assertEquals(10, c.bytes());
+    }
+
+    @Test
     void clearFreesEverything() {
         HotCache<String, String> c = cache(30, 1, 100, 0);
         c.use("a", 1);

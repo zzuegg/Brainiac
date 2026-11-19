@@ -565,8 +565,9 @@ public final class Llama implements LanguageModel {
                             Linear l = new Linear(Var.of(Tensor.packed(b, Device.cpu())), bias);
                             l.mapped = b;
                             String name = w;
-                            l.reload = (d, t) -> linear(gguf, name, hf, null, d, t, new LinkedHashMap<>(), null)
-                                    .weight.value();
+                            // packed for the device later, uploaded in the background (see copyExpert)
+                            l.reload = (d, t) -> gguf.packable(name) ? gguf.packedTransposed(name, d, null, true)
+                                    : linear(gguf, name, hf, null, d, t, new LinkedHashMap<>(), null).weight.value();
                             linears.put(hf, l);
                         } else {
                             linears.put(hf, linear(gguf, w, hf, null, on, as, named, bias));
@@ -2610,7 +2611,8 @@ public final class Llama implements LanguageModel {
      * Keeps copies of the most used experts on {@code target} (the GPU) where the experts of
      * blocks on {@code target} are kept elsewhere ({@link #loadExpertsOnCpu}): up to {@code bytes}
      * of them, chosen from the experts the model used. The copies fill after a warm-up of about
-     * 32 tokens and follow what the model uses after that, swapping a few every 256 tokens. A
+     * 32 tokens and follow what the model uses after that, swapping a few every 256 tokens;
+     * they are made on other threads, and decoding goes on without each until it is ready. A
      * token's experts with a copy run on {@code target}, at the same time as the rest on the
      * CPU. Where the routing favours some experts, which it does for most text, more of every
      * token's expert work moves to the GPU than with whole blocks of experts there
@@ -2627,11 +2629,15 @@ public final class Llama implements LanguageModel {
         }
         int k = config.extras().moe().present() ? config.extras().moe().perToken() : 1;
         long perToken = (long) Math.max(1, routed) * k;
-        return cacheExperts(target, bytes, 32 * perToken, 256 * perToken, Math.max(1, bytes / 16));
+        return cacheExperts(target, bytes, 32 * perToken, 256 * perToken, Math.max(1, bytes / 16), COPIER);
     }
 
-    /** As {@link #cacheExperts(Device, long)}, with the cache's timing: in expert uses, and the bytes a refresh may load. */
-    Llama cacheExperts(Device target, long bytes, long warmup, long every, long maxSwapBytes) {
+    /**
+     * As {@link #cacheExperts(Device, long)}, with the cache's timing (in expert uses), the
+     * bytes a refresh may load, and where copies are made.
+     */
+    Llama cacheExperts(Device target, long bytes, long warmup, long every, long maxSwapBytes,
+            java.util.concurrent.Executor copier) {
         Objects.requireNonNull(target, "target");
         if (bytes < 0) {
             throw new IllegalArgumentException("bytes is " + bytes);
@@ -2647,10 +2653,23 @@ public final class Llama implements LanguageModel {
         DType as = target.equals(device) ? dtype : DType.FLOAT32;
         expertCache = new HotCache<>(bytes, key -> expertBytes(key.block(), key.expert()),
                 key -> copyExpert(key.block(), key.expert(), target, as),
-                Llama::releaseExpert, warmup, every, maxSwapBytes);
+                Llama::releaseExpert, warmup, every, maxSwapBytes, copier);
         cacheDevice = target;
         return this;
     }
+
+    /**
+     * Makes expert copies for the cache, off the decoding thread: repacking a file's blocks
+     * for a GPU takes about a second per gigabyte on one thread, and a first fill of several
+     * gigabytes held up decoding for seconds. A few threads, leaving most cores to the experts
+     * on the CPU.
+     */
+    private static final java.util.concurrent.ExecutorService COPIER = java.util.concurrent.Executors.newFixedThreadPool(
+            Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 8)), r -> {
+                Thread t = new Thread(r, "brainiac-expert-copier");
+                t.setDaemon(true);
+                return t;
+            });
 
     /** The expert cache, or null; for tests. */
     HotCache<?, ?> expertCache() {
@@ -2683,6 +2702,9 @@ public final class Llama implements LanguageModel {
             }
             Var bias = from[i].bias == null ? null : Var.of(from[i].bias.value().to(target).to(dtype));
             out[i] = new Linear(Var.of(w), bias);
+            if (w.isPacked()) {
+                Tensor.evaluate(List.of(w));   // a matrix packed for later starts its upload now
+            }
         }
         return out;
     }

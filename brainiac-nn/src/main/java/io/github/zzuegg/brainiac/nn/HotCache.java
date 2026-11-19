@@ -6,6 +6,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.ToLongFunction;
@@ -19,6 +21,10 @@ import java.util.function.ToLongFunction;
  * never stalls a stream for long. Counts halve at each refresh, so the ranking follows what the
  * stream does now; a held item counts a quarter more than its uses, so two items of about the
  * same heat do not trade places on every refresh.
+ *
+ * <p>Copies can be made on another thread ({@code loader}): a refresh then only starts them,
+ * and each joins the cache at the first use after it is ready, so making gigabytes of copies
+ * never holds up the stream that uses them.
  *
  * @param <K> the item's key, with value equality
  * @param <V> the copy
@@ -35,6 +41,10 @@ public final class HotCache<K, V> {
     private final long maxSwapBytes;
     private final Map<K, double[]> counts = new HashMap<>();
     private final Map<K, V> held = new LinkedHashMap<>();
+    private final Executor loader;
+    /** Copies being made, and those no longer wanted, to free once they are made. */
+    private final Map<K, CompletableFuture<V>> pending = new LinkedHashMap<>();
+    private final List<CompletableFuture<V>> dropped = new ArrayList<>();
     private long bytes;
     private long untilRefresh;
     private boolean filled;
@@ -52,6 +62,18 @@ public final class HotCache<K, V> {
      */
     public HotCache(long budget, ToLongFunction<K> size, Function<K, V> load, Consumer<V> unload, long warmup,
             long every, long maxSwapBytes) {
+        this(budget, size, load, unload, warmup, every, maxSwapBytes, Runnable::run);
+    }
+
+    /**
+     * As the other constructor, with copies made on {@code loader}; {@code load} must then be
+     * safe to call from it, several at once if it runs several.
+     *
+     * @param loader runs {@code load}; {@code Runnable::run} makes copies during the use that asks
+     */
+    public HotCache(long budget, ToLongFunction<K> size, Function<K, V> load, Consumer<V> unload, long warmup,
+            long every, long maxSwapBytes, Executor loader) {
+        this.loader = Objects.requireNonNull(loader, "loader");
         if (budget < 0 || warmup < 0 || every <= 0 || maxSwapBytes < 0) {
             throw new IllegalArgumentException("budget " + budget + ", warmup " + warmup + ", every " + every
                     + ", maxSwapBytes " + maxSwapBytes);
@@ -79,6 +101,7 @@ public final class HotCache<K, V> {
         if (untilRefresh <= 0) {
             refresh();
         }
+        settle();
         V v = held.get(key);
         if (filled && v != null) {
             hits += times;
@@ -110,16 +133,23 @@ public final class HotCache<K, V> {
                 it.remove();
             }
         }
+        for (var it = pending.entrySet().iterator(); it.hasNext();) {
+            Map.Entry<K, CompletableFuture<V>> e = it.next();
+            if (!want.containsKey(e.getKey())) {
+                dropped.add(e.getValue());
+                it.remove();
+            }
+        }
         long loaded = 0;
         for (Map.Entry<K, Long> e : want.entrySet()) {
-            if (held.containsKey(e.getKey())) {
+            if (held.containsKey(e.getKey()) || pending.containsKey(e.getKey())) {
                 continue;
             }
             if (filled && loaded + e.getValue() > maxSwapBytes) {
                 break;
             }
-            held.put(e.getKey(), load.apply(e.getKey()));
-            bytes += e.getValue();
+            K key = e.getKey();
+            pending.put(key, CompletableFuture.supplyAsync(() -> load.apply(key), loader));
             loaded += e.getValue();
         }
         filled = true;
@@ -127,6 +157,35 @@ public final class HotCache<K, V> {
             c[0] /= 2;
         }
         untilRefresh = every;
+    }
+
+    /** Moves copies that are ready into the cache, and frees those made after they stopped being wanted. */
+    private void settle() {
+        for (var it = pending.entrySet().iterator(); it.hasNext();) {
+            Map.Entry<K, CompletableFuture<V>> e = it.next();
+            if (e.getValue().isDone()) {
+                it.remove();
+                if (!e.getValue().isCompletedExceptionally()) {
+                    // a copy that failed (out of memory, say) is tried again at a later refresh
+                    held.put(e.getKey(), e.getValue().join());
+                    bytes += size.applyAsLong(e.getKey());
+                }
+            }
+        }
+        for (var it = dropped.iterator(); it.hasNext();) {
+            CompletableFuture<V> f = it.next();
+            if (f.isDone()) {
+                it.remove();
+                if (!f.isCompletedExceptionally()) {
+                    unload.accept(f.join());
+                }
+            }
+        }
+    }
+
+    /** The number of copies being made. */
+    public synchronized int loading() {
+        return pending.size();
     }
 
     private double heat(Map.Entry<K, double[]> e) {
@@ -159,6 +218,9 @@ public final class HotCache<K, V> {
             unload.accept(v);
         }
         held.clear();
+        dropped.addAll(pending.values());
+        pending.clear();
+        settle();
         counts.clear();
         bytes = 0;
         filled = false;
@@ -169,7 +231,7 @@ public final class HotCache<K, V> {
 
     @Override
     public synchronized String toString() {
-        return String.format("HotCache[%d held, %.1f of %.1f MB, hit rate %.2f]", held.size(), bytes / 1e6,
-                budget / 1e6, hitRate());
+        return String.format(java.util.Locale.ROOT, "HotCache[%d held, %d loading, %.1f of %.1f MB, hit rate %.2f]",
+                held.size(), pending.size(), bytes / 1e6, budget / 1e6, hitRate());
     }
 }
