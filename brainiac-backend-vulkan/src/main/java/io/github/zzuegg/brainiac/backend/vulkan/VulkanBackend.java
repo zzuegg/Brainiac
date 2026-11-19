@@ -219,6 +219,13 @@ public final class VulkanBackend implements Backend {
     }
 
     @Override
+    public synchronized void trim() {
+        if (vk != null) {
+            vk.trim();
+        }
+    }
+
+    @Override
     public synchronized void resetPeakMemory() {
         if (vk != null) {
             vk.resetPeak();

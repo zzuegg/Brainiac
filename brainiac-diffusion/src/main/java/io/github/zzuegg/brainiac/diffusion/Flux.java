@@ -22,6 +22,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.SplittableRandom;
 import java.util.concurrent.CancellationException;
 
@@ -177,29 +178,42 @@ public final class Flux implements ImageGenerator {
     static final long WORKING = 3L << 30;
 
     private final Kind kind;
+    private final Path path;
     private final Device device;
+    private final DType dtype;
     private final List<WeightSource> sources;
     private final List<Tensor> weights;
     private final ClipTokenizer clipTokenizer;
     private final ClipTextEncoder clip;
     private final PretrainedTokenizer t5Tokenizer;
-    private final T5Encoder t5;
+    /** T5, or null while it is released to leave its memory to the transformer ({@link #encode}). */
+    private T5Encoder t5;
+    private final List<WeightSource> t5Sources;
+    private final List<Tensor> t5Weights;
+    /** The last prompt encoded and its conditioning, kept for the next draw of the same prompt. */
+    private String encodedPrompt;
+    private Conditioning encoded;
     private final FluxTransformer transformer;
     private final AutoencoderKL vae;
     private final Map<String, Object> scheduler;
     private final Options options;
 
-    private Flux(Kind kind, Device device, List<WeightSource> sources, List<Tensor> weights,
+    private Flux(Kind kind, Path path, Device device, DType dtype, List<WeightSource> sources, List<Tensor> weights,
             ClipTokenizer clipTokenizer, ClipTextEncoder clip, PretrainedTokenizer t5Tokenizer, T5Encoder t5,
-            FluxTransformer transformer, AutoencoderKL vae, Map<String, Object> scheduler, Options options) {
+            List<WeightSource> t5Sources, List<Tensor> t5Weights, FluxTransformer transformer, AutoencoderKL vae,
+            Map<String, Object> scheduler, Options options) {
         this.kind = kind;
+        this.path = path;
         this.device = device;
+        this.dtype = dtype;
         this.sources = sources;
         this.weights = weights;
         this.clipTokenizer = clipTokenizer;
         this.clip = clip;
         this.t5Tokenizer = t5Tokenizer;
         this.t5 = t5;
+        this.t5Sources = t5Sources;
+        this.t5Weights = t5Weights;
         this.transformer = transformer;
         this.vae = vae;
         this.scheduler = scheduler;
@@ -266,13 +280,14 @@ public final class Flux implements ImageGenerator {
                 options.textEncoderBits()), device, "Options.fitting picks weights that fit");
         List<WeightSource> sources = new ArrayList<>();
         List<Tensor> all = new ArrayList<>();
+        List<WeightSource> t5Sources = new ArrayList<>();
+        List<Tensor> t5All = new ArrayList<>();
         try {
             ClipTextEncoder.Settings cs = Pretrained.clipSettings(config(path.resolve("text_encoder")));
             ClipTextEncoder clip = Pretrained.clip(weights(path.resolve("text_encoder"), "model", sources, device,
                     dtype, all), cs, cs.layers());
             ClipTokenizer clipTokenizer = ClipTokenizer.load(path.resolve("tokenizer"), cs.positions());
-            T5Encoder t5 = Pretrained.t5(weights(path.resolve("text_encoder_2"), "model", sources, device, dtype, all)
-                    .quantized(options.textEncoderBits()), Pretrained.t5Settings(config(path.resolve("text_encoder_2"))));
+            T5Encoder t5 = loadT5(path, device, dtype, options, t5Sources, t5All);
             PretrainedTokenizer t5Tokenizer = PretrainedTokenizer.load(path.resolve("tokenizer_2"));
             FluxTransformer transformer = Pretrained.flux(weights(path.resolve("transformer"),
                     "diffusion_pytorch_model", sources, device, dtype, all).quantized(options.transformerBits()),
@@ -281,12 +296,19 @@ public final class Flux implements ImageGenerator {
                     dtype, all), Pretrained.vaeSettings(config(path.resolve("vae")), false));
             Path sc = path.resolve("scheduler/scheduler_config.json");
             Map<String, Object> scheduler = Files.isRegularFile(sc) ? Json.object(Json.read(sc)) : Map.of();
-            return new Flux(kind, device, sources, all, clipTokenizer, clip, t5Tokenizer, t5, transformer, vae,
-                    scheduler, options);
+            return new Flux(kind, path, device, dtype, sources, all, clipTokenizer, clip, t5Tokenizer, t5, t5Sources,
+                    t5All, transformer, vae, scheduler, options);
         } catch (IOException | RuntimeException e) {
+            release(t5All, t5Sources);
             release(all, sources);
             throw e;
         }
+    }
+
+    private static T5Encoder loadT5(Path path, Device device, DType dtype, Options options,
+            List<WeightSource> sources, List<Tensor> all) throws IOException {
+        return Pretrained.t5(weights(path.resolve("text_encoder_2"), "model", sources, device, dtype, all)
+                .quantized(options.textEncoderBits()), Pretrained.t5Settings(config(path.resolve("text_encoder_2"))));
     }
 
     private static Map<String, Object> config(Path dir) throws IOException {
@@ -366,35 +388,30 @@ public final class Flux implements ImageGenerator {
         int width = request.width() == 0 ? nativeSize() : request.width();
         int height = request.height() == 0 ? nativeSize() : request.height();
         Conditioning cond = encode(request.prompt());
-        try {
-            List<GeneratedImage> images = new ArrayList<>();
-            int[] done = {0};
-            int total = request.steps() * request.count();
-            int channels = transformer.settings().latentChannels();
-            for (int i = 0; i < request.count(); i++) {
-                long seed = request.seed() + i;
-                Tensor noise = StableDiffusion.gaussian(Shape.of(1, channels, height / 8, width / 8),
-                        new SplittableRandom(seed), device);
-                Tensor latents = denoise(noise, cond, request.steps(), request.guidance(), (step, steps, x0) -> {
-                    done[0]++;
-                    GeneratedImage preview = null;
-                    int every = progress.previewEvery();
-                    if (every > 0 && (step % every == 0 || step == steps)) {
-                        preview = preview(x0);
-                    }
-                    return progress.step(done[0], total, preview);
-                });
-                noise.release();
-                Tensor image = decode(latents);
-                latents.release();
-                images.add(StableDiffusion.toImage(image, seed));
-                image.release();
-            }
-            return images;
-        } finally {
-            cond.context().release();
-            cond.pooled().release();
+        List<GeneratedImage> images = new ArrayList<>();
+        int[] done = {0};
+        int total = request.steps() * request.count();
+        int channels = transformer.settings().latentChannels();
+        for (int i = 0; i < request.count(); i++) {
+            long seed = request.seed() + i;
+            Tensor noise = StableDiffusion.gaussian(Shape.of(1, channels, height / 8, width / 8),
+                    new SplittableRandom(seed), device);
+            Tensor latents = denoise(noise, cond, request.steps(), request.guidance(), (step, steps, x0) -> {
+                done[0]++;
+                GeneratedImage preview = null;
+                int every = progress.previewEvery();
+                if (every > 0 && (step % every == 0 || step == steps)) {
+                    preview = preview(x0);
+                }
+                return progress.step(done[0], total, preview);
+            });
+            noise.release();
+            Tensor image = decode(latents);
+            latents.release();
+            images.add(StableDiffusion.toImage(image, seed));
+            image.release();
         }
+        return images;
     }
 
     /** The noise levels for {@code steps} steps on an image of {@code imageTokens} patches, as diffusers sets them. */
@@ -445,8 +462,55 @@ public final class Flux implements ImageGenerator {
         return StableDiffusion.decode(vae, latents);
     }
 
-    /** Encodes a prompt with CLIP (pooled) and T5 (token states). */
+    /**
+     * Encodes a prompt with CLIP (pooled) and T5 (token states), or returns the last prompt's
+     * conditioning again. T5 is needed only here, so when the weights leave less than
+     * {@link #WORKING} free on the device, its weights are released afterwards and read again
+     * for the next new prompt: on a 16 GB GPU that is what keeps the transformer's steps in
+     * device memory instead of spilling to system memory, at a few seconds per new prompt.
+     * The conditioning stays valid until the next new prompt or {@link #close}.
+     */
     Conditioning encode(String prompt) {
+        if (encoded != null && prompt.equals(encodedPrompt)) {
+            return encoded;
+        }
+        if (encoded != null) {
+            encoded.context().release();
+            encoded.pooled().release();
+            encoded = null;
+            encodedPrompt = null;
+        }
+        if (t5 == null) {
+            try {
+                t5 = loadT5(path, device, dtype, options, t5Sources, t5Weights);
+            } catch (IOException e) {
+                release(t5Weights, t5Sources);
+                throw new java.io.UncheckedIOException("cannot read T5 again from " + path, e);
+            }
+        }
+        Conditioning cond = encodeWithT5(prompt);
+        OptionalLong free = MemoryFit.free(device);
+        if (free.isPresent() && free.getAsLong() < WORKING) {
+            releaseTextEncoder();
+        }
+        encoded = cond;
+        encodedPrompt = prompt;
+        return cond;
+    }
+
+    /** Releases T5's weights, giving their memory back to the device; the next new prompt reads them again. */
+    void releaseTextEncoder() {
+        t5 = null;
+        release(t5Weights, t5Sources);
+        device.trim();
+    }
+
+    /** @return whether T5's weights are on the device now */
+    boolean textEncoderLoaded() {
+        return t5 != null;
+    }
+
+    private Conditioning encodeWithT5(String prompt) {
         return Var.noGrad(() -> {
             DType type = transformer.dtype();
             Tensor clipIds = StableDiffusion.idTensor(new int[][] {clipTokenizer.encode(prompt)}, device);
@@ -517,6 +581,13 @@ public final class Flux implements ImageGenerator {
 
     @Override
     public synchronized void close() {
+        if (encoded != null) {
+            encoded.context().release();
+            encoded.pooled().release();
+            encoded = null;
+        }
+        t5 = null;
+        release(t5Weights, t5Sources);
         release(weights, sources);
     }
 

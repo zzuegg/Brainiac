@@ -937,6 +937,15 @@ final class VkContext {
     /** The first of {@link #spillTypes} that still had room. */
     private int spillFrom;
 
+    /**
+     * Frees every unused pooled block now, and lets device-local allocation be tried again
+     * even if the device filled up before: for after much memory was released.
+     */
+    void trim() {
+        reclaim();
+        fullAt = -1;
+    }
+
     private boolean deviceFull() {
         if (fullAt >= 0 && allocated < fullAt) {
             fullAt = -1;   // blocks were freed since

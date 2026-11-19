@@ -296,6 +296,14 @@ public interface Backend {
     }
 
     /**
+     * Gives the device memory that pooled, unused storage holds back to the device, so that
+     * storage of other sizes can use it; for after a large part of a model was released. The
+     * default does nothing, for backends that pool nothing.
+     */
+    default void trim() {
+    }
+
+    /**
      * Allocates storage whose contents are undefined, for results that an operation
      * overwrites completely. Backends where clearing costs a device command (such as a GPU)
      * skip it; the default clears anyway.
