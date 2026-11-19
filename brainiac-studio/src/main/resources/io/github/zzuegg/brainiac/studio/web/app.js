@@ -3680,9 +3680,8 @@ reason ::= [a-z ]+`;
       $$(`.pane[data-convo="${c.id}"]`).forEach(pane => {
         const el = pane.querySelector(`.msg[data-i="${i}"]`), box = pane.querySelector(".transcript");
         if (!el || !box) return;
-        const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
         el.outerHTML = msgHtml(c.messages[i], i);
-        if (stick) box.scrollTop = box.scrollHeight;
+        if (L.scroll[c.id] == null) box.scrollTop = box.scrollHeight;
       });
     }));
   }
@@ -3781,6 +3780,7 @@ reason ::= [a-z ]+`;
     // an edited message takes the place of the old one; what was answered after it goes
     if (L.editingMsg && L.editingMsg.convo === c.id) { c.messages.splice(L.editingMsg.at); L.editingMsg = null; }
     c.messages.push(pics.length ? { role: "user", text, images: pics, at: Date.now() } : { role: "user", text, at: Date.now() });
+    L.scroll[c.id] = null;                // whoever sends wants to see the answer come in
     persist(c);
     answer(c);
   }
@@ -3822,7 +3822,25 @@ reason ::= [a-z ]+`;
       const box = pane.querySelector(".transcript"), key = pane.dataset.convo;
       if (box) {
         box.scrollTop = key && L.scroll[key] != null ? L.scroll[key] : box.scrollHeight;
-        box.addEventListener("scroll", () => { if (key) L.scroll[key] = box.scrollHeight - box.scrollTop - box.clientHeight < 80 ? null : box.scrollTop; }, { passive: true });
+        // Only the reader leaves the bottom: a scroll that comes from the text growing, or from the page
+        // being drawn again, keeps a conversation that was followed at its end.
+        let byHand = 0, held = false;
+        const hand = () => { byHand = Date.now(); };
+        ["wheel", "touchmove", "keydown"].forEach(t => box.addEventListener(t, hand, { passive: true }));
+        box.addEventListener("pointerdown", () => {     // dragging the scroll bar
+          held = true; hand();
+          const up = () => { held = false; hand(); };
+          window.addEventListener("pointerup", up, { once: true });
+          window.addEventListener("pointercancel", up, { once: true });
+        });
+        box.addEventListener("scroll", () => {
+          if (!key) return;
+          if (box.scrollHeight - box.scrollTop - box.clientHeight < 80) L.scroll[key] = null;
+          else if (held || Date.now() - byHand < 800) L.scroll[key] = box.scrollTop;
+          else if (L.scroll[key] == null) box.scrollTop = box.scrollHeight;
+        }, { passive: true });
+        const lane = box.firstElementChild;
+        if (key && lane && window.ResizeObserver) new ResizeObserver(() => { if (L.scroll[key] == null) box.scrollTop = box.scrollHeight; }).observe(lane);
       }
     });
     $$("[data-pick-model]").forEach(s => s.addEventListener("change", () => {
