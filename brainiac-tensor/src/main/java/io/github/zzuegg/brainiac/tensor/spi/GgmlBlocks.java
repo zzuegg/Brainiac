@@ -47,7 +47,6 @@ public final class GgmlBlocks implements PackedStorage {
     private final int blockBytes;
     private final long rowBytes;
     private final Decoder decoder;
-    /** Whether {@link #load} read it all once: from then on, the page cache is trusted to keep it. */
     /**
      * {@link #READ} when this matrix was last {@linkplain #load loaded}, or -1. A mapped file
      * larger than memory keeps only what was read last in memory: once more than

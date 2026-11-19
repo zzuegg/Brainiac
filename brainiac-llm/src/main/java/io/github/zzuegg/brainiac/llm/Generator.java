@@ -304,7 +304,9 @@ public final class Generator {
     /**
      * The tokens that end a pretrained model's answer: its {@code generation_config.json}'s
      * {@code eos_token_id} (one or a list), the tokenizer's end-of-sequence token, and the
-     * end-of-turn tokens of common chat formats that its vocabulary has.
+     * end-of-turn tokens of common chat formats that its vocabulary has. In gpt-oss's
+     * harmony format {@code <|end|>} only ends a channel's message, so there the answer's
+     * {@code <|return|>} and a tool call's {@code <|call|>} end it instead.
      *
      * @param model the model directory or {@code .gguf} file
      * @param tokenizer its tokenizer
@@ -329,13 +331,28 @@ public final class Generator {
         }
         tokenizer.eos().ifPresent(stops::add);
         Set<Integer> special = tokenizer.specialIds();
+        boolean harmony = tokenizer.id("<|channel|>").isPresent() && tokenizer.id("<|return|>").isPresent();
         for (String t : END_OF_TURN) {
+            if (harmony && t.equals("<|end|>")) {
+                // gpt-oss's harmony format ends each channel's message with it, the analysis
+                // before the answer too; the answer ends with <|return|> (or <|call|> for a tool)
+                continue;
+            }
             // only as a special token: in Qwen's vocabulary "</s>" is ordinary text
             tokenizer.id(t).ifPresent(id -> {
                 if (special.contains(id)) {
                     stops.add(id);
                 }
             });
+        }
+        if (harmony) {
+            for (String t : List.of("<|return|>", "<|call|>")) {
+                tokenizer.id(t).ifPresent(id -> {
+                    if (special.contains(id)) {
+                        stops.add(id);
+                    }
+                });
+            }
         }
         return stops;
     }

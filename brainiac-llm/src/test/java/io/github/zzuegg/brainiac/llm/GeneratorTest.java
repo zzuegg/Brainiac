@@ -92,6 +92,24 @@ class GeneratorTest {
     }
 
     @Test
+    void harmonyAnswersEndWithReturnNotWithTheEndOfTheirAnalysis() {
+        List<Map<String, Object>> added = new java.util.ArrayList<>();
+        String[] specials = {"<|end|>", "<|return|>", "<|call|>", "<|channel|>", "<|im_end|>"};
+        for (int i = 0; i < specials.length; i++) {
+            added.add(Map.of("id", 2 + i, "content", specials[i], "special", true));
+        }
+        Map<String, Object> root = Map.of("model", Map.of("type", "BPE", "vocab", Map.of("a", 0, "b", 1), "merges",
+                List.of()), "added_tokens", added);
+        io.github.zzuegg.brainiac.io.PretrainedTokenizer harmony = io.github.zzuegg.brainiac.io.PretrainedTokenizer
+                .fromJson(io.github.zzuegg.brainiac.io.Json.write(root), Map.of());
+        assertEquals(Set.of(3, 4, 6), Generator.stopTokens(java.nio.file.Path.of("none.gguf"), harmony));
+        added.remove(3);   // without <|channel|>: <|end|> ends a turn (Phi-3)
+        io.github.zzuegg.brainiac.io.PretrainedTokenizer phi = io.github.zzuegg.brainiac.io.PretrainedTokenizer
+                .fromJson(io.github.zzuegg.brainiac.io.Json.write(root), Map.of());
+        assertEquals(Set.of(2, 6), Generator.stopTokens(java.nio.file.Path.of("none.gguf"), phi));
+    }
+
+    @Test
     void stopTokensEndOneRowAndNotTheOthers() {
         Generator gen = new Generator(letters(2), new CharacterTokenizer(LETTERS));
         int[][] prompts = {{1, 2, 3}, {4, 5}};
