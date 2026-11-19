@@ -202,7 +202,8 @@ public final class HipBackend implements Backend {
         HipContext c = hip;
         return "device " + c.ordinal + ": " + c.deviceName + ", " + c.architecture + ", " + c.multiprocessors
                 + " CUs, " + (c.deviceMemory >> 20) + " MB, " + (c.budget >> 20) + " MB budget; HIP runtime "
-                + HipRuntime.versionText(c.cu.runtimeVersion()) + " (" + c.cu.library + "); hipRTC "
+                + HipRuntime.versionText(c.cu.runtimeVersion()) + ", driver " + c.cu.driverVersion() + " (" + c.cu.library
+                + "); hipRTC "
                 + c.hiprtc.version() + " (" + c.hiprtc.library + ", "
                 + (c.cachedKernels ? "cached" : "compiled in " + c.compileNanos / 1_000_000 + " ms") + "); rocBLAS "
                 + (c.rocblas != null ? c.rocblas.version() + " (" + c.rocblas.library + ")"

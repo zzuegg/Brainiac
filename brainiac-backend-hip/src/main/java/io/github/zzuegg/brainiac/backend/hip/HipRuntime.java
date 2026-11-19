@@ -71,11 +71,19 @@ final class HipRuntime {
      * @throws HipException if there is no HIP runtime
      */
     HipRuntime() {
-        Binder b = Binder.load("the AMD HIP runtime", "brainiac.hip.runtime",
-                Binder.WINDOWS ? List.of("amdhip64_7.dll", "amdhip64_6.dll", "amdhip64.dll")
-                        : List.of("libamdhip64.so.7", "libamdhip64.so.6", "libamdhip64.so"),
-                Binder.WINDOWS ? Pattern.compile("amdhip64_(\\d+)\\.dll") : Pattern.compile("libamdhip64\\.so\\.([0-9.]+)"),
-                null);
+        List<String> names = Binder.WINDOWS ? List.of("amdhip64_7.dll", "amdhip64_6.dll", "amdhip64.dll")
+                : List.of("libamdhip64.so.7", "libamdhip64.so.6", "libamdhip64.so");
+        Binder b;
+        try {
+            // the display driver's own copy first (System32 on Windows): it matches the kernel
+            // driver, which the HIP SDK's copy need not
+            b = Binder.load("the AMD HIP runtime", "brainiac.hip.runtime", names, null, null);
+        } catch (HipException e) {
+            b = Binder.load("the AMD HIP runtime", "brainiac.hip.runtime", names,
+                    Binder.WINDOWS ? Pattern.compile("amdhip64_(\\d+)\\.dll")
+                            : Pattern.compile("libamdhip64\\.so\\.([0-9.]+)"),
+                    null);
+        }
         library = b.library();
         hipInit = b.bind("hipInit", FunctionDescriptor.of(JAVA_INT, JAVA_INT), false);
         hipDriverGetVersion = b.bind("hipDriverGetVersion", FunctionDescriptor.of(JAVA_INT, PTR), false);
