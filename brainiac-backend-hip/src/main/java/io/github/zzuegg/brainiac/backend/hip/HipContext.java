@@ -41,6 +41,15 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 final class HipContext {
 
     static final boolean DEBUG = Boolean.getBoolean("brainiac.hip.debug");
+    /** Prints every call into HIP before it is made ({@code -Dbrainiac.hip.trace=true}), to find a hang. */
+    static final boolean TRACE = Boolean.getBoolean("brainiac.hip.trace");
+
+    static void trace(String what) {
+        if (TRACE) {
+            System.err.println("brainiac hip: " + what);
+            System.err.flush();
+        }
+    }
     static final int GROUP = 256;
     /** Most blocks a one-dimensional launch uses; the kernels loop over the rest. */
     private static final int MAX_BLOCKS = 1 << 20;
@@ -88,7 +97,9 @@ final class HipContext {
 
     static synchronized HipRuntime runtime() {
         if (sharedRuntime == null) {
+            trace("loading the HIP runtime");
             HipRuntime d = new HipRuntime();
+            trace("hipInit (" + d.library + ")");
             d.init();
             sharedRuntime = d;
         }
@@ -97,6 +108,7 @@ final class HipContext {
 
     private static synchronized Hiprtc hiprtc() {
         if (sharedHiprtc == null) {
+            trace("loading hipRTC");
             sharedHiprtc = new Hiprtc();
         }
         return sharedHiprtc;
@@ -160,8 +172,11 @@ final class HipContext {
             throw new HipException(deviceName + " (" + architecture + ") runs 64-lane wavefronts; the hip backend "
                     + "needs an RDNA GPU (gfx10, gfx11, gfx12)", 0);
         }
+        trace("device " + ordinal + ": " + deviceName + ", " + architecture + ", warp " + warpSize + ", "
+                + multiprocessors + " CUs");
         cu.setDevice(ordinal);
         CURRENT.set(this);
+        trace("hipStreamCreateWithFlags");
         stream = cu.createStream(HipRuntime.HIP_STREAM_NON_BLOCKING);
 
         long mb = Long.getLong("brainiac.hip.memory", 0);
@@ -185,7 +200,9 @@ final class HipContext {
             why = "turned off (-Dbrainiac.hip.rocblas=none)";
         } else {
             try {
+                trace("loading rocBLAS");
                 blas = new Rocblas(stream, architecture);
+                trace("rocBLAS " + blas.version());
             } catch (HipException | LinkageError | IllegalArgumentException e) {
                 why = e.getMessage();
             }
@@ -300,6 +317,7 @@ final class HipContext {
             try (Arena a = Arena.ofConfined()) {
                 MemorySegment image = a.allocate(code.length + 1L, 16);
                 MemorySegment.copy(code, 0, image, JAVA_BYTE, 0, code.length);
+                trace("hipModuleLoadData " + part + " (" + code.length + " bytes)");
                 m = cu.loadModule(image);
             }
             modules.put(part, m);
@@ -392,6 +410,7 @@ final class HipContext {
     /** Launches {@code name} with a grid of blocks of {@link #GROUP} threads. */
     void launch(String name, int gridX, int gridY, int gridZ) {
         long f = function(name);
+        trace("launch " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
         int r = cu.launch(f, gridX, gridY, gridZ, GROUP, 0, stream, argPointers);
         launches++;
         if (r != HipRuntime.HIP_SUCCESS) {
@@ -404,6 +423,7 @@ final class HipContext {
 
     /** In debug mode: waits for the device and reports an error as caused by {@code what}. */
     void debugWait(String what) {
+        trace("hipStreamSynchronize after " + what);
         int r = cu.synchronize(stream);
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, what);
@@ -413,6 +433,7 @@ final class HipContext {
     /** Waits until the device has run everything queued. */
     void finish() {
         waits++;
+        trace("hipStreamSynchronize");
         int r = cu.synchronize(stream);
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, "waiting for the device (run with -Dbrainiac.hip.debug=true to find the operation)");
@@ -427,15 +448,17 @@ final class HipContext {
             return;
         }
         uploadedBytes += bytes;
+        trace("hipMemcpyHtoDAsync " + bytes + " bytes" + (src.isNative() ? "" : " from the heap"));
         if (src.isNative()) {
             cu.copyToDevice(dst, src, bytes, stream);
         } else {
-            // a Java array: copied off the heap first. The driver has taken the values when
-            // the call returns (pageable memory), so the copy can go right away.
+            // a Java array: copied off the heap first. HIP may still read pageable memory after
+            // the call returns, so the copy is waited for before the memory is freed.
             try (Arena a = Arena.ofConfined()) {
                 MemorySegment off = a.allocate(bytes, 8);
                 MemorySegment.copy(src, 0, off, 0, bytes);
                 cu.copyToDevice(dst, off, bytes, stream);
+                finish();
             }
         }
         if (DEBUG) {
@@ -453,6 +476,7 @@ final class HipContext {
         }
         for (long done = 0; done < bytes; done += chunk) {
             long n = Math.min(chunk, bytes - done);
+            trace("hipMemcpyDtoHAsync " + n + " bytes");
             cu.copyToHost(staging, src + done, n, stream);
             finish();
             MemorySegment.copy(staging, 0, dst, done, n);
@@ -461,6 +485,7 @@ final class HipContext {
 
     void copy(long dst, long src, long bytes) {
         if (bytes > 0) {
+            trace("hipMemcpyDtoDAsync " + bytes + " bytes");
             cu.copy(dst, src, bytes, stream);
             if (DEBUG) {
                 debugWait("device copy of " + bytes + " bytes");
@@ -470,18 +495,21 @@ final class HipContext {
 
     void fill32(long dst, int bits, long count) {
         if (count > 0) {
+            trace("hipMemsetD32Async " + count);
             cu.fill32(dst, bits, count, stream);
         }
     }
 
     void fill16(long dst, short bits, long count) {
         if (count > 0) {
+            trace("hipMemsetD16Async " + count);
             cu.fill16(dst, bits, count, stream);
         }
     }
 
     void fill8(long dst, byte bits, long count) {
         if (count > 0) {
+            trace("hipMemsetD8Async " + count);
             cu.fill8(dst, bits, count, stream);
         }
     }
@@ -520,6 +548,7 @@ final class HipContext {
             if (reserved + size > budget) {
                 trim();
             }
+            trace("hipMalloc " + size + " bytes");
             ptr = allocateFromDriver(size);
             reserved += size;
         }
@@ -589,6 +618,7 @@ final class HipContext {
         finish();
         for (Map.Entry<Long, ArrayDeque<Long>> e : pool.entrySet()) {
             for (Long ptr : e.getValue()) {
+                trace("hipFree");
                 cu.free(ptr);
                 reserved -= e.getKey();
             }

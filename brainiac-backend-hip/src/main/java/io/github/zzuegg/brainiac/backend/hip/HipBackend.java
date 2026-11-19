@@ -639,6 +639,7 @@ public final class HipBackend implements Backend {
             // a handful of rows: a BLAS library runs these 16-bit products slower than float32 ones
             few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
         } else if (blas) {
+            HipContext.trace("rocBLAS " + t + " " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n + "]");
             c.rocblas.gemm(t, false, false, m, n, k, x.address(), k, (long) m * k, y.address(), n, (long) k * n,
                     z.address(), (long) m * n, batch);
             c.products++;

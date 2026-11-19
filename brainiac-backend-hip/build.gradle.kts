@@ -30,6 +30,10 @@ tasks.test {
     if (providers.gradleProperty("brainiac.hip.debug").orNull == "true") {
         jvmArgs("-Dbrainiac.hip.debug=true")
     }
+    // -Pbrainiac.hip.trace=true prints every HIP call before it is made, to find a hang
+    if (providers.gradleProperty("brainiac.hip.trace").orNull == "true") {
+        jvmArgs("-Dbrainiac.hip.trace=true")
+    }
     // -Pbrainiac.hip.critical=true links the per-operation calls as critical downcalls
     if (providers.gradleProperty("brainiac.hip.critical").orNull == "true") {
         jvmArgs("-Dbrainiac.hip.critical=true")
@@ -41,4 +45,6 @@ tasks.test {
         jvmArgs("-Dbrainiac.bench=true")
     }
     testLogging.showStandardStreams = true
+    // name each test as it starts, so a test that never ends shows which one it is
+    testLogging.events("started", "passed", "skipped", "failed")
 }
