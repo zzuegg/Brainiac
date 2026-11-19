@@ -115,6 +115,7 @@ final class Binder {
             Path p = Path.of(explicit);
             try {
                 loadCompanion(p, companion, arena);
+                loadWithItsFolder(p);
                 return new Binder(SymbolLookup.libraryLookup(p, arena), p.toString());
             } catch (IllegalArgumentException e) {
                 throw new HipException("cannot load " + what + " from " + p + " (-D" + property + "): "
@@ -129,6 +130,7 @@ final class Binder {
             if (found != null) {
                 try {
                     loadCompanion(found, companion, arena);
+                    loadWithItsFolder(found);
                     return new Binder(SymbolLookup.libraryLookup(found, arena), found.toString());
                 } catch (IllegalArgumentException e) {
                     tried.add(found + " (" + e.getMessage() + ")");
@@ -151,6 +153,31 @@ final class Binder {
         }
         throw new HipException(what + " not found (tried " + String.join(", ", tried)
                 + "); install AMD's HIP SDK (ROCm on Linux) or name the file with -D" + property, 0);
+    }
+
+    /**
+     * On Windows, loads {@code file} so that the libraries it needs are also looked for in its
+     * own folder (rocblas.dll needs others from the SDK's bin folder, which Windows otherwise
+     * finds only when that folder is on the PATH); the lookup that follows then gets the
+     * library already loaded. Elsewhere, and when this fails, nothing happens.
+     */
+    private static void loadWithItsFolder(Path file) {
+        if (!WINDOWS) {
+            return;
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MethodHandle loadLibraryEx = LINKER.downcallHandle(
+                    SymbolLookup.libraryLookup("kernel32", Arena.global()).findOrThrow("LoadLibraryExW"),
+                    FunctionDescriptor.of(java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.ADDRESS,
+                            java.lang.foreign.ValueLayout.ADDRESS, java.lang.foreign.ValueLayout.JAVA_INT));
+            MemorySegment name = a.allocateFrom(file.toAbsolutePath().toString(),
+                    java.nio.charset.StandardCharsets.UTF_16LE);
+            // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+            MemorySegment module = (MemorySegment) loadLibraryEx.invokeExact(name, MemorySegment.NULL, 0x100 | 0x1000);
+            HipContext.trace("LoadLibraryExW " + file + (module.address() == 0 ? ": failed" : ""));
+        } catch (Throwable t) {
+            HipContext.trace("LoadLibraryExW " + file + ": " + t);
+        }
     }
 
     private static void loadCompanion(Path file, java.util.function.UnaryOperator<String> companion, Arena arena) {

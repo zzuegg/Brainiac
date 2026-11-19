@@ -44,6 +44,10 @@ tasks.test {
     }
     // -Pbrainiac.hip.devices=one|all chooses which GPUs become devices
     providers.gradleProperty("brainiac.hip.devices").orNull?.let { jvmArgs("-Dbrainiac.hip.devices=$it") }
+    // -Pbrainiac.hip.slabs=false gives each small block a hipMalloc of its own
+    providers.gradleProperty("brainiac.hip.slabs").orNull?.let { jvmArgs("-Dbrainiac.hip.slabs=$it") }
+    // -Pbrainiac.hip.closeAtExit=false leaves the device to the runtime at exit
+    providers.gradleProperty("brainiac.hip.closeAtExit").orNull?.let { jvmArgs("-Dbrainiac.hip.closeAtExit=$it") }
     // -Pbrainiac.hip.rocblas=none multiplies with the backend's own kernel
     providers.gradleProperty("brainiac.hip.rocblas").orNull?.let { jvmArgs("-Dbrainiac.hip.rocblas=$it") }
     // -Pbench prints matrix product speeds (HipBenchmarkTest)

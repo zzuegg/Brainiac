@@ -586,6 +586,8 @@ final class HipContext {
     private final java.util.TreeMap<Long, Long> slabs = new java.util.TreeMap<>();
     /** The largest size class cut from slabs. */
     static final long SLAB_LIMIT = 1L << 20;
+    /** Whether small blocks are cut from slabs ({@code -Dbrainiac.hip.slabs=false}: a hipMalloc each). */
+    static final boolean SLABS = !"false".equals(System.getProperty("brainiac.hip.slabs"));
     private final Set<Long> live = new HashSet<>();
     private long inUse;
     private long peak;
@@ -611,7 +613,7 @@ final class HipContext {
         long ptr;
         if (free != null && !free.isEmpty()) {
             ptr = free.pop();
-        } else if (size <= SLAB_LIMIT && reserved + slabBytes(size) <= budget) {
+        } else if (SLABS && size <= SLAB_LIMIT && reserved + slabBytes(size) <= budget) {
             ptr = cutSlab(size);
         } else {
             if (reserved + size > budget) {

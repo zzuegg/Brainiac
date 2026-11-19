@@ -58,6 +58,8 @@ import java.util.Optional;
  * runtime's properties do not tell</li>
  * <li>{@code brainiac.hip.cache}: where compiled kernels are kept, {@code none} for nowhere</li>
  * <li>{@code brainiac.hip.statistics=true}: print {@link #statistics()} at exit</li>
+ * <li>{@code brainiac.hip.slabs=false}: a hipMalloc for every small block instead of cutting
+ * blocks up to 1 MB from slabs</li>
  * <li>{@code brainiac.hip.profile=true}: time every kernel, wait, copy and allocation, waiting
  * after each launch, and list the costliest in {@link #statistics()}</li>
  * <li>{@code brainiac.hip.devices}: {@code one} for only one device; {@code all} for one per GPU
