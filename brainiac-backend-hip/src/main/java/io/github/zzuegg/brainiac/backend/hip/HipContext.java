@@ -546,7 +546,13 @@ final class HipContext {
             ptr = free.pop();
         } else {
             if (reserved + size > budget) {
-                trim();
+                ptr = reclaim(size);
+                if (ptr != 0) {
+                    live.add(ptr);
+                    inUse += size;
+                    peak = Math.max(peak, inUse);
+                    return ptr;
+                }
             }
             trace("hipMalloc " + size + " bytes");
             ptr = allocateFromDriver(size);
@@ -556,6 +562,40 @@ final class HipContext {
         inUse += size;
         peak = Math.max(peak, inUse);
         return ptr;
+    }
+
+    private long lastCollection;
+
+    /**
+     * Makes room within the budget: frees pooled blocks, and asks the garbage collector for
+     * tensors no longer used. On Windows HIP does not fail when the card is full but moves
+     * memory to system memory, where every kernel reads it over PCIe, so the budget has to be
+     * kept here. Returns a block of {@code size} the collection gave back, or 0.
+     */
+    private long reclaim(long size) {
+        trim();
+        for (int attempt = 0; reserved + size > budget && attempt < 3; attempt++) {
+            long now = System.nanoTime();
+            if (attempt == 0 && now - lastCollection < 50_000_000L) {
+                break;   // collected a moment ago: the rest is in use
+            }
+            lastCollection = now;
+            collections++;
+            System.gc();
+            try {
+                Thread.sleep(5L << attempt);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            drainCollected();
+            ArrayDeque<Long> free = pool.get(size);
+            if (free != null && !free.isEmpty()) {
+                return free.pop();
+            }
+            trim();
+        }
+        return 0;
     }
 
     private long allocateFromDriver(long size) {
