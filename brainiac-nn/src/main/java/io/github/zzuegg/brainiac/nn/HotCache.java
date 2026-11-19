@@ -131,7 +131,7 @@ public final class HotCache<K, V> {
                 if (held.containsKey(key) || pending.containsKey(key)) {
                     continue;
                 }
-                CompletableFuture<V> f = CompletableFuture.supplyAsync(() -> load.apply(key), loader);
+                CompletableFuture<V> f = start(key);
                 pending.put(key, f);
                 started.add(f);
                 total += s;
@@ -141,7 +141,7 @@ public final class HotCache<K, V> {
         for (CompletableFuture<V> f : started) {
             try {
                 f.join();
-            } catch (java.util.concurrent.CompletionException e) {
+            } catch (RuntimeException e) {
                 // left out; a refresh may try it again
             }
         }
@@ -207,7 +207,7 @@ public final class HotCache<K, V> {
             }
         }
         for (K key : newcomers.keySet()) {
-            pending.put(key, CompletableFuture.supplyAsync(() -> load.apply(key), loader));
+            pending.put(key, start(key));
         }
         filled = true;
         for (double[] c : counts.values()) {
@@ -215,6 +215,38 @@ public final class HotCache<K, V> {
         }
         untilRefresh = every;
     }
+
+    /**
+     * Starts making a copy. The copy's future completes whatever happens: a load that fails
+     * with an error (out of memory, say) and a loader that refuses the task leave it failed,
+     * where a future that never completes held up {@link #preload} for good (measured: a
+     * heap that ran out while copies were made).
+     */
+    private CompletableFuture<V> start(K key) {
+        CompletableFuture<V> f = new CompletableFuture<>();
+        try {
+            loader.execute(() -> {
+                try {
+                    f.complete(load.apply(key));
+                } catch (Throwable t) {
+                    f.completeExceptionally(t);
+                } finally {
+                    if (!f.isDone()) {
+                        f.completeExceptionally(LOAD_FAILED);   // completing above failed too
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            f.completeExceptionally(e);
+        }
+        return f;
+    }
+
+    /** Made beforehand: when a load fails because memory ran out, there may be none for another. */
+    private static final RuntimeException LOAD_FAILED = new RuntimeException("a copy failed", null, false,
+            false) {
+        private static final long serialVersionUID = 1L;
+    };
 
     /** Moves copies that are ready into the cache, and frees those made after they stopped being wanted. */
     private void settle() {

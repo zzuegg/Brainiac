@@ -104,6 +104,25 @@ class HotCacheTest {
     }
 
     @Test
+    void preloadGoesOnWithoutACopyWhoseLoadFailed() throws Exception {
+        java.util.concurrent.ExecutorService loader = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            HotCache<String, String> c = new HotCache<>(20, k -> 10, k -> {
+                if (k.equals("a")) {
+                    throw new OutOfMemoryError("no heap for a");   // an error, which kills a plain task
+                }
+                return "copy of " + k;
+            }, unloaded::add, 4, 100, 10, loader);
+            c.preload(List.of("a", "b"));
+            assertFalse(c.holds("a"));
+            assertTrue(c.holds("b"));
+            assertEquals(0, c.loading());
+        } finally {
+            loader.shutdownNow();
+        }
+    }
+
+    @Test
     void clearFreesEverything() {
         HotCache<String, String> c = cache(30, 1, 100, 0);
         c.use("a", 1);

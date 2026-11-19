@@ -98,7 +98,7 @@ public final class ChatExample {
         }
         Device device = device(deviceName);
         if (dtype == null) {
-            dtype = device.kind() == Device.Kind.GPU && device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
+            dtype = defaultType(path, device);
         }
         long start = System.nanoTime();
         Llama model;
@@ -156,11 +156,33 @@ public final class ChatExample {
             if (expertCacheGb > 0) {
                 System.out.println("[" + model.expertCacheStats() + "]");
             }
+            if (cpuExperts) {
+                System.out.println("[" + model.readAheadStats() + "]");
+            }
             history.add(ChatTemplate.message("assistant", answer));
             if (prompt != null) {
                 return;
             }
         }
+    }
+
+    /**
+     * float16 on a GPU that has it, float32 elsewhere; bfloat16 for gpt-oss, whose
+     * activations outgrow float16 (measured: only "!!!" on a GPU in float16, the same answer
+     * in bfloat16 as in float32, with a third less GPU memory).
+     */
+    private static DType defaultType(Path path, Device device) {
+        if (device.kind() != Device.Kind.GPU) {
+            return DType.FLOAT32;
+        }
+        if (path.getFileName().toString().endsWith(".gguf") && device.supports(DType.BFLOAT16)) {
+            try (io.github.zzuegg.brainiac.io.Gguf g = io.github.zzuegg.brainiac.io.Gguf.open(path)) {
+                if (g.architecture().equals("gpt-oss")) {
+                    return DType.BFLOAT16;
+                }
+            }
+        }
+        return device.supports(DType.FLOAT16) ? DType.FLOAT16 : DType.FLOAT32;
     }
 
     private static Device device(String name) {

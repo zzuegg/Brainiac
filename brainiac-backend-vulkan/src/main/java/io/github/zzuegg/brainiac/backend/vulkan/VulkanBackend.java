@@ -630,8 +630,21 @@ public final class VulkanBackend implements Backend {
         if (storage instanceof QuantizedRows) {
             return;
         }
-        if (storage instanceof Deferred) {
-            return;   // uploaded weights: freed with the tensor that holds them
+        if (storage instanceof Deferred d) {
+            Packed p = d.done;
+            if (d.letGo && p != null && d.owner == this) {
+                // a copy used only here (see prefetchNow), such as a cached expert: freed now,
+                // where left to the collector the swapped-out copies of a GPU's expert cache
+                // took gigabytes more than it (measured: 2 to 5 GB spilled to host memory)
+                for (VkStorage v : new VkStorage[] {p.levels(), p.hi(), p.scaleCodes(), p.offsetCodes(), p.scales(),
+                        p.offsets()}) {
+                    if (v != null) {
+                        v.release();
+                    }
+                }
+                d.done = null;   // with no host copy either: a later use fails
+            }
+            return;   // other uploaded weights: freed with the tensor that holds them
         }
         if (storage instanceof Packed p) {
             if (p.host() == null) {   // quantized here, such as optimizer state: freed now
@@ -1979,13 +1992,27 @@ public final class VulkanBackend implements Backend {
         }
     }
 
+    @Override
+    public void prefetchNow(PackedStorage packed) {
+        if (packed instanceof Deferred d && d.owner == this) {
+            d.letGo = true;
+            packed(d);
+            Packed p = d.done;
+            if (p != null && p.host() != null) {
+                d.host = null;   // uploaded before it was asked for: its copy goes now
+                d.done = new Packed(p.rows(), p.cols(), p.bits(), p.group(), p.flags(), p.perSuper(), p.shift(), null,
+                        p.levels(), p.hi(), p.scaleCodes(), p.offsetCodes(), p.scales(), p.offsets());
+            }
+        }
+    }
+
     /** Uploads in the background, unless it was unpacked to the host first and {@code always} is false. */
     private void fetch(Deferred d, boolean always) {
         prefetcher.execute(() -> {
             if (always || !d.skip) {
                 try {
                     packed(d);
-                } catch (RuntimeException e) {
+                } catch (RuntimeException | OutOfMemoryError e) {
                     // out of memory or such: the first use tries again, and fails there
                 }
             }
@@ -2005,8 +2032,21 @@ public final class VulkanBackend implements Backend {
     /** A matrix packed for a backend, uploaded in the background or on its first use. */
     private static final class Deferred implements PackedStorage {
         final VulkanBackend owner;
-        final PackedMatrix host;
-        /** The uploaded matrix, once uploaded. */
+        final int rows;
+        final int cols;
+        final long hostBytes;
+        /**
+         * The matrix in host memory: kept after the upload, for reading it back, unless
+         * {@link #letGo} (see {@link #prefetchNow}).
+         */
+        volatile PackedMatrix host;
+        /**
+         * Whether the host copy goes once uploaded: kept, the copies of a GPU's experts took as
+         * much heap as the GPU took memory (measured: a heap that ran out while an expert cache
+         * filled).
+         */
+        volatile boolean letGo;
+        /** The uploaded matrix, once uploaded; set before {@link #host} is cleared. */
         volatile Packed done;
         /** Whether the background upload should leave it (it was unpacked to the host first). */
         volatile boolean skip;
@@ -2014,26 +2054,41 @@ public final class VulkanBackend implements Backend {
         Deferred(VulkanBackend owner, PackedMatrix host) {
             this.owner = owner;
             this.host = host;
+            this.rows = host.rows();
+            this.cols = host.cols();
+            this.hostBytes = host.data().length;
+        }
+
+        /** Records the upload, and lets the host copy go if asked to. */
+        void uploaded(Packed p) {
+            if (letGo) {
+                done = new Packed(p.rows(), p.cols(), p.bits(), p.group(), p.flags(), p.perSuper(), p.shift(), null,
+                        p.levels(), p.hi(), p.scaleCodes(), p.offsetCodes(), p.scales(), p.offsets());
+                host = null;
+            } else {
+                done = p;
+            }
         }
 
         @Override
         public int rows() {
-            return host.rows();
+            return rows;
         }
 
         @Override
         public int cols() {
-            return host.cols();
+            return cols;
         }
 
         @Override
         public long size() {
-            return (long) host.rows() * host.cols();
+            return (long) rows * cols;
         }
 
         @Override
         public long bytes() {
-            return done != null ? done.bytes() : host.data().length;
+            Packed p = done;
+            return p != null ? p.bytes() : hostBytes;
         }
     }
 
@@ -2189,8 +2244,8 @@ public final class VulkanBackend implements Backend {
             vk.uploadStaged(block, to, from, bytes);
             if (d.done == null) {
                 PackedMatrix m = st.matrix();
-                d.done = new Packed(m.rows(), m.cols(), m.bits(), m.group(), st.flags(), st.superRatio(), st.shift(), m,
-                        slots[0], slots[1], slots[2], slots[3], slots[4], slots[5]);
+                d.uploaded(new Packed(m.rows(), m.cols(), m.bits(), m.group(), st.flags(), st.superRatio(), st.shift(),
+                        m, slots[0], slots[1], slots[2], slots[3], slots[4], slots[5]));
             }
             return d.done;
         }
@@ -2312,12 +2367,24 @@ public final class VulkanBackend implements Backend {
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
         if (packed instanceof Deferred d) {
-            d.skip = true;
-            return d.host;
+            PackedMatrix h = d.host;
+            if (h != null) {
+                d.skip = true;
+                return h;
+            }
+            if (d.owner != this) {
+                return d.owner.unpackToHost(d);   // on another device: read back from there
+            }
+            packed = d.done;   // uploaded, its host copy let go (see prefetchNow): read back from the device
         }
         if (packed instanceof Packed p) {
             if (p.host() != null) {
                 return p.host();
+            }
+            if ((p.flags() & ~(Packed.NIBBLES | Packed.OFFSETS)) != 0 || p.hi() != null) {
+                throw new UnsupportedOperationException("a matrix of " + p.bits()
+                        + " bits with packed factors is not read back from the device, and its host copy was let go"
+                        + " after its upload (see prefetchNow)");
             }
             float[] scales = download(p.scales());
             float[] offsets = p.offsets() == null ? null : download(p.offsets());
@@ -2358,10 +2425,18 @@ public final class VulkanBackend implements Backend {
             if (done != null) {
                 return done;
             }
-            Staged st = stage(d.host);
+            PackedMatrix h = d.host;
+            if (h == null) {
+                Packed p = d.done;   // uploaded meanwhile: done is set before host is cleared
+                if (p == null) {
+                    throw new IllegalStateException("a packed matrix used after it was released");
+                }
+                return p;
+            }
+            Staged st = stage(h);
             if (Thread.holdsLock(this)) {
                 if (d.done == null) {
-                    d.done = upload(st);
+                    d.uploaded(upload(st));
                 }
                 return d.done;
             }

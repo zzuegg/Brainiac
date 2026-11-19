@@ -1046,6 +1046,12 @@ class VulkanBackendTest {
         Tensor later = Tensor.packed(w, gpu, true);
         Tensor.evaluate(List.of(later));
         assertArrayEquals(expected, x.to(gpu).matmul(later).toArray(), close, what + ", uploaded in the background");
+        // uploaded on this thread, with no copy kept in host memory
+        Tensor now = Tensor.packed(w, gpu, true);
+        Tensor.prefetchNow(List.of(now));
+        assertArrayEquals(expected, x.to(gpu).matmul(now).toArray(), close, what + ", uploaded at once");
+        now.release();   // freed at once, with no host copy to use again
+        assertThrows(IllegalStateException.class, () -> x.to(gpu).matmul(now).toArray());
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {
                 // inputs rounded to 16 bits: errors relative to the largest output

@@ -430,6 +430,17 @@ public interface Backend {
     }
 
     /**
+     * Moves a matrix from {@link #packLater} to the device now, on the calling thread, if it
+     * is not there yet, keeping no copy in host memory where the backend can: for copies that
+     * are only used on the device, as reading the matrix back may then be unsupported. The
+     * default does nothing.
+     *
+     * @param packed the matrix
+     */
+    default void prefetchNow(PackedStorage packed) {
+    }
+
+    /**
      * Quantizes a {@code [rows, cols]} float32 matrix on this backend, as
      * {@link PackedMatrix#quantize} does. The default downloads the values and quantizes them
      * in Java; backends override it to keep the values on the device.
