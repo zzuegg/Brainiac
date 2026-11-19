@@ -491,7 +491,7 @@ final class LocalProvider implements ChatProvider {
             if (l == null || !l.path().equals(path) || !l.device().name().equals(device.name())) {
                 // the old weights go before the new ones load, and room is made as the policy says
                 loaded = slot.load(request.model(), path, device, () -> false, () -> load(path, device),
-                        () -> loaded = null);
+                        this::unload);
             }
             return answer(request, listener);
         } finally {
@@ -538,6 +538,27 @@ final class LocalProvider implements ChatProvider {
      */
     static boolean looksAtPictures(Path path) {
         return sees(path);
+    }
+
+    // lets the chat model go, its GPU memory at once: left to the collector, the next model to
+    // load found it still in use and was refused or spilled
+    private void unload() {
+        Loaded l = loaded;
+        loaded = null;
+        if (l != null) {
+            release(l);
+        }
+    }
+
+    static void release(Loaded l) {
+        l.generator().cachePrefixes(0);
+        Llama llama = l.vision() != null ? l.vision().language()
+                : l.generator().model() instanceof Llama x ? x : null;
+        if (llama != null) {
+            for (io.github.zzuegg.brainiac.autograd.Var p : llama.parameters()) {
+                p.value().release();
+            }
+        }
     }
 
     private static Loaded load(Path path, Device device) {

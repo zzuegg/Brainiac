@@ -212,6 +212,13 @@ public final class VulkanBackend implements Backend {
     }
 
     @Override
+    public synchronized void flush() {
+        if (vk != null) {
+            vk.submit();
+        }
+    }
+
+    @Override
     public synchronized void resetPeakMemory() {
         if (vk != null) {
             vk.resetPeak();

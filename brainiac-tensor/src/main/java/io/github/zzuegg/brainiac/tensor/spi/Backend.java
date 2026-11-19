@@ -253,6 +253,15 @@ public interface Backend {
     }
 
     /**
+     * Sends the work recorded so far to the device without waiting for it. A backend that
+     * gathers commands into batches (the Vulkan backend) submits the current one; others need
+     * nothing, which is the default. Long computations call it between their parts, so that no
+     * single submission runs long enough for a display driver to time it out.
+     */
+    default void flush() {
+    }
+
+    /**
      * Says that the values of these storages are about to be needed. A backend that records
      * operations instead of running them (such as the Vulkan backend's fused shaders) can
      * compute them all together, for example in one kernel; others ignore it, which is the

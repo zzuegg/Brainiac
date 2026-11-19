@@ -365,6 +365,10 @@ public final class GpuResidency {
         return m != null ? m : sizeOnDisk(path);
     }
 
+    boolean wasMeasured(String key) {
+        return measured.containsKey(key);
+    }
+
     void measuredAs(String key, long bytes) {
         if (bytes > 0) {
             measured.put(key, bytes);

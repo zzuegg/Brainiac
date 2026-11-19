@@ -109,18 +109,47 @@ public final class Flux implements ImageGenerator {
             if (MemoryFit.free(device).isEmpty()) {
                 return full();
             }
-            long free = MemoryFit.free(device).getAsLong();
             Sizes sizes = Sizes.of(path);
-            for (int[] b : CHOICES) {
-                if (sizes.bytes(dtype, b[0], b[1]) + WORKING <= free) {
-                    return bits(b[0], b[1]);
-                }
+            int[] b = choose(sizes, dtype, MemoryFit.free(device).getAsLong());
+            if (b == null) {
+                // short of the comfortable room, still try the smallest weights if they leave the minimum
+                MemoryFit.require("Flux (" + path.getFileName() + ")", sizes.bytes(dtype, 4, 4), device,
+                        "even with both networks in 4 bits");
+                return bits(4, 4);
             }
-            // short of the comfortable room, still try the smallest weights if they leave the minimum
-            MemoryFit.require("Flux (" + path.getFileName() + ")", sizes.bytes(dtype, 4, 4), device,
-                    "even with both networks in 4 bits");
-            return bits(4, 4);
+            return bits(b[0], b[1]);
         }
+    }
+
+    /** The most precise {transformer, T5} bits that leave the working room in {@code free} bytes, or null. */
+    private static int[] choose(Sizes sizes, DType dtype, long free) {
+        for (int[] b : CHOICES) {
+            if (sizes.bytes(dtype, b[0], b[1]) + WORKING <= free) {
+                return b;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The device memory a Flux folder will take when nothing else is loaded: its weights at the
+     * bits {@link Options#fitting} would pick on an empty device, and the least room to generate.
+     *
+     * @param path a diffusers Flux folder
+     * @param device where it will run
+     * @param dtype the load type
+     * @return the bytes, or 0 on a device that does not count its memory
+     * @throws IOException if the headers cannot be read
+     */
+    static long memoryNeed(Path path, Device device, DType dtype) throws IOException {
+        java.util.Optional<Device.Memory> m = device.memory();
+        if (m.isEmpty()) {
+            return 0;
+        }
+        Sizes sizes = Sizes.of(path);
+        int[] b = choose(sizes, dtype, m.get().budget());
+        int[] bits = b == null ? new int[] {4, 4} : b;
+        return sizes.bytes(dtype, bits[0], bits[1]) + MemoryFit.MIN_WORKING;
     }
 
     /** The parameters of a Flux folder's networks, from the headers. */
