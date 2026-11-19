@@ -205,8 +205,11 @@ public final class HipBackend implements Backend {
                     }
                 }
                 if (Boolean.getBoolean("brainiac.hip.statistics")) {
-                    Runtime.getRuntime().addShutdownHook(new Thread(() -> System.err.println(name() + ": "
-                            + statistics()), "hip-statistics"));
+                    // printed by the closing hook when there is one: hooks run at the same time
+                    if ("false".equals(System.getProperty("brainiac.hip.closeAtExit"))) {
+                        Runtime.getRuntime().addShutdownHook(new Thread(() -> System.err.println(name() + ": "
+                                + statistics()), "hip-statistics"));
+                    }
                 }
             } catch (RuntimeException | LinkageError e) {
                 unavailable = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -256,6 +259,9 @@ public final class HipBackend implements Backend {
     private synchronized HipContext closeAtExit() {
         HipContext c = hip;
         if (c != null) {
+            if (Boolean.getBoolean("brainiac.hip.statistics")) {
+                System.err.println(name() + ": " + statistics());
+            }
             try {
                 c.close();
             } catch (RuntimeException e) {
@@ -810,14 +816,14 @@ public final class HipBackend implements Backend {
 
     /**
      * {@code few_vec}: a thread per {@code perThread} columns, reading them as one 16-byte load
-     * per row; {@code k} split into pieces of at least 16 rows until there are 16 blocks per
+     * per row; {@code k} split into pieces of at least 64 rows until there are 8 blocks per
      * compute unit, so that enough loads are in flight to keep the memory busy.
      */
     private void fewVec(HipContext c, HipStorage a, long w, int m, int k, int n, HipStorage out, int perThread) {
         int columnBlocks = (n / perThread + FEW_COLUMNS - 1) / FEW_COLUMNS;
-        int target = 16 * c.multiprocessors;
-        int pieces = Math.max(1, Math.min((k + 15) / 16, target / columnBlocks));
-        int chunk = ((k + pieces - 1) / pieces + 15) / 16 * 16;
+        int target = 8 * c.multiprocessors;
+        int pieces = Math.max(1, Math.min((k + 63) / 64, target / columnBlocks));
+        int chunk = ((k + pieces - 1) / pieces + 63) / 64 * 64;
         pieces = (k + chunk - 1) / chunk;
         if (pieces > 1 && columnBlocks > FEW_COUNTERS) {
             pieces = 1;

@@ -700,6 +700,11 @@ struct PackedWeights {
 #define FEW_ROWS 16
 #define FEW_TILE 64
 
+// a partial sum another block wrote, read past this compute unit's cache
+__device__ __forceinline__ float load_part(const float* p) {
+    return __hip_atomic_load(p, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+}
+
 // out[m, n] = a[m, k] x w[k, n] for m <= FEW_ROWS: a thread per column, each reading its column
 // of w once for every row of a. Blocks over columns (x) and pieces of k (y); with several pieces
 // each writes float partial sums to part[piece, m, n], added up in order by the last block of
@@ -760,11 +765,10 @@ template <class D, class W> __device__ void few_k(const typename D::T* a, W w, f
         if (last) {
             __threadfence();
             if (c < n) {
-                const volatile float* p = part;
                 for (int r = 0; r < m; r++) {
                     A sum = A(0);
                     for (int q = 0; q < (int) gridDim.y; q++) {
-                        sum += (A) p[((i64) q * m + r) * n + c];
+                        sum += (A) load_part(part + ((i64) q * m + r) * n + c);
                     }
                     D::st(out, (i64) r * n + c, sum);
                 }
@@ -781,6 +785,16 @@ template <class D, class W> __device__ void few_k(const typename D::T* a, W w, f
 // so that the many small loads of few_k do not keep a decoded token's products far below the
 // memory's speed. Pieces of k as in few_k, summed by the last block of each column block.
 #define FEW_VEC_ROWS 4
+
+// value v of the 16 bytes in `raw`, as stored values of type T
+template <class T> __device__ __forceinline__ T lane_of(const uint4& raw, int v);
+template <> __device__ __forceinline__ u16 lane_of<u16>(const uint4& raw, int v) {
+    unsigned w = v < 2 ? raw.x : v < 4 ? raw.y : v < 6 ? raw.z : raw.w;
+    return (u16) (w >> (16 * (v & 1)));
+}
+template <> __device__ __forceinline__ float lane_of<float>(const uint4& raw, int v) {
+    return __uint_as_float(v == 0 ? raw.x : v == 1 ? raw.y : v == 2 ? raw.z : raw.w);
+}
 
 template <class D> __device__ void few_vec_k(const typename D::T* a, const typename D::T* w, float* part,
         typename D::T* out, int m, int k, int n, int chunk, int* counters) {
@@ -812,11 +826,10 @@ template <class D> __device__ void few_vec_k(const typename D::T* a, const typen
 #pragma unroll 4
             for (int kk = 0; kk < len; kk++) {
                 uint4 raw = *reinterpret_cast<const uint4*>(w + (i64) (t + kk) * n + c0);
-                T vals[V];
-                __builtin_memcpy(vals, &raw, 16);
 #pragma unroll
                 for (int v = 0; v < V; v++) {
-                    A wv = D::ld(vals, v);
+                    T stored = lane_of<T>(raw, v);
+                    A wv = D::ld(&stored, 0);
 #pragma unroll
                     for (int r = 0; r < FEW_VEC_ROWS; r++) {
                         acc[r][v] += as[r][kk] * wv;
@@ -849,12 +862,11 @@ template <class D> __device__ void few_vec_k(const typename D::T* a, const typen
         if (last) {
             __threadfence();
             if (active) {
-                const volatile float* p = part;
                 for (int r = 0; r < m; r++) {
                     for (int v = 0; v < V; v++) {
                         A sum = A(0);
                         for (int q = 0; q < (int) gridDim.y; q++) {
-                            sum += (A) p[((i64) q * m + r) * n + c0 + v];
+                            sum += (A) load_part(part + ((i64) q * m + r) * n + c0 + v);
                         }
                         D::st(out, (i64) r * n + c0 + v, sum);
                     }
