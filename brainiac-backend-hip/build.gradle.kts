@@ -34,6 +34,10 @@ tasks.test {
     if (providers.gradleProperty("brainiac.hip.trace").orNull == "true") {
         jvmArgs("-Dbrainiac.hip.trace=true")
     }
+    // -Pbrainiac.hip.profile=true times every kernel (waiting after each) for HipBackend.statistics()
+    if (providers.gradleProperty("brainiac.hip.profile").orNull == "true") {
+        jvmArgs("-Dbrainiac.hip.profile=true")
+    }
     // -Pbrainiac.hip.critical=true links the per-operation calls as critical downcalls
     if (providers.gradleProperty("brainiac.hip.critical").orNull == "true") {
         jvmArgs("-Dbrainiac.hip.critical=true")

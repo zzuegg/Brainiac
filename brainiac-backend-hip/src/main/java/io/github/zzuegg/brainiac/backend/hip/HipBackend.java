@@ -58,6 +58,8 @@ import java.util.Optional;
  * runtime's properties do not tell</li>
  * <li>{@code brainiac.hip.cache}: where compiled kernels are kept, {@code none} for nowhere</li>
  * <li>{@code brainiac.hip.statistics=true}: print {@link #statistics()} at exit</li>
+ * <li>{@code brainiac.hip.profile=true}: time every kernel, wait, copy and allocation, waiting
+ * after each launch, and list the costliest in {@link #statistics()}</li>
  * <li>{@code brainiac.hip.devices}: {@code one} for only one device; {@code all} for one per GPU
  * ({@code hip}, {@code hip:1}, ...); by default one per GPU of the first one's architecture</li>
  * <li>{@code brainiac.hip.fusedAttention=false}: attention from separate operations</li>
@@ -255,7 +257,7 @@ public final class HipBackend implements Backend {
                 + " rocBLAS products, " + c.waits + " waits, " + (c.uploadedBytes >> 20) + " MB uploaded, "
                 + (c.downloadedBytes >> 20) + " MB downloaded, " + (c.inUse() >> 20) + " MB in use, "
                 + (c.peak() >> 20) + " MB peak, " + (c.reserved() >> 20) + " MB reserved, " + c.collections
-                + " collections";
+                + " collections" + c.profileReport();
     }
 
     /** Waits until the device has run everything queued, for timing. */
@@ -671,9 +673,14 @@ public final class HipBackend implements Backend {
             few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
         } else if (blas) {
             HipContext.trace("rocBLAS " + t + " " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n + "]");
+            long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
             c.rocblas.gemm(t, false, false, m, n, k, x.address(), k, (long) m * k, y.address(), n, (long) k * n,
                     z.address(), (long) m * n, batch);
             c.products++;
+            if (HipContext.PROFILE) {
+                c.profileSync();
+                c.record("rocBLAS " + t + (m <= FEW ? " few rows" : ""), System.nanoTime() - t0);
+            }
             if (HipContext.DEBUG) {
                 c.debugWait("rocBLAS " + t + " product " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n + "]");
             }

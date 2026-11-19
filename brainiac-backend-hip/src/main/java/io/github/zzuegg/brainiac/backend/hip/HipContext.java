@@ -50,6 +50,49 @@ final class HipContext {
             System.err.flush();
         }
     }
+    /**
+     * Times each kernel, wait, copy and allocation ({@code -Dbrainiac.hip.profile=true}), waiting
+     * after every launch, so that {@link HipBackend#statistics()} can list where the time goes.
+     */
+    static final boolean PROFILE = Boolean.getBoolean("brainiac.hip.profile");
+    private final java.util.Map<String, long[]> profile = new java.util.HashMap<>();
+    private long profileStart;
+
+    /** Waits for the device without counting it as a wait, to time what was just queued. */
+    void profileSync() {
+        cu.synchronize(stream);
+    }
+
+    /** With profiling on: counts {@code nanos} spent in {@code what}. */
+    void record(String what, long nanos) {
+        if (PROFILE) {
+            if (profileStart == 0) {
+                profileStart = System.nanoTime() - nanos;
+            }
+            long[] e = profile.computeIfAbsent(what, w -> new long[2]);
+            e[0]++;
+            e[1] += nanos;
+        }
+    }
+
+    /** The profile so far: the costliest entries, and how much of the time they cover. */
+    String profileReport() {
+        if (!PROFILE || profile.isEmpty()) {
+            return "";
+        }
+        long total = 0;
+        for (long[] e : profile.values()) {
+            total += e[1];
+        }
+        long wall = System.nanoTime() - profileStart;
+        StringBuilder b = new StringBuilder("\nprofile: " + total / 1_000_000 + " ms timed of " + wall / 1_000_000
+                + " ms since the first call (the rest is the host between calls)");
+        profile.entrySet().stream().sorted((x, y) -> Long.compare(y.getValue()[1], x.getValue()[1])).limit(25)
+                .forEach(e -> b.append(String.format(java.util.Locale.ROOT, "%n  %-34s %8d calls %10.1f ms %8.1f us each",
+                        e.getKey(), e.getValue()[0], e.getValue()[1] / 1e6, e.getValue()[1] / 1e3 / e.getValue()[0])));
+        return b.toString();
+    }
+
     static final int GROUP = 256;
     /** Most blocks a one-dimensional launch uses; the kernels loop over the rest. */
     private static final int MAX_BLOCKS = 1 << 20;
@@ -411,10 +454,15 @@ final class HipContext {
     void launch(String name, int gridX, int gridY, int gridZ) {
         long f = function(name);
         trace("launch " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
+        long t0 = PROFILE ? System.nanoTime() : 0;
         int r = cu.launch(f, gridX, gridY, gridZ, GROUP, 0, stream, argPointers);
         launches++;
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, "launching " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
+        }
+        if (PROFILE) {
+            cu.synchronize(stream);
+            record(name, System.nanoTime() - t0);
         }
         if (DEBUG) {
             debugWait("kernel " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
@@ -434,7 +482,9 @@ final class HipContext {
     void finish() {
         waits++;
         trace("hipStreamSynchronize");
+        long t0 = PROFILE ? System.nanoTime() : 0;
         int r = cu.synchronize(stream);
+        record("wait", PROFILE ? System.nanoTime() - t0 : 0);
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, "waiting for the device (run with -Dbrainiac.hip.debug=true to find the operation)");
         }
@@ -448,6 +498,7 @@ final class HipContext {
             return;
         }
         uploadedBytes += bytes;
+        long t0 = PROFILE ? System.nanoTime() : 0;
         trace("hipMemcpyHtoDAsync " + bytes + " bytes" + (src.isNative() ? "" : " from the heap"));
         if (src.isNative()) {
             cu.copyToDevice(dst, src, bytes, stream);
@@ -464,12 +515,17 @@ final class HipContext {
         if (DEBUG) {
             debugWait("upload of " + bytes + " bytes");
         }
+        if (PROFILE) {
+            cu.synchronize(stream);
+            record(src.isNative() ? "upload" : "upload from the heap", System.nanoTime() - t0);
+        }
     }
 
     /** Copies device memory into {@code dst}, waiting for it. */
     void download(MemorySegment dst, long src) {
         long bytes = dst.byteSize();
         downloadedBytes += bytes;
+        long t0 = PROFILE ? System.nanoTime() : 0;
         long chunk = Math.min(bytes, 64L << 20);
         if (staging == null || staging.byteSize() < chunk) {
             staging = cu.allocateHost(Math.max(chunk, 1L << 20));
@@ -481,6 +537,7 @@ final class HipContext {
             finish();
             MemorySegment.copy(staging, 0, dst, done, n);
         }
+        record("download", PROFILE ? System.nanoTime() - t0 : 0);
     }
 
     void copy(long dst, long src, long bytes) {
@@ -546,7 +603,9 @@ final class HipContext {
             ptr = free.pop();
         } else {
             if (reserved + size > budget) {
+                long t0 = PROFILE ? System.nanoTime() : 0;
                 ptr = reclaim(size);
+                record("reclaim (garbage collection)", PROFILE ? System.nanoTime() - t0 : 0);
                 if (ptr != 0) {
                     live.add(ptr);
                     inUse += size;
@@ -555,7 +614,9 @@ final class HipContext {
                 }
             }
             trace("hipMalloc " + size + " bytes");
+            long t0 = PROFILE ? System.nanoTime() : 0;
             ptr = allocateFromDriver(size);
+            record("hipMalloc", PROFILE ? System.nanoTime() - t0 : 0);
             reserved += size;
         }
         live.add(ptr);
