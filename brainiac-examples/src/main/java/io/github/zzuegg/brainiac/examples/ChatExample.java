@@ -156,6 +156,9 @@ public final class ChatExample {
             if (expertCacheGb > 0) {
                 System.out.println("[" + model.expertCacheStats() + "]");
             }
+            if (cpuExperts) {
+                System.out.println("[" + model.readAheadStats() + "]");
+            }
             history.add(ChatTemplate.message("assistant", answer));
             if (prompt != null) {
                 return;

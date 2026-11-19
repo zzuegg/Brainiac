@@ -236,6 +236,58 @@ public final class GgmlBlocks implements PackedStorage {
     }
 
     /**
+     * Starts {@linkplain #loadAll loading} the matrices that are not all in memory on
+     * background threads and returns at once: for weights a later step will probably use,
+     * such as the experts a router is likely to choose next, so the disk reads them while
+     * this step computes. A matrix counts as loaded once all its pieces are; a step that
+     * needs it sooner loads it itself, and waits only for what is still on its way.
+     *
+     * @param matrices the matrices
+     * @return the bytes asked for
+     */
+    public static long readAhead(Collection<GgmlBlocks> matrices) {
+        long asked = 0;
+        for (GgmlBlocks b : matrices) {
+            if (b.loaded() || !b.reading.compareAndSet(false, true)) {
+                continue;   // in memory, or on its way
+            }
+            long size = b.data.byteSize();
+            asked += size;
+            int pieces = (int) Math.max(1, (size + CHUNK - 1) / CHUNK);
+            java.util.concurrent.atomic.AtomicInteger left = new java.util.concurrent.atomic.AtomicInteger(pieces);
+            for (int i = 0; i < pieces; i++) {
+                long at = (long) i * CHUNK;
+                MemorySegment piece = b.data.asSlice(at, Math.min(CHUNK, size - at));
+                READERS.execute(() -> {
+                    try {
+                        piece.load();
+                    } finally {
+                        if (left.decrementAndGet() == 0) {
+                            b.warmAt = READ.addAndGet(size);
+                            b.reading.set(false);
+                        }
+                    }
+                });
+            }
+        }
+        return asked;
+    }
+
+    /** Whether a {@link #readAhead} of this matrix is under way. */
+    private final java.util.concurrent.atomic.AtomicBoolean reading = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * The threads of {@link #readAhead}: they mostly wait on the disk, so there are more of
+     * them than a fast SSD needs reads at once, and they leave the cores to the computation.
+     */
+    private static final java.util.concurrent.ExecutorService READERS = java.util.concurrent.Executors
+            .newFixedThreadPool(Integer.getInteger("brainiac.readAheadThreads", 16), r -> {
+                Thread t = new Thread(r, "brainiac-read-ahead");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /**
      * Returns whether the matrix is in memory: not mapped, or {@linkplain #load loaded} with
      * fewer than {@code brainiac.mappedResidentBytes} read since. Asking the operating system
      * page by page on every use costs about as much as reading, and on some systems it cannot

@@ -187,6 +187,8 @@ class LlamaTest {
             // some experts ran from copies and some from the file
             double hits = cached.expertCache().hitRate();
             assertTrue(cached.expertCache().size() > 0 && hits > 0 && hits < 1, cached.expertCacheStats());
+            // while decoding, the next block's experts were guessed and read ahead from the file
+            assertTrue(cached.readAheadChecked() > 0, cached.readAheadStats());
         }
         assertThrows(IllegalArgumentException.class,
                 () -> Llama.loadExpertsOnCpu(resource("qwen3.gguf"), DEVICE, DType.FLOAT32, 0));

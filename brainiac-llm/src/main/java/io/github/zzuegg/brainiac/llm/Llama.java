@@ -2506,28 +2506,9 @@ public final class Llama implements LanguageModel {
         Var shared = m.sharedGate() == null ? null : sharedExpert(m, flat);
         Tensor x = flat.value().to(home).to(DType.FLOAT32);
         Router r = routers.computeIfAbsent(m, e -> new Router(e.router(), home, e.choiceBias()));
-        float[] p = apply(r.linear, x).to(DType.FLOAT32).toArray();   // [n, experts] logits, then scores
-        for (int t = 0; t < n; t++) {
-            if (routing.sigmoid()) {
-                for (int e = 0; e < count; e++) {
-                    p[t * count + e] = (float) (1 / (1 + Math.exp(-p[t * count + e])));
-                }
-            } else {
-                float max = Float.NEGATIVE_INFINITY;
-                for (int e = 0; e < count; e++) {
-                    max = Math.max(max, p[t * count + e]);
-                }
-                double total = 0;
-                for (int e = 0; e < count; e++) {
-                    p[t * count + e] = (float) Math.exp(p[t * count + e] - max);
-                    total += p[t * count + e];
-                }
-                for (int e = 0; e < count; e++) {
-                    p[t * count + e] = (float) (p[t * count + e] / total);
-                }
-            }
-        }
+        float[] p = scores(apply(r.linear, x).to(DType.FLOAT32).toArray(), n, count, routing.sigmoid());
         int[] chosen = Functional.chooseExperts(p, r.choiceBias, n, count, k, groups(routing));
+        readAhead(m, x, chosen, home);
         float[] w = new float[n * k];
         for (int t = 0; t < n; t++) {
             double total = 0;
@@ -2774,6 +2755,121 @@ public final class Llama implements LanguageModel {
                 .mul(m.sharedUp().apply(flat)));
         return m.sharedScale() == null ? shared
                 : shared.mul(m.sharedScale().apply(flat).activation(ActivationOp.SIGMOID, 0));
+    }
+
+    /**
+     * Guesses the next block's experts from this block's tokens, and starts reading those that
+     * are mapped and not in memory, so the disk reads them while this block computes. The
+     * tokens change little from one block to the next: their scores under the next router
+     * pick most of what it will pick (counted in {@link #readAheadStats}). Measured on
+     * gpt-oss-120b from a file larger than memory: half of a token's time went to waiting
+     * for experts read when chosen. Only while decoding a few tokens at once, where a step
+     * waits on a few experts; {@code -Dbrainiac.expertReadAhead=false} turns it off.
+     */
+    private void readAhead(Experts m, Tensor x, int[] chosen, Device home) {
+        int[] guess = guessed.remove(m);
+        if (guess != null) {
+            boolean[] was = new boolean[m.gate().length];
+            for (int e : guess) {
+                was[e] = true;
+            }
+            int right = 0;
+            for (int e : chosen) {
+                right += was[e] ? 1 : 0;
+            }
+            guessedRight.addAndGet(right);
+            guessesChecked.addAndGet(chosen.length);
+        }
+        int n = x.shape().dim(0);
+        Experts next = nextExperts(m);
+        if (!READ_AHEAD || n > 4 || next == null || next.gate()[0].mapped == null) {
+            return;
+        }
+        LlamaConfig.Moe moe = config.extras().moe();
+        LlamaConfig.Routing routing = moe.routing();
+        int count = moe.experts();
+        Router r = routers.computeIfAbsent(next, e -> new Router(e.router(), home, e.choiceBias()));
+        float[] p = scores(apply(r.linear, x).to(DType.FLOAT32).toArray(), n, count, routing.sigmoid());
+        int[] g = Functional.chooseExperts(p, r.choiceBias, n, count, moe.perToken(), groups(routing));
+        guessed.put(next, g);
+        List<GgmlBlocks> used = new ArrayList<>();
+        boolean[] seen = new boolean[count];
+        HotCache<ExpertKey, Linear[]> cache = expertCache;
+        for (int e : g) {
+            if (!seen[e] && (cache == null || !cache.holds(new ExpertKey(next, e)))) {   // a copy runs instead
+                seen[e] = true;
+                for (Linear l : new Linear[] {next.gate()[e], next.up()[e], next.down()[e]}) {
+                    if (l.mapped != null) {
+                        used.add(l.mapped);
+                    }
+                }
+            }
+        }
+        readAheadBytes.addAndGet(GgmlBlocks.readAhead(used));
+    }
+
+    /** The experts of the next block with experts after {@code m}, or null after the last. */
+    private Experts nextExperts(Experts m) {
+        return following.computeIfAbsent(m, e -> {
+            boolean after = false;
+            for (Block b : blocks) {
+                if (after && b.experts != null) {
+                    return java.util.Optional.of(b.experts);
+                }
+                after |= b.experts == e;
+            }
+            return java.util.Optional.empty();
+        }).orElse(null);
+    }
+
+    /** A router's logits {@code [n, count]} made scores in place: sigmoids, or each token's softmax. */
+    private static float[] scores(float[] p, int n, int count, boolean sigmoid) {
+        for (int t = 0; t < n; t++) {
+            if (sigmoid) {
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) (1 / (1 + Math.exp(-p[t * count + e])));
+                }
+            } else {
+                float max = Float.NEGATIVE_INFINITY;
+                for (int e = 0; e < count; e++) {
+                    max = Math.max(max, p[t * count + e]);
+                }
+                double total = 0;
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) Math.exp(p[t * count + e] - max);
+                    total += p[t * count + e];
+                }
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) (p[t * count + e] / total);
+                }
+            }
+        }
+        return p;
+    }
+
+    /** Whether {@link #readAhead} runs: {@code -Dbrainiac.expertReadAhead=false} turns it off. */
+    private static final boolean READ_AHEAD = !"false".equals(System.getProperty("brainiac.expertReadAhead"));
+    private final Map<Experts, java.util.Optional<Experts>> following = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<Experts, int[]> guessed = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong guessedRight = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong guessesChecked = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong readAheadBytes = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * How the experts' read-ahead did, for logs: the share of chosen experts it had guessed,
+     * and what it asked the disk for.
+     *
+     * @return a line of text
+     */
+    public String readAheadStats() {
+        long checked = guessesChecked.get();
+        return String.format(java.util.Locale.ROOT, "read-ahead: guessed %.2f of %d chosen experts, asked for %.1f GB",
+                checked == 0 ? 0 : (double) guessedRight.get() / checked, checked, readAheadBytes.get() / 1e9);
+    }
+
+    /** The chosen experts that {@link #readAhead} had a guess for; for tests. */
+    long readAheadChecked() {
+        return guessesChecked.get();
     }
 
     /** Reads the chosen experts' weights from disk at once where they are mapped and not all in memory. */
