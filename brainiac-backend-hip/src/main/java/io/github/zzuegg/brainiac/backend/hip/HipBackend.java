@@ -795,8 +795,13 @@ public final class HipBackend implements Backend {
         DType t = z.dtype;
         boolean blas = c.rocblas != null;
         if (batch == 1 && m == 1 && MATVEC.equals("rocblas") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()) {
+            long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
             c.rocblas.halfGemv(k, n, y.address(), x.address(), z.address());
             c.products++;
+            if (HipContext.PROFILE) {
+                c.profileSync();
+                c.record("rocBLAS FLOAT16 gemv", System.nanoTime() - t0);
+            }
         } else if (FEW_ROWS && batch == 1 && m >= 1 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
             // a handful of rows: a BLAS library runs these 16-bit products slower than float32 ones
             few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
