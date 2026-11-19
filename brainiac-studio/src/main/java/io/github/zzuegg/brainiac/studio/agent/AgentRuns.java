@@ -1013,6 +1013,35 @@ public final class AgentRuns {
         }
     }
 
+    /** The roles, what each is for, and which the caller may start. */
+    List<Map<String, Object>> roleList() {
+        Run r = caller();
+        Roles.Effective mine = r.effective != null ? r.effective : roles.resolve(r.role, tools.keySet());
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Role x : roles.list()) {
+            Roles.Effective e;
+            try {
+                e = roles.resolve(x.id(), tools.keySet());
+            } catch (RuntimeException broken) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", x.id());
+            m.put("name", x.name());
+            m.put("family", x.family());
+            m.put("purpose", x.description());
+            m.put("model", e.model() == null || e.model().isBlank() ? ChatService.AUTO : e.model());
+            m.put("tools", e.tools() == null ? "all" : e.tools().size());
+            m.put("starts", e.canSpawn());
+            m.put("youMayStart", mine.spawns(x.id()) && r.depth < MAX_DEPTH);
+            if (x.id().equals(r.role)) {
+                m.put("you", true);
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
     /** Starts a sub-agent for the caller. */
     Map<String, Object> spawn(String role, String goal, String model, List<String> narrow) {
         Run parent = caller();
@@ -1831,6 +1860,11 @@ public final class AgentRuns {
                 .append("cannot be reached, answer in a few plain sentences without a tool call.\n\n");
         if (!role.instructions().isEmpty()) {
             s.append("# Your role: ").append(role.role().name()).append("\n\n").append(role.instructions()).append("\n\n");
+        }
+        if (!role.canSpawn().isEmpty() && r.depth < MAX_DEPTH) {
+            s.append("# Other agents\n\nYou may start agents for parts of the work with spawn_agent, in these roles: ")
+                    .append(role.canSpawn().contains("*") ? "any" : String.join(", ", role.canSpawn()))
+                    .append(". list_roles says what each role is for, and list_models which models there are.\n\n");
         }
         if (r.mode.equals("plan") && !r.planApproved) {
             s.append("# Plan first\n\nYou are in plan mode: look around with tools that only read, then write your plan ")

@@ -264,6 +264,18 @@ class AgentRunsTest {
     }
 
     @Test
+    void agentsSeeTheRolesAndWhichTheyMayStart() throws Exception {
+        script.turns.add("<tool_call>{\"name\": \"list_roles\", \"arguments\": {}}</tool_call>");
+        script.turns.add("Done.");
+        String id = (String) agents.start("Which roles are there?", "script/bot", "auto", 5, null).get("id");
+        until(id, r -> "done".equals(r.get("state")));
+        String told = script.heard.getLast().messages().getLast().text();
+        assertTrue(told.contains("\"id\":\"researcher\"") && told.contains("\"purpose\"")
+                && told.contains("\"youMayStart\":true"), told);
+        assertTrue(script.heard.getFirst().system().contains("list_roles says what each role is for"));
+    }
+
+    @Test
     void runsAreKeptStoppedAndContinued() throws Exception {
         script.turns.add("<tool_call>{\"name\": \"download_model\", \"arguments\": {\"repo\": \"a/b\", "
                 + "\"option\": \"x.gguf\"}}</tool_call>");

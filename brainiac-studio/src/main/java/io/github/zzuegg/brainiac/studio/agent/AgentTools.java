@@ -21,7 +21,7 @@ import java.util.Optional;
 public final class AgentTools implements RiskRefiner {
 
     /** Tools every agent has, whatever its role and project allow: they only talk to the user. */
-    static final List<String> ALWAYS = List.of("update_plan", "ask_user", "run_script");
+    static final List<String> ALWAYS = List.of("update_plan", "ask_user", "run_script", "list_roles");
 
     /** Tools for the agents an agent starts. */
     static final List<String> SPAWN_TOOLS = List.of("spawn_agent", "wait_agents", "message_agent", "read_agent",
@@ -30,7 +30,7 @@ public final class AgentTools implements RiskRefiner {
     /** Tools that only work inside an agent. */
     static final List<String> RUN_TOOLS = List.of("update_plan", "ask_user", "spawn_agent", "wait_agents",
             "message_agent", "read_agent", "stop_agent", "remember", "recall", "list_agents", "send_message",
-            "propose_rule", "run_script");
+            "propose_rule", "run_script", "list_roles");
 
     private static final int NOTES_CHARS = 200_000;
 
@@ -219,6 +219,19 @@ public final class AgentTools implements RiskRefiner {
     public String sendMessage(@Tools.Param("the agent's id, from list_agents") String to,
             @Tools.Param("the message") String text) {
         return runs.send(to, text);
+    }
+
+    /**
+     * Lists the roles.
+     *
+     * @return each role, what it is for, and whether the caller may start it
+     */
+    @Tools.Tool(name = "list_roles", value = "Lists the roles agents work in: what each is for, its model, how many "
+            + "tools it has, which roles it starts, and whether you may start it with spawn_agent.")
+    @Tier(value = Risk.READ)
+    @Returns("[{id, name, family, purpose, model, tools: a count or all, starts: [role ids or *], youMayStart, you?}]")
+    public List<Map<String, Object>> listRoles() {
+        return runs.roleList();
     }
 
     /**
