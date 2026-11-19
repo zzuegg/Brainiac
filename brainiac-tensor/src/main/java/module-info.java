@@ -9,5 +9,8 @@ module io.github.zzuegg.brainiac.tensor {
     exports io.github.zzuegg.brainiac.tensor;
     exports io.github.zzuegg.brainiac.tensor.spi;
 
+    requires java.management;
+    requires static jdk.management;
+
     uses io.github.zzuegg.brainiac.tensor.spi.Backend;
 }
