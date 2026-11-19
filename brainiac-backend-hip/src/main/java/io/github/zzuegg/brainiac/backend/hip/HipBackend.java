@@ -58,7 +58,8 @@ import java.util.Optional;
  * runtime's properties do not tell</li>
  * <li>{@code brainiac.hip.cache}: where compiled kernels are kept, {@code none} for nowhere</li>
  * <li>{@code brainiac.hip.statistics=true}: print {@link #statistics()} at exit</li>
- * <li>{@code brainiac.hip.devices=one}: only one device, not one per GPU ({@code hip}, {@code hip:1}, ...)</li>
+ * <li>{@code brainiac.hip.devices}: {@code one} for only one device; {@code all} for one per GPU
+ * ({@code hip}, {@code hip:1}, ...); by default one per GPU of the first one's architecture</li>
  * <li>{@code brainiac.hip.fusedAttention=false}: attention from separate operations</li>
  * <li>{@code brainiac.hip.fewRows=false}: products of up to 16 rows in float16 and bfloat16 by
  * rocBLAS instead of a kernel of its own</li>
@@ -130,22 +131,35 @@ public final class HipBackend implements Backend {
     }
 
     /**
-     * The machine's other AMD GPUs, each a backend of its own ({@code -Dbrainiac.hip.devices=one}:
-     * none).
+     * The machine's other AMD GPUs of the same architecture as the first, each a backend of its
+     * own. Others, such as the processor's integrated GPU next to a graphics card, are left alone:
+     * opening one made the process hang on Windows. {@code -Dbrainiac.hip.devices=one}: none;
+     * {@code =all}: every GPU.
      */
     @Override
     public synchronized java.util.List<Backend> siblings() {
-        if (!primary || !isAvailable() || "one".equals(System.getProperty("brainiac.hip.devices"))) {
+        String which = System.getProperty("brainiac.hip.devices", "same");
+        if (!primary || !isAvailable() || "one".equals(which)) {
             return java.util.List.of();
         }
         java.util.List<Backend> others = new java.util.ArrayList<>();
         int count = hip.cu.deviceCount();
         for (int i = 0; i < count; i++) {
-            if (i != hip.ordinal) {
+            if (i != hip.ordinal && ("all".equals(which) || sameArchitecture(i))) {
                 others.add(new HipBackend(i, false));
             }
         }
         return others;
+    }
+
+    private boolean sameArchitecture(int ordinal) {
+        try {
+            int device = hip.cu.device(ordinal);
+            String arch = hip.cu.properties(device, hip.cu.totalMemory(device)).architecture();
+            return arch.split(":")[0].equals(hip.architecture.split(":")[0]);
+        } catch (HipException e) {
+            return false;
+        }
     }
 
     /**

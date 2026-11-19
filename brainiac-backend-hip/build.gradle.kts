@@ -38,6 +38,8 @@ tasks.test {
     if (providers.gradleProperty("brainiac.hip.critical").orNull == "true") {
         jvmArgs("-Dbrainiac.hip.critical=true")
     }
+    // -Pbrainiac.hip.devices=one|all chooses which GPUs become devices
+    providers.gradleProperty("brainiac.hip.devices").orNull?.let { jvmArgs("-Dbrainiac.hip.devices=$it") }
     // -Pbrainiac.hip.rocblas=none multiplies with the backend's own kernel
     providers.gradleProperty("brainiac.hip.rocblas").orNull?.let { jvmArgs("-Dbrainiac.hip.rocblas=$it") }
     // -Pbench prints matrix product speeds (HipBenchmarkTest)

@@ -1433,7 +1433,7 @@ Windows). The first device is the GPU with the most compute units, so a graphics
 processor's integrated GPU, which HIP may number first. System properties: `brainiac.hip.device`, `brainiac.hip.memory`, `brainiac.hip.debug`,
 `brainiac.hip.critical`, `brainiac.hip.runtime`/`hiprtc`/`rocblas` (library files; `rocblas=none`
 turns rocBLAS off), `brainiac.hip.arch` (the compiler target, when the runtime does not tell),
-`brainiac.hip.cache`, `brainiac.hip.statistics`, `brainiac.hip.devices`,
+`brainiac.hip.cache`, `brainiac.hip.statistics`, `brainiac.hip.devices` (by default only GPUs of the first one's architecture; `all` for every one, `one` for the first),
 `brainiac.hip.fusedAttention` and `brainiac.hip.fewRows`. `HipBackend.status()` names the device
 and the libraries found, or why there is none.
 
