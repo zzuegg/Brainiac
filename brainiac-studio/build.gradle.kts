@@ -9,6 +9,9 @@ dependencies {
     implementation(project(":brainiac"))
     implementation(project(":brainiac-cloud"))
     runtimeOnly(project(":brainiac-backend-vulkan"))
+    // the other GPU backends, chosen in the studio's settings: CUDA on NVIDIA cards, HIP on AMD ones
+    runtimeOnly(project(":brainiac-backend-cuda"))
+    runtimeOnly(project(":brainiac-backend-hip"))
     runtimeOnly(project(":brainiac-experiments"))
     testRuntimeOnly(project(":brainiac-backend-cpu"))
 }
@@ -20,7 +23,7 @@ application {
     // modules (GPU backends, experiments) are found at startup
     applicationDefaultJvmArgs = listOf(
         "--add-modules", "jdk.incubator.vector,ALL-MODULE-PATH",
-        "--enable-native-access=org.lwjgl",
+        "--enable-native-access=org.lwjgl,io.github.zzuegg.brainiac.backend.cuda,io.github.zzuegg.brainiac.backend.hip",
     )
 }
 

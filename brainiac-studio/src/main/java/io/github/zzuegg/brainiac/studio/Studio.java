@@ -151,6 +151,9 @@ public final class Studio implements AutoCloseable {
         // before anything opens the GPU: the core reads its memory limit once
         io.github.zzuegg.brainiac.studio.chat.LocalDevice.applyMemoryLimit(settings.outputs()
                 .resolveSibling(io.github.zzuegg.brainiac.studio.chat.LocalDevice.MEMORY_FILE));
+        // and before anything lists the devices: the core reads the preferred GPU backend once
+        io.github.zzuegg.brainiac.studio.chat.LocalDevice.applyBackend(settings.outputs()
+                .resolveSibling(io.github.zzuegg.brainiac.studio.chat.LocalDevice.BACKEND_FILE));
         CapabilityRegistry capabilities = CapabilityRegistry.discover();
         Keys keys = new Keys(settings.keyFile(), settings.environment(),
                 Keys.standardFiles(Path.of(System.getProperty("user.home")), settings.environment()));

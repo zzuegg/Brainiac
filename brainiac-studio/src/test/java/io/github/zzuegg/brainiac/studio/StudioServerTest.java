@@ -135,6 +135,22 @@ class StudioServerTest {
     }
 
     @Test
+    void aGpuBackendIsKeptForTheNextStart() throws Exception {
+        Map<String, Object> first = Json.object(Json.parse(get("/api/local/device", true).body()));
+        assertEquals("vulkan", first.get("backend"));
+        Object inEffect = first.get("backendInEffect");
+        Map<String, Object> set = Json.object(Json.parse(post("/api/local/device", "{\"backend\": \"hip\"}").body()));
+        assertEquals("hip", set.get("backend"));
+        assertEquals("best", set.get("choice"), "the device choice is left alone");
+        // the core reads its preference once, so this run goes on as it started
+        assertEquals(inEffect, set.get("backendInEffect"));
+        assertEquals(400, post("/api/local/device", "{\"backend\": \"opencl\"}").statusCode());
+        assertEquals("hip", Json.object(Json.parse(get("/api/local/device", true).body())).get("backend"));
+        assertEquals("vulkan", Json.object(Json.parse(post("/api/local/device", "{\"backend\": \"vulkan\"}").body()))
+                .get("backend"));
+    }
+
+    @Test
     void listsCapabilitiesOfThePresentModules() throws Exception {
         Map<String, Object> body = Json.object(Json.parse(get("/api/capabilities", true).body()));
         List<Object> caps = Json.array(body.get("capabilities"));
