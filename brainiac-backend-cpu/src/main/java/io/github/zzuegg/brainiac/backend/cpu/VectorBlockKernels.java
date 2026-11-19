@@ -37,6 +37,9 @@ final class VectorBlockKernels {
     /** IQ4_NL's and IQ4_XS's levels (llama.cpp's kvalues_iq4nl). */
     private static final byte[] IQ4 = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
+    /** Each thread's copy of the Q8_0 row being multiplied (see {@link #q80}). */
+    private static final ThreadLocal<byte[]> ROW = ThreadLocal.withInitial(() -> new byte[0]);
+
     private VectorBlockKernels() {
     }
 
@@ -124,18 +127,36 @@ final class VectorBlockKernels {
     }
 
     private static float q80(MemorySegment m, long row, float[] x, int at, int k) {
-        FloatVector acc = FloatVector.zero(F8);
-        for (int b = 0; b < k / 32; b++) {
-            long o = row + 34L * b;
-            float d = f16(m, o);
-            int xo = at + 32 * b;
-            FloatVector s = f8(ByteVector.fromMemorySegment(B8, m, o + 2, LE)).mul(xs(x, xo));
-            s = f8(ByteVector.fromMemorySegment(B8, m, o + 10, LE)).fma(xs(x, xo + 8), s);
-            s = f8(ByteVector.fromMemorySegment(B8, m, o + 18, LE)).fma(xs(x, xo + 16), s);
-            s = f8(ByteVector.fromMemorySegment(B8, m, o + 26, LE)).fma(xs(x, xo + 24), s);
-            acc = s.fma(FloatVector.broadcast(F8, d), acc);
+        // the row copied to an array first, then read from there: read from the segment, the
+        // 2-byte scale and the 8-byte loads of a 34-byte block stayed slow out-of-line accesses
+        // on JDK 27 (0.1 GMAC/s; 1.2 with the block in its own method)
+        int bytes = 34 * (k / 32);
+        byte[] q = ROW.get();
+        if (q.length < bytes) {
+            q = new byte[bytes];
+            ROW.set(q);
         }
-        return acc.reduceLanes(VectorOperators.ADD);
+        MemorySegment.copy(m, ValueLayout.JAVA_BYTE, row, q, 0, bytes);
+        float sum = 0;
+        for (int b = 0; b < k / 32; b++) {
+            int o = 34 * b;
+            short bits = (short) ((q[o] & 0xFF) | q[o + 1] << 8);
+            sum += Float.float16ToFloat(bits) * q80Block(q, o + 2, x, at + 32 * b);
+        }
+        return sum;
+    }
+
+    /** One Q8_0 block's 32 codes, at {@code o} in {@code q}, times x, unscaled. */
+    private static float q80Block(byte[] q, int o, float[] x, int xo) {
+        FloatVector s = ((FloatVector) ByteVector.fromArray(B8, q, o).convertShape(VectorOperators.B2F, F8, 0))
+                .mul(FloatVector.fromArray(F8, x, xo));
+        s = ((FloatVector) ByteVector.fromArray(B8, q, o + 8).convertShape(VectorOperators.B2F, F8, 0))
+                .fma(FloatVector.fromArray(F8, x, xo + 8), s);
+        s = ((FloatVector) ByteVector.fromArray(B8, q, o + 16).convertShape(VectorOperators.B2F, F8, 0))
+                .fma(FloatVector.fromArray(F8, x, xo + 16), s);
+        s = ((FloatVector) ByteVector.fromArray(B8, q, o + 24).convertShape(VectorOperators.B2F, F8, 0))
+                .fma(FloatVector.fromArray(F8, x, xo + 24), s);
+        return s.reduceLanes(VectorOperators.ADD);
     }
 
     private static float iq4xs(MemorySegment m, long row, float[] x, int at, int k) {
