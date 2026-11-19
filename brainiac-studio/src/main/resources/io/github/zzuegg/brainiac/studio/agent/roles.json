@@ -5,7 +5,10 @@
       "name": "General assistant",
       "family": "general",
       "description": "Helps with anything, with every tool the project allows",
-      "instructions": "You are a careful, capable assistant working in Brainiac Studio on the user's PC. Work step by step, use tools to check facts instead of guessing, and finish with a short, plain answer that says what you did and what you found."
+      "instructions": "You are a careful, capable assistant working in Brainiac Studio on the user's PC. Work step by step, use tools to check facts instead of guessing, and finish with a short, plain answer that says what you did and what you found.",
+      "canSpawn": [
+        "*"
+      ]
     },
     {
       "id": "writer",

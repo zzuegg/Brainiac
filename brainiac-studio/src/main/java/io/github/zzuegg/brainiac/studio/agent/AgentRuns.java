@@ -63,6 +63,12 @@ public final class AgentRuns {
     /** How deep agents may start agents: a top agent is at 0. */
     public static final int MAX_DEPTH = 2;
 
+    /** The most times other agents' messages wake an agent before the user speaks to it again. */
+    public static final int MAX_WAKES = 10;
+
+    // the ends an agent's messages wake it from; one the user stopped, or out of budget, stays put
+    private static final List<String> WAKEABLE = List.of("done", "failed", "out of steps");
+
     /** What a model is told when its final answer must have a form. */
     static final String SHAPE_ASK = "Now give your final answer as one JSON object and nothing else. Call no tool.";
 
@@ -132,6 +138,7 @@ public final class AgentRuns {
         boolean tainted;
         final List<String> grants = new ArrayList<>();
         int media;
+        int wakes;
         long tokenBase;
         final List<Map<String, Object>> steps = new ArrayList<>();
         final List<ChatMessage> messages = new ArrayList<>();
@@ -601,10 +608,18 @@ public final class AgentRuns {
             throw new IllegalArgumentException("the message is empty");
         }
         resume(r, text.strip());
+        synchronized (r) {
+            r.wakes = 0;
+        }
         return Optional.of(r.toJson(false));
     }
 
     private void resume(Run r, String text) {
+        resume(r, text, true);
+    }
+
+    // fresh: whether the budget starts again, as when the user or a parent speaks; a peer's wake keeps it
+    private void resume(Run r, String text, boolean fresh) {
         synchronized (r) {
             if (r.active()) {
                 throw new IllegalArgumentException("the agent is still working");
@@ -622,9 +637,11 @@ public final class AgentRuns {
             r.ended = 0;
             r.stopping = false;
         }
-        Run root = root(r);
-        synchronized (root) {
-            root.tokenBase = tokens(root);
+        if (fresh) {
+            Run root = root(r);
+            synchronized (root) {
+                root.tokenBase = tokens(root);
+            }
         }
         save(r);
         Thread.ofVirtual().name("studio-agent-" + r.id).start(() -> work(r));
@@ -1050,8 +1067,36 @@ public final class AgentRuns {
         }
         save(x);
         me.step("message", Map.of("to", to, "text", text.strip()));
-        return x.active() ? "delivered; agent " + to + " reads it before its next turn"
-                : "left in agent " + to + "'s inbox; it is " + state + " and reads it when it works again";
+        if (wake(x)) {
+            return "delivered; agent " + to + " had " + state + ", and the message woke it to work on";
+        }
+        synchronized (x) {
+            if (x.active()) {
+                return "delivered; agent " + to + " reads it before its next turn";
+            }
+            state = x.state;
+        }
+        return "left in agent " + to + "'s inbox; it is " + state + (WAKEABLE.contains(state)
+                ? " and has been woken " + MAX_WAKES + " times by messages, so it reads it when the user lets it go on"
+                : state.equals("waiting") ? " for the user" : " and reads it when the user lets it go on");
+    }
+
+    // lets an agent that ended work on its unread messages, unless it was woken too often
+    private boolean wake(Run x) {
+        synchronized (x) {
+            if (x.active() || x.inbox.isEmpty() || !WAKEABLE.contains(x.state) || x.wakes >= MAX_WAKES) {
+                return false;
+            }
+            x.wakes++;
+            x.tainted = true;
+        }
+        try {
+            resume(x, "Other agents sent you messages; read them below and carry on with your goal if they ask "
+                    + "for something, or answer briefly if not.", false);
+            return true;
+        } catch (IllegalArgumentException busy) {   // it started working meanwhile, and reads them on its own
+            return true;
+        }
     }
 
     // hands a run the messages other agents left for it, as data
@@ -1288,10 +1333,9 @@ public final class AgentRuns {
         if (!tools.containsKey(name)) {
             return false;
         }
+        // the role's canSpawn decides the sub-agent tools, whatever its tool list says
         if (name.equals("spawn_agent")) {
-            if (effective(r).canSpawn().isEmpty() || r.depth >= MAX_DEPTH) {
-                return false;
-            }
+            return !effective(r).canSpawn().isEmpty() && r.depth < MAX_DEPTH;
         } else if (AgentTools.SPAWN_TOOLS.contains(name)) {
             boolean spawns = !effective(r).canSpawn().isEmpty() && r.depth < MAX_DEPTH;
             synchronized (r) {
@@ -1614,6 +1658,13 @@ public final class AgentRuns {
             r.step("error", Map.of("text", error));
         }
         save(r);
+        boolean mail;
+        synchronized (r) {
+            mail = !r.inbox.isEmpty();
+        }
+        if (mail) {
+            wake(r);   // messages that came while it finished
+        }
     }
 
     /** What a turn says and calls, without what the model imagined after its calls. */
