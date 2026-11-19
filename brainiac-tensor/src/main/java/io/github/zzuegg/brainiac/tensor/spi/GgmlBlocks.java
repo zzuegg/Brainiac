@@ -207,32 +207,32 @@ public final class GgmlBlocks implements PackedStorage {
      * @param matrices the matrices
      */
     public static void loadAll(Collection<GgmlBlocks> matrices) {
-        List<GgmlBlocks> cold = new ArrayList<>();
-        long bytes = 0;
+        List<Pass> passes = new ArrayList<>();
+        int pieces = 0;
         for (GgmlBlocks b : matrices) {
-            if (!b.loaded()) {
-                cold.add(b);
-                bytes += b.data.byteSize();
+            Pass p = b.pass();
+            if (p != null) {
+                passes.add(p);
+                pieces += p.pieces;
             }
         }
-        if (cold.isEmpty()) {
+        if (pieces == 0) {
             return;
         }
-        List<MemorySegment> pieces = new ArrayList<>();
-        for (GgmlBlocks b : cold) {
-            for (long at = 0; at < b.data.byteSize(); at += CHUNK) {
-                pieces.add(b.data.asSlice(at, Math.min(CHUNK, b.data.byteSize() - at)));
+        if (pieces == 1) {
+            passes.getFirst().readOne();
+            return;
+        }
+        // one task per piece, each reading the next piece no one took yet: pieces a read-ahead
+        // already took are not read twice (measured: most of the reading as a step began was
+        // of experts a read-ahead was still reading)
+        Pass[] each = new Pass[pieces];
+        for (int i = 0, at = 0; i < passes.size(); i++) {
+            for (int j = 0; j < passes.get(i).pieces; j++) {
+                each[at++] = passes.get(i);
             }
         }
-        if (pieces.size() > 1) {
-            pieces.parallelStream().forEach(MemorySegment::load);
-        } else {
-            pieces.getFirst().load();
-        }
-        long now = READ.addAndGet(bytes);
-        for (GgmlBlocks b : cold) {
-            b.warmAt = now;
-        }
+        java.util.Arrays.stream(each).parallel().forEach(Pass::readOne);
     }
 
     /**
@@ -240,7 +240,7 @@ public final class GgmlBlocks implements PackedStorage {
      * background threads and returns at once: for weights a later step will probably use,
      * such as the experts a router is likely to choose next, so the disk reads them while
      * this step computes. A matrix counts as loaded once all its pieces are; a step that
-     * needs it sooner loads it itself, and waits only for what is still on its way.
+     * needs it sooner loads the pieces still left itself.
      *
      * @param matrices the matrices
      * @return the bytes asked for
@@ -248,33 +248,79 @@ public final class GgmlBlocks implements PackedStorage {
     public static long readAhead(Collection<GgmlBlocks> matrices) {
         long asked = 0;
         for (GgmlBlocks b : matrices) {
-            if (b.loaded() || !b.reading.compareAndSet(false, true)) {
+            Pass p = b.pass();
+            if (p == null || !p.ahead.compareAndSet(false, true)) {
                 continue;   // in memory, or on its way
             }
-            long size = b.data.byteSize();
-            asked += size;
-            int pieces = (int) Math.max(1, (size + CHUNK - 1) / CHUNK);
-            java.util.concurrent.atomic.AtomicInteger left = new java.util.concurrent.atomic.AtomicInteger(pieces);
-            for (int i = 0; i < pieces; i++) {
-                long at = (long) i * CHUNK;
-                MemorySegment piece = b.data.asSlice(at, Math.min(CHUNK, size - at));
-                READERS.execute(() -> {
-                    try {
-                        piece.load();
-                    } finally {
-                        if (left.decrementAndGet() == 0) {
-                            b.warmAt = READ.addAndGet(size);
-                            b.reading.set(false);
-                        }
-                    }
-                });
+            asked += b.data.byteSize();
+            for (int i = 0; i < p.pieces; i++) {
+                READERS.execute(p::readOne);
             }
         }
         return asked;
     }
 
-    /** Whether a {@link #readAhead} of this matrix is under way. */
-    private final java.util.concurrent.atomic.AtomicBoolean reading = new java.util.concurrent.atomic.AtomicBoolean();
+    /**
+     * A load of this matrix under way, or a new one; null if it is in memory. Every loader of
+     * the matrix takes its pieces from the same pass.
+     */
+    private Pass pass() {
+        if (loaded()) {
+            return null;
+        }
+        Pass p = pass;
+        if (p != null) {
+            return p;
+        }
+        Pass fresh = new Pass(this);
+        return PASS.compareAndExchange(this, null, fresh) instanceof Pass other ? other : fresh;
+    }
+
+    /** One load of a matrix's pieces, shared by whoever reads them. */
+    private static final class Pass {
+        final GgmlBlocks of;
+        final int pieces;
+        final java.util.concurrent.atomic.AtomicInteger next = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger left;
+        /** Whether a read-ahead already asked for its pieces. */
+        final java.util.concurrent.atomic.AtomicBoolean ahead = new java.util.concurrent.atomic.AtomicBoolean();
+
+        Pass(GgmlBlocks of) {
+            this.of = of;
+            this.pieces = (int) Math.max(1, (of.data.byteSize() + CHUNK - 1) / CHUNK);
+            this.left = new java.util.concurrent.atomic.AtomicInteger(pieces);
+        }
+
+        /** Reads the next piece no one took, if any; the last one marks the matrix loaded. */
+        void readOne() {
+            int i = next.getAndIncrement();
+            if (i >= pieces) {
+                return;
+            }
+            long size = of.data.byteSize();
+            long at = (long) i * CHUNK;
+            try {
+                of.data.asSlice(at, Math.min(CHUNK, size - at)).load();
+            } finally {
+                if (left.decrementAndGet() == 0) {
+                    of.warmAt = READ.addAndGet(size);
+                    of.pass = null;
+                }
+            }
+        }
+    }
+
+    /** The load under way, or null. */
+    private volatile Pass pass;
+    private static final java.lang.invoke.VarHandle PASS;
+
+    static {
+        try {
+            PASS = java.lang.invoke.MethodHandles.lookup().findVarHandle(GgmlBlocks.class, "pass", Pass.class);
+        } catch (ReflectiveOperationException e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
 
     /**
      * The threads of {@link #readAhead}: they mostly wait on the disk, so there are more of
