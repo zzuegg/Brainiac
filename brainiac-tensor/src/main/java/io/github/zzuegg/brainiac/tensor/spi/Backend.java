@@ -253,6 +253,15 @@ public interface Backend {
     }
 
     /**
+     * Sends the work recorded so far to the device without waiting for it. A backend that
+     * gathers commands into batches (the Vulkan backend) submits the current one; others need
+     * nothing, which is the default. Long computations call it between their parts, so that no
+     * single submission runs long enough for a display driver to time it out.
+     */
+    default void flush() {
+    }
+
+    /**
      * Says that the values of these storages are about to be needed. A backend that records
      * operations instead of running them (such as the Vulkan backend's fused shaders) can
      * compute them all together, for example in one kernel; others ignore it, which is the
@@ -284,6 +293,14 @@ public interface Backend {
 
     /** Starts measuring {@link Device.Memory#peak()} again from the current use. */
     default void resetPeakMemory() {
+    }
+
+    /**
+     * Gives the device memory that pooled, unused storage holds back to the device, so that
+     * storage of other sizes can use it; for after a large part of a model was released. The
+     * default does nothing, for backends that pool nothing.
+     */
+    default void trim() {
     }
 
     /**

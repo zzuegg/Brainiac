@@ -26,10 +26,24 @@ final class GpuSlot {
     private volatile long bytes;
     private volatile long lastUsed;
     private volatile Runnable unloader;
+    private final java.util.function.ToLongBiFunction<Path, Device> estimator;
 
     GpuSlot(String kind, GpuResidency residency) {
+        this(kind, residency, null);
+    }
+
+    /**
+     * A slot whose models know their size better than their files do, such as quantized image
+     * models.
+     *
+     * @param kind the kind of task
+     * @param residency the scheduler
+     * @param estimator the bytes a model will take on a device, 0 if unknown; or null
+     */
+    GpuSlot(String kind, GpuResidency residency, java.util.function.ToLongBiFunction<Path, Device> estimator) {
         this.kind = kind;
         this.residency = residency;
+        this.estimator = estimator;
         residency.register(this);
     }
 
@@ -101,7 +115,7 @@ final class GpuSlot {
         }
         forget();
         String k = key(path, device);
-        residency.admit(this, name, device, residency.estimate(k, path), cancelled);
+        residency.admit(this, name, device, need(k, path, device), cancelled);
         long before = residency.inUse(device);
         T t = loader.load();
         long after = residency.inUse(device);
@@ -113,6 +127,17 @@ final class GpuSlot {
         residency.measuredAs(k, after > before ? used : 0);
         residency.keepMeasured();
         return t;
+    }
+
+    // what was measured when it last loaded, else what the model says, else its files
+    private long need(String k, Path path, Device device) {
+        if (!residency.wasMeasured(k) && estimator != null) {
+            long e = estimator.applyAsLong(path, device);
+            if (e > 0) {
+                return e;
+            }
+        }
+        return residency.estimate(k, path);
     }
 
     /** Lets go of the model, holding the slot. */

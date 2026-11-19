@@ -120,7 +120,8 @@ public final class LocalImages {
         this.places = places;
         this.hub = hub;
         this.where = where;
-        this.slot = new GpuSlot("image", where.residency());
+        // a quantized Flux takes a third of its files: the model says what it will take
+        this.slot = new GpuSlot("image", where.residency(), ImageGenerator::memoryNeed);
     }
 
     /**

@@ -213,21 +213,26 @@ public final class StableDiffusion implements ImageGenerator {
 
     /** Fails before loading if the weights cannot fit the device, estimated from the headers. */
     private static void requireFits(Path path, Device device, DType dtype) throws IOException {
-        long bytes;
+        long bytes = weightBytes(path, dtype);
+        if (bytes > 0) {
+            MemoryFit.require("Stable Diffusion (" + path.getFileName() + ")", bytes, device,
+                    dtype.bytes() > 2 ? "a 16-bit type halves it" : "");
+        }
+    }
+
+    /** The device bytes of a model's weights from the headers, or 0 if a checkpoint cannot be read. */
+    static long weightBytes(Path path, DType dtype) throws IOException {
         if (Files.isDirectory(path)) {
-            bytes = MemoryFit.params(path.resolve("text_encoder"), "model", true).bytes(dtype, 0)
+            return MemoryFit.params(path.resolve("text_encoder"), "model", true).bytes(dtype, 0)
                     + MemoryFit.params(path.resolve("text_encoder_2"), "model", true).bytes(dtype, 0)
                     + MemoryFit.params(path.resolve("unet"), "diffusion_pytorch_model", true).bytes(dtype, 0)
                     + MemoryFit.params(path.resolve("vae"), "diffusion_pytorch_model", true).bytes(DType.FLOAT32, 0);
-        } else {
-            try {
-                bytes = MemoryFit.params(path).bytes(dtype, 0);
-            } catch (RuntimeException e) {
-                return; // not a readable checkpoint: loading says why
-            }
         }
-        MemoryFit.require("Stable Diffusion (" + path.getFileName() + ")", bytes, device,
-                dtype.bytes() > 2 ? "a 16-bit type halves it" : "");
+        try {
+            return MemoryFit.params(path).bytes(dtype, 0);
+        } catch (RuntimeException e) {
+            return 0; // not a readable checkpoint: loading says why
+        }
     }
 
     private static void release(List<Tensor> all, List<WeightSource> sources) {

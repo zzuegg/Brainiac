@@ -84,6 +84,9 @@ final class Parts {
         Var[] out = new Var[1];
         List<Tensor> made = Tensor.created(() -> out[0] = body.get());
         Tensor.evaluate(List.of(out[0].value()));
+        // a block of a large model is a second or more of GPU work: sent on its own, so that the
+        // batches never grow long enough for a display driver to reset the device
+        out[0].value().device().flush();
         Set<Tensor> keep = Collections.newSetFromMap(new IdentityHashMap<>());
         keep.add(out[0].value());
         Tensor.releaseCreated(made, keep);

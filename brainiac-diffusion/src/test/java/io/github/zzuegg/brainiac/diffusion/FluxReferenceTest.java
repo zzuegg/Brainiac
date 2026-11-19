@@ -20,6 +20,7 @@ import java.util.Map;
 import static io.github.zzuegg.brainiac.diffusion.ReferenceTest.assertClose;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -105,6 +106,24 @@ class FluxReferenceTest {
                 Tensor image = flux.decode(latents);
                 assertClose(ref("pipe." + name), image, 2e-4);
             }
+        }
+    }
+
+    @Test
+    void textEncoderIsReadAgainAfterBeingReleased() throws Exception {
+        try (Flux flux = Flux.load(dir.resolve("flux_schnell"), DEVICE, DType.FLOAT32, new Flux.Options(0, 0, 16))) {
+            Flux.Conditioning first = flux.encode("hello the cat");
+            assertTrue(first == flux.encode("hello the cat"), "the same prompt reuses its conditioning");
+            float[] context = first.context().toArray();
+            float[] pooled = first.pooled().toArray();
+            flux.releaseTextEncoder();
+            assertFalse(flux.textEncoderLoaded());
+            flux.encode("a different prompt");
+            assertTrue(flux.textEncoderLoaded());
+            flux.releaseTextEncoder();
+            Flux.Conditioning again = flux.encode("hello the cat");
+            assertArrayEquals(context, again.context().toArray(), 1e-6f);
+            assertArrayEquals(pooled, again.pooled().toArray(), 1e-6f);
         }
     }
 

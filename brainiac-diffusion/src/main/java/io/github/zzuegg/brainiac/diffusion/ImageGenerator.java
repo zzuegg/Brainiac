@@ -89,6 +89,33 @@ public interface ImageGenerator extends AutoCloseable {
     }
 
     /**
+     * Estimates the device memory a model will take once loaded with {@link #load(Path, Device)},
+     * when nothing else holds the device: its weights in the type and, for Flux, the weight bits
+     * it would pick, plus the least room to generate. Read from the files' headers; nothing is
+     * loaded. Schedulers that decide what to unload first use it.
+     *
+     * @param path a diffusers folder or a single {@code .safetensors} checkpoint
+     * @param device where it would run
+     * @return the bytes, or 0 if unknown (a device that does not count its memory, or files
+     *     that cannot be read)
+     */
+    static long memoryNeed(Path path, Device device) {
+        if (device.memory().isEmpty()) {
+            return 0;
+        }
+        DType dtype = dtype(path, device);
+        try {
+            if (Files.isDirectory(path) && Flux.detect(path).isPresent()) {
+                return Flux.memoryNeed(path, device, dtype);
+            }
+            long weights = StableDiffusion.weightBytes(path, dtype);
+            return weights > 0 ? weights + MemoryFit.MIN_WORKING : 0;
+        } catch (IOException | RuntimeException e) {
+            return 0;
+        }
+    }
+
+    /**
      * The type {@link #load(Path, Device)} picks for a model on a device.
      *
      * @param path the model

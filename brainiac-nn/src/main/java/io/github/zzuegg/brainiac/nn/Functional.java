@@ -199,6 +199,7 @@ public final class Functional {
                 Tensor.evaluate(List.of(y[0]));
             });
             Tensor.releaseCreated(made, List.of(y[0]));
+            y[0].device().flush();   // a band of a large image is a long dispatch: sent on its own
             parts.add(y[0]);
         }
         if (parts.size() == 1) {

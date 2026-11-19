@@ -174,6 +174,24 @@ public final class Device {
         return m != null && m.budget() > 0 && bytes > share * m.budget();
     }
 
+    /**
+     * Sends the work recorded so far to the device without waiting for it. GPUs that drive a
+     * display are reset by their driver when one submission runs for about two seconds;
+     * computations with long parts (a large diffusion model's blocks) call this between them.
+     */
+    public void flush() {
+        backend.flush();
+    }
+
+    /**
+     * Gives the memory of released tensors that the backend pools back to the device, so that
+     * tensors of other sizes can use it: after releasing a large part of a model whose memory
+     * the rest of the work should have. Waits for the device's work.
+     */
+    public void trim() {
+        backend.trim();
+    }
+
     /** Starts measuring the peak in {@link #memory()} again from the current use. */
     public void resetPeakMemory() {
         backend.resetPeakMemory();
