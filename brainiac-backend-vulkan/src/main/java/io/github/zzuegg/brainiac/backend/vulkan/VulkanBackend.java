@@ -630,8 +630,21 @@ public final class VulkanBackend implements Backend {
         if (storage instanceof QuantizedRows) {
             return;
         }
-        if (storage instanceof Deferred) {
-            return;   // uploaded weights: freed with the tensor that holds them
+        if (storage instanceof Deferred d) {
+            Packed p = d.done;
+            if (d.letGo && p != null && d.owner == this) {
+                // a copy used only here (see prefetchNow), such as a cached expert: freed now,
+                // where left to the collector the swapped-out copies of a GPU's expert cache
+                // took gigabytes more than it (measured: 2 to 5 GB spilled to host memory)
+                for (VkStorage v : new VkStorage[] {p.levels(), p.hi(), p.scaleCodes(), p.offsetCodes(), p.scales(),
+                        p.offsets()}) {
+                    if (v != null) {
+                        v.release();
+                    }
+                }
+                d.done = null;   // with no host copy either: a later use fails
+            }
+            return;   // other uploaded weights: freed with the tensor that holds them
         }
         if (storage instanceof Packed p) {
             if (p.host() == null) {   // quantized here, such as optimizer state: freed now
@@ -2414,7 +2427,11 @@ public final class VulkanBackend implements Backend {
             }
             PackedMatrix h = d.host;
             if (h == null) {
-                return d.done;   // uploaded meanwhile: done is set before host is cleared
+                Packed p = d.done;   // uploaded meanwhile: done is set before host is cleared
+                if (p == null) {
+                    throw new IllegalStateException("a packed matrix used after it was released");
+                }
+                return p;
             }
             Staged st = stage(h);
             if (Thread.holdsLock(this)) {
