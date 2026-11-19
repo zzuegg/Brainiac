@@ -17,9 +17,12 @@ import io.github.zzuegg.brainiac.tensor.spi.UnaryOp;
 import java.lang.foreign.MemorySegment;
 import java.lang.ref.Cleaner;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * A GPU backend for AMD GPUs on HIP (ROCm), called through the Foreign Function and Memory API:
@@ -194,7 +197,12 @@ public final class HipBackend implements Backend {
                     }
                 }
                 if (!"false".equals(System.getProperty("brainiac.hip.closeAtExit"))) {
-                    Runtime.getRuntime().addShutdownHook(new Thread(this::closeAtExit, "hip-close"));
+                    synchronized (OPEN) {
+                        if (OPEN.isEmpty()) {
+                            Runtime.getRuntime().addShutdownHook(new Thread(HipBackend::closeAllAtExit, "hip-close"));
+                        }
+                        OPEN.add(this);
+                    }
                 }
                 if (Boolean.getBoolean("brainiac.hip.statistics")) {
                     Runtime.getRuntime().addShutdownHook(new Thread(() -> System.err.println(name() + ": "
@@ -211,17 +219,52 @@ public final class HipBackend implements Backend {
         return hip != null;
     }
 
-    /** Releases the device at exit ({@code -Dbrainiac.hip.closeAtExit=false}: leave it to the runtime). */
-    private synchronized void closeAtExit() {
-        if (hip != null) {
+    /** The backends with a context, for closing them all at exit. */
+    private static final List<HipBackend> OPEN = new java.util.ArrayList<>();
+
+    /**
+     * Releases the devices at exit ({@code -Dbrainiac.hip.closeAtExit=false}: leave it to the
+     * runtime), in one hook: every context first, then each device reset once. A reset clears
+     * the device for the whole process, so resetting it while another context on it still held
+     * memory and a rocBLAS handle made the process abort.
+     */
+    private static void closeAllAtExit() {
+        List<HipBackend> all;
+        synchronized (OPEN) {
+            all = new java.util.ArrayList<>(OPEN);
+        }
+        List<HipContext> closed = new java.util.ArrayList<>();
+        for (HipBackend b : all) {
+            HipContext c = b.closeAtExit();
+            if (c != null) {
+                closed.add(c);
+            }
+        }
+        Set<Integer> reset = new HashSet<>();
+        for (HipContext c : closed) {
+            if (reset.add(c.ordinal)) {
+                try {
+                    c.resetDevice();
+                } catch (RuntimeException e) {
+                    System.err.println("brainiac hip: resetting device " + c.ordinal + ": " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    /** Closes this backend's context, but leaves the device unreset; returns the context, or null. */
+    private synchronized HipContext closeAtExit() {
+        HipContext c = hip;
+        if (c != null) {
             try {
-                hip.close();
+                c.close();
             } catch (RuntimeException e) {
                 System.err.println("brainiac hip: closing " + name() + ": " + e.getMessage());
             }
             hip = null;
             unavailable = "closed at exit";
         }
+        return c;
     }
 
     /**

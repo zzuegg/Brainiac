@@ -775,7 +775,7 @@ final class HipContext {
 
     /**
      * Gives everything back to the runtime at exit: memory, the rocBLAS handle, the modules and
-     * the stream, then resets the device. On Windows a process that left them to the runtime's
+     * the stream; {@link #resetDevice()} then resets the device. On Windows a process that left them to the runtime's
      * own exit handling hung in the driver and could not be killed.
      */
     void close() {
@@ -818,9 +818,18 @@ final class HipContext {
         functions.clear();
         trace("closing: hipStreamDestroy");
         cu.destroyStream(stream);
-        trace("closing: hipDeviceReset");
-        cu.resetDevice();
         trace("closed");
+    }
+
+    /**
+     * Resets the device, for the whole process: only once every context on it is closed (see
+     * {@code HipBackend.closeAllAtExit}).
+     */
+    void resetDevice() {
+        cu.setDevice(ordinal);
+        CURRENT.remove();
+        trace("closing: hipDeviceReset of device " + ordinal);
+        cu.resetDevice();
     }
 
     long inUse() {
