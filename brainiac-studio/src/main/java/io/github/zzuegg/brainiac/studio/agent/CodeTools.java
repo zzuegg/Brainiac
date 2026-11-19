@@ -72,6 +72,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
 
     @Tools.Tool(name = "git_status", value = "Says the repository's branch and which files are changed, staged or new.")
     @Tier(value = Risk.READ)
+    @Returns("text: git's short status")
     public String gitStatus(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo) {
         return git(repo, OUT, "status", "--short", "--branch");
     }
@@ -79,6 +80,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "git_diff", value = "Shows what changed in the repository: the working files against the last "
             + "commit, the staged changes, or against another commit or branch.")
     @Tier(value = Risk.READ, resultChars = 16_000)
+    @Returns("text: the diff")
     public String gitDiff(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
             @Tools.Param("true for what is staged for the next commit") Optional<Boolean> staged,
             @Tools.Param("a commit or branch to compare with, such as 'main'") Optional<String> against,
@@ -95,6 +97,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
 
     @Tools.Tool(name = "git_log", value = "Lists the repository's last commits, one line each.")
     @Tier(value = Risk.READ)
+    @Returns("text: the log")
     public String gitLog(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
             @Tools.Param("how many, 20 if left out, at most 200") Optional<Integer> count,
             @Tools.Param("only commits touching this file or folder") Optional<String> path) {
@@ -107,6 +110,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "git_branch", value = "Switches the repository to a branch, making it first if 'create' is "
             + "true. Uncommitted changes go along.")
     @Tier(value = Risk.WRITE, what = "switches the repository's branch")
+    @Returns("text: git's answer")
     public String gitBranch(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
             @Tools.Param("the branch") String name,
             @Tools.Param("true to make a new branch") Optional<Boolean> create) {
@@ -117,6 +121,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "git_commit", value = "Commits changes in the repository: the files named, or every change if "
             + "none are named. Hooks do not run. Nothing is pushed.")
     @Tier(value = Risk.CODE, what = "commits to the repository")
+    @Returns("text: git's answer and the new commit")
     public String gitCommit(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
             @Tools.Param("the commit message: a short first line, then details if needed") String message,
             @Tools.Param("the files to commit; every change if left out") Optional<List<String>> files) {
@@ -138,6 +143,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "git_push", value = "Pushes a branch to a remote, such as GitHub, under the user's name. Never "
             + "forces. Always asks the user first.")
     @Tier(value = Risk.OUTWARD, what = "pushes commits to a remote under your name")
+    @Returns("text: git's answer")
     public String gitPush(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
             @Tools.Param("the remote, 'origin' if left out") Optional<String> remote,
             @Tools.Param("the branch; the current one if left out") Optional<String> branch) {
@@ -195,6 +201,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
             + "such as building or testing code, with no network unless the settings allow it. Files it changes are "
             + "copied back and can be undone with the run. Nothing runs on this PC directly.")
     @Tier(value = Risk.CODE, what = "runs a command in a container")
+    @Returns("{exitCode, output, changed?, note?}")
     public Map<String, Object> runCommand(@Tools.Param("the command, run by sh in the project's folder") String command,
             @Tools.Param("the time limit in seconds; the settings' limit if left out, at most 3600") Optional<Integer> seconds) {
         if (command == null || command.isBlank()) {

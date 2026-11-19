@@ -73,6 +73,7 @@ public final class PublishTools implements AutoCloseable {
             + "name, with pictures from the project's folder. Give a content calendar entry's id to post that entry, "
             + "which is then marked posted. Always asks the user first.")
     @Tier(value = Risk.OUTWARD, what = "posts publicly under your name")
+    @Returns("{channel, url or id of the post, ...}")
     public Map<String, Object> publishPost(@Tools.Param("mastodon, bluesky, discord or webhook") String channel,
             @Tools.Param("the post's text; the entry's text if an entry is given") Optional<String> text,
             @Tools.Param("pictures or a video in the project's folder") Optional<List<String>> media,
@@ -87,6 +88,7 @@ public final class PublishTools implements AutoCloseable {
     @Tools.Tool(name = "schedule_post", value = "Schedules a post for a time, approved now and sent by the studio "
             + "then, if it is running. Asks the user first.")
     @Tier(value = Risk.OUTWARD, what = "schedules a public post under your name")
+    @Returns("{id, project, channel, text, media, entry, at, state}")
     public Map<String, Object> schedulePost(@Tools.Param("mastodon, bluesky, discord or webhook") String channel,
             @Tools.Param("when, as 2026-12-01T09:00 in this PC's time zone") String at,
             @Tools.Param("the post's text; the entry's text if an entry is given") Optional<String> text,
@@ -126,6 +128,7 @@ public final class PublishTools implements AutoCloseable {
     @Tools.Tool(name = "scheduled_posts", value = "Lists the posts scheduled, sent and failed, and can cancel one "
             + "not sent yet.")
     @Tier(value = Risk.READ)
+    @Returns("{posts: [{id, channel, text, at, state, ...}]}")
     public Map<String, Object> scheduledPosts(@Tools.Param("a scheduled post's id to cancel") Optional<String> cancel) {
         synchronized (this) {
             List<Map<String, Object>> q = load();
@@ -142,6 +145,7 @@ public final class PublishTools implements AutoCloseable {
 
     @Tools.Tool(name = "post_stats", value = "Reads how a Mastodon or Bluesky post did: likes, boosts and replies.")
     @Tier(value = Risk.READ)
+    @Returns("{likes or favourites, reposts or boosts, replies, ...}")
     public Map<String, Object> postStats(@Tools.Param("the post's address, as publish_post gave it") String url) {
         try {
             if (url.contains("bsky.app/profile/")) {

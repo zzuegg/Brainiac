@@ -67,6 +67,7 @@ public final class KnowledgeTools {
     @Tools.Tool(name = "index_files", value = "Builds or refreshes the search index over the project's text files, "
             + "so search_knowledge can find passages by their words and, with an embedding model, by meaning. Only changed files are read again.")
     @Tier(value = Risk.COMPUTE, what = "indexes the project's files")
+    @Returns("{files, readAgain, unchanged, meaning, note?}")
     public Map<String, Object> indexFiles(@Tools.Param("which files, such as '**/*.md'; every text file if left out")
             Optional<String> glob) {
         Project p = FileTools.project();
@@ -168,6 +169,7 @@ public final class KnowledgeTools {
             + "words, best first, with file and line; then read_project_file reads around them. Run index_files first "
             + "if the files changed.")
     @Tier(value = Risk.READ, resultChars = 12_000)
+    @Returns("{query, by, passages: [{file, line, score, text}]}")
     public Map<String, Object> searchKnowledge(@Tools.Param("the words to look for") String query,
             @Tools.Param("how many passages, 8 if left out, at most 30") Optional<Integer> count) {
         Project p = FileTools.project();

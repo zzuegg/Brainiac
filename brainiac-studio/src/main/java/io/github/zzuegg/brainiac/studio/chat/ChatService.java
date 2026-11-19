@@ -921,9 +921,21 @@ public final class ChatService {
             route.accept(target);
             // reasoning models that think in plain text: their <think> block goes to the thinking
             ThinkSplitter split = new ThinkSplitter(listener, false);
+            String plainTold = (instructions.isBlank() ? "" : instructions.strip() + "\n\n") + ToolCalls.instructions(tools);
             return logged(target, "chat", () -> {
-                ChatResult r = p.chat(new ChatRequest(target.id(), told, messages, maxTokens, key, temperature, sampler,
-                        format, nativeTools ? tools : List.of()), split);
+                ChatResult r;
+                try {
+                    r = p.chat(new ChatRequest(target.id(), told, messages, maxTokens, key, temperature, sampler,
+                            format, nativeTools ? tools : List.of()), split);
+                } catch (IOException e) {
+                    // a model whose template takes no tools (Ollama says so): tell it about them in words
+                    if (!nativeTools || e.getMessage() == null
+                            || !e.getMessage().toLowerCase(java.util.Locale.ROOT).contains("support tools")) {
+                        throw e;
+                    }
+                    r = p.chat(new ChatRequest(target.id(), plainTold, messages, maxTokens, key, temperature, sampler,
+                            format, List.of()), split);
+                }
                 split.finish();
                 return r;
             }, r -> new long[] {r.inputTokens(), r.outputTokens(), 0});
