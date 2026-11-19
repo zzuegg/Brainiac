@@ -6905,7 +6905,7 @@ Sources: R-wave13. Theme: explainability. Tests: RashomonSetTest, ScoringSystems
 | SORTD-style enumeration | Match / members / time | Exact, 30 members, 4.1 ms (depth-3 set: 1,575 members) | Brute force: 6.7 ms | Win | Exact and fast, as predicted. |
 | Rashomon set | Ambiguity / discrepancy | 0.055 / 0.040 | Bootstrap retraining: 0.022 / 0.022 | Win | Retraining underestimates ambiguity 2.5x, as predicted. 85% of members use a redundant copy of a planted feature, and reliance on the copies ranges from 0 to 0.20. |
 | FasterRisk; RiskSLIM, non-integer log-odds (k = 5) | Training loss | 0.590; 0.600 | Naive rounding: 0.600. Continuous logistic: 0.588 | Mixed | FasterRisk nearly matches logistic regression; RiskSLIM only ties rounding and never certified within 400 nodes. |
-| FasterRisk; RiskSLIM, nonlinear term (k = 3) | Training loss | 0.470; 0.475 | Rounding: 0.475. Logistic: 0.386. EBM: 0.374 | Negative | Integer scores cannot follow the nonlinear term. |
+| FasterRisk; RiskSLIM, nonlinear term (k = 3) | Training loss | 0.470; 0.475 (0.484 after core #212) | Rounding: 0.475. Logistic: 0.386. EBM: 0.374 | Negative | Integer scores cannot follow the nonlinear term. After the core LP changes in #212, uncertified RiskSLIM ends 0.0085 above rounding, so the test now checks a 0.02 tolerance. |
 
 Item verdicts: 1.12 Win, 1.13 Mixed.
 
