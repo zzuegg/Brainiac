@@ -28,6 +28,10 @@ tasks.named<JavaExec>("run") {
     standardInput = System.`in`
     // ./models means the models folder at the top of the repository
     workingDir = rootProject.projectDir
+    // extra JVM options for the studio, such as -PstudioJvmArgs="-Xmx24g" (studio.bat sets the heap this way)
+    providers.gradleProperty("studioJvmArgs").orNull?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        jvmArgs(it.split(Regex("\\s+")))
+    }
 }
 
 tasks.test {
