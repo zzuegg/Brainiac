@@ -298,7 +298,8 @@ public final class HipBackend implements Backend {
             return "not initialized";
         }
         HipContext c = hip;
-        return "init " + initNanos / 1_000_000 + " ms, " + c.launches + " kernel launches, " + c.products
+        return "init " + initNanos / 1_000_000 + " ms, " + c.launches + " kernel launches ("
+                + c.callNanos / 1_000_000 + " ms in launch and copy calls), " + c.products
                 + " rocBLAS products, " + c.waits + " waits, " + (c.uploadedBytes >> 20) + " MB uploaded, "
                 + (c.downloadedBytes >> 20) + " MB downloaded, " + (c.inUse() >> 20) + " MB in use, "
                 + (c.peak() >> 20) + " MB peak, " + (c.reserved() >> 20) + " MB reserved, " + c.collections
@@ -752,6 +753,10 @@ public final class HipBackend implements Backend {
     private static final boolean FEW_ROWS = !"false".equals(System.getProperty("brainiac.hip.fewRows"));
     /** The most rows {@code few_dense} and {@code few_packed} take (FEW_ROWS in kernels.hip). */
     static final int FEW = 16;
+    /** Column blocks the few-row kernels can count finished pieces for: an int each in {@link #fewCounters}. */
+    private static final int FEW_COUNTERS = 1 << 16;
+    /** Counters of finished pieces per column block, all 0 between launches. */
+    private HipStorage fewCounters;
     /** The columns a block of the few-row kernels covers: a thread each. */
     private static final int FEW_COLUMNS = HipContext.GROUP;
 
@@ -770,13 +775,21 @@ public final class HipBackend implements Backend {
         pieces = (k + chunk - 1) / chunk;
         HipStorage part = pieces > 1 ? raw((long) pieces * m * n, DType.FLOAT32, null) : null;
         long partAddress = part != null ? part.address() : 0;
+        // the pieces are added by the last block of each column block to finish, which counts them
+        boolean counted = part != null && columnBlocks <= FEW_COUNTERS;
+        if (counted && fewCounters == null) {
+            fewCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
+            fill(fewCounters, 0);
+        }
         c.args().ptr(a.address()).ptr(w);
         if (kernel.equals("few_packed")) {
             c.ptr(scales).ptr(offsets).i32(group).i32(nibbles);
         }
-        c.ptr(partAddress).ptr(out.address()).i32(m).i32(k).i32(n).i32(chunk);
+        c.ptr(partAddress).ptr(out.address()).i32(m).i32(k).i32(n).i32(chunk).ptr(counted ? fewCounters.address() : 0);
         c.launch(kernel(kernel, out.dtype), columnBlocks, pieces, 1);
-        if (part != null) {
+        if (counted) {
+            part.release();
+        } else if (part != null) {
             long mn = (long) m * n;
             c.args().ptr(part.address()).ptr(out.address()).i64(mn).i32(pieces);
             c.launch(kernel("few_sum", out.dtype), mn);
@@ -1085,6 +1098,31 @@ public final class HipBackend implements Backend {
         c.args().ptr(xs.address()).ptr(ws.address()).ptr(y.address()).i64(rows).i32(cols).f32(eps);
         c.launch(kernel("rms_norm", y.dtype), (int) Math.min(rows, 1 << 20), 1, 1);
         done(xs, cs(x));
+        done(ws, cs(weight));
+    }
+
+    @Override
+    public boolean hasAddRmsNorm(DType type) {
+        return hasRmsNorm(type);
+    }
+
+    @Override
+    public synchronized void addRmsNorm(Storage x, Storage r, Storage weight, long rows, int cols, float eps,
+            Storage sum, Storage out) {
+        HipStorage y = cs(out);
+        HipStorage s = cs(sum);
+        if (!hasAddRmsNorm(y.dtype) || s.dtype != y.dtype) {
+            throw new UnsupportedOperationException("fused add and RMSNorm: " + y.dtype);
+        }
+        HipContext c = ctx();
+        HipStorage xs = as(cs(x), y.dtype);
+        HipStorage rs = as(cs(r), y.dtype);
+        HipStorage ws = as(cs(weight), y.dtype);
+        c.args().ptr(xs.address()).ptr(rs.address()).ptr(ws.address()).ptr(s.address()).ptr(y.address()).i64(rows)
+                .i32(cols).f32(eps);
+        c.launch(kernel("add_rms_norm", y.dtype), (int) Math.min(rows, 1 << 20), 1, 1);
+        done(xs, cs(x));
+        done(rs, cs(r));
         done(ws, cs(weight));
     }
 

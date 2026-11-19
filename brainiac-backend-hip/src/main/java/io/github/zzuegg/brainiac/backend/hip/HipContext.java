@@ -129,6 +129,8 @@ final class HipContext {
 
     // statistics
     long launches;
+    /** Time the host spent in launch and copy calls, which return before the device runs them. */
+    long callNanos;
     long products;
     long waits;
     long uploadedBytes;
@@ -454,8 +456,9 @@ final class HipContext {
     void launch(String name, int gridX, int gridY, int gridZ) {
         long f = function(name);
         trace("launch " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
-        long t0 = PROFILE ? System.nanoTime() : 0;
+        long t0 = System.nanoTime();
         int r = cu.launch(f, gridX, gridY, gridZ, GROUP, 0, stream, argPointers);
+        callNanos += System.nanoTime() - t0;
         launches++;
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, "launching " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
@@ -543,7 +546,9 @@ final class HipContext {
     void copy(long dst, long src, long bytes) {
         if (bytes > 0) {
             trace("hipMemcpyDtoDAsync " + bytes + " bytes");
+            long t0 = System.nanoTime();
             cu.copy(dst, src, bytes, stream);
+            callNanos += System.nanoTime() - t0;
             if (DEBUG) {
                 debugWait("device copy of " + bytes + " bytes");
             }

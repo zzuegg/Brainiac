@@ -528,6 +528,38 @@ template <class D> __device__ void rms_norm_k(const typename D::T* x, const type
     }
 }
 
+// a residual add and the RMSNorm after it, one block per row: sum = x + r as an add stores it,
+// y the RMSNorm of the stored sum. Each thread reads back only the sums it wrote.
+template <class D> __device__ void add_rms_norm_k(const typename D::T* x, const typename D::T* res,
+        const typename D::T* w, typename D::T* sum, typename D::T* y, i64 rows, int cols, float eps) {
+    typedef typename D::A A;
+    __shared__ float part[GROUP / 32];
+    for (i64 r = blockIdx.x; r < rows; r += gridDim.x) {
+        i64 base = r * cols;
+        float acc = 0;
+        for (int t = threadIdx.x; t < cols; t += GROUP) {
+            D::st(sum, base + t, (A) D::ld(x, base + t) + (A) D::ld(res, base + t));
+            float v = (float) D::ld(sum, base + t);
+            acc += v * v;
+        }
+        acc = warp_reduce(0, acc);
+        if ((threadIdx.x & 31) == 0) {
+            part[threadIdx.x >> 5] = acc;
+        }
+        __syncthreads();
+        float total = 0;
+        for (int i = 0; i < GROUP / 32; i++) {
+            total += part[i];
+        }
+        float d = sqrtf(total / (float) cols + eps);
+        for (int t = threadIdx.x; t < cols; t += GROUP) {
+            float n = (float) D::round((A) ((float) D::ld(sum, base + t) / d));
+            D::st(y, base + t, (A) (n * (float) D::ld(w, t)));
+        }
+        __syncthreads();
+    }
+}
+
 // ---------------------------------------------------------------- windows and indices
 
 // table[pos * ks + k]: the image cell kernel cell k reads at window position pos, or -1
@@ -670,9 +702,11 @@ struct PackedWeights {
 
 // out[m, n] = a[m, k] x w[k, n] for m <= FEW_ROWS: a thread per column, each reading its column
 // of w once for every row of a. Blocks over columns (x) and pieces of k (y); with several pieces
-// each writes float partial sums to part[piece, m, n], added up in order by few_sum.
+// each writes float partial sums to part[piece, m, n], added up in order by the last block of
+// its column block to finish (counted in counters[blockIdx.x], left at 0 again), or by few_sum
+// when counters is null.
 template <class D, class W> __device__ void few_k(const typename D::T* a, W w, float* part, typename D::T* out,
-        int m, int k, int n, int chunk) {
+        int m, int k, int n, int chunk, int* counters) {
     typedef typename D::A A;
     __shared__ A as[FEW_ROWS][FEW_TILE];
     i64 c = (i64) blockIdx.x * GROUP + threadIdx.x;
@@ -712,6 +746,31 @@ template <class D, class W> __device__ void few_k(const typename D::T* a, W w, f
                 D::st(out, (i64) r * n + c, acc[r]);
             } else {
                 part[((i64) blockIdx.y * m + r) * n + c] = (float) acc[r];
+            }
+        }
+    }
+    if (gridDim.y > 1 && counters != nullptr) {
+        __shared__ int last;
+        __threadfence();
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            last = atomicAdd(&counters[blockIdx.x], 1) == (int) gridDim.y - 1;
+        }
+        __syncthreads();
+        if (last) {
+            __threadfence();
+            if (c < n) {
+                const volatile float* p = part;
+                for (int r = 0; r < m; r++) {
+                    A sum = A(0);
+                    for (int q = 0; q < (int) gridDim.y; q++) {
+                        sum += (A) p[((i64) q * m + r) * n + c];
+                    }
+                    D::st(out, (i64) r * n + c, sum);
+                }
+            }
+            if (threadIdx.x == 0) {
+                counters[blockIdx.x] = 0;
             }
         }
     }
@@ -1121,6 +1180,10 @@ extern "C" __global__ void argmax_block_##S(const D::T* x, D::T* y, i64 rows, i6
 extern "C" __global__ void rms_norm_##S(const D::T* x, const D::T* w, D::T* y, i64 rows, int cols, float eps) {  \
     rms_norm_k<D>(x, w, y, rows, cols, eps);                                                                      \
 }                                                                                                                 \
+extern "C" __global__ void add_rms_norm_##S(const D::T* x, const D::T* r, const D::T* w, D::T* sum, D::T* y,     \
+        i64 rows, int cols, float eps) {                                                                          \
+    add_rms_norm_k<D>(x, r, w, sum, y, rows, cols, eps);                                                          \
+}                                                                                                                 \
 extern "C" __global__ void im2col_##S(const D::T* x, const int* table, D::T* z, int channels, int positions,     \
         int ks, i64 img, float pad, i64 total) {                                                                  \
     im2col_k<D>(x, table, z, channels, positions, ks, img, pad, total);                                           \
@@ -1154,14 +1217,15 @@ KERNELS(bf16, BF16)
 
 #define FEW_KERNELS(S, D)                                                                                         \
 extern "C" __global__ void few_dense_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m, int k,     \
-        int n, int chunk) {                                                                                       \
+        int n, int chunk, int* counters) {                                                                        \
     DenseWeights<D> dw = {w, n};                                                                                  \
-    few_k<D>(a, dw, part, out, m, k, n, chunk);                                                                   \
+    few_k<D>(a, dw, part, out, m, k, n, chunk, counters);                                                         \
 }                                                                                                                 \
 extern "C" __global__ void few_packed_##S(const D::T* a, const signed char* levels, const float* scales,          \
-        const float* offsets, int group, int nibbles, float* part, D::T* out, int m, int k, int n, int chunk) {   \
+        const float* offsets, int group, int nibbles, float* part, D::T* out, int m, int k, int n, int chunk,     \
+        int* counters) {                                                                                          \
     PackedWeights pw = {levels, scales, offsets, n, group, nibbles};                                              \
-    few_k<D>(a, pw, part, out, m, k, n, chunk);                                                                   \
+    few_k<D>(a, pw, part, out, m, k, n, chunk, counters);                                                         \
 }                                                                                                                 \
 extern "C" __global__ void few_sum_##S(const float* part, D::T* out, i64 mn, int pieces) {                        \
     few_sum_k<D>(part, out, mn, pieces);                                                                          \
