@@ -165,6 +165,24 @@ class LlamaTest {
                     logits.length);
             assertArrayEquals(lastExpected, last.to(DType.FLOAT32).toArray(), 1e-3f, name + " cached " + onDevice);
         }
+        // copies of the most used experts on the device, refreshed every few uses, give the same
+        Llama cached = Llama.loadExpertsOnCpu(resource(name + ".gguf"), DEVICE, DType.FLOAT32, 0);
+        cached.cacheExperts(DEVICE, 1 << 16, 1, 5, Long.MAX_VALUE);
+        for (int pass = 0; pass < 3; pass++) {
+            assertArrayEquals(logits, cached.forward(ids).value().toArray(), 1e-4f, name + " expert cache " + pass);
+        }
+        LanguageModel.State state = cached.newState(1);
+        Tensor last = null;
+        for (int t = 0; t < ids[0].length; t++) {
+            last = cached.next(state, new int[][] {{ids[0][t]}}, null);
+        }
+        assertArrayEquals(java.util.Arrays.copyOfRange(logits, logits.length - cached.config().vocabSize(),
+                logits.length), last.to(DType.FLOAT32).toArray(), 1e-3f, name + " expert cache, step by step");
+        if (DEVICE.kind() != Device.Kind.CPU) {
+            // some experts ran from copies and some from the file
+            double hits = cached.expertCache().hitRate();
+            assertTrue(cached.expertCache().size() > 0 && hits > 0 && hits < 1, cached.expertCacheStats());
+        }
         assertThrows(IllegalArgumentException.class,
                 () -> Llama.loadExpertsOnCpu(resource("qwen3.gguf"), DEVICE, DType.FLOAT32, 0));
     }

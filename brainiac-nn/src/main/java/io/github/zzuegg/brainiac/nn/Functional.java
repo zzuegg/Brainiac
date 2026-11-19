@@ -1247,7 +1247,8 @@ public final class Functional {
      * and wait for them on its own, and cores sat idle for most of the time.
      *
      * @param x {@code [tokens, features]}, on the experts' device
-     * @param chosen each token's experts {@code [tokens * k]}
+     * @param chosen each token's experts {@code [tokens * k]}; a negative entry skips its slot
+     *     (that expert ran elsewhere), and at least one must be an expert
      * @param weights their weights {@code [tokens * k]}
      * @param k the experts per token
      * @param experts expert {@code e}'s network, mapping {@code [m, features]} to
@@ -1265,7 +1266,12 @@ public final class Functional {
         // each expert used, with the slots (token * k + j) that chose it
         java.util.Map<Integer, List<Integer>> slots = new java.util.TreeMap<>();
         for (int s = 0; s < chosen.length; s++) {
-            slots.computeIfAbsent(chosen[s], e -> new ArrayList<>()).add(s);
+            if (chosen[s] >= 0) {
+                slots.computeIfAbsent(chosen[s], e -> new ArrayList<>()).add(s);
+            }
+        }
+        if (slots.isEmpty()) {
+            throw new IllegalArgumentException("no slot chose an expert");
         }
         List<Integer> used = List.copyOf(slots.keySet());
         float[][] outs = new float[used.size()][];
