@@ -9,9 +9,10 @@ dependencies {
     testRuntimeOnly(project(":brainiac-backend-cpu"))
     testRuntimeOnly(project(":brainiac-backend-vulkan"))
     testRuntimeOnly(project(":brainiac-backend-cuda"))
+    testRuntimeOnly(project(":brainiac-backend-hip"))
 }
 
-// -PtestDevice=vulkan or cuda (or part of a device name) runs the tests that use TestDevice there
+// -PtestDevice=vulkan, cuda or hip (or part of a device name) runs the tests that use TestDevice there
 tasks.test {
     val device = providers.gradleProperty("testDevice").getOrElse("cpu")
     systemProperty("brainiac.test.device", device)

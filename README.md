@@ -31,6 +31,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-backend-cpu` | Default backend, plain Java on the CPU |
 | `brainiac-backend-vulkan` | Optional GPU backend: Vulkan compute shaders through LWJGL (its only dependency) |
 | `brainiac-backend-cuda` | Optional NVIDIA GPU backend: the CUDA driver, NVRTC and cuBLAS called through the Foreign Function and Memory API (no dependencies) |
+| `brainiac-backend-hip` | Optional AMD GPU backend (ROCm/HIP, RDNA cards): the HIP runtime, hipRTC and rocBLAS called through the Foreign Function and Memory API (no dependencies) |
 | `brainiac-autograd` | Reverse-mode automatic differentiation |
 | `brainiac-nn` | Layers, activations, losses, initializers, models, the growing `Brain` |
 | `brainiac-train` | Optimizers (Adam/AdamW, Lion, Adafactor, Muon, parameter groups), training loops, checkpoints, EMA, metrics, listeners, `Plasticity` |
@@ -1415,6 +1416,25 @@ GPU), `brainiac.cuda.nccl` (library file, `none` to sum on the host), `brainiac.
 and `brainiac.cuda.fewRows` (`false` turns those kernels off). `CudaBackend.status()` names the
 device and the libraries found, or why there is none; without an NVIDIA driver the backend
 reports itself unavailable and its device tests are skipped (`-Pbench` prints product speeds).
+
+`brainiac-backend-hip` is the same backend ported to AMD's HIP, which mirrors the CUDA API: the
+HIP runtime (`amdhip64_7.dll`, part of the display driver and the HIP SDK; `libamdhip64.so` on
+Linux), hipRTC to compile its kernels (`kernels.hip`, the CUDA kernels with AMD's half
+conversions and shuffles) for the card at first use (cached in `~/.cache/brainiac/hip`), and
+rocBLAS for matrix products when it has kernels for the card (otherwise a kernel of its own).
+On Windows install AMD's HIP SDK (its core, libraries and runtime compiler) and put its `bin`
+folder on the `PATH`; the libraries are also looked for in `HIP_PATH`, `ROCM_PATH` and the usual
+install folders. The kernels are written for 32-lane wavefronts, so it needs an RDNA card
+(Radeon RX 5000 or later; the RX 9070 XT is `gfx1201`). Run with
+`--enable-native-access=io.github.zzuegg.brainiac.backend.hip`; the device is `hip`
+(`-Dbrainiac.gpu=hip` to prefer it over Vulkan, `-PtestDevice=hip` for the model tests). It covers
+the same operations as the CUDA backend; several GPUs sum gradients on the host (no RCCL on
+Windows). System properties: `brainiac.hip.device`, `brainiac.hip.memory`, `brainiac.hip.debug`,
+`brainiac.hip.critical`, `brainiac.hip.runtime`/`hiprtc`/`rocblas` (library files; `rocblas=none`
+turns rocBLAS off), `brainiac.hip.arch` (the compiler target, when the runtime does not tell),
+`brainiac.hip.cache`, `brainiac.hip.statistics`, `brainiac.hip.devices`,
+`brainiac.hip.fusedAttention` and `brainiac.hip.fewRows`. `HipBackend.status()` names the device
+and the libraries found, or why there is none.
 
 Tensors and models come in four number formats:
 
