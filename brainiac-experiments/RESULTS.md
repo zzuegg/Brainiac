@@ -1,6 +1,6 @@
 # brainiac-experiments: measured results
 
-This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes. It also covers wave 10: 101 more techniques in six work packages (WP1–WP6, listed in `wave10-ideas.md`), tagged **W10** in the same way and measured in 39 new experiment entries (106 new test classes), with eight new themes: events, labels, metric, multitask, parsing, restoration, shift and speech. Wave 10 is gathered in its own section after wave 9, one part per work package; all its numbers are single-seed and at test budgets, because its long-budget Runs were not executed. It also covers wave 11: 102 more techniques in six work packages (WP1–WP6, listed in `wave11-ideas.md`), tagged **W11** in the same way and measured in 53 new experiment entries (78 new test classes), with eight new themes: algorithms, bandits, combinatorial, discovery, econometrics, music, security and uncertainty. Wave 11 is gathered in its own section after wave 10, one part per work package; all its numbers are at test budgets and mostly single-seed, and no long runs were made, because the user asked for no extensive test runs. It also covers wave 12: 104 more techniques in six work packages (WP1–WP6, listed in `wave12-ideas.md`), tagged **W12** in the same way and measured in 52 new experiment entries (56 new test classes), with eight new themes: biology, coding, communications, estimation, markets, operations, robotics and statistics. Wave 12 is gathered in its own section after wave 11, one part per work package; as in wave 11, all its numbers are at test budgets and mostly single-seed, and no long runs were made, because the user asked for no extensive test runs.
+This page collects every measured result recorded for the experimental AI techniques in the `brainiac-experiments` module of the brainiac repository (PRs #86, #92 and #97), plus a full run of the experiment suite on 2026-11-17 after PR #105. It also covers wave 4: 85 more techniques in six work packages (WP1–WP6, listed in `unimplemented-ideas.md`), each measured against a baseline. Wave 4 experiments are tagged **W4** with their item number, for example "W4 1.1". It also covers wave 5: 106 more techniques in six work packages (WP1–WP6, listed in `wave5-ideas.md`), tagged **W5** in the same way, with two new themes, data and safety. It also covers wave 6: 105 more techniques in six work packages (WP1–WP6, listed in `wave6-ideas.md`), tagged **W6** in the same way and measured in 84 new experiments, with one new theme, classic. It also covers wave 7: 108 more techniques in six work packages (WP1–WP6, listed in `wave7-ideas.md`), tagged **W7** in the same way and measured in 59 new experiment entries (91 new test classes), with six new themes: audio, multiagent, numerics, probabilistic, recsys and synthesis. It also covers wave 8: 106 more techniques in six work packages (WP1–WP6, listed in `wave8-ideas.md`), tagged **W8** in the same way and measured in 38 new experiment entries (124 new test classes), with six new themes: compression, kernels, privacy, robustness, sciml and serving. It also covers wave 9: 102 more techniques in six work packages (WP1–WP6, listed in `wave9-ideas.md`), tagged **W9** in the same way and measured in 51 new experiment entries (104 new test classes), with ten new themes: alignment, causal, code, document, edge, evaluation, parallel, streaming, survival and world. Wave 9 is gathered in its own section, one part per work package, after the themes. It also covers wave 10: 101 more techniques in six work packages (WP1–WP6, listed in `wave10-ideas.md`), tagged **W10** in the same way and measured in 39 new experiment entries (106 new test classes), with eight new themes: events, labels, metric, multitask, parsing, restoration, shift and speech. Wave 10 is gathered in its own section after wave 9, one part per work package; all its numbers are single-seed and at test budgets, because its long-budget Runs were not executed. It also covers wave 11: 102 more techniques in six work packages (WP1–WP6, listed in `wave11-ideas.md`), tagged **W11** in the same way and measured in 53 new experiment entries (78 new test classes), with eight new themes: algorithms, bandits, combinatorial, discovery, econometrics, music, security and uncertainty. Wave 11 is gathered in its own section after wave 10, one part per work package; all its numbers are at test budgets and mostly single-seed, and no long runs were made, because the user asked for no extensive test runs. It also covers wave 12: 104 more techniques in six work packages (WP1–WP6, listed in `wave12-ideas.md`), tagged **W12** in the same way and measured in 52 new experiment entries (56 new test classes), with eight new themes: biology, coding, communications, estimation, markets, operations, robotics and statistics. Wave 12 is gathered in its own section after wave 11, one part per work package; as in wave 11, all its numbers are at test budgets and mostly single-seed, and no long runs were made, because the user asked for no extensive test runs. It also covers wave 13, the final wave of this series: 99 more techniques in six work packages (WP1–WP6, listed in `wave13-ideas.md`), tagged **W13** in the same way and measured in 53 new experiment entries (86 new test classes), with six new themes: explainability, imaging, inference, science, sensing and symbolic. Wave 13 is gathered in its own section after wave 12, one part per work package, with the same caveats as wave 12. The idea lists for waves 5–13 now live in `brainiac-experiments/docs/ideas/`.
 
 ## How the module is laid out
 
@@ -24,6 +24,7 @@ Rules this page follows:
 - Wave 10 numbers are keyed **R-wave10**: they come from the final reports of the six wave 10 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 10 branch or of the merged branch has been made, so there is no Run-w10 key. Every wave 10 number is single-seed and at the test budget. The long-budget `main()` Runs, including most of the wave 9 follow-ups, were written but not executed, so a hypothesis that needs them is marked **Inconclusive (long run pending)** unless the test-budget numbers already settle it.
 - Wave 11 numbers are keyed **R-wave11**: they come from the final reports of the six wave 11 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 11 branch or of the merged branch has been made, so there is no Run-w11 key. Every wave 11 number is at the test budget and most are single-seed, and no long runs were made. Where a number comes from a probe run larger than the test's, the row says so, and a hypothesis that the test-budget numbers cannot decide is marked **Inconclusive**.
 - Wave 12 numbers are keyed **R-wave12**: they come from the final reports of the six wave 12 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 12 branch or of the merged branch has been made, so there is no Run-w12 key. Every wave 12 number is at the test budget and most are single-seed, and no long runs were made. Where a number comes from a probe run larger than the test's, the row says so. Two items (12.1.17 and 12.5.14) have no recorded numbers; their entries give what the tests assert, and they are marked **Inconclusive**.
+- Wave 13 numbers are keyed **R-wave13**: they come from the final reports of the six wave 13 work-package agents, who ran only their own test classes, one or two at a time with `--tests` filters, on 2026-11-18 (all passing when last run), because the user asked for no extensive test runs. No full suite run of any wave 13 branch or of the merged branch has been made, so there is no Run-w13 key. Every wave 13 number is toy-scale, at the test budget and mostly single-seed, and no long runs were made.
 - An experiment with no recorded numbers is listed as **no numbers recorded**, together with what its test asserts. The test thresholds are pass conditions, not measurements.
 
 Source keys (given under each experiment):
@@ -56,6 +57,7 @@ Source keys (given under each experiment):
 | R-wave10 | Session transcript: final reports of the six wave 10 work-package agents (WP1–WP6); per-class test runs only, single seed at test budgets, 2026-11-18; long-budget `main()` Runs not executed |
 | R-wave11 | Session transcript: final reports of the six wave 11 work-package agents (WP1–WP6); per-class test runs only, at test budgets and mostly single seed, 2026-11-18; no long runs |
 | R-wave12 | Session transcript: final reports of the six wave 12 work-package agents (WP1–WP6); per-class test runs only, at test budgets and mostly single seed, 2026-11-18; no long runs |
+| R-wave13 | Session transcript: final reports of the six wave 13 work-package agents (WP1–WP6); per-class test runs only, toy-scale at test budgets and mostly single seed, 2026-11-18; no long runs |
 
 ---
 
@@ -6673,6 +6675,878 @@ Not done: mountain car, 3–5 seeds and `LearningCurveHarness` curves. Full-cova
 
 ---
 
+## Wave 13
+
+Wave 13 adds 99 techniques in six work packages (WP1–WP6, items 13.1.1 to 13.6.17 in `wave13-ideas.md`). An item is tagged **W13** in the same way as earlier waves, so "W13 1.3" is item 13.1.3. The six work-package branches were built on the waves 1–12 code (291b001) and are merged into the local branch `claude/project-thread-8zvcl0` (merge commits 0caa9a1 to 5dc6798, then cc2db49, which sorts the new exports in `module-info.java`); the wave 13 work has not been pushed. Wave 13 adds 86 test classes, 53 experiment entries below and six new themes (explainability, imaging, inference, science, sensing and symbolic), and extends eight existing ones (classic, multitask, probabilistic, robotics, robustness, selfsupervised, survival and timeseries). As in waves 9–12, the section has one part per work package, and the theme of each experiment is given on its Sources line. One item is a fair-test follow-up of a wave 12 negative (13.4.17, Deep Closest Point with a differentiable SVD), and a few items carry small enabling changes with unchanged defaults: a read-only `tree(i)` accessor on `RandomForest` (13.1.2), new `SimulatorInference` methods next to the unchanged rows (13.5.1–13.5.4), and the `DeepClosestPoint.Procrustes` option with `MultiViewGeometry.registrationSvd` (13.4.17).
+
+The idea lists for waves 5–13 (`wave5-ideas.md` to `wave13-ideas.md`), together with `unimplemented-ideas.md` and `experimental-ai-ideas.md`, now live in `brainiac-experiments/docs/ideas/`. **Wave 13 is the final wave of this series.**
+
+Every wave 13 number is keyed **R-wave13**. It comes from the final report of the work-package agent that built the item. The user asked for no extensive test runs, so each agent ran only its own test classes, one or two at a time with `--tests` filters, in the cloud container on 2026-11-18, and all of them passed when last run. No full suite run has been made, neither of a single branch nor of the merged branch, so there is no Run-w13 key. Two caveats apply to every row:
+
+- **All numbers are toy-scale, test-budget and mostly single-seed** (the seed fixed in each test unless a row says otherwise). Gaps of a few points are within noise.
+- **No long runs were made**, because the user asked for no extensive test runs. The tasks are cut to toy sizes (for example 32×32 CT phantoms, 16×16 learned-imaging tasks, 6–10 qubits, 2 test instances per planning domain, and about 3 s of training for the flow samplers), so a hypothesis stated at paper scale is judged at the scale that ran. Several learned methods are plainly under-trained at these budgets (the φ⁴ flow sampler, the chirp CNN, PnP-Flow and DAD), and their rows say so.
+
+Some test classes take longer than the ~10 s target; each WP part says which. One reported inconsistency is kept as reported: in 13.5.3 the builder's summary says FMPE loses to NPE on SLCP, but the C2ST numbers it gives (lower is better) show FMPE ahead on SLCP and behind on the Gaussian mixture; the entry gives the numbers.
+
+The **Verdict** column reads as follows:
+- **Win:** the technique beats its baseline clearly.
+- **Mixed:** it wins on some measures or settings and loses on others.
+- **Negative:** it does not beat its baseline, or the hypothesis in `wave13-ideas.md` did not hold. These rows are kept and labelled.
+- **Inconclusive:** the numbers at the test budget cannot decide (the task is too easy to separate the methods, the differences are noise, or no numbers were recorded).
+
+### Wave 13 verdicts by item
+
+| WP | Win | Mixed | Negative | Inconclusive | Items |
+|---|---|---|---|---|---|
+| WP1 explanation and interpretable models | 5 | 10 | 1 | 0 | 16 |
+| WP2 symbolic AI, planning and constraint reasoning | 4 | 9 | 3 | 0 | 16 |
+| WP3 science domains | 7 | 8 | 2 | 0 | 17 |
+| WP4 computational imaging and array sensing | 11 | 1 | 5 | 0 | 17 |
+| WP5 the Bayesian workflow | 6 | 8 | 2 | 0 | 16 |
+| WP6 classical-learning gaps | 6 | 7 | 2 | 2 | 17 |
+| **Total** | **39** | **43** | **15** | **2** | **99** |
+
+The 2 Inconclusive items are 13.6.6 (every elastic distance, the ensembles and ROCKET reach 1.0 on the warped task, so the methods cannot be told apart) and 13.6.16 (the "conflicting" tasks barely conflict, so the main soft-sharing claim cannot be tested). Several Mixed items contain a clearly negative row: the path-dependent TreeSHAP null result in 13.1.2, cosine ProtoPNet in 13.1.7, random directions in 13.1.15, LAMA alternation in 13.2.2, the additive PDB in 13.2.3, decision-DNNF size in 13.2.11, the PINN surrogate's speed in 13.3.8, the chirp CNN in 13.3.14, hard-example mining in 13.4.5, NPSE in 13.5.3, PSIS-LOO in 13.5.12 and the outliergram in 13.5.15. WP4 has the most wins and also the most negatives, because its classical baselines are strong and its learned methods are small.
+
+| Item | Technique | Experiment | Verdict |
+|---|---|---|---|
+| W13 1.1 | PDP, ICE, ALE and the H-statistic | EffectPlotComparison | Mixed |
+| W13 1.2 | Path-dependent and interventional TreeSHAP | ShapleyMethods | Mixed |
+| W13 1.3 | SII, k-SII, Faith-Shap, SHAP-IQ, TreeSHAP-IQ | ShapleyMethods | Negative |
+| W13 1.4 | Antithetic permutation, paired KernelSHAP, Leverage SHAP | ShapleyMethods | Mixed |
+| W13 1.5 | Anchors with KL-LUCB | LocalRules | Mixed |
+| W13 1.6 | IP recourse, DiCE, FACE, robust recourse | LocalRules | Mixed |
+| W13 1.7 | ProtoPNet with ℓ2 and cosine similarity | InterpretableNetworks | Mixed |
+| W13 1.8 | Concept bottlenecks, CEM and leakage | InterpretableNetworks | Mixed |
+| W13 1.9 | Self-explaining neural networks | InterpretableNetworks | Win |
+| W13 1.10 | RuleFit and CORELS | InterpretableModels | Win |
+| W13 1.11 | DL8.5 / GOSDT optimal sparse trees | InterpretableModels | Win |
+| W13 1.12 | Rashomon sets (SORTD) and predictive multiplicity | InterpretableModels | Win |
+| W13 1.13 | RiskSLIM and FasterRisk | InterpretableModels | Mixed |
+| W13 1.14 | ROAR, infidelity, max-sensitivity, sanity checks | ExplanationEvaluation | Win |
+| W13 1.15 | Network dissection and compositional explanations | ExplanationEvaluation | Mixed |
+| W13 1.16 | Right for the right reasons (RRR) | InterpretableNetworks | Mixed |
+| W13 2.1 | h_max, h_add, h_FF with GBFS and lazy search | ClassicalPlanning | Mixed |
+| W13 2.2 | LM-cut and landmark count | ClassicalPlanning | Mixed |
+| W13 2.3 | Pattern databases and the canonical heuristic | ClassicalPlanning | Mixed |
+| W13 2.4 | WL-GOOSE learned heuristics | LearnedPlanning | Win |
+| W13 2.5 | Ranking losses and partial-space search | LearnedPlanning | Negative |
+| W13 2.6 | Generalised planning: transition models and policies | LearnedPlanning | Mixed |
+| W13 2.7 | Backtracking, FC, MAC and min-conflicts | ConstraintSolving | Mixed |
+| W13 2.8 | ANYCSP | ConstraintSolving | Negative |
+| W13 2.9 | CDCL | SatSolving | Mixed |
+| W13 2.10 | RLAF guidance for SAT | SatSolving | Win |
+| W13 2.11 | OBDD and decision-DNNF compilation, WMC | LogicInference | Mixed |
+| W13 2.12 | Resolution proving with learned clause selection | LogicInference | Mixed |
+| W13 2.13 | Markov logic: MC-SAT and pseudo-likelihood | LogicInference | Negative |
+| W13 2.14 | Answer set programming with loop formulas | LogicInference | Mixed |
+| W13 2.15 | Mamdani, Takagi–Sugeno and ANFIS | FuzzyInference | Win |
+| W13 2.16 | SATPlan with ∀-step and ∃-step encodings | SatSolving | Win |
+| W13 3.1 | VQE with HEA and HVA ansätze | QuantumAlgorithms | Win |
+| W13 3.2 | QAOA with INTERP and transfer | QuantumAlgorithms | Win |
+| W13 3.3 | Neural quantum states with SR | QuantumStates | Win |
+| W13 3.4 | Conditional ("foundation") NQS | QuantumStates | Mixed |
+| W13 3.5 | Tomography: LI, MLE, RBM, classical shadows | QuantumStates | Mixed |
+| W13 3.6 | Flow-based MCMC for lattice φ⁴ | LatticeSampling | Negative |
+| W13 3.7 | Rₜ estimation, SEIR and nowcasting | Epidemics | Win |
+| W13 3.8 | PINN-pretrained SIR surrogate | Epidemics | Mixed |
+| W13 3.9 | Capture–recapture and occupancy models | Ecology | Win |
+| W13 3.10 | MaxEnt / IPP species distributions | Ecology | Win |
+| W13 3.11 | HBV, LSTM and δ-HBV hydrology | Hydrology | Mixed |
+| W13 3.12 | DC-OPF learning (DeepOPF, DC3) and load repair | PowerGrids | Mixed |
+| W13 3.13 | STA/LTA, AR-AIC and U-Net phase picking | SignalSearch | Win |
+| W13 3.14 | Matched filtering with χ² veto against a CNN | SignalSearch | Mixed |
+| W13 3.15 | BLS transit search and CNN vetting | SignalSearch | Mixed |
+| W13 3.16 | Wiener, Kalman, GLM and LSTM decoders | Neuroscience | Mixed |
+| W13 3.17 | Spike sorting: PCA + GMM and template matching | Neuroscience | Negative |
+| W13 4.1 | FBP, ART/SART-TV, learned primal–dual | Tomography | Win |
+| W13 4.2 | CS-MRI, MoDL and VarNet | MriReconstruction | Win |
+| W13 4.3 | ER/HIO, Wirtinger flow, prDeep | PhaseRetrieval | Win |
+| W13 4.4 | ℓ0-gradient blind deconvolution | ImageInverseProblems | Win |
+| W13 4.5 | Malvar, residual interpolation, learned demosaicing | ImageInverseProblems | Mixed |
+| W13 4.6 | Deep image prior with early stopping | ImageInverseProblems | Negative |
+| W13 4.7 | DPS, ΠGDM, DDRM, DAPS against exact posteriors | PosteriorSampling | Win |
+| W13 4.8 | PnP-Flow and flow-prior posterior sampling | PosteriorSampling | Negative |
+| W13 4.9 | PDHG for TV/TGV and edge-preserving filters | ImageInverseProblems | Win |
+| W13 4.10 | VisuShrink, SureShrink, BayesShrink, cycle spinning | ImageInverseProblems | Win |
+| W13 4.11 | Discrepancy, L-curve, GCV and MC-SURE | ImageInverseProblems | Win |
+| W13 4.12 | Single-pixel imaging: Hadamard, random, learned | ImageInverseProblems | Negative |
+| W13 4.13 | LMS, NLMS, APA, RLS, Kalman adaptive filters | AdaptiveFilters | Win |
+| W13 4.14 | DAS, MVDR, MUSIC, ESPRIT, spatial smoothing | DirectionFinding | Win |
+| W13 4.15 | SubspaceNet and near-field DCD-MUSIC | DirectionFinding | Negative |
+| W13 4.16 | Welch, multitaper, Burg, Lomb–Scargle | SpectralEstimation | Negative |
+| W13 4.17 | Deep Closest Point with a differentiable SVD (follow-up) | MultiViewGeometry | Win |
+| W13 5.1 | Neural likelihood estimation | LikelihoodFree | Mixed |
+| W13 5.2 | NRE-A, contrastive NRE and BNRE | LikelihoodFree | Win |
+| W13 5.3 | FMPE and NPSE | LikelihoodFree | Mixed |
+| W13 5.4 | APT and truncated sequential NPE | LikelihoodFree | Mixed |
+| W13 5.5 | Regression adjustment, semi-automatic and learned ABC summaries | LikelihoodFree | Negative |
+| W13 5.6 | SBC, TARP and local C2ST | PosteriorDiagnostics | Mixed |
+| W13 5.7 | RoPE, RNPE and RVNP under misspecification | Misspecification | Mixed |
+| W13 5.8 | NMC, PCE, NCE and variational EIG bounds | ExperimentalDesign | Win |
+| W13 5.9 | DAD and Step-DAD | ExperimentalDesign | Negative |
+| W13 5.10 | Halton, scrambled Sobol, lattices, RQMC for VI | Integration | Win |
+| W13 5.11 | Bayesian quadrature and kernel herding | Integration | Win |
+| W13 5.12 | PSIS-LOO, WAIC and stacking | ModelChecking | Mixed |
+| W13 5.13 | POT, Hill, SPOT and DSPOT | TailsAndDependence | Mixed |
+| W13 5.14 | R-vine copulas | TailsAndDependence | Win |
+| W13 5.15 | PACE, functional regression and depth outliers | TailsAndDependence | Mixed |
+| W13 5.16 | Evidence networks for model comparison | ModelChecking | Win |
+| W13 6.1 | BOSS and WEASEL 2.0 | SeriesClassifiers | Mixed |
+| W13 6.2 | Hydra and MultiRocket-Hydra | SeriesClassifiers | Mixed |
+| W13 6.3 | QUANT, TSF and DrCIF-lite | SeriesClassifiers | Win |
+| W13 6.4 | Stacking, CAWPE and the meta-learning gap | SeriesClassifiers | Mixed |
+| W13 6.5 | FCN, ResNet, InceptionTime, LITE | SeriesClassifiers | Mixed |
+| W13 6.6 | Elastic distances, Elastic Ensemble, Proximity Forest | SeriesClassifiers | Inconclusive |
+| W13 6.7 | Soft-DTW, DBA and k-Shape | ElasticClustering | Win |
+| W13 6.8 | VIME, SCARF, SubTab, mask-and-recover | TabularPretraining | Negative |
+| W13 6.9 | MI-guided structured corruption | TabularPretraining | Negative |
+| W13 6.10 | CVaR, χ², KL and Wasserstein DRO | DistributionallyRobust | Mixed |
+| W13 6.11 | Conformal survival lower bounds | ConformalSurvival | Win |
+| W13 6.12 | Cure models, Aalen–Johansen and Fine–Gray | ConformalSurvival | Win |
+| W13 6.13 | ELM, RVFL, deep and ensemble RVFL | KernelLearners | Mixed |
+| W13 6.14 | SimpleMKL, EasyMKL, ALIGNF | KernelLearners | Win |
+| W13 6.15 | Fuzzy ART and Fuzzy ARTMAP | PrototypeLearners | Win |
+| W13 6.16 | Cross-stitch, sluice and MTAN soft sharing | SharingArchitectures | Inconclusive |
+| W13 6.17 | LVQ1, GLVQ, GMLVQ, localised GMLVQ | PrototypeLearners | Mixed |
+
+---
+
+## Wave 13 WP1: explanation and interpretable models
+
+New packages: `experimental.explain` and `experiments.explainability`, with the generators `experimental.data.PlantedFunctions` and `ConceptShapes`. `experimental.ml.RandomForest` gains a read-only `tree(i)` / `TreeArrays` accessor. No core module was edited. All 19 test classes passed, run at most two per Gradle run; none is over the ~10 s target (the longest single test is ExplanationGuidedTrainingTest at 8.3 s, and ShapleyMethodsTest's three tests add up to 4.9 s). Every row is seed 1 (R-wave13).
+
+### EffectPlotComparison (W13 1.1: PDP, ICE, ALE and Friedman's H-statistic)
+Sources: R-wave13. Theme: explainability. Test: EffectPlotComparisonTest. Blocks: `explain.EffectPlots`; generator `PlantedFunctions`. The experiment is named `EffectPlotComparison` because the block is already called `EffectPlots`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PDP and ALE, ρ = 0 | Agreement | PDP ≈ ALE for every model | | Win | They agree without correlation, as predicted. |
+| ALE; PDP, ρ = 0.9 (MLP / GBT / forest / true function) | Error against the true shapes | 0.190 / 0.363 / 0.549 / 0.077; 0.465 / 0.458 / 0.652 / 0.077 | EBM shape error: 0.384. KernelSHAP dependence: 0.531 | Mixed | ALE beats PDP for every model, by 2.4x on the MLP but only 1.2–1.3x on the trees, not several-fold. |
+| H-statistic, ρ = 0.9 (MLP / GBT / forest) | AUROC for finding the planted pair | 1.00 / 0.80 / 0.40 | EBM FAST: 0.90 | Mixed | The H-statistic finds the pair on the MLP, trails EBM FAST on GBT and is below chance on the forest. |
+
+Item verdict: 1.1 Mixed.
+
+### ShapleyMethods (W13 1.2: TreeSHAP, 1.3: Shapley interactions, 1.4: fast Shapley estimators)
+Sources: R-wave13. Theme: explainability. Tests: ShapleyMethodsTest (4.9 s), TreeShapTest. Blocks: `explain.TreeShap`, `TreeView`, `CoalitionGame`, `ShapleyInteractions`, `ShapleyEstimators`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Interventional TreeSHAP | Error against brute force / µs per row | 1e-15 / 487 | KernelSHAP (2,000 samples): 20,362 µs per row | Mixed | Exact, as predicted, and 42x faster, short of the predicted 100x. |
+| Path-dependent vs interventional TreeSHAP | Credit share on irrelevant features | 0.017 vs 0.019 | | Negative | Null result: no credit leaks to the correlated irrelevant features. |
+| k-SII; SHAP-IQ; permutation; Faith-Shap; TreeSHAP interactions, GBT | Precision@5 for the planted pairs | 0.6; 0.6; 0.6; 0.6; 0.4 | H-statistic: 1.0 | Negative | Negative: k-SII stays well below the predicted 0.9, and the H-statistic beats it. |
+| k-SII; SHAP-IQ; permutation; Faith-Shap, MLP | Precision@5 | 1.0; 0.8; 1.0; 1.0 | H-statistic: 1.0 | Mixed | k-SII finds every pair on the MLP, but so does the H-statistic. |
+| SHAP-IQ, 128 calls | Error to the exact SII | 0.07–0.08 | Per-pair permutation (112 calls): 0.01–0.02 | Negative | Negative: SHAP-IQ is less accurate at a similar number of calls, not 10x cheaper. |
+| Leverage SHAP; paired KernelSHAP, budget 8p | MSE, p = 8 / 16 | 3.9e-5 / 9.1e-6; 1.0e-4 / 1.5e-5 | Existing KernelSHAP: 1.3e-3 / 1.0e-3 | Win | Leverage SHAP is best at 8p, and its lead over KernelSHAP grows with p. |
+| Antithetic permutation sampling | MSE | 3–10x lower | Plain permutation sampling | Win | Better than the predicted 2x. |
+| Leverage SHAP, budget 2p, p = 32 | MSE | 1.4e-2 | | Negative | It is the worst method here, so it is not the best at every budget. |
+
+Item verdicts: 1.2 Mixed, 1.3 Negative, 1.4 Mixed.
+
+Not done: no gain-importance comparison and no TreeSHAP-IQ check against enumeration were reported. Core gap: core `GradientBoostedTrees` has no read-only tree accessor, so `TreeView.boost` (boosted single-tree `RandomForest` stages) stands in for it.
+
+### LocalRules (W13 1.5: Anchors, 1.6: actionable recourse and diverse counterfactuals)
+Sources: R-wave13. Theme: explainability. Test: LocalRulesTest. Blocks: `explain.Anchors` (KL-LUCB), `Recourse` (integer program, ROAR-style robust recourse, DiCE, FACE, Wachter).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Anchors with KL-LUCB, GBT | Precision / coverage / model calls | 0.993 / 0.42 / 4,686 | Uniform sampling: 8,959 calls. LIME top-2: 0.976 (coverage 0.06). SHAP top-2: 0.976 | Mixed | Anchors reach the predicted 0.95 precision with far more coverage, but LIME rules are not as weak as predicted, and KL-LUCB saves 1.9x calls, not 3x. |
+| Anchors with KL-LUCB, MLP | Precision / calls | 0.963 / 9,478 | Uniform: 20,923 calls. LIME: 0.825. SHAP: 0.916 | Win | On the MLP, LIME falls into the predicted 0.7–0.85 band; the call saving is 2.2x. |
+| Integer program; robust recourse (ROAR), logistic regression | Valid / actionable / cost / valid after a model update | 1.00 / 1.00 / 2.08 / 0.13; 1.00 / 1.00 / 2.42 / 0.73 | Wachter and nearest unlike neighbour: actionable 0.00 | Mixed | The IP never breaks immutability while Wachter always does. Robust recourse keeps 0.73 validity after the update, against 0.13 for plain recourse, below the predicted 0.9. |
+| DiCE; FACE | Valid / diversity or density | 0.67 / diversity 3.3; 0.27 / highest density 1.22 | | Mixed | FACE has the highest density, as predicted, but low validity even after its graph tolerance was relaxed (0.13 before). |
+
+Item verdicts: 1.5 Mixed, 1.6 Mixed.
+
+Core gap: `BranchAndBound` handles only packing problems, so `Recourse` carries its own branch and bound over `Optimize.linearProgram`.
+
+### InterpretableNetworks prototypes and concepts (W13 1.7: ProtoPNet, 1.8: concept bottlenecks and leakage)
+Sources: R-wave13. Theme: explainability. Tests: PrototypeNetworksTest, ConceptBottleneckTest, IncompleteConceptsTest. Blocks: `explain.PrototypeLayer`, `ProtoPNet`, `ConceptBottleneck` (independent, sequential, joint soft and hard, CEM), `ConceptLeakage`; generator `ConceptShapes`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ProtoPNet with ℓ2 similarity, lr 1e-3 / 3e-3 / 1e-2 | Accuracy; prototype purity | 0.46 / 0.57 / 0.82; 0.75 | CNN black box: 0.27 / 0.40 / 0.65, Grad-CAM pointing 0.49. kNN: 0.62. Chance purity: 0.32 | Win | ProtoPNet beats the black box at every learning rate instead of costing accuracy, with purity well above chance. |
+| ProtoPNet with cosine similarity | Accuracy; purity | 0.29 / 0.38 / 0.64; 0.12 | ℓ2: 0.46 / 0.57 / 0.82; 0.75 | Negative | Negative: cosine does not narrow the spread across learning rates, and its purity is below chance. |
+| IND; SEQ; joint soft; joint hard; CEM | Task accuracy | 0.875; 0.873; 0.885; 0.895; 0.910 | MLP: 0.920 | Win | CEM is closest to the black box, as predicted. |
+| Interventions, all concepts corrected | Task accuracy | IND / SEQ 1.00; joint soft 0.92 | | Win | Hard and sequential models gain most from interventions, as predicted. |
+| Concept-task leakage (CTL) | CTL; rank correlation with intervention gain | Joint soft 0.089 vs IND 0.050; Spearman about 0 | | Negative | Joint soft leaks more, as predicted, but leakage does not predict intervention gain, so the 2025 finding is not reproduced. |
+| Joint soft CBM, incomplete concepts | Accuracy before → after intervening | 0.81 → 0.63 | | Negative | Intervening hurts when the concepts are incomplete. |
+
+Item verdicts: 1.7 Mixed, 1.8 Mixed.
+
+### InterpretableNetworks SENN and guided training (W13 1.9: self-explaining networks, 1.16: right for the right reasons)
+Sources: R-wave13. Theme: explainability. Tests: SelfExplainingNetworkTest, ExplanationGuidedTrainingTest (8.3 s), GuidedTrainingBaselinesTest. Blocks: `explain.SelfExplainingNetwork`, `ExplanationRegularizer` (RRR with masks or integrated gradients).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SENN, λ = 0.02; λ = 0 | Correlation with the true local slopes / Lipschitz estimate | 0.870 / 0.90; 0.882 / 0.98 | MLP gradient: 0.988 / 3.0. LIME: 0.987 / 2.74. NAM: −0.04. EBM: 0.46 | Win | SENN recovers the varying coefficients (above 0.8) where NAM and EBM cannot, and is about 3x more stable than gradients or LIME, short of the predicted 5–10x. |
+| RRR on 10% / all masks; RRR with integrated gradients, 300 steps | Accuracy when the shortcut breaks | 0.77 / 0.72; 0.87 | ERM: 0.70. GroupDRO: 0.75. JTT: 0.72. Last-layer retraining: 0.76. Augmentation: 0.92 | Mixed | RRR with 10% of masks beats ERM and ties GroupDRO, but stays below the predicted 0.85; only the integrated-gradients variant passes it. |
+
+Item verdicts: 1.9 Win, 1.16 Mixed.
+
+Not done: the RRR-guided models and SENN are MLPs, because autograd has no second derivatives through convolution or pooling (a core gap). Grad-CAM mass on the patch was not reported.
+
+### InterpretableModels rules and trees (W13 1.10: RuleFit and CORELS, 1.11: optimal sparse trees)
+Sources: R-wave13. Theme: explainability. Tests: RuleModelsTest, OptimalTreesTest. Blocks: `explain.RuleLists` (CORELS), `RuleFit`, `OptimalTrees` (DL8.5 with threshold guessing).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CORELS, 12 features, 0 / 5 / 10% noise | Truth agreement; certification time | 1.000 with 3 rules; 28–101 ms | Greedy tree: 0.967. GBT: 1.000 → 0.995. EBM: 1.000 → 0.985. L1 logistic: 0.84–0.86 | Win | CORELS recovers the planted list exactly and certifies optimality well under a second, as predicted. |
+| RuleFit | Truth agreement / rules / time | 1.000 / 8–9 / 0.5–2 s | | Win | GBT-level agreement with fewer rules than the predicted 10–30. |
+| DL8.5, XOR tree | Truth agreement / objective / subproblems / time | 1.000 / 0.101 / 760 / 7 ms | Greedy: 0.802 / 0.238 | Win | The optimal tree recovers the structure; greedy is 20 points worse, inside the predicted 10–25. |
+| Guessed thresholds; 24 quantiles; 3 quantiles | Agreement / binary features | 0.998 / 26; 0.989 / 144; 0.959 / – | | Win | Threshold guessing keeps accuracy with far fewer binary features. Solve-time scaling without it was not reported. |
+
+Item verdicts: 1.10 Win, 1.11 Win.
+
+### InterpretableModels Rashomon sets and scoring systems (W13 1.12: SORTD Rashomon sets, 1.13: RiskSLIM and FasterRisk)
+Sources: R-wave13. Theme: explainability. Tests: RashomonSetTest, ScoringSystemsTest. Blocks: `explain.RashomonSet`, `ScoringSystems` (RiskSLIM cutting planes with the paper's rounding and polishing, FasterRisk).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SORTD-style enumeration | Match / members / time | Exact, 30 members, 4.1 ms (depth-3 set: 1,575 members) | Brute force: 6.7 ms | Win | Exact and fast, as predicted. |
+| Rashomon set | Ambiguity / discrepancy | 0.055 / 0.040 | Bootstrap retraining: 0.022 / 0.022 | Win | Retraining underestimates ambiguity 2.5x, as predicted. 85% of members use a redundant copy of a planted feature, and reliance on the copies ranges from 0 to 0.20. |
+| FasterRisk; RiskSLIM, non-integer log-odds (k = 5) | Training loss | 0.590; 0.600 | Naive rounding: 0.600. Continuous logistic: 0.588 | Mixed | FasterRisk nearly matches logistic regression; RiskSLIM only ties rounding and never certified within 400 nodes. |
+| FasterRisk; RiskSLIM, nonlinear term (k = 3) | Training loss | 0.470; 0.475 (0.484 after core #212) | Rounding: 0.475. Logistic: 0.386. EBM: 0.374 | Negative | Integer scores cannot follow the nonlinear term. After the core LP changes in #212, uncertified RiskSLIM ends 0.0085 above rounding, so the test now checks a 0.02 tolerance. |
+
+Item verdicts: 1.12 Win, 1.13 Mixed.
+
+Not done: AUROC and calibration of the scores, and the speed comparison, were not reported. RiskSLIM is not certified at this budget, and the core simplex throws in phase 1 on some branch nodes (now pruned and caught locally).
+
+### ExplanationEvaluation (W13 1.14: ROAR, infidelity and sanity checks, 1.15: network dissection)
+Sources: R-wave13. Theme: explainability. Tests: RemoveAndRetrainTest, AttributionFidelityTest, SanityChecksTest, NetworkDissectionTest, SpuriousDissectionTest. Blocks: `explain.AttributionEvaluation`, `NetworkDissection`. The original rule task was 85% one class, so a balanced planted label is used.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ROAR, 20% removed: SmoothGrad; KernelSHAP | Retrained accuracy (lower is better) | 0.540; 0.550 | Random removal: 0.745 | Win | Both find informative features. |
+| KAR, 20% kept: KernelSHAP | Accuracy | 0.850 | Random: 0.555 | Win | |
+| Deletion AUC vs ROAR | Method pairs ordered differently | 6 of 21 | | Win | The two rankings disagree, as predicted. |
+| SmoothGrad; KernelSHAP | Infidelity / max-sensitivity | 0.100 / 0.228; 0.67 / 0.234 | Saliency: 0.149 / 0.326 | Mixed | Both are more stable than saliency, but KernelSHAP is worse on infidelity. |
+| Sanity checks after full randomisation | Rank correlation with the original maps | Saliency 0.24; Grad-CAM −0.03; gradient × input and IG 0.51 | Edge detector: pointing 0.98, deletion 0.255, correlation 1.00 | Win | Saliency and Grad-CAM change; the edge detector passes deletion and pointing but fails the sanity check, as predicted. |
+| Dissection, clean model | Unique detectors; units gaining ≥ 20% IoU from formulas; TCAV agreement | conv1 4 (mostly colour), conv2 3 (mostly "large"); 13% / 0%; 0.50 | Hypothesis: a third of units | Mixed | The layer pattern roughly holds, but formulas help far fewer units than predicted. |
+| Dissection, spurious model | Patch-detector units; TCAV patch z; agreement | 5; 6.4; 0.83 | Clean model: 1; −0.3 | Win | Several units detect the patch, and TCAV flags it too. |
+| Random channel mixtures | Mean IoU | 0.20 | Single units: 0.18–0.22 | Negative | Negative: random directions are as interpretable as units, not near zero, so the test prints this comparison instead of asserting it. |
+
+Item verdicts: 1.14 Win, 1.15 Mixed.
+
+Not done: dissection keeps the top 5% of activations instead of the paper's 0.5%, because objects cover only 3–8% of a 12×12 image. `ExplainabilityBenchmark`'s deletion AUC is private, so `AttributionEvaluation.deletionAuc` reimplements it.
+
+---
+
+## Wave 13 WP2: symbolic AI, planning and constraint reasoning
+
+New packages: `experimental.symbolic`, `experimental.logic` and `experiments.symbolic`, with the generators `experimental.data.PlanningDomains` and `ConstraintInstances`. No core module was edited. All 9 test classes passed, each run on its own. Two are slightly over the ~10 s target: LearnedPlanningTest (about 11 s) and ConstraintSolvingTest (about 11 s); FuzzyInferenceTest takes 7.6 s (R-wave13).
+
+### ClassicalPlanning (W13 2.1: delete-relaxation heuristics, 2.2: landmarks and LM-cut, 2.3: pattern databases)
+Sources: R-wave13. Theme: symbolic. Test: ClassicalPlanningTest. Blocks: `symbolic.StripsTask`, `StateSpaceSearch` (A*, weighted A*, eager and lazy GBFS), `RelaxationHeuristics` (h_max, h_add, h_FF with preferred operators), `Landmarks` (LM-cut, RHW, LAMA count), `PatternDatabases`. `StateSpaceSearch` is new because `GraphSearch` is unit-cost only.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| GBFS with h_FF, budget 10,000 expansions | Instances solved | All | Blind search fails on bw-7, gripper-8, logistics-2c-4 and visitall-5 | Win | As predicted. |
+| GBFS h_add; h_FF; lazy h_FF + preferred operators, bw-7 | Expansions (heuristic evaluations) | 23; 39; 25 (25 evaluations) | Goal count: 61. Eager h_FF: 109 evaluations | Mixed | Lazy search more than halves evaluations, as predicted, but h_add and h_FF save 1.6–2.7x over goal count, not 10–100x. |
+| A* with h_max, bw-7 | Expansions | 1,302 | A* with goal count: 613 | Mixed | h_max expands about twice as many as goal count. |
+| LM-cut, A* (gripper-4 / logistics / logistics with costs / bw-5) | Expansions; h(s₀)/h* | 82 / 55 / 85 / 6; 0.77–1.00 | h_max: 208 / 832 / 651 / 14; 0.18–0.54 | Mixed | LM-cut cuts expansions 2.3–15x, mostly below the predicted 10–100x; its h(s₀)/h* is near the predicted 0.8. |
+| LAMA-style landmark alternation, logistics-3c-8 | Expansions | 175 | GBFS h_FF: 52 | Negative | Negative: adding the landmark count does not help. |
+| Additive 4+4 PDB, 8-puzzle | Expansions | 398 | Manhattan: 601. Manhattan + linear conflicts: 362. DAVI: 997 (22% of estimates above h*) | Negative | Negative: the PDB does not beat Manhattan + linear conflicts, let alone by 2x. |
+| Canonical iPDB, gripper-5 | A* expansions | 486 | Single PDB: 674. LM-cut: 591. h_max: 684 | Win | The canonical heuristic beats single PDBs and LM-cut, as predicted. |
+
+Item verdicts: 2.1 Mixed, 2.2 Mixed, 2.3 Mixed.
+
+### LearnedPlanning (W13 2.4: WL-GOOSE, 2.5: ranking and partial-space search, 2.6: generalised planning)
+Sources: R-wave13. Theme: symbolic. Test: LearnedPlanningTest (about 11 s). Blocks: `symbolic.WlFeatures`, `LearnedPlanningHeuristic`, `RankingHeuristic`, `PartialSpaceSearch`, `GeneralizedPlanner`. Two test instances per domain.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| WL features + ridge (Blocksworld / Gripper / Ferry / VisitAll) | Expansions | 23 / 67 / 42 / 50, all solved, 1–3 ms training | h_FF: 66 / 190 / 61 / 172. GIN heuristic: 25 / 292 / 68 / 92 | Win | WL-ridge trains in milliseconds and beats h_FF everywhere, also on Blocksworld, where it was predicted to lose. The GP heuristic solves 0/2 on VisitAll. |
+| Pairwise ranking loss | Expansions | Blocksworld 29, Ferry 49, Gripper and VisitAll equal | Regression: 23, 42 | Negative | Negative: ranking ties or loses on every domain instead of winning on 3 of 4. |
+| Partial-space search, Logistics | Solved | Fails | h_FF: 2/2 | Negative | Negative: no saving on high-branching Logistics. |
+| Ridge transition model; GBT model; GNN policy | Solved (VisitAll / Gripper / Logistics) | 2/2 (plans 0.5x the h_FF length) / 0/2 / 0/2; 0/2 / 0/2 / 0/2; 2/2 / 2/2 / 0/2 | WL-ridge GBFS on Logistics: 2/2 | Mixed | The GNN policy solves VisitAll and Gripper; both transition models fail Gripper. Every learned planner fails Logistics while learned search succeeds, as the paper reports. |
+
+Item verdicts: 2.4 Win, 2.5 Negative, 2.6 Mixed.
+
+Not done: Blocksworld is dropped from the generalised-planning test for time, and the GP's predictive variance was not reported.
+
+### ConstraintSolving (W13 2.7: CSP propagation and min-conflicts, 2.8: ANYCSP)
+Sources: R-wave13. Theme: symbolic. Test: ConstraintSolvingTest (about 11 s). Blocks: `logic.Csp`, `ConstraintSolver` (BT, FC, AC-3, MAC with MRV/degree/LCV), `MinConflicts`, `AnyCsp`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| MAC; FC, Sudoku 9×9 with 55 blanks | Nodes | 91; 85 | Backtracking: fails | Mixed | Propagation solves it, but MAC needs more than the predicted 50 nodes and is no better than FC. |
+| Min-conflicts, 200-queens | Steps | 98 | BT and FC: fail within 20,000 nodes | Win | Far under the predicted 1,000 steps. |
+| MAC, Model RB n = 25 at the peak p = 0.65 | Nodes | 47 | FC: 941 | Win | MAC's advantage is largest at the phase transition, as predicted. |
+| ANYCSP trained; untrained | Instances solved | 3/5; 0/5 | Min-conflicts with tabu: 3/5. WalkSAT: 5/5. MAC: 5/5 | Negative | Negative: training helps, but ANYCSP only ties min-conflicts and loses to WalkSAT and MAC. |
+
+Item verdicts: 2.7 Mixed, 2.8 Negative.
+
+Not done: the DPLL-on-CNF comparison for Sudoku was not reported. ANYCSP needs a common domain size.
+
+### SatSolving (W13 2.9: CDCL, 2.10: RLAF, 2.16: planning as SAT)
+Sources: R-wave13. Theme: symbolic. Test: SatSolvingTest. Blocks: `logic.CdclSolver` (1-UIP, watched literals, VSIDS, restarts, phase saving), `RlafGuidance`, `symbolic.SatPlanner` (sequential, ∀-step and ∃-step encodings).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CDCL, random 3-SAT n = 200 at the threshold | Solved / conflicts / time | 3/3 / about 26,000 / 0.6 s | WalkSAT: 0/3. DPLL at n = 50: 3 ms vs 0.1 ms for CDCL | Mixed | CDCL solves them, but in 0.6 s rather than tens of milliseconds, and WalkSAT does not win on the large satisfiable instances. |
+| CDCL ablation, 3-colouring n = 120 | Conflicts | 126 with VSIDS | Without VSIDS: 1,058 | Mixed | VSIDS gives about 8x; the other features barely matter, instead of each giving 10x. |
+| CDCL, pigeonhole PHP-5 / PHP-7 | Conflicts | 151 / 13,252 | | Win | Exponential, as predicted. |
+| NeuroSAT, SR(20) after SR(10) training | Accuracy | 0.50 | | Negative | Negative: chance. |
+| RLAF; supervised weights (n = 15 / 30) | Mean decisions relative to plain VSIDS | 0.65 / 0.55; 0.72 / 0.58 | Random weights: 0.94 / 1.03 | Win | RLAF cuts decisions by 35–45%, keeps the gain on the larger size and beats supervised weighting, as predicted (measured in decisions, not conflicts). |
+| ∀-step; ∃-step; sequential SATPlan | Makespan (gripper-3 / logistics) | 7 / 8; – / 8; 9 / 14 | Optimal A* (LM-cut) length equals sequential SATPlan's | Win | Parallel encodings shorten makespans; sequential SATPlan is length-optimal. |
+| DPLL vs CDCL, ∀-step gripper-3 | Time | 262 ms | CDCL: 7 ms | Win | The encoding needs CDCL. |
+
+Item verdicts: 2.9 Mixed, 2.10 Win, 2.16 Win.
+
+Not done: random 3-SAT for RLAF and the SATPlan-vs-A* timing were not reported. The ∃-step encoding uses a fixed action order. `RandomSatFormulas`' DPLL has no budget.
+
+### LogicInference compilation and proving (W13 2.11: knowledge compilation and WMC, 2.12: saturation proving)
+Sources: R-wave13. Theme: symbolic. Tests: LogicInferenceTest, LogicInferenceProvingTest. Blocks: `logic.KnowledgeCompiler` (OBDD, decision-DNNF with component caching), `ResolutionProver`, `ClauseSelector` (AGE, WEIGHT, AGE_WEIGHT, learned ENIGMA-style).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Model counting (exactly-k, Latin squares, grid paths) | Counts | Exact everywhere (for example 576 Latin squares of order 4, 924 paths at side 7) | Brute force | Win | |
+| Decision-DNNF, 7×7 grid paths | Circuit size | 32,164 | OBDD: 539 (static order), 4,839 (min-fill) | Negative | Negative: the DNNF is larger than the OBDD, against the predicted 10x smaller. |
+| WMC, Bayesian network n = 30 with 50% deterministic rows | Agreement / circuit size / query time | 1e-16 / 2,772 / 3.3 ms | VE, all marginals: 32 ms. Loopy BP error 0.025. Gibbs error 0.10 | Win | Exact and faster with deterministic CPTs, as predicted; without them the circuit has 373,882 nodes and takes 2.6 s. |
+| Semantic loss, 4×4 grid paths | Valid-path / exact-path rate | 0.985 / 0.03 | Plain MLP: 0.13 / 0.12 | Mixed | Valid paths rise far past the predicted 0.7, but the model collapses onto valid wrong paths. On Latin squares the exact loss is 15.5 against 22.6 for the summed closed form. |
+| AGE_WEIGHT; WEIGHT; AGE, 23 held-out problems, 300 given clauses | Proved | 19; 17; 8 | | Win | AGE_WEIGHT beats either pure queue. |
+| Learned selector | Proved / mean given clauses on commonly proved problems | 19 / 5 | AGE_WEIGHT: 19 / 86 | Mixed | It proves the same number, not 20–40% more, but cuts processed clauses far more than half (family 6 vs 101, chains 33 vs 62; equivalence 84 vs 72). |
+
+Item verdicts: 2.11 Mixed, 2.12 Mixed.
+
+Not done: equality is handled only through axioms (no paramodulation), so group theory stays mostly unproved (1/4). On PHP-3/4 CDCL needs 7 and 28 conflicts while resolution proves only PHP-3. dILP learns the grandparent rule and recovers 2/2 held-out facts.
+
+### LogicInference Markov logic and ASP (W13 2.13: Markov logic networks, 2.14: answer set programming)
+Sources: R-wave13. Theme: symbolic. Tests: LogicInferenceMlnTest, LogicInferenceAspTest. Blocks: `logic.MarkovLogic` (grounding, MC-SAT, Gibbs, MaxWalkSAT, pseudo-likelihood and diagonal Newton learning), `AnswerSetSolver` (grounding, Clark completion, lazy loop formulas over CDCL).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Pseudo-likelihood learning | Rule signs / time | Both correct (w = 0.73, 4.91) / 15 ms | Diagonal Newton: correct, 991 ms | Win | Signs recovered at 66x less time, as predicted. |
+| MC-SAT, friends and smokers n = 60, 62 hidden atoms | AUROC | 0.86 | Gibbs: 0.87. Loopy BP: 0.86. Logistic regression: 0.96 | Negative | Negative: the feature-based logistic baseline wins clearly. |
+| MC-SAT, tiny world | Max marginal error against exact | 0.050 | Gibbs: 0.047. Loopy BP: 0.037 | Negative | MC-SAT is no closer to exact than the baselines. |
+| MC-SAT, family world with hard rules | AUROC | 1.0 | Every method: 1.0 | Negative | Gibbs did not get stuck, so the hypothesis was not reproduced. MaxWalkSAT MAP gets 6 of 152 atoms wrong. |
+| Lazy loop formulas, Hamiltonian cycles (5 graphs, 10 nodes) | Valid first models / enumerated | 5/5 / 12/12, 74 loop clauses in total | Plain completion: 0/5 / 12/33 | Win | Completion alone returns sub-cycles; loop formulas fix every instance, as predicted. |
+| ASP, 8-queens / colouring n = 12 / n = 40 | Time or models | 92 models in 225 ms / 264 models / 46 ms to the first model | Direct CNF with CDCL: 46 ms / 264 / 12 ms. MAC: 8 ms | Mixed | ASP is 4–5x slower than the direct CNF, not within 2–3x. Blocks-5: the shortest ASP plan has 3 moves, matching SATPlan's 6 STRIPS actions. |
+
+Item verdicts: 2.13 Negative, 2.14 Mixed.
+
+Not done: MC-SAT leaves non-unit clauses with negative weights out of the slice; ASP element conditions must be fact predicates, and choice rules need a positive body. `FactorGraph` has no evidence-aware WMC or ground-MLN builder.
+
+### FuzzyInference (W13 2.15: Mamdani, Takagi–Sugeno and ANFIS)
+Sources: R-wave13. Theme: symbolic. Test: FuzzyInferenceTest (7.6 s). Blocks: `logic.FuzzyInference`, `Anfis` (hybrid least-squares and gradient training, grid and subtractive-clustering partitions).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ANFIS hybrid, 16 rules, 10 epochs; TS grid with least-squares consequents only, Mackey–Glass | Test RMSE (parameters) | 0.0038 (208); 0.0038 (208) | MLP, 1,000 epochs: 0.0106; 100 epochs: 0.044. Gaussian RBF ridge: 0.0071. KAN: 0.0227. ANFIS gradient only: 0.0079. Mamdani grid: 0.168 | Win | ANFIS beats the MLP at 100x fewer epochs, thanks to the least-squares step: the hybrid premise training adds nothing over it. |
+| ANFIS, 2-D sinc | RMSE | 0.076 | MLP: 0.103. RBF ridge: 0.113. EBM: 0.116. KAN: 0.021 (1,000 steps), 0.033 (300) | Win | ANFIS beats the MLP; KAN beats ANFIS rather than matching it. |
+| ANFIS, cart-pole control surface | RMSE / balance | 0.0023 / 500 of 500 steps | MLP: 0.0082 / 500 | Win | |
+| Subtractive clustering, d = 4 / 8 | Rules (RMSE) | 6 (0.0075) / 10 (0.0034) | Grid partition: 16 or 81 rules at d = 4, 256 or 6,561 at d = 8 | Win | The grid explodes with dimension; clustering keeps the rule count small, as predicted. |
+
+Item verdict: 2.15 Win.
+
+---
+
+## Wave 13 WP3: science domains
+
+New packages: `experimental.quantum`, `experimental.science` and `experiments.science`, with the generator `experimental.data.ScienceSims`. No core module was edited. All 14 test classes passed, run one or two at a time, and none took more than about 10 s (R-wave13).
+
+### QuantumAlgorithms (W13 3.1: VQE, 3.2: QAOA)
+Sources: R-wave13. Theme: science. Test: QuantumAlgorithmsTest. Blocks: `quantum.StateVector`, `PauliHamiltonian`, `QuantumCircuit`, `Vqe`, `Qaoa`, `SpinModels`, `ParameterObjective`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Hamiltonian variational ansatz (L-BFGS), TFIM N = 6, depth 3, h = 0.5 / 1 / 2 | Relative energy error | About 4e-9 at every h (fidelity 1.0, 6 parameters) | Hardware-efficient ansatz: 1.4e-3 / 2.8e-2 / 5.0e-2 (fidelity 0.49–0.92, 48 parameters). Mean field: 1.5e-3 / 2.9e-2 / 6.0e-2 | Win | HVA is exact; HEA stalls above 1e-2 at the critical point, as predicted. XXZ chain: HVA 2.6e-9, HEA 0.022. |
+| SPSA, 1,000 shots | Relative error | 0.034 | | Win | Close to the predicted 1e-2 level. Adjoint and parameter-shift gradients agree to 7.8e-16. |
+| QAOA with INTERP, 3-regular n = 10, p = 1 to 4 | Approximation ratio | 0.787 / 0.885 / 0.939 / 0.968 (P(optimal cut) 0.73 at p = 4) | Random initialisation: 0.787 / 0.869 / 0.916 / 0.926 (P 0.46). FOURIER equals INTERP | Win | INTERP rises monotonically past 0.9 while random initialisation flattens. |
+| Angles transferred at p = 3 | Approximation ratio | 0.921 | Re-optimised: 0.939 | Mixed | A 0.018 gap, a little over the predicted 0.01. |
+| Classical baselines | Approximation ratio | | Simulated bifurcation, p-bits, greedy + local search: 1.0. Random cut: 0.577 | Win | The classical solvers find optimal cuts at this size, the honest comparison. |
+
+Item verdicts: 3.1 Win, 3.2 Win.
+
+### QuantumStates (W13 3.3: neural quantum states, 3.4: conditional NQS, 3.5: tomography and classical shadows)
+Sources: R-wave13. Theme: science. Tests: QuantumStatesTest, QuantumTomographyTest. Blocks: `quantum.NeuralQuantumState`, `VariationalMonteCarlo`, `WaveFunction`, `ConditionalQuantumState`, `Tomography`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| RBM with SR; sampled SR; MLP with SR, TFIM N = 8 | Relative energy error | 3.8e-6; 1.4e-5; 1.0e-5 | RBM with Adam: 5.3e-4. Jastrow with SR: 1.1e-3. Mean field: 0.0246. VQE HEA: 0.0232 | Win | SR is far below the predicted 1e-3 and 140x better than Adam; SR reaches 1e-2 in 10 steps, Adam in 38. |
+| RBM with the Marshall sign, Heisenberg chain | Relative error | 2.4e-5 | Without the sign: 0.452 | Win | |
+| Conditional NQS across fields, 132 coupling-steps | Mean relative error | 1.08e-3 | Per-field models: 1.6e-5 at 540 steps; 0.0115 at a quarter of that budget | Mixed | At equal budget the shared model is 10x better, but it is not within 2x of the fully trained per-field models. |
+| Fidelity susceptibility | Peak position | h = 1.0 | Exact: h = 0.9 | Win | Within the predicted 0.1. |
+| MLE; linear inversion, 1e2 / 1e3 / 1e4 shots | Infidelity (LI minimum eigenvalue) | 0.112 / 0.019 / 0.0045; 0.114 (−0.53) / −0.069 (−0.15) / −0.003 (−0.04) | | Win | Linear inversion gives unphysical states; MLE stays physical, as predicted. |
+| RBM tomography, 6 qubits | Infidelity | GHZ 0.006; W state 0.25 | | Mixed | Below 0.05 for GHZ (at 6 rather than 8 qubits), but not for the W state. |
+| Classical shadows, 153 local Paulis, 1e3 / 3e3 / 1e4 shots | Worst-case error | 0.29 / 0.21 / 0.10 | Direct measurement: 1.0 / 0.58 / 0.45 | Mixed | Shadows at 1e3 shots beat direct measurement at 1e4, but the error stays above the predicted 0.05. |
+
+Item verdicts: 3.3 Win, 3.4 Mixed, 3.5 Mixed.
+
+### LatticeSampling (W13 3.6: flow-based MCMC for lattice φ⁴)
+Sources: R-wave13. Theme: science. Test: LatticeSamplingTest. Blocks: `science.LatticePhi4`, `FlowSampler`. L = 6, λ = 6.975 / 4, about 3 s of flow training.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Flow-based MCMC | Integrated autocorrelation time / acceptance | 47 / 57; 0.09 / 0.18 | Local Metropolis: 7.4 / 19.6. HMC: 1.2 / 2.4 | Negative | Negative: the flow is under-trained at this budget, so its chain mixes far worse than HMC instead of 10x better, with acceptance below the predicted 0.4. |
+| Flow as an importance sampler | ESS per sample | 0.024 / 0.022 | Gaussian importance sampling: 0.012 / 0.0013 | Win | Better than the Gaussian proposal. |
+| Flow chain, λ = 6.975 / 4 | ⟨\|M\|⟩ | 0.133 / about 0.495 | Local: 0.130 / 0.437. HMC at λ = 4: about 0.495 | Win | The flow chain is exact; at λ = 4 local Metropolis is probably not mixing. |
+
+Item verdict: 3.6 Negative.
+
+Not done: the 8×8 lattice.
+
+### Epidemics (W13 3.7: Rₜ estimation, SEIR and nowcasting, 3.8: PINN-pretrained SIR surrogate)
+Sources: R-wave13. Theme: science. Tests: EpidemicsTest, SirSurrogateTest. Blocks: `science.Epidemics` (EpiEstim, random-walk Kalman, particle filter, nowcasting, SEIR fitting), `SirSurrogate`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Random-walk Kalman; particle filter (step / smooth change) | Rₜ RMSE / 90% coverage | 0.034 / 0.93, 0.031 / 0.98; 0.099 / 0.67, 0.043 / 0.99 | EpiEstim: 0.119 / 0.89, 0.081 / 0.62 | Win | The random-walk filter is best on both, also on the step change, where EpiEstim was predicted to be competitive. |
+| Nowcasting, last 7 days | Error (step / smooth) | 0.077 / 0.26 | Without nowcasting: 0.54 / 0.51 | Win | It removes most of the bias, as predicted. |
+| SEIR, before the peak | 7-day forecast MAE | 9.2 | ARIMA: 43.9. ETS: 73 | Win | Fitted R0 is 2.001 [1.951, 2.051] against a truth of 2.0. |
+| PINN surrogate | 4-week MAE / 90% coverage | 2541 / 0.44 | MLP: 2618. Exact ODE: 5647. ARIMA: 3954 | Mixed | It beats ARIMA and the direct ODE fit, but it is no faster than the ODE (against the predicted 10x), and its intervals undercover, as the paper notes. |
+
+Item verdicts: 3.7 Win, 3.8 Mixed.
+
+### Ecology (W13 3.9: capture–recapture and occupancy, 3.10: species distributions)
+Sources: R-wave13. Theme: science. Test: EcologyTest. Blocks: `science.CaptureRecapture` (Lincoln–Petersen / Chapman, Schnabel, CJS), `OccupancyModel`, `SpeciesDistribution` (IPP, MaxEnt).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Chapman; Schnabel | Relative bias of population size (coverage) | 0.048 (0.925); about 0 | Naive count: −0.48 | Win | Nearly unbiased where the naive count is off by the detection rate, as predicted. |
+| CJS survival | Bias | −0.015 | Naive return rate: −0.60 | Win | |
+| Occupancy model | Mean occupancy bias | −0.024 | Naive share of sites with a detection: −0.237 | Win | |
+| IPP; MaxEnt | Correlation with the true log-intensity | 0.990; 0.979 | KDE of locations: 0.901. Random forest: 0.868 | Win | IPP and MaxEnt match each other and beat both baselines. |
+| IPP under road-biased sampling; with a bias covariate | Correlation | 0.944; 0.978 | | Win | Bias correction recovers most of the loss; the biased map is already at 0.944, not the predicted 0.5. |
+
+Item verdicts: 3.9 Win, 3.10 Win.
+
+### Hydrology (W13 3.11: HBV, LSTMs and δ-HBV under warming)
+Sources: R-wave13. Theme: science. Test: HydrologyTest. Blocks: `science.Hbv`, `HybridHydrology`. Train on 6 cold years, test on 3 cold and 3 warm (+2 °C) years. The δ-HBV hybrids use forward-mode dual numbers, because a `Var` graph over 3,650 daily steps is too slow.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| HBV (CMA-ES); HBV (Nelder–Mead); δ-HBV static; δ-HBV dynamic | NSE cold / warm; error in the change of Q95 | 0.969 / 0.968, 0.033; 0.982 / 0.982, 0.23; 0.982 / 0.982, 0.058; 0.974 / 0.970, 0.27 | Persistence: 0.885 / 0.870. Ridge on lagged forcings: 0.23 / 0.25, 0.49 | Win | The conceptual and hybrid models hold their NSE under warming; HBV with CMA-ES, not δ-HBV, reproduces the change signal best. |
+| LSTM, 60 steps | NSE cold / warm; Q95 change error | 0.61 / 0.24; 2.01 | HBV: 0.969 / 0.968 | Mixed | The LSTM is the least robust under warming, as predicted, but it is also the worst cold-period model instead of the best, so the ranking is not reproduced at this budget. |
+
+Item verdict: 3.11 Mixed.
+
+### PowerGrids (W13 3.12: learned DC optimal power flow and counterfactual load repair)
+Sources: R-wave13. Theme: science. Test: PowerGridsTest. Blocks: `science.DcPowerFlow`, `LearnedOpf` (direct MLP, DeepOPF, DC3); `PowerGrid.withLimitsScaled` in `ScienceSims` makes about 20% of scenarios infeasible. Counterfactual repair uses `ModelAgnosticExplainer.counterfactual`, because WP1's recourse code was not in this worktree.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DC3 (9 / 14 / 30 bus) | Violations / cost gap / time | 0 / 0.74%, 0.85%, 2.2% / 6, 29, 193 µs | LP: 17, 40, 310 µs. Direct MLP violations: 0.88 / 0.98 / 1.0. DeepOPF: 0.16 / 0.76 / 0.92 | Mixed | DC3 removes every violation, but its gap exceeds 1% on 30 buses and it is only 1.4–2.8x faster than the LP, not 10–100x. DeepOPF still violates often. |
+| Counterfactual load repair | Success / load moved | 0.83 / 0.90 / 0.56; 32–57 MW | LP load shedding: always succeeds, 17–27 MW | Mixed | Repair moves more load, as the paper reports, but it does not restore every infeasible case. The feasibility classifier scores 0.93–0.97. |
+| WLS state estimation | Injection error | 2.7 MW | Without: 5.0 MW | Win | |
+
+Item verdict: 3.12 Mixed.
+
+### SignalSearch (W13 3.13: seismic phase picking, 3.14: chirp detection, 3.15: transit search)
+Sources: R-wave13. Theme: science. Tests: PhasePickingTest, ChirpSearchTest, TransitSearchTest. Blocks: `science.PhasePicking` (STA/LTA, AR-AIC, U-Net), `MatchedFilter` (template bank, χ² veto, `CnnDetector`), package-private `Cnn1d`, `TransitSearch` (BLS), `TransitVetter`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| U-Net picker, 50 Hz | P recall / P residual / S recall | 0.225 / 0.043 s / 0.54 | STA/LTA: 0.16 / 0.077 s / 0.11. AR-AIC: 0.21 / 0.020 s / 0.175. PELT on energy: 0.01 / – / 0.04 | Win | The U-Net triples S-pick recall with residuals under 0.05 s, as predicted; only the 10 and 20 dB traces can be picked, which caps P recall near 0.4. Trace-level detection: ROCKET 0.81, U-Net 0.74, STA/LTA 0.39. |
+| Matched filter, 18 templates; + χ² veto | Pd at SNR 8 (FAR 1e-2) / glitch false alarms / µs per second of data | 1.0 / 1.0 / 696; 1.0 / 0.05 / 696 | Excess power: 0.93. ROCKET + ridge: 0.70 | Win | Best detector, and the veto removes glitch false alarms, as predicted. Outside the bank's range: 0.47 detected (0.20 with the veto). |
+| CNN detector | Pd at SNR 8 / µs per second | 0.37 / 469 | Matched filter: 1.0 | Negative | Negative: the CNN is under-trained at this budget and far from the matched filter. |
+| BLS + GP detrending; BLS + moving median (SNR 4–7 / 7–10 / 10–20) | Period recovered within 1% | 0.14 / 0.43 / 1.0; 0.29 / 0.14 / 0.86 | FFT periodogram: 0 / 0 / 0 | Mixed | BLS works from SNR 10, and the FFT fails, as predicted, but recovery at SNR 7–10 is weak, and GP detrending loses at the lowest SNR. |
+| Two-view CNN vetter | AUROC | 0.906 | ROCKET on the raw light curve: 0.46 | Mixed | Far above ROCKET, but below the predicted 0.95. |
+
+Item verdicts: 3.13 Win, 3.14 Mixed, 3.15 Mixed.
+
+Not done: in 13.3.14 the in-range tests use 1 s segments at 256 Hz, and the FAR is measured only down to 1/300, with no 1e-3 point; in 13.3.15 no `MatrixProfile` or `ChangePoints` baselines.
+
+### Neuroscience (W13 3.16: neural population decoding, 3.17: spike sorting)
+Sources: R-wave13. Theme: science. Tests: NeuralDecodingTest, SpikeSortingTest. Blocks: `science.NeuralDecoders` (on `StateSpaceFilter` and core `Recurrent`), `SpikeSorting`. The Kalman decoder uses the closed-form maximum-likelihood fit with observed kinematics (what EM converges to); EM itself is not run.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Kalman; Poisson GLM + point-process filter; LSTM, 50 neurons, 10 / 40 / 160 reaches | Velocity R² | 0.91 / 0.92 / 0.92; 0.95 / 0.96 / 0.95; 0.95 / 0.96 / 0.96 | Wiener: 0.76 / 0.92 / 0.94. Population vector: 0.89. Ridge on the current bin: 0.89 / 0.91 / 0.91 | Mixed | Kalman beats Wiener only with 10 reaches, as predicted, but the LSTM ties the GLM at every size instead of overtaking only with the most data. |
+| Same decoders, 30% dropout / drift / 20 ms bins | R² | Kalman 0.88 / 0.77 / 0.86; GLM 0.93 / 0.81 / 0.88; LSTM 0.91 / 0.84 / – | Wiener: 0.90 / 0.80 / 0.91 | Negative | Under drift the Kalman decoder degrades most, not least, and at fine bins Wiener beats the GLM. |
+| PCA + GMM; template matching (distinct / similar templates) | Accuracy / overlap recall | 0.53 / 0.38, 0.31 / 0.39; 0.59 / 0.59, 0.62 / 0.59 | k-means on raw snippets: 0.71 / 0.61, 0.54 / –. Wavelet + GMM: 0.56 / 0.48. PCA + HDBSCAN: 0.51 / 0.25. PCA + DBSCAN: 0.12 | Negative | Negative: PCA + GMM is far below the predicted 0.9 and below k-means on raw snippets; template matching lifts overlap recall to 0.59, not above 0.8. |
+
+Item verdicts: 3.16 Mixed, 3.17 Negative.
+
+Not done: the generator has no drift-induced spike-shape changes, so the HDBSCAN-under-drift hypothesis was not tested. Scores use units + 2 clusters, each mapped to its majority unit, and the test uses seed 3, because seed 1 gave two units almost the same footprint.
+
+---
+
+## Wave 13 WP4: computational imaging and array sensing
+
+New packages: `experimental.imaging`, `experimental.sensing`, `experiments.imaging` and `experiments.sensing`, with the generators `experimental.data.InverseProblems` and `ArraySignals`. `DeepClosestPoint` gains a `Procrustes` option (default unchanged) and `MultiViewGeometry` gains `registrationSvd`; the wave 12 rows are unchanged, and the existing registration test still passes with the same numbers. No core module was edited. All 15 test classes passed, run one or two at a time. Three are at or over the ~10 s target: PosteriorSamplingTest (about 10 s), DirectionFindingTest (about 11 s) and DeepClosestPointSvdTest (about 12 s). Numbers are PSNR in dB unless stated otherwise (R-wave13).
+
+### Tomography (W13 4.1: FBP, ART/SART-TV, learned primal–dual and FBPConvNet)
+Sources: R-wave13. Theme: imaging. Test: TomographyTest. Blocks: `imaging.RadonTransform`, `AlgebraicReconstruction`, `PrimalDual`, `LearnedPrimalDual`, `ImagingCnn`, `OperatorPlugAndPlay`. 32×32 phantoms.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SART-TV; TV with preconditioned PDHG; PnP-ADMM with NLM (48 / 16 / 8 angles) | PSNR | 24.2 / 22.5 / 20.0; 33.6 / 28.8 / 24.0; 33.9 / 26.5 / 19.6 | FBP (Ram-Lak): 19.8 / 17.8 / 14.3. FBP (Shepp-Logan): 18.9 / 17.9 / 15.3. ART: 20.3 / 18.9 / 17.8. SART: 23.1 / 21.5 / 19.4 | Win | FBP falls below 20 dB, as predicted; SART-TV holds 20 dB at 8 angles (not 26), and TV by PDHG is far better. Methods are not close at 48 angles. |
+| Learned primal–dual, 16×16, 6 angles | PSNR (parameters) | 23.75 (17k) | FBPConvNet: 21.99. TV: 22.07. FBP: 15.47 | Win | 1.8 dB over FBPConvNet, near the predicted 2–4, and above TV. |
+
+Item verdict: 4.1 Win.
+
+### MriReconstruction (W13 4.2: CS-MRI, MoDL and the variational network)
+Sources: R-wave13. Theme: imaging. Test: MriReconstructionTest. Blocks: `imaging.MriOperator`, `CompressedSensingMri`, `UnrolledMri`, local `LinearOperator` (no generic CG solver in core).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CS-TV; CS-wavelet; PnP-HQS, 32×32 (4x / 8x) | PSNR | 25.8 / 22.0; 22.2 / 20.1; 25.0 / 21.5 | Zero-filled: 21.8 / 19.9 | Win | CS-TV gains 4.0 dB at 4x, as predicted, and 2.1 dB at 8x. |
+| VarNet; MoDL, 16×16 at 4x | PSNR | 22.2; 22.0 | U-Net: 19.6. Zero-filled: 20.1. CS-TV: 20.6 | Win | MoDL beats the U-Net by 2.4 dB, VarNet matches MoDL, and both hold their quality on an unseen mask. |
+
+Item verdict: 4.2 Win.
+
+Not done: the LISTA baseline (also left out of 13.4.12).
+
+### PhaseRetrieval (W13 4.3: ER/HIO, Wirtinger flow and prDeep)
+Sources: R-wave13. Theme: imaging. Test: PhaseRetrievalTest. Block: `imaging.PhaseRetrieval`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| HIO, Fourier magnitudes | Success rate (PSNR) | 0.67 (86.7) | ER: 0 (20.7) | Win | |
+| Wirtinger flow; truncated WF, 4 coded masks | Success (PSNR) | 0.75 (57.4); 0.50 (67.4) | Random-start gradient descent: 10.7. prDeep: 40.8. PnP-HQS: 36.7 (neither reaches the success threshold) | Win | Spectral initialisation is what makes WF work, as predicted. |
+| prDeep; PnP-HQS, Poisson noise, 300 photons | PSNR | 35.8; 36.4 | Wirtinger flow: 24.8 | Win | The denoiser priors win under strong noise; PnP-HQS slightly edges prDeep. |
+
+Item verdict: 4.3 Win.
+
+### ImageInverseProblems deconvolution, demosaicing and the deep image prior (W13 4.4: blind deconvolution, 4.5: demosaicing, 4.6: DIP)
+Sources: R-wave13. Theme: imaging. Tests: BlindDeconvolutionTest, DemosaicingTest, DeepImagePriorTest. Blocks: `imaging.BlindDeconvolution`, `Demosaicing`, `DeepImagePrior` (oracle, fixed and ES-WMV stopping).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ℓ0-gradient prior; normalised sparsity, 64×64, 9×9 kernels | Kernel similarity / PSNR | 0.85 / 31.2; 0.85 / 29.2 | Gaussian kernel guess: 0.73 / 24.3. Richardson–Lucy: 26.0. Wiener with the true kernel: 25.0. Oracle kernel: 33.1 | Win | Blind ℓ0 deconvolution is within 2 dB of the oracle kernel. |
+| Malvar; residual interpolation | CPSNR | 25.9; 27.6 | Bilinear: 19.2. Nearest: 16.4 | Win | Malvar beats bilinear by 6.7 dB and residual interpolation adds 1.7 dB, as predicted. |
+| Learned demosaicing with / without hard mining | CPSNR | 26.4; 26.8 | Residual interpolation: 27.6 | Negative | Negative: hard-example mining does not help, and the learned network does not beat residual interpolation. |
+| DIP, oracle / ES-WMV / fixed 300 iterations, σ = 25/255 | Denoising PSNR | 27.9 / 26.3 / 25.6 | NLM: 32.5. Gaussian filter: 29.5. Zero-shot Noise2Noise: 28.1. Noisy input: 20.1 | Negative | Negative: DIP is close to Noise2Noise but below NLM; early stopping recovers only 0.7 of the 2.3 dB lost. |
+| DIP, same stopping rules, 50% inpainting | PSNR | 32.4 / 27.8 / 31.7 | TV inpainting: 32.5. Observed: 13.2 | Negative | DIP only ties TV, and ES-WMV stops too early here. DIP uses learning rate 0.005, because the sigmoid output saturates at 0.01. |
+
+Item verdicts: 4.4 Win, 4.5 Mixed, 4.6 Negative.
+
+Not done: the U-Net and DnCNN baselines in 13.4.4–13.4.6, the moiré and noise conditions of 13.4.5 (no σ = 0.02 run), and the error-ratio metric of 13.4.4.
+
+### ImageInverseProblems variational methods, wavelets and parameter choice (W13 4.9: PDHG and edge-preserving filters, 4.10: wavelet shrinkage, 4.11: choosing λ)
+Sources: R-wave13. Theme: imaging. Tests: VariationalImagingTest, WaveletDenoisingTest, ParameterChoiceTest. Blocks: `imaging.PrimalDual`, `EdgePreservingFilters`, `Wavelets`, `ParameterChoice` (DISCREPANCY, L_CURVE, GCV, MC_SURE).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PDHG for TV | Iterations to a 0.1% gap | 160 (15 ms) | Gradient descent: not reached in 2,560 | Win | More than 16x faster, as predicted. |
+| TV-L1, salt and pepper; TGV, ramps | PSNR | 33.4; 39.1 | TV-L2: 22.7. TV on ramps: 37.6 | Win | TV-L1 wins by 10.7 dB and TGV by 1.5 dB, as predicted. |
+| NLM; TV; TGV, Gaussian σ = 0.1 | PSNR | 31.5; 31.0; 30.5 | Bilateral: 28.4 | Win | NLM is the best classical filter, as predicted. |
+| BayesShrink; SureShrink; Bayes + cycle spinning (σ = 10 / 25 / 50) | PSNR | 32.4 / 27.0 / 24.0; 31.8 / 25.1 / 23.4; 33.4 / 28.0 / 24.8 | VisuShrink: 27.5 / 23.6 / 22.6. NLM: 38.2 / 31.6 / 25.8. DCT dictionary: 35.3 / 30.5 / 26.2 | Win | Sure and Bayes beat VisuShrink by 0.8–4.9 dB, cycle spinning adds about 1 dB, and NLM beats wavelet shrinkage, as predicted. |
+| MC-SURE (Tikhonov / TV / wavelet / PnP-HQS) | dB lost against the oracle λ | 0.37 / 0.00 / 0.20 / 0.13 | GCV: 0.37. Discrepancy: 0.55, with σ × 1.2: 1.38. L-curve: 0.92 and 5.19 on TV. Marginal likelihood: 0.22. Fixed λ: 2.14 | Win | MC-SURE is within 0.2 dB on three tasks and 0.37 on Tikhonov; GCV matches it there; overestimated σ makes the discrepancy principle oversmooth, and the L-curve is least reliable, as predicted. With σ overestimated by 20%, MC-SURE loses at most 0.6 dB (1.7 on PnP-HQS). |
+
+Item verdicts: 4.9 Win, 4.10 Win, 4.11 Win.
+
+Not done: the guided-filter timing and the 1-D oracle-risk comparison were not reported.
+
+### ImageInverseProblems single-pixel imaging (W13 4.12: Hadamard, random and learned patterns)
+Sources: R-wave13. Theme: imaging. Test: SinglePixelImagingTest. Block: `imaging.SinglePixelImaging`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Hadamard in sequency order (2 / 5 / 10 / 25% sampling) | PSNR | 28.5 / 28.8 / 29.4 / 31.0 | Truncated DCT: 28.5 / 28.9 / 29.6 / 31.4 | Win | Low-frequency Hadamard is as good as a truncated DCT. |
+| Random ±1 with TV; with FISTA on Haar; Gaussian sensing with AMP | PSNR | 24.8 / 27.8 / 36.2 / 44.2; 19.3 / 20.2 / 23.7 / 37.5; 19.2 / 19.2 / 19.4 / 36.0 | Hadamard: 28.5 / 28.8 / 29.4 / 31.0 | Negative | Negative: compressed sensing with TV beats Hadamard from 10% up, against the hypothesis. |
+| Learned patterns with decoder (2 / 5%) | PSNR | 28.3 / 28.7 | Hadamard: 28.5 / 28.8 | Negative | Negative: the learned patterns only tie Hadamard instead of winning by 2–4 dB. |
+
+Item verdict: 4.12 Negative.
+
+### PosteriorSampling (W13 4.7: diffusion posterior samplers against exact posteriors, 4.8: PnP-Flow)
+Sources: R-wave13. Theme: imaging. Test: PosteriorSamplingTest (about 10 s). Blocks: `imaging.PosteriorSamplers` (DPS, ΠGDM, DDRM, DAPS), `PnpFlow` (on core `FlowMatching`). Image tasks are 16×16 shapes with about 3 s of training.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DAPS; DPS; SMC, 2-D magnitude measurement, σ_y = 0.05 | Sliced W2 / mode coverage | 0.23 / 0.84; 0.61 / 0.54; 0.25 / 0.90 | Exact second draw: 0.25 / 0.88. Single-chain HMC: 1.97 / 0.23 | Win | DPS collapses onto one mode and DAPS is closest to exact on the nonlinear case, as predicted. |
+| DDRM; ΠGDM; DPS, 2-D inpainting | Sliced W2 / mode coverage | 0.13 / 0.93; 0.28 / 0.93; 0.37 / 0.65 | Exact: 0.24 / 0.91. MAP: 0.75 / 0.71 | Win | DDRM is near-exact for the linear operator, as predicted. In 8-D, HMC and SMC beat every diffusion sampler. |
+| PnP-Flow (box / 50% pixels / deblurring / 2x SR) | PSNR | 30.9 / 26.2 / 23.2 / 23.6 | PnP-HQS with NLM: 48.7 / 35.1 / 29.1 / 25.9. PnP-HQS with the flow denoiser: 40.1 / 30.7 / 26.0 / 25.1 | Negative | Negative: PnP-Flow does not match PnP-HQS at this training budget. |
+| DAPS; DPS with the flow score | PSNR (box inpainting) | 33.7; 29.7 | Observation: 28.3 | Win | DAPS beats DPS on box inpainting, as predicted. |
+
+Item verdicts: 4.7 Win, 4.8 Negative.
+
+Not done: DIP as a 13.4.8 baseline, DDRM on images, unrolled PnP and a trained FFDNet (the flow model's denoiser and NLM stand in for them).
+
+### AdaptiveFilters (W13 4.13: LMS, NLMS, APA, RLS and Kalman adaptive filters)
+Sources: R-wave13. Theme: sensing. Test: AdaptiveFiltersTest. Blocks: `sensing.AdaptiveFilters` (LMS, NLMS, APA, RLS, KALMAN_FIR, Geigel double-talk detector); generator `ArraySignals`. The Kalman filter works in the time domain, not the frequency domain.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| RLS; APA; Kalman, AR(1)-coloured input | Samples to −20 dB misalignment | 10; 16; 29 | NLMS: 318. LMS: 1,938. AdaGrad online gradient: 3,119 | Win | RLS converges 32x faster than NLMS, and APA sits between them, as predicted. |
+| Offline least squares (baseline) | Misalignment | −53 dB; −3.8 dB after an abrupt change | | Win | The offline fit is best on a fixed system but breaks after a change, which the adaptive filters track. |
+| Kalman + Geigel; RLS; Kalman without a detector | ERLE in double-talk (dB) | 28.5; 14.4; 12.6 | NLMS + Geigel: 5.5. NLMS without a detector: −8.7 | Win | The Kalman filter keeps ERLE where undetected NLMS diverges, as predicted. It tracks abrupt changes poorly (it settles in 846 samples). |
+
+Item verdict: 4.13 Win.
+
+### DirectionFinding (W13 4.14: classical beamforming and DOA, 4.15: SubspaceNet)
+Sources: R-wave13. Theme: sensing. Test: DirectionFindingTest (about 11 s). Blocks: `sensing.ArrayProcessing` (DAS, MVDR, MUSIC, root-MUSIC, ESPRIT, forward–backward spatial smoothing, MDL/AIC, CRB), `SubspaceNet` (trained through core `Decompositions.eigh` on a real 2M embedding, because core has no complex Hermitian eigensolver; near-field DCD-MUSIC).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| MUSIC, M = 10, T = 100, 10 dB | RMSE | 0.05° | CRB: 0.06°. Delay-and-sum: 5.27°. Direct MLP: 1.47° | Win | MUSIC is at the CRB, as predicted. |
+| MUSIC, sources 4° apart | Resolution rate | 1.0 | Delay-and-sum: 0 | Win | |
+| MUSIC with spatial smoothing, coherent sources | RMSE | 0.06° | Plain MUSIC: 5.4° | Win | Smoothing recovers MUSIC, as predicted. MDL counts the sources correctly at every SNR tested. |
+| SubspaceNet + MUSIC, coherent, M = 8, T = 20 | RMSE | 0.61° | MUSIC on the sample covariance: 19.95°. Direct MLP: 2.18°. Smoothed MUSIC: 0.23° | Negative | Negative: it beats plain MUSIC and the MLP but not smoothed MUSIC, against the predicted 2x win. At 0 dB, outside training, it ties smoothed MUSIC (1.01° vs 1.23°). |
+| DCD-MUSIC with the learned / sample covariance, near field | Angle / range RMSE (wavelengths) | 5.3° / 1.67; 4.4° / 1.39 | 2-D MUSIC: 0.37° / 0.25 | Negative | Negative: DCD does not help in the near field here. |
+
+Item verdicts: 4.14 Win, 4.15 Negative.
+
+Not done: SubspaceNet under miscalibration was not reported.
+
+### SpectralEstimation (W13 4.16: Welch, multitaper, Burg and Lomb–Scargle)
+Sources: R-wave13. Theme: sensing. Test: SpectralEstimationTest. Block: `sensing.SpectralEstimation` (periodogram, Welch, multitaper with DPSS via `Matrices.lanczos` and the F-test, Burg with AIC, Lomb–Scargle with false-alarm probability). The ARIMA baseline is an AR(4) fit over 5 trials, for time.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Multitaper; Burg; Welch, n = 256 | Log-spectral distance (dB) | 2.00; 0.88; 1.71 | Periodogram: 6.07. ARIMA: 0.78 | Negative | Negative: multitaper is not the lowest; the AR methods are. |
+| Burg; multitaper, 64 samples | Two-line resolution rate | 0.17; 0.10 | Welch: 0. Periodogram: 0.47 | Mixed | Burg resolves lines where Welch cannot, as predicted, but the plain periodogram does better than both. |
+| Lomb–Scargle, irregular samples | AUC for a weak line | 0.91 | Interpolate-then-FFT: 0.94. Multitaper F-test on regular samples: 0.94 | Negative | Negative: interpolation does not produce the predicted spurious peaks here. |
+
+Item verdict: 4.16 Negative.
+
+### MultiViewGeometry registrationSvd (W13 4.17: Deep Closest Point with a differentiable SVD, follow-up)
+Sources: R-wave13. Theme: robotics. Test: DeepClosestPointSvdTest (about 12 s). Blocks: `geometry.DeepClosestPoint.Procrustes` {HORN_POWER_ITERATION (default), SVD}, `MultiViewGeometry.registrationSvd`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| DCP + ICP with SVD Procrustes (15° / 45° / 90°) | Success | 1.00 / 1.00 / 0.88 | Wave 12 Horn power iteration: 0.50 / 0.63 / 0.63 | Win | The SVD version lifts DCP + ICP at 90° well above 0.63, as predicted, so the wave 12 weakness was the Procrustes solver. |
+| DCP alone with SVD, 15° | Median error | 8.1° | Horn: 57° | Win | DCP alone now gets near the answer; its success rate was not reported. |
+
+Item verdict: 4.17 Win.
+
+---
+
+## Wave 13 WP5: the Bayesian workflow
+
+New packages: `experimental.sbi`, `experimental.design`, `experimental.quadrature` and `experiments.inference`, with new classes in `experimental.stats` (`ModelComparison`, `ExtremeValues`, `SpotThreshold`, `VineCopula`, `FunctionalData`) and the generators `experimental.data.SimulatorSuite` and `DependenceSamples`. `experiments.probabilistic.SimulatorInference` gains `gaussianLinearNeural`, `twoMoonsNeural` and `lotkaVolterraSequential`; its existing rows are unchanged. No core module was edited. All 18 test classes passed at their final settings, run one or two at a time. Two are over the ~10 s target: SequentialPosteriorTest (12–15 s on the loaded machine) and ModelCheckingTest (about 10 s); AdaptiveDesignTest takes 8.6 s and IidTrialsTest 8.8 s, and the others 0.2–7.4 s. C2ST is accuracy of a classifier separating the estimate from the reference posterior, so 0.5 is perfect and lower is better (R-wave13).
+
+### LikelihoodFree neural likelihoods and ratios (W13 5.1: NLE, 5.2: NRE, contrastive NRE and BNRE)
+Sources: R-wave13. Theme: inference. Tests: NeuralLikelihoodTest, IidTrialsTest (8.8 s), NeuralRatioTest, SimulatorInferenceNeuralTest, SimulatorInferenceMoonsTest. Blocks: `sbi.ConditionalDensity` (MDN and coupling flow), `SliceSampler`, `NeuralLikelihood`, `NeuralRatio`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| NLE-flow; NLE-MDN, SLCP, n = 2,000 | C2ST | 0.827; 0.847 | NPE: 0.847. SMC-ABC: 0.803 | Mixed | NLE-flow edges NPE, as predicted, but SMC-ABC beats both. |
+| NLE, i.i.d. trials k = 1 / 10 | C2ST | 0.542 / 0.545 | NPE on stacked trials: 0.538 / 0.570. NPSE at k = 1: 0.520 | Win | NLE keeps its accuracy as trials are added, where stacked NPE degrades. |
+| NLE, Gaussian linear / two moons (new `SimulatorInference` rows) | C2ST | 0.512 / 0.707 | NRE-C: 0.555 / 0.902. FMPE: 0.462 / 0.788. TSNPE: 0.537 / 0.687 | Inconclusive | TSNPE is best on two moons; no plain NPE row was reported, so "NPE wins on two moons" cannot be checked. |
+| NRE-C; NRE-A, Gaussian linear, n = 1,000 | C2ST / coverage at 0.9 | 0.503 / 0.913; 0.535 / 0.888 | NPE: 0.530 / 0.925 | Win | Contrastive NRE improves on NRE-A, as predicted. |
+| BNRE | C2ST / coverage at 0.9 | 0.717 / 0.975 | NRE-A: 0.535 / 0.888 | Win | BNRE is conservative, as intended, at a clear C2ST cost. |
+
+Item verdicts: 5.1 Mixed, 5.2 Win.
+
+### LikelihoodFree flows and sequential NPE (W13 5.3: FMPE and NPSE, 5.4: APT and TSNPE)
+Sources: R-wave13. Theme: inference. Tests: FlowPosteriorTest, IidTrialsTest, SequentialPosteriorTest (12–15 s), SimulatorInferenceSequentialTest. Blocks: `sbi.FlowMatchingPosterior`, `SequentialPosterior`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| FMPE, Gaussian mixture / SLCP | C2ST | 0.765 / 0.762 | NPE: 0.577 / 0.813 | Mixed | By these numbers FMPE loses on the mixture and wins on SLCP (the builder's summary calls SLCP a loss). On two moons FMPE's 0.788 trails NLE (0.707) and TSNPE (0.687). |
+| NPSE composition, 10 i.i.d. trials | C2ST | 0.928 | NPE on stacked trials: 0.570 | Negative | Negative: composition fails at k = 10; Langevin and time-feature fixes did not help. |
+| APT; TSNPE, SLCP 2 × 600 | C2ST / prior leakage | 0.893 / 0.42; 0.853 / 0.15 | NPE: 0.880. SNL: 0.878. SMC-ABC: 0.920 | Mixed | TSNPE leaks far less than APT, as predicted, but neither sequential method clearly beats amortised NPE. |
+| APT; TSNPE, Lotka–Volterra | RMSE | 0.051; 0.058 | NPE: 0.041 | Negative | NPE is best. |
+
+Item verdicts: 5.3 Mixed, 5.4 Mixed.
+
+Not done: the 10⁴-simulation budgets and multi-seed runs.
+
+### LikelihoodFree summaries (W13 5.5: ABC summary statistics)
+Sources: R-wave13. Theme: inference. Test: AbcSummariesTest. Block: `sbi.SummaryStatistics`. Ricker model; prior RMSE/width is 0.259.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Regression adjustment | RMSE / width | 0.146 | Rejection ABC with hand summaries: 0.144 | Negative | Negative: adjustment does not halve the error; it changes nothing. |
+| Semi-automatic linear; semi-automatic MLP | RMSE / width (adjusted) | 0.131 (0.130); 0.223 | Hand summaries: 0.144 | Mixed | Linear semi-automatic summaries beat hand summaries slightly; the MLP version is worse. |
+| Infomax learned summaries; NPE on raw data | RMSE / width | 0.172; 0.258 | Hand summaries: 0.144. Prior: 0.259 | Negative | Negative: learned summaries do not approach NPE as predicted; NPE on raw data learns nothing at this budget. |
+
+Item verdict: 5.5 Negative.
+
+Not done: the Ricker against logistic-map model pair.
+
+### PosteriorDiagnostics (W13 5.6: SBC, TARP and local C2ST)
+Sources: R-wave13. Theme: inference. Test: PosteriorDiagnosticsTest. Block: `sbi.PosteriorDiagnostics`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SBC; coverage; TARP; L-C2ST, exact posterior | Rejection rate | 0.17 / 0.17 / 0 / 0.17 | | Win | Low false-rejection rates. |
+| Same, over- and under-dispersed and mode-dropped posteriors | Rejection rate | At least 0.83 for every test | | Mixed | All four catch dispersion errors, as predicted, but SBC also catches mode dropping, which it was predicted to miss. |
+| Same, shifted posterior | Rejection rate | 1 / 0.83 / 0.17 / 1 | | Negative | TARP is the weakest test on the shift, against the hypothesis that it catches shifts the others miss. |
+| L-C2ST local statistic | Spearman with the oracle | 0.976 | Hypothesis: ≥ 0.7 | Win | |
+
+Item verdict: 5.6 Mixed.
+
+### Misspecification (W13 5.7: RoPE, RNPE and RVNP)
+Sources: R-wave13. Theme: inference. Test: MisspecificationTest. Block: `sbi.MisspecificationRobust`. An MMD test detects the misspecification (p = 0.005).
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| RoPE; RNPE; RVNP-style; fine-tuned NPE | Coverage at 0.9 / log p | 0.650 / −3.26; 0.475 / −4.87; 0.875 / −2.61; 0.800 / −3.62 | NPE: 0.225 / −7.32. BNRE: 0.925 / −2.56 | Mixed | NPE's coverage collapses, as predicted, and every method improves on it, but RoPE reaches only 0.65, not 0.9, and BNRE is both better calibrated and more informative than RoPE. RVNP does best of the robust methods without calibration pairs. |
+
+Item verdict: 5.7 Mixed.
+
+### ExperimentalDesign (W13 5.8: EIG estimators and static design, 5.9: DAD and Step-DAD)
+Sources: R-wave13. Theme: inference. Tests: StaticDesignTest, AdaptiveDesignTest (8.6 s). Blocks: `design.InformationGain`, `DesignOptimiser`, `AdaptiveDesign`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PCE; NCE; posterior bound; marginal bound, linear-Gaussian (exact EIG 0.405) | Bias / sd | −0.019 / 0.062; +0.0004 / 0.055; −0.003 / 0.012; −0.002 / 0.010 | NMC: −0.004 / 0.054. MINE: −0.065 / 0.018 | Mixed | PCE and NCE bracket the true EIG, as predicted, but their spread is no lower than NMC's; the variational bounds have the lowest spread. |
+| PCE gradient ascent, location finding | EIG | 0.792 | 21×21 grid: 0.795. Random: 0.478. Best of 20 random: 0.622. GP-EI BayesOpt: 0.706. CMA-ES: 0.717 | Win | Within 0.4% of the grid optimum and 66% above random, as predicted. Death process: 1.04 against 0.957 for random. CES: CMA-ES 2.56 against 1.52. |
+| DAD; Step-DAD, T = 10, 200 training steps | sPCE prior / prior-shifted | 3.41 / 3.53; 3.92 / 4.66 | Static: 4.31 / 3.45. Myopic: 4.23 / 5.23. Uncertainty sampling: 4.30 / 7.09. Random: 2.66 / 3.66 | Negative | Negative: DAD is under-trained and falls behind the static design and, on shifted priors, behind random designs. Step-DAD recovers 0.5 and 1.1 nats, as predicted. |
+| DAD decision time; 300 training steps | ms per step; sPCE | 0.08 ms; 4.24 | Myopic: 5.7 ms; 4.57. Static: 4.04 | Negative | DAD is 70x faster than myopic re-optimisation, not 1,000x, and still below it after 300 steps. |
+
+Item verdicts: 5.8 Win, 5.9 Negative.
+
+### Integration (W13 5.10: quasi-Monte Carlo, 5.11: Bayesian quadrature and herding)
+Sources: R-wave13. Theme: inference. Tests: QmcTest, BayesianQuadratureTest. Blocks: `quadrature.LowDiscrepancy`, `RqmcEstimator`, `BayesianQuadrature`, `KernelHerding`, `Cubature`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Owen-scrambled Sobol; Halton and lattice, smooth Genz integrands | Slope of RMSE against n | −1.2 to −1.4; about −1.0 | MC: about −0.5 | Win | As predicted. At n = 2,048, d = 8 Gaussian: relative RMSE 2.6e-5 against 1.9e-2 for MC. |
+| Sobol, discontinuous integrand; Latin hypercube | Slope | −0.95; −1.5 only on the additive integrand | | Win | Sobol does better than the predicted −0.5; Latin hypercube helps only for additive integrands, as predicted. Linear-scrambled Sobol gives an unexplained −4.9 on the additive d = 2 integrand (the estimator is unbiased). |
+| RQMC for VI, banana | ELBO-gradient variance | 16.4 | MC: 195 | Win | 12x lower, above the predicted 5x, with the same final ELBO. |
+| BQ; sequential BQ, smooth d = 2, n = 50 | Relative error | 2.7e-5; 7e-7 | Sobol: 8e-3. MC: 4.7e-2 | Win | Orders of magnitude better, as predicted. At d = 8 BQ's 0.046 is about MC's, and its 95% interval covers on smooth integrands only (1.0, against 0–0.2 on rough ones), also as predicted. |
+| Kernel herding | MMD slope | −0.93 | i.i.d. points: −0.54 | Win | Close to O(1/n). |
+| BQ; WSABI, evidence | \|log Z error\| | 0.010; 0.031 | Nested sampling (5e4 evaluations): 0.12. Sobol: 0.19. MC: 0.27 | Win | |
+
+Item verdicts: 5.10 Win, 5.11 Win.
+
+Not done: AIS evidence baselines; sparse grids against product Gauss–Hermite were not reported. The Sobol direction numbers for dimensions 2–32 are typed from memory, not checked against the published Joe–Kuo file; they pass the format checks, and the worst t-value over all two-dimensional projections is 5 at 2⁸ points.
+
+### ModelChecking (W13 5.12: PSIS-LOO, WAIC and stacking, 5.16: evidence networks)
+Sources: R-wave13. Theme: inference. Test: ModelCheckingTest (about 10 s for the amortised part). Blocks: `stats.ModelComparison`, `sbi.ModelComparisonNetwork`. Conjugate regressions are used, where exact LOO is closed-form.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| PSIS-LOO; WAIC | elpd error against exact LOO | 0.59; 1.19 | Plain IS-LOO: 0.44 | Negative | Negative: PSIS is not better than plain IS here and misses the 0.5 target. |
+| k̂ > 0.7 | Recall of planted outliers / false flags | 1.0 / none | | Win | k̂ works as a flag, as predicted. |
+| Stacking; pseudo-BMA+ | Held-out log score | −2.24; −2.83 | BMA: −4.18 (equal to the best single model) | Win | Stacking beats BMA in the M-open case, as predicted. |
+| Evidence network (\|log BF\| < 5 / 5–20 / > 20) | \|log BF\| error | 0.15 / 1.5 / 8.3 | Classifier: 0.13 / 2.6 / 16.1. ABC: 0.31 / 6.1 / 29.2 | Win | The evidence network stays accurate where the classifier saturates, and ABC is biased, as predicted. Accuracy is about 0.82 for all, calibration error about 0.02, and SIR vs SEIR accuracy 0.92. |
+| Amortised comparison | Cost per new observation | About 1.5e4x below nested sampling | | Win | As predicted. |
+
+Item verdicts: 5.12 Mixed, 5.16 Win.
+
+Not done: HMC-sampled hierarchical and logistic models for 13.5.12.
+
+### TailsAndDependence (W13 5.13: extreme values and SPOT, 5.14: vine copulas, 5.15: functional data)
+Sources: R-wave13. Theme: inference. Tests: TailsTest, DependenceTest. Blocks: `stats.ExtremeValues`, `SpotThreshold`, `VineCopula`, `FunctionalData`. A synthetic heavy-tailed stream with drift replaces the planned `StreamingAnomaly` and `MarketPaths` inputs.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| POT-MLE; POT-PWM | Relative error at the 1e-3 / 1e-4 quantile | 0.15 / 0.33; 0.15 / 0.32 | Hill: 0.28 / 0.70. Empirical: 0.28 / 0.41. Gaussian tail: 0.56 / 0.78 | Mixed | POT is best, with profile-interval coverage 0.91, but its 1e-4 error is above the predicted 20%, and the Gaussian tail is off by less than the predicted factor of 2. |
+| SPOT; DSPOT, q = 1e-3 (stationary / drift) | Realised false-alarm rate | 1.15e-3 / 4.8e-3; 1.2e-3 / 2.3e-3 | Fixed top-1% threshold: 7.2e-3 / 5.4e-2 | Win | SPOT is within 2x of the target when stationary, the fixed threshold is off by an order of magnitude, and DSPOT is needed under drift, as predicted. |
+| R-vine | Held-out log c / tail-dependence errors / joint-tail probabilities | 1.67 (full first tree recovered) / 0.006 and 0.02 / within 1–3% | Oracle: 1.68. Gaussian copula: 1.41, tail errors 0.79 / 0.68, joint tails off by 49–54% | Win | The vine recovers the planted tree and the tails, as predicted. |
+| PACE, 3–5 points per curve | Eigenfunction angles / reconstruction RMSE / outcome RMSE | 15° and 12° / 0.51 / 0.37 | Interpolate-then-PCA: 29° and 81° / 1.10 / 0.79 | Win | As predicted. |
+| Outliergram, shape outliers | AUROC | 0.80 | Isolation forest: 0.91. Magnitude outliers: 1.0 for every method | Negative | Negative: depth does not beat the isolation forest on shape outliers. |
+
+Item verdicts: 5.13 Mixed, 5.14 Win, 5.15 Mixed.
+
+Not done: the flow, GAN and table-synthesis baselines for the vines; `IrregularSeries`, mTAN and per-curve GP baselines for 13.5.15. Only C-vine sampling is implemented, not general R-vine sampling.
+
+---
+
+## Wave 13 WP6: classical-learning gaps
+
+New packages: `experimental.tsc` and `experimental.tabular`, with new classes in `experimental.ml` (`RandomWeightNetworks`, `MultipleKernelLearning`, `AdaptiveResonance`, `VectorQuantization`), `experimental.robust.DistributionalRobustness`, `experimental.survival` (`ConformalSurvival`, `CureModel`, `CompetingRisks`), `experimental.multitask.SoftSharing` and the generator `experimental.data.SeriesArchive`. No core module and no existing experiment class was edited. All 11 test classes passed, each run alone, mostly in about 3–10 s. Two are over the ~10 s target: SeriesClassifiersDeepTest (about 10.7 s) and SharingArchitecturesTest (about 11 s); PrototypeLearnersTest takes about 9 s (R-wave13).
+
+### SeriesClassifiers dictionary, convolution, interval and ensemble methods (W13 6.1: BOSS and WEASEL 2.0, 6.2: Hydra, 6.3: QUANT and interval forests, 6.4: combining classifiers)
+Sources: R-wave13. Theme: timeseries. Tests: SeriesClassifiersDictionaryTest, SeriesClassifiersIntervalTest. Blocks: `tsc.SymbolicFourier`, `Boss`, `Weasel` (V1 and V2), `WideRidgeClassifier` (a dual ridge, because `RidgeClassifier` is primal-only), `Hydra`, `Quant`, `IntervalForest` (TSF, DrCIF-lite), `SeriesEnsembles`; generator `SeriesArchive`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| BOSS; BOSS without std-norm; WEASEL; WEASEL 2.0, sawtooth motifs (length 128, 90 train) | Accuracy | 0.675; 0.650; 0.592; 0.750 | DTW 1-NN: 0.558. ROCKET: 0.908. MiniRocket: 0.842 | Mixed | The dictionary methods beat DTW but lose to ROCKET, and WEASEL 2.0 does not match MiniRocket. |
+| Hydra (431 ms); hard counting; MultiRocket-Hydra | Accuracy | 0.817; 0.808; 0.850 | ROCKET: 0.833. MiniRocket: 0.775. WEASEL 2.0: 0.792 | Mixed | MultiRocket-Hydra is best, as predicted, but Hydra does not beat ROCKET. |
+| QUANT (421 ms); TSF; DrCIF-lite, interval task | Accuracy | 0.967; 0.947; 0.907 | Random forest on raw values: 0.827. ROCKET: 0.907. MiniRocket: 0.720. Hydra: 0.587 | Win | QUANT wins and TSF trails it, as predicted. |
+| Vote; CAWPE; ridge stack; extra-trees stack; concatenation | Accuracy (share of the gap to the oracle closed) | 0.808 (22%); 0.808 (22%); 0.875 (57%); 0.933 (87%); 0.892 | Members: Hydra 0.742, QUANT 0.767, WEASEL2 0.717. Oracle: 0.958 | Mixed | Stacking closes far more of the gap than predicted, so the meta-learning gap is not reproduced on this task, and the extra-trees stack, not concatenation, is best. |
+
+Item verdicts: 6.1 Mixed, 6.2 Mixed, 6.3 Win, 6.4 Mixed.
+
+### SeriesClassifiers deep and elastic methods (W13 6.5: FCN, ResNet, InceptionTime and LITE, 6.6: elastic distances and Proximity Forest)
+Sources: R-wave13. Theme: timeseries. Tests: SeriesClassifiersDeepTest (about 10.7 s), SeriesClassifiersElasticTest. Blocks: `tsc.DeepSeriesClassifiers` (implements `Layer`), `ElasticDistances` (10 measures), `ProximityForest` (plus the Elastic Ensemble and DTW with an LB_Keogh bound). Warped task, 6 classes.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| InceptionTime (7,188 parameters); LITE (1,248); ResNet; FCN | Accuracy | 0.783; 0.700; 0.400; 0.167 | TCN: 0.383. MLP: 0.850. ROCKET: 1.000. Hydra: 0.942 | Mixed | InceptionTime beats FCN, ResNet and the TCN, as predicted, but LITE is 8 points behind, not 1–2, and ROCKET wins. FCN stays at chance because there is no 1-D BatchNorm. |
+| DTW, WDTW, LCSS, ERP, EE, PF; MSM; TWE | Accuracy | 1.0; 0.967; 0.95 | ROCKET: 1.0. Euclidean: 0.783. DDTW: 0.75 | Inconclusive | The task is too easy: DTW and the ensembles all reach 1.0, so MSM, TWE and EE cannot beat DTW. |
+| Proximity Forest; Elastic Ensemble | Time | 1,056 ms; 1,984 ms | | Inconclusive | PF is about 2x faster than EE, not 10x. LB_Keogh pruned 73% of DTW computations. |
+
+Item verdicts: 6.5 Mixed, 6.6 Inconclusive.
+
+### ElasticClustering (W13 6.7: soft-DTW, DBA and k-Shape)
+Sources: R-wave13. Theme: timeseries. Test: ElasticClusteringTest. Blocks: `tsc.SoftDtw`, `DtwBarycenter`, `KShape`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| k-Shape, phase-shifted series | ARI | 1.0 | k-means, k-medoids and spectral: about 0 | Win | As predicted. |
+| DBA k-means, warped series | ARI | 0.959 | k-medoids and spectral: 0.959. k-Shape: 0.717 | Win | |
+| Soft-DTW barycentre; DBA | DTW distance to the true template | 0.27; 1.00 | Arithmetic mean: 2.70. Medoid: 1.67 | Win | Soft-DTW barycentres are closest to the template, as predicted. |
+| Soft-DTW as a training loss | DTW error / peak height (true 1.91) | 0.56 / 1.67 | MSE loss: 2.35 / 0.69 | Win | Lower DTW error and sharper peaks, as predicted. |
+
+Item verdict: 6.7 Win.
+
+### TabularPretraining (W13 6.8: tabular self-supervised pretraining, 6.9: MI-guided structured corruption)
+Sources: R-wave13. Theme: selfsupervised. Test: TabularPretrainingTest. Blocks: `tabular.TabularPretraining` (VIME, SCARF, SubTab, mask-and-recover), `StructuredCorruption`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| SSL fine-tuning, 5% / 20% labels | Accuracy | 0.53–0.55 / 0.58–0.60 | MLP from scratch: 0.548 / 0.603. Random forest: 0.652 / 0.773. GBT: 0.632 / 0.807 | Negative | Negative: pretraining gives nothing over scratch, and trees win, also at 5%. |
+| SSL under MCAR and MNAR missingness | Accuracy | Not more robust than scratch | | Negative | Negative. |
+| MI grouping; group-marginal; group-CVAE corruption, 20% labels | Duplicate recovery; probe accuracy | 100%; 0.560; 0.570 | Random corruption: 0.547. Scratch: 0.580. GBT: 0.820 | Negative | Negative: the grouping finds the duplicated features, but group corruption gains only 1–2 points over random and stays below scratch. |
+
+Item verdicts: 6.8 Negative, 6.9 Negative.
+
+### DistributionallyRobust (W13 6.10: CVaR, χ², KL and Wasserstein DRO)
+Sources: R-wave13. Theme: robustness. Test: DistributionallyRobustTest. Block: `robust.DistributionalRobustness`.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| CVaR; χ²; KL | Worst-group / average accuracy | 0.189 / 0.618; 0.136; 0.131 | ERM: 0.073 / 0.563. JTT: 0.306 / 0.664. GroupDRO (with group labels): 0.296 / 0.661 | Mixed | All three raise worst-group accuracy over ERM without group labels and below GroupDRO, as predicted, but they fall well short of JTT, and CVaR has no average-accuracy cost. |
+| CVaR, 10% flipped labels | Worst-group accuracy | 0.335 | ERM: 0.146. JTT: 0.479. GroupDRO: 0.286 | Mixed | CVaR is not hurt by label noise here, against the predicted sensitivity. |
+| Wasserstein DRO logistic, ε = 0 / 0.1 / 0.2 | Accuracy (time) | 0.594 / 0.592 / 0.588 (10 ms) | Logistic: 0.627 / 0.602 / 0.574. PGD training: 0.617 / 0.587 / 0.552 (240 ms) | Win | WDRO matches or beats PGD training's robust accuracy at 24x less cost, as predicted. |
+
+Item verdict: 6.10 Mixed.
+
+### ConformalSurvival (W13 6.11: conformal survival bounds, 6.12: cure models and competing risks)
+Sources: R-wave13. Theme: survival. Test: ConformalSurvivalTest. Blocks: `survival.ConformalSurvival` (uncalibrated, naive, type-I LPB, general-censoring IPCW LPB, doubly robust), `CureModel` (EM with Weibull or Cox latency), `CompetingRisks` (Aalen–Johansen, Fine–Gray). The general-censoring method is implemented as IPCW-weighted calibration, an approximation of Davidov et al. The experiment simulates its own latent times, because `SurvivalData` has no latent-time, cure or subdistribution generators. Target coverage is 0.9.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Type-I LPB; general-censoring LPB; doubly robust, well-specified Cox | Coverage (E[L]/E[T]) | 0.886 (about 0.27); 0.886; 0.920 | Uncalibrated: 0.880. Naive: 0.982 (0.086) | Win | The conformal methods sit near nominal coverage, and naive conformal is conservative and loose, as predicted. |
+| Same, misspecified Cox | Coverage | 0.942; 0.918; 0.946 | | Win | Coverage holds under misspecification. |
+| Same on a survival forest | Coverage | Type-I and doubly robust 0.916 | Uncalibrated: 0.910 | Win | |
+| Weibull cure model; Cox cure model | Cured fraction (true 0.442) | 0.454 (coefficients 1.233 vs 1.2, 0.735 vs 0.7); 0.394 | Plain Cox extrapolated to t = 30: survival 0.178 | Win | The cure model recovers the cured fraction within about a point, as predicted. |
+| Aalen–Johansen | Cumulative incidence error | 0.033 | 1 − KM: 0.080 (bias +0.08) | Win | As predicted. |
+| Fine–Gray | Coefficient error / individual incidence error at t = 1 | 0.092 / 0.013 | Cause-specific Cox: 0.402. DeepHit: 0.093 | Win | As predicted. |
+
+Item verdicts: 6.11 Win, 6.12 Win.
+
+Not done: the uncalibrated quantiles under misspecification were not reported, so the 10–30-point miscoverage claim is untested.
+
+### KernelLearners (W13 6.13: random-weight networks, 6.14: multiple kernel learning)
+Sources: R-wave13. Theme: classic. Test: KernelLearnersTest. Blocks: `ml.RandomWeightNetworks` (ELM, RVFL, deep RVFL, ensemble deep RVFL; closed-form ridge with a hold-out λ), `ml.MultipleKernelLearning` (uniform, SimpleMKL, EasyMKL, ALIGNF). Width 256. The stress task was shrunk to 2 informative of 4 columns, and the MKL group task uses a smooth planted function, because the step functions left every learner near chance.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ELM; RVFL; deep RVFL; edRVFL (stress / spirals / digits) | Accuracy | 0.715 / 0.98 / 0.717; 0.718 / 0.98 / 0.737; 0.713 / 0.993 / 0.750; 0.690 / 0.987 / 0.687 | MLP: 0.738 / – / 0.820. SVM: 0.728 / – / 0.887. RFF: 0.735 / 0.98 / 0.743. Linear: 0.650 / 0.52 / 0.620 | Mixed | Direct links add 0–2 points over ELM (predicted 1–5), and ensemble deep RVFL does not approach the MLP or SVM. They fit in 30–350 ms against 0.2–1.3 s for the MLP. |
+| ELM; RVFL, Friedman | RMSE | 2.15; 2.13 | RFF: 1.73. Nyström: 1.56. MLP: 1.91. Linear: 2.70 | Negative | ELM and RFF are not equivalent here. |
+| SimpleMKL; ALIGNF; EasyMKL, feature-group task | Accuracy / weight on the informative group | 0.920 / 0.88; 0.928 / 0.96; 0.848 / 0.56 | CV-tuned single RBF: 0.813. Uniform: 0.865. ARD GP: 0.915 / 1.00 (2 s) | Win | MKL beats the tuned single kernel and selects the informative group, uniform is competitive, and the ARD GP matches at higher cost, as predicted. |
+| Same, two-scale task | Accuracy | 0.893; 0.865; 0.850 | Single RBF: 0.868. Uniform: 0.860. ARD GP: 0.825 | Win | |
+| EasyMKL | Time | About 150 ms | SimpleMKL: 91–136 ms (27 SVM solves) | Negative | Negative: EasyMKL is not faster than SimpleMKL, let alone 10x. |
+
+Item verdicts: 6.13 Mixed, 6.14 Win.
+
+Not done: the `SpectralMixtureKernel` baseline. `Optimize` has no QP solver, so ALIGNF and EasyMKL use a local accelerated projected gradient, and `KernelSvm` exposes no dual coefficients.
+
+### PrototypeLearners (W13 6.15: Fuzzy ART and ARTMAP, 6.17: learning vector quantisation)
+Sources: R-wave13. Theme: classic. Test: PrototypeLearnersTest (about 9 s). Blocks: `ml.AdaptiveResonance` (Fuzzy ART, Fuzzy ARTMAP with match tracking), `ml.VectorQuantization` (LVQ1, LVQ2.1, GLVQ, GMLVQ, localised GMLVQ). One prototype per class for LVQ.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| ARTMAP, class-incremental digits, ρ = 0 / 0.6 / 0.8 | Accuracy / forgetting (categories) | 0.190 / 0.113 (44); 0.957 / 0.025 (163); 0.983 / 0.012 (308) | k-NN: 0.983 (500 stored). Sequential MLP: 0.193 / 0.925. MLP with replay: 0.587 / 0.367. SOM read-out: 0.437. GNG read-out: 0.433 | Win | Near-zero forgetting with k-NN accuracy and fewer stored prototypes at a suitable vigilance, and strong vigilance sensitivity, as predicted. |
+| ARTMAP, spirals, ρ = 0.6 | Accuracy / forgetting (categories) | 0.975 / 0 (10) | Sequential MLP: 0.330 / 1.0. MLP with replay: 0.810 | Win | |
+| ARTMAP, drifting stream | Prequential accuracy | 0.775–0.805 | k-NN (all 3,000 stored): 0.825. Online MLP: 0.620 | Win | |
+| GMLVQ; GLVQ; LVQ1, irrelevant features | Accuracy | 0.936 (relevance correlation 1.00); 0.907; 0.758 | k-NN: 0.573. Nearest class mean: 0.776. Logistic: 0.940. Triplet map + k-NN: 0.933 | Mixed | GMLVQ recovers the planted features and beats k-NN, but beats GLVQ by 3 points, not 5–15. |
+| Localised GMLVQ; GMLVQ, X-shaped correlated task | Accuracy | 0.878; 0.628 | k-NN: 0.800. MLP: 0.865. Triplet map + k-NN: 0.885 | Win | Localised relevance wins over global GMLVQ, as predicted, and roughly ties the best baselines. |
+| Localised GMLVQ; GMLVQ, digits | Accuracy | 0.917; 0.653 | k-NN: 0.983 | Negative | Negative: one prototype per class does not match k-NN on digits. On the stress suite GMLVQ scores 0.623 against 0.638 for k-NN. |
+
+Item verdicts: 6.15 Win, 6.17 Mixed.
+
+### SharingArchitectures (W13 6.16: cross-stitch, sluice and MTAN-style soft sharing)
+Sources: R-wave13. Theme: multitask. Test: SharingArchitecturesTest (about 11 s). Block: `multitask.SoftSharing` (hard, separate, cross-stitch, sluice, MTAN; implements `Layer`). Parameter counts are roughly matched at about 10k; `GradientBalancing` keeps its task builders private, so the experiment rebuilds equivalent tasks.
+
+| Technique | Metric | Result | Baseline | Verdict | Takeaway |
+|---|---|---|---|---|---|
+| Cross-stitch; sluice; MTAN, related tasks (digits) | Δ_MTL | +6.0%; +9.8%; −2.9% | Hard sharing: +7.7%. Hard + PCGrad: +10.7%. MMoE: +6.1% | Mixed | Soft sharing roughly ties hard sharing on related tasks, as predicted; PCGrad gives the largest gain. |
+| Same, conflicting tasks (clicks, correlation −0.5) | Δ_MTL | All within ±0.5% except MTAN −2.0% | | Inconclusive | The tasks barely conflict, so the problem is too weak to show a soft-sharing win. MMoE is about 60% over the matched parameter count here. |
+| Cross-stitch weights, last layer | Own-task share | 0.94 → 0.78 | | Negative | Negative: the units move towards more sharing in the last layer, not towards separation. |
+
+Item verdict: 6.16 Inconclusive.
+
+---
+
 ## Highlights
 
 The ten most interesting findings, chosen for effect size and for what they show:
@@ -6844,6 +7718,23 @@ The ten most interesting wave 12 findings (R-wave12, mostly one seed at test bud
 10. **Profile HMMs detect sequence families perfectly at low identity.** At 20% identity the profile HMM reaches AUROC 1.000 against 0.892 for the best Smith–Waterman score and 0.726 for a CNN (biology).
 
 Honourable mentions: a hyperprior image codec needs 0.398 bpp at 26.0 dB against 0.724 for a factorised prior and 1.247 at 27.6 dB for a DCT codec (coding). MCD distances detect leverage outliers at AUROC 1.00 against 0.48 for the classical covariance, and MM regression keeps the coefficient error at 0.185 against 2.27 for OLS (statistics). Jumping knowledge keeps a depth-8 GCN at 0.988 accuracy against 0.772 for a plain one (graphs). Control barrier filters give zero violations from the first episode, also around TD3 during training, against 398 violations without (robotics). Per-feature weight decay tuned by implicit hypergradients cuts test MSE to 0.89 against 15.29 for a grid over one global decay (estimation). The graph cut reaches the exact minimum energy in 7 ms against 58 ms for loopy BP (vision). The IBP finds the 4 planted features where a DP mixture needs 18 clusters (probabilistic). t-digest's tail error at q = 0.999 is 0.034 against 0.37 for reservoir sampling (algorithms). Stackelberg commitment raises the leader's value on Shapley's game from 0.33 to 0.50, and internal regret matching reaches a CE gap of 0.0029 against 0.074 for Hedge (multiagent).
+
+### Wave 13
+
+The ten most interesting wave 13 findings (R-wave13, mostly one seed at test budgets):
+
+1. **A differentiable SVD rescues Deep Closest Point.** With SVD Procrustes, DCP + ICP succeeds 1.00 / 1.00 / 0.88 at 15° / 45° / 90° against 0.50 / 0.63 / 0.63 with wave 12's Horn power iteration, and DCP alone has a median error of 8.1° against 57° (robotics).
+2. **The Hamiltonian variational ansatz is exact.** On the critical transverse-field Ising chain, VQE with HVA reaches a relative error of about 4e-9 with 6 parameters, against 2.8e-2 for a 48-parameter hardware-efficient ansatz (science).
+3. **CORELS finds and certifies the planted rule list.** It recovers the list exactly (3 rules) at up to 10% noise and certifies optimality in 28–101 ms, against 0.84–0.86 truth agreement for L1 logistic regression (explainability).
+4. **WL features beat h_FF everywhere.** A ridge heuristic on Weisfeiler–Leman features trains in 1–3 ms and solves Blocksworld, Gripper, Ferry and VisitAll in 23 / 67 / 42 / 50 expansions against 66 / 190 / 61 / 172 for h_FF (symbolic).
+5. **Fuzzy ARTMAP learns classes incrementally without forgetting.** On class-incremental digits it reaches 0.957 accuracy with forgetting 0.025, against 0.193 and 0.925 for a sequential MLP (classic).
+6. **Evidence networks keep large Bayes factors accurate.** Above |log BF| = 20 the error is 8.3, against 16.1 for a classifier and 29.2 for ABC, at about 1.5e4x less cost than nested sampling (inference).
+7. **A Kalman adaptive filter survives double-talk.** With a Geigel detector it keeps 28.5 dB ERLE where NLMS without a detector falls to −8.7 dB (sensing).
+8. **The cure model gets long-term survival right.** It estimates a cured fraction of 0.454 against a truth of 0.442, where a plain Cox model extrapolates survival to 0.178 (survival).
+9. **Spatial smoothing fixes MUSIC on coherent sources.** The RMSE drops from 5.4° to 0.06°, and MUSIC reaches the CRB (0.05° against 0.06°) where delay-and-sum has 5.27° (sensing).
+10. **An R-vine nearly matches the oracle copula.** Its held-out log density is 1.67 against 1.68 for the oracle and 1.41 for a Gaussian copula, whose tail-dependence errors are 0.79 and 0.68 against 0.006 and 0.02 (inference).
+
+Honourable mentions: stochastic reconfiguration takes an RBM quantum state to 3.8e-6 relative error against 5.3e-4 with Adam (science). Loop formulas turn 0/5 valid Hamiltonian cycles from plain completion into 5/5 with 74 added clauses (symbolic). RLAF cuts CDCL decisions to 0.55 of plain VSIDS on 2x larger instances (symbolic). Learned primal–dual CT reaches 23.75 dB against 21.99 for FBPConvNet and 15.47 for FBP (imaging). TV-L1 removes salt-and-pepper noise at 33.4 dB against 22.7 for TV-L2 (imaging). Bayesian quadrature integrates a smooth 2-D function to 2.7e-5 relative error from 50 evaluations, against 4.7e-2 for Monte Carlo (inference). QUANT reaches 0.967 on the interval task against 0.907 for ROCKET (timeseries). A soft-DTW barycentre is 0.27 from the true template against 2.70 for the arithmetic mean (timeseries). PACE recovers eigenfunctions from 3–5 points per curve at 15° and 12° against 29° and 81° for interpolate-then-PCA (inference). DC3 removes every line-limit violation where a direct MLP violates on 0.88–1.0 of scenarios (science). The Rashomon set shows 2.5x more ambiguity than bootstrap retraining (explainability).
 
 ## Negative or null results
 
@@ -7227,5 +8118,31 @@ Wave 12 (R-wave12, mostly one seed at test budgets; no long runs):
 | control | MultiObjectiveRl, envelope Q | Hypervolume 24 vs 264 for linear scalarisation | Weak at 3k steps; diverged with a discount of 1. |
 | control | TabularExploration, UCRL2 | Regret 298 vs 297 for ε-greedy on Deep Sea | Too conservative at these bonus scales. |
 | bandits | RestlessBandits, Whittle Q-learning and the neural index | 3.276 and 3.256 vs 3.250 for random | The learned indices do not approach the known-model index. |
+| explainability | ShapleyMethods, k-SII and SHAP-IQ | Precision@5 0.6 vs 1.0 for the H-statistic on GBT; SHAP-IQ error 0.07–0.08 vs 0.01–0.02 for permutation | Interaction indices do not find the planted pairs better or more cheaply. |
+| explainability | InterpretableNetworks, cosine ProtoPNet | Accuracy 0.64 and purity 0.12 vs 0.82 and 0.75 for ℓ2 | Cosine similarity hurts at every learning rate. |
+| explainability | ExplanationEvaluation, random channel mixtures | Mean IoU 0.20 vs 0.18–0.22 for single units | Units are no more interpretable than random directions here. |
+| symbolic | ClassicalPlanning, additive 4+4 PDB | 398 expansions vs 362 for Manhattan + linear conflicts | The PDB does not beat the hand-made heuristic. |
+| symbolic | LearnedPlanning, ranking loss and partial-space search | Ranking ties or loses to regression; partial-space search fails on Logistics | Neither helps at this scale. |
+| symbolic | ConstraintSolving, ANYCSP | 3/5 solved vs 5/5 for WalkSAT and MAC | The GNN search only ties min-conflicts. |
+| symbolic | LogicInference, decision-DNNF on grid paths | 32,164 nodes vs 539 for the OBDD | The DNNF is larger, not 10x smaller. |
+| symbolic | LogicInference, Markov logic network | AUROC 0.86 vs 0.96 for logistic regression | The MLN loses to the feature baseline. |
+| science | LatticeSampling, flow sampler | Autocorrelation time 47 / 57 vs 1.2 / 2.4 for HMC | Under-trained at about 3 s of training. |
+| science | SignalSearch, CNN chirp detector | Pd 0.37 vs 1.0 for the matched filter | Under-trained at this budget. |
+| science | Neuroscience, PCA + GMM spike sorting | Accuracy 0.53 vs 0.71 for k-means on raw snippets | Far below the predicted 0.9. |
+| imaging | ImageInverseProblems, deep image prior | 27.9 dB (oracle stop) vs 32.5 for NLM | DIP loses to a classical denoiser on these scenes. |
+| imaging | PosteriorSampling, PnP-Flow | 30.9 dB box inpainting vs 48.7 for PnP-HQS with NLM | The small flow prior does not compete. |
+| imaging | ImageInverseProblems, learned single-pixel patterns | 28.3 / 28.7 dB vs 28.5 / 28.8 for Hadamard | Learned patterns only tie. |
+| sensing | DirectionFinding, SubspaceNet | 0.61° vs 0.23° for smoothed MUSIC; DCD-MUSIC 5.3° vs 0.37° for 2-D MUSIC | Learned covariances do not beat the classical fixes. |
+| sensing | SpectralEstimation, multitaper and Lomb–Scargle | Log-spectral distance 2.00 vs 0.88 for Burg; AUC 0.91 vs 0.94 for interpolate-then-FFT | Neither wins where predicted. |
+| inference | LikelihoodFree, NPSE composition at k = 10 | C2ST 0.928 vs 0.570 for stacked NPE | Score composition fails. |
+| inference | LikelihoodFree, ABC regression adjustment and learned summaries | 0.146 vs 0.144 unadjusted; infomax 0.172 | Neither improves on hand summaries. |
+| inference | ExperimentalDesign, DAD at 200 steps | sPCE 3.41 vs 4.31 for a static design | Under-trained; Step-DAD recovers part of the gap. |
+| inference | ModelChecking, PSIS-LOO | elpd error 0.59 vs 0.44 for plain IS-LOO | PSIS is not more accurate here, though k̂ flags outliers. |
+| timeseries | SeriesClassifiers, deep classifiers | InceptionTime 0.783, FCN 0.167 vs 1.000 for ROCKET | No 1-D BatchNorm; ROCKET wins. |
+| selfsupervised | TabularPretraining, VIME, SCARF, SubTab, mask-and-recover | 0.53–0.55 at 5% labels vs 0.548 from scratch and 0.652 for a random forest | Pretraining gives nothing; trees win. |
+| selfsupervised | TabularPretraining, MI-guided corruption | Probe 0.570 vs 0.547 random and 0.580 from scratch | The gain is 1–2 points and stays below scratch. |
+| multitask | SharingArchitectures, cross-stitch weights | Own-task share 0.94 → 0.78 in the last layer | The units move towards sharing, not separation. |
 
 Overturned by the Run: second-order MAML was listed here (1.89 vs 0.81 for first-order, with finite-difference Hessian-vector products). With exact second-order maths (PR #105) it scores 0.65 and is now the best meta-learner in MetaLearningExperiment.
+
+Narrowed by wave 13: the wave 12 row for Deep Closest Point alone (success 0.00 at 15°) was a fair-test target in W13 4.17. With a differentiable SVD in place of the Horn power iteration, DCP alone has a median error of 8.1° at 15° (against 57°), and DCP + ICP succeeds 1.00 / 1.00 / 0.88 at 15° / 45° / 90° (against 0.50 / 0.63 / 0.63), so the weakness was mostly the Procrustes solver, not only the training budget.

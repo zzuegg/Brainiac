@@ -23,6 +23,38 @@ public final class Matrices {
          * @param out receives {@code A in}
          */
         void apply(double[] in, double[] out);
+
+        /**
+         * A dense matrix as an operator.
+         *
+         * @param a the matrix, rows of equal length
+         * @return {@code x -> A x}
+         */
+        static Operator of(double[][] a) {
+            return (in, out) -> {
+                for (int i = 0; i < a.length; i++) {
+                    double s = 0;
+                    for (int j = 0; j < in.length; j++) {
+                        s += a[i][j] * in[j];
+                    }
+                    out[i] = s;
+                }
+            };
+        }
+
+        /**
+         * A diagonal matrix as an operator, such as a Jacobi preconditioner {@code 1 / diag(A)}.
+         *
+         * @param d the diagonal
+         * @return {@code x -> d * x}
+         */
+        static Operator diagonal(double[] d) {
+            return (in, out) -> {
+                for (int i = 0; i < d.length; i++) {
+                    out[i] = d[i] * in[i];
+                }
+            };
+        }
     }
 
     // ------------------------------------------------------------------ LU
@@ -800,6 +832,84 @@ public final class Matrices {
             out[i] = a[i].clone();
         }
         return out;
+    }
+
+    // ------------------------------------------------------------------ conjugate gradient
+
+    /**
+     * Where an iterative solve ended.
+     *
+     * @param x the solution
+     * @param iterations the iterations taken
+     * @param residual the final {@code |b - A x| / |b|}
+     * @param converged whether the tolerance was met
+     */
+    public record Solution(double[] x, int iterations, double residual, boolean converged) {
+    }
+
+    /**
+     * Solves {@code A x = b} for a symmetric positive-definite operator by (preconditioned)
+     * conjugate gradients, as {@code scipy.sparse.linalg.cg}: only products with {@code A} are
+     * needed, so {@code A} can be sparse, structured or matrix-free.
+     *
+     * @param a the operator
+     * @param b the right-hand side
+     * @param x0 the start, or null for zeros
+     * @param preconditioner an approximation of {@code A^-1} (symmetric positive definite), or null
+     * @param tolerance stop when {@code |b - A x| <= tolerance |b|}
+     * @param maxIterations the most iterations
+     * @return the solution
+     */
+    public static Solution conjugateGradient(Operator a, double[] b, double[] x0, Operator preconditioner,
+            double tolerance, int maxIterations) {
+        int n = b.length;
+        double[] x = x0 == null ? new double[n] : x0.clone();
+        double[] r = new double[n];
+        a.apply(x, r);
+        for (int i = 0; i < n; i++) {
+            r[i] = b[i] - r[i];
+        }
+        double bn = norm(b);
+        if (bn == 0) {
+            return new Solution(new double[n], 0, 0, true);
+        }
+        double[] z = new double[n];
+        precondition(preconditioner, r, z);
+        double[] p = z.clone();
+        double[] ap = new double[n];
+        double rz = dot(r, z);
+        double res = norm(r) / bn;
+        int it = 0;
+        while (res > tolerance && it < maxIterations) {
+            it++;
+            a.apply(p, ap);
+            double pap = dot(p, ap);
+            if (!(pap > 0)) {
+                break;   // not positive definite along p
+            }
+            double alpha = rz / pap;
+            for (int i = 0; i < n; i++) {
+                x[i] += alpha * p[i];
+                r[i] -= alpha * ap[i];
+            }
+            res = norm(r) / bn;
+            precondition(preconditioner, r, z);
+            double rzNew = dot(r, z);
+            double beta = rzNew / rz;
+            rz = rzNew;
+            for (int i = 0; i < n; i++) {
+                p[i] = z[i] + beta * p[i];
+            }
+        }
+        return new Solution(x, it, res, res <= tolerance);
+    }
+
+    private static void precondition(Operator m, double[] r, double[] z) {
+        if (m == null) {
+            System.arraycopy(r, 0, z, 0, r.length);
+        } else {
+            m.apply(r, z);
+        }
     }
 
     private static int square(double[][] a) {

@@ -140,8 +140,27 @@ public final class GradientBoostedTrees {
         }
     }
 
-    /** A tree as arrays: a node splits when {@code feature >= 0}, else it is a leaf. */
-    private record Tree(int[] feature, double[] threshold, int[] left, int[] right, double[] value) {
+    /**
+     * A tree as arrays, node 0 the root: a node splits when {@code feature >= 0}, sending rows
+     * with {@code x[feature] < threshold} to {@code left} and the rest to {@code right}; else it
+     * is a leaf worth {@code value} (before the learning rate).
+     *
+     * @param feature the split feature per node, or -1 for a leaf
+     * @param threshold the split value per node
+     * @param left the left child per node
+     * @param right the right child per node
+     * @param value the leaf value per node
+     */
+    public record Tree(int[] feature, double[] threshold, int[] left, int[] right, double[] value) {
+
+        /** @return the number of nodes */
+        public int nodes() {
+            return feature.length;
+        }
+
+        private Tree copy() {
+            return new Tree(feature.clone(), threshold.clone(), left.clone(), right.clone(), value.clone());
+        }
 
         double predict(double[] x) {
             int n = 0;
@@ -547,5 +566,25 @@ public final class GradientBoostedTrees {
     /** @return the number of trees */
     public int size() {
         return trees.size();
+    }
+
+    /**
+     * Returns a copy of one tree, for inspection or export.
+     *
+     * @param i the tree, from 0
+     * @return the tree
+     */
+    public Tree tree(int i) {
+        return trees.get(i).copy();
+    }
+
+    /** @return the raw score every row starts from, before the trees */
+    public double base() {
+        return base;
+    }
+
+    /** @return the factor each tree's leaf values are multiplied by */
+    public double learningRate() {
+        return learningRate;
     }
 }
