@@ -124,33 +124,51 @@ public final class HotCache<K, V> {
                 total += s;
             }
         }
-        // free what fell out first, then load the hottest newcomers within the swap limit
-        for (var it = held.entrySet().iterator(); it.hasNext();) {
-            Map.Entry<K, V> e = it.next();
-            if (!want.containsKey(e.getKey())) {
-                unload.accept(e.getValue());
-                bytes -= size.applyAsLong(e.getKey());
-                it.remove();
-            }
-        }
-        for (var it = pending.entrySet().iterator(); it.hasNext();) {
-            Map.Entry<K, CompletableFuture<V>> e = it.next();
-            if (!want.containsKey(e.getKey())) {
-                dropped.add(e.getValue());
-                it.remove();
-            }
-        }
-        long loaded = 0;
+        // the hottest newcomers within the swap limit, then room for them: what fell out of the
+        // ranking leaves, coldest first, only as far as the newcomers need, so that a refresh
+        // that may load little does not empty the cache
+        Map<K, Long> newcomers = new LinkedHashMap<>();
+        long loading = 0;
         for (Map.Entry<K, Long> e : want.entrySet()) {
             if (held.containsKey(e.getKey()) || pending.containsKey(e.getKey())) {
                 continue;
             }
-            if (filled && loaded + e.getValue() > maxSwapBytes) {
+            if (filled && loading + e.getValue() > maxSwapBytes) {
                 break;
             }
-            K key = e.getKey();
+            newcomers.put(e.getKey(), e.getValue());
+            loading += e.getValue();
+        }
+        long kept = 0;
+        List<K> leaving = new ArrayList<>();
+        for (K k : held.keySet()) {
+            kept += size.applyAsLong(k);
+            if (!want.containsKey(k)) {
+                leaving.add(k);
+            }
+        }
+        for (K k : pending.keySet()) {
+            kept += size.applyAsLong(k);
+            if (!want.containsKey(k)) {
+                leaving.add(k);
+            }
+        }
+        leaving.sort((x, y) -> Double.compare(heat(x), heat(y)));
+        for (K k : leaving) {
+            if (kept + loading <= budget) {
+                break;
+            }
+            kept -= size.applyAsLong(k);
+            V v = held.remove(k);
+            if (v != null) {
+                unload.accept(v);
+                bytes -= size.applyAsLong(k);
+            } else {
+                dropped.add(pending.remove(k));
+            }
+        }
+        for (K key : newcomers.keySet()) {
             pending.put(key, CompletableFuture.supplyAsync(() -> load.apply(key), loader));
-            loaded += e.getValue();
         }
         filled = true;
         for (double[] c : counts.values()) {
@@ -189,7 +207,13 @@ public final class HotCache<K, V> {
     }
 
     private double heat(Map.Entry<K, double[]> e) {
-        return held.containsKey(e.getKey()) ? e.getValue()[0] * HELD_BONUS : e.getValue()[0];
+        return heat(e.getKey());
+    }
+
+    private double heat(K key) {
+        double[] c = counts.get(key);
+        double n = c == null ? 0 : c[0];
+        return held.containsKey(key) || pending.containsKey(key) ? n * HELD_BONUS : n;
     }
 
     /** Whether {@code key}'s copy is held. */

@@ -50,6 +50,22 @@ class HotCacheTest {
     }
 
     @Test
+    void aSmallSwapLimitDoesNotEmptyTheCache() {
+        HotCache<String, String> c = cache(30, 3, 30, 10);
+        c.use("a", 1);
+        c.use("b", 1);
+        c.use("c", 1);   // fills with a, b and c
+        assertEquals(3, c.size());
+        c.use("d", 10);
+        c.use("e", 10);
+        c.use("f", 10);  // refresh: d, e and f are hotter, but only one may load
+        assertEquals(3, c.size());
+        assertEquals(30, c.bytes());
+        assertTrue(c.holds("d"));
+        assertEquals(1, unloaded.size());
+    }
+
+    @Test
     void keepsAHeldItemOfAboutTheSameHeat() {
         HotCache<String, String> c = cache(10, 4, 4, 10);
         c.use("a", 4);   // fills with a; a's count halves to 2
