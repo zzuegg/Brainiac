@@ -836,12 +836,13 @@ public final class AgentRuns {
         List<String> notes = new ArrayList<>();
         List<String> logs = new ArrayList<>();
         int[] calls = {0};
+        String[] lastResult = {null};
         Map<String, Interpreter.HostFunction> fns = new LinkedHashMap<>();
         for (String name : tools.keySet()) {
             if (name.equals("run_script") || !permitted(r, name, p)) {
                 continue;
             }
-            fns.put(name, a -> scriptCall(r, p, name, a, notes, calls));
+            fns.put(name, a -> scriptCall(r, p, name, a, notes, calls, lastResult));
         }
         Interpreter.Host host = new Interpreter.Host() {
             @Override
@@ -864,6 +865,9 @@ public final class AgentRuns {
             if (calls[0] > 0) {
                 b.append("; it made ").append(calls[0]).append(" tool call(s) before that, which stand");
             }
+            if (lastResult[0] != null) {
+                b.append("; the last call returned: ").append(lastResult[0]);
+            }
             if (!logs.isEmpty()) {
                 b.append("; it logged:\n").append(String.join("\n", logs));
             }
@@ -884,7 +888,8 @@ public final class AgentRuns {
     }
 
     // one tool call from a script
-    private Object scriptCall(Run r, Project p, String name, List<Object> given, List<String> notes, int[] calls) {
+    private Object scriptCall(Run r, Project p, String name, List<Object> given, List<String> notes, int[] calls,
+            String[] lastResult) {
         if (calls[0] >= SCRIPT_CALLS) {
             throw new Interpreter.HostError("ToolError", "a script makes at most " + SCRIPT_CALLS + " tool calls");
         }
@@ -911,6 +916,7 @@ public final class AgentRuns {
             throw new Stopped();
         }
         boolean ok = !out.startsWith("error:");
+        lastResult[0] = name + " → " + (out.length() > 600 ? out.substring(0, 600) + "…" : out);
         r.step("result", Map.of("tool", name, "text", out.length() > 4000 ? out.substring(0, 4000) + "…" : out, "ok", ok,
                 "via", "script"));
         save(r);

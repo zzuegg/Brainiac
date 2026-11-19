@@ -234,7 +234,8 @@ public final class AgentTools implements RiskRefiner {
             + "approved like your own calls. The script's value is its top-level return, or its last expression; "
             + "console.log lines come back too. Modern JavaScript without classes, modules or real promises: await "
             + "is allowed but needless. No file system, network or timers except through tools. At most 100 tool "
-            + "calls and 30 seconds of its own work. Example: const fs = tools.list_project_files({}); "
+            + "calls and 30 seconds of its own work. Where a Returns is vague, look before you rely on a shape: "
+            + "console.log a result or return it whole. Example: const fs = tools.list_project_files({}); "
             + "return fs.entries.filter(e => e.name.endsWith('.md')).map(e => e.name);")
     @Tier(value = Risk.READ, resultChars = 20_000)
     @Returns("{result, calls, logs?, notes?}: the script's value as JSON, the number of tool calls, its console lines "

@@ -530,7 +530,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "list_datasets", value = "Lists the built-in data sets and the data files in the studio's "
             + "datasets folder.")
-    @Returns("{datasets: [{name, ...}], ...}")
+    @Returns("{folder, builtins: [{name, what, input, targets, classes}], files: [{name, kind, bytes, columns?, classes?}]}")
     public Map<String, Object> listDatasets() {
         return call(() -> training.data().list());
     }
