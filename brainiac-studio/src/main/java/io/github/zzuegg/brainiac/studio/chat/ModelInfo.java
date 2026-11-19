@@ -41,6 +41,19 @@ public record ModelInfo(String provider, String id, String name, List<String> me
         return media.contains("text");
     }
 
+    /**
+     * The context window its detail names, such as {@code 200k context}.
+     *
+     * @return tokens, or 0 if the detail does not say
+     */
+    public long contextTokens() {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)([kM]) context").matcher(detail);
+        if (!m.find()) {
+            return 0;
+        }
+        return Math.round(Double.parseDouble(m.group(1)) * (m.group(2).equals("M") ? 1_000_000 : 1000));
+    }
+
     /** Writes a context length as {@code 200k context} or {@code 1M context}; empty when unknown. */
     static String context(long tokens) {
         if (tokens <= 0) {

@@ -128,7 +128,13 @@ final class AnthropicProvider extends RemoteProvider {
         }
         body.put("messages", messages);
         if (tools) {
-            body.put("tools", request.tools().stream().map(ToolCalls::anthropic).toList());
+            List<Map<String, Object>> defs = new ArrayList<>(request.tools().stream().map(ToolCalls::anthropic).toList());
+            // the tools and instructions stay the same through a run: cache them, and the conversation so far
+            Map<String, Object> last = new LinkedHashMap<>(defs.getLast());
+            last.put("cache_control", Map.of("type", "ephemeral"));
+            defs.set(defs.size() - 1, last);
+            body.put("tools", defs);
+            body.put("cache_control", Map.of("type", "ephemeral"));
         }
         // thinking with tools needs its signed blocks sent back, which a conversation kept as text has not
         if (!tools && (listed ? adaptive.contains(request.model()) : ADAPTIVE.matcher(request.model()).matches())) {
@@ -168,7 +174,13 @@ final class AnthropicProvider extends RemoteProvider {
                         }
                     }
                 }
-                case "message_start" -> usage[0] = num(obj(obj(e.get("message")).get("usage")).get("input_tokens"));
+                case "message_start" -> {
+                    // cached input is counted apart; all of it was read
+                    Map<String, Object> u = obj(obj(e.get("message")).get("usage"));
+                    long in = num(u.get("input_tokens"));
+                    usage[0] = in < 0 ? in : in + Math.max(0, num(u.get("cache_read_input_tokens")))
+                            + Math.max(0, num(u.get("cache_creation_input_tokens")));
+                }
                 case "content_block_delta" -> {
                     Map<String, Object> d = obj(e.get("delta"));
                     switch (Json.string(d, "type", "")) {

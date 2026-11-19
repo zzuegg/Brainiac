@@ -417,4 +417,5 @@ class AgentRulesTest {
         assertTrue(Json.array(woken.get("steps")).stream().map(Json::object)
                 .anyMatch(s -> "inbox".equals(s.get("kind")) && String.valueOf(s.get("messages")).contains("count the files")));
     }
+
 }

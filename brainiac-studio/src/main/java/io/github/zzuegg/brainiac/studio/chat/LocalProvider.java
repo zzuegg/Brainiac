@@ -319,14 +319,30 @@ final class LocalProvider implements ChatProvider {
         return speech == null ? null : speech.options(model).toJson();
     }
 
+    // the context window a model's config.json names, or 0
+    private static long window(Path folder) {
+        try {
+            Map<String, Object> c = io.github.zzuegg.brainiac.io.Json.object(io.github.zzuegg.brainiac.io.Json.parse(
+                    Files.readString(folder.resolve("config.json"))));
+            Object text = c.get("text_config");
+            Map<String, Object> t = text instanceof Map<?, ?> m ? io.github.zzuegg.brainiac.io.Json.object(m) : c;
+            return Math.max(io.github.zzuegg.brainiac.io.Json.integer(t, "max_position_embeddings", 0),
+                    io.github.zzuegg.brainiac.io.Json.integer(c, "max_position_embeddings", 0));
+        } catch (IOException | RuntimeException e) {
+            return 0;
+        }
+    }
+
     @Override
     public List<ModelInfo> models() {
         List<ModelInfo> out = new ArrayList<>();
         for (Map.Entry<String, Path> e : find().entrySet()) {
             Path p = e.getValue();
             boolean gguf = Files.isRegularFile(p);
+            long window = gguf ? 0 : window(p);
             out.add(new ModelInfo(id(), e.getKey(), e.getKey(), List.of("text"), 0,
-                    (gguf ? "GGUF" : "safetensors") + " · " + size(p) + (sees(p) ? " · looks at pictures" : "")));
+                    (gguf ? "GGUF" : "safetensors") + " · " + size(p) + (sees(p) ? " · looks at pictures" : "")
+                            + (window > 0 ? " · " + ModelInfo.context(window) : "")));
         }
         if (images != null) {
             out.addAll(images.models());

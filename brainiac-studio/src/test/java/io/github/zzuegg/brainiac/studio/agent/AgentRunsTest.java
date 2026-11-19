@@ -121,6 +121,8 @@ class AgentRunsTest {
         Map<String, StudioTools.Entry> tools = agents.tools();
         assertTrue(tools.keySet().containsAll(List.of("list_models", "search_hub", "hub_files", "download_model",
                 "list_datasets", "start_training", "stop_training", "list_training_runs")), tools.keySet().toString());
+        assertEquals(List.of(), tools.values().stream().filter(e -> e.returns() == null).map(e -> e.tool().name()).toList(),
+                "every tool says what it returns");
         assertNull(tools.get("list_datasets").acts());
         assertNotNull(tools.get("download_model").acts());
         assertNotNull(tools.get("start_training").acts());
@@ -193,7 +195,9 @@ class AgentRunsTest {
         assertEquals(20L, ((Number) run.get("inputTokens")).longValue());
 
         ChatRequest first = script.heard.getFirst();
-        assertTrue(first.system().contains("<tools>") && first.system().contains("\"name\":\"start_training\""));
+        assertTrue(first.system().contains("<tools>") && first.system().contains("\n- list_models("));
+        assertTrue(first.system().contains("# More tools") && first.system().contains("- start_training: ")
+                && !first.system().contains("- start_training("), "tools beyond the core ones are listed by name");
         ChatRequest second = script.heard.get(1);
         String asked = second.messages().get(1).text();
         assertFalse(asked.contains("made up"), "what the model imagined after its call is dropped");
@@ -226,6 +230,61 @@ class AgentRunsTest {
         Map<String, Object> r2 = until(auto, r -> "done".equals(r.get("state")));
         assertEquals(List.of("goal", "call", "result", "answer"), kinds(r2));
         assertTrue(script.heard.getLast().messages().getLast().text().contains("there is no run 7"));
+    }
+
+    @Test
+    void aScriptCallsToolsThatAreJudgedOneByOne() throws Exception {
+        String code = "const sets = tools.list_datasets({});\n"
+                + "let stopped;\n"
+                + "try { stopped = tools.stop_training({id: '7'}); } catch (e) { stopped = e.name + ': ' + e.message; }\n"
+                + "console.log('checked', Object.keys(sets).length > 0);\n"
+                + "return {stopped, hasSets: JSON.stringify(sets).includes('spirals')};";
+        script.turns.add("<tool_call>" + Json.write(Map.of("name", "run_script", "arguments", Map.of("code", code)))
+                + "</tool_call>");
+        script.turns.add("Done.");
+        String id = (String) agents.start("Check the sets", "script/bot", "ask", 5, null).get("id");
+        Map<String, Object> waiting = until(id, r -> "waiting".equals(r.get("state")));
+        assertEquals("stop_training", Json.object(waiting.get("pending")).get("tool"), "a call in a script asks too");
+        assertTrue(agents.answer(id, false, "not now"));
+        Map<String, Object> run = until(id, r -> "done".equals(r.get("state")));
+        assertEquals(List.of("goal", "call", "call", "result", "call", "decision", "result", "result", "answer"),
+                kinds(run));
+        String told = script.heard.getLast().messages().getLast().text();
+        assertTrue(told.contains("\"stopped\":\"ToolError: the user did not allow this call; they said: not now\"")
+                && told.contains("\"hasSets\":true") && told.contains("\"calls\":2")
+                && told.contains("checked true"), told);
+        ChatRequest first = script.heard.getFirst();
+        assertTrue((first.system() + first.tools()).contains("Returns {result, calls"), "tools say what they return");
+
+        // a script that does not parse says where
+        script.turns.add("<tool_call>{\"name\": \"run_script\", \"arguments\": {\"code\": \"let = 1\"}}</tool_call>");
+        script.turns.add("Oops.");
+        String bad = (String) agents.start("Try", "script/bot", "auto", 5, null).get("id");
+        until(bad, r -> "done".equals(r.get("state")));
+        String error = script.heard.getLast().messages().getLast().text();
+        assertTrue(error.contains("error: line 1"), error);
+    }
+
+    @Test
+    void findToolsLoadsAToolForTheNextTurns() throws Exception {
+        script.turns.add("<tool_call>{\"name\": \"find_tools\", \"arguments\": {\"names\": [\"start_training\"]}}</tool_call>");
+        script.turns.add("Loaded.");
+        String id = (String) agents.start("Get ready to train", "script/bot", "auto", 5, null).get("id");
+        until(id, r -> "done".equals(r.get("state")));
+        assertFalse(script.heard.get(0).system().contains("- start_training("));
+        assertTrue(script.heard.get(1).system().contains("- start_training(model: string, data: string"), "loaded from the next turn on");
+    }
+
+    @Test
+    void agentsSeeTheRolesAndWhichTheyMayStart() throws Exception {
+        script.turns.add("<tool_call>{\"name\": \"list_roles\", \"arguments\": {}}</tool_call>");
+        script.turns.add("Done.");
+        String id = (String) agents.start("Which roles are there?", "script/bot", "auto", 5, null).get("id");
+        until(id, r -> "done".equals(r.get("state")));
+        String told = script.heard.getLast().messages().getLast().text();
+        assertTrue(told.contains("\"id\":\"researcher\"") && told.contains("\"purpose\"")
+                && told.contains("\"youMayStart\":true"), told);
+        assertTrue(script.heard.getFirst().system().contains("list_roles says what each role is for"));
     }
 
     @Test
