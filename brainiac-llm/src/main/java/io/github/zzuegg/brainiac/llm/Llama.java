@@ -2718,7 +2718,9 @@ public final class Llama implements LanguageModel {
             Var bias = from[i].bias == null ? null : Var.of(from[i].bias.value().to(target).to(dtype));
             out[i] = new Linear(Var.of(w), bias);
             if (w.isPacked()) {
-                Tensor.evaluate(List.of(w));   // a matrix packed for later starts its upload now
+                // uploaded here, before the next is read: queued for a background upload, the
+                // copies waiting in host memory took more heap than there was (measured)
+                Tensor.prefetchNow(List.of(w));
             }
         }
         return out;

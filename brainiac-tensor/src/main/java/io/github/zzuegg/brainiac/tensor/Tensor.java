@@ -793,6 +793,23 @@ public final class Tensor {
     }
 
     /**
+     * Moves packed matrices that wait for their first use (see {@link #packed(PackedMatrix,
+     * Device, boolean)}) to their devices now, on this thread, and returns once they are there,
+     * keeping no host copy where the backend can: for copies used only on their device, such
+     * as a GPU's cache of experts, since reading them back may then be unsupported. A thread
+     * that makes many such copies so holds only a few in host memory at once.
+     *
+     * @param tensors the tensors, on any devices; others are left as they are
+     */
+    public static void prefetchNow(java.util.List<Tensor> tensors) {
+        for (Tensor t : tensors) {
+            if (t.storage instanceof PackedStorage p) {
+                t.device.backend().prefetchNow(p);
+            }
+        }
+    }
+
+    /**
      * Sums tensors that live on different devices, such as the gradients of data-parallel
      * training, and gives each device the sum: element {@code i} of the result is the sum on
      * the device of {@code tensors.get(i)}. Devices that can exchange values directly (CUDA
