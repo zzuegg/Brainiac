@@ -227,21 +227,28 @@ final class VectorBlockKernels {
      * Q6_K: per half (128 values) and 16 positions {@code l}, the values at {@code l + 32 g}
      * (g 0 to 3) come from the same bytes: low 4 bits from {@code ql[l]} (g 0, 2) and
      * {@code ql[l + 32]} (g 1, 3), the top 2 from bits {@code 2 g} of {@code qh[l]}. Each 8 of
-     * those bytes is loaded once and gives 32 values, with constant byte shifts and masks.
+     * those bytes is loaded once and gives 32 values, with constant byte shifts and masks. The
+     * row is copied to a per-thread array first, as for {@link #q80}: measured 15% faster than
+     * reading the block's scales and codes from the segment.
      */
     private static float q6k(MemorySegment m, long row, float[] x, int at, int k) {
+        int bytes = 210 * (k / 256);
+        byte[] q = ROW.get();
+        if (q.length < bytes) {
+            q = new byte[bytes];
+            ROW.set(q);
+        }
+        MemorySegment.copy(m, ValueLayout.JAVA_BYTE, row, q, 0, bytes);
         float sum = 0;
         for (int b = 0; b < k / 256; b++) {
-            long o = row + 210L * b;
-            float d = f16(m, o + 208);
+            int o = 210 * b;
+            float d = Float.float16ToFloat((short) ((q[o + 208] & 0xFF) | q[o + 209] << 8));
             for (int i = 0; i < 4; i++) {
                 int half = i >>> 1;
                 int c = i & 1;
-                long sc = o + 192 + 8L * half + c;
-                sum += q6kGroup(m, o + 64L * half + 16 * c, o + 128 + 32L * half + 16 * c, x,
-                        at + 256 * b + 128 * half + 16 * c, d * m.get(ValueLayout.JAVA_BYTE, sc),
-                        d * m.get(ValueLayout.JAVA_BYTE, sc + 2), d * m.get(ValueLayout.JAVA_BYTE, sc + 4),
-                        d * m.get(ValueLayout.JAVA_BYTE, sc + 6));
+                int sc = o + 192 + 8 * half + c;
+                sum += q6kGroup(q, o + 64 * half + 16 * c, o + 128 + 32 * half + 16 * c, x,
+                        at + 256 * b + 128 * half + 16 * c, d * q[sc], d * q[sc + 2], d * q[sc + 4], d * q[sc + 6]);
             }
         }
         return sum;
@@ -253,13 +260,13 @@ final class VectorBlockKernels {
      * helper calls taking or returning vectors: measured on JDK 27, either made the JIT box the
      * vectors, and the kernel ran 2 times slower.
      */
-    private static float q6kGroup(MemorySegment m, long ql, long qh, float[] x, int xo, float s0, float s1, float s2,
+    private static float q6kGroup(byte[] m, int ql, int qh, float[] x, int xo, float s0, float s1, float s2,
             float s3) {
         FloatVector v = FloatVector.zero(F8);
         for (int j = 0; j < 16; j += 8) {
-            ByteVector a = ByteVector.fromMemorySegment(B8, m, ql + j, LE);
-            ByteVector bb = ByteVector.fromMemorySegment(B8, m, ql + 32 + j, LE);
-            ByteVector h = ByteVector.fromMemorySegment(B8, m, qh + j, LE);
+            ByteVector a = ByteVector.fromArray(B8, m, ql + j);
+            ByteVector bb = ByteVector.fromArray(B8, m, ql + 32 + j);
+            ByteVector h = ByteVector.fromArray(B8, m, qh + j);
             // written out, not through helpers taking vectors: a small helper the JIT compiled on
             // its own was not inlined again here, and its vectors were boxed (measured, 2x slower)
             ByteVector q0 = a.and((byte) 0x0F).or(h.lanewise(VectorOperators.LSHL, 4).and((byte) 0x30)).sub((byte) 32);
@@ -279,7 +286,6 @@ final class VectorBlockKernels {
         }
         return v.reduceLanes(VectorOperators.ADD);
     }
-
 
     /** As {@link BlockKernels#dot}, two vectors of running sums at a time. */
     static float dot(float[] x, int at, float[] y, int k) {
