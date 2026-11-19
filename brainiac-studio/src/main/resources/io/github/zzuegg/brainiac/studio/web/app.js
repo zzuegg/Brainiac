@@ -6267,7 +6267,7 @@ reason ::= [a-z ]+`;
       <div class="muted">${esc(r.description || "")}</div>
       <div class="ag-role-chips">${r.mode ? `<span class="chip">${esc(modeLabel(r.mode))}</span>` : ""}<span class="chip">${tools}</span>
         ${r.extends ? `<span class="chip">extends ${esc(roleName(r.extends))}</span>` : ""}
-        ${(r.canSpawn || []).length ? `<span class="chip c-text" title="${esc(r.canSpawn.map(roleName).join(", "))}">starts ${r.canSpawn.length} roles</span>` : ""}
+        ${(r.canSpawn || []).includes("*") ? `<span class="chip c-text">starts any role</span>` : (r.canSpawn || []).length ? `<span class="chip c-text" title="${esc(r.canSpawn.map(roleName).join(", "))}">starts ${r.canSpawn.length} role${r.canSpawn.length === 1 ? "" : "s"}</span>` : ""}
         ${r.budget?.steps ? `<span class="chip">${r.budget.steps} steps</span>` : ""}</div>
       <div class="ag-bar">${r.builtin ? `<button class="btn ghost sm" data-as-copy="${esc(r.id)}">${icon("copy")}Make a copy</button>`
         : `<button class="btn ghost sm" data-as-edit="${esc(r.id)}">${icon("edit")}Edit</button><button class="btn ghost sm" data-as-del="${esc(r.id)}">${icon("trash")}${AS.deleting === r.id ? "Click again" : "Delete"}</button>`}</div>
@@ -6301,7 +6301,7 @@ reason ::= [a-z ]+`;
         ${own ? `<input class="input" id="as-tool-filter" placeholder="Filter tools" value="${esc(AS.filter)}">
           <div class="ag-tool-grid">${tools.map(t => `<label class="ag-check" title="${esc(t.description)}"><input type="checkbox" data-as-tool="${esc(t.name)}" ${d.tools.includes(t.name) ? "checked" : ""}><code>${esc(t.name)}</code>${riskChip(t.risk)}</label>`).join("")}</div>` : ""}
         <div class="h3 ag-fam">May start these roles as sub-agents</div>
-        <div class="ag-tool-grid">${AS.roles.map(r => `<label class="ag-check"><input type="checkbox" data-as-spawn="${esc(r.id)}" ${(d.canSpawn || []).includes(r.id) ? "checked" : ""}>${esc(r.name)}</label>`).join("")}</div>
+        <div class="ag-tool-grid"><label class="ag-check"><input type="checkbox" data-as-spawn="*" ${(d.canSpawn || []).includes("*") ? "checked" : ""}><b>Any role</b></label>${AS.roles.map(r => `<label class="ag-check"><input type="checkbox" data-as-spawn="${esc(r.id)}" ${(d.canSpawn || []).includes(r.id) ? "checked" : ""}>${esc(r.name)}</label>`).join("")}</div>
         <div class="ag-bar"><button class="btn primary" type="submit" ${AS.busy ? "disabled" : ""}>${icon("check")}Save role</button><button class="btn ghost" type="button" id="as-role-cancel">Cancel</button></div>
       </form>`;
   }

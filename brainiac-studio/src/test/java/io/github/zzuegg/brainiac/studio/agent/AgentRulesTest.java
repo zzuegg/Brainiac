@@ -117,7 +117,8 @@ class AgentRulesTest {
                 }
             }
             for (String child : e.canSpawn()) {
-                assertTrue(agents.roles().get(child).isPresent(), r.id() + " may start an unknown role " + child);
+                assertTrue(child.equals("*") || agents.roles().get(child).isPresent(),
+                        r.id() + " may start an unknown role " + child);
             }
         }
         assertEquals("plan", agents.roles().resolve("planner", null).mode());
@@ -372,5 +373,48 @@ class AgentRulesTest {
         again.close();
         assertTrue(again.list().stream().allMatch(m -> String.valueOf(m.get("id")).matches("\\d+")),
                 "the reminders kept beside the runs are not read as runs");
+    }
+
+    private String startAs(String role, String goal) {
+        return (String) ScopedValue.where(ChatService.SCOPE, project).call(() -> agents.start(
+                new AgentRuns.Spec(goal, role, "script/bot", "auto", 6, null, null))).get("id");
+    }
+
+    private static boolean ended(Map<String, Object> r) {
+        return !"running".equals(r.get("state")) && !"waiting".equals(r.get("state"));
+    }
+
+    @Test
+    void rolesThatMayStartSubAgentsCanCallSpawnAgent() throws Exception {
+        // the manager's tool list leaves spawn_agent out; its canSpawn is what lets it start others
+        script.turns.add(call("spawn_agent", Map.of("role", "writer", "goal", "Draft a haiku", "model", "script/bot")));
+        String id = startAs("manager", "Get a haiku written");
+        Map<String, Object> done = until(id, AgentRulesTest::ended);
+        List<Object> kids = Json.array(done.get("children"));
+        assertEquals(1, kids.size(), "the manager started a writer");
+        Map<String, Object> child = until(String.valueOf(kids.getFirst()), AgentRulesTest::ended);
+        assertEquals("writer", child.get("role"));
+        assertEquals(id, child.get("parent"));
+
+        // the general assistant may start any role; a writer may start none
+        assertTrue(new Roles(data.resolve("roles")).resolve("assistant", agents.tools().keySet()).spawns("coder"));
+        script.turns.add(call("spawn_agent", Map.of("role", "tester", "goal", "Test it", "model", "script/bot")));
+        String w = startAs("writer", "Write and test");
+        assertTrue(lastResult(until(w, AgentRulesTest::ended)).startsWith("error"), "a writer starts no agents");
+    }
+
+    @Test
+    void aMessageWakesAnAgentThatHasFinished() throws Exception {
+        String a = startAs("assistant", "Wait for work");
+        assertEquals("done", until(a, AgentRulesTest::ended).get("state"));
+        script.turns.add(call("send_message", Map.of("to", a, "text", "Please count the files")));
+        String b = startAs("assistant", "Ask agent " + a + " to count the files");
+        Map<String, Object> sender = until(b, AgentRulesTest::ended);
+        assertTrue(lastResult(sender).contains("woke it"), lastResult(sender));
+        Map<String, Object> woken = until(a, r -> ended(r) && Json.array(r.get("steps")).stream()
+                .anyMatch(s -> "inbox".equals(Json.object(s).get("kind"))));
+        assertEquals("done", woken.get("state"));
+        assertTrue(Json.array(woken.get("steps")).stream().map(Json::object)
+                .anyMatch(s -> "inbox".equals(s.get("kind")) && String.valueOf(s.get("messages")).contains("count the files")));
     }
 }
