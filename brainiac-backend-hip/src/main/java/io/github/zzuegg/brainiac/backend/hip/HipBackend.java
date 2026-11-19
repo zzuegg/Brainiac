@@ -45,7 +45,8 @@ import java.util.Optional;
  * <p>Run with {@code --enable-native-access=io.github.zzuegg.brainiac.backend.hip} (or
  * {@code ALL-UNNAMED} on the class path). System properties:
  * <ul>
- * <li>{@code brainiac.hip.device}: the device index, default 0</li>
+ * <li>{@code brainiac.hip.device}: the device index, default the GPU with the most compute units
+ * (a graphics card before the processor's integrated GPU)</li>
  * <li>{@code brainiac.hip.memory}: the memory budget in MB</li>
  * <li>{@code brainiac.hip.debug=true}: wait after every operation, so errors name the
  * operation that caused them</li>
@@ -102,7 +103,7 @@ public final class HipBackend implements Backend {
         return Optional.ofNullable(first);
     }
 
-    /** The device index, or -1 for the one {@code brainiac.hip.device} names (default 0). */
+    /** The device index, or -1 for the one {@code brainiac.hip.device} names (default the largest GPU). */
     private final int requested;
     private final boolean primary;
 
@@ -167,7 +168,7 @@ public final class HipBackend implements Backend {
             initialized = true;
             long start = System.nanoTime();
             try {
-                hip = new HipContext(requested >= 0 ? requested : Integer.getInteger("brainiac.hip.device", 0));
+                hip = new HipContext(requested >= 0 ? requested : Integer.getInteger("brainiac.hip.device", HipContext.largestDevice()));
                 initNanos = System.nanoTime() - start;
                 synchronized (HipBackend.class) {
                     if (first == null && primary) {

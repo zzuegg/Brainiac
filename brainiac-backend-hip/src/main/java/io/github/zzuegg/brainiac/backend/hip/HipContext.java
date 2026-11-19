@@ -108,6 +108,31 @@ final class HipContext {
     final int ordinal;
 
     /**
+     * The device with the most compute units (then the most memory): the graphics card rather
+     * than an integrated GPU, which HIP may number first.
+     */
+    static int largestDevice() {
+        HipRuntime rt = runtime();
+        int best = 0;
+        long bestScore = -1;
+        for (int i = 0; i < rt.deviceCount(); i++) {
+            long score;
+            try {
+                int device = rt.device(i);
+                long memory = rt.totalMemory(device);
+                score = (long) rt.properties(device, memory).multiprocessors() << 40 | Math.min(memory >> 20, (1L << 40) - 1);
+            } catch (HipException e) {
+                score = 0;
+            }
+            if (score > bestScore) {
+                best = i;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    /**
      * Opens a device.
      *
      * @param ordinal its index among the driver's devices

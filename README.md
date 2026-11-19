@@ -1429,7 +1429,8 @@ install folders. The kernels are written for 32-lane wavefronts, so it needs an 
 `--enable-native-access=io.github.zzuegg.brainiac.backend.hip`; the device is `hip`
 (`-Dbrainiac.gpu=hip` to prefer it over Vulkan, `-PtestDevice=hip` for the model tests). It covers
 the same operations as the CUDA backend; several GPUs sum gradients on the host (no RCCL on
-Windows). System properties: `brainiac.hip.device`, `brainiac.hip.memory`, `brainiac.hip.debug`,
+Windows). The first device is the GPU with the most compute units, so a graphics card wins over the
+processor's integrated GPU, which HIP may number first. System properties: `brainiac.hip.device`, `brainiac.hip.memory`, `brainiac.hip.debug`,
 `brainiac.hip.critical`, `brainiac.hip.runtime`/`hiprtc`/`rocblas` (library files; `rocblas=none`
 turns rocBLAS off), `brainiac.hip.arch` (the compiler target, when the runtime does not tell),
 `brainiac.hip.cache`, `brainiac.hip.statistics`, `brainiac.hip.devices`,
