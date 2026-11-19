@@ -374,6 +374,15 @@ final class HipRuntime {
         check(r, "hipFree");
     }
 
+    /** Frees device memory, returning the error code instead of throwing (for teardown). */
+    int freeQuietly(long pointer) {
+        try {
+            return (int) hipFree.invokeExact(pointer);
+        } catch (Throwable t) {
+            throw Binder.fail("hipFree", t);
+        }
+    }
+
     /** Free and total device memory in bytes. */
     long[] memoryInfo() {
         try (Arena a = Arena.ofConfined()) {

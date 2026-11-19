@@ -636,17 +636,20 @@ final class HipContext {
         trace("closing: hipStreamSynchronize");
         cu.synchronize(stream);
         drainCollected();
-        for (Long ptr : live) {
-            cu.free(ptr);
-        }
-        live.clear();
+        // every step goes on after an error, so the device is released as far as it can be
+        int failed = 0;
+        Set<Long> all = new HashSet<>(live);
         for (ArrayDeque<Long> free : pool.values()) {
-            for (Long ptr : free) {
-                cu.free(ptr);
-            }
+            all.addAll(free);
             free.clear();
         }
-        trace("closing: freed device memory");
+        live.clear();
+        for (Long ptr : all) {
+            if (cu.freeQuietly(ptr) != HipRuntime.HIP_SUCCESS) {
+                failed++;
+            }
+        }
+        trace("closing: freed " + all.size() + " blocks of device memory" + (failed > 0 ? ", " + failed + " refused" : ""));
         if (staging != null) {
             cu.freeHost(staging);
             staging = null;
