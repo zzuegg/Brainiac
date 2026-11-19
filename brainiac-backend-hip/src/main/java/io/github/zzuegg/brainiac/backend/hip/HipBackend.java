@@ -623,7 +623,12 @@ public final class HipBackend implements Backend {
         HipStorage x = as(cs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
             c.args().ptr(x.address()).ptr(y.address()).i64(rows).i64(length).i64(inner);
-            c.launch(kernel("argmax", y.dtype), rows);
+            if (rows < 2L * c.multiprocessors && length > 1024) {
+                // few long rows (a vocabulary's logits): a block each, not a thread
+                c.launch(kernel("argmax_block", y.dtype), (int) rows, 1, 1);
+            } else {
+                c.launch(kernel("argmax", y.dtype), rows);
+            }
         } else {
             reduce(c, op.ordinal(), x, y, rows, length, inner);
         }
@@ -668,7 +673,7 @@ public final class HipBackend implements Backend {
         HipStorage y = as(cs(b), z.dtype);
         DType t = z.dtype;
         boolean blas = c.rocblas != null;
-        if (FEW_ROWS && batch == 1 && m >= 2 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
+        if (FEW_ROWS && batch == 1 && m >= 1 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
             // a handful of rows: a BLAS library runs these 16-bit products slower than float32 ones
             few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
         } else if (blas) {

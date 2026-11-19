@@ -1356,6 +1356,11 @@ public final class VulkanBackend implements Backend {
         done(y, vs(b));
     }
 
+    @Override
+    public boolean readsTransposedInPlace() {
+        return true;   // a pending transpose is read by matmul_vect or the tiles
+    }
+
     /** Whether products read transposed and strided operands in place ({@code -Dbrainiac.vulkan.stridedMatmul=false}: never). */
     private static final boolean STRIDED_MATMUL =
             !"false".equalsIgnoreCase(System.getProperty("brainiac.vulkan.stridedMatmul"));

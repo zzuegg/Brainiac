@@ -130,6 +130,17 @@ public final class Device {
     }
 
     /**
+     * Whether a product with a transposed matrix reads it in place on this device instead of
+     * copying it first; where it does not, a matrix used transposed over and over is worth
+     * keeping transposed.
+     *
+     * @return {@code true} if transposed operands cost no copy
+     */
+    public boolean readsTransposedInPlace() {
+        return backend().readsTransposedInPlace();
+    }
+
+    /**
      * Returns whether tensors of a type can live on this device.
      *
      * @param dtype the type

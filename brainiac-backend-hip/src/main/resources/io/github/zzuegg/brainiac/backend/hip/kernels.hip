@@ -458,6 +458,47 @@ template <class D> __device__ void argmax_k(const typename D::T* x, typename D::
     }
 }
 
+// argmax of few long rows (a vocabulary's logits): a block per row, each thread scanning every
+// GROUP-th value, then the threads' bests combined, the first index winning a tie
+template <class D> __device__ void argmax_block_k(const typename D::T* x, typename D::T* y, i64 rows, i64 len,
+        i64 inner) {
+    typedef typename D::A A;
+    __shared__ A values[GROUP];
+    __shared__ i64 indices[GROUP];
+    for (i64 r = blockIdx.x; r < rows; r += gridDim.x) {
+        i64 base = (r / inner) * len * inner + r % inner;
+        i64 best = -1;
+        A bestValue = A(0);
+        for (i64 t = threadIdx.x; t < len; t += GROUP) {
+            A v = D::ld(x, base + t * inner);
+            if (best < 0 || v > bestValue) {
+                best = t;
+                bestValue = v;
+            }
+        }
+        values[threadIdx.x] = bestValue;
+        indices[threadIdx.x] = best;
+        __syncthreads();
+        for (int s = GROUP / 2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) {
+                i64 oi = indices[threadIdx.x + s];
+                i64 mi = indices[threadIdx.x];
+                A ov = values[threadIdx.x + s];
+                A mv = values[threadIdx.x];
+                if (oi >= 0 && (mi < 0 || ov > mv || (ov == mv && oi < mi))) {
+                    values[threadIdx.x] = ov;
+                    indices[threadIdx.x] = oi;
+                }
+            }
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            D::st(y, r, A(indices[0]));
+        }
+        __syncthreads();
+    }
+}
+
 // RMSNorm, one block per row: y = round(x / sqrt(mean(x^2) + eps)) * w, in float
 template <class D> __device__ void rms_norm_k(const typename D::T* x, const typename D::T* w, typename D::T* y,
         i64 rows, int cols, float eps) {
@@ -1073,6 +1114,9 @@ extern "C" __global__ void reduce_block_##S(const D::T* x, D::T* y, i64 rows, i6
 }                                                                                                                 \
 extern "C" __global__ void argmax_##S(const D::T* x, D::T* y, i64 rows, i64 len, i64 inner) {                    \
     argmax_k<D>(x, y, rows, len, inner);                                                                          \
+}                                                                                                                 \
+extern "C" __global__ void argmax_block_##S(const D::T* x, D::T* y, i64 rows, i64 len, i64 inner) {              \
+    argmax_block_k<D>(x, y, rows, len, inner);                                                                    \
 }                                                                                                                 \
 extern "C" __global__ void rms_norm_##S(const D::T* x, const D::T* w, D::T* y, i64 rows, int cols, float eps) {  \
     rms_norm_k<D>(x, w, y, rows, cols, eps);                                                                      \

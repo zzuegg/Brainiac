@@ -576,6 +576,16 @@ final class HipContext {
     /** Freed allocations from the collector's thread, returned to the pool by the next allocation. */
     private final ConcurrentLinkedQueue<long[]> collected = new ConcurrentLinkedQueue<>();
     private final Map<Long, ArrayDeque<Long>> pool = new HashMap<>();
+    /**
+     * Free blocks of the small sizes, most cut from slabs: hipMalloc takes tens of microseconds
+     * and a decoded token asks for hundreds of small blocks, which come back only once the
+     * garbage collector finds their tensors. Never trimmed; freed at {@link #close()}.
+     */
+    private final Map<Long, ArrayDeque<Long>> smallPool = new HashMap<>();
+    /** The slabs: their addresses and sizes. */
+    private final java.util.TreeMap<Long, Long> slabs = new java.util.TreeMap<>();
+    /** The largest size class cut from slabs. */
+    static final long SLAB_LIMIT = 1L << 20;
     private final Set<Long> live = new HashSet<>();
     private long inUse;
     private long peak;
@@ -597,10 +607,12 @@ final class HipContext {
     long allocate(long bytes) {
         drainCollected();
         long size = sizeClass(bytes);
-        ArrayDeque<Long> free = pool.get(size);
+        ArrayDeque<Long> free = freeList(size);
         long ptr;
         if (free != null && !free.isEmpty()) {
             ptr = free.pop();
+        } else if (size <= SLAB_LIMIT && reserved + slabBytes(size) <= budget) {
+            ptr = cutSlab(size);
         } else {
             if (reserved + size > budget) {
                 long t0 = PROFILE ? System.nanoTime() : 0;
@@ -623,6 +635,38 @@ final class HipContext {
         inUse += size;
         peak = Math.max(peak, inUse);
         return ptr;
+    }
+
+    private ArrayDeque<Long> freeList(long size) {
+        return (size <= SLAB_LIMIT ? smallPool : pool).get(size);
+    }
+
+    /** The bytes of a slab cut into blocks of {@code size}: 64 of them, within 1 to 8 MB. */
+    static long slabBytes(long size) {
+        long bytes = Math.min(8L << 20, Math.max(1L << 20, size * 64));
+        return bytes / size * size;
+    }
+
+    /** A new slab cut into blocks of {@code size}: returns the first, pools the others. */
+    private long cutSlab(long size) {
+        long bytes = slabBytes(size);
+        trace("hipMalloc " + bytes + " bytes (a slab of " + (bytes / size) + " blocks of " + size + ")");
+        long t0 = PROFILE ? System.nanoTime() : 0;
+        long base = allocateFromDriver(bytes);
+        record("hipMalloc (slab)", PROFILE ? System.nanoTime() - t0 : 0);
+        reserved += bytes;
+        slabs.put(base, bytes);
+        ArrayDeque<Long> free = smallPool.computeIfAbsent(size, x -> new ArrayDeque<>());
+        for (long at = bytes - size; at > 0; at -= size) {
+            free.push(base + at);
+        }
+        return base;
+    }
+
+    /** Whether {@code ptr} lies in a slab, and so is freed with it. */
+    private boolean inSlab(long ptr) {
+        Map.Entry<Long, Long> e = slabs.floorEntry(ptr);
+        return e != null && ptr < e.getKey() + e.getValue();
     }
 
     private long lastCollection;
@@ -650,7 +694,7 @@ final class HipContext {
                 break;
             }
             drainCollected();
-            ArrayDeque<Long> free = pool.get(size);
+            ArrayDeque<Long> free = freeList(size);
             if (free != null && !free.isEmpty()) {
                 return free.pop();
             }
@@ -694,7 +738,7 @@ final class HipContext {
         if (live.remove(ptr)) {
             long size = sizeClass(bytes);
             inUse -= size;
-            pool.computeIfAbsent(size, s -> new ArrayDeque<>()).push(ptr);
+            (size <= SLAB_LIMIT ? smallPool : pool).computeIfAbsent(size, s -> new ArrayDeque<>()).push(ptr);
         }
     }
 
@@ -740,11 +784,16 @@ final class HipContext {
         // every step goes on after an error, so the device is released as far as it can be
         int failed = 0;
         Set<Long> all = new HashSet<>(live);
-        for (ArrayDeque<Long> free : pool.values()) {
-            all.addAll(free);
-            free.clear();
+        for (Map<Long, ArrayDeque<Long>> p : List.of(pool, smallPool)) {
+            for (ArrayDeque<Long> free : p.values()) {
+                all.addAll(free);
+                free.clear();
+            }
         }
         live.clear();
+        all.removeIf(this::inSlab);
+        all.addAll(slabs.keySet());
+        slabs.clear();
         for (Long ptr : all) {
             if (cu.freeQuietly(ptr) != HipRuntime.HIP_SUCCESS) {
                 failed++;
