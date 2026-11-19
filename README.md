@@ -1016,8 +1016,13 @@ public final class MyTts implements CapabilityProvider {
 **Chat** works with models on this PC and at Anthropic, OpenAI, Google, Hugging Face, DeepSeek,
 Qwen (Alibaba Cloud), Kimi (Moonshot), GLM (Zhipu), MiniMax, Mistral, xAI, Groq and OpenRouter.
 Local models are Hugging Face model folders (Llama, Qwen2, Mistral) and `.gguf` files in
-`./models`, `~/.brainiac/models`, `$BRAINIAC_MODELS`, or the folders given with
-`--models <folder>`. **Add folder or GGUF** on the Models screen adds any other file or folder,
+`$BRAINIAC_MODELS` (several folders, split as in a path), `./models`, the folders with "models"
+in their name in any folder above the one the studio starts in (such as `Brainiac-models-large`
+beside a checkout), `~/.brainiac/models`, the Hugging Face cache and
+LM Studio's models folder, or the folders given with `--models <folder>`. Models in folders below
+these are found too, up to five levels down; code projects (`.git`, `build`, `node_modules` and
+the like) are skipped, and a Hugging Face cache snapshot is named after its model.
+**Add folder or GGUF** on the Models screen adds any other file or folder,
 picked by browsing this PC or typed; the files stay where they are, and the list is kept in
 `local-models.txt` in the data folder. **Hugging Face** on the same screen searches the Hub
 and shows only the models the studio runs: whole model folders of a family `LlamaConfig.MODEL_TYPES`

@@ -5413,7 +5413,7 @@ reason ::= [a-z ]+`;
     const inside = l ? l.entries.filter(e => e.kind !== "folder").length : 0;
     const here = l && l.path ? (l.kind === "model" ? "This folder is a model." : `${inside || "No"} model${inside === 1 ? "" : "s"} directly in this folder.`) : "";
     return `<form class="placebox" id="place-form" autocomplete="off">
-      <div class="place-head"><div><b>Add models from this PC</b> <span class="muted">A <code>.gguf</code> file, a Hugging Face model folder (Llama, Qwen2, Mistral), or a folder holding them. The files stay where they are.</span></div>
+      <div class="place-head"><div><b>Add models from this PC</b> <span class="muted">A <code>.gguf</code> file, a Hugging Face model folder (Llama, Qwen2, Mistral), or a folder holding them, in folders below it too, such as <code>D:\\models</code>. The files stay where they are.</span></div>
         <button type="button" class="iconbtn sm" id="place-close" aria-label="Close">${icon("x")}</button></div>
       <div class="place-path"><input class="input mono" id="place-path" placeholder="A file or folder, such as D:/Models" value="${esc(P.path)}" spellcheck="false" aria-label="File or folder">
         <button class="btn primary" type="submit" ${P.busy || !P.path.trim() ? "disabled" : ""}>${P.busy ? "Adding…" : "Add"}</button></div>
