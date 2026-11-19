@@ -774,12 +774,6 @@ public final class HipBackend implements Backend {
      */
     private void few(HipContext c, String kernel, HipStorage a, long w, long scales, long offsets, int group,
             int nibbles, int m, int k, int n, HipStorage out) {
-        int perThread = 16 / out.dtype.bytes();
-        if (FEW_VEC && kernel.equals("few_dense") && m <= FEW_VEC_ROWS && n % perThread == 0 && (w & 15) == 0
-                && out.dtype != DType.FLOAT64) {
-            fewVec(c, a, w, m, k, n, out, perThread);
-            return;
-        }
         int columnBlocks = (n + FEW_COLUMNS - 1) / FEW_COLUMNS;
         int target = 4 * c.multiprocessors;
         int pieces = Math.max(1, Math.min((k + 127) / 128, target / columnBlocks));
@@ -805,39 +799,6 @@ public final class HipBackend implements Backend {
             long mn = (long) m * n;
             c.args().ptr(part.address()).ptr(out.address()).i64(mn).i32(pieces);
             c.launch(kernel("few_sum", out.dtype), mn);
-            part.release();
-        }
-    }
-
-    /** Whether products of up to 4 rows read 16 bytes of weights at a time ({@code -Dbrainiac.hip.fewVec=false}: never). */
-    private static final boolean FEW_VEC = !"false".equals(System.getProperty("brainiac.hip.fewVec"));
-    /** The most rows {@code few_vec} takes (FEW_VEC_ROWS in kernels.hip). */
-    static final int FEW_VEC_ROWS = 4;
-
-    /**
-     * {@code few_vec}: a thread per {@code perThread} columns, reading them as one 16-byte load
-     * per row; {@code k} split into pieces of at least 64 rows until there are 8 blocks per
-     * compute unit, so that enough loads are in flight to keep the memory busy.
-     */
-    private void fewVec(HipContext c, HipStorage a, long w, int m, int k, int n, HipStorage out, int perThread) {
-        int columnBlocks = (n / perThread + FEW_COLUMNS - 1) / FEW_COLUMNS;
-        int target = 8 * c.multiprocessors;
-        int pieces = Math.max(1, Math.min((k + 63) / 64, target / columnBlocks));
-        int chunk = ((k + pieces - 1) / pieces + 63) / 64 * 64;
-        pieces = (k + chunk - 1) / chunk;
-        if (pieces > 1 && columnBlocks > FEW_COUNTERS) {
-            pieces = 1;
-            chunk = k;
-        }
-        HipStorage part = pieces > 1 ? raw((long) pieces * m * n, DType.FLOAT32, null) : null;
-        if (part != null && fewCounters == null) {
-            fewCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
-            fill(fewCounters, 0);
-        }
-        c.args().ptr(a.address()).ptr(w).ptr(part != null ? part.address() : 0).ptr(out.address()).i32(m).i32(k)
-                .i32(n).i32(chunk).ptr(part != null ? fewCounters.address() : 0);
-        c.launch(kernel("few_vec", out.dtype), columnBlocks, pieces, 1);
-        if (part != null) {
             part.release();
         }
     }

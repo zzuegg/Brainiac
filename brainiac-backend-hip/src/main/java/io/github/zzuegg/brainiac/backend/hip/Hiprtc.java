@@ -140,6 +140,12 @@ final class Hiprtc {
         }
         MemorySegment log = a.allocate(n);
         check((int) hiprtcGetProgramLog.invokeExact(prog, log), "hiprtcGetProgramLog");
-        return log.getString(0).strip();
+        // read as many bytes as were reported: the log need not end in a NUL
+        byte[] bytes = log.toArray(JAVA_BYTE);
+        int end = 0;
+        while (end < bytes.length && bytes[end] != 0) {
+            end++;
+        }
+        return new String(bytes, 0, end, java.nio.charset.StandardCharsets.UTF_8).strip();
     }
 }

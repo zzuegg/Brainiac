@@ -780,105 +780,6 @@ template <class D, class W> __device__ void few_k(const typename D::T* a, W w, f
     }
 }
 
-// Products of up to FEW_VEC_ROWS rows with a dense w whose rows hold a multiple of 16 bytes:
-// each thread reads 16 bytes of a row of w at once (8 16-bit values, 4 float32), for V columns,
-// so that the many small loads of few_k do not keep a decoded token's products far below the
-// memory's speed. Pieces of k as in few_k, summed by the last block of each column block.
-#define FEW_VEC_ROWS 4
-
-// value v of the 16 bytes in `raw`, as stored values of type T
-template <class T> __device__ __forceinline__ T lane_of(const uint4& raw, int v);
-template <> __device__ __forceinline__ u16 lane_of<u16>(const uint4& raw, int v) {
-    unsigned w = v < 2 ? raw.x : v < 4 ? raw.y : v < 6 ? raw.z : raw.w;
-    return (u16) (w >> (16 * (v & 1)));
-}
-template <> __device__ __forceinline__ float lane_of<float>(const uint4& raw, int v) {
-    return __uint_as_float(v == 0 ? raw.x : v == 1 ? raw.y : v == 2 ? raw.z : raw.w);
-}
-
-template <class D> __device__ void few_vec_k(const typename D::T* a, const typename D::T* w, float* part,
-        typename D::T* out, int m, int k, int n, int chunk, int* counters) {
-    typedef typename D::A A;
-    typedef typename D::T T;
-    constexpr int V = 16 / sizeof(T);
-    __shared__ A as[FEW_VEC_ROWS][FEW_TILE];
-    i64 c0 = ((i64) blockIdx.x * GROUP + threadIdx.x) * V;
-    bool active = c0 < n;
-    int k0 = blockIdx.y * chunk;
-    int k1 = min(k, k0 + chunk);
-    A acc[FEW_VEC_ROWS][V];
-#pragma unroll
-    for (int r = 0; r < FEW_VEC_ROWS; r++) {
-#pragma unroll
-        for (int v = 0; v < V; v++) {
-            acc[r][v] = A(0);
-        }
-    }
-    for (int t = k0; t < k1; t += FEW_TILE) {
-        int len = min(FEW_TILE, k1 - t);
-        for (int i = threadIdx.x; i < FEW_VEC_ROWS * FEW_TILE; i += GROUP) {
-            int r = i / FEW_TILE;
-            int kk = i % FEW_TILE;
-            as[r][kk] = r < m && kk < len ? D::ld(a, (i64) r * k + t + kk) : A(0);
-        }
-        __syncthreads();
-        if (active) {
-#pragma unroll 4
-            for (int kk = 0; kk < len; kk++) {
-                uint4 raw = *reinterpret_cast<const uint4*>(w + (i64) (t + kk) * n + c0);
-#pragma unroll
-                for (int v = 0; v < V; v++) {
-                    T stored = lane_of<T>(raw, v);
-                    A wv = D::ld(&stored, 0);
-#pragma unroll
-                    for (int r = 0; r < FEW_VEC_ROWS; r++) {
-                        acc[r][v] += as[r][kk] * wv;
-                    }
-                }
-            }
-        }
-        __syncthreads();
-    }
-    if (active) {
-        for (int r = 0; r < m; r++) {
-#pragma unroll
-            for (int v = 0; v < V; v++) {
-                if (gridDim.y == 1) {
-                    D::st(out, (i64) r * n + c0 + v, acc[r][v]);
-                } else {
-                    part[((i64) blockIdx.y * m + r) * n + c0 + v] = (float) acc[r][v];
-                }
-            }
-        }
-    }
-    if (gridDim.y > 1) {
-        __shared__ int last;
-        __threadfence();
-        __syncthreads();
-        if (threadIdx.x == 0) {
-            last = atomicAdd(&counters[blockIdx.x], 1) == (int) gridDim.y - 1;
-        }
-        __syncthreads();
-        if (last) {
-            __threadfence();
-            if (active) {
-                for (int r = 0; r < m; r++) {
-                    for (int v = 0; v < V; v++) {
-                        A sum = A(0);
-                        for (int q = 0; q < (int) gridDim.y; q++) {
-                            sum += (A) load_part(part + ((i64) q * m + r) * n + c0 + v);
-                        }
-                        D::st(out, (i64) r * n + c0 + v, sum);
-                    }
-                }
-            }
-            if (threadIdx.x == 0) {
-                counters[blockIdx.x] = 0;
-            }
-        }
-    }
-}
-
 template <class D> __device__ void few_sum_k(const float* part, typename D::T* out, i64 mn, int pieces) {
     typedef typename D::A A;
     FOR_EACH(i, mn) {
@@ -1329,10 +1230,6 @@ extern "C" __global__ void few_packed_##S(const D::T* a, const signed char* leve
         int* counters) {                                                                                          \
     PackedWeights pw = {levels, scales, offsets, n, group, nibbles};                                              \
     few_k<D>(a, pw, part, out, m, k, n, chunk, counters);                                                         \
-}                                                                                                                 \
-extern "C" __global__ void few_vec_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m, int k,       \
-        int n, int chunk, int* counters) {                                                                        \
-    few_vec_k<D>(a, w, part, out, m, k, n, chunk, counters);                                                      \
 }                                                                                                                 \
 extern "C" __global__ void few_sum_##S(const float* part, D::T* out, i64 mn, int pieces) {                        \
     few_sum_k<D>(part, out, mn, pieces);                                                                          \
