@@ -91,6 +91,19 @@ class HotCacheTest {
     }
 
     @Test
+    void preloadFillsAsFarAsTheBudgetGoesThenFollowsTheUses() {
+        HotCache<String, String> c = cache(20, 4, 100, 10);
+        c.preload(List.of("a", "b", "c"));
+        assertEquals(2, c.size());
+        assertTrue(c.holds("a") && c.holds("b"));
+        assertEquals("copy of a", c.use("a", 1));
+        c.use("c", 3);   // the warm-up's end refreshes: c is hot, b never used
+        assertTrue(c.holds("c"));
+        assertFalse(c.holds("b"));
+        assertTrue(c.holds("a"));
+    }
+
+    @Test
     void clearFreesEverything() {
         HotCache<String, String> c = cache(30, 1, 100, 0);
         c.use("a", 1);

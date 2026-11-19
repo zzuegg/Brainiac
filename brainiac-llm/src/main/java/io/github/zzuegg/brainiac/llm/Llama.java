@@ -2610,9 +2610,10 @@ public final class Llama implements LanguageModel {
     /**
      * Keeps copies of the most used experts on {@code target} (the GPU) where the experts of
      * blocks on {@code target} are kept elsewhere ({@link #loadExpertsOnCpu}): up to {@code bytes}
-     * of them, chosen from the experts the model used. The copies fill after a warm-up of about
-     * 32 tokens and follow what the model uses after that, swapping a few every 256 tokens;
-     * they are made on other threads, and decoding goes on without each until it is ready. A
+     * of them. The cache starts with the experts of the first blocks, copied before this
+     * returns, and follows what the model uses from a warm-up of about 32 tokens on, swapping
+     * an eighth of it at most every 128 tokens; those copies are made on other threads, and
+     * decoding goes on without each until it is ready. A
      * token's experts with a copy run on {@code target}, at the same time as the rest on the
      * CPU. Where the routing favours some experts, which it does for most text, more of every
      * token's expert work moves to the GPU than with whole blocks of experts there
@@ -2629,7 +2630,21 @@ public final class Llama implements LanguageModel {
         }
         int k = config.extras().moe().present() ? config.extras().moe().perToken() : 1;
         long perToken = (long) Math.max(1, routed) * k;
-        return cacheExperts(target, bytes, 32 * perToken, 256 * perToken, Math.max(1, bytes / 16), COPIER);
+        cacheExperts(target, bytes, 32 * perToken, 128 * perToken, Math.max(1, bytes / 8), COPIER);
+        // a start: the experts of the first blocks, as many as fit, copied now while nothing
+        // else runs; filling it while decoding took seconds of the first tokens (measured)
+        List<ExpertKey> first = new ArrayList<>();
+        for (Block b : blocks) {
+            if (b.experts != null && !b.experts.gate()[0].weight.value().device().equals(target)) {
+                for (int e = 0; e < b.experts.gate().length; e++) {
+                    first.add(new ExpertKey(b.experts, e));
+                }
+            }
+        }
+        if (expertCache != null) {
+            expertCache.preload(first);
+        }
+        return this;
     }
 
     /**

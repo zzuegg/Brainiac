@@ -178,7 +178,12 @@ class LlamaTest {
         }
         assertArrayEquals(java.util.Arrays.copyOfRange(logits, logits.length - cached.config().vocabSize(),
                 logits.length), last.to(DType.FLOAT32).toArray(), 1e-3f, name + " expert cache, step by step");
+        // started with the first blocks' experts, copied in the background
+        Llama preloaded = Llama.loadExpertsOnCpu(resource(name + ".gguf"), DEVICE, DType.FLOAT32, 0)
+                .cacheExperts(DEVICE, 1 << 16);
+        assertArrayEquals(logits, preloaded.forward(ids).value().toArray(), 1e-4f, name + " preloaded expert cache");
         if (DEVICE.kind() != Device.Kind.CPU) {
+            assertTrue(preloaded.expertCache().size() > 0, preloaded.expertCacheStats());
             // some experts ran from copies and some from the file
             double hits = cached.expertCache().hitRate();
             assertTrue(cached.expertCache().size() > 0 && hits > 0 && hits < 1, cached.expertCacheStats());

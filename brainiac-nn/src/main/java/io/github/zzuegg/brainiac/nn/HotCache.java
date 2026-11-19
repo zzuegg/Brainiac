@@ -111,6 +111,45 @@ public final class HotCache<K, V> {
         return v;
     }
 
+    /**
+     * Fills the cache with {@code keys}, in order, as far as the budget goes, and waits for the
+     * copies: a start for a stream with no uses yet, made while nothing else runs (a model
+     * loading). The refreshes then move the cache toward what the stream uses, within the swap
+     * limit, as after a first fill.
+     *
+     * @param keys the items to hold first, the most likely first
+     */
+    public void preload(Iterable<K> keys) {
+        List<CompletableFuture<V>> started = new ArrayList<>();
+        synchronized (this) {
+            long total = bytes;
+            for (K key : keys) {
+                long s = size.applyAsLong(key);
+                if (total + s > budget) {
+                    break;
+                }
+                if (held.containsKey(key) || pending.containsKey(key)) {
+                    continue;
+                }
+                CompletableFuture<V> f = CompletableFuture.supplyAsync(() -> load.apply(key), loader);
+                pending.put(key, f);
+                started.add(f);
+                total += s;
+            }
+            filled = true;
+        }
+        for (CompletableFuture<V> f : started) {
+            try {
+                f.join();
+            } catch (java.util.concurrent.CompletionException e) {
+                // left out; a refresh may try it again
+            }
+        }
+        synchronized (this) {
+            settle();
+        }
+    }
+
     /** Ranks the items again and swaps copies; the first time, fills the whole budget. */
     public synchronized void refresh() {
         List<Map.Entry<K, double[]>> ranked = new ArrayList<>(counts.entrySet());
