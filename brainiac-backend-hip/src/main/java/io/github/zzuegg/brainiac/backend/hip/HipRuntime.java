@@ -68,6 +68,14 @@ final class HipRuntime {
     private final MethodHandle hipModuleUnload;
     private final MethodHandle hipHostFree;
     private final MethodHandle hipDeviceReset;
+    // graphs: null when the runtime lacks them
+    private final MethodHandle hipStreamBeginCapture;
+    private final MethodHandle hipStreamEndCapture;
+    private final MethodHandle hipGraphInstantiate;
+    private final MethodHandle hipGraphLaunch;
+    private final MethodHandle hipGraphExecUpdate;
+    private final MethodHandle hipGraphDestroy;
+    private final MethodHandle hipGraphExecDestroy;
 
     /**
      * Loads the HIP runtime and binds its functions. Does not call into it.
@@ -133,6 +141,88 @@ final class HipRuntime {
         hipModuleUnload = b.bind("hipModuleUnload", FunctionDescriptor.of(JAVA_INT, JAVA_LONG), false);
         hipHostFree = b.bind("hipHostFree", FunctionDescriptor.of(JAVA_INT, PTR), false);
         hipDeviceReset = b.bind("hipDeviceReset", FunctionDescriptor.of(JAVA_INT), false);
+        hipStreamBeginCapture = b.optional("hipStreamBeginCapture", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT));
+        hipStreamEndCapture = b.optional("hipStreamEndCapture", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, PTR));
+        hipGraphInstantiate = b.optional("hipGraphInstantiate",
+                FunctionDescriptor.of(JAVA_INT, PTR, JAVA_LONG, PTR, PTR, JAVA_LONG));
+        hipGraphLaunch = b.optional("hipGraphLaunch", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG));
+        hipGraphExecUpdate = b.optional("hipGraphExecUpdate", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, PTR, PTR));
+        hipGraphDestroy = b.optional("hipGraphDestroy", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        hipGraphExecDestroy = b.optional("hipGraphExecDestroy", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+    }
+
+    // ------------------------------------------------------------------ graphs
+
+    boolean hasGraphs() {
+        return hipStreamBeginCapture != null && hipStreamEndCapture != null && hipGraphInstantiate != null
+                && hipGraphLaunch != null && hipGraphExecUpdate != null && hipGraphDestroy != null
+                && hipGraphExecDestroy != null;
+    }
+
+    /** Starts recording what is queued on {@code stream} instead of running it (relaxed mode). */
+    void beginCapture(long stream) {
+        try {
+            check((int) hipStreamBeginCapture.invokeExact(stream, 2), "hipStreamBeginCapture");
+        } catch (Throwable t) {
+            throw Binder.fail("hipStreamBeginCapture", t);
+        }
+    }
+
+    /** Ends recording; returns the graph. */
+    long endCapture(long stream) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment v = a.allocate(JAVA_LONG);
+            check((int) hipStreamEndCapture.invokeExact(stream, v), "hipStreamEndCapture");
+            return v.get(JAVA_LONG, 0);
+        } catch (Throwable t) {
+            throw Binder.fail("hipStreamEndCapture", t);
+        }
+    }
+
+    long instantiate(long graph) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment v = a.allocate(JAVA_LONG);
+            check((int) hipGraphInstantiate.invokeExact(v, graph, MemorySegment.NULL, MemorySegment.NULL, 0L),
+                    "hipGraphInstantiate");
+            return v.get(JAVA_LONG, 0);
+        } catch (Throwable t) {
+            throw Binder.fail("hipGraphInstantiate", t);
+        }
+    }
+
+    void launchGraph(long exec, long stream) {
+        try {
+            check((int) hipGraphLaunch.invokeExact(exec, stream), "hipGraphLaunch");
+        } catch (Throwable t) {
+            throw Binder.fail("hipGraphLaunch", t);
+        }
+    }
+
+    /** Gives {@code exec} the parameters of {@code graph}, of the same shape; false if it cannot. */
+    boolean updateGraph(long exec, long graph) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment node = a.allocate(JAVA_LONG);
+            MemorySegment result = a.allocate(JAVA_INT);
+            return (int) hipGraphExecUpdate.invokeExact(exec, graph, node, result) == HIP_SUCCESS;
+        } catch (Throwable t) {
+            throw Binder.fail("hipGraphExecUpdate", t);
+        }
+    }
+
+    void destroyGraph(long graph) {
+        try {
+            int r = (int) hipGraphDestroy.invokeExact(graph);
+        } catch (Throwable t) {
+            throw Binder.fail("hipGraphDestroy", t);
+        }
+    }
+
+    void destroyGraphExec(long exec) {
+        try {
+            int r = (int) hipGraphExecDestroy.invokeExact(exec);
+        } catch (Throwable t) {
+            throw Binder.fail("hipGraphExecDestroy", t);
+        }
     }
 
     // ------------------------------------------------------------------ errors

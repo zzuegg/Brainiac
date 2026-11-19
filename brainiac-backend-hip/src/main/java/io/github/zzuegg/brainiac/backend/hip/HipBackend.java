@@ -312,6 +312,75 @@ public final class HipBackend implements Backend {
                 + " collections" + c.profileReport();
     }
 
+    /**
+     * For deciding whether to replay decoding as HIP graphs: the time per kernel of a chain of
+     * {@code kernels} small element-wise kernels (896 float16 values each, as a decoded token's
+     * are), launched one by one, replayed as an instantiated graph, and recorded again and
+     * updated into that graph before each replay (what decoding would do every token).
+     */
+    synchronized String graphBenchmark(int kernels, int reps) {
+        HipContext c = ctx();
+        if (!c.cu.hasGraphs()) {
+            return "no graphs in this HIP runtime";
+        }
+        int n = 896;
+        HipStorage x = raw(n, DType.FLOAT16, null);
+        HipStorage y = raw(n, DType.FLOAT16, null);
+        fill(x, 1);
+        fill(y, 0);
+        String name = kernel("binary_contiguous", DType.FLOAT16);
+        Runnable chain = () -> {
+            for (int i = 0; i < kernels; i++) {
+                c.args().ptr(x.address()).ptr(y.address()).ptr(y.address()).i64(n).i32(BinaryOp.ADD.ordinal());
+                c.launch(name, n);
+            }
+        };
+        chain.run();
+        c.finish();
+        long t0 = System.nanoTime();
+        for (int r = 0; r < reps; r++) {
+            chain.run();
+        }
+        c.finish();
+        double plain = (System.nanoTime() - t0) / 1e3 / reps / kernels;
+        c.cu.beginCapture(c.stream);
+        chain.run();
+        long graph = c.cu.endCapture(c.stream);
+        long exec = c.cu.instantiate(graph);
+        c.cu.launchGraph(exec, c.stream);
+        c.finish();
+        t0 = System.nanoTime();
+        for (int r = 0; r < reps; r++) {
+            c.cu.launchGraph(exec, c.stream);
+        }
+        c.finish();
+        double replay = (System.nanoTime() - t0) / 1e3 / reps / kernels;
+        boolean updated = true;
+        long captureNanos = 0;
+        t0 = System.nanoTime();
+        for (int r = 0; r < reps; r++) {
+            long s = System.nanoTime();
+            c.cu.beginCapture(c.stream);
+            chain.run();
+            long g = c.cu.endCapture(c.stream);
+            updated &= c.cu.updateGraph(exec, g);
+            c.cu.destroyGraph(g);
+            captureNanos += System.nanoTime() - s;
+            c.cu.launchGraph(exec, c.stream);
+        }
+        c.finish();
+        double recorded = (System.nanoTime() - t0) / 1e3 / reps / kernels;
+        c.cu.destroyGraphExec(exec);
+        c.cu.destroyGraph(graph);
+        x.release();
+        y.release();
+        return String.format(java.util.Locale.ROOT,
+                "%d kernels x %d: launched %.2f us each; graph replayed %.2f us each; recorded, updated%s and replayed"
+                        + " %.2f us each (recording and updating %.2f us of it)",
+                kernels, reps, plain, replay, updated ? "" : " (UPDATE FAILED)", recorded,
+                captureNanos / 1e3 / reps / kernels);
+    }
+
     /** Waits until the device has run everything queued, for timing. */
     public synchronized void finish() {
         if (hip != null) {

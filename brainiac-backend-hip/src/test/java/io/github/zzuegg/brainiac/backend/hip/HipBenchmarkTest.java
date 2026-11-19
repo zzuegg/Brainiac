@@ -63,4 +63,14 @@ class HipBenchmarkTest {
         }
         System.out.println(backend.statistics());
     }
+
+    @Test
+    void graphs() {
+        assumeTrue(Boolean.getBoolean("brainiac.bench"), "benchmark: -Pbench");
+        Device.available().stream().filter(d -> d.name().startsWith("hip")).findFirst().orElseThrow();
+        HipBackend backend = HipBackend.loaded().orElseThrow();
+        for (int kernels : new int[] {100, 500}) {
+            System.out.println(backend.graphBenchmark(kernels, 50));
+        }
+    }
 }
