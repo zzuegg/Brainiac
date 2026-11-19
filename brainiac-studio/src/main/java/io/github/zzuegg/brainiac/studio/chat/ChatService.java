@@ -1315,6 +1315,26 @@ public final class ChatService {
         }
     }
 
+    /**
+     * The context window of a model, as its provider or its config says.
+     *
+     * @param key the model's key
+     * @return tokens, or 0 if unknown
+     */
+    public long contextOf(String key) {
+        if (key == null) {
+            return 0;
+        }
+        for (Listing l : listAll(false).values()) {
+            for (ModelInfo m : l.models()) {
+                if (m.key().equals(key)) {
+                    return m.contextTokens();
+                }
+            }
+        }
+        return 0;
+    }
+
     private ModelInfo resolve(String model, String medium) throws IOException {
         ModelInfo target = resolveAny(model, medium);
         if (SCOPE.isBound() && !SCOPE.get().allows(target.key())) {

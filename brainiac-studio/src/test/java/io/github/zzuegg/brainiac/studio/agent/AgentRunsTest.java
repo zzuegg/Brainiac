@@ -195,7 +195,9 @@ class AgentRunsTest {
         assertEquals(20L, ((Number) run.get("inputTokens")).longValue());
 
         ChatRequest first = script.heard.getFirst();
-        assertTrue(first.system().contains("<tools>") && first.system().contains("\"name\":\"start_training\""));
+        assertTrue(first.system().contains("<tools>") && first.system().contains("\n- list_models("));
+        assertTrue(first.system().contains("# More tools") && first.system().contains("- start_training: ")
+                && !first.system().contains("- start_training("), "tools beyond the core ones are listed by name");
         ChatRequest second = script.heard.get(1);
         String asked = second.messages().get(1).text();
         assertFalse(asked.contains("made up"), "what the model imagined after its call is dropped");
@@ -261,6 +263,16 @@ class AgentRunsTest {
         until(bad, r -> "done".equals(r.get("state")));
         String error = script.heard.getLast().messages().getLast().text();
         assertTrue(error.contains("error: line 1"), error);
+    }
+
+    @Test
+    void findToolsLoadsAToolForTheNextTurns() throws Exception {
+        script.turns.add("<tool_call>{\"name\": \"find_tools\", \"arguments\": {\"names\": [\"start_training\"]}}</tool_call>");
+        script.turns.add("Loaded.");
+        String id = (String) agents.start("Get ready to train", "script/bot", "auto", 5, null).get("id");
+        until(id, r -> "done".equals(r.get("state")));
+        assertFalse(script.heard.get(0).system().contains("- start_training("));
+        assertTrue(script.heard.get(1).system().contains("- start_training(model: string, data: string"), "loaded from the next turn on");
     }
 
     @Test

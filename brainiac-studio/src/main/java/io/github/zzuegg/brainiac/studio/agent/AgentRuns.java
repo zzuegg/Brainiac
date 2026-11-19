@@ -147,6 +147,10 @@ public final class AgentRuns {
         int wakes;
         long tokenBase;
         final List<Map<String, Object>> steps = new ArrayList<>();
+        // the context window of the model that answers, once known; 0 before
+        long window;
+        // tools find_tools loaded for this run, beyond the core set
+        final Set<String> loaded = new LinkedHashSet<>();
         final List<ChatMessage> messages = new ArrayList<>();
         String state = "running";
         String by;
@@ -1013,6 +1017,107 @@ public final class AgentRuns {
         }
     }
 
+    /** The most context a run's history grows to by default, whatever the model could hold. */
+    static final int DEFAULT_CONTEXT_CAP = 200_000;
+
+    // how much history a turn may send: the role's limit if a role in its chain sets one, else the model's
+    // own window up to a cap that keeps turns affordable; never more than the model holds
+    private int context(Run r, Roles.Effective role) {
+        int set = role.budget().get("context");
+        boolean explicit = role.chain().stream().map(id -> roles.get(id).orElse(null))
+                .anyMatch(x -> x != null && x.budget().containsKey("context"));
+        String by;
+        synchronized (r) {
+            by = r.by;
+        }
+        if (r.window == 0 && by != null) {
+            long w = chat.contextOf(by);
+            r.window = w > 0 ? w : -1;
+        }
+        long window = r.window;
+        if (window <= 0) {
+            return set;
+        }
+        return (int) Math.min(window, explicit ? set : Math.max(set, DEFAULT_CONTEXT_CAP));
+    }
+
+    /** Tools sent in full when a run may use many: the ones most work needs. */
+    static final List<String> CORE = List.of("update_plan", "ask_user", "run_script", "find_tools", "list_roles",
+            "list_project_files", "read_project_file", "write_file", "edit_file", "search_files", "web_search", "fetch_url",
+            "remember", "recall", "spawn_agent", "wait_agents", "send_message", "list_models", "ask_model");
+
+    /** Runs that may use more tools than this get the core ones in full and the rest on demand. */
+    static final int LAZY_ABOVE = 24;
+
+    // the tools a turn sends in full
+    private List<Map<String, Object>> definitions(Run r, List<StudioTools.Entry> allowed, boolean lazy) {
+        Set<String> want = new java.util.HashSet<>();
+        if (lazy) {
+            want.addAll(CORE);
+            synchronized (r) {
+                want.addAll(r.loaded);
+                // a tool the conversation already called stays defined, as providers need
+                for (Map<String, Object> s : r.steps) {
+                    if ("call".equals(s.get("kind")) && s.get("via") == null && s.get("tool") instanceof String t) {
+                        want.add(t);
+                    }
+                }
+            }
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (StudioTools.Entry e : allowed) {
+            if (!lazy || want.contains(e.tool().name())) {
+                out.add(e.definition());
+            }
+        }
+        return out;
+    }
+
+    // the tools not sent in full, a line each
+    private static String moreTools(List<StudioTools.Entry> allowed) {
+        StringBuilder s = new StringBuilder("\n\n# More tools\n\nBesides the tools you see, you have these. Call "
+                + "find_tools with their names to load them; run_script can call any of them directly.\n");
+        for (StudioTools.Entry e : allowed) {
+            if (!CORE.contains(e.tool().name())) {
+                s.append("- ").append(e.tool().name()).append(": ").append(firstSentence(e.tool().description())).append('\n');
+            }
+        }
+        return s.toString();
+    }
+
+    static String firstSentence(String text) {
+        int dot = text.indexOf(". ");
+        String f = dot < 0 ? text : text.substring(0, dot + 1);
+        return f.length() > 110 ? f.substring(0, 107) + "…" : f;
+    }
+
+    /** Loads tools for the caller's next turns: by name, or the ones whose words match. */
+    List<Map<String, Object>> findTools(List<String> names, String query) {
+        Run r = caller();
+        Project p = current() instanceof Project cp ? cp : projects == null ? null : projects.get(r.project).orElse(null);
+        List<String> words = query == null ? List.of()
+                : java.util.Arrays.stream(query.toLowerCase(java.util.Locale.ROOT).split("\\W+")).filter(w -> w.length() > 2).toList();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (StudioTools.Entry e : tools.values()) {
+            String n = e.tool().name();
+            if (!permitted(r, n, p)) {
+                continue;
+            }
+            String hay = (n + " " + e.tool().description()).toLowerCase(java.util.Locale.ROOT);
+            boolean hit = (names != null && names.contains(n)) || (!words.isEmpty() && words.stream().anyMatch(hay::contains));
+            if (hit && out.size() < 12) {
+                synchronized (r) {
+                    r.loaded.add(n);
+                }
+                out.add(e.definition());
+            }
+        }
+        if (out.isEmpty()) {
+            throw new IllegalArgumentException("no tool you may use matches; the list under More tools names them all");
+        }
+        return out;
+    }
+
     /** The roles, what each is for, and which the caller may start. */
     List<Map<String, Object>> roleList() {
         Run r = caller();
@@ -1337,13 +1442,10 @@ public final class AgentRuns {
     private void workIn(Run r, Project p) {
         try {
             Roles.Effective role = effective(r);
-            String system = system(r, p, role);
-            List<Map<String, Object>> definitions = new ArrayList<>();
-            for (StudioTools.Entry e : tools.values()) {
-                if (permitted(r, e.tool().name(), p)) {
-                    definitions.add(e.definition());
-                }
-            }
+            List<StudioTools.Entry> allowed = tools.values().stream().filter(e -> permitted(r, e.tool().name(), p)).toList();
+            // many tools: the core ones in full, the rest by name until find_tools loads them
+            boolean lazy = allowed.size() > LAZY_ABOVE;
+            String system = system(r, p, role) + (lazy ? moreTools(allowed) : "");
             int turnTokens = role.budget().get("turnTokens");
             int turns = 0;
             while (true) {
@@ -1364,13 +1466,14 @@ public final class AgentRuns {
                     return;
                 }
                 deliver(r);
-                compact(r, system, role.budget().get("context"));
+                compact(r, system, context(r, role));
                 StringBuilder text = new StringBuilder();
                 List<ChatMessage> history;
                 synchronized (r) {
                     history = List.copyOf(r.messages);
                     r.thinking.setLength(0);
                 }
+                List<Map<String, Object>> definitions = definitions(r, allowed, lazy);
                 ChatResult result = chat.chat(r.model, system, history, turnTokens, null, null, Sampler.NONE, Format.NONE,
                         definitions, m -> { synchronized (r) { r.by = m.key(); } },
                         new ChatListener() {

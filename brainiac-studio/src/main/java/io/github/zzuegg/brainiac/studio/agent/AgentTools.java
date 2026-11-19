@@ -21,7 +21,7 @@ import java.util.Optional;
 public final class AgentTools implements RiskRefiner {
 
     /** Tools every agent has, whatever its role and project allow: they only talk to the user. */
-    static final List<String> ALWAYS = List.of("update_plan", "ask_user", "run_script", "list_roles");
+    static final List<String> ALWAYS = List.of("update_plan", "ask_user", "run_script", "list_roles", "find_tools");
 
     /** Tools for the agents an agent starts. */
     static final List<String> SPAWN_TOOLS = List.of("spawn_agent", "wait_agents", "message_agent", "read_agent",
@@ -30,7 +30,7 @@ public final class AgentTools implements RiskRefiner {
     /** Tools that only work inside an agent. */
     static final List<String> RUN_TOOLS = List.of("update_plan", "ask_user", "spawn_agent", "wait_agents",
             "message_agent", "read_agent", "stop_agent", "remember", "recall", "list_agents", "send_message",
-            "propose_rule", "run_script", "list_roles");
+            "propose_rule", "run_script", "list_roles", "find_tools");
 
     private static final int NOTES_CHARS = 200_000;
 
@@ -219,6 +219,22 @@ public final class AgentTools implements RiskRefiner {
     public String sendMessage(@Tools.Param("the agent's id, from list_agents") String to,
             @Tools.Param("the message") String text) {
         return runs.send(to, text);
+    }
+
+    /**
+     * Loads tools.
+     *
+     * @param names the tools' names
+     * @param query words to match instead
+     * @return their definitions
+     */
+    @Tools.Tool(name = "find_tools", value = "Loads tools listed under More tools, so you can call them from your next "
+            + "turn on. Give their names, or words for what you need.")
+    @Tier(value = Risk.READ)
+    @Returns("[{name, description, parameters}], at most 12")
+    public List<Map<String, Object>> findTools(@Tools.Param("the tools' names") Optional<List<String>> names,
+            @Tools.Param("words for what you need, if you do not know the names") Optional<String> query) {
+        return runs.findTools(names.orElse(null), query.orElse(null));
     }
 
     /**
