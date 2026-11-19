@@ -189,6 +189,9 @@ public final class HipBackend implements Backend {
                         first = this;
                     }
                 }
+                if (!"false".equals(System.getProperty("brainiac.hip.closeAtExit"))) {
+                    Runtime.getRuntime().addShutdownHook(new Thread(this::closeAtExit, "hip-close"));
+                }
                 if (Boolean.getBoolean("brainiac.hip.statistics")) {
                     Runtime.getRuntime().addShutdownHook(new Thread(() -> System.err.println(name() + ": "
                             + statistics()), "hip-statistics"));
@@ -202,6 +205,19 @@ public final class HipBackend implements Backend {
             }
         }
         return hip != null;
+    }
+
+    /** Releases the device at exit ({@code -Dbrainiac.hip.closeAtExit=false}: leave it to the runtime). */
+    private synchronized void closeAtExit() {
+        if (hip != null) {
+            try {
+                hip.close();
+            } catch (RuntimeException e) {
+                System.err.println("brainiac hip: closing " + name() + ": " + e.getMessage());
+            }
+            hip = null;
+            unavailable = "closed at exit";
+        }
     }
 
     /**

@@ -64,6 +64,10 @@ final class HipRuntime {
     private final MethodHandle hipModuleLaunchKernel;
     private final MethodHandle hipGetErrorName;
     private final MethodHandle hipGetErrorString;
+    private final MethodHandle hipStreamDestroy;
+    private final MethodHandle hipModuleUnload;
+    private final MethodHandle hipHostFree;
+    private final MethodHandle hipDeviceReset;
 
     /**
      * Loads the HIP runtime and binds its functions. Does not call into it.
@@ -125,6 +129,10 @@ final class HipRuntime {
                 JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, PTR, PTR), true);
         hipGetErrorName = b.bind("hipGetErrorName", FunctionDescriptor.of(PTR, JAVA_INT), false);
         hipGetErrorString = b.bind("hipGetErrorString", FunctionDescriptor.of(PTR, JAVA_INT), false);
+        hipStreamDestroy = b.bind("hipStreamDestroy", FunctionDescriptor.of(JAVA_INT, JAVA_LONG), false);
+        hipModuleUnload = b.bind("hipModuleUnload", FunctionDescriptor.of(JAVA_INT, JAVA_LONG), false);
+        hipHostFree = b.bind("hipHostFree", FunctionDescriptor.of(JAVA_INT, PTR), false);
+        hipDeviceReset = b.bind("hipDeviceReset", FunctionDescriptor.of(JAVA_INT), false);
     }
 
     // ------------------------------------------------------------------ errors
@@ -491,6 +499,42 @@ final class HipRuntime {
                     stream, params, MemorySegment.NULL);
         } catch (Throwable t) {
             throw Binder.fail("hipModuleLaunchKernel", t);
+        }
+    }
+
+    // ------------------------------------------------------------------ teardown, at exit
+
+    /** Calls a teardown function, returning its error code instead of throwing. */
+    int destroyStream(long stream) {
+        try {
+            return (int) hipStreamDestroy.invokeExact(stream);
+        } catch (Throwable t) {
+            throw Binder.fail("hipStreamDestroy", t);
+        }
+    }
+
+    int unloadModule(long module) {
+        try {
+            return (int) hipModuleUnload.invokeExact(module);
+        } catch (Throwable t) {
+            throw Binder.fail("hipModuleUnload", t);
+        }
+    }
+
+    int freeHost(MemorySegment host) {
+        try {
+            return (int) hipHostFree.invokeExact(host);
+        } catch (Throwable t) {
+            throw Binder.fail("hipHostFree", t);
+        }
+    }
+
+    /** Releases everything the process holds on the current device. */
+    int resetDevice() {
+        try {
+            return (int) hipDeviceReset.invokeExact();
+        } catch (Throwable t) {
+            throw Binder.fail("hipDeviceReset", t);
         }
     }
 }

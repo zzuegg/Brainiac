@@ -1434,7 +1434,7 @@ processor's integrated GPU, which HIP may number first. System properties: `brai
 `brainiac.hip.critical`, `brainiac.hip.runtime`/`hiprtc`/`rocblas` (library files; `rocblas=none`
 turns rocBLAS off), `brainiac.hip.arch` (the compiler target, when the runtime does not tell),
 `brainiac.hip.cache`, `brainiac.hip.statistics`, `brainiac.hip.devices` (by default only GPUs of the first one's architecture; `all` for every one, `one` for the first),
-`brainiac.hip.fusedAttention` and `brainiac.hip.fewRows`. `HipBackend.status()` names the device
+`brainiac.hip.fusedAttention` and `brainiac.hip.fewRows`, `brainiac.hip.closeAtExit` (`false` leaves the device to the runtime at exit). `HipBackend.status()` names the device
 and the libraries found, or why there is none.
 
 Tensors and models come in four number formats:

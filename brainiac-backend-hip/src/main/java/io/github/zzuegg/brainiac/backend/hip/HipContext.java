@@ -626,6 +626,48 @@ final class HipContext {
         }
     }
 
+    /**
+     * Gives everything back to the runtime at exit: memory, the rocBLAS handle, the modules and
+     * the stream, then resets the device. On Windows a process that left them to the runtime's
+     * own exit handling hung in the driver and could not be killed.
+     */
+    void close() {
+        bind();
+        trace("closing: hipStreamSynchronize");
+        cu.synchronize(stream);
+        drainCollected();
+        for (Long ptr : live) {
+            cu.free(ptr);
+        }
+        live.clear();
+        for (ArrayDeque<Long> free : pool.values()) {
+            for (Long ptr : free) {
+                cu.free(ptr);
+            }
+            free.clear();
+        }
+        trace("closing: freed device memory");
+        if (staging != null) {
+            cu.freeHost(staging);
+            staging = null;
+        }
+        if (rocblas != null) {
+            trace("closing: rocblas_destroy_handle");
+            rocblas.destroy();
+        }
+        for (Long m : modules.values()) {
+            trace("closing: hipModuleUnload");
+            cu.unloadModule(m);
+        }
+        modules.clear();
+        functions.clear();
+        trace("closing: hipStreamDestroy");
+        cu.destroyStream(stream);
+        trace("closing: hipDeviceReset");
+        cu.resetDevice();
+        trace("closed");
+    }
+
     long inUse() {
         drainCollected();
         return inUse;

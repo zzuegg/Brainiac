@@ -50,6 +50,7 @@ final class Rocblas {
     private final MethodHandle dgemmStridedBatched;
     private final MethodHandle gemmStridedBatchedEx;
     private final String version;
+    private final MethodHandle destroyHandle;
 
     // alpha and beta, read by rocBLAS from host memory
     private static final MemorySegment ONE_F;
@@ -81,6 +82,7 @@ final class Rocblas {
         library = b.library();
         checkKernelsFor(Path.of(library), architecture);
         MethodHandle create = b.bind("rocblas_create_handle", FunctionDescriptor.of(JAVA_INT, ADDRESS), false);
+        destroyHandle = b.bind("rocblas_destroy_handle", FunctionDescriptor.of(JAVA_INT, JAVA_LONG), false);
         MethodHandle setStream = b.bind("rocblas_set_stream", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG),
                 false);
         MethodHandle versionSize = b.bind("rocblas_get_version_string_size", FunctionDescriptor.of(JAVA_INT, ADDRESS),
@@ -155,6 +157,15 @@ final class Rocblas {
         MemoryLayout[] all = java.util.Arrays.copyOf(head, head.length + tail.length);
         System.arraycopy(tail, 0, all, head.length, tail.length);
         return all;
+    }
+
+    /** Releases the handle, at exit; returns the status instead of throwing. */
+    int destroy() {
+        try {
+            return (int) destroyHandle.invokeExact(handle);
+        } catch (Throwable t) {
+            throw Binder.fail("rocblas_destroy_handle", t);
+        }
     }
 
     /** For example "4.4.0.f21b8e3e". */
