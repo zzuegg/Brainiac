@@ -1387,7 +1387,7 @@ final class VkContext {
 
     /** A staging block's mapped memory. */
     static MemorySegment mapped(Block b) {
-        return MemorySegment.ofAddress(b.mapped).reinterpret(b.size);
+        return MemorySegment.ofBuffer(MemoryUtil.memByteBuffer(b.mapped, Math.toIntExact(b.size)));
     }
 
     /**
