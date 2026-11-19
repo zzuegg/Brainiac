@@ -517,6 +517,7 @@ public final class PretrainedTokenizer implements Tokenizer {
                 String pre = String.valueOf(meta.get("tokenizer.ggml.pre"));
                 List<String> regexes = switch (pre) {
                     case "qwen2", "deepseek-r1-qwen", "qwen35" -> List.of(TokenizerParts.QWEN2_PATTERN);
+                    case "gpt-4o" -> List.of(TokenizerParts.GPT4O_PATTERN);
                     case "gpt-2", "gpt2", "starcoder", "refact", "olmo", "phi-2", "stablelm2" ->
                             List.of(TokenizerParts.GPT2_PATTERN);
                     case "deepseek-llm" -> TokenizerParts.DEEPSEEK_LLM_PATTERNS;

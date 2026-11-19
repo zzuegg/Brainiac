@@ -118,8 +118,33 @@ class LlamaTest {
         assertArrayEquals(logits, model.forward(new int[][] {ints(e.get("ids"))}).value().toArray(), 1e-4f, name);
     }
 
+    @Test
+    void readsGptOssFromGguf() throws IOException {
+        // sinks, biased experts in MXFP4 with the clamped SwiGLU, router bias, alternating windows
+        Map<String, Object> e = expected("gpt-oss.gguf.expected.json");
+        int[][] ids = {ints(e.get("ids"))};
+        float[] expected = rows(e.get("logits"));
+        Llama model = Llama.load(resource("gpt-oss.gguf"), DEVICE, DType.FLOAT32);
+        assertEquals("gpt_oss", model.config().architecture());
+        assertTrue(model.config().extras().attentionSinks());
+        float[] logits = model.forward(ids).value().toArray();
+        assertArrayEquals(expected, logits, 2e-3f);
+        Llama split = Llama.loadExpertsOnCpu(resource("gpt-oss.gguf"), DEVICE, DType.FLOAT32, 0);
+        assertArrayEquals(logits, split.forward(ids).value().toArray(), 1e-4f);
+        // token by token through the cache: windows and sinks as in the full pass
+        int vocab = model.config().vocabSize();
+        for (Llama m : new Llama[] {model, split}) {
+            LanguageModel.State state = m.newState(1);
+            for (int t = 0; t < ids[0].length; t++) {
+                float[] step = m.next(state, new int[][] {{ids[0][t]}}, null).to(DType.FLOAT32).toArray();
+                assertArrayEquals(java.util.Arrays.copyOfRange(logits, t * vocab, (t + 1) * vocab), step, 1e-3f,
+                        "step " + t);
+            }
+        }
+    }
+
     @ParameterizedTest
-    @ValueSource(strings = {"qwen3moe", "qwen2moe"})
+    @ValueSource(strings = {"qwen3moe", "qwen2moe", "deepseek-v2", "deepseek-v3"})
     void runsExpertsOnTheCpuFromTheFile(String name) throws IOException {
         Map<String, Object> e = expected(name + ".gguf.expected.json");
         int[][] ids = {ints(e.get("ids"))};
@@ -139,6 +164,29 @@ class LlamaTest {
             float[] lastExpected = java.util.Arrays.copyOfRange(logits, logits.length - split.config().vocabSize(),
                     logits.length);
             assertArrayEquals(lastExpected, last.to(DType.FLOAT32).toArray(), 1e-3f, name + " cached " + onDevice);
+        }
+        // copies of the most used experts on the device, refreshed every few uses, give the same
+        Llama cached = Llama.loadExpertsOnCpu(resource(name + ".gguf"), DEVICE, DType.FLOAT32, 0);
+        cached.cacheExperts(DEVICE, 1 << 16, 1, 5, Long.MAX_VALUE, Runnable::run);
+        for (int pass = 0; pass < 3; pass++) {
+            assertArrayEquals(logits, cached.forward(ids).value().toArray(), 1e-4f, name + " expert cache " + pass);
+        }
+        LanguageModel.State state = cached.newState(1);
+        Tensor last = null;
+        for (int t = 0; t < ids[0].length; t++) {
+            last = cached.next(state, new int[][] {{ids[0][t]}}, null);
+        }
+        assertArrayEquals(java.util.Arrays.copyOfRange(logits, logits.length - cached.config().vocabSize(),
+                logits.length), last.to(DType.FLOAT32).toArray(), 1e-3f, name + " expert cache, step by step");
+        // started with the first blocks' experts, copied in the background
+        Llama preloaded = Llama.loadExpertsOnCpu(resource(name + ".gguf"), DEVICE, DType.FLOAT32, 0)
+                .cacheExperts(DEVICE, 1 << 16);
+        assertArrayEquals(logits, preloaded.forward(ids).value().toArray(), 1e-4f, name + " preloaded expert cache");
+        if (DEVICE.kind() != Device.Kind.CPU) {
+            assertTrue(preloaded.expertCache().size() > 0, preloaded.expertCacheStats());
+            // some experts ran from copies and some from the file
+            double hits = cached.expertCache().hitRate();
+            assertTrue(cached.expertCache().size() > 0 && hits > 0 && hits < 1, cached.expertCacheStats());
         }
         assertThrows(IllegalArgumentException.class,
                 () -> Llama.loadExpertsOnCpu(resource("qwen3.gguf"), DEVICE, DType.FLOAT32, 0));

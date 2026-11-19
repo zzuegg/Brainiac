@@ -176,4 +176,12 @@ class PretrainedTokenizerTest {
         }
         return TokenizerParts.preTokenizer(Map.of("type", "Sequence", "pretokenizers", splits)).split(text, true);
     }
+
+    @Test
+    void splitsAsGpt4o() {
+        // gpt-oss's "gpt-4o" pre-tokenizer: o200k, case-split words, digits in threes
+        List<String> words = TokenizerParts.split(java.util.regex.Pattern.compile(TokenizerParts.GPT4O_PATTERN),
+                "Hello World's HTTPServer 12345 ok!\n\nbye", "Isolated", false);
+        assertEquals(List.of("Hello", " World's", " HTTPServer", " ", "123", "45", " ok", "!\n\n", "bye"), words);
+    }
 }

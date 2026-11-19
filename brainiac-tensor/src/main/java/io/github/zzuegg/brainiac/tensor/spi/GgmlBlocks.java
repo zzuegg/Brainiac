@@ -46,6 +46,8 @@ public final class GgmlBlocks implements PackedStorage {
     private final int blockBytes;
     private final long rowBytes;
     private final Decoder decoder;
+    /** Whether {@link #load} read it all once: from then on, the page cache is trusted to keep it. */
+    private volatile boolean warm;
 
     /**
      * Wraps stored blocks.
@@ -160,9 +162,10 @@ public final class GgmlBlocks implements PackedStorage {
      * threads at once for several matrices, it keeps a fast SSD busy with many reads.
      */
     public void load() {
-        if (data.isMapped()) {
+        if (data.isMapped() && !warm) {
             data.load();
         }
+        warm = true;
     }
 
     /**
@@ -186,9 +189,16 @@ public final class GgmlBlocks implements PackedStorage {
         }
     }
 
-    /** @return whether every page of the matrix is in memory now; {@code false} if this cannot be told */
+    /**
+     * Returns whether the matrix is in memory: not mapped, {@linkplain #load loaded} once
+     * already, or every page resident now. Once loaded it counts as loaded, as asking the
+     * operating system page by page on every use costs about as much as reading it, and on
+     * some systems it cannot tell at all.
+     *
+     * @return whether it need not be loaded
+     */
     public boolean loaded() {
-        return !data.isMapped() || data.isLoaded();
+        return warm || !data.isMapped() || data.isLoaded();
     }
 
     @Override

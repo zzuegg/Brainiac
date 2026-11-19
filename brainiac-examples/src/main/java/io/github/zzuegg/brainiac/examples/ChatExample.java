@@ -38,7 +38,8 @@ import java.util.Set;
  * {@code .gguf} with its experts on the CPU, read in place from the file, and the rest on the
  * device: for models many times larger than the GPU's memory, even larger than RAM) and
  * {@code --gpu-expert-layers N} (with {@code --cpu-experts}, the first N blocks keep their
- * experts on the device, to use its spare memory).
+ * experts on the device, to use its spare memory) and {@code --gpu-expert-cache GB} (with
+ * {@code --cpu-experts}, copies of the most used experts on the device, up to GB gigabytes).
  */
 public final class ChatExample {
 
@@ -58,7 +59,7 @@ public final class ChatExample {
         if (args.length == 0) {
             System.out.println("Usage: chat <model directory or .gguf> [--prompt text] [--device name] [--dtype f32|f16]"
                     + " [--max N] [--temperature T] [--top-p P] [--kv8] [--no-fuse] [--gpu-layers N]"
-                    + " [--cpu-experts] [--gpu-expert-layers N]");
+                    + " [--cpu-experts] [--gpu-expert-layers N] [--gpu-expert-cache GB]");
             return;
         }
         Path path = Path.of(args[0]);
@@ -73,6 +74,7 @@ public final class ChatExample {
         int gpuLayers = -1;
         boolean cpuExperts = false;
         int gpuExpertLayers = 0;
+        double expertCacheGb = 0;
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--prompt" -> prompt = args[++i];
@@ -90,6 +92,7 @@ public final class ChatExample {
                 case "--gpu-layers" -> gpuLayers = Integer.parseInt(args[++i]);
                 case "--cpu-experts" -> cpuExperts = true;
                 case "--gpu-expert-layers" -> gpuExpertLayers = Integer.parseInt(args[++i]);
+                case "--gpu-expert-cache" -> expertCacheGb = Double.parseDouble(args[++i]);
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -101,6 +104,9 @@ public final class ChatExample {
         Llama model;
         if (cpuExperts) {
             model = Llama.loadExpertsOnCpu(path, device, dtype, gpuExpertLayers);
+            if (expertCacheGb > 0) {
+                model.cacheExperts(device, (long) (expertCacheGb * 1e9));
+            }
         } else if (gpuLayers >= 0 && device.kind() != Device.Kind.CPU) {
             model = Llama.load(path, Device.cpu(), DType.FLOAT32);
             model.offload(device, dtype, Math.min(gpuLayers, model.config().layers()));
@@ -147,6 +153,9 @@ public final class ChatExample {
             int tokens = tok.encode(answer, false).length;
             System.out.printf(Locale.ROOT, "%n[%d prompt tokens, %d new tokens in %.1f s: %.1f tokens/s]%n",
                     promptTokens, tokens, seconds, tokens / seconds);
+            if (expertCacheGb > 0) {
+                System.out.println("[" + model.expertCacheStats() + "]");
+            }
             history.add(ChatTemplate.message("assistant", answer));
             if (prompt != null) {
                 return;

@@ -2007,7 +2007,7 @@ public final class VulkanBackend implements Backend {
         final VulkanBackend owner;
         final PackedMatrix host;
         /** The uploaded matrix, once uploaded. */
-        Packed done;
+        volatile Packed done;
         /** Whether the background upload should leave it (it was unpacked to the host first). */
         volatile boolean skip;
 
@@ -2037,14 +2037,29 @@ public final class VulkanBackend implements Backend {
         }
     }
 
+    /**
+     * A packed matrix's arrays as they go to the device: levels split into planes or
+     * codebook indices, factors as float16 where they are exactly that. Made without the
+     * backend's lock, so that a background upload (see {@link #fetch}) holds it only to copy.
+     */
+    private record Staged(PackedMatrix matrix, int flags, int superRatio, float shift, byte[] levels, byte[] hi,
+            byte[] scaleCodes, byte[] offsetCodes, short[] scaleHalves, short[] offsetHalves, float[] scales,
+            float[] offsets) {
+    }
+
     /** Uploads a packed matrix. */
-    private synchronized Packed uploadPacked(PackedMatrix matrix) {
+    private Packed uploadPacked(PackedMatrix matrix) {
+        return upload(stage(matrix));
+    }
+
+    /** Prepares a packed matrix's arrays for the device; touches no device state, so needs no lock. */
+    private static Staged stage(PackedMatrix matrix) {
         int rows = matrix.rows();
         int cols = matrix.cols();
         int bits = matrix.bits();
         int flags = matrix.nibbles() ? Packed.NIBBLES : 0;
-        VkStorage levels;
-        VkStorage hi = null;
+        byte[] levels;
+        byte[] hi = null;
         byte[] table;
         if (PACKED_PLANES && !matrix.nibbles() && (bits == 5 || bits == 6) && rows % 8 == 0) {
             int planeBits = bits - 4;
@@ -2067,8 +2082,8 @@ public final class VulkanBackend implements Backend {
                     }
                 }
             });
-            levels = uploadBytes(low);
-            hi = uploadBytes(high);
+            levels = low;
+            hi = high;
         } else if (PACKED_CODEBOOK && !matrix.nibbles() && rows % 2 == 0
                 && (table = codebook(matrix.data())) != null) {
             // at most 16 distinct levels (IQ4_NL, IQ4_XS, MXFP4): a 4-bit index each into a table
@@ -2087,29 +2102,112 @@ public final class VulkanBackend implements Backend {
                     packed[at + c] = (byte) (index[data[even + c] & 0xFF] | index[data[odd + c] & 0xFF] << 4);
                 }
             });
-            levels = uploadBytes(packed);
-            hi = uploadBytes(java.util.Arrays.copyOf(table, 16));
+            levels = packed;
+            hi = java.util.Arrays.copyOf(table, 16);
             flags |= Packed.CODEBOOK;
         } else {
-            levels = uploadBytes(matrix.data());
+            levels = matrix.data();
         }
         PackedMatrix.Factors f = matrix.factors();
         if (PACKED_FACTORS && f != null && halves(f.superScales()) && (f.superOffsets() == null || halves(f.superOffsets()))) {
             flags |= Packed.HALF | (f.scaleCodes() != null ? Packed.SCALE_CODES : 0)
                     | (f.superOffsets() != null ? Packed.OFFSETS : 0) | (f.offsetCodes() != null ? Packed.OFFSET_CODES : 0);
-            return new Packed(rows, cols, bits, matrix.group(), flags, f.superGroup() / matrix.group(), f.shift(), matrix,
-                    levels, hi, f.scaleCodes() == null ? null : uploadBytes(f.scaleCodes()),
-                    f.offsetCodes() == null ? null : uploadBytes(f.offsetCodes()), uploadHalves(f.superScales()),
-                    f.superOffsets() == null ? null : uploadHalves(f.superOffsets()));
+            return new Staged(matrix, flags, f.superGroup() / matrix.group(), f.shift(), levels, hi, f.scaleCodes(),
+                    f.offsetCodes(), toHalves(f.superScales()), f.superOffsets() == null ? null : toHalves(f.superOffsets()),
+                    null, null);
         }
         flags |= matrix.offsets() != null ? Packed.OFFSETS : 0;
         if (PACKED_FACTORS && halves(matrix.scales()) && (matrix.offsets() == null || halves(matrix.offsets()))) {
             // float16 values per group, as IQ4_NL and MXFP4 store them
-            return new Packed(rows, cols, bits, matrix.group(), flags | Packed.HALF, 1, 0, matrix, levels, hi, null, null,
-                    uploadHalves(matrix.scales()), matrix.offsets() == null ? null : uploadHalves(matrix.offsets()));
+            return new Staged(matrix, flags | Packed.HALF, 1, 0, levels, hi, null, null, toHalves(matrix.scales()),
+                    matrix.offsets() == null ? null : toHalves(matrix.offsets()), null, null);
         }
-        return new Packed(rows, cols, bits, matrix.group(), flags, 1, 0, matrix, levels, hi, null, null,
-                vs(upload(matrix.scales())), matrix.offsets() == null ? null : vs(upload(matrix.offsets())));
+        return new Staged(matrix, flags, 1, 0, levels, hi, null, null, null, null, matrix.scales(), matrix.offsets());
+    }
+
+    /**
+     * As {@link #upload(Staged)} for a deferred matrix, from a thread without the lock: the
+     * slots and a staging block are taken under the lock, the arrays copied into the staging
+     * block without it, and the copies to the device recorded under it again. Measured while a
+     * cache of experts filled: copying 8 GB into staging under the lock cost the decoding thread
+     * seconds of waits.
+     */
+    private Packed uploadUnlocked(Deferred d, Staged st) {
+        Object[] parts = {st.levels(), st.hi(), st.scaleCodes(), st.offsetCodes(),
+                st.scaleHalves() != null ? st.scaleHalves() : st.scales(),
+                st.offsetHalves() != null ? st.offsetHalves() : st.offsets()};
+        java.lang.foreign.MemorySegment[] src = new java.lang.foreign.MemorySegment[parts.length];
+        long[] at = new long[parts.length];
+        long total = 0;
+        for (int i = 0; i < parts.length; i++) {
+            src[i] = switch (parts[i]) {
+                case null -> null;
+                case byte[] b -> java.lang.foreign.MemorySegment.ofArray(b);
+                case short[] h -> java.lang.foreign.MemorySegment.ofArray(h);
+                case float[] f -> java.lang.foreign.MemorySegment.ofArray(f);
+                default -> throw new IllegalStateException();
+            };
+            if (src[i] != null) {
+                at[i] = total;
+                total += (src[i].byteSize() + 15) & ~15L;
+            }
+        }
+        VkStorage[] slots = new VkStorage[parts.length];
+        VkContext.Block block;
+        synchronized (this) {
+            if (d.done != null) {
+                return d.done;
+            }
+            for (int i = 0; i < parts.length; i++) {
+                if (src[i] != null) {
+                    // in 32-bit words, as the shaders read them; float32 factors one per word
+                    slots[i] = raw(Math.max(1, (src[i].byteSize() + 3) / 4), null);
+                    slots[i].slot();
+                }
+            }
+            block = vk.stagingBlock(Math.max(16, total));
+        }
+        java.lang.foreign.MemorySegment staging = VkContext.mapped(block);
+        int n = 0;
+        for (int i = 0; i < parts.length; i++) {
+            if (src[i] != null) {
+                staging.asSlice(at[i], src[i].byteSize()).copyFrom(src[i]);
+                n++;
+            }
+        }
+        VkContext.Slot[] to = new VkContext.Slot[n];
+        long[] from = new long[n];
+        long[] bytes = new long[n];
+        for (int i = 0, j = 0; i < parts.length; i++) {
+            if (src[i] != null) {
+                to[j] = slots[i].slot();
+                from[j] = at[i];
+                bytes[j++] = src[i].byteSize();
+            }
+        }
+        synchronized (this) {
+            vk.uploadStaged(block, to, from, bytes);
+            if (d.done == null) {
+                PackedMatrix m = st.matrix();
+                d.done = new Packed(m.rows(), m.cols(), m.bits(), m.group(), st.flags(), st.superRatio(), st.shift(), m,
+                        slots[0], slots[1], slots[2], slots[3], slots[4], slots[5]);
+            }
+            return d.done;
+        }
+    }
+
+    /** Copies a staged matrix to the device. */
+    private synchronized Packed upload(Staged st) {
+        PackedMatrix m = st.matrix();
+        VkStorage levels = uploadBytes(st.levels());
+        VkStorage hi = st.hi() == null ? null : uploadBytes(st.hi());
+        VkStorage scaleCodes = st.scaleCodes() == null ? null : uploadBytes(st.scaleCodes());
+        VkStorage offsetCodes = st.offsetCodes() == null ? null : uploadBytes(st.offsetCodes());
+        VkStorage scales = st.scaleHalves() != null ? uploadHalves(st.scaleHalves()) : vs(upload(st.scales()));
+        VkStorage offsets = st.offsetHalves() != null ? uploadHalves(st.offsetHalves())
+                : st.offsets() != null ? vs(upload(st.offsets())) : null;
+        return new Packed(m.rows(), m.cols(), m.bits(), m.group(), st.flags(), st.superRatio(), st.shift(), m, levels,
+                hi, scaleCodes, offsetCodes, scales, offsets);
     }
 
     /** @return the distinct levels in increasing order if there are at most 16, else null */
@@ -2166,11 +2264,15 @@ public final class VulkanBackend implements Backend {
         return s;
     }
 
-    private VkStorage uploadHalves(float[] values) {
+    private static short[] toHalves(float[] values) {
         short[] h = new short[values.length];
         for (int i = 0; i < h.length; i++) {
             h[i] = Float.floatToFloat16(values[i]);
         }
+        return h;
+    }
+
+    private VkStorage uploadHalves(short[] h) {
         VkStorage s = raw(Math.max(1, (h.length + 1) / 2), null);
         if (java.nio.ByteOrder.nativeOrder() == java.nio.ByteOrder.LITTLE_ENDIAN) {
             vk.upload(s.slot(), java.lang.foreign.MemorySegment.ofArray(h));
@@ -2243,13 +2345,32 @@ public final class VulkanBackend implements Backend {
         return Backend.super.unpackToHost(packed);
     }
 
-    private synchronized Packed packed(PackedStorage s) {
+    /**
+     * The device copy of a packed storage, uploaded now if needed. A matrix waiting for its
+     * upload is staged before the lock is taken: from the background uploader, the decoding
+     * thread then waits at most for the copy, not for the packing (measured: seconds of waits
+     * while a cache of experts filled). Two threads may stage the same matrix; the first to
+     * upload wins.
+     */
+    private Packed packed(PackedStorage s) {
         if (s instanceof Deferred d && d.owner == this) {
-            if (d.done == null) {
-                d.done = uploadPacked(d.host);
+            Packed done = d.done;
+            if (done != null) {
+                return done;
             }
-            return d.done;
+            Staged st = stage(d.host);
+            if (Thread.holdsLock(this)) {
+                if (d.done == null) {
+                    d.done = upload(st);
+                }
+                return d.done;
+            }
+            return uploadUnlocked(d, st);
         }
+        return packedHere(s);
+    }
+
+    private synchronized Packed packedHere(PackedStorage s) {
         if (s instanceof Packed p && p.levels().owner == this) {
             return p;
         }

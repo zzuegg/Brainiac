@@ -1042,6 +1042,10 @@ class VulkanBackendTest {
         assertArrayEquals(expected, x.to(gpu).matmul(onGpu).toArray(), close, what);
         assertArrayEquals(expected, x.to(gpu).matmul(onGpu.to(CPU).to(gpu)).toArray(),
                 close, what);
+        // uploaded in the background, staged and copied without the backend's lock
+        Tensor later = Tensor.packed(w, gpu, true);
+        Tensor.evaluate(List.of(later));
+        assertArrayEquals(expected, x.to(gpu).matmul(later).toArray(), close, what + ", uploaded in the background");
         for (DType type : List.of(DType.FLOAT64, DType.FLOAT16, DType.BFLOAT16)) {
             if (supported(type)) {
                 // inputs rounded to 16 bits: errors relative to the largest output

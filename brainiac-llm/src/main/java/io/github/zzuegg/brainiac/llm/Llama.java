@@ -9,6 +9,7 @@ import io.github.zzuegg.brainiac.io.SafeTensors;
 import io.github.zzuegg.brainiac.io.WeightSource;
 import io.github.zzuegg.brainiac.nn.Activation;
 import io.github.zzuegg.brainiac.nn.Functional;
+import io.github.zzuegg.brainiac.nn.HotCache;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 import io.github.zzuegg.brainiac.tensor.Shape;
@@ -62,6 +63,8 @@ public final class Llama implements LanguageModel {
         private boolean frozen;
         /** The file blocks a weight read in place multiplies from, or null. */
         private GgmlBlocks mapped;
+        /** For a weight read in place: reads it from the file again, for a device and type, as loading does. */
+        private java.util.function.BiFunction<Device, DType, Tensor> reload;
 
         Linear(Var weight, Var bias) {
             this.weight = weight;
@@ -105,7 +108,8 @@ public final class Llama implements LanguageModel {
      * ({@link Fused}); the q/k and post norms are null where the family has none.
      */
     private record Block(Var attnNorm, Linear q, Linear k, Linear v, Linear o, Var ffnNorm, Linear gate, Linear up,
-            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts, Latent latent) {
+            Linear down, Var qNorm, Var kNorm, Var postAttnNorm, Var postFfnNorm, Experts experts, Latent latent,
+            Var sinks) {
     }
 
     /**
@@ -235,7 +239,8 @@ public final class Llama implements LanguageModel {
                     e.qkNorm() ? need(named, p + "self_attn.k_norm.weight") : null,
                     post ? need(named, p + "post_attention_layernorm.weight") : null,
                     post ? need(named, p + "post_feedforward_layernorm.weight") : null,
-                    experts(config, linears, named, i), latent(config, linears, named, i)));
+                    experts(config, linears, named, i), latent(config, linears, named, i),
+                    named.get(p + "self_attn.sinks")));
             if (e.fused()) {
                 fused[i] = new Fused(linears.get(p + "self_attn.qkv_proj"), linears.get(p + "mlp.gate_up_proj"));
             }
@@ -501,6 +506,12 @@ public final class Llama implements LanguageModel {
             for (Map.Entry<String, String> n : ggufNorms(config).entrySet()) {
                 named.put(p + n.getKey() + ".weight", Var.param(gguf.tensor(g + n.getValue() + ".weight", device, dtype)));
             }
+            for (String sinks : new String[] {g + "attn_sinks.weight", g + "attn_sinks"}) {
+                if (gguf.contains(sinks)) {
+                    named.put(p + "self_attn.sinks", Var.param(gguf.tensor(sinks, device, DType.FLOAT32)));
+                    break;
+                }
+            }
             for (Map.Entry<String, String> e : parts.entrySet()) {
                 String l = p + e.getKey();
                 int heads = e.getValue().equals("attn_q") ? config.heads()
@@ -525,8 +536,13 @@ public final class Llama implements LanguageModel {
                 }
                 String[] n = expertNames(config);
                 String[] stored = {"ffn_gate", "ffn_up", "ffn_down"};
+                Var routerBias = null;
+                if (gguf.contains(g + "ffn_gate_inp.bias")) {
+                    routerBias = Var.param(gguf.tensor(g + "ffn_gate_inp.bias", device, dtype));
+                    named.put(p + n[0] + "gate.bias", routerBias);
+                }
                 linears.put(p + n[0] + "gate", linear(gguf, g + "ffn_gate_inp.weight", p + n[0] + "gate", null, device,
-                        dtype, named, null));
+                        dtype, named, routerBias));
                 boolean inPlace = gpuExpertLayers >= 0 && i >= gpuExpertLayers;
                 for (int x = 0; x < moe.experts(); x++) {
                     for (int k = 0; k < 3; k++) {
@@ -534,14 +550,27 @@ public final class Llama implements LanguageModel {
                         String stack = g + stored[k] + "_exps.weight";
                         String w = gguf.contains(stack) ? gguf.slice(stack, x) : g + stored[k] + "." + x + ".weight";
                         String hf = p + n[0] + "experts." + x + "." + n[k + 1];
+                        Device on = inPlace ? Device.cpu() : device;
+                        DType as = inPlace ? DType.FLOAT32 : dtype;
+                        // gpt-oss: each expert's projections have biases, stacked as [experts, out]
+                        Var bias = null;
+                        String stackedBias = g + stored[k] + "_exps.bias";
+                        if (gguf.contains(stackedBias)) {
+                            bias = Var.param(gguf.tensor(stackedBias, on, as).slice(0, x, x + 1)
+                                    .reshape(gguf.shape(stackedBias).dim(1)));
+                            named.put(hf + ".bias", bias);
+                        }
                         if (inPlace && gguf.mappable(w)) {
                             GgmlBlocks b = gguf.mapped(w);
-                            Linear l = new Linear(Var.of(Tensor.packed(b, Device.cpu())), null);
+                            Linear l = new Linear(Var.of(Tensor.packed(b, Device.cpu())), bias);
                             l.mapped = b;
+                            String name = w;
+                            // packed for the device later, uploaded in the background (see copyExpert)
+                            l.reload = (d, t) -> gguf.packable(name) ? gguf.packedTransposed(name, d, null, true)
+                                    : linear(gguf, name, hf, null, d, t, new LinkedHashMap<>(), null).weight.value();
                             linears.put(hf, l);
                         } else {
-                            linears.put(hf, linear(gguf, w, hf, null, inPlace ? Device.cpu() : device,
-                                    inPlace ? DType.FLOAT32 : dtype, named, null));
+                            linears.put(hf, linear(gguf, w, hf, null, on, as, named, bias));
                         }
                     }
                 }
@@ -641,7 +670,8 @@ public final class Llama implements LanguageModel {
             norms.put("pre_feedforward_layernorm", "ffn_norm");
             norms.put("post_feedforward_layernorm", "post_ffw_norm");
         } else {
-            norms.put("post_attention_layernorm", "ffn_norm");
+            // gpt-oss names the norm before its experts after the attention
+            norms.put("post_attention_layernorm", c.architecture().equals("gpt_oss") ? "post_attention_norm" : "ffn_norm");
         }
         if (c.extras().qkNorm()) {
             norms.put("self_attn.q_norm", "attn_q_norm");
@@ -802,7 +832,7 @@ public final class Llama implements LanguageModel {
             layerType[i] = dtype;
             String prefix = "model.layers." + i + ".";
             for (Map.Entry<String, Var> e : List.copyOf(named.entrySet())) {
-                if (e.getKey().startsWith(prefix) && e.getKey().contains("norm")) {
+                if (e.getKey().startsWith(prefix) && (e.getKey().contains("norm") || e.getKey().endsWith("sinks"))) {
                     named.put(e.getKey(), moved(e.getValue(), target, dtype));
                 } else if (e.getKey().startsWith(prefix) && e.getKey().endsWith("e_score_correction_bias")) {
                     named.put(e.getKey(), moved(e.getValue(), target, DType.FLOAT32));
@@ -825,7 +855,8 @@ public final class Llama implements LanguageModel {
                             b.experts.sharedScale, named.get(choiceBiasName(i))),
                     b.latent == null ? null : new Latent(b.latent.qA,
                             named.get(prefix + "self_attn.q_a_layernorm.weight"), b.latent.qB, b.latent.kvA,
-                            named.get(prefix + "self_attn.kv_a_layernorm.weight"), b.latent.kvB)));
+                            named.get(prefix + "self_attn.kv_a_layernorm.weight"), b.latent.kvB),
+                    named.get(prefix + "self_attn.sinks")));
         }
         headDevice = target;
         headType = dtype;
@@ -1877,6 +1908,12 @@ public final class Llama implements LanguageModel {
     }
 
     private Tensor read(State state, int[][] tokens, boolean[][] padding, boolean everyStep, Tensor[] hiddenOut) {
+        // logits come back as tensors: nothing here is differentiated, so no graph is kept
+        return Var.noGrad(() -> readSteps(state, tokens, padding, everyStep, hiddenOut));
+    }
+
+    private Tensor readSteps(State state, int[][] tokens, boolean[][] padding, boolean everyStep,
+            Tensor[] hiddenOut) {
         Cache cache = (Cache) Objects.requireNonNull(state, "state");
         int batch = tokens.length;
         int steps = tokens[0].length;
@@ -2198,7 +2235,11 @@ public final class Llama implements LanguageModel {
         if (bias == null && e.attentionSoftcap() > 0 && causal) {
             bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
         }
-        Var a = e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
+        if (bias == null && blk.sinks != null && causal) {
+            bias = Functional.causalMask(steps, k.shape().dim(2), layerDev).to(typeOf(l));
+        }
+        Var a = blk.sinks != null ? Functional.sinkAttention(q, k, v, bias, scale, Var.of(blk.sinks.value()))
+                : e.attentionSoftcap() > 0 ? Functional.softCappedAttention(q, k, v, bias, scale, e.attentionSoftcap())
                 : bias != null ? Functional.attention(q, k, v, bias, scale, 0, null)
                 : Functional.attention(q, k, v, causal, scale);
         a = a.permute(0, 2, 1, 3).reshape(batch, steps, config.heads() * hd);
@@ -2386,12 +2427,15 @@ public final class Llama implements LanguageModel {
         int k = moe.perToken();
         Device dev = h.value().device();
         Var flat = h.reshape(n, hidden);
-        Var logits = m.router().apply(flat).to(DType.FLOAT32);
-        Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
         // experts kept elsewhere (on the CPU, see loadExpertsOnCpu) run there, in float32, on
         // a copy of the tokens; the shared expert stays here and is queued first
         Device home = m.gate()[0].weight().value().device();
         boolean split = !home.equals(dev);
+        if (split && (!Var.gradEnabled() || !flat.requiresGrad())) {
+            return expertsAtHome(m, flat, home).reshape(s[0], s[1], hidden);
+        }
+        Var logits = m.router().apply(flat).to(DType.FLOAT32);
+        Var probs = routing.sigmoid() ? logits.sigmoid() : Activation.SOFTMAX.forward(logits);   // [n, experts]
         Var shared = null;
         if (split && m.sharedGate() != null) {
             shared = sharedExpert(m, flat);
@@ -2420,8 +2464,7 @@ public final class Llama implements LanguageModel {
         List<java.util.function.Function<Var, Var>> nets = new ArrayList<>();
         for (int e = 0; e < count; e++) {
             int at = e;
-            nets.add(xe -> m.down()[at].apply(m.gate()[at].apply(xe).activation(config.extras().activation(), 0)
-                    .mul(m.up()[at].apply(xe))));
+            nets.add(xe -> m.down()[at].apply(gated(m.gate()[at].apply(xe), m.up()[at].apply(xe))));
         }
         Var out = Functional.routedExperts(src, chosen, weights, k, nets);
         if (split) {
@@ -2431,6 +2474,296 @@ public final class Llama implements LanguageModel {
             out = out.add(shared != null ? shared : sharedExpert(m, flat));
         }
         return out.reshape(s[0], s[1], hidden);
+    }
+
+    /**
+     * An expert's gated activation: the family's activation of the gate times the up
+     * projection, or gpt-oss's clamped SwiGLU (see {@link LlamaConfig.Moe#swigluLimit}).
+     */
+    private Var gated(Var gate, Var up) {
+        float limit = config.extras().moe().swigluLimit();
+        if (limit > 0) {
+            Var g = gate.minimum(limit);
+            return up.clamp(-limit, limit).add(1f).mul(g.mul(g.mul(1.702f).sigmoid()));
+        }
+        return gate.activation(config.extras().activation(), 0).mul(up);
+    }
+
+    /**
+     * The experts of a block kept on another device ({@code home}, the CPU), for inference:
+     * the tokens cross once, the router runs there too on a copy of its weights, the chosen
+     * experts run at once ({@link Functional#routedExpertsAtOnce}) and their sum crosses
+     * back. One wait for the GPU per block, where routing there and copying the tokens took
+     * two. The shared expert stays on the model's device, queued first.
+     */
+    private Var expertsAtHome(Experts m, Var flat, Device home) {
+        LlamaConfig.Moe moe = config.extras().moe();
+        LlamaConfig.Routing routing = moe.routing();
+        int n = flat.shape().dim(0);
+        int count = moe.experts();
+        int k = moe.perToken();
+        Device dev = flat.value().device();
+        Var shared = m.sharedGate() == null ? null : sharedExpert(m, flat);
+        Tensor x = flat.value().to(home).to(DType.FLOAT32);
+        Router r = routers.computeIfAbsent(m, e -> new Router(e.router(), home, e.choiceBias()));
+        float[] p = apply(r.linear, x).to(DType.FLOAT32).toArray();   // [n, experts] logits, then scores
+        for (int t = 0; t < n; t++) {
+            if (routing.sigmoid()) {
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) (1 / (1 + Math.exp(-p[t * count + e])));
+                }
+            } else {
+                float max = Float.NEGATIVE_INFINITY;
+                for (int e = 0; e < count; e++) {
+                    max = Math.max(max, p[t * count + e]);
+                }
+                double total = 0;
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) Math.exp(p[t * count + e] - max);
+                    total += p[t * count + e];
+                }
+                for (int e = 0; e < count; e++) {
+                    p[t * count + e] = (float) (p[t * count + e] / total);
+                }
+            }
+        }
+        int[] chosen = Functional.chooseExperts(p, r.choiceBias, n, count, k, groups(routing));
+        float[] w = new float[n * k];
+        for (int t = 0; t < n; t++) {
+            double total = 0;
+            for (int j = 0; j < k; j++) {
+                w[t * k + j] = p[t * count + chosen[t * k + j]];
+                total += w[t * k + j];
+            }
+            for (int j = 0; j < k; j++) {
+                if (moe.normalize()) {
+                    // DeepSeek adds 1e-20 against a zero sum of sigmoids; a softmax's never is
+                    w[t * k + j] = (float) (w[t * k + j] / (routing.sigmoid() ? total + 1e-20 : total));
+                }
+                w[t * k + j] *= routing.scale();
+            }
+        }
+        // experts with a copy here run here, queued before the rest start on the CPU
+        int[] rest = chosen;
+        Tensor near = null;
+        HotCache<ExpertKey, Linear[]> cache = dev.equals(cacheDevice) ? expertCache : null;
+        if (cache != null) {
+            rest = chosen.clone();
+            Map<Integer, List<Integer>> slots = new java.util.TreeMap<>();
+            for (int i = 0; i < chosen.length; i++) {
+                slots.computeIfAbsent(chosen[i], e -> new ArrayList<>()).add(i);
+            }
+            Tensor xd = flat.value();
+            for (Map.Entry<Integer, List<Integer>> e : slots.entrySet()) {
+                Linear[] copy = cache.use(new ExpertKey(m, e.getKey()), e.getValue().size());
+                if (copy == null) {
+                    continue;
+                }
+                int[] rows = new int[e.getValue().size()];
+                float[] ws = new float[rows.length];
+                for (int j = 0; j < rows.length; j++) {
+                    int slot = e.getValue().get(j);
+                    rows[j] = slot / k;
+                    ws[j] = w[slot];
+                    rest[slot] = -1;
+                }
+                Tensor xe = n == 1 ? xd : xd.gather(0, indices(rows, dev));
+                Tensor ye = apply(copy[2], gated(apply(copy[0], xe), apply(copy[1], xe)));
+                ye = ye.mul(Tensor.of(Shape.of(rows.length, 1), ws, dev).to(ye.dtype()));
+                if (n != 1) {
+                    ye = ye.scatterAdd(0, indices(rows, dev), n);
+                }
+                near = near == null ? ye : near.add(ye);
+            }
+        }
+        Var out = null;
+        if (near == null || java.util.Arrays.stream(rest).anyMatch(e -> e >= 0)) {
+            prefetch(m, rest);
+            Tensor y = Functional.routedExpertsAtOnce(x, rest, w, k, e -> xe -> apply(m.down()[e],
+                    gated(apply(m.gate()[e], xe), apply(m.up()[e], xe))));
+            out = Var.of(y.to(dev).to(flat.value().dtype()));
+        }
+        if (near != null) {
+            Var v = Var.of(near.to(flat.value().dtype()));
+            out = out == null ? v : out.add(v);
+        }
+        return shared == null ? out : out.add(shared);
+    }
+
+    /** An expert of a block, by the block's identity. */
+    private record ExpertKey(Experts block, int expert) {
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ExpertKey other && other.block == block && other.expert == expert;
+        }
+
+        @Override
+        public int hashCode() {
+            return System.identityHashCode(block) * 31 + expert;
+        }
+    }
+
+    /** The most used experts of blocks whose experts are elsewhere, copied to {@link #cacheDevice}; or null. */
+    private HotCache<ExpertKey, Linear[]> expertCache;
+    private Device cacheDevice;
+
+    /**
+     * Keeps copies of the most used experts on {@code target} (the GPU) where the experts of
+     * blocks on {@code target} are kept elsewhere ({@link #loadExpertsOnCpu}): up to {@code bytes}
+     * of them. The cache starts with the experts of the first blocks, copied before this
+     * returns, and follows what the model uses from a warm-up of about 32 tokens on, swapping
+     * an eighth of it at most every 128 tokens; those copies are made on other threads, and
+     * decoding goes on without each until it is ready. A
+     * token's experts with a copy run on {@code target}, at the same time as the rest on the
+     * CPU. Where the routing favours some experts, which it does for most text, more of every
+     * token's expert work moves to the GPU than with whole blocks of experts there
+     * ({@code gpuExpertLayers}) for the same memory.
+     *
+     * @param target the device to copy to, the model's device for the blocks that use it
+     * @param bytes the memory the copies may take there, 0 to stop caching
+     * @return this model
+     */
+    public Llama cacheExperts(Device target, long bytes) {
+        int routed = 0;
+        for (Block b : blocks) {
+            routed += b.experts == null ? 0 : 1;
+        }
+        int k = config.extras().moe().present() ? config.extras().moe().perToken() : 1;
+        long perToken = (long) Math.max(1, routed) * k;
+        cacheExperts(target, bytes, 32 * perToken, 128 * perToken, Math.max(1, bytes / 8), COPIER);
+        // a start: the experts of the first blocks, as many as fit, copied now while nothing
+        // else runs; filling it while decoding took seconds of the first tokens (measured)
+        List<ExpertKey> first = new ArrayList<>();
+        for (Block b : blocks) {
+            if (b.experts != null && !b.experts.gate()[0].weight.value().device().equals(target)) {
+                for (int e = 0; e < b.experts.gate().length; e++) {
+                    first.add(new ExpertKey(b.experts, e));
+                }
+            }
+        }
+        if (expertCache != null) {
+            expertCache.preload(first);
+        }
+        return this;
+    }
+
+    /**
+     * As {@link #cacheExperts(Device, long)}, with the cache's timing (in expert uses), the
+     * bytes a refresh may load, and where copies are made.
+     */
+    Llama cacheExperts(Device target, long bytes, long warmup, long every, long maxSwapBytes,
+            java.util.concurrent.Executor copier) {
+        Objects.requireNonNull(target, "target");
+        if (bytes < 0) {
+            throw new IllegalArgumentException("bytes is " + bytes);
+        }
+        if (expertCache != null) {
+            expertCache.clear();
+        }
+        if (bytes == 0) {
+            expertCache = null;
+            cacheDevice = null;
+            return this;
+        }
+        DType as = target.equals(device) ? dtype : DType.FLOAT32;
+        expertCache = new HotCache<>(bytes, key -> expertBytes(key.block(), key.expert()),
+                key -> copyExpert(key.block(), key.expert(), target, as),
+                Llama::releaseExpert, warmup, every, maxSwapBytes, copier);
+        cacheDevice = target;
+        return this;
+    }
+
+    /**
+     * Makes expert copies for the cache, off the decoding thread: repacking a file's blocks
+     * for a GPU takes about a second per gigabyte on one thread, and a first fill of several
+     * gigabytes held up decoding for seconds. A few threads, leaving most cores to the experts
+     * on the CPU.
+     */
+    private static final java.util.concurrent.ExecutorService COPIER = java.util.concurrent.Executors.newFixedThreadPool(
+            Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 8)), r -> {
+                Thread t = new Thread(r, "brainiac-expert-copier");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** The expert cache, or null; for tests. */
+    HotCache<?, ?> expertCache() {
+        return expertCache;
+    }
+
+    /** The expert cache's state, for logs: what it holds and how often it was used. */
+    public String expertCacheStats() {
+        return expertCache == null ? "no expert cache" : expertCache.toString();
+    }
+
+    private static long expertBytes(Experts m, int e) {
+        long b = 0;
+        for (Linear l : new Linear[] {m.gate()[e], m.up()[e], m.down()[e]}) {
+            b += l.weight.value().bytes() + (l.bias == null ? 0 : l.bias.value().bytes());
+        }
+        return b;
+    }
+
+    /** Expert {@code e}'s gate, up and down copied to {@code target}: packed weights stay packed. */
+    private static Linear[] copyExpert(Experts m, int e, Device target, DType dtype) {
+        Linear[] out = new Linear[3];
+        Linear[] from = {m.gate()[e], m.up()[e], m.down()[e]};
+        for (int i = 0; i < 3; i++) {
+            // from the file where it was read in place: a GPU then gets the file's levels, as
+            // loading the experts there does, where moving the blocks would requantize them
+            Tensor w = from[i].reload != null ? from[i].reload.apply(target, dtype) : from[i].weight.value().to(target);
+            if (!w.isPacked()) {
+                w = w.to(dtype);
+            }
+            Var bias = from[i].bias == null ? null : Var.of(from[i].bias.value().to(target).to(dtype));
+            out[i] = new Linear(Var.of(w), bias);
+            if (w.isPacked()) {
+                Tensor.evaluate(List.of(w));   // a matrix packed for later starts its upload now
+            }
+        }
+        return out;
+    }
+
+    private static void releaseExpert(Linear[] copy) {
+        for (Linear l : copy) {
+            l.weight.value().release();
+            if (l.bias != null) {
+                l.bias.value().release();
+            }
+        }
+    }
+
+    /** A block's router as {@link #expertsAtHome} uses it: a copy on the experts' device, and the choice bias read once. */
+    private record Router(Linear linear, float[] choiceBias) {
+        Router(Linear router, Device home, Var choiceBias) {
+            this(new Linear(Var.of(onHome(router.weight.value(), home)),
+                    router.bias == null ? null : Var.of(router.bias.value().to(home).to(DType.FLOAT32))),
+                    choiceBias == null ? null : choiceBias.value().toArray());
+        }
+    }
+
+    /** A weight copied to {@code home}: packed weights stay packed, others become float32. */
+    private static Tensor onHome(Tensor w, Device home) {
+        return w.isPacked() ? w.to(home) : w.to(home).to(DType.FLOAT32);
+    }
+
+    /** Copies of the routers of blocks whose experts are elsewhere, made on first use. */
+    private final Map<Experts, Router> routers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** As {@link #gated(Var, Var)}, on plain tensors. */
+    private Tensor gated(Tensor gate, Tensor up) {
+        float limit = config.extras().moe().swigluLimit();
+        if (limit > 0) {
+            Tensor g = gate.minimum(limit);
+            return up.clamp(-limit, limit).add(1f).mul(g.mul(g.mul(1.702f).sigmoid()));
+        }
+        return gate.activation(config.extras().activation(), 0).mul(up);
+    }
+
+    /** A projection without adapters, on plain tensors. */
+    private static Tensor apply(Linear l, Tensor x) {
+        Tensor y = x.matmul(l.weight.value());
+        return l.bias == null ? y : y.add(l.bias.value());
     }
 
     /** The shared expert's output for {@code flat}, scaled by its sigmoid gate. */
@@ -2446,7 +2779,7 @@ public final class Llama implements LanguageModel {
         List<GgmlBlocks> used = new ArrayList<>();
         boolean[] seen = new boolean[m.gate().length];
         for (int e : chosen) {
-            if (!seen[e]) {
+            if (e >= 0 && !seen[e]) {
                 seen[e] = true;
                 for (Linear l : new Linear[] {m.gate()[e], m.up()[e], m.down()[e]}) {
                     if (l.mapped != null) {
