@@ -342,7 +342,7 @@ final class HipContext {
      */
     static String part(String kernel) {
         String format = kernel.substring(kernel.lastIndexOf('_') + 1).toUpperCase(java.util.Locale.ROOT);
-        if (kernel.startsWith("few_") || kernel.startsWith("unpack_packed_")) {
+        if (kernel.startsWith("few_") || kernel.startsWith("mv_") || kernel.startsWith("unpack_packed_")) {
             return "FEW_" + format;
         }
         if (kernel.startsWith("attention")) {
@@ -454,10 +454,15 @@ final class HipContext {
 
     /** Launches {@code name} with a grid of blocks of {@link #GROUP} threads. */
     void launch(String name, int gridX, int gridY, int gridZ) {
+        launch(name, gridX, gridY, gridZ, GROUP);
+    }
+
+    /** Launches {@code name} with a grid of blocks of {@code block} threads. */
+    void launch(String name, int gridX, int gridY, int gridZ, int block) {
         long f = function(name);
         trace("launch " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
         long t0 = System.nanoTime();
-        int r = cu.launch(f, gridX, gridY, gridZ, GROUP, 0, stream, argPointers);
+        int r = cu.launch(f, gridX, gridY, gridZ, block, 0, stream, argPointers);
         callNanos += System.nanoTime() - t0;
         launches++;
         if (r != HipRuntime.HIP_SUCCESS) {

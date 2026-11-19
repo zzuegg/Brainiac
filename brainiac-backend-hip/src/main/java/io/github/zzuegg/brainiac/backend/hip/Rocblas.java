@@ -51,6 +51,8 @@ final class Rocblas {
     private final MethodHandle gemmStridedBatchedEx;
     private final String version;
     private final MethodHandle destroyHandle;
+    /** rocblas_hshgemv_strided_batched (float16 in and out, float32 sums), or null. */
+    private final MethodHandle hshgemv;
 
     // alpha and beta, read by rocBLAS from host memory
     private static final MemorySegment ONE_F;
@@ -113,6 +115,10 @@ final class Rocblas {
                 ADDRESS, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, ADDRESS,
                 JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT,
                 JAVA_INT, JAVA_INT, JAVA_INT)), true);
+        // handle, trans, m, n, alpha, A, lda, strideA, x, incx, stridex, beta, y, incy, stridey, batch
+        hshgemv = b.optional("rocblas_hshgemv_strided_batched", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_INT,
+                JAVA_INT, JAVA_INT, ADDRESS, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, ADDRESS,
+                JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT));
         try (Arena a = Arena.ofConfined()) {
             MemorySegment h = a.allocate(JAVA_LONG);
             check((int) create.invokeExact(h), "rocblas_create_handle");
@@ -275,6 +281,28 @@ final class Rocblas {
         if (status != 0) {
             throw new HipException(call + " " + dtype + " (" + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n
                     + "]): " + statusName(status) + " (" + status + ")", status);
+        }
+    }
+
+    boolean hasHalfGemv() {
+        return hshgemv != null;
+    }
+
+    /**
+     * {@code out[n] = x[k] w[k, n]} in float16, {@code w} row-major: column-major it is
+     * {@code [n, k]} with leading dimension {@code n}, so {@code out = W x} without a transpose.
+     */
+    void halfGemv(int k, int n, long w, long x, long out) {
+        int status;
+        try {
+            status = (int) hshgemv.invokeExact(handle, OP_N, n, k, ONE_F, w, n, (long) n * k, x, 1, (long) k, ZERO_F,
+                    out, 1, (long) n, 1);
+        } catch (Throwable t) {
+            throw Binder.fail("rocblas_hshgemv_strided_batched", t);
+        }
+        if (status != 0) {
+            throw new HipException("rocblas_hshgemv_strided_batched ([1, " + k + "] x [" + k + ", " + n + "]): "
+                    + statusName(status) + " (" + status + ")", status);
         }
     }
 }

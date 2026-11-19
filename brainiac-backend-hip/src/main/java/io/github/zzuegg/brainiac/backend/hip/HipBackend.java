@@ -794,7 +794,13 @@ public final class HipBackend implements Backend {
         HipStorage y = as(cs(b), z.dtype);
         DType t = z.dtype;
         boolean blas = c.rocblas != null;
-        if (FEW_ROWS && batch == 1 && m >= 1 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
+        if (batch == 1 && m == 1 && MATVEC.equals("rocblas") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()) {
+            c.rocblas.halfGemv(k, n, y.address(), x.address(), z.address());
+            c.products++;
+        } else if (batch == 1 && m <= MV_ROWS && !MATVEC.equals("few") && (t == DType.FLOAT16 || t == DType.BFLOAT16)
+                && n % 8 == 0) {
+            mv(c, x, y.address(), m, k, n, z);
+        } else if (FEW_ROWS && batch == 1 && m >= 1 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
             // a handful of rows: a BLAS library runs these 16-bit products slower than float32 ones
             few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
         } else if (blas) {
@@ -868,6 +874,44 @@ public final class HipBackend implements Backend {
             long mn = (long) m * n;
             c.args().ptr(part.address()).ptr(out.address()).i64(mn).i32(pieces);
             c.launch(kernel("few_sum", out.dtype), mn);
+            part.release();
+        }
+    }
+
+    /**
+     * What multiplies one to four 16-bit rows by a dense matrix, decoding's products
+     * ({@code -Dbrainiac.hip.matvec}): {@code mv} (the default) the kernel of that name,
+     * {@code rocblas} rocBLAS's float16 gemv for single rows, {@code few} the few-row kernel.
+     */
+    private static final String MATVEC = System.getProperty("brainiac.hip.matvec", "mv");
+    /** The most rows {@code mv} takes (MV_ROWS in kernels.hip), and its block size. */
+    static final int MV_ROWS = 4;
+    private static final int MV_BLOCK = 64;
+
+    /**
+     * {@code mv}: a thread per 8 columns, a 16-byte load per row of {@code w}, in blocks of 64
+     * threads; {@code k} split into pieces of at least 32 rows until there are 32 blocks per
+     * compute unit, so that enough loads are in flight to keep the memory busy.
+     */
+    private void mv(HipContext c, HipStorage a, long w, int m, int k, int n, HipStorage out) {
+        int columnBlocks = (n / 8 + MV_BLOCK - 1) / MV_BLOCK;
+        int target = 32 * c.multiprocessors;
+        int pieces = Math.max(1, Math.min((k + 31) / 32, target / columnBlocks));
+        int chunk = (k + pieces - 1) / pieces;
+        pieces = (k + chunk - 1) / chunk;
+        if (columnBlocks > FEW_COUNTERS) {
+            pieces = 1;
+            chunk = k;
+        }
+        HipStorage part = pieces > 1 ? raw((long) pieces * m * n, DType.FLOAT32, null) : null;
+        if (part != null && fewCounters == null) {
+            fewCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
+            fill(fewCounters, 0);
+        }
+        c.args().ptr(a.address()).ptr(w).ptr(part != null ? part.address() : 0).ptr(out.address()).i32(m).i32(k)
+                .i32(n).i32(chunk).ptr(part != null ? fewCounters.address() : 0);
+        c.launch(kernel("mv", out.dtype), columnBlocks, pieces, 1, MV_BLOCK);
+        if (part != null) {
             part.release();
         }
     }

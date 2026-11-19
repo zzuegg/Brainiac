@@ -780,6 +780,95 @@ template <class D, class W> __device__ void few_k(const typename D::T* a, W w, f
     }
 }
 
+// Products of up to MV_ROWS rows of 16-bit values with a dense w whose rows are a multiple of 8
+// values long, for decoding: blocks of MV_BLOCK threads, each thread 8 columns read as one
+// 16-byte load per row of w, rows unrolled so that many loads are in flight, a read straight
+// from memory (few values, all cached). Blocks over columns (x) and pieces of k (y), the
+// pieces summed in order by the last block of each column block to finish.
+#define MV_ROWS 4
+#define MV_BLOCK 64
+
+__device__ __forceinline__ u16 half_of(const uint4& raw, int v) {
+    unsigned w = v < 2 ? raw.x : v < 4 ? raw.y : v < 6 ? raw.z : raw.w;
+    return (u16) (w >> (16 * (v & 1)));
+}
+
+template <class D> __device__ void mv_k(const typename D::T* a, const typename D::T* w, float* part,
+        typename D::T* out, int m, int k, int n, int chunk, int* counters) {
+    typedef typename D::T T;
+    i64 c0 = ((i64) blockIdx.x * MV_BLOCK + threadIdx.x) * 8;
+    bool active = c0 < n;
+    int k0 = blockIdx.y * chunk;
+    int k1 = min(k, k0 + chunk);
+    float acc[MV_ROWS][8];
+#pragma unroll
+    for (int r = 0; r < MV_ROWS; r++) {
+#pragma unroll
+        for (int v = 0; v < 8; v++) {
+            acc[r][v] = 0.0f;
+        }
+    }
+    if (active) {
+        const uint4* p = reinterpret_cast<const uint4*>(w + (i64) k0 * n + c0);
+        i64 step = n / 8;
+#pragma unroll 8
+        for (int kk = k0; kk < k1; kk++, p += step) {
+            uint4 raw = *p;
+            float x[MV_ROWS];
+#pragma unroll
+            for (int r = 0; r < MV_ROWS; r++) {
+                x[r] = r < m ? (float) D::ld(a, (i64) r * k + kk) : 0.0f;
+            }
+#pragma unroll
+            for (int v = 0; v < 8; v++) {
+                T stored = half_of(raw, v);
+                float wv = (float) D::ld(&stored, 0);
+#pragma unroll
+                for (int r = 0; r < MV_ROWS; r++) {
+                    acc[r][v] += x[r] * wv;
+                }
+            }
+        }
+        for (int r = 0; r < m; r++) {
+#pragma unroll
+            for (int v = 0; v < 8; v++) {
+                if (gridDim.y == 1) {
+                    D::st(out, (i64) r * n + c0 + v, acc[r][v]);
+                } else {
+                    part[((i64) blockIdx.y * m + r) * n + c0 + v] = acc[r][v];
+                }
+            }
+        }
+    }
+    if (gridDim.y > 1) {
+        __shared__ int last;
+        __threadfence();
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            last = atomicAdd(&counters[blockIdx.x], 1) == (int) gridDim.y - 1;
+        }
+        __syncthreads();
+        if (last) {
+            __threadfence();
+            if (active) {
+                for (int r = 0; r < m; r++) {
+#pragma unroll
+                    for (int v = 0; v < 8; v++) {
+                        float sum = 0.0f;
+                        for (int q = 0; q < (int) gridDim.y; q++) {
+                            sum += load_part(part + ((i64) q * m + r) * n + c0 + v);
+                        }
+                        D::st(out, (i64) r * n + c0 + v, sum);
+                    }
+                }
+            }
+            if (threadIdx.x == 0) {
+                counters[blockIdx.x] = 0;
+            }
+        }
+    }
+}
+
 template <class D> __device__ void few_sum_k(const float* part, typename D::T* out, i64 mn, int pieces) {
     typedef typename D::A A;
     FOR_EACH(i, mn) {
@@ -1248,9 +1337,17 @@ FEW_KERNELS(f64, F64)
 #endif
 #ifdef BRAINIAC_FEW_F16
 FEW_KERNELS(f16, F16)
+extern "C" __global__ void mv_f16(const F16::T* a, const F16::T* w, float* part, F16::T* out, int m, int k, int n,
+        int chunk, int* counters) {
+    mv_k<F16>(a, w, part, out, m, k, n, chunk, counters);
+}
 #endif
 #ifdef BRAINIAC_FEW_BF16
 FEW_KERNELS(bf16, BF16)
+extern "C" __global__ void mv_bf16(const BF16::T* a, const BF16::T* w, float* part, BF16::T* out, int m, int k,
+        int n, int chunk, int* counters) {
+    mv_k<BF16>(a, w, part, out, m, k, n, chunk, counters);
+}
 #endif
 
 // Multi-head latent attention over cached latents (Backend.latentAttention, DeepSeek): every
