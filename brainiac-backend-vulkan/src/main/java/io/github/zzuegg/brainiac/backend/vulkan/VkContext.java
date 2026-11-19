@@ -1377,6 +1377,43 @@ final class VkContext {
         uploadNanos += System.nanoTime() - t;
     }
 
+    /**
+     * A mapped block of system memory for {@link #uploadStaged}: the caller fills it without the
+     * backend's lock, so that a background upload's copy does not hold up the thread computing.
+     */
+    Block stagingBlock(long bytes) {
+        return block(bytes, bulkType, true);
+    }
+
+    /** A staging block's mapped memory. */
+    static MemorySegment mapped(Block b) {
+        return MemorySegment.ofAddress(b.mapped).reinterpret(b.size);
+    }
+
+    /**
+     * Copies parts of a filled staging block to slots: part {@code i} is {@code bytes[i]} bytes
+     * at {@code at[i]}. The block is freed once the copies are done.
+     */
+    void uploadStaged(Block from, Slot[] to, long[] at, long[] bytes) {
+        long t = System.nanoTime();
+        Batch b = null;
+        for (int i = 0; i < to.length; i++) {
+            uploaded += bytes[i];
+            access(to[i].address);
+            b = recording();
+            try (MemoryStack st = stackPush()) {
+                vkCmdCopyBuffer(b.commands, from.buffer, to[i].block.buffer,
+                        VkBufferCopy.calloc(1, st).srcOffset(at[i]).dstOffset(to[i].offset).size(bytes[i]));
+            }
+            if (i < to.length - 1) {
+                recorded(b);
+            }
+        }
+        b.done.add(() -> destroy(from));
+        uploadNanos += System.nanoTime() - t;
+        recorded(b);
+    }
+
     /** Room for {@code bytes} bytes in the staging chunk, for commands recorded into {@code b}. */
     private long stage(Batch b, long bytes) {
         if (staging == null || staging.used + bytes > staging.size) {

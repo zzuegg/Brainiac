@@ -2125,6 +2125,77 @@ public final class VulkanBackend implements Backend {
         return new Staged(matrix, flags, 1, 0, levels, hi, null, null, null, null, matrix.scales(), matrix.offsets());
     }
 
+    /**
+     * As {@link #upload(Staged)} for a deferred matrix, from a thread without the lock: the
+     * slots and a staging block are taken under the lock, the arrays copied into the staging
+     * block without it, and the copies to the device recorded under it again. Measured while a
+     * cache of experts filled: copying 8 GB into staging under the lock cost the decoding thread
+     * seconds of waits.
+     */
+    private Packed uploadUnlocked(Deferred d, Staged st) {
+        Object[] parts = {st.levels(), st.hi(), st.scaleCodes(), st.offsetCodes(),
+                st.scaleHalves() != null ? st.scaleHalves() : st.scales(),
+                st.offsetHalves() != null ? st.offsetHalves() : st.offsets()};
+        java.lang.foreign.MemorySegment[] src = new java.lang.foreign.MemorySegment[parts.length];
+        long[] at = new long[parts.length];
+        long total = 0;
+        for (int i = 0; i < parts.length; i++) {
+            src[i] = switch (parts[i]) {
+                case null -> null;
+                case byte[] b -> java.lang.foreign.MemorySegment.ofArray(b);
+                case short[] h -> java.lang.foreign.MemorySegment.ofArray(h);
+                case float[] f -> java.lang.foreign.MemorySegment.ofArray(f);
+                default -> throw new IllegalStateException();
+            };
+            if (src[i] != null) {
+                at[i] = total;
+                total += (src[i].byteSize() + 15) & ~15L;
+            }
+        }
+        VkStorage[] slots = new VkStorage[parts.length];
+        VkContext.Block block;
+        synchronized (this) {
+            if (d.done != null) {
+                return d.done;
+            }
+            for (int i = 0; i < parts.length; i++) {
+                if (src[i] != null) {
+                    // in 32-bit words, as the shaders read them; float32 factors one per word
+                    slots[i] = raw(Math.max(1, (src[i].byteSize() + 3) / 4), null);
+                    slots[i].slot();
+                }
+            }
+            block = vk.stagingBlock(Math.max(16, total));
+        }
+        java.lang.foreign.MemorySegment staging = VkContext.mapped(block);
+        int n = 0;
+        for (int i = 0; i < parts.length; i++) {
+            if (src[i] != null) {
+                staging.asSlice(at[i], src[i].byteSize()).copyFrom(src[i]);
+                n++;
+            }
+        }
+        VkContext.Slot[] to = new VkContext.Slot[n];
+        long[] from = new long[n];
+        long[] bytes = new long[n];
+        for (int i = 0, j = 0; i < parts.length; i++) {
+            if (src[i] != null) {
+                to[j] = slots[i].slot();
+                from[j] = at[i];
+                bytes[j++] = src[i].byteSize();
+            }
+        }
+        synchronized (this) {
+            vk.uploadStaged(block, to, from, bytes);
+            if (d.done == null) {
+                PackedMatrix m = st.matrix();
+                d.done = new Packed(m.rows(), m.cols(), m.bits(), m.group(), st.flags(), st.superRatio(), st.shift(), m,
+                        slots[0], slots[1], slots[2], slots[3], slots[4], slots[5]);
+            }
+            return d.done;
+        }
+    }
+
     /** Copies a staged matrix to the device. */
     private synchronized Packed upload(Staged st) {
         PackedMatrix m = st.matrix();
@@ -2288,12 +2359,13 @@ public final class VulkanBackend implements Backend {
                 return done;
             }
             Staged st = stage(d.host);
-            synchronized (this) {
+            if (Thread.holdsLock(this)) {
                 if (d.done == null) {
                     d.done = upload(st);
                 }
                 return d.done;
             }
+            return uploadUnlocked(d, st);
         }
         return packedHere(s);
     }
