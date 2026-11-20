@@ -272,8 +272,32 @@ class HipBackendTest {
         same(DType.FLOAT32, "embedding model", t -> (t.device().equals(gpu) ? device : cpu).predict(t), x);
     }
 
+    /**
+     * A pending chain written into rows of a larger array (a key/value cache step), and a
+     * pending result that reads an array computed before the array is written.
+     */
     @ParameterizedTest
-    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64"})
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16", "BFLOAT16"})
+    void pendingResultsWrittenIntoArraysMatchTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        Tensor x = random(31, 2, 3, 8);
+        same(type, "chain written into rows", t -> {
+            Tensor cache = Tensor.zeros(Shape.of(2, 7, 8), type, t.device());
+            cache.write(1, 2, t.mul(2).add(t.exp()));
+            cache.write(1, 5, t.slice(1, 0, 2).neg());
+            return cache.add(0);
+        }, x);
+        same(type, "result read before its source is written", t -> {
+            Tensor cache = t.mul(1).add(0);
+            Tensor.evaluate(List.of(cache));
+            Tensor before = cache.mul(3).add(1);   // pending, reads cache
+            cache.write(1, 1, t.slice(1, 0, 1).add(5));
+            return before.sub(cache);
+        }, x);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void fusedChainsAndViewsMatchTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         Tensor x = random(21, 6, 9);

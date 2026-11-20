@@ -6,17 +6,36 @@ import io.github.zzuegg.brainiac.tensor.spi.Storage;
 import java.lang.ref.Cleaner;
 
 /**
- * Values in device memory. The memory goes back to the context's pool when the storage is
- * released, or when the garbage collector finds it unreachable.
+ * Values in device memory. The memory is taken when the values are first written, so a result
+ * that is only ever inlined into generated kernels ({@link HipFusion}) never takes any, and goes
+ * back to the context's pool when the storage is released, or when the garbage collector finds
+ * it unreachable.
  */
 final class HipStorage implements Storage {
+
+    /** The memory, or 0 until it is needed; shared with the cleaner action. */
+    private static final class Holder {
+        volatile long pointer;
+    }
 
     final HipBackend owner;
     final long size;
     final DType dtype;
     /** The values as uploaded, kept for small uploads so indices can be checked without a download. */
     final float[] host;
-    private final long pointer;
+    /** The element-wise expression not yet computed into memory, or null once it is. */
+    HipFusion.Expr pending;
+    /** The size of {@link #pending} in nodes, inlined inputs included. */
+    int pendingNodes;
+    /** The backend's fusion generation when {@link #pending} was recorded. */
+    long pendingGeneration;
+    /**
+     * Pending expressions that read this storage directly (not counting those dropped unread):
+     * while any do, it is not freed early, and a write to it computes them first.
+     */
+    int readers;
+    private final HipContext context;
+    private final Holder holder = new Holder();
     private final Cleaner.Cleanable cleanable;
     private boolean released;
 
@@ -25,16 +44,18 @@ final class HipStorage implements Storage {
         this.size = size;
         this.dtype = dtype;
         this.host = host;
-        long bytes = Math.max(1, size) * dtype.bytes();
-        this.pointer = context.allocate(bytes);
-        this.cleanable = cleaner.register(this, new Free(context, pointer, bytes));
+        this.context = context;
+        this.cleanable = cleaner.register(this, new Free(context, holder, Math.max(1, size) * dtype.bytes()));
     }
 
     /** Runs on the collector's thread (or on release): hands the memory back for the next allocation. */
-    private record Free(HipContext context, long pointer, long bytes) implements Runnable {
+    private record Free(HipContext context, Holder holder, long bytes) implements Runnable {
         @Override
         public void run() {
-            context.freeLater(pointer, bytes);
+            long p = holder.pointer;
+            if (p != 0) {
+                context.freeLater(p, bytes);
+            }
         }
     }
 
@@ -48,12 +69,20 @@ final class HipStorage implements Storage {
         return dtype;
     }
 
-    /** The device address of element {@code index}. */
+    /** The device address of element {@code index}; the memory is taken on first use. */
     long address(long index) {
         if (released) {
             throw new IllegalStateException("a released tensor was used");
         }
-        return pointer + index * dtype.bytes();
+        if (pending != null) {
+            throw new IllegalStateException("a pending result was read before it was computed");
+        }
+        long p = holder.pointer;
+        if (p == 0) {
+            p = context.allocate(Math.max(1, size) * dtype.bytes());
+            holder.pointer = p;
+        }
+        return p + index * dtype.bytes();
     }
 
     long address() {

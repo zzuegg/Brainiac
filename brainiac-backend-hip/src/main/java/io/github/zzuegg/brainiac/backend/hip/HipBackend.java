@@ -68,6 +68,9 @@ import java.util.Set;
  * <li>{@code brainiac.hip.devices}: {@code one} for only one device; {@code all} for one per GPU
  * ({@code hip}, {@code hip:1}, ...); by default one per GPU of the first one's architecture</li>
  * <li>{@code brainiac.hip.fusedAttention=false}: attention from separate operations</li>
+ * <li>{@code brainiac.hip.fusion=false}: every element-wise step as a kernel of its own instead
+ * of chains generated as one kernel ({@link HipFusion}), and transposed operands copied before
+ * a product instead of read in place</li>
  * <li>{@code brainiac.hip.fewRows=false}: products of up to 16 rows in float16 and bfloat16 by
  * rocBLAS instead of a kernel of its own</li>
  * </ul>
@@ -309,7 +312,9 @@ public final class HipBackend implements Backend {
                 + " rocBLAS products, " + c.waits + " waits, " + (c.uploadedBytes >> 20) + " MB uploaded, "
                 + (c.downloadedBytes >> 20) + " MB downloaded, " + (c.inUse() >> 20) + " MB in use, "
                 + (c.peak() >> 20) + " MB peak, " + (c.reserved() >> 20) + " MB reserved, " + c.collections
-                + " collections" + c.profileReport();
+                + " collections, fusion " + (FUSION ? fusedLaunches + " fused launches of " + c.fusedKernels()
+                        + " generated kernels (" + c.fusedCompileNanos / 1_000_000 + " ms compiling)" : "off")
+                + c.profileReport();
     }
 
     /**
@@ -328,6 +333,8 @@ public final class HipBackend implements Backend {
         HipStorage y = raw(n, DType.FLOAT16, null);
         fill(x, 1);
         fill(y, 0);
+        ready(x);
+        ready(y);
         String name = kernel("binary_contiguous", DType.FLOAT16);
         Runnable chain = () -> {
             for (int i = 0; i < kernels; i++) {
@@ -420,11 +427,32 @@ public final class HipBackend implements Backend {
         return new HipStorage(this, c, size, dtype, host, CLEANER);
     }
 
+    /** {@code s} with its values computed: an operand read now. */
     private HipStorage cs(Storage s) {
+        HipStorage c = ls(s);
+        ready(c);
+        return c;
+    }
+
+    /** {@code s} as it is, possibly pending. */
+    private HipStorage ls(Storage s) {
         if (s instanceof HipStorage c && c.owner == this) {
             return c;
         }
         throw new IllegalArgumentException("storage " + s + " does not belong to " + name());
+    }
+
+    /**
+     * {@code s} about to be written by an operation that is not fused: pending results that
+     * read it are computed first, then its own (a write may cover only part of it); starts a
+     * new fusion generation.
+     */
+    private HipStorage wr(Storage s) {
+        HipStorage c = ls(s);
+        flushReaders(c);
+        ready(c);
+        generation++;
+        return c;
     }
 
     /** The kernel compiled for a number format. */
@@ -445,6 +473,7 @@ public final class HipBackend implements Backend {
         }
         HipStorage c = raw(s.size, dtype, null);
         convert(s, c);
+        ready(c);
         return c;
     }
 
@@ -487,8 +516,15 @@ public final class HipBackend implements Backend {
         if (storage instanceof Packed) {
             return;   // weights: freed with the tensor that holds them, by the collector
         }
-        if (storage instanceof HipStorage s && s.owner == this) {
-            s.release();
+        if (storage instanceof HipStorage s && s.owner == this && s.pending == null && s.readers == 0) {
+            s.release();   // pending results, and what they read, are left to the collector
+        }
+    }
+
+    @Override
+    public synchronized void evaluate(List<Storage> storages) {
+        for (Storage s : storages) {
+            ready(ls(s));
         }
     }
 
@@ -588,8 +624,16 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void convert(Storage in, Storage out) {
+        HipStorage x0 = ls(in);
+        HipStorage y0 = ls(out);
+        if (x0.dtype != y0.dtype && x0.dtype != DType.FLOAT64 && y0.dtype != DType.FLOAT64 && fusable(y0)
+                && x0.size == y0.size) {
+            // between float32, float16 and bfloat16: read in the other format by what uses it
+            defer(y0, HipFusion.whole(x0));
+            return;
+        }
         HipStorage x = cs(in);
-        HipStorage y = cs(out);
+        HipStorage y = wr(out);
         HipContext c = ctx();
         if (x.dtype == y.dtype) {
             c.copy(y.address(), x.address(), Math.min(x.bytes(), y.bytes()));
@@ -610,7 +654,15 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void fill(Storage dst, float value) {
-        HipStorage s = cs(dst);
+        HipStorage s0 = ls(dst);
+        if (fusable(s0)) {
+            defer(s0, new HipFusion.Const(value));
+            return;
+        }
+        fillNow(wr(dst), value);
+    }
+
+    private void fillNow(HipStorage s, float value) {
         HipContext c = ctx();
         switch (s.dtype) {
             case FLOAT32 -> c.fill32(s.address(), Float.floatToRawIntBits(value), s.size);
@@ -630,16 +682,201 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized Storage random(long size, long seed) {
         HipStorage s = raw(size, DType.FLOAT32, null);
+        if (fusable(s)) {
+            // generated inside the kernel that uses the values, never stored
+            defer(s, new HipFusion.Random(seed));
+            return s;
+        }
         hip.args().ptr(s.address()).i64(size).i64(seed);
         hip.launch("random_values", size);
         return s;
+    }
+
+    // ------------------------------------------------------------------ fusion
+
+    /** Whether element-wise chains are fused ({@code -Dbrainiac.hip.fusion=false} runs every step on its own). */
+    static final boolean FUSION = !"false".equalsIgnoreCase(System.getProperty("brainiac.hip.fusion"));
+    /**
+     * Counts operations that are not fused. A pending result recorded before the latest of
+     * them is computed before anything builds on it, so chains end at the same points in every
+     * step and their generated kernels repeat instead of growing.
+     */
+    private long generation;
+    private long fusedLaunches;
+    /** Storages given a pending value, to find those reading a storage about to be written. */
+    private final java.util.ArrayList<java.lang.ref.WeakReference<HipStorage>> pendings = new java.util.ArrayList<>();
+
+    /** Whether an element-wise result can be recorded instead of computed now. */
+    private boolean fusable(HipStorage out, Storage... inputs) {
+        if (!FUSION || out.size == 0 || out.size > Integer.MAX_VALUE || !isAvailable()) {
+            return false;
+        }
+        for (Storage in : inputs) {
+            if (ls(in).dtype != out.dtype) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Records {@code e} as the pending value of {@code out}, computing inputs first where it pays. */
+    private void defer(HipStorage out, HipFusion.Expr e) {
+        // pending results reading out's current value compute it before it changes
+        flushReaders(out);
+        // in place: the output's value so far is computed first and read from memory, and the
+        // result is computed now, as the output cannot both stay pending and be read by it
+        boolean inPlace = HipFusion.reads(e, out);
+        if (inPlace) {
+            ready(out);
+        }
+        // a view adds no step of its own, so it cannot grow a chain
+        boolean view = e instanceof HipFusion.Src;
+        for (HipFusion.Src in : HipFusion.sources(e)) {
+            HipStorage st = in.storage();
+            if (st.pending == null || cheap(st.pending)) {
+                continue;
+            }
+            boolean old = st.pendingGeneration != generation && !view;
+            // read at more indices than it has (a broadcast): computed once, not at every read
+            boolean repeated = in.count() > st.size;
+            if (old || repeated) {
+                ready(st);
+            }
+        }
+        if (HipFusion.cost(e) > HipFusion.MAX_NODES) {
+            for (HipFusion.Src in : HipFusion.sources(e)) {
+                ready(in.storage());
+            }
+        }
+        drop(out);
+        out.pending = e;
+        out.pendingNodes = Math.min(HipFusion.nodes(e), 1 << 20);
+        out.pendingGeneration = generation;
+        for (HipFusion.Src in : HipFusion.sources(e)) {
+            in.storage().readers++;
+        }
+        if (pendings.size() >= 1024) {
+            pendings.removeIf(r -> {
+                HipStorage p = r.get();
+                return p == null || p.pending == null;
+            });
+        }
+        pendings.add(new java.lang.ref.WeakReference<>(out));
+        if (inPlace) {
+            ready(out);
+        }
+    }
+
+    /** Pending values that cost nothing to compute again wherever they are read. */
+    private static boolean cheap(HipFusion.Expr e) {
+        return e instanceof HipFusion.Const || e instanceof HipFusion.Random
+                || e instanceof HipFusion.Src s && s.storage().pending == null;
+    }
+
+    /** Forgets {@code s}'s pending value without computing it; returns it. */
+    private static HipFusion.Expr drop(HipStorage s) {
+        HipFusion.Expr e = s.pending;
+        if (e != null) {
+            s.pending = null;
+            s.pendingNodes = 0;
+            for (HipFusion.Src in : HipFusion.sources(e)) {
+                in.storage().readers--;
+            }
+        }
+        return e;
+    }
+
+    /** Computes the pending results that read {@code s}, before it is written. */
+    private void flushReaders(HipStorage s) {
+        if (s.readers <= 0) {
+            return;
+        }
+        for (java.lang.ref.WeakReference<HipStorage> r : List.copyOf(pendings)) {
+            HipStorage p = r.get();
+            if (p != null && p != s && p.pending != null && HipFusion.reads(p.pending, s)) {
+                ready(p);
+            }
+        }
+    }
+
+    /** Computes a pending storage, so that its memory holds its values. */
+    private void ready(HipStorage s) {
+        if (s.pending == null) {
+            return;
+        }
+        HipContext c = ctx();
+        // no longer pending first: an expression computed in place reads the stored values
+        HipFusion.Expr e = drop(s);
+        if (e instanceof HipFusion.Const k) {
+            fillNow(s, k.value());
+            return;
+        }
+        if (e instanceof HipFusion.Src v && v.storage().pending == null && v.dims().length == 1
+                && v.strides()[0] == 1 && v.storage().dtype == s.dtype) {
+            // a contiguous range of stored values
+            int bytes = s.dtype.bytes();
+            c.copy(s.address(), v.storage().address(v.offset()), s.size * bytes);
+            return;
+        }
+        launch(c, HipFusion.generate(e, s.dtype), s.address(), s.size);
+    }
+
+    /** Runs a generated kernel over {@code n} items, storing at {@code out}. */
+    private void launch(HipContext c, HipFusion.Kernel k, long out, long n) {
+        long f = c.fusedFunction(k.source());
+        for (HipStorage in : k.loads()) {
+            in.address();   // memory taken before the arguments are written
+        }
+        c.args().ptr(out).i32((int) n).struct(k.metaBytes(), k::writeMeta);
+        c.launchFused(f, n);
+        fusedLaunches++;
+    }
+
+    /**
+     * Where contiguous values of {@code shape} land in an array with {@code outStrides}, when
+     * that is rows of {@code inner} values {@code outerStride} apart: those two, else null.
+     */
+    private static int[] rows(int[] shape, long[] outStrides) {
+        int d = shape.length - 1;
+        long inner = 1;
+        while (d >= 0 && (shape[d] == 1 || outStrides[d] == inner)) {
+            inner *= shape[d];
+            d--;
+        }
+        long outer = -1;
+        long count = 1;
+        for (; d >= 0; d--) {
+            if (shape[d] == 1) {
+                continue;
+            }
+            if (outer < 0) {
+                outer = outStrides[d];
+            } else if (outStrides[d] != outer * count) {
+                return null;
+            }
+            count *= shape[d];
+        }
+        if (inner > Integer.MAX_VALUE || outer > Integer.MAX_VALUE) {
+            return null;
+        }
+        return new int[] {(int) inner, outer < 0 ? (int) inner : (int) outer};
+    }
+
+    /** Computes {@code in}'s pending value into rows of {@code z} (see {@link #rows}); {@code in} keeps it. */
+    private void writePending(HipStorage in, HipStorage z, long outOffset, long n, int inner, int outerStride) {
+        HipFusion.Kernel k = HipFusion.generate(in.pending, z.dtype, inner, outerStride);
+        launch(ctx(), k, z.address(outOffset), n);
     }
 
     // ------------------------------------------------------------------ element-wise
 
     @Override
     public synchronized void unary(UnaryOp op, Storage in, Storage out) {
-        HipStorage y = cs(out);
+        if (fusable(ls(out), in)) {
+            defer(ls(out), new HipFusion.Un(op.ordinal(), HipFusion.whole(ls(in))));
+            return;
+        }
+        HipStorage y = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(in), y.dtype);
         c.args().ptr(x.address()).ptr(y.address()).i64(y.size).i32(op.ordinal());
@@ -649,7 +886,11 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void activation(ActivationOp op, float param, Storage in, Storage out) {
-        HipStorage y = cs(out);
+        if (fusable(ls(out), in)) {
+            defer(ls(out), new HipFusion.Act(op.ordinal(), param, HipFusion.whole(ls(in))));
+            return;
+        }
+        HipStorage y = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(in), y.dtype);
         c.args().ptr(x.address()).ptr(y.address()).i64(y.size).i32(op.ordinal()).f32(param);
@@ -659,7 +900,12 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void activationBackward(ActivationOp op, float param, Storage in, Storage grad, Storage out) {
-        HipStorage y = cs(out);
+        if (fusable(ls(out), in, grad)) {
+            defer(ls(out), new HipFusion.ActBack(op.ordinal(), param, HipFusion.whole(ls(in)),
+                    HipFusion.whole(ls(grad))));
+            return;
+        }
+        HipStorage y = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(in), y.dtype);
         HipStorage g = as(cs(grad), y.dtype);
@@ -672,7 +918,7 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void binary(BinaryOp op, Storage a, long[] aStrides, Storage b, long[] bStrides, int[] shape,
             Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z0 = ls(out);
         long n = 1;
         for (int d : shape) {
             n *= d;
@@ -680,6 +926,15 @@ public final class HipBackend implements Backend {
         if (n == 0) {
             return;
         }
+        if (fusable(z0, a, b)) {
+            HipFusion.Src x = HipFusion.strided(ls(a), 0, shape, aStrides);
+            HipFusion.Src y = HipFusion.strided(ls(b), 0, shape, bStrides);
+            if (x != null && y != null) {
+                defer(z0, new HipFusion.Bin(op.ordinal(), x, y));
+                return;
+            }
+        }
+        HipStorage z = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(a), z.dtype);
         HipStorage y = as(cs(b), z.dtype);
@@ -707,7 +962,7 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void copy(Storage in, long inOffset, long[] inStrides, int[] shape, Storage out,
             long outOffset, long[] outStrides) {
-        HipStorage z = cs(out);
+        HipStorage z0 = ls(out);
         long n = 1;
         for (int d : shape) {
             n *= d;
@@ -715,6 +970,29 @@ public final class HipBackend implements Backend {
         if (n == 0) {
             return;
         }
+        HipStorage in0 = ls(in);
+        if (outOffset == 0 && n == z0.size && Arrays.equals(outStrides, Axes.contiguous(shape)) && fusable(z0, in)) {
+            // a view: recorded, and read through its strides by whatever uses it
+            HipFusion.Src x = HipFusion.strided(in0, inOffset, shape, inStrides);
+            if (x != null) {
+                defer(z0, x);
+                return;
+            }
+        }
+        if (FUSION && in0.pending != null && inOffset == 0 && in0.dtype == z0.dtype && n == in0.size
+                && Arrays.equals(inStrides, Axes.contiguous(shape)) && n < Integer.MAX_VALUE) {
+            int[] rows = rows(shape, outStrides);
+            if (rows != null) {
+                // a pending value written into part of an array (a key/value cache step): its
+                // kernel stores there directly, without computing it into a temporary first
+                HipStorage z = wr(out);
+                if (in0.pending != null) {   // unless it read the array, and was computed for the write
+                    writePending(in0, z, outOffset, n, rows[0], rows[1]);
+                    return;
+                }
+            }
+        }
+        HipStorage z = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(in), z.dtype);
         int bytes = z.dtype.bytes();
@@ -735,7 +1013,7 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void reduce(ReduceOp op, Storage in, long outer, long length, long inner, Storage out) {
-        HipStorage y = cs(out);
+        HipStorage y = wr(out);
         long rows = outer * inner;
         if (rows == 0) {
             return;
@@ -781,14 +1059,38 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void matmulBatched(Storage a, Storage b, int batch, int m, int k, int n, Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         if ((long) batch * m * n == 0) {
             return;
         }
         HipContext c = ctx();
         if (k == 0) {
             fill(z, 0);
+            ready(z);
             return;
+        }
+        if (c.rocblas != null) {
+            // a transposed or otherwise strided operand still pending: rocBLAS reads it in place
+            Operand va = view(ls(a), batch, m, k, z.dtype);
+            Operand vb = view(ls(b), batch, k, n, z.dtype);
+            if (va != null || vb != null) {
+                HipStorage x = va != null ? null : as(cs(a), z.dtype);
+                HipStorage y = vb != null ? null : as(cs(b), z.dtype);
+                if (va == null) {
+                    va = Operand.of(x, m, k);
+                }
+                if (vb == null) {
+                    vb = Operand.of(y, k, n);
+                }
+                strided(c, va, vb, batch, m, k, n, z);
+                if (x != null) {
+                    done(x, cs(a));
+                }
+                if (y != null) {
+                    done(y, cs(b));
+                }
+                return;
+            }
         }
         HipStorage x = as(cs(a), z.dtype);
         HipStorage y = as(cs(b), z.dtype);
@@ -796,7 +1098,7 @@ public final class HipBackend implements Backend {
         boolean blas = c.rocblas != null;
         if (batch == 1 && m == 1 && MATVEC.equals("rocblas") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()) {
             long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
-            c.rocblas.halfGemv(k, n, y.address(), x.address(), z.address());
+            c.rocblas.halfGemv(false, n, k, n, y.address(), x.address(), z.address());
             c.products++;
             if (HipContext.PROFILE) {
                 c.profileSync();
@@ -832,6 +1134,86 @@ public final class HipBackend implements Backend {
         done(y, cs(b));
     }
 
+    @Override
+    public boolean readsTransposedInPlace() {
+        // a pending transpose is read by rocBLAS in place
+        return FUSION && isAvailable() && hip.rocblas != null;
+    }
+
+    /**
+     * How rocBLAS reads a matrix operand: from {@code values} at {@code offset}, rows {@code ld}
+     * apart (columns, when {@code transposed}), {@code batch} apart from one matrix to the next.
+     */
+    private record Operand(HipStorage values, long offset, long batch, int ld, boolean transposed) {
+
+        /** Stored {@code rows x cols} matrices one after another. */
+        static Operand of(HipStorage values, int rows, int cols) {
+            return new Operand(values, 0, (long) rows * cols, cols, false);
+        }
+    }
+
+    /** A pending strided read of stored values ({@code [batch,] rows, cols}), as an operand; null if none. */
+    private static Operand view(HipStorage s, int batch, int rows, int cols, DType type) {
+        if (!(s.pending instanceof HipFusion.Src src) || src.direct() || src.storage().pending != null
+                || src.storage().dtype != type) {
+            return null;
+        }
+        int[] d = src.dims();
+        int[] st = src.strides();
+        for (int x : st) {
+            if (x < 0) {
+                return null;
+            }
+        }
+        long b;
+        int row;
+        int col;
+        if (batch == 1 && d.length == 2 && d[0] == rows && d[1] == cols) {
+            b = 0;
+            row = st[0];
+            col = st[1];
+        } else if (d.length == 3 && d[0] == batch && d[1] == rows && d[2] == cols) {
+            b = st[0];
+            row = st[1];
+            col = st[2];
+        } else {
+            return null;
+        }
+        if (col == 1 && row >= cols) {
+            return new Operand(src.storage(), src.offset(), b, row, false);
+        }
+        if (row == 1 && col >= rows) {
+            return new Operand(src.storage(), src.offset(), b, col, true);
+        }
+        return null;
+    }
+
+    /** {@code z = a x b} by rocBLAS, the operands read as they lie. */
+    private void strided(HipContext c, Operand a, Operand b, int batch, int m, int k, int n, HipStorage z) {
+        DType t = z.dtype;
+        long pa = a.values().address(a.offset());
+        long pb = b.values().address(b.offset());
+        long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
+        if (batch == 1 && m == 1 && t == DType.FLOAT16 && MATVEC.equals("rocblas") && c.rocblas.hasHalfGemv()
+                && !a.transposed()) {
+            c.rocblas.halfGemv(b.transposed(), b.ld(), k, n, pb, pa, z.address());
+        } else {
+            HipContext.trace("rocBLAS " + t + " " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n
+                    + "] in place" + (a.transposed() ? ", a transposed" : "") + (b.transposed() ? ", b transposed" : ""));
+            c.rocblas.gemm(t, a.transposed(), b.transposed(), m, n, k, pa, a.ld(), batch == 1 ? 0 : a.batch(), pb,
+                    b.ld(), batch == 1 ? 0 : b.batch(), z.address(), (long) m * n, batch);
+        }
+        c.products++;
+        if (HipContext.PROFILE) {
+            c.profileSync();
+            c.record("rocBLAS " + t + " in place", System.nanoTime() - t0);
+        }
+        if (HipContext.DEBUG) {
+            c.debugWait("rocBLAS " + t + " product in place " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n
+                    + "]");
+        }
+    }
+
     /** Whether products of a few 16-bit rows use a kernel of their own ({@code -Dbrainiac.hip.fewRows=false}: rocBLAS). */
     private static final boolean FEW_ROWS = !"false".equals(System.getProperty("brainiac.hip.fewRows"));
     /** The most rows {@code few_dense} and {@code few_packed} take (FEW_ROWS in kernels.hip). */
@@ -863,6 +1245,7 @@ public final class HipBackend implements Backend {
         if (counted && fewCounters == null) {
             fewCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
             fill(fewCounters, 0);
+            ready(fewCounters);
         }
         c.args().ptr(a.address()).ptr(w);
         if (kernel.equals("few_packed")) {
@@ -954,7 +1337,7 @@ public final class HipBackend implements Backend {
             return;
         }
         Packed p = packed(packed);
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         HipContext c = ctx();
         c.args().ptr(p.levels().address()).ptr(p.scales().address())
                 .ptr(p.offsets() == null ? 0 : p.offsets().address()).i32(p.group()).i32(p.nibbles())
@@ -968,7 +1351,7 @@ public final class HipBackend implements Backend {
             Backend.super.matmulPacked(a, b, m, k, n, out);
             return;
         }
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         HipContext c = ctx();
         if (m > FEW) {
             // many rows: unpacked into a temporary for rocBLAS, which is then free for the next
@@ -1031,10 +1414,10 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void attention(Storage q, Storage k, Storage v, int[] shape, float scale, boolean causal,
             Storage bias, long[] strides, Storage out, Storage lse) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         DType t = z.dtype;
         checkAttention(shape, t);
-        HipStorage l = cs(lse);
+        HipStorage l = wr(lse);
         long rows = (long) shape[0] * shape[1] * shape[3];
         if (rows == 0) {
             return;
@@ -1081,7 +1464,7 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void latentAttention(Storage qc, Storage qr, Storage c, Storage r, int[] shape, float scale,
             Storage bias, long[] strides, Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         DType t = z.dtype;
         if (t == DType.FLOAT64 || shape[4] > LATENT || shape[5] > ATTENTION_HEAD) {
             throw new UnsupportedOperationException("fused latent attention on " + name() + ": " + t
@@ -1114,9 +1497,9 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void attentionBackward(Storage q, Storage k, Storage v, Storage out, Storage lse,
             Storage grad, int[] shape, float scale, boolean causal, Storage dq, Storage dk, Storage dv) {
-        HipStorage gq = cs(dq);
-        HipStorage gk = cs(dk);
-        HipStorage gv = cs(dv);
+        HipStorage gq = wr(dq);
+        HipStorage gk = wr(dk);
+        HipStorage gv = wr(dv);
         DType t = gq.dtype;
         checkAttention(shape, t);
         HipContext c = ctx();
@@ -1182,7 +1565,7 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void rmsNorm(Storage x, Storage weight, long rows, int cols, float eps, Storage out) {
-        HipStorage y = cs(out);
+        HipStorage y = wr(out);
         HipContext c = ctx();
         HipStorage xs = as(cs(x), y.dtype);
         HipStorage ws = as(cs(weight), y.dtype);
@@ -1200,8 +1583,8 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void addRmsNorm(Storage x, Storage r, Storage weight, long rows, int cols, float eps,
             Storage sum, Storage out) {
-        HipStorage y = cs(out);
-        HipStorage s = cs(sum);
+        HipStorage y = wr(out);
+        HipStorage s = wr(sum);
         if (!hasAddRmsNorm(y.dtype) || s.dtype != y.dtype) {
             throw new UnsupportedOperationException("fused add and RMSNorm: " + y.dtype);
         }
@@ -1221,7 +1604,7 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void im2col(Storage in, ConvGeometry geometry, float padValue, Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(in), z.dtype);
         Tables t = tables(geometry);
@@ -1235,7 +1618,7 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void col2im(Storage cols, ConvGeometry geometry, Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         HipContext c = ctx();
         HipStorage x = as(cs(cols), z.dtype);
         Tables t = tables(geometry);
@@ -1341,7 +1724,7 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void gather(Storage in, long outer, long length, long inner, Storage indices, int count,
             Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         HipContext c = ctx();
         indices(cs(indices), count, length);
         HipStorage x = as(cs(in), z.dtype);
@@ -1356,7 +1739,7 @@ public final class HipBackend implements Backend {
     @Override
     public synchronized void scatterAdd(Storage src, long outer, int count, long inner, Storage indices, long length,
             Storage out) {
-        HipStorage z = cs(out);
+        HipStorage z = wr(out);
         HipContext c = ctx();
         int[] idx = indices(cs(indices), count, length);
         HipStorage s = as(cs(src), z.dtype);

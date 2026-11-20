@@ -2061,8 +2061,8 @@ public final class Llama implements LanguageModel {
         // tied: while decoding, a transposed copy of the embeddings made once; while
         // training, through the embeddings so they get the gradient
         // decoding keeps a transposed copy of the embeddings, except on a device that reads
-        // the transpose in place (Vulkan), saving the copy's memory (272 MB for Qwen2.5-0.5B);
-        // elsewhere (CPU, HIP, CUDA) each token would otherwise copy the whole matrix
+        // the transpose in place (Vulkan, HIP), saving the copy's memory (272 MB for Qwen2.5-0.5B);
+        // elsewhere (CPU, CUDA) each token would otherwise copy the whole matrix
         if (tiedOnHead != null) {
             return x.matmul(tiedOnHead.transpose());
         }

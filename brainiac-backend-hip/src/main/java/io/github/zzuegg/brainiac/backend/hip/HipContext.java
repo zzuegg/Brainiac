@@ -273,11 +273,15 @@ final class HipContext {
      * {@code ~/.cache/brainiac/hip}, {@code none} for no cache).
      */
     private byte[] kernels(String part, boolean[] cached) {
-        String source = source();
-        List<String> options = new ArrayList<>(List.of("--gpu-architecture=" + architecture, "-std=c++17", "-O3",
-                "-DBRAINIAC_" + part));
+        return compile(source(), "kernels.hip", "kernels", List.of("-DBRAINIAC_" + part), cached);
+    }
+
+    /** Compiles {@code source} for this GPU, or reads it from the cache folder (see {@link #kernels}). */
+    private byte[] compile(String source, String name, String prefix, List<String> extra, boolean[] cached) {
+        List<String> options = new ArrayList<>(List.of("--gpu-architecture=" + architecture, "-std=c++17", "-O3"));
+        options.addAll(extra);
         String hiprtcVersion = hiprtc.version();
-        Path file = cacheFile(source + "\n" + options + "\n" + hiprtcVersion + "\n" + hiprtc.library);
+        Path file = cacheFile(prefix, source + "\n" + options + "\n" + hiprtcVersion + "\n" + hiprtc.library);
         if (file != null && Files.isRegularFile(file)) {
             try {
                 byte[] code = Files.readAllBytes(file);
@@ -287,7 +291,7 @@ final class HipContext {
                 // compiled again below
             }
         }
-        Hiprtc.Code result = hiprtc.compile(source, "kernels.hip", options);
+        Hiprtc.Code result = hiprtc.compile(source, name, options);
         if (DEBUG && !result.log().isBlank()) {
             System.err.println("brainiac hip: hipRTC messages:\n" + result.log());
         }
@@ -295,7 +299,7 @@ final class HipContext {
         if (file != null) {
             try {
                 Files.createDirectories(file.getParent());
-                Path tmp = Files.createTempFile(file.getParent(), "kernels", ".tmp");
+                Path tmp = Files.createTempFile(file.getParent(), prefix, ".tmp");
                 Files.write(tmp, code);
                 Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                         java.nio.file.StandardCopyOption.ATOMIC_MOVE);
@@ -306,7 +310,7 @@ final class HipContext {
         return code;
     }
 
-    private static Path cacheFile(String key) {
+    private static Path cacheFile(String prefix, String key) {
         String dir = System.getProperty("brainiac.hip.cache");
         if ("none".equals(dir)) {
             return null;
@@ -315,7 +319,7 @@ final class HipContext {
                 : Path.of(System.getProperty("user.home"), ".cache", "brainiac", "hip");
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
-            return folder.resolve("kernels-" + HexFormat.of().formatHex(hash, 0, 12) + ".hsaco");
+            return folder.resolve(prefix + "-" + HexFormat.of().formatHex(hash, 0, 12) + ".hsaco");
         } catch (NoSuchAlgorithmException e) {
             return null;
         }
@@ -370,6 +374,76 @@ final class HipContext {
         return m;
     }
 
+    /** Generated kernels ({@link HipFusion}): their functions by source. */
+    private final Map<String, Long> fused = new HashMap<>();
+    /** Time spent compiling (or reading from the cache) and loading generated kernels. */
+    long fusedCompileNanos;
+
+    /**
+     * The function {@code fused} of a generated kernel, compiled with the shared part of
+     * kernels.hip (its formats and math) at first use, or read from the cache folder.
+     */
+    long fusedFunction(String body) {
+        Long f = fused.get(body);
+        if (f == null) {
+            long start = System.nanoTime();
+            String all = prelude() + "\n" + body;
+            byte[] code = compile(all, "fused.hip", "fused", List.of(), new boolean[1]);
+            long m;
+            try (Arena a = Arena.ofConfined()) {
+                MemorySegment image = a.allocate(code.length + 1L, 16);
+                MemorySegment.copy(code, 0, image, JAVA_BYTE, 0, code.length);
+                trace("hipModuleLoadData fused#" + fused.size() + " (" + code.length + " bytes)");
+                m = cu.loadModule(image);
+            }
+            modules.put("fused#" + fused.size(), m);
+            f = cu.function(m, "fused");
+            fused.put(body, f);
+            fusedCompileNanos += System.nanoTime() - start;
+            if (PROFILE || DEBUG) {
+                try {
+                    Path dir = Path.of(System.getProperty("java.io.tmpdir"), "brainiac-hip-fused");
+                    Files.createDirectories(dir);
+                    Files.writeString(dir.resolve("fused_" + (fused.size() - 1) + ".hip"), body);
+                } catch (IOException e) {
+                    // only a help for reading the profile
+                }
+            }
+        }
+        return f;
+    }
+
+    /** Distinct generated kernels so far. */
+    int fusedKernels() {
+        return fused.size();
+    }
+
+    /** kernels.hip up to its indexing section: the formats and the math generated kernels call. */
+    private static String prelude() {
+        String s = source();
+        int end = s.indexOf("// ---------------------------------------------------------------- indexing");
+        return end < 0 ? s : s.substring(0, end);
+    }
+
+    /** Launches a generated kernel's function over {@code n} items; the arguments are set. */
+    void launchFused(long f, long n) {
+        int blocks = (int) Math.max(1, Math.min(MAX_BLOCKS, (n + GROUP - 1) / GROUP));
+        long t0 = System.nanoTime();
+        int r = cu.launch(f, blocks, 1, 1, GROUP, 0, stream, argPointers);
+        callNanos += System.nanoTime() - t0;
+        launches++;
+        if (r != HipRuntime.HIP_SUCCESS) {
+            throw cu.error(r, "launching a fused kernel (" + blocks + " blocks)");
+        }
+        if (PROFILE) {
+            cu.synchronize(stream);
+            record("fused", System.nanoTime() - t0);
+        }
+        if (DEBUG) {
+            debugWait("a fused kernel (" + blocks + " blocks)");
+        }
+    }
+
     long function(String name) {
         Long f = functions.get(name);
         if (f == null) {
@@ -418,6 +492,13 @@ final class HipContext {
 
     HipContext f64(double v) {
         argValues.set(JAVA_DOUBLE, slot(8), v);
+        return this;
+    }
+
+    /** A struct of {@code bytes} bytes passed by value, written by {@code writer} at the offset it is given. */
+    HipContext struct(int bytes, java.util.function.ObjLongConsumer<MemorySegment> writer) {
+        long at = slot(bytes);
+        writer.accept(argValues, at);
         return this;
     }
 
