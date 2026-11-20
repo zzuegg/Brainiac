@@ -5,14 +5,14 @@ import { Button, IconAction } from "/v2/ui/Button.js";
 import { Layer } from "/v2/ui/Layer.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { plural } from "/v2/lib/format.js";
-import { modelInfo, modelsError, loadModels } from "/v2/state/models.js";
+import { modelInfo, modelsError, loadModels, MEDIA_NAMES } from "/v2/state/models.js";
+import { keyed, ProviderKeys, MoreProviders, Usage, editProvider, providerFlags, readUsage, readBalances } from "/v2/screens/Providers.js";
 import { hub, readHub, active, download, cancel, forget, fmtBytes, fmtWait, fmtCount } from "/v2/state/hub.js";
 import { fail, toast } from "/v2/state/toasts.js";
 
 // Every model the studio can use, wherever it runs: this PC, your other machines, and the
 // providers you have a key for. New ones come from Hugging Face or from a folder on this PC.
 
-export const MEDIA_NAMES = { text: "Chat", vision: "Sees pictures", image: "Pictures", speech: "Speech", transcribe: "Transcription", video: "Video", embed: "Embeddings" };
 const placeName = p => (p.id === "local" ? "This PC" : p.name || p.id);
 const placeNote = p => (p.kind === "local" ? "free · private" : p.kind === "host" ? "your machine" : p.kind === "rental" ? "rented" : "your key");
 
@@ -20,11 +20,12 @@ export function Models() {
   const info = modelInfo.value;
   const [find, setFind] = useState("");
   const [folded, setFolded] = useState(() => new Set());
-  useEffect(() => { loadModels(); readHub(); }, []);
+  useEffect(() => { loadModels(); readHub(); readUsage(); }, []);
   const q = find.trim().toLowerCase();
   const auto = new Set(Object.values(info?.auto || {}));
   const groups = (info?.providers || []).map(p => ({ p, list: (info.models || []).filter(m => m.provider === p.id && (!q || (m.name + " " + m.key).toLowerCase().includes(q))) }))
-    .filter(g => g.list.length || (!q && (g.p.kind === "local" || g.p.error)));
+    .filter(g => g.list.length || (!q && (g.p.kind === "local" || g.p.error || g.p.keys?.length)));
+  const more = q ? [] : (info?.providers || []).filter(p => p.kind === "api" && !p.keys?.length && !groups.some(g => g.p === p));
   const downloads = hub.value.downloads;
 
   return html`<div class="page models-page">
@@ -39,7 +40,7 @@ export function Models() {
     ${!info ? html`<p class="muted">Looking for models…</p>` : html`
       <div class="models-bar">
         <input class="input" type="search" placeholder="Find a model" value=${find} onInput=${e => setFind(e.target.value)} aria-label="Find a model" />
-        <${IconAction} icon="redo" label="Look again: new files and provider lists" onClick=${() => loadModels(true)} />
+        <${IconAction} icon="redo" label="Look again: new files, provider lists and balances" onClick=${() => { loadModels(true); readUsage(); readBalances(); }} />
       </div>
       ${groups.map(({ p, list }) => {
         const open = q || !folded.has(p.id);
@@ -49,10 +50,13 @@ export function Models() {
             <button type="button" class="group-toggle" aria-expanded=${!!open} onClick=${() => { const f = new Set(folded); f.has(p.id) ? f.delete(p.id) : f.add(p.id); setFolded(f); }}>
               <${Icon} name=${open ? "chevronDown" : "chevronRight"} size=${14} />${placeName(p)}</button>
             <span class="muted small">${plural(list.length, "model")}${hidden ? ` · ${hidden} hidden` : ""}</span>
+            ${providerFlags(p).map(f => html`<span class="badge set-flag">${f}</span>`)}
             <span class="badge">${placeNote(p)}</span>
+            ${keyed(p) && html`<${IconAction} icon="settings" label=${"How " + placeName(p) + " is used: Auto, address, which models"} onClick=${() => editProvider(p.id)} />`}
           </h2>
           ${p.error && html`<p class="msg-error"><${Icon} name="warn" size=${14} />${p.error}</p>`}
           ${open && p.id === "local" && html`<${Folders} p=${p} />`}
+          ${open && keyed(p) && (p.kind === "api" || p.keys?.length > 0) && html`<${ProviderKeys} p=${p} />`}
           ${open && (list.length ? html`<ul class="model-rows">${list.map(m => html`<li key=${m.key} class=${cx(m.shown === false && "dim")}>
               <div class="model-name"><b>${m.name}</b><span class="mono muted small">${m.key}</span></div>
               <div class="model-can">${(m.media || []).map(x => html`<span class=${"cap cap-" + x}>${MEDIA_NAMES[x] || x}</span>`)}</div>
@@ -63,7 +67,9 @@ export function Models() {
             : html`<p class="muted small">${p.kind === "local" ? "No models here yet: download one, or add a folder that has some." : "No models."}</p>`)}
         </section>`;
       })}
-      ${q && !groups.length && html`<p class="muted">No model matches “${find}”.</p>`}`}
+      ${q && !groups.length && html`<p class="muted">No model matches “${find}”.</p>`}
+      <${MoreProviders} list=${more} />
+      <${Usage} />`}
   </div>`;
 }
 

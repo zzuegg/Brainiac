@@ -4,6 +4,9 @@ import { api, local } from "/v2/lib/api.js";
 // The models the studio found, on this PC and at the providers with keys. Loaded once and
 // shared; the chat's model picker and the agent wizard read it.
 
+/** What a model can do, in words. */
+export const MEDIA_NAMES = { text: "Chat", vision: "Sees pictures", image: "Pictures", speech: "Speech", transcribe: "Transcription", video: "Video", embed: "Embeddings" };
+
 export const modelInfo = signal(null);
 export const modelsError = signal(null);
 let loading = null;

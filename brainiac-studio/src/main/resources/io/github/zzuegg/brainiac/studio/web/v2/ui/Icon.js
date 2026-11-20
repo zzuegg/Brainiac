@@ -34,6 +34,7 @@ const PATHS = {
   redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
   chevronLeft: "M15 6l-6 6 6 6",
   download: "M12 4v11M7 10l5 5 5-5M5 20h14",
+  up: "M12 19V5M6 11l6-6 6 6",
   speech: "M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4",
   video: "M3 6h12v12H3zM15 10l6-3v10l-6-3z",
   train: "M4 20h16M4 4v16M7 8l4 5 3-2 6 6",
