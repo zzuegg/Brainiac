@@ -34,6 +34,7 @@ export function providerFlags(p) {
 export function ProviderKeys({ p }) {
   const [sure, setSure] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(null);   // a saved key's name, while its new value is typed
   const bal = balances.value?.[p.id];
   useEffect(() => { if (p.balance && p.keys.length && !balances.value) readBalances(); }, []);
   const saved = p.keys.filter(k => k.source === "saved").length;
@@ -51,11 +52,13 @@ export function ProviderKeys({ p }) {
         ${use && html`<span class="mono muted small key-use">${use}</span>`}
         <span class="grow" />
         ${k.source === "saved" ? html`
+          <${IconAction} icon="edit" label="Replace this key with a new one under the same name" onClick=${() => setEditing(editing === k.label ? null : k.label)} />
           ${n > 0 && html`<${IconAction} icon="up" label="Try this key first" onClick=${() => keys({ provider: p.id, label: k.label, first: true }).catch(fail)} />`}
           <${IconAction} icon=${sure === k.label ? "check" : "trash"} label=${sure === k.label ? "Click again to remove the key" : "Remove this key"}
             onClick=${() => (sure === k.label ? (setSure(null), keys({ provider: p.id, label: k.label, remove: true }).then(() => toast("Key removed.")).catch(fail)) : setSure(k.label))} />`
           : html`<span class="badge" title="Set in the environment the studio started from; remove it there">from ${k.source || "the environment"}</span>`}
         ${k.error && html`<p class="msg-error small key-err">${k.error}</p>`}
+        ${editing === k.label && html`<div class="key-err"><${KeyForm} p=${p} label=${k.label} done=${() => setEditing(null)} cancel=${() => setEditing(null)} /></div>`}
       </li>`;
     })}</ul>`}
     ${adding || !p.keys.length ? html`<${KeyForm} p=${p} first=${!saved} done=${() => setAdding(false)} cancel=${p.keys.length ? () => setAdding(false) : null} />`
@@ -64,21 +67,21 @@ export function ProviderKeys({ p }) {
   </div>`;
 }
 
-function KeyForm({ p, first, done, cancel }) {
-  const [label, setLabel] = useState(first ? "default" : "");
+function KeyForm({ p, first, done, cancel, label: fixed }) {
+  const [label, setLabel] = useState(fixed || (first ? "default" : ""));
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const save = async e => {
     e.preventDefault();
     setBusy(true);
-    try { await keys({ provider: p.id, label: label.trim() || "default", key: key.trim() }); setKey(""); toast(`${p.name} key saved. Its models are listed now.`); done?.(); }
+    try { await keys({ provider: p.id, label: label.trim() || "default", key: key.trim() }); setKey(""); toast(fixed ? `Key “${fixed}” replaced.` : `${p.name} key saved. Its models are listed now.`); done?.(); }
     catch (x) { fail(x); }
     setBusy(false);
   };
   return html`<form class="key-form" onSubmit=${save}>
-    <input class="input" value=${label} onInput=${e => setLabel(e.target.value)} placeholder="Name, such as work" aria-label="Key name" maxlength="40" required />
-    <input class="input mono" type="password" value=${key} onInput=${e => setKey(e.target.value)} placeholder="API key" aria-label=${p.name + " API key"} autocomplete="off" required autofocus=${!first} />
-    <${Button} type="submit" icon="plus" disabled=${busy || !key.trim()}>${busy ? "Checking…" : "Add key"}<//>
+    ${!fixed && html`<input class="input" value=${label} onInput=${e => setLabel(e.target.value)} placeholder="Name, such as work" aria-label="Key name" maxlength="40" required />`}
+    <input class="input mono" type="password" value=${key} onInput=${e => setKey(e.target.value)} placeholder=${fixed ? "New key for “" + fixed + "”" : "API key"} aria-label=${p.name + " API key"} autocomplete="off" required autofocus=${!first} />
+    <${Button} type="submit" icon=${fixed ? "check" : "plus"} disabled=${busy || !key.trim()}>${busy ? "Checking…" : fixed ? "Replace" : "Add key"}<//>
     ${cancel && html`<${Button} variant="ghost" onClick=${cancel}>Cancel<//>`}
   </form>`;
 }
