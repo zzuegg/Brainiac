@@ -220,13 +220,14 @@ final class ItemKinds {
 
         @Override
         public List<Item> list() {
-            // sub-agents show inside the run that started them, unless it started them in another project
+            // sub-agents show inside the run that started them, unless it started them in another
+            // project; a chat's agent shows in its chat
             List<Map<String, Object>> all = runs.list();
             Map<String, String> where = new java.util.HashMap<>();
             for (Map<String, Object> r : all) {
                 where.put(Json.string(r, "id", ""), Json.string(r, "project", Project.DEFAULT));
             }
-            return all.stream().filter(r -> r.get("parent") == null
+            return all.stream().filter(r -> r.get("chat") == null).filter(r -> r.get("parent") == null
                     || !Json.string(r, "project", Project.DEFAULT).equals(where.get(String.valueOf(r.get("parent")))))
                     .map(Agents::item).toList();
         }

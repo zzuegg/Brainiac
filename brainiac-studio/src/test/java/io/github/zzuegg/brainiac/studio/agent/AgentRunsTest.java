@@ -313,6 +313,20 @@ class AgentRunsTest {
     }
 
     @Test
+    void aChatsAgentCarriesOnWithTheChatsModeAndModel() throws Exception {
+        script.turns.add("Hello.");
+        String id = (String) agents.start("Say hello", "script/bot", "ask", 5, null).get("id");
+        agents.forChat(id, "c1");
+        until(id, r -> "done".equals(r.get("state")));
+        script.turns.add("Hello again.");
+        agents.reply(id, "Once more", "auto", "script/other").orElseThrow();
+        Map<String, Object> r = until(id, x -> "done".equals(x.get("state")));
+        assertEquals("auto", r.get("mode"));
+        assertEquals("script/other", r.get("model"));
+        assertEquals("c1", r.get("chat"));
+    }
+
+    @Test
     void runsAreKeptStoppedAndContinued() throws Exception {
         script.turns.add("<tool_call>{\"name\": \"download_model\", \"arguments\": {\"repo\": \"a/b\", "
                 + "\"option\": \"x.gguf\"}}</tool_call>");

@@ -7,6 +7,7 @@ import { ItemHeader, routeItem, Gone } from "/v2/screens/ItemHeader.js";
 import { fail } from "/v2/state/toasts.js";
 import { when, plural } from "/v2/lib/format.js";
 import { modelByKey } from "/v2/state/models.js";
+import { navigate } from "/v2/state/workspace.js";
 
 // An agent's run, read like a conversation: the goal and each reply as your messages, what it
 // did in between as activity, its answers, and what it waits on, answered in place. When it
@@ -43,6 +44,7 @@ export function Agent({ tab }) {
   const model = run.by || run.model;
   const header = html`<${ItemHeader} tab=${tab} item=${item} sub=${html`<span class=${"badge s-" + run.state}>${run.pending ? "waits for you" : run.state}</span>
       ${" · " + (run.role || "agent")} · ${modelByKey(model)?.name || (model === "auto" ? "Auto" : model)} · ${run.mode === "auto" ? "automatic" : run.mode === "plan" ? "plan first" : "asks first"}`}>
+    ${run.chat && html`<${Button} icon="chat" onClick=${() => navigate(tab, { screen: "chat", id: run.chat })} title="This agent writes the answers of a chat">Open its chat<//>`}
     ${live && html`<${Button} icon="stop" onClick=${stop}>Stop<//>`}
   <//>`;
   return html`<${Reading} header=${header} scrollRef=${scroll} class="chat agent"

@@ -81,7 +81,7 @@ export function Chat({ tab }) {
 
   const footer = html`<${Composer} key=${id} s=${s} busy=${busy} model=${model} editing=${editing}
     onModel=${k => { configure(s, { model: k }); rememberChatModel(k); }}
-    onTools=${v => configure(s, { tools: v, agentRun: null })}
+    onTools=${v => configure(s, { tools: v })}
     cancelEdit=${() => setEditing(null)}
     onSend=${(text, images) => {
       follow.current = true;

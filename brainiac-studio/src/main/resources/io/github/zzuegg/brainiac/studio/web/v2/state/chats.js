@@ -170,21 +170,31 @@ async function streamAnswer(s, c, history) {
 }
 
 // With tools on, an agent answers: the same tools, rules and approvals as an agent of its own.
-// A conversation keeps its agent, so the next message carries on with it.
+// A conversation keeps one agent for good: the next message carries on with it, with the chat's
+// model and tool mode as they are now. It shows in the chat, not among the agents.
 async function agentAnswer(s, c, history) {
   const last = history.at(-1);
+  const mode = c.tools, model = c.model || "auto";
   let id = c.agentRun, from = 0;
-  const old = id ? await api("/api/agents/get", { id }, { project: s.project }).catch(() => null) : null;
-  if (old && !["running", "waiting"].includes(old.state) && old.mode === c.tools && old.model === (c.model || "auto")) {
+  let old = id ? await api("/api/agents/get", { id }, { project: s.project }).catch(() => null) : null;
+  if (old && ["running", "waiting"].includes(old.state)) {
+    // left working or waiting (another window, a reload): this message takes over from it
+    await api("/api/agents/stop", { id }, { project: s.project }).catch(() => {});
+    for (let i = 0; i < 20 && old && ["running", "waiting"].includes(old.state); i++) {
+      await new Promise(res => setTimeout(res, 250));
+      old = await api("/api/agents/get", { id }, { project: s.project }).catch(() => null);
+    }
+  }
+  if (old && !["running", "waiting"].includes(old.state)) {
     from = (old.steps || []).length;
-    await api("/api/agents/reply", { id, text: last.text }, { project: s.project });
+    await api("/api/agents/reply", { id, text: last.text, mode, model }, { project: s.project });
   } else {
     const earlier = history.slice(0, -1).filter(m => m.text);
     const goal = ((c.system || "").trim() ? `Instructions for this chat: ${c.system.trim()}\n\n` : "")
       + (earlier.length ? "Earlier in this chat:\n\n" + earlier.map(m => (m.role === "user" ? "User: " : "You: ") + m.text).join("\n\n")
         + "\n\nNow the user says:\n\n" : "")
       + last.text;
-    const r = await api("/api/agents/start", { goal, model: c.model || "auto", mode: c.tools, maxSteps: 30 }, { project: s.project });
+    const r = await api("/api/agents/start", { goal, model, mode, maxSteps: 30, chat: c.id }, { project: s.project });
     id = r.id;
     set(s, { agentRun: id });
   }

@@ -128,13 +128,16 @@ public final class AgentRuns {
     private final class Run {
         final String id;
         final String goal;
-        final String model;
+        // the user may change it between turns, as a chat's model picker does
+        volatile String model;
         final int maxSteps;
         final List<String> allowed;
         final long created;
         final String role;
         String mode;
         String project = Project.DEFAULT;
+        // the chat whose answers it writes, or null for an agent of its own
+        String chat;
         // the name the user gave it, or null to show its goal
         String title;
         Format format = Format.NONE;
@@ -226,6 +229,9 @@ public final class AgentRuns {
             }
             if (parent != null) {
                 m.put("parent", parent);
+            }
+            if (chat != null) {
+                m.put("chat", chat);
             }
             m.put("depth", depth);
             m.put("children", List.copyOf(children));
@@ -663,12 +669,40 @@ public final class AgentRuns {
      * @return the run, or empty if there is none
      */
     public synchronized Optional<Map<String, Object>> reply(String id, String text) {
+        return reply(id, text, null, null);
+    }
+
+    /**
+     * Sends the user's next message to an agent that has stopped, first changing how it works
+     * and which model answers, as a chat does when its settings changed between messages.
+     *
+     * @param id the run
+     * @param text the message
+     * @param mode {@code plan}, {@code ask} or {@code auto}, or null to keep it
+     * @param model the chat model key or {@code auto}, or null to keep it
+     * @return the run, or empty if there is none
+     */
+    public synchronized Optional<Map<String, Object>> reply(String id, String text, String mode, String model) {
         Run r = runs.get(id);
         if (r == null) {
             return Optional.empty();
         }
         if (text == null || text.isBlank()) {
             throw new IllegalArgumentException("the message is empty");
+        }
+        if (mode != null && !List.of("plan", "ask", "auto").contains(mode)) {
+            throw new IllegalArgumentException("the mode is plan, ask or auto, not " + mode);
+        }
+        synchronized (r) {
+            if (!r.active()) {
+                if (mode != null && !mode.equals(r.mode)) {
+                    r.mode = mode;
+                    r.planApproved = false;
+                }
+                if (model != null && !model.isBlank()) {
+                    r.model = model;
+                }
+            }
         }
         resume(r, text.strip());
         synchronized (r) {
@@ -813,7 +847,25 @@ public final class AgentRuns {
     }
 
     /**
-     * Names a run; the name shows instead of its goal.
+     * Says which chat a run writes the answers of: it then shows in that chat, not among the agents.
+     *
+     * @param id the run
+     * @param chat the chat's id, or blank for an agent of its own
+     * @throws IllegalArgumentException if there is no such run
+     */
+    public void forChat(String id, String chat) {
+        Run r = runs.get(id);
+        if (r == null) {
+            throw new IllegalArgumentException("there is no such agent");
+        }
+        synchronized (r) {
+            r.chat = chat == null || chat.isBlank() ? null : chat;
+        }
+        save(r);
+    }
+
+    /**
+     * Names a run.
      *
      * @param id the run
      * @param title the name, or blank to show the goal again
@@ -2647,6 +2699,7 @@ public final class AgentRuns {
             r.format = Format.NONE;
         }
         r.parent = Json.string(m, "parent", null);
+        r.chat = Json.string(m, "chat", null);
         r.depth = (int) Json.integer(m, "depth", 0);
         for (Object c : Json.array(m.getOrDefault("children", List.of()))) {
             r.children.add(String.valueOf(c));
