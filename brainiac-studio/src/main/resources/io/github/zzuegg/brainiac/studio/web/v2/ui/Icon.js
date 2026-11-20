@@ -35,6 +35,7 @@ const PATHS = {
   chevronLeft: "M15 6l-6 6 6 6",
   download: "M12 4v11M7 10l5 5 5-5M5 20h14",
   up: "M12 19V5M6 11l6-6 6 6",
+  server: "M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01",
   speech: "M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4",
   video: "M3 6h12v12H3zM15 10l6-3v10l-6-3z",
   train: "M4 20h16M4 4v16M7 8l4 5 3-2 6 6",

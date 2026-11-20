@@ -2,12 +2,12 @@ import { html } from "/v2/lib/html.js";
 import { Choices, Field } from "/v2/ui/Wizard.js";
 import { theme, readingWidth } from "/v2/state/prefs.js";
 import { Icon } from "/v2/ui/Icon.js";
-import { GpuCard } from "/v2/screens/Gpu.js";
+import { Button } from "/v2/ui/Button.js";
+import { navigate } from "/v2/state/workspace.js";
 
-// Settings for this page. Studio-wide setup (providers, keys, machines) moves here with the
-// Placement step; until then it lives in the classic page.
+// Settings for every project: how the page looks. Models, keys and machines have pages of their own.
 
-export function Settings() {
+export function Settings({ tab }) {
   return html`<div class="page page-narrow">
     <header class="page-head"><div><p class="eyebrow">Studio</p><h1 class="page-title">Studio settings</h1><p class="page-lead">For every project. A project’s own folder, models and tools are in its Project settings.</p></div></header>
     <section class="card">
@@ -21,11 +21,13 @@ export function Settings() {
           { value: "wide", label: "Wide", text: "960 px" }, { value: "full", label: "Full", text: "the whole width" },
         ]} /><//>
     </section>
-    <${GpuCard} />
     <section class="card">
       <h2 class="card-title">Models, keys and machines</h2>
-      <p class="muted">These still live in the classic Studio while this one grows.</p>
-      <a class="btn" href="/" target="_blank" rel="noopener"><${Icon} name="classic" /><span>Open classic Studio</span></a>
+      <p class="muted">Each has a page of its own, also in the sidebar.</p>
+      <div class="row-btns">
+        <${Button} icon="layers" onClick=${() => navigate(tab, { screen: "models" })}>Models and API keys<//>
+        <${Button} icon="server" onClick=${() => navigate(tab, { screen: "machines" })}>Machines and GPU memory<//>
+      </div>
     </section>
   </div>`;
 }

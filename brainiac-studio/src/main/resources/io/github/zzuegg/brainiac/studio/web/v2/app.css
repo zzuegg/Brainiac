@@ -906,3 +906,36 @@ a.mini { color: var(--muted); }
 .browse-item span:first-of-type { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .dl.dl-done .prog i { background: var(--ok); }
 .dl.dl-failed .prog i { background: var(--bad); }
+
+/* machines */
+.live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; background: var(--muted); flex: none; }
+.live-dot.ok { background: var(--ok); }
+.live-dot.bad { background: var(--bad); }
+.live-dot.busy { background: var(--accent); animation: live-pulse 1.6s ease-in-out infinite; }
+@keyframes live-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot.busy { animation: none; } }
+.machine .card-title { gap: 8px; }
+.machine .card-title .push, .devices .push, .rentals .push { margin-left: auto; }
+.machine.off { opacity: .85; }
+.devices { list-style: none; margin: 0 0 6px; padding: 0; }
+.devices li { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-top: 1px solid var(--line-soft); color: var(--fg-2); }
+.machine-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.machine-foot .bad { color: var(--bad); }
+.btn.btn-on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.hint-card { border-style: dashed; }
+.rentals { list-style: none; margin: 0 0 6px; padding: 0; }
+.rentals li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 7px 2px; border-top: 1px solid var(--line-soft); }
+.rentals li.ended { opacity: .6; }
+.rent-note { width: 100%; margin: 0 0 0 16px; }
+.rent-log { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vast-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-bottom: 12px; }
+.vast-filters .field { margin: 0; }
+.vast-filters .field:first-child { flex: 1; min-width: 160px; }
+.vast-filters .field:not(:first-child) .input { width: 110px; }
+.offers tr.on td { background: var(--accent-soft); }
+.rent-confirm td { background: var(--panel-2); }
+.rent-box { display: grid; gap: 6px; padding: 6px 2px; }
+.rent-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.rent-row .input { width: 80px; display: inline-block; margin: 0 4px; }
+.offers td { white-space: nowrap; }
+.offers .rent-confirm td { white-space: normal; }
