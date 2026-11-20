@@ -2,7 +2,7 @@ import { html, useEffect, useLayoutEffect, useRef, useState, cx } from "/v2/lib/
 import { Reading, Empty } from "/v2/ui/Reading.js";
 import { Text } from "/v2/ui/Text.js";
 import { Icon } from "/v2/ui/Icon.js";
-import { Button } from "/v2/ui/Button.js";
+import { Button, IconAction } from "/v2/ui/Button.js";
 import { Pending, stepLine } from "/v2/ui/Pending.js";
 import { ModelPicker } from "/v2/ui/ModelPicker.js";
 import { ItemHeader, routeItem, Gone } from "/v2/screens/ItemHeader.js";
@@ -120,8 +120,8 @@ function UserMsg({ msg, edit, editing }) {
     ${msg.images?.length > 0 && html`<div class="msg-pics">${msg.images.map((p, i) =>
       html`<img key=${i} src=${"data:" + p.type + ";base64," + p.data} alt=${"Picture " + (i + 1)} />`)}</div>`}
     <div class="msg-acts">
-      <button type="button" class="mini" title="Copy" aria-label="Copy" onClick=${() => copy(msg.text || "")}><${Icon} name="copy" size=${14} /></button>
-      ${edit && html`<button type="button" class="mini" title="Edit and send again" aria-label="Edit" onClick=${edit}><${Icon} name="edit" size=${14} /></button>`}
+      <${IconAction} icon="copy" label="Copy" onClick=${() => copy(msg.text || "")} />
+      ${edit && html`<${IconAction} icon="edit" label="Edit and send again" onClick=${edit} />`}
     </div>
   </li>`;
 }
@@ -151,8 +151,8 @@ function AnswerMsg({ msg, s, last, busy }) {
     ${msg.error && html`<p class="msg-error"><${Icon} name="warn" size=${14} />${msg.error}</p>`}
     ${msg.stopped && html`<p class="muted small">Stopped.</p>`}
     ${!live && html`<div class="msg-acts">
-      <button type="button" class="mini" title="Copy" aria-label="Copy" onClick=${() => copy(msg.text || "")}><${Icon} name="copy" size=${14} /></button>
-      ${last && !busy && html`<button type="button" class="mini" title="Answer again" aria-label="Answer again" onClick=${() => regenerate(s)}><${Icon} name="undo" size=${14} /></button>`}
+      <${IconAction} icon="copy" label="Copy" onClick=${() => copy(msg.text || "")} />
+      ${last && !busy && html`<${IconAction} icon="undo" label="Answer again" onClick=${() => regenerate(s)} />`}
     </div>`}
   </li>`;
 }

@@ -15,3 +15,14 @@ export function Button({ variant, icon, label, children, class: cls, size, ...re
 
 /** A keyboard shortcut, as shown in menus and tooltips. */
 export const Kbd = ({ children }) => html`<kbd class="kbd">${children}</kbd>`;
+
+/**
+ * A small icon for an action on an item: copy, save, fine tune, again. Its name shows as a
+ * tooltip and is what a screen reader says. With `href` it is a link (a download, say).
+ */
+export function IconAction({ icon, label, href, download, size = 14, class: cls, ...rest }) {
+  const inner = html`<${Icon} name=${icon} size=${size} />`;
+  return href
+    ? html`<a class=${cx("mini", cls)} href=${href} download=${download} title=${label} aria-label=${label} ...${rest}>${inner}</a>`
+    : html`<button type="button" class=${cx("mini", cls)} title=${label} aria-label=${label} ...${rest}>${inner}</button>`;
+}

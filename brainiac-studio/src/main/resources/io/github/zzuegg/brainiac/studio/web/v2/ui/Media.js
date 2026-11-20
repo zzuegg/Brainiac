@@ -3,7 +3,7 @@ import { peaksOf, clock } from "/v2/lib/audio.js";
 import { Icon } from "/v2/ui/Icon.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { Layer } from "/v2/ui/Layer.js";
-import { Button } from "/v2/ui/Button.js";
+import { Button, IconAction } from "/v2/ui/Button.js";
 
 // Pictures, recordings and clips the studio made, shown where they were asked for: in a chat,
 // on an agent's page, in an image, speech or video chat. They are read from the outputs folder
@@ -90,13 +90,23 @@ function MediaTile({ it: given, open, onFineTune }) {
   const title = `${fileName(it.file)}${it.seed != null ? " · seed " + it.seed : ""}`;
   if (error) return html`<div class="media-tile media-missing" title=${it.file}><${Icon} name="warn" size=${14} />${error}</div>`;
   if (it.kind === "audio") return html`<${AudioTile} it=${it} url=${url} onFineTune=${onFineTune} />`;
-  return html`<button type="button" class=${cx("media-tile", "media-" + it.kind)} title=${title} onClick=${open} aria-label=${"Open " + title}>
-    ${!url ? html`<span class="media-wait" />`
-      : it.kind === "video" ? html`<video src=${url} muted loop autoplay playsinline />`
-      : html`<img src=${url} alt=${it.prompt || fileName(it.file)} />`}
+  return html`<div class=${cx("media-tile", "media-" + it.kind)}>
+    <button type="button" class="media-open" title=${title} onClick=${open} aria-label=${"Open " + title}>
+      ${!url ? html`<span class="media-wait" />`
+        : it.kind === "video" ? html`<video src=${url} muted loop autoplay playsinline />`
+        : html`<img src=${url} alt=${it.prompt || fileName(it.file)} />`}
+    </button>
     ${it.seed != null && html`<span class="media-seed">seed ${it.seed}</span>`}
-  </button>`;
+    ${url && html`<span class="media-over"><${MediaActions} it=${it} url=${url} onFineTune=${onFineTune} /></span>`}
+  </div>`;
 }
+
+/** Save and Fine tune, the same two icons on every picture, clip and recording. */
+function MediaActions({ it, url, onFineTune }) {
+  return html`${url && html`<${IconAction} icon="download" label="Save" href=${url} download=${fileName(it.file)} />`}
+    ${onFineTune && html`<${IconAction} icon="sparkle" label="Fine tune: make it again with changes" onClick=${() => onFineTune(it)} />`}`;
+}
+
 /**
  * A recording as a waveform to play and click into, with its length, what was said and in which
  * voice, and Save and Fine tune. One recording plays at a time.
@@ -141,8 +151,7 @@ function AudioTile({ it, url, onFineTune }) {
         <span class="mono small">${clock(at)} / ${clock(length)}</span>
         <span class="audio-what">${it.prompt ? `“${short(it.prompt, 90)}”` : fileName(it.file)}${it.voice ? html` <span class="muted">· ${it.voice}</span>` : ""}</span>
         <span class="grow" />
-        ${url && html`<a class="link small" href=${url} download=${fileName(it.file)}>Save</a>`}
-        ${onFineTune && html`<button type="button" class="link small" onClick=${() => onFineTune(it)}>Fine tune…</button>`}
+        <${MediaActions} it=${it} url=${url} onFineTune=${onFineTune} />
       </div>
     </div>
     ${url && html`<audio ref=${audio} src=${url} preload="metadata" onPlay=${() => setPlaying(true)}
@@ -170,8 +179,8 @@ function Viewer({ items, at: first, onFineTune, close, top }) {
       <span class="muted small">${at + 1} of ${items.length}</span>
       <${Button} icon="chevronRight" label="Next (→)" disabled=${at === items.length - 1} onClick=${() => setAt(at + 1)} />`}
     <span class="grow" />
-    ${url && html`<a class="btn" href=${url} download=${fileName(it.file)}><${Icon} name="download" /><span>Save</span></a>`}
-    ${onFineTune && html`<${Button} variant="primary" icon="sparkle" onClick=${() => { close(); onFineTune(it); }}>Fine tune…<//>`}`;
+    ${url && html`<a class="btn btn-icon" href=${url} download=${fileName(it.file)} title="Save" aria-label="Save"><${Icon} name="download" /></a>`}
+    ${onFineTune && html`<${Button} variant="primary" icon="sparkle" label="Fine tune: make it again with changes" onClick=${() => { close(); onFineTune(it); }} />`}`;
   return html`<${Layer} title=${it.prompt ? short(it.prompt, 90) : fileName(it.file)} close=${close} top=${top} wide footer=${footer}
       subtitle=${[it.model, it.seed != null && "seed " + it.seed, fileName(it.file)].filter(Boolean).join(" · ")}>
     <div class="viewer">${!url ? html`<span class="media-wait" />`

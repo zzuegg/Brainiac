@@ -1,7 +1,7 @@
 import { html, useEffect, useLayoutEffect, useRef, useState, cx } from "/v2/lib/html.js";
 import { Reading, Empty } from "/v2/ui/Reading.js";
 import { Icon } from "/v2/ui/Icon.js";
-import { Button } from "/v2/ui/Button.js";
+import { Button, IconAction } from "/v2/ui/Button.js";
 import { ItemHeader } from "/v2/screens/ItemHeader.js";
 import { MediaGrid, Working } from "/v2/ui/Media.js";
 import { plural } from "/v2/lib/format.js";
@@ -78,7 +78,7 @@ function Turn({ t, M, busy, tune, again }) {
     ${made && !made.streaming && html`<div class="msg-acts media-acts">
       <span class="muted small">${[made.model?.name, made.seconds >= 0.1 && made.seconds.toFixed(1) + " s"].filter(Boolean).join(" · ")}</span>
       <span class="grow" />
-      ${!busy && html`<button type="button" class="link" onClick=${again} title="The same prompt and settings, new seeds">${M.verb} again</button>`}
+      ${!busy && html`<${IconAction} icon="undo" label=${M.verb + " again: the same prompt and settings, new seeds"} onClick=${again} />`}
     </div>`}
   </li>`;
 }
