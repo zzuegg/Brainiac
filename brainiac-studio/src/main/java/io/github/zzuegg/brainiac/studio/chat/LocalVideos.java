@@ -215,7 +215,7 @@ public final class LocalVideos {
         for (Path place : places.get()) {
             for (Path p : candidates(place)) {
                 if (check(p).wan()) {
-                    found.putIfAbsent(p.getFileName().toString(), p);
+                    found.putIfAbsent(ModelPlaces.name(p), p);
                 }
             }
         }

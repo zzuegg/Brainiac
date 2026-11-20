@@ -175,7 +175,7 @@ public final class LocalImages {
         for (Path place : places.get()) {
             for (Path p : candidates(place)) {
                 if (family(p).isPresent()) {
-                    found.putIfAbsent(p.getFileName().toString(), p);
+                    found.putIfAbsent(ModelPlaces.name(p), p);
                 }
             }
         }

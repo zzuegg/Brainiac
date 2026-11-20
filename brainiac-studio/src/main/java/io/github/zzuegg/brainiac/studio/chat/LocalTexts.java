@@ -172,14 +172,14 @@ public final class LocalTexts {
         Map<String, Path> found = new LinkedHashMap<>();
         for (Path place : places.get()) {
             if (isModel(place)) {
-                found.putIfAbsent(place.getFileName().toString(), place);
+                found.putIfAbsent(ModelPlaces.name(place), place);
                 continue;
             }
             if (!Files.isDirectory(place)) {
                 continue;
             }
             try (Stream<Path> s = Files.list(place)) {
-                s.sorted().filter(LocalTexts::isModel).forEach(p -> found.putIfAbsent(p.getFileName().toString(), p));
+                s.sorted().filter(LocalTexts::isModel).forEach(p -> found.putIfAbsent(ModelPlaces.name(p), p));
             } catch (IOException e) {
                 // unreadable: nothing here
             }

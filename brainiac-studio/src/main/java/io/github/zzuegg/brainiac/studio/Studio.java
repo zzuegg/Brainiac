@@ -6,13 +6,19 @@ import io.github.zzuegg.brainiac.studio.server.CapabilityRegistry;
 import io.github.zzuegg.brainiac.studio.server.StudioServer;
 import io.github.zzuegg.brainiac.studio.server.WorkerServer;
 import io.github.zzuegg.brainiac.studio.spi.Capability;
+import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Brainiac Studio, a local web app for using, building and training models.
@@ -80,22 +86,70 @@ public final class Studio implements AutoCloseable {
         }
 
         /**
-         * Returns the usual settings: port {@value Studio#DEFAULT_PORT}; models in {@code ./models},
-         * {@code ~/.brainiac/models} and {@code $BRAINIAC_MODELS}; everything the studio keeps in
-         * {@code $BRAINIAC_STUDIO_DATA}, or else {@code ~/.brainiac/studio}; keys also from the environment.
+         * Returns the usual settings: port {@value Studio#DEFAULT_PORT}; models in the folders
+         * {@link #modelFoldersFrom} names; everything the studio keeps in {@code $BRAINIAC_STUDIO_DATA},
+         * or else {@code ~/.brainiac/studio}; keys also from the environment.
          *
          * @return the settings
          */
         public static Settings defaults() {
-            Path home = Path.of(System.getProperty("user.home"), ".brainiac");
-            List<Path> folders = new ArrayList<>(List.of(Path.of("models").toAbsolutePath(), home.resolve("models")));
-            String env = System.getenv("BRAINIAC_MODELS");
-            if (env != null && !env.isBlank()) {
-                folders.add(0, Path.of(env).toAbsolutePath());
-            }
+            Path user = Path.of(System.getProperty("user.home"));
             String data = System.getenv(DATA_VARIABLE);
-            return new Settings(DEFAULT_PORT, folders,
-                    data == null || data.isBlank() ? home.resolve("studio") : Path.of(data), System.getenv());
+            return new Settings(DEFAULT_PORT, modelFoldersFrom(Path.of("").toAbsolutePath(), user, System.getenv()),
+                    data == null || data.isBlank() ? user.resolve(".brainiac").resolve("studio") : Path.of(data),
+                    System.getenv());
+        }
+
+        /**
+         * Returns where to look for models when none are named: the folders in {@code $BRAINIAC_MODELS}
+         * (several, split as in a path), {@code models} in the folder the studio starts in, the folders
+         * with "models" in their name in each folder above it (such as {@code Brainiac-models-large}
+         * beside a checkout), {@code ~/.brainiac/models}, the Hugging Face cache and LM Studio's models
+         * folder. Models in folders below these are found too.
+         *
+         * @param start the folder the studio starts in
+         * @param user the user's home folder
+         * @param environment the environment variables
+         * @return the folders, those named first
+         */
+        public static List<Path> modelFoldersFrom(Path start, Path user, Map<String, String> environment) {
+            LinkedHashSet<Path> folders = new LinkedHashSet<>();
+            String env = environment.get("BRAINIAC_MODELS");
+            if (env != null && !env.isBlank()) {
+                for (String part : env.split(Pattern.quote(File.pathSeparator))) {
+                    if (!part.isBlank()) {
+                        folders.add(Path.of(part.strip()).toAbsolutePath().normalize());
+                    }
+                }
+            }
+            Path here = start.toAbsolutePath().normalize();
+            folders.add(here.resolve("models"));
+            // started from a checkout or an unpacked copy beside the models, such as D:\code\studio next to
+            // D:\code\models or D:\code\studio-models-large: a folder with "models" in its name counts
+            for (Path up = here.getParent(); up != null; up = up.getParent()) {
+                try (Stream<Path> s = Files.list(up)) {
+                    s.filter(p -> p.getFileName() != null
+                                    && p.getFileName().toString().toLowerCase(Locale.ROOT).contains("models")
+                                    && Files.isDirectory(p))
+                            .sorted().forEach(folders::add);
+                } catch (IOException | RuntimeException e) {
+                    // an unreadable folder holds no models to find
+                }
+            }
+            folders.add(user.resolve(".brainiac").resolve("models"));
+            String hub = environment.get("HF_HUB_CACHE"), hfHome = environment.get("HF_HOME");
+            List<Path> usual = List.of(
+                    hub != null && !hub.isBlank() ? Path.of(hub)
+                            : hfHome != null && !hfHome.isBlank() ? Path.of(hfHome, "hub")
+                            : user.resolve(".cache").resolve("huggingface").resolve("hub"),
+                    user.resolve(".lmstudio").resolve("models"),
+                    user.resolve(".cache").resolve("lm-studio").resolve("models"));
+            for (Path p : usual) {
+                if (Files.isDirectory(p)) {
+                    folders.add(p.toAbsolutePath().normalize());
+                }
+            }
+            return List.copyOf(folders);
         }
 
         /**
@@ -246,7 +300,8 @@ public final class Studio implements AutoCloseable {
                     System.out.println("Usage: studio [--port <n>] [--models <folder>]... [--data <folder>]");
                     System.out.println("       studio --worker [--port <n>] [--listen <address>] [--models <folder>]... [--data <folder>]");
                     System.out.println("  --port    default " + DEFAULT_PORT + ", 0 = any free port");
-                    System.out.println("  --models  where local models are (default ./models and ~/.brainiac/models)");
+                    System.out.println("  --models  where local models are (default ./models, models in the folders above,"
+                            + " ~/.brainiac/models, the Hugging Face cache and LM Studio's folder; folders below are searched too)");
                     System.out.println("  --data    where keys, conversations, settings and outputs are kept");
                     System.out.println("            (default $" + DATA_VARIABLE + ", else ~/.brainiac/studio)");
                     System.out.println("  --worker  train runs sent by another studio on this machine, and serve its models (port "

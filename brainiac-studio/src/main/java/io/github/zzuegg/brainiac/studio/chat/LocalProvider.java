@@ -38,6 +38,8 @@ final class LocalProvider implements ChatProvider {
     private final List<Path> folders;
     private final Path placesFile;
     private final List<Path> added = new ArrayList<>();
+    // the model folders and added places, with the folders below them that may hold models
+    private final ModelPlaces places;
     private final LocalDevice device;
     private volatile Loaded loaded;
     private final GpuSlot slot;
@@ -59,6 +61,11 @@ final class LocalProvider implements ChatProvider {
         this.placesFile = placesFile;
         this.device = new LocalDevice(placesFile == null ? null : placesFile.resolveSibling("local-device.txt"));
         this.slot = new GpuSlot("chat", device.residency());
+        this.places = new ModelPlaces(() -> {
+            List<Path> roots = new ArrayList<>(this.folders);
+            roots.addAll(added());
+            return roots;
+        });
         if (placesFile != null && Files.isRegularFile(placesFile)) {
             try {
                 for (String line : Files.readAllLines(placesFile)) {
@@ -70,11 +77,7 @@ final class LocalProvider implements ChatProvider {
                 LOG.log(System.Logger.Level.WARNING, "cannot read " + placesFile, e);
             }
         }
-        texts = new LocalTexts(() -> {
-            List<Path> places = new ArrayList<>(this.folders);
-            places.addAll(added());
-            return places;
-        }, device);
+        texts = new LocalTexts(places, device);
     }
 
     /**
@@ -107,7 +110,8 @@ final class LocalProvider implements ChatProvider {
             added.add(p);
             save();
         }
-        return models(p).size();
+        // what the finders see there, the models in folders below it among them
+        return (int) ModelPlaces.expand(List.of(p)).stream().flatMap(q -> models(q).stream()).distinct().count();
     }
 
     /**
@@ -175,11 +179,7 @@ final class LocalProvider implements ChatProvider {
      * @param hub where a single-file checkpoint's CLIP vocabulary is fetched from
      */
     void drawToo(java.util.function.Supplier<io.github.zzuegg.brainiac.io.HuggingFaceHub> hub) {
-        images = new LocalImages(() -> {
-            List<Path> places = new ArrayList<>(folders);
-            places.addAll(added());
-            return places;
-        }, hub, device);
+        images = new LocalImages(places, hub, device);
     }
 
     /**
@@ -187,11 +187,7 @@ final class LocalProvider implements ChatProvider {
      * and an image model do not stay loaded together: loading one lets the other go.
      */
     void filmToo() {
-        videos = new LocalVideos(() -> {
-            List<Path> places = new ArrayList<>(folders);
-            places.addAll(added());
-            return places;
-        }, device, () -> {
+        videos = new LocalVideos(places, device, () -> {
             if (images != null) {
                 images.close();
             }
@@ -250,11 +246,7 @@ final class LocalProvider implements ChatProvider {
      * @param voices where voices made from recordings are kept
      */
     void speakToo(Path voices) {
-        speech = new LocalSpeech(() -> {
-            List<Path> places = new ArrayList<>(folders);
-            places.addAll(added());
-            return places;
-        }, voices, device);
+        speech = new LocalSpeech(places, voices, device);
     }
 
     /**
@@ -359,12 +351,10 @@ final class LocalProvider implements ChatProvider {
 
     // name -> path; the first place that has a name wins
     private Map<String, Path> find() {
-        List<Path> places = new ArrayList<>(folders);
-        places.addAll(added());
         Map<String, Path> found = new LinkedHashMap<>();
-        for (Path place : places) {
+        for (Path place : places.get()) {
             for (Path p : models(place)) {
-                found.putIfAbsent(p.getFileName().toString(), p);
+                found.putIfAbsent(ModelPlaces.name(p), p);
             }
         }
         return found;
