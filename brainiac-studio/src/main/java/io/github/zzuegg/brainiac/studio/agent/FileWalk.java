@@ -26,7 +26,7 @@ final class FileWalk {
     /** Folders skipped wherever they are. */
     static final Set<String> SKIPPED = Set.of(".git", ".gradle", ".idea", ".vscode", "build", "out", "target",
             "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", "dist", ".next",
-            ".kotlin", ".cache");
+            ".kotlin", ".cache", ".brainiac");
 
     private final Path root;
     private final List<PathMatcher> ignored = new ArrayList<>();

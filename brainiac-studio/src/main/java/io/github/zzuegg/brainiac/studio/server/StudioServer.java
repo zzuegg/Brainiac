@@ -118,7 +118,7 @@ public final class StudioServer implements AutoCloseable {
                 new io.github.zzuegg.brainiac.studio.agent.WebTools(services),
                 new io.github.zzuegg.brainiac.studio.agent.KnowledgeTools(agentsFolder.resolve("index"),
                         new io.github.zzuegg.brainiac.studio.agent.Embedder(services, chat::modelFolders)),
-                new io.github.zzuegg.brainiac.studio.agent.CodeTools(services),
+                new io.github.zzuegg.brainiac.studio.agent.CodeTools(services, agentsFolder.resolve("sandbox")),
                 new io.github.zzuegg.brainiac.studio.agent.GitHubTools(services),
                 new io.github.zzuegg.brainiac.studio.agent.RunnerTools(chat, () -> server.rentals, server.projects),
                 server.publish,
