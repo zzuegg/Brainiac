@@ -599,6 +599,38 @@ public final class HipBackend implements Backend {
         return out;
     }
 
+    /**
+     * Queues a small float32 read-back (decoding's chosen tokens) and returns at once, so the
+     * next step can be queued while the device still works on this one; larger or other
+     * reads happen now.
+     */
+    @Override
+    public synchronized java.util.function.Supplier<float[]> downloadLater(Storage src) {
+        HipStorage s = cs(src);
+        HipContext c = ctx();
+        if (s.dtype != DType.FLOAT32 || !c.readsLater(s.bytes())) {
+            float[] now = download(s);
+            return () -> now;
+        }
+        HipContext.Pending p = c.downloadLater(s.address(), s.bytes());
+        int n = Math.toIntExact(s.size);
+        return new java.util.function.Supplier<>() {
+            private float[] got;
+
+            @Override
+            public float[] get() {
+                synchronized (HipBackend.this) {
+                    if (got == null) {
+                        got = new float[n];
+                        MemorySegment.copy(c.read(p), java.lang.foreign.ValueLayout.JAVA_FLOAT, 0, got, 0, n);
+                        c.release(p);
+                    }
+                    return got;
+                }
+            }
+        };
+    }
+
     @Override
     public synchronized double[] downloadDouble(Storage src) {
         HipStorage s = cs(src);

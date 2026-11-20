@@ -338,6 +338,24 @@ class HipBackendTest {
         }
     }
 
+    /** Reads queued with toArrayLater give the values at the time, while more work is queued after them. */
+    @Test
+    void readsLaterGiveTheValuesWhenQueued() {
+        Tensor logits = random(21, 3, 1000).to(gpu);
+        float[] expected = logits.to(CPU).argmax(-1).toArray();
+        Tensor ids = logits.argmax(-1);
+        java.util.function.Supplier<float[]> later = ids.toArrayLater();
+        Tensor more = logits;
+        for (int i = 0; i < 20; i++) {
+            more = more.mul(1.01f).add(logits);   // queued after the read
+        }
+        Tensor.evaluate(List.of(more));
+        assertArrayEquals(expected, later.get(), 0f);
+        assertArrayEquals(expected, later.get(), 0f);
+        Tensor big = random(22, 300, 100).to(gpu);   // past the size read later: read now
+        assertArrayEquals(big.to(CPU).toArray(), big.toArrayLater().get(), 0f);
+    }
+
     /**
      * Work from virtual threads, as the studio serves requests: each may run on any carrier
      * thread, whose current HIP device may be another GPU (such as an integrated one).

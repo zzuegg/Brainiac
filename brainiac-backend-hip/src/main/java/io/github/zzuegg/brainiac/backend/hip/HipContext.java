@@ -749,6 +749,49 @@ final class HipContext {
         record("download", PROFILE ? System.nanoTime() - t0 : 0);
     }
 
+    /** The largest copy {@link #downloadLater} takes: a pinned buffer of this size each. */
+    static final long SMALL_READBACK = 64 << 10;
+    /** Pinned buffers for {@link #downloadLater}, free for the next. */
+    private final ArrayDeque<MemorySegment> readbacks = new ArrayDeque<>();
+
+    /** A copy to the host in flight: its pinned buffer and the event that marks it done. */
+    record Pending(MemorySegment host, long event, long bytes) {
+    }
+
+    /** Whether {@link #downloadLater} can take {@code bytes}: small, and with events to wait on. */
+    boolean readsLater(long bytes) {
+        return bytes <= SMALL_READBACK && cu.hasEvents() && !DEBUG;
+    }
+
+    /** Queues a copy of at most {@link #SMALL_READBACK} bytes to the host, without waiting for it. */
+    Pending downloadLater(long src, long bytes) {
+        downloadedBytes += bytes;
+        MemorySegment h = readbacks.poll();
+        if (h == null) {
+            h = cu.allocateHost(SMALL_READBACK);
+        }
+        trace("hipMemcpyDtoHAsync " + bytes + " bytes, read later");
+        cu.copyToHost(h, src, bytes, stream);
+        long e = event();
+        cu.recordEvent(e, stream);
+        return new Pending(h, e, bytes);
+    }
+
+    /** Waits for a copy from {@link #downloadLater} (only for it, not for work queued after it), and gives its bytes. */
+    MemorySegment read(Pending p) {
+        bind();
+        long t0 = PROFILE ? System.nanoTime() : 0;
+        cu.synchronizeEvent(p.event());
+        record("wait for a read-back", PROFILE ? System.nanoTime() - t0 : 0);
+        return p.host().asSlice(0, p.bytes());
+    }
+
+    /** Takes back the buffer and event of a copy that was read. */
+    void release(Pending p) {
+        events.add(p.event());
+        readbacks.add(p.host());
+    }
+
     void copy(long dst, long src, long bytes) {
         if (bytes > 0) {
             trace("hipMemcpyDtoDAsync " + bytes + " bytes");
@@ -1023,6 +1066,10 @@ final class HipContext {
             cu.freeHost(staging);
             staging = null;
         }
+        for (MemorySegment h : readbacks) {
+            cu.freeHost(h);
+        }
+        readbacks.clear();
         if (rocblas != null) {
             trace("closing: rocblas_destroy_handle");
             rocblas.destroy();
