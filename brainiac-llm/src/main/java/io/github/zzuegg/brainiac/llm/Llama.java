@@ -1995,14 +1995,14 @@ public final class Llama implements LanguageModel {
         multiPositions = multi;
         Var logits;
         try {
-            logits = run(tokens, positions, cache, masks, hidden);
+            logits = run(tokens, positions, cache, masks, hidden, !everyStep);
         } finally {
             multiPositions = null;
         }
         cache.padding = keysPad;
         cache.length += steps;
         Tensor out = everyStep ? logits.value().to(DType.FLOAT32)
-                : logits.value().slice(1, steps - 1, steps).reshape(batch, config.vocabSize()).to(DType.FLOAT32);
+                : logits.value().reshape(batch, config.vocabSize()).to(DType.FLOAT32);   // the last step's only
         // computed before the next step writes into the cache it read
         if (hiddenOut != null) {
             hiddenOut[0] = hidden[0].value().to(DType.FLOAT32);
@@ -2037,13 +2037,23 @@ public final class Llama implements LanguageModel {
     }
 
     private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor[] masks) {
-        return run(tokens, positions, cache, masks, null);
+        return run(tokens, positions, cache, masks, null, false);
     }
 
-    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor[] masks, Var[] hiddenOut) {
+    /**
+     * The logits of {@code tokens}; with {@code lastOnly} of their last step only, which is all
+     * a prompt's reading needs: the output layer then multiplies one row, not every step's (a
+     * 7B model's 928-token prompt otherwise unpacked its 1 GB output layer for the product).
+     */
+    private Var run(int[][] tokens, int[][] positions, Cache cache, Tensor[] masks, Var[] hiddenOut,
+            boolean lastOnly) {
         Var x = hidden(tokens, positions, cache, masks);
         if (hiddenOut != null) {
             hiddenOut[0] = x;
+        }
+        int steps = tokens[0].length;
+        if (lastOnly && steps > 1) {
+            x = x.slice(1, steps - 1, steps);
         }
         return softcap(head(x, cache != null));
     }
