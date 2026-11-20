@@ -58,7 +58,7 @@ export function mediaOf(steps = []) {
     const args = call && call.tool === s.tool ? call.arguments || {} : {};
     files.forEach((file, i) => out.push({
       file, kind: kindOfFile(file), tool: s.tool, model: r.model, seed: r.seeds?.[i] ?? null,
-      prompt: args.prompt || args.text || "", aspect: args.aspect || null, voice: args.voice || null,
+      prompt: args.prompt || args.text || "", aspect: args.aspect || null, voice: args.voice || null, speed: args.speed || null, instructions: args.instructions || null,
     }));
   }
   return out;
@@ -68,18 +68,19 @@ export function mediaOf(steps = []) {
 export function MediaGrid({ items, onFineTune, compact }) {
   if (!items?.length) return null;
   return html`<div class=${cx("media-grid", compact && "media-grid-compact")}>
-    ${items.map((it, i) => html`<${MediaTile} key=${it.file + i} it=${it} open=${() => openLayer(Viewer, { items, at: i, onFineTune })} />`)}
+    ${items.map((it, i) => html`<${MediaTile} key=${it.file + i} it=${it} open=${() => openLayer(Viewer, { items, at: i, onFineTune })} onFineTune=${onFineTune} />`)}
   </div>`;
 }
 
-function MediaTile({ it: given, open }) {
+function MediaTile({ it: given, open, onFineTune }) {
   const it = { ...given, kind: kindOfFile(given.file) || given.kind };
   const { url, error } = useOutput(it.file);
   const title = `${fileName(it.file)}${it.seed != null ? " · seed " + it.seed : ""}`;
   if (error) return html`<div class="media-tile media-missing" title=${it.file}><${Icon} name="warn" size=${14} />${error}</div>`;
   if (it.kind === "audio") return html`<div class="media-tile media-audio" title=${title}>
     ${url ? html`<audio controls preload="metadata" src=${url} />` : html`<span class="media-wait" />`}
-    <span class="media-cap">${it.prompt ? `“${short(it.prompt, 80)}”` : fileName(it.file)}</span></div>`;
+    <span class="media-cap">${it.prompt ? `“${short(it.prompt, 80)}”` : fileName(it.file)}${it.voice ? html` <span class="muted">· ${it.voice}</span>` : ""}
+      ${onFineTune && html`<button type="button" class="link media-tune" onClick=${() => onFineTune(it)}>Fine tune…</button>`}</span></div>`;
   return html`<button type="button" class=${cx("media-tile", "media-" + it.kind)} title=${title} onClick=${open} aria-label=${"Open " + title}>
     ${!url ? html`<span class="media-wait" />`
       : it.kind === "video" ? html`<video src=${url} muted loop autoplay playsinline />`
@@ -108,7 +109,7 @@ function Viewer({ items, at: first, onFineTune, close, top }) {
       <${Button} icon="chevronRight" label="Next (→)" disabled=${at === items.length - 1} onClick=${() => setAt(at + 1)} />`}
     <span class="grow" />
     ${url && html`<a class="btn" href=${url} download=${fileName(it.file)}><${Icon} name="download" /><span>Save</span></a>`}
-    ${onFineTune && it.kind === "image" && html`<${Button} variant="primary" icon="sparkle" onClick=${() => { close(); onFineTune(it); }}>Fine tune…<//>`}`;
+    ${onFineTune && html`<${Button} variant="primary" icon="sparkle" onClick=${() => { close(); onFineTune(it); }}>Fine tune…<//>`}`;
   return html`<${Layer} title=${it.prompt ? short(it.prompt, 90) : fileName(it.file)} close=${close} top=${top} wide footer=${footer}
       subtitle=${[it.model, it.seed != null && "seed " + it.seed, fileName(it.file)].filter(Boolean).join(" · ")}>
     <div class="viewer">${!url ? html`<span class="media-wait" />`

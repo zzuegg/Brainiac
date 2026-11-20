@@ -24,8 +24,14 @@ export const modelsFor = medium => (modelInfo.value?.models || []).filter(m => (
 
 export const defaults = medium => ({
   model: "auto", aspect: medium === "video" ? "16:9" : "1:1", count: 1, steps: "", guidance: "", seed: "", negativePrompt: "",
-  voice: "", seconds: 2,
+  voice: "", seconds: 2, speed: 1, instructions: "",
 });
+
+/** What a speech model offers: its voices, and whether it takes a speed and instructions. */
+export function speechOptions(key) {
+  const k = key === "auto" ? modelInfo.value?.auto?.speech : key;
+  return modelByKey(k)?.speech || { voices: [], speed: false, instructions: false };
+}
 
 const chatId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const titleOf = t => { t = t.replace(/\s+/g, " ").trim(); return t.length > 60 ? t.slice(0, 57).replace(/\s+\S*$/, "") + "…" : t; };
@@ -45,19 +51,21 @@ export function makeMedium(s, medium) {
 export async function fineTune(project, it) {
   try {
     const id = chatId();
-    const settings = { ...defaults("image"), model: it.model || "auto", seed: it.seed ?? "", aspect: it.aspect || "1:1" };
+    const medium = it.kind === "audio" ? "speech" : it.kind === "video" ? "video" : "image";
+    const settings = { ...defaults(medium), model: it.model || "auto", seed: it.seed ?? "", ...(it.aspect ? { aspect: it.aspect } : {}),
+      ...(it.voice ? { voice: it.voice } : {}), ...(it.speed ? { speed: it.speed } : {}), ...(it.instructions ? { instructions: it.instructions } : {}) };
     const at = Date.now();
     await api("/api/chats", {
-      id, title: "Fine tune: " + titleOf(it.prompt || "picture"), medium: "image", settings, prompt: it.prompt || "",
+      id, title: "Fine tune: " + titleOf(it.prompt || MEDIA[medium].noun), medium, settings, prompt: it.prompt || "",
       messages: [
         { role: "user", text: it.prompt || "", settings, at, from: "agent" },
-        { role: "assistant", media: [{ file: it.file, seed: it.seed, kind: "image" }], model: it.model ? { key: it.model, name: modelByKey(it.model)?.name || it.model } : null, at },
+        { role: "assistant", media: [{ file: it.file, seed: it.seed, kind: it.kind }], model: it.model ? { key: it.model, name: modelByKey(it.model)?.name || it.model } : null, at },
       ],
       status: "open", created: at, updated: at,
     }, { project });
     await refreshAll();
     openProject(project, { route: { screen: "chat", id } });
-    toast("Opened in an image chat: change the prompt or settings and draw again");
+    toast(`Opened in a ${MEDIA[medium].label.toLowerCase()}: change the ${medium === "speech" ? "text, voice" : "prompt"} or settings and ${MEDIA[medium].verb.toLowerCase()} again`);
   } catch (e) { fail(e); }
 }
 
@@ -151,6 +159,7 @@ async function video(s, prompt, o) {
 }
 
 async function speech(s, text, o) {
-  const r = await api("/api/speech", { model: o.model || "auto", text, voice: o.voice || "", format: "wav" }, { project: s.project, signal: s.ctrl.signal });
+  const r = await api("/api/speech", { model: o.model || "auto", text, voice: o.voice || "", format: "wav",
+    speed: numberOr(o.speed, 1), instructions: o.instructions || "" }, { project: s.project, signal: s.ctrl.signal });
   setLast(s, { model: r.model, media: (r.items || []).map(it => ({ file: it.file, kind: "audio" })) });
 }

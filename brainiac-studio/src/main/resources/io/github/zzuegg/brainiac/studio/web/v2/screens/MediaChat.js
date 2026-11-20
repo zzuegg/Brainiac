@@ -7,7 +7,7 @@ import { MediaGrid, Working } from "/v2/ui/Media.js";
 import { plural } from "/v2/lib/format.js";
 import { configure } from "/v2/state/chats.js";
 import { modelInfo, placeOf } from "/v2/state/models.js";
-import { MEDIA, modelsFor, defaults, generate, stopMaking } from "/v2/state/media.js";
+import { MEDIA, modelsFor, defaults, generate, stopMaking, speechOptions } from "/v2/state/media.js";
 
 // An image, speech or video chat: each turn is a prompt with the settings it was made with, and
 // what came out. Any picture can be taken back into the composer (Fine tune: its prompt and seed)
@@ -54,15 +54,15 @@ function Turn({ t, M, busy, tune, again }) {
   const { ask, made } = t;
   const o = ask.settings || {};
   const facts = [o.aspect && M !== MEDIA.speech && o.aspect, o.count > 1 && o.count + " " + M.noun + "s", o.steps && o.steps + " steps",
-    o.guidance && "guidance " + o.guidance, o.seed !== "" && o.seed != null && "seed " + o.seed, o.voice && "voice " + o.voice].filter(Boolean);
-  const items = (made?.media || []).map(m => ({ ...m, prompt: ask.text, model: made.model?.key, aspect: o.aspect }));
+    o.guidance && "guidance " + o.guidance, o.seed !== "" && o.seed != null && "seed " + o.seed, o.voice && "voice " + o.voice, M === MEDIA.speech && o.speed && +o.speed !== 1 && "speed " + o.speed, o.instructions && "“" + o.instructions + "”"].filter(Boolean);
+  const items = (made?.media || []).map(m => ({ ...m, prompt: ask.text, model: made.model?.key, aspect: o.aspect, voice: o.voice || null }));
   return html`<li class="msg media-turn">
     <div class="media-ask"><span class="media-prompt-text">${ask.text}</span>
       ${ask.from === "agent" && html`<span class="badge">from an agent</span>`}
       ${facts.length > 0 && html`<span class="muted small">${facts.join(" · ")}</span>`}</div>
     ${made?.streaming && html`<${Working} progress=${made.progress ? { ...made.progress, tool: M === MEDIA.image ? "draw_image" : M === MEDIA.video ? "make_video" : "make_speech" } : null}
         doing=${made.model ? M.doing.toLowerCase() + " with " + made.model.name : "starting"} />`}
-    <${MediaGrid} items=${items} onFineTune=${M === MEDIA.image ? tune : null} />
+    <${MediaGrid} items=${items} onFineTune=${tune} />
     ${made?.error && html`<p class="msg-error"><${Icon} name="warn" size=${14} />${made.error}</p>`}
     ${made?.stopped && html`<p class="muted small">Stopped.</p>`}
     ${made && !made.streaming && html`<div class="msg-acts media-acts">
@@ -101,7 +101,7 @@ function MediaComposer({ M, medium, settings: o, put, prompt, setPrompt, busy, g
         </select>
         ${medium !== "speech" && html`<div class="seg" role="group" aria-label="Shape">${ASPECTS.map(a => html`<button type="button" aria-pressed=${o.aspect === a} disabled=${busy} onClick=${() => put({ aspect: a })}>${a}</button>`)}</div>`}
         ${medium === "image" && html`<div class="seg" role="group" aria-label="How many">${[1, 2, 3, 4].map(n => html`<button type="button" aria-pressed=${+o.count === n} disabled=${busy} onClick=${() => put({ count: n })}>${n}</button>`)}</div>`}
-        ${medium === "speech" && html`<input class="input select-sm" value=${o.voice} placeholder="Voice" aria-label="Voice" disabled=${busy} onInput=${e => put({ voice: e.target.value })} />`}
+        ${medium === "speech" && html`<${SpeechSettings} o=${o} put=${put} busy=${busy} />`}
         ${medium !== "speech" && html`<label class="seed-field" title="The same seed with the same prompt and settings gives the same result; empty picks a new one">Seed
           <input class="input mono select-sm" value=${o.seed} placeholder="new" disabled=${busy} onInput=${e => put({ seed: e.target.value.replace(/[^0-9]/g, "") })} />
           ${o.seed !== "" && html`<button type="button" class="mini" aria-label="New seed each time" title="New seed each time" onClick=${() => put({ seed: "" })}><${Icon} name="close" size=${12} /></button>`}</label>`}
@@ -118,4 +118,21 @@ function MediaComposer({ M, medium, settings: o, put, prompt, setPrompt, busy, g
       </div>`}
     </div>
   </div>`;
+}
+
+/** A speech model's voices, and its speed and how-it-sounds instructions when it takes them. */
+function SpeechSettings({ o, put, busy }) {
+  const opt = speechOptions(o.model);
+  const voices = opt.voices || [];
+  return html`
+    ${voices.length
+      ? html`<select class="input select-sm" value=${o.voice || voices[0]} aria-label="Voice" disabled=${busy} onChange=${e => put({ voice: e.target.value })}>
+          ${voices.map(v => html`<option value=${v}>${v}</option>`)}
+          ${o.voice && !voices.includes(o.voice) && html`<option value=${o.voice}>${o.voice}</option>`}</select>`
+      : html`<input class="input select-sm" value=${o.voice} placeholder="Voice" aria-label="Voice" disabled=${busy} onInput=${e => put({ voice: e.target.value })} />`}
+    ${opt.speed !== false && html`<label class="seed-field" title="How fast it speaks">Speed
+      <input type="range" min="0.5" max="2" step="0.05" value=${o.speed ?? 1} disabled=${busy} onInput=${e => put({ speed: +e.target.value })} />
+      <span class="mono small">${(+(o.speed ?? 1)).toFixed(2)}×</span></label>`}
+    ${opt.instructions !== false && html`<input class="input select-sm speech-how" value=${o.instructions} placeholder="How it sounds: calm, cheerful, a sports commentator…"
+      aria-label="How it sounds" disabled=${busy} onInput=${e => put({ instructions: e.target.value })} />`}`;
 }

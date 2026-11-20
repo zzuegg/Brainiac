@@ -738,3 +738,5 @@ button.media-tile:hover { border-color: color-mix(in srgb, var(--accent) 50%, va
 .media-more input { width: 80px; }
 .media-more label.grow input { width: 100%; min-width: 160px; }
 .seed-field input { width: 96px; }
+.media-tune { margin-left: 8px; font-size: 12.5px; }
+.speech-how { flex: 1; min-width: 220px; }
