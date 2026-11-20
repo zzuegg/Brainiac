@@ -34,6 +34,7 @@ import java.util.UUID;
  * Posting always asks the user first; a post scheduled for later is approved when it is
  * scheduled, and goes out from the studio at its time.
  */
+@ToolGroup(id = "social", summary = "posting to social networks")
 public final class PublishTools implements AutoCloseable {
 
     /** The channels that can be posted to. */

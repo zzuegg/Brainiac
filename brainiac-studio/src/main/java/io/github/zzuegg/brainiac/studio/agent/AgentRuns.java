@@ -90,6 +90,8 @@ public final class AgentRuns {
     private final ChatService chat;
     private final Path folder;
     private final Map<String, StudioTools.Entry> tools = new LinkedHashMap<>();
+    // the group of each tool, from its class's ToolGroup
+    private final Map<String, ToolGroup> groups = new LinkedHashMap<>();
     private final Map<String, Run> runs = new ConcurrentHashMap<>();
     private final Projects projects;
     private final Roles roles;
@@ -313,6 +315,10 @@ public final class AgentRuns {
                     f.checkpoints(checkpoints);
                 }
                 this.tools.putIfAbsent(e.tool().name(), e);
+                ToolGroup g = source.getClass().getAnnotation(ToolGroup.class);
+                if (g != null) {
+                    this.groups.putIfAbsent(e.tool().name(), g);
+                }
             }
         }
         load();
@@ -428,6 +434,7 @@ public final class AgentRuns {
      * @return the result, or {@code error: ...}
      */
     public String call(String name, Map<String, Object> arguments) {
+        name = ToolNames.current(name);
         StudioTools.Entry e = tools.get(name);
         if (e == null) {
             throw new IllegalArgumentException("there is no tool " + name);
@@ -1043,7 +1050,7 @@ public final class AgentRuns {
 
     /** Tools sent in full when a run may use many: the ones most work needs. */
     static final List<String> CORE = List.of("update_plan", "ask_user", "run_script", "find_tools", "list_roles",
-            "list_project_files", "read_project_file", "write_file", "edit_file", "search_files", "web_search", "fetch_url",
+            "list_files", "read_file", "write_file", "edit_file", "grep", "glob", "web_search", "fetch_url",
             "remember", "recall", "spawn_agent", "wait_agents", "send_message", "list_models", "ask_model");
 
     /** Runs that may use more tools than this get the core ones in full and the rest on demand. */
@@ -1073,12 +1080,25 @@ public final class AgentRuns {
         return out;
     }
 
-    // the tools not sent in full, a line each
-    private static String moreTools(List<StudioTools.Entry> allowed) {
+    // the tools not sent in full, a line each, under their groups
+    private String moreTools(List<StudioTools.Entry> allowed) {
         StringBuilder s = new StringBuilder("\n\n# More tools\n\nBesides the tools you see, you have these. Call "
-                + "find_tools with their names to load them; run_script can call any of them directly.\n");
+                + "find_tools with their names, or a group's name to load the whole group; run_script can call any of "
+                + "them directly.\n");
+        Map<String, List<StudioTools.Entry>> byGroup = new LinkedHashMap<>();
+        Map<String, String> summaries = new LinkedHashMap<>();
         for (StudioTools.Entry e : allowed) {
             if (!CORE.contains(e.tool().name())) {
+                ToolGroup g = groups.get(e.tool().name());
+                String id = g == null ? "other" : g.id();
+                summaries.putIfAbsent(id, g == null ? "" : g.summary());
+                byGroup.computeIfAbsent(id, k -> new ArrayList<>()).add(e);
+            }
+        }
+        for (Map.Entry<String, List<StudioTools.Entry>> g : byGroup.entrySet()) {
+            String summary = summaries.get(g.getKey());
+            s.append("\n## ").append(g.getKey()).append(summary.isEmpty() ? "" : ": " + summary).append('\n');
+            for (StudioTools.Entry e : g.getValue()) {
                 s.append("- ").append(e.tool().name()).append(": ").append(firstSentence(e.tool().description())).append('\n');
             }
         }
@@ -1097,15 +1117,20 @@ public final class AgentRuns {
         Project p = current() instanceof Project cp ? cp : projects == null ? null : projects.get(r.project).orElse(null);
         List<String> words = query == null ? List.of()
                 : java.util.Arrays.stream(query.toLowerCase(java.util.Locale.ROOT).split("\\W+")).filter(w -> w.length() > 2).toList();
+        List<String> wanted = names == null ? List.of() : names.stream().map(ToolNames::current).toList();
+        boolean wholeGroup = groups.values().stream().anyMatch(g -> wanted.contains(g.id()));
         List<Map<String, Object>> out = new ArrayList<>();
         for (StudioTools.Entry e : tools.values()) {
             String n = e.tool().name();
             if (!permitted(r, n, p)) {
                 continue;
             }
-            String hay = (n + " " + e.tool().description()).toLowerCase(java.util.Locale.ROOT);
-            boolean hit = (names != null && names.contains(n)) || (!words.isEmpty() && words.stream().anyMatch(hay::contains));
-            if (hit && out.size() < 12) {
+            ToolGroup group = groups.get(n);
+            String hay = (n + " " + e.tool().description() + (group == null ? "" : " " + group.id() + " "
+                    + group.summary())).toLowerCase(java.util.Locale.ROOT);
+            boolean hit = wanted.contains(n) || (group != null && wanted.contains(group.id()))
+                    || (!words.isEmpty() && words.stream().anyMatch(hay::contains));
+            if (hit && out.size() < (wholeGroup ? 24 : 12)) {
                 synchronized (r) {
                     r.loaded.add(n);
                 }
@@ -1732,6 +1757,7 @@ public final class AgentRuns {
      */
     private String call(Run r, String name, Map<String, Object> args, Project in, List<String> notes)
             throws InterruptedException {
+        name = ToolNames.current(name);
         StudioTools.Entry e = tools.get(name);
         if (e == null || !permitted(r, name, current() instanceof Project cp ? cp : in)) {
             return "error: there is no tool named " + name;
@@ -1986,11 +2012,44 @@ public final class AgentRuns {
                     : " Its files are in a folder you can work in with the file tools; you cannot reach anything "
                     + "outside it.").append("\n\n");
         }
+        String guide = projectInstructions(p);
+        if (!guide.isEmpty()) {
+            s.append("# The project's instructions\n\nThe project's folder holds this guide for agents. Follow it for how ")
+                    .append("to build, test and change the code.\n\n").append(guide).append("\n\n");
+        }
         String notes = AgentTools.notes(folder.resolveSibling("memory"), r.project, MEMORY_CHARS);
         if (!notes.isBlank()) {
             s.append("# Notes kept for this project\n\n").append(notes.strip()).append("\n\n");
         }
         return s.toString().strip();
+    }
+
+    /** Names of the guide files agents read from the top of a project's folder, the first found. */
+    static final List<String> GUIDES = List.of("AGENTS.md", "BRAINIAC.md", "CLAUDE.md");
+
+    /** The most characters of a project's guide put in an agent's instructions. */
+    static final int GUIDE_CHARS = 8000;
+
+    // the project's guide for agents, such as AGENTS.md, or empty
+    static String projectInstructions(Project p) {
+        if (p == null || p.folder() == null) {
+            return "";
+        }
+        for (String name : GUIDES) {
+            Path f = p.folder().resolve(name);
+            if (Files.isRegularFile(f)) {
+                try {
+                    String text = Files.readString(f, StandardCharsets.UTF_8).strip();
+                    if (text.length() > GUIDE_CHARS) {
+                        text = text.substring(0, GUIDE_CHARS) + "\n[cut: read " + name + " for the rest]";
+                    }
+                    return "From " + name + ":\n\n" + text;
+                } catch (IOException | RuntimeException e) {
+                    return "";
+                }
+            }
+        }
+        return "";
     }
 
     private static String doing(Map<String, Object> step) {

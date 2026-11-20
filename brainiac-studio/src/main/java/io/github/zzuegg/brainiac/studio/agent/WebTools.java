@@ -30,6 +30,7 @@ import java.util.regex.Pattern;
  * Tools that read the web: a search through the provider set on the settings page, and a page
  * reader that refuses addresses on this PC or its network.
  */
+@ToolGroup(id = "web", summary = "web search and pages")
 public final class WebTools {
 
     /** The most bytes read from a page. */

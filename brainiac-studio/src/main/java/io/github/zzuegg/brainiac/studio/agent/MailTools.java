@@ -42,6 +42,7 @@ import javax.net.ssl.SSLSocketFactory;
  * anything), writing drafts into the project's folder, sending over SMTP after the user approves,
  * and reading and adding calendar events.
  */
+@ToolGroup(id = "mail", summary = "mail and calendar")
 public final class MailTools implements RiskRefiner, Checkpointed {
 
     /** The project's own calendar file. */

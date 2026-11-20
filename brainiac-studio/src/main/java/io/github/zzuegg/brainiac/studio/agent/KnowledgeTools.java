@@ -27,6 +27,7 @@ import java.util.stream.Stream;
  * ranked by BM25 against the words asked for. The index is kept per project in the studio's
  * folder and brought up to date for files that changed.
  */
+@ToolGroup(id = "knowledge", summary = "search the project's files by meaning")
 public final class KnowledgeTools {
 
     private static final int PASSAGE_LINES = 40;
@@ -166,7 +167,7 @@ public final class KnowledgeTools {
     }
 
     @Tools.Tool(name = "search_knowledge", value = "Finds the passages of the project's files that best match some "
-            + "words, best first, with file and line; then read_project_file reads around them. Run index_files first "
+            + "words, best first, with file and line; then read_file reads around them. Run index_files first "
             + "if the files changed.")
     @Tier(value = Risk.READ, resultChars = 12_000)
     @Returns("{query, by, passages: [{file, line, score, text}]}")

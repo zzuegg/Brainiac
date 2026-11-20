@@ -19,6 +19,7 @@ import java.util.function.Supplier;
 /**
  * Tools for where work runs: rented GPU machines and the project's routes per kind of task.
  */
+@ToolGroup(id = "machines", summary = "rented GPU machines and model routes")
 public final class RunnerTools {
 
     private final ChatService chat;

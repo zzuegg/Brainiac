@@ -207,15 +207,15 @@ public final class Roles {
                 instructions.append(r.instructions());
             }
             if (r.tools() != null) {
-                tools = new LinkedHashSet<>(r.tools());
+                tools = new LinkedHashSet<>(r.tools().stream().map(ToolNames::current).toList());
             }
             if (!r.addTools().isEmpty()) {
                 if (tools != null) {
-                    tools.addAll(r.addTools());
+                    tools.addAll(r.addTools().stream().map(ToolNames::current).toList());
                 }
             }
             if (tools != null) {
-                tools.removeAll(r.removeTools());
+                tools.removeAll(r.removeTools().stream().map(ToolNames::current).toList());
             }
             if (r.model() != null) {
                 model = r.model();

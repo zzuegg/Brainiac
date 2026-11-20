@@ -24,6 +24,7 @@ import java.util.stream.Stream;
  * Tools for code: git in the project's repository, and commands run in a container on a copy of
  * the project, whose changes are copied back with checkpoints so the run can be undone.
  */
+@ToolGroup(id = "code", summary = "git and commands run in the sandbox")
 public final class CodeTools implements RiskRefiner, Checkpointed {
 
     private static final int OUT = 12_000;

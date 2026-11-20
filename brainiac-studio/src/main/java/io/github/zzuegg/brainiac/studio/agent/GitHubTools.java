@@ -26,6 +26,7 @@ import java.util.regex.Pattern;
  * opening issues and pull requests and commenting under the user's name. The token is kept on the
  * settings page; public repositories can be read without one.
  */
+@ToolGroup(id = "github", summary = "GitHub issues and pull requests")
 public final class GitHubTools {
 
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
