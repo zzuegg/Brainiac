@@ -1,4 +1,4 @@
-import { signal, effect } from "/v2/lib/html.js";
+import { signal, effect, computed } from "/v2/lib/html.js";
 import { local, pageState, remember } from "/v2/lib/api.js";
 
 // Appearance choices, kept in the studio (so every browser on this PC shares them) and in the
@@ -12,6 +12,19 @@ export const theme = signal(saved.theme || "system");
 export const readingWidth = signal(saved.readingWidth || "normal");
 export const sidebarOpen = signal(saved.sidebarOpen ?? true);
 export const sidebarWidth = signal(saved.sidebarWidth || 272);
+
+// On a narrow screen the sidebar lies over the page: it starts hidden, closes after a pick, and
+// whether it shows there is not kept, so a phone never hides it on the PC.
+const narrowQuery = matchMedia("(max-width: 900px)");
+export const narrow = signal(narrowQuery.matches);
+narrowQuery.addEventListener("change", e => { narrow.value = e.matches; phoneSide.value = false; });
+const phoneSide = signal(false);
+/** Whether the sidebar shows now. */
+export const sideShown = computed(() => (narrow.value ? phoneSide.value : sidebarOpen.value));
+export function showSide(v) {
+  if (narrow.value) phoneSide.value = v;
+  else sidebarOpen.value = v;
+}
 
 export const WIDTHS = { narrow: 640, normal: 760, wide: 960, full: 0 };
 

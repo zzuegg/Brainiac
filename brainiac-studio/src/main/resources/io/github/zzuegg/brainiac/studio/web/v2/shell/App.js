@@ -11,7 +11,7 @@ import { pickProject } from "/v2/shell/ProjectPicker.js";
 import { activeTab, tabs, closeTab, navigate, showingOverview, openOverview } from "/v2/state/workspace.js";
 import { forUser } from "/v2/state/requests.js";
 import { byId, loaded } from "/v2/state/projects.js";
-import { sidebarOpen } from "/v2/state/prefs.js";
+import { sideShown, showSide, narrow } from "/v2/state/prefs.js";
 import { undoLast } from "/v2/state/toasts.js";
 import { layers, menu } from "/v2/ui/overlay.js";
 import { Home } from "/v2/screens/Home.js";
@@ -37,7 +37,7 @@ export function App() {
       const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
       const mod = e.ctrlKey || e.metaKey;
       if (layers.value.length || menu.value) return;
-      if (mod && !e.shiftKey && e.key.toLowerCase() === "b") sidebarOpen.value = !sidebarOpen.value;
+      if (mod && !e.shiftKey && e.key.toLowerCase() === "b") showSide(!sideShown.value);
       else if (mod && !e.shiftKey && e.key.toLowerCase() === "p") pickProject();
       else if (mod && e.shiftKey && e.key.toLowerCase() === "o") openOverview();
       else if (mod && !e.shiftKey && e.key.toLowerCase() === "z" && !typing) { if (!undoLast()) return; }
@@ -65,6 +65,9 @@ export function App() {
 }
 
 function Workspace({ tab }) {
+  // on a phone the sidebar steps aside once something is opened from it
+  const r = tab.route.value;
+  useEffect(() => { if (narrow.peek()) showSide(false); }, [r.screen, r.id]);
   const gone = loaded.value && !byId.value.has(tab.project);
   if (gone) {
     return html`<main class="main"><div class="gone">
@@ -76,10 +79,11 @@ function Workspace({ tab }) {
   }
   const Screen = SCREENS[tab.route.value.screen] || Home;
   return html`
-    ${sidebarOpen.value && html`<${Sidebar} tab=${tab} />`}
-    <main class=${"main" + (sidebarOpen.value ? "" : " main-solo")} id="main">
-      ${!sidebarOpen.value && html`<button type="button" class="side-flip btn btn-ghost btn-icon" aria-label="Show the sidebar"
-        title="Show the sidebar (Ctrl+B)" onClick=${() => (sidebarOpen.value = true)}><${Icon} name="sidebar" /></button>`}
+    ${sideShown.value && html`<${Sidebar} tab=${tab} />`}
+    ${sideShown.value && narrow.value && html`<div class="side-scrim" aria-hidden="true" onClick=${() => showSide(false)} />`}
+    <main class=${"main" + (sideShown.value && !narrow.value ? "" : " main-solo")} id="main">
+      ${!sideShown.value && html`<button type="button" class="side-flip btn btn-ghost btn-icon" aria-label="Show the sidebar"
+        title="Show the sidebar (Ctrl+B)" onClick=${() => showSide(true)}><${Icon} name="sidebar" /></button>`}
       <${Screen} tab=${tab} />
     </main>`;
 }
@@ -110,7 +114,7 @@ function StatusBar() {
     ${waiting + forUser.value.length > 0 && html`<button type="button" class="status-item status-link" onClick=${openOverview}>
       <span class="live live-wait" />${waiting + forUser.value.length} waiting for you</button>`}
     <span class="grow" />
-    <span class="status-item muted">Studio v2 preview</span>
+    <span class="status-item muted status-wide">Studio v2 preview</span>
     <a class="status-item" href="/">Classic Studio</a>
   </footer>`;
 }

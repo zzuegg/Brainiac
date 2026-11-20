@@ -1,4 +1,5 @@
-import { html, useRef, cx } from "/v2/lib/html.js";
+import { html, useRef, useState, cx } from "/v2/lib/html.js";
+import { local } from "/v2/lib/api.js";
 import { Icon } from "/v2/ui/Icon.js";
 import { Button } from "/v2/ui/Button.js";
 import { ItemList } from "/v2/ui/ItemList.js";
@@ -6,7 +7,7 @@ import { KINDS, SECTIONS } from "/v2/state/kinds.js";
 import { byId, childrenOf } from "/v2/state/projects.js";
 import { navigate, openProject } from "/v2/state/workspace.js";
 import { openTo } from "/v2/state/requests.js";
-import { sidebarWidth, sidebarOpen } from "/v2/state/prefs.js";
+import { sidebarWidth, showSide } from "/v2/state/prefs.js";
 import { create, newProject } from "/v2/wizards/index.js";
 
 // The open project's own things: its home, then a section per kind with a "+" that starts its
@@ -32,7 +33,7 @@ export function Sidebar({ tab }) {
         <button type="button" class=${cx("side-link", route.screen === "home" && "on")} onClick=${() => navigate(tab, { screen: "home" })}>
           <${Icon} name="home" /><span class="side-project">${p?.name ?? tab.project}</span>
         </button>
-        <${Button} variant="ghost" icon="sidebar" label="Hide the sidebar (Ctrl+B)" onClick=${() => (sidebarOpen.value = false)} />
+        <${Button} variant="ghost" icon="sidebar" label="Hide the sidebar (Ctrl+B)" onClick=${() => showSide(false)} />
       </div>
       <div class="search side-search"><${Icon} name="search" size=${14} />
         <input class="input" placeholder="Filter" value=${tab.filter.value} aria-label="Filter this project's items"
@@ -76,14 +77,7 @@ export function Sidebar({ tab }) {
       </section>`}
     </div>
     <div class="side-bottom">
-      <button type="button" class=${cx("side-link", route.screen === "config" && "on")} onClick=${() => navigate(tab, { screen: "config" })}><${Icon} name="edit" /><span>Project settings</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "trash" && "on")} onClick=${() => navigate(tab, { screen: "trash" })}><${Icon} name="trash" /><span>Trash</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "models" && "on")} onClick=${() => navigate(tab, { screen: "models" })}><${Icon} name="layers" /><span>Models</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "machines" && "on")} onClick=${() => navigate(tab, { screen: "machines" })}><${Icon} name="server" /><span>Machines</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "rl" && "on")} onClick=${() => navigate(tab, { screen: "rl" })}><${Icon} name="gauge" /><span>Learning from rewards</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "agents" && "on")} onClick=${() => navigate(tab, { screen: "agents" })}><${Icon} name="agent" /><span>Agent settings</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "tools" && "on")} onClick=${() => navigate(tab, { screen: "tools" })}><${Icon} name="build" /><span>Tools</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "settings" && "on")} onClick=${() => navigate(tab, { screen: "settings" })}><${Icon} name="settings" /><span>Studio settings</span></button>
+      <${SideLinks} tab=${tab} route=${route} />
     </div>
     <${Resizer} />
   </aside>`;
@@ -103,4 +97,22 @@ function Resizer() {
   return html`<div class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize the sidebar"
     onPointerDown=${onDown} onPointerMove=${onMove} onPointerUp=${() => (start.current = null)}
     onDblClick=${() => (sidebarWidth.value = 272)} />`;
+}
+
+// the pages beside the project's items: its own settings and trash, then the studio's pages,
+// which fold away (remembered) to leave the lists more room
+const PROJECT_LINKS = [["config", "edit", "Project settings"], ["trash", "trash", "Trash"]];
+const STUDIO_LINKS = [["models", "layers", "Models"], ["machines", "server", "Machines"], ["agents", "agent", "Agent settings"],
+  ["tools", "build", "Tools"], ["rl", "gauge", "Learning from rewards"], ["settings", "settings", "Studio settings"]];
+
+function SideLinks({ tab, route }) {
+  const [open, setOpen] = useState(() => local.get("sideStudio", true));
+  const flip = () => { local.set("sideStudio", !open); setOpen(!open); };
+  const link = ([screen, icon, label]) => html`<button type="button" key=${screen} class=${cx("side-link", route.screen === screen && "on")}
+    onClick=${() => navigate(tab, { screen })}><${Icon} name=${icon} /><span>${label}</span></button>`;
+  const here = STUDIO_LINKS.find(l => l[0] === route.screen);
+  return html`${PROJECT_LINKS.map(link)}
+    <button type="button" class="side-group" aria-expanded=${open} onClick=${flip}>
+      <${Icon} name="chevronDown" size=${12} class=${open ? "" : "turned"} /><span>Studio</span></button>
+    ${open ? STUDIO_LINKS.map(link) : here && link(here)}`;
 }
