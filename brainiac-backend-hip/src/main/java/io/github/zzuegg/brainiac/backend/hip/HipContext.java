@@ -98,6 +98,8 @@ final class HipContext {
     /** Milliseconds {@code work} takes on the GPU, the mean of {@code reps} runs after one to warm up. */
     float timeOnGpu(Runnable work, int reps) {
         work.run();
+        work.run();
+        cu.synchronize(stream);   // a library's first call may set itself up out of order
         long a = event();
         long b = event();
         cu.recordEvent(a, stream);
