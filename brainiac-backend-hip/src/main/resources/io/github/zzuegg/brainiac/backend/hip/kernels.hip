@@ -1097,6 +1097,133 @@ template <class D> __device__ void unpack_words_k(PackedLayout p, typename D::T*
         part[i][2] += x * (A) lv_[2]; part[i][3] += x * (A) lv_[3]; \
         sum[i] += x; } }
 
+// the four values of row r at columns c .. c + 3 of a dense matrix with n a multiple of 4, in
+// one load (8 bytes for 16-bit formats, 16 for float32)
+template <class D> __device__ __forceinline__ void dense4(const typename D::T* w, i64 at, typename D::A* v) {
+    typedef typename D::T T;
+    if (sizeof(T) == 2) {
+        uint2 q = *(const uint2*) (w + at);
+        const T* p = (const T*) &q;
+        v[0] = D::ld(p, 0); v[1] = D::ld(p, 1); v[2] = D::ld(p, 2); v[3] = D::ld(p, 3);
+    } else if (sizeof(T) == 4) {
+        uint4 q = *(const uint4*) (w + at);
+        const T* p = (const T*) &q;
+        v[0] = D::ld(p, 0); v[1] = D::ld(p, 1); v[2] = D::ld(p, 2); v[3] = D::ld(p, 3);
+    } else {
+        v[0] = D::ld(w, at); v[1] = D::ld(w, at + 1); v[2] = D::ld(w, at + 2); v[3] = D::ld(w, at + 3);
+    }
+}
+
+// out[m, n] = a[m, k] x w[k, n] for a dense row-major w, n a multiple of 4, m <= ROWS (rows past
+// m repeat row 0 and are not stored): packed_mv's shape (four columns a thread, PK_SLICES
+// wavefronts over runs of rows, pieces of k added by the last block) reading 16-bit values
+// four at a time, so a wavefront reads 256 contiguous bytes of a row.
+template <class D, int ROWS> __device__ void dense_mv_k(const typename D::T* a, const typename D::T* w,
+        float* partial, typename D::T* out, int m, int k, int n, int chunk, int* counters) {
+    typedef typename D::A A;
+    __shared__ A sums[PK_SLICES][PK_QUADS * 4];
+    __shared__ int last;
+    int quad = threadIdx.x % PK_QUADS;
+    int slice = threadIdx.x / PK_QUADS;
+    int c = (blockIdx.x * PK_QUADS + quad) * 4;
+    int piece = blockIdx.y;
+    int from = piece * chunk;
+    int to = min(k, from + chunk);
+    int run = (to - from + PK_SLICES - 1) / PK_SLICES;
+    int start = min(to, from + slice * run);
+    int end = min(to, start + run);
+    i64 rowOf[ROWS];
+    A total[ROWS][4];
+#pragma unroll
+    for (int i = 0; i < ROWS; i++) {
+        rowOf[i] = (i64) (i < m ? i : 0) * k;
+        total[i][0] = total[i][1] = total[i][2] = total[i][3] = A(0);
+    }
+    if (c < n) {
+        int r = start;
+        // four rows' values loaded before any is used, so more loads are in flight
+        for (; r + 4 <= end; r += 4) {
+            A v0[4], v1[4], v2[4], v3[4];
+            dense4<D>(w, (i64) r * n + c, v0);
+            dense4<D>(w, (i64) (r + 1) * n + c, v1);
+            dense4<D>(w, (i64) (r + 2) * n + c, v2);
+            dense4<D>(w, (i64) (r + 3) * n + c, v3);
+#pragma unroll
+            for (int i = 0; i < ROWS; i++) {
+                A x0 = D::ld(a, rowOf[i] + r);
+                A x1 = D::ld(a, rowOf[i] + r + 1);
+                A x2 = D::ld(a, rowOf[i] + r + 2);
+                A x3 = D::ld(a, rowOf[i] + r + 3);
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    total[i][j] += x0 * v0[j] + x1 * v1[j] + x2 * v2[j] + x3 * v3[j];
+                }
+            }
+        }
+        for (; r < end; r++) {
+            A v0[4];
+            dense4<D>(w, (i64) r * n + c, v0);
+#pragma unroll
+            for (int i = 0; i < ROWS; i++) {
+                A x0 = D::ld(a, rowOf[i] + r);
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    total[i][j] += x0 * v0[j];
+                }
+            }
+        }
+    }
+    bool single = gridDim.y == 1;
+#pragma unroll
+    for (int i = 0; i < ROWS; i++) {
+        for (int j = 0; j < 4; j++) {
+            sums[slice][quad * 4 + j] = total[i][j];
+        }
+        __syncthreads();
+        if (threadIdx.x < PK_QUADS * 4 && i < m) {
+            int col = blockIdx.x * PK_QUADS * 4 + threadIdx.x;
+            if (col < n) {
+                A t = sums[0][threadIdx.x];
+                for (int s = 1; s < PK_SLICES; s++) {
+                    t += sums[s][threadIdx.x];
+                }
+                if (single) {
+                    D::st(out, (i64) i * n + col, t);
+                } else {
+                    partial[((i64) piece * m + i) * n + col] = (float) t;
+                }
+            }
+        }
+        __syncthreads();
+    }
+    if (single) {
+        return;
+    }
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        last = atomicAdd(&counters[blockIdx.x], 1) == (int) gridDim.y - 1;
+    }
+    __syncthreads();
+    if (!last) {
+        return;
+    }
+    __threadfence();   // agent scope: this compute unit's caches invalidated, plain loads see the pieces
+    int col = blockIdx.x * PK_QUADS * 4 + (threadIdx.x % (PK_QUADS * 4));
+    if (col < n) {
+        for (int i = threadIdx.x / (PK_QUADS * 4); i < m; i += 2) {
+            A t = A(0);
+            for (int q = 0; q < (int) gridDim.y; q++) {
+                t += (A) partial[((i64) q * m + i) * n + col];
+            }
+            D::st(out, (i64) i * n + col, t);
+        }
+    }
+    if (threadIdx.x == 0) {
+        counters[blockIdx.x] = 0;
+    }
+}
+
 // out[m, n] = a[m, k] x packed[k, n] for m <= ROWS (rows past m repeat row 0 and are not
 // stored), as the Vulkan backend's matmul_packed. Each thread computes four adjacent columns,
 // reading their levels of a row as one 32-bit word when n is a multiple of 4, so neighbouring
@@ -1822,6 +1949,22 @@ extern "C" __global__ void unpack_words_##S(const unsigned* q, const unsigned* h
         float shift, D::T* out, int rows) {                                                                       \
     PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                     \
     unpack_words_k<D>(p, out, rows);                                                                              \
+}                                                                                                                 \
+extern "C" __global__ void dense_mv1_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m,      \
+        int k, int n, int chunk, int* counters) {                                                                 \
+    dense_mv_k<D, 1>(a, w, part, out, m, k, n, chunk, counters);                                               \
+}                                                                                                                 \
+extern "C" __global__ void dense_mv2_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m,      \
+        int k, int n, int chunk, int* counters) {                                                                 \
+    dense_mv_k<D, 2>(a, w, part, out, m, k, n, chunk, counters);                                               \
+}                                                                                                                 \
+extern "C" __global__ void dense_mv4_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m,      \
+        int k, int n, int chunk, int* counters) {                                                                 \
+    dense_mv_k<D, 4>(a, w, part, out, m, k, n, chunk, counters);                                               \
+}                                                                                                                 \
+extern "C" __global__ void dense_mv8_##S(const D::T* a, const D::T* w, float* part, D::T* out, int m,      \
+        int k, int n, int chunk, int* counters) {                                                                 \
+    dense_mv_k<D, 8>(a, w, part, out, m, k, n, chunk, counters);                                               \
 }                                                                                                                 \
 extern "C" __global__ void packed_mv1_##S(const D::T* a, const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
         const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                    \

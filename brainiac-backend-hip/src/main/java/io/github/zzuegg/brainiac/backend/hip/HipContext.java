@@ -457,7 +457,7 @@ final class HipContext {
      */
     static String part(String kernel) {
         String format = kernel.substring(kernel.lastIndexOf('_') + 1).toUpperCase(java.util.Locale.ROOT);
-        if (kernel.startsWith("few_") || kernel.startsWith("unpack_packed_") || kernel.startsWith("packed_mv") || kernel.startsWith("unpack_words_")) {
+        if (kernel.startsWith("few_") || kernel.startsWith("unpack_packed_") || kernel.startsWith("packed_mv") || kernel.startsWith("dense_mv") || kernel.startsWith("unpack_words_")) {
             return "FEW_" + format;
         }
         if (kernel.startsWith("attention")) {

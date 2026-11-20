@@ -1215,7 +1215,11 @@ public final class HipBackend implements Backend {
         HipStorage y = as(cs(b), z.dtype);
         DType t = z.dtype;
         boolean blas = c.rocblas != null;
-        if (batch == 1 && m == 1 && !MATVEC.equals("few") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()
+        if (DENSE_MV && batch == 1 && m <= PACKED_ROWS && n % 4 == 0 && t != DType.FLOAT64) {
+            // decoding's products: four columns a thread from 8-byte loads (rocBLAS's gemv
+            // reached a third of the bandwidth on a feed-forward network's shapes)
+            matvec(c, "dense_mv", x, y.address(), null, m, k, n, z);
+        } else if (batch == 1 && m == 1 && !MATVEC.equals("few") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()
                 && !fewFaster(c, x, y, k, n, z)) {
             long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
             long g = c.gpuStart();
@@ -1695,6 +1699,19 @@ public final class HipBackend implements Backend {
         }
         Packed p = packed(b);
         HipStorage x = as(cs(a), z.dtype);
+        matvec(c, "packed_mv", x, 0, p, m, k, n, z);
+        done(x, cs(a));
+    }
+
+    /** Whether products of up to 8 rows by a dense matrix use {@code dense_mv} ({@code -Dbrainiac.hip.denseMv=false}: rocBLAS or few_dense). */
+    private static final boolean DENSE_MV = !"false".equals(System.getProperty("brainiac.hip.denseMv"));
+
+    /**
+     * {@code z[m, n] = x[m, k] x w[k, n]} for {@code m <= PACKED_ROWS} by {@code packed_mv} (w
+     * packed) or {@code dense_mv} (w dense, at address {@code w}).
+     */
+    private void matvec(HipContext c, String kernel, HipStorage x, long w, Packed p, int m, int k, int n,
+            HipStorage z) {
         // 128 columns per block; enough pieces of k to fill the device, of at least PACKED_PIECE rows
         int columnBlocks = (n + 127) / 128;
         int target = PACKED_BLOCKS > 0 ? PACKED_BLOCKS : 4 * c.multiprocessors;
@@ -1711,14 +1728,17 @@ public final class HipBackend implements Backend {
         }
         int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
         c.args().ptr(x.address());
-        p.push(c);
-        c.ptr(part != null ? part.address() : 0).ptr(z.address()).i32(m).i32(k).i32(chunk)
-                .ptr(part != null ? fewCounters.address() : 0);
-        c.launch(kernel("packed_mv" + rows, z.dtype), columnBlocks, pieces, 1);
+        if (p != null) {
+            p.push(c);
+            c.ptr(part != null ? part.address() : 0).ptr(z.address()).i32(m).i32(k).i32(chunk);
+        } else {
+            c.ptr(w).ptr(part != null ? part.address() : 0).ptr(z.address()).i32(m).i32(k).i32(n).i32(chunk);
+        }
+        c.ptr(part != null ? fewCounters.address() : 0);
+        c.launch(kernel(kernel + rows, z.dtype), columnBlocks, pieces, 1);
         if (part != null) {
             part.release();
         }
-        done(x, cs(a));
     }
 
     // ------------------------------------------------------------------ attention
