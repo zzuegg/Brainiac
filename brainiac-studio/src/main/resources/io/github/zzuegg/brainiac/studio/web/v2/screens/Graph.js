@@ -1,7 +1,7 @@
 import { html, useEffect, useLayoutEffect, useRef, useState, cx } from "/v2/lib/html.js";
 import { api, local } from "/v2/lib/api.js";
 import { Icon } from "/v2/ui/Icon.js";
-import { Button } from "/v2/ui/Button.js";
+import { Button, IconAction } from "/v2/ui/Button.js";
 import { ModelPicker } from "/v2/ui/ModelPicker.js";
 import { Thread } from "/v2/ui/AgentThread.js";
 import { ItemHeader, routeItem, Gone } from "/v2/screens/ItemHeader.js";
@@ -423,7 +423,7 @@ function Props({ ed }) {
     <div class="row-btns">
       ${n.op !== "input" && html`<${Button} size="sm" onClick=${() => set((t, gr) => { gr.output = gr.output === n.id ? undefined : n.id; })}>
         ${g.output === n.id ? "Output (chosen)" : "Make this the output"}<//>`}
-      <${Button} size="sm" variant="ghost" icon="trash" onClick=${() => removeBlock(ed, n.id)}>Remove<//>
+      <span class="grow" /><${IconAction} icon="trash" label="Remove this block" onClick=${() => removeBlock(ed, n.id)} />
     </div>
   </div>`;
 }

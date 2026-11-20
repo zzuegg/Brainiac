@@ -164,7 +164,7 @@ function HubSearch({ close, top }) {
                   <span class="hub-opt-name">${o.kind === "folder" ? "Whole model folder" : o.name}${o.quant && html` <span class="badge">${o.quant}</span>`}${o.sees && html` <span class="badge">sees pictures</span>`}</span>
                   <span class="mono small muted">${o.size ? fmtBytes(o.size + (o.projectorSize || 0)) : ""}</span>
                   ${(o.have && !to) || d?.state === "done" ? html`<span class="badge s-done">on ${toName}</span>` : d && active(d) ? html`<span class="badge s-running">downloading</span>`
-                    : o.supported ? html`<${Button} size="sm" icon="download" onClick=${() => download(repo, o.id, to).then(() => toast("Downloading " + (o.kind === "folder" ? repo : o.name) + (to ? " onto " + toName : "")), fail)}>Download<//>`
+                    : o.supported ? html`<${IconAction} icon="download" label=${"Download onto " + toName} onClick=${() => download(repo, o.id, to).then(() => toast("Downloading " + (o.kind === "folder" ? repo : o.name) + (to ? " onto " + toName : "")), fail)} />`
                     : html`<span class="badge s-failed" title=${o.reason || ""}>won’t run</span>`}
                   ${o.reason && !o.supported && html`<span class="muted small hub-why">${o.reason}</span>`}
                 </li>`;
