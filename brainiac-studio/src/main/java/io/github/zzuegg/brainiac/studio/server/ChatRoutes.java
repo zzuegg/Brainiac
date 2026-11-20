@@ -125,9 +125,11 @@ final class ChatRoutes {
     private static final int DEFAULT_MAX_TOKENS = 8192;
 
     private final ChatService chat;
+    private final io.github.zzuegg.brainiac.studio.items.Owners owners;
 
-    ChatRoutes(ChatService chat) {
+    ChatRoutes(ChatService chat, io.github.zzuegg.brainiac.studio.items.Owners owners) {
         this.chat = chat;
+        this.owners = owners;
     }
 
     void register(StudioServer server) {
@@ -257,6 +259,9 @@ final class ChatRoutes {
                 chat.conversations().delete(body.get("id"));
             } else {
                 chat.conversations().save(body);
+                // a new conversation belongs to the project it was started in
+                owners.claim(io.github.zzuegg.brainiac.studio.items.ItemKind.CHAT, String.valueOf(body.get("id")),
+                        ItemRoutes.callerProject());
             }
             Exchanges.json(ex, 200, Map.of("ok", true));
         });

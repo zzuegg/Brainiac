@@ -993,6 +993,27 @@ Everything the studio keeps goes to one **data folder**: `--data <folder>`, or e
 | `local-models.txt` | model files and folders added on the Models screen |
 | `hosts.properties` | other machines to train on, with their tokens, readable only by your account |
 | `agents/` | every agent run: its goal, each step, tool call and answer |
+| `owners.json` | which project each conversation and graph belongs to |
+| `trash/` | deleted items, restorable for 30 days |
+
+### Studio v2 (preview)
+
+A second page grows beside the classic one at `http://127.0.0.1:7860/v2/`, on the same server and
+data. It opens several projects at once as tabs, each with its own sidebar, and gives every item
+(chat, agent, network, project) the same menu: right-click or `⋯` for Open, Rename (F2),
+Duplicate (Ctrl+D), Move to project and Delete, which is instant and undone from its toast or
+with Ctrl+Z. Every "New …" is a short wizard, and chats and agent runs read in one centred column
+whose width is a setting. It is built from Preact, htm and signals, vendored in
+`web/v2/vendor` (no build step, nothing loaded from the internet); `BRAINIAC_STUDIO_WEB` pointed
+at `brainiac-studio/src/main/resources/io/github/zzuegg/brainiac/studio/web` serves the page
+from the checkout, so a change shows on reload. Both pages use the same item API:
+
+| call | what |
+|---|---|
+| `POST /api/items {project?, kinds?}` | a project's items, newest first |
+| `POST /api/items/rename`, `/move`, `/duplicate {kind, id, …}` | the same actions for every kind |
+| `POST /api/items/delete {kind, id}` | moves it to the trash; the answer's id restores it |
+| `GET /api/trash`, `POST /api/trash/restore {id}`, `/empty {id?}` | the trash |
 
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that

@@ -343,6 +343,7 @@ public final class Studio implements AutoCloseable {
         Runtime.getRuntime().addShutdownHook(new Thread(studio::close));
         long available = studio.capabilities().stream().filter(c -> c.status() == Capability.Status.AVAILABLE).count();
         System.out.println("Brainiac Studio is running at " + studio.uri());
+        System.out.println("The new page (preview) is at " + studio.uri().resolve("/v2/"));
         System.out.println("Keeping keys, conversations and settings in " + settings.data());
         System.out.println(available + " capabilities available, " + (studio.capabilities().size() - available)
                 + " planned. Only this machine can connect. Press Ctrl+C to stop.");

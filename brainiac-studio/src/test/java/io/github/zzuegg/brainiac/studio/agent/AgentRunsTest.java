@@ -117,6 +117,30 @@ class AgentRunsTest {
     }
 
     @Test
+    void aRunCanBeRenamedMovedAndTakenOutAndPutBack() throws Exception {
+        script.turns.add("Done.");
+        String id = (String) agents.start("Say done", "script/bot", "auto", 3, null).get("id");
+        until(id, r -> !"running".equals(r.get("state")));
+
+        agents.rename(id, "  My helper ");
+        assertEquals("My helper", agents.get(id).orElseThrow().get("title"));
+        assertEquals("My helper", new AgentRuns(chat, new StudioTools(chat, training), data.resolve("agents"))
+                .get(id).orElseThrow().get("title"), "the name is kept with the run");
+        agents.move(id, "elsewhere");
+        assertEquals("elsewhere", agents.get(id).orElseThrow().get("project"));
+
+        java.nio.file.Path away = data.resolve("away-" + id);
+        assertEquals(List.of(id), agents.detach(id, away));
+        assertTrue(agents.get(id).isEmpty());
+        assertTrue(java.nio.file.Files.exists(away.resolve(id + ".json")));
+        assertTrue(new AgentRuns(chat, new StudioTools(chat, training), data.resolve("agents")).get(id).isEmpty(),
+                "a run taken out stays out after a restart");
+        agents.attach(List.of(id), away);
+        assertEquals("My helper", agents.get(id).orElseThrow().get("title"));
+        assertThrows(IllegalArgumentException.class, () -> agents.attach(List.of(id), away));
+    }
+
+    @Test
     void theToolsAreGeneratedFromTheStudiosMethods() {
         Map<String, StudioTools.Entry> tools = agents.tools();
         assertTrue(tools.keySet().containsAll(List.of("list_models", "search_hub", "hub_files", "download_model",

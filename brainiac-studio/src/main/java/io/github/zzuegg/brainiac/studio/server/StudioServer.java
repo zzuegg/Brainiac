@@ -94,8 +94,19 @@ public final class StudioServer implements AutoCloseable {
         server.get("/api/system", ex -> Exchanges.json(ex, 200, SystemInfo.snapshot()));
         server.projects = new io.github.zzuegg.brainiac.studio.project.Projects(chat.folder().resolve("projects.json"));
         new ProjectRoutes(server.projects, chat).register(server);
-        new ChatRoutes(chat).register(server);
-        new BuilderRoutes(chat.folder()).register(server);
+        // every kind of item gets the same actions: rename, move, duplicate, delete to the trash
+        io.github.zzuegg.brainiac.studio.items.Owners owners = new io.github.zzuegg.brainiac.studio.items.Owners(
+                chat.folder().resolve("owners.json"));
+        io.github.zzuegg.brainiac.studio.builder.Graphs graphs = new io.github.zzuegg.brainiac.studio.builder.Graphs(chat.folder());
+        io.github.zzuegg.brainiac.studio.items.Items items = new io.github.zzuegg.brainiac.studio.items.Items(owners,
+                new io.github.zzuegg.brainiac.studio.items.Trash(chat.folder().resolve("trash")),
+                id -> server.projects.get(id).isPresent())
+                .register(new ItemKinds.Chats(chat.conversations()))
+                .register(new ItemKinds.GraphKind(graphs))
+                .register(new ItemKinds.ProjectKind(server.projects));
+        new ItemRoutes(items).register(server);
+        new ChatRoutes(chat, owners).register(server);
+        new BuilderRoutes(graphs, owners).register(server);
         new TrainRoutes(server.training).register(server);
         server.rl = new io.github.zzuegg.brainiac.studio.train.RlRuns();
         new RlRoutes(server.rl).register(server);
@@ -125,6 +136,7 @@ public final class StudioServer implements AutoCloseable {
                 new io.github.zzuegg.brainiac.studio.agent.MailTools(services)),
                 agentsFolder, server.projects, new io.github.zzuegg.brainiac.studio.agent.Roles(chat.folder().resolve("roles")));
         new AgentRoutes(agents, services, chat.folder().resolve("memory")).register(server);
+        items.register(new ItemKinds.Agents(agents));
         http.start();
         // models idle for longer than the user allows are unloaded
         io.github.zzuegg.brainiac.studio.chat.GpuResidency residency = chat.localDevice().residency();

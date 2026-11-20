@@ -134,6 +134,8 @@ public final class AgentRuns {
         final String role;
         String mode;
         String project = Project.DEFAULT;
+        // the name the user gave it, or null to show its goal
+        String title;
         Format format = Format.NONE;
         String parent;
         int depth;
@@ -196,6 +198,9 @@ public final class AgentRuns {
         synchronized Map<String, Object> toJson(boolean full) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", id);
+            if (title != null) {
+                m.put("title", title);
+            }
             m.put("goal", goal);
             m.put("model", model);
             if (by != null) {
@@ -757,6 +762,132 @@ public final class AgentRuns {
         Files.deleteIfExists(folder.resolve(id + ".json"));
         checkpoints.forget(id);
         return true;
+    }
+
+    /**
+     * Names a run; the name shows instead of its goal.
+     *
+     * @param id the run
+     * @param title the name, or blank to show the goal again
+     * @throws IllegalArgumentException if there is no such run or the name is too long
+     */
+    public void rename(String id, String title) {
+        Run r = runs.get(id);
+        if (r == null) {
+            throw new IllegalArgumentException("there is no such agent");
+        }
+        String t = title == null ? "" : title.strip();
+        if (t.length() > 200) {
+            throw new IllegalArgumentException("an agent's name is at most 200 characters");
+        }
+        synchronized (r) {
+            r.title = t.isEmpty() ? null : t;
+        }
+        save(r);
+    }
+
+    /**
+     * Moves a run that is not working, and the runs it started, to another project.
+     *
+     * @param id the run
+     * @param project the project's id
+     * @throws IllegalArgumentException if there is no such run or project, or the run works
+     */
+    public synchronized void move(String id, String project) {
+        Run r = runs.get(id);
+        if (r == null) {
+            throw new IllegalArgumentException("there is no such agent");
+        }
+        if (projects != null && projects.get(project).isEmpty()) {
+            throw new IllegalArgumentException("there is no project " + project);
+        }
+        if (r.active() || r.children.stream().map(runs::get).anyMatch(c -> c != null && c.active())) {
+            throw new IllegalArgumentException("stop the agent before moving it");
+        }
+        for (String k : List.copyOf(r.children)) {
+            if (runs.containsKey(k)) {
+                move(k, project);
+            }
+        }
+        synchronized (r) {
+            r.project = project;
+        }
+        save(r);
+    }
+
+    /**
+     * Takes a run that is not working, and the runs it started, out of the list and moves their
+     * files into a folder, so they can be {@linkplain #attach attached} again. What it changed
+     * can still be undone once it is back.
+     *
+     * @param id the run
+     * @param into the folder to move the files to
+     * @return the ids of the runs taken out, this one first
+     * @throws IllegalArgumentException if there is no such run, or it works
+     * @throws IOException if the files cannot be moved
+     */
+    public synchronized List<String> detach(String id, Path into) throws IOException {
+        Run r = runs.get(id);
+        if (r == null) {
+            throw new IllegalArgumentException("there is no such agent");
+        }
+        if (r.active() || r.children.stream().map(runs::get).anyMatch(c -> c != null && c.active())) {
+            throw new IllegalArgumentException("stop the agent before removing it");
+        }
+        List<String> out = new ArrayList<>();
+        out.add(id);
+        for (String k : List.copyOf(r.children)) {
+            if (runs.containsKey(k)) {
+                out.addAll(detach(k, into));
+            }
+        }
+        Files.createDirectories(into);
+        Path f = folder.resolve(id + ".json");
+        if (Files.exists(f)) {
+            Files.move(f, into.resolve(id + ".json"), StandardCopyOption.REPLACE_EXISTING);
+        }
+        runs.remove(id);
+        return out;
+    }
+
+    /**
+     * Puts runs {@linkplain #detach taken out} back.
+     *
+     * @param ids the runs
+     * @param from the folder their files were moved to
+     * @throws IllegalArgumentException if a run with one of the ids is in the list again
+     * @throws IOException if a file cannot be read or moved back
+     */
+    public synchronized void attach(List<String> ids, Path from) throws IOException {
+        for (String id : ids) {
+            if (runs.containsKey(id)) {
+                throw new IllegalArgumentException("there is already an agent " + id);
+            }
+        }
+        List<Run> back = new ArrayList<>();
+        for (String id : ids) {
+            back.add(read(Json.object(Json.parse(Files.readString(from.resolve(id + ".json"), StandardCharsets.UTF_8)))));
+        }
+        Files.createDirectories(folder);
+        for (Run r : back) {
+            Files.move(from.resolve(r.id + ".json"), folder.resolve(r.id + ".json"), StandardCopyOption.REPLACE_EXISTING);
+            runs.put(r.id, r);
+            counter = Math.max(counter, Integer.parseInt(r.id));
+        }
+    }
+
+    /**
+     * Forgets what runs that are gone for good changed, so it can no longer be undone.
+     *
+     * @param ids the runs
+     * @throws IOException if what they changed cannot be deleted
+     */
+    public void forget(List<String> ids) throws IOException {
+        for (String id : ids) {
+            if (!runs.containsKey(id)) {
+                checkpoints.forget(id);
+            }
+        }
     }
 
     /**
@@ -2071,6 +2202,7 @@ public final class AgentRuns {
                 Json.integer(m, "created", 0), Json.string(m, "role", Roles.DEFAULT));
         r.state = Json.string(m, "state", "stopped");
         r.project = Json.string(m, "project", Project.DEFAULT);
+        r.title = Json.string(m, "title", null);
         try {
             r.format = Format.of(m);
         } catch (IllegalArgumentException e) {
