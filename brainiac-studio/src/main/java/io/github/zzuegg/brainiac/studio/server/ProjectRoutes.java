@@ -54,7 +54,20 @@ final class ProjectRoutes {
             if (p == null) {
                 throw new Exchanges.BadRequest("send the project as {\"project\": {...}}");
             }
-            Project project = Project.fromJson(Json.object(p));
+            Map<String, Object> sent = Json.object(p);
+            Project project = Project.fromJson(sent);
+            // a page that does not know about subprojects keeps the links it did not send
+            Project before = projects.own(project.id()).orElse(null);
+            if (before != null && !Boolean.TRUE.equals(body.get("create"))) {
+                if (!sent.containsKey("parents")) {
+                    project = project.withParents(before.parents());
+                }
+                if (!sent.containsKey("requests")) {
+                    project = new Project(project.id(), project.name(), project.description(), project.folder(),
+                            project.tools(), project.models(), project.routes(), project.runners(), project.parents(),
+                            before.requests());
+                }
+            }
             // a runner that cannot be rented is refused now, not when a task needs it
             project.runners().values().forEach(io.github.zzuegg.brainiac.studio.train.VastRunners.Runner::fromJson);
             Project saved = projects.save(project, Boolean.TRUE.equals(body.get("create")));

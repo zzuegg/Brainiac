@@ -38,6 +38,9 @@ import java.util.Map;
  *   <li>{@code GET /api/services}, {@code POST /api/services/save {section, values, secret?}}.
  *   <li>{@code GET /api/reminders}, {@code POST /api/reminders/add {at, text, goal?, role?, project?,
  *       repeat?}}, {@code /dismiss {id}}.
+ *   <li>{@code GET /api/requests}: what agents asked of the projects theirs is part of, open
+ *       first; {@code POST /api/requests/answer {id, answer?, approve?}} answers one as the user
+ *       ({@code approve} gives or refuses a tool or model), {@code /withdraw {id}} drops it.
  *   <li>{@code POST /api/agents/notes {project}} and {@code /notes/save {project, text}}: what
  *       agents remember per project.
  * </ul>
@@ -92,6 +95,16 @@ final class AgentRoutes {
                     blank(Json.string(body, "role", "")), blank(model), blank(mode),
                     (int) Json.integer(body, "maxSteps", 0), tools, Format.of(body))));
         });
+        // requests agents sent up to parent projects
+        server.get("/api/requests", ex -> Exchanges.json(ex, 200, Map.of("requests", agents.requests())));
+        server.post("/api/requests/answer", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            Object approve = body.get("approve");
+            Exchanges.json(ex, 200, Map.of("request", agents.respond(Json.string(body, "id", ""),
+                    Json.string(body, "answer", null), approve instanceof Boolean bo ? bo : null)));
+        });
+        server.post("/api/requests/withdraw", ex -> Exchanges.json(ex, 200, Map.of("request",
+                agents.withdrawRequest(Json.string(Exchanges.body(ex, MAX_BODY), "id", "")))));
         server.post("/api/agents/answer", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             boolean ok = agents.answer(Json.string(body, "id", ""), Boolean.TRUE.equals(body.get("allow")),

@@ -372,4 +372,101 @@ class AgentRunsTest {
         assertThrows(IllegalArgumentException.class, () -> agents.start("x", "auto", "yolo", 3, null));
         assertThrows(IllegalArgumentException.class, () -> agents.start(" ", "auto", "ask", 3, null));
     }
+
+    @Test
+    void anAgentInASubprojectAsksItsParentAndTheAnswerWakesIt() throws Exception {
+        io.github.zzuegg.brainiac.studio.project.Projects projects = new io.github.zzuegg.brainiac.studio.project.Projects(
+                data.resolve("projects.json"));
+        projects.save(new io.github.zzuegg.brainiac.studio.project.Project("film", "Film", "", null, null, null,
+                Map.of()), true);
+        projects.save(new io.github.zzuegg.brainiac.studio.project.Project("scenes", "Scenes", "", null,
+                List.of("list_datasets"), null, Map.of(), Map.of(), List.of("film"),
+                io.github.zzuegg.brainiac.studio.project.Project.BY_USER), true);
+        AgentRuns runs = new AgentRuns(chat, List.of(new StudioTools(chat, training)), data.resolve("agents2"), projects,
+                new Roles(data.resolve("roles")));
+        try {
+            script.turns.add("<tool_call>{\"name\": \"request_parent\", \"arguments\": {\"kind\": \"question\", "
+                    + "\"text\": \"Which colour?\"}}</tool_call>");
+            script.turns.add("I asked; I will wait for the answer.");
+            script.turns.add("Blue it is.");
+            String id = (String) ScopedValue.where(ChatService.SCOPE, projects.get("scenes").orElseThrow())
+                    .call(() -> runs.start("Paint the scene", "script/bot", "auto", 6, null)).get("id");
+            for (int i = 0; i < 200 && runs.requests().isEmpty(); i++) {
+                Thread.sleep(20);
+            }
+            Map<String, Object> q = runs.requests().getFirst();
+            assertEquals("open", q.get("state"));
+            assertEquals(List.of("film"), q.get("to"));
+            assertEquals("user", q.get("answeredBy"));
+            for (int i = 0; i < 200 && "running".equals(runs.get(id).orElseThrow().get("state")); i++) {
+                Thread.sleep(20);
+            }
+            runs.respond((String) q.get("id"), "Blue", null);
+            assertThrows(IllegalArgumentException.class, () -> runs.respond((String) q.get("id"), "Red", null),
+                    "the first answer counts");
+            Map<String, Object> done = null;
+            for (int i = 0; i < 200; i++) {
+                done = runs.get(id).orElseThrow();
+                if ("Blue it is.".equals(done.get("answer"))) {
+                    break;
+                }
+                Thread.sleep(20);
+            }
+            assertEquals("Blue it is.", done.get("answer"));
+            assertTrue(kinds(done).contains("inbox"));
+            assertFalse(Boolean.TRUE.equals(done.get("tainted")), "the user's answer is not another agent's word");
+            assertTrue(script.heard.getLast().messages().getLast().text().contains("Blue"));
+
+            assertEquals("answered", runs.requests().getFirst().get("state"));
+        } finally {
+            for (int i = 0; i < 200 && runs.list().stream().anyMatch(r -> "running".equals(r.get("state"))); i++) {
+                Thread.sleep(20);
+            }
+            runs.close();
+        }
+    }
+
+    @Test
+    void agentsReachDownIntoSubprojectsButNotUp() throws Exception {
+        io.github.zzuegg.brainiac.studio.project.Projects projects = new io.github.zzuegg.brainiac.studio.project.Projects(
+                data.resolve("projects.json"));
+        projects.save(new io.github.zzuegg.brainiac.studio.project.Project("film", "Film", "", null, null, null,
+                Map.of()), true);
+        projects.save(new io.github.zzuegg.brainiac.studio.project.Project("other", "Other", "", null, null, null,
+                Map.of()), true);
+        AgentRuns runs = new AgentRuns(chat, List.of(new StudioTools(chat, training)), data.resolve("agents3"), projects,
+                new Roles(data.resolve("roles")));
+        try {
+            script.turns.add("<tool_call>{\"name\": \"create_subproject\", \"arguments\": {\"name\": \"Scenes\", "
+                    + "\"tools\": [\"list_datasets\"]}}</tool_call>");
+            script.turns.add("<tool_call>{\"name\": \"spawn_agent\", \"arguments\": {\"role\": \"assistant\", "
+                    + "\"goal\": \"Look\", \"project\": \"other\"}}</tool_call>");
+            script.turns.add("<tool_call>{\"name\": \"spawn_agent\", \"arguments\": {\"role\": \"assistant\", "
+                    + "\"goal\": \"Look at the data\", \"project\": \"scenes\"}}</tool_call>");
+            script.turns.add("Started.");
+            script.turns.add("Child done.");
+            String id = (String) ScopedValue.where(ChatService.SCOPE, projects.get("film").orElseThrow())
+                    .call(() -> runs.start("Make the film", "script/bot", "auto", 8, null)).get("id");
+            Map<String, Object> run = null;
+            for (int i = 0; i < 300; i++) {
+                run = runs.get(id).orElseThrow();
+                if (!"running".equals(run.get("state"))) {
+                    break;
+                }
+                Thread.sleep(20);
+            }
+            assertEquals(List.of("film"), projects.own("scenes").orElseThrow().parents());
+            List<Map<String, Object>> results = Json.array(run.get("steps")).stream().map(Json::object)
+                    .filter(s -> "result".equals(s.get("kind"))).toList();
+            assertEquals(Boolean.FALSE, results.get(1).get("ok"), "not into a project that is not below: " + results.get(1));
+            assertEquals(Boolean.TRUE, results.get(2).get("ok"), String.valueOf(results.get(2)));
+            String child = (String) Json.array(run.get("children")).getFirst();
+            assertEquals("scenes", runs.get(child).orElseThrow().get("project"));
+        } finally {
+            for (int i = 0; i < 300 && runs.list().stream().anyMatch(r -> "running".equals(r.get("state"))); i++) {
+                Thread.sleep(20);
+            }
+            runs.close();
+        }
+    }
 }

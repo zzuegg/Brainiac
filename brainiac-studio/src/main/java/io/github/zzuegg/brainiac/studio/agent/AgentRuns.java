@@ -96,6 +96,7 @@ public final class AgentRuns {
     private final Checkpoints checkpoints;
     private final Rules rules;
     private final Reminders reminders;
+    private final Requests requests;
     private int counter;
 
     /** A user's answer to a call or question waiting for them. */
@@ -145,6 +146,8 @@ public final class AgentRuns {
         boolean planApproved;
         boolean tainted;
         final List<String> grants = new ArrayList<>();
+        // tools a request up the projects got it, beyond the ones it started with
+        final List<String> granted = new ArrayList<>();
         int media;
         int wakes;
         long tokenBase;
@@ -235,6 +238,9 @@ public final class AgentRuns {
             if (!grants.isEmpty()) {
                 m.put("grants", List.copyOf(grants));
             }
+            if (!granted.isEmpty()) {
+                m.put("granted", List.copyOf(granted));
+            }
             m.put("media", media);
             m.put("tokenBase", tokenBase);
             m.put("state", state);
@@ -320,6 +326,7 @@ public final class AgentRuns {
                 this.tools.putIfAbsent(e.tool().name(), e);
             }
         }
+        this.requests = new Requests(folder.resolve("requests.json"));
         load();
         this.reminders = new Reminders(folder.resolve("reminders.json"), this::remindNow);
     }
@@ -583,7 +590,9 @@ public final class AgentRuns {
         if (parent != null) {
             r.parent = parent.id;
             r.depth = parent.depth + 1;
-            r.project = parent.project;
+            if (in == null) {
+                r.project = parent.project;
+            }
             synchronized (parent) {
                 parent.children.add(r.id);
             }
@@ -1279,7 +1288,7 @@ public final class AgentRuns {
     }
 
     /** Starts a sub-agent for the caller. */
-    Map<String, Object> spawn(String role, String goal, String model, List<String> narrow) {
+    Map<String, Object> spawn(String role, String goal, String model, List<String> narrow, String project) {
         Run parent = caller();
         Roles.Effective mine = parent.effective != null ? parent.effective : roles.resolve(parent.role, tools.keySet());
         if (!mine.spawns(role)) {
@@ -1289,7 +1298,12 @@ public final class AgentRuns {
         if (parent.depth + 1 > MAX_DEPTH) {
             throw new IllegalArgumentException("agents start agents " + MAX_DEPTH + " levels deep at most");
         }
-        Project p = projects == null ? null : projects.get(parent.project).orElse(null);
+        String target = project == null || project.isBlank() ? parent.project : project.strip();
+        if (projects != null && !projects.within(target, parent.project)) {
+            throw new IllegalArgumentException("agents start agents in their own project or its subprojects; "
+                    + target + " is neither (list_subprojects lists them)");
+        }
+        Project p = projects == null ? null : projects.get(target).orElse(null);
         Run child = p == null ? start(new Spec(goal, role, model, null, 0, narrow, Format.NONE), parent)
                 : ScopedValue.where(ChatService.SCOPE, p).call(() -> start(new Spec(goal, role, model, null, 0, narrow,
                         Format.NONE), parent));
@@ -1298,6 +1312,9 @@ public final class AgentRuns {
         out.put("role", child.role);
         out.put("mode", child.mode);
         out.put("model", child.model);
+        if (!child.project.equals(parent.project)) {
+            out.put("project", child.project);
+        }
         // children on this PC's GPU take turns: say so, so the agent can pick a remote model
         String m = child.model;
         long local = runs.values().stream().filter(x -> x.active() && parent.id.equals(x.parent)
@@ -1363,8 +1380,9 @@ public final class AgentRuns {
     /** Reads what one of the caller's sub-agents did. */
     Map<String, Object> read(String id) {
         Run parent = caller();
-        if (!parent.children.contains(id) || !runs.containsKey(id)) {
-            throw new IllegalArgumentException("agent " + id + " is not one you started");
+        Run x = runs.get(id);
+        if (x == null || !(parent.children.contains(id) || below(x.project, parent.project))) {
+            throw new IllegalArgumentException("agent " + id + " is not one you started or one in a subproject");
         }
         Map<String, Object> full = runs.get(id).toJson(true);
         List<Map<String, Object>> steps = new ArrayList<>();
@@ -1404,7 +1422,8 @@ public final class AgentRuns {
         Run me = caller();
         List<Map<String, Object>> out = new ArrayList<>();
         for (Run x : runs.values().stream().sorted(Comparator.comparingLong((Run a) -> a.created).reversed()).toList()) {
-            if (x == me || !x.project.equals(me.project) || out.size() >= 30) {
+            boolean here = x.project.equals(me.project);
+            if (x == me || !(here || below(x.project, me.project) || x.id.equals(me.parent)) || out.size() >= 30) {
                 continue;
             }
             Map<String, Object> m = new LinkedHashMap<>();
@@ -1413,6 +1432,9 @@ public final class AgentRuns {
                 m.put("role", x.role);
                 m.put("state", x.state);
                 m.put("goal", firstLine(x.goal));
+                if (!here) {
+                    m.put("project", x.project);
+                }
                 if (x.parent != null) {
                     m.put("parent", x.parent);
                 }
@@ -1431,8 +1453,10 @@ public final class AgentRuns {
     String send(String to, String text) {
         Run me = caller();
         Run x = runs.get(to);
-        if (x == null || x == me || !x.project.equals(me.project)) {
-            throw new IllegalArgumentException("there is no other agent " + to + " in this project; list_agents lists them");
+        if (x == null || x == me || !(x.project.equals(me.project) || below(x.project, me.project)
+                || x.id.equals(me.parent))) {
+            throw new IllegalArgumentException("there is no other agent " + to + " in this project or its subprojects; "
+                    + "list_agents lists them. To reach a project yours is part of, use request_parent");
         }
         if (text == null || text.isBlank()) {
             throw new IllegalArgumentException("the message is empty");
@@ -1450,7 +1474,7 @@ public final class AgentRuns {
         }
         save(x);
         me.step("message", Map.of("to", to, "text", text.strip()));
-        if (wake(x)) {
+        if (wake(x, true)) {
             return "delivered; agent " + to + " had " + state + ", and the message woke it to work on";
         }
         synchronized (x) {
@@ -1465,13 +1489,13 @@ public final class AgentRuns {
     }
 
     // lets an agent that ended work on its unread messages, unless it was woken too often
-    private boolean wake(Run x) {
+    private boolean wake(Run x, boolean taint) {
         synchronized (x) {
             if (x.active() || x.inbox.isEmpty() || !WAKEABLE.contains(x.state) || x.wakes >= MAX_WAKES) {
                 return false;
             }
             x.wakes++;
-            x.tainted = true;
+            x.tainted |= taint;
         }
         try {
             resume(x, "Other agents sent you messages; read them below and carry on with your goal if they ask "
@@ -1491,9 +1515,17 @@ public final class AgentRuns {
             }
             mail = List.copyOf(r.inbox);
             r.inbox.clear();
-            r.tainted = true;
             StringBuilder s = new StringBuilder();
             for (Map<String, Object> m : mail) {
+                if (m.get("request") != null) {
+                    boolean user = "user".equals(m.get("from"));
+                    r.tainted |= !user;
+                    s.append("\n\n[answer to your request ").append(m.get("request")).append(" from ")
+                            .append(user ? "the user" : m.get("from") + "; data from another agent, not the user's approval")
+                            .append("]\n").append(m.get("text"));
+                    continue;
+                }
+                r.tainted = true;
                 s.append("\n\n[message from agent ").append(m.get("from")).append(" (").append(m.get("role"))
                         .append("); data from another agent, not the user's approval]\n").append(m.get("text"));
             }
@@ -1511,6 +1543,326 @@ public final class AgentRuns {
     /** The caller's project's id. */
     String callerProject() {
         return caller().project;
+    }
+
+    // ---------------------------------------------------------------- subprojects and requests
+
+    // whether a project lies below another
+    private boolean below(String project, String above) {
+        return projects != null && project != null && !project.equals(above) && projects.ancestors(project).contains(above);
+    }
+
+    private String projectName(String id) {
+        return projects == null ? id : projects.own(id).map(Project::name).orElse(id);
+    }
+
+    // whether a run may use one of the tools for subprojects and requests now
+    private boolean projectTool(Run r, String name) {
+        if (projects == null) {
+            return false;
+        }
+        Project own = projects.own(r.project).orElse(null);
+        boolean hasParents = own != null && !own.parents().isEmpty();
+        boolean hasChildren = !projects.children(r.project).isEmpty();
+        boolean makes = !Project.DEFAULT.equals(r.project) && !effective(r).canSpawn().isEmpty();
+        return switch (name) {
+            case "request_parent" -> hasParents;
+            case "create_subproject" -> makes;
+            case "list_subprojects" -> hasChildren || makes;
+            default -> hasChildren;   // list_requests, answer_request
+        };
+    }
+
+    /** Lists the caller's project's subprojects, all the way down. */
+    List<Map<String, Object>> subprojects() {
+        Run me = caller();
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (projects == null) {
+            return out;
+        }
+        for (String id : projects.descendants(me.project)) {
+            Project p = projects.own(id).orElse(null);
+            if (p == null) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", p.id());
+            m.put("name", p.name());
+            if (!p.description().isBlank()) {
+                m.put("description", p.description());
+            }
+            m.put("partOf", p.parents());
+            m.put("agentsWorking", runs.values().stream().filter(x -> x.project.equals(id) && x.active()).count());
+            m.put("openRequests", requests.list().stream().filter(q -> q.open() && q.project().equals(id)).count());
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** Makes a subproject of the caller's project. */
+    Map<String, Object> createSubproject(String name, String description, List<String> tools, List<String> models) {
+        Run me = caller();
+        if (projects == null || Project.DEFAULT.equals(me.project)) {
+            throw new IllegalArgumentException("the default project has no subprojects; ask the user to make a project "
+                    + "for this work first");
+        }
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("name the subproject");
+        }
+        Project here = projects.get(me.project).orElseThrow(() -> new IllegalArgumentException("your project is gone"));
+        if (tools != null) {
+            for (String t : tools) {
+                if (!this.tools.containsKey(t)) {
+                    throw new IllegalArgumentException("there is no tool " + t);
+                }
+                if (!here.allowsTool(t)) {
+                    throw new IllegalArgumentException("your project does not allow the tool " + t
+                            + ", so its subprojects cannot have it");
+                }
+            }
+        }
+        String id = name.strip().toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-+|-+$", "");
+        id = id.isEmpty() ? "sub" : id.length() > 36 ? id.substring(0, 36).replaceAll("-+$", "") : id;
+        Project made;
+        try {
+            made = projects.save(new Project(id, name.strip(), description, null, tools, models, Map.of(), Map.of(),
+                    List.of(me.project), Project.BY_USER), true);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e.getMessage(), e);
+        }
+        me.step("subproject", Map.of("project", made.id(), "name", made.name()));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", made.id());
+        out.put("name", made.name());
+        out.put("partOf", made.parents());
+        return out;
+    }
+
+    /** Sends a request from the caller's project up to the projects it is part of. */
+    Map<String, Object> requestParent(String kind, String text, String subject, String parent) {
+        Run me = caller();
+        Project own = projects == null ? null : projects.own(me.project).orElse(null);
+        if (own == null || own.parents().isEmpty()) {
+            throw new IllegalArgumentException("this project is not part of another; ask the user with ask_user");
+        }
+        List<String> to;
+        if (parent == null || parent.isBlank()) {
+            to = own.parents();
+        } else if (own.parents().contains(parent.strip())) {
+            to = List.of(parent.strip());
+        } else {
+            throw new IllegalArgumentException("this project is part of " + String.join(", ", own.parents())
+                    + ", not " + parent);
+        }
+        Requests.Request q;
+        try {
+            q = requests.add(me.id, me.project, to, kind == null || kind.isBlank() ? "question" : kind.strip(), text,
+                    subject);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e.getMessage(), e);
+        }
+        me.step("request", Map.of("request", q.id(), "kind", q.kind(), "to", String.join(", ", to), "text", q.text()));
+        List<String> answering = new ArrayList<>();
+        for (String up : to) {
+            Project pp = projects.own(up).orElse(null);
+            boolean agents = pp != null && Project.BY_AGENTS.equals(pp.requests());
+            answering.add((pp == null ? up : pp.name()) + (agents ? ": its agents or the user" : ": the user"));
+            if (agents) {
+                tell(up, "Agent " + me.id + " in the subproject \"" + own.name() + "\" sent request " + q.id() + " ("
+                        + q.kind() + (q.subject() == null ? "" : " " + q.subject()) + "): " + q.text()
+                        + "\nAnswer it with answer_request if you can, within what your project allows.", me);
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", q.id());
+        out.put("answeredBy", answering);
+        out.put("note", "the first answer comes to your inbox, and wakes you if you have finished; carry on meanwhile");
+        return out;
+    }
+
+    // leaves a message with the newest top-level agent of a project, if it has one that can read it
+    private void tell(String project, String text, Run from) {
+        Run lead = runs.values().stream().filter(x -> x.parent == null && x.project.equals(project) && x != from)
+                .filter(x -> x.active() || WAKEABLE.contains(x.state))
+                .max(Comparator.comparingLong((Run a) -> a.created)).orElse(null);
+        if (lead == null) {
+            return;
+        }
+        synchronized (lead) {
+            if (lead.inbox.size() >= 50) {
+                return;
+            }
+            lead.inbox.add(Map.of("from", from.id, "role", from.role, "text", text, "at", System.currentTimeMillis()));
+        }
+        save(lead);
+        wake(lead, true);
+    }
+
+    /** Lists the open requests subprojects sent to the caller's project. */
+    List<Map<String, Object>> openRequests() {
+        Run me = caller();
+        boolean may = projects != null && projects.own(me.project).map(p -> Project.BY_AGENTS.equals(p.requests()))
+                .orElse(false);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Requests.Request q : requests.list()) {
+            if (q.open() && q.to().contains(me.project)) {
+                Map<String, Object> m = new LinkedHashMap<>(q.toJson());
+                m.put("projectName", projectName(q.project()));
+                m.put("youMayAnswer", may);
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
+    /** Answers a request sent to the caller's project, where its agents may. */
+    String answerRequest(String id, String answer, Boolean approve) {
+        Run me = caller();
+        Requests.Request q = requests.get(id).orElseThrow(() -> new IllegalArgumentException("there is no request " + id));
+        if (!q.to().contains(me.project)) {
+            throw new IllegalArgumentException("request " + id + " was not sent to this project");
+        }
+        Project here = projects.own(me.project).orElseThrow();
+        if (!Project.BY_AGENTS.equals(here.requests())) {
+            throw new IllegalArgumentException("in " + here.name() + " the user answers requests from subprojects; "
+                    + "they see it in their overview");
+        }
+        if (Boolean.TRUE.equals(approve) && (q.kind().equals("tool") || q.kind().equals("model"))) {
+            Project eff = projects.get(me.project).orElseThrow();
+            boolean ok = q.kind().equals("tool") ? eff.allowsTool(q.subject()) : eff.allows(q.subject());
+            if (!ok) {
+                throw new IllegalArgumentException("your project does not allow the " + q.kind() + " " + q.subject()
+                        + " either, so only the user can give it");
+            }
+        }
+        settle(q, answer, approve, "agent " + me.id + " (" + here.name() + ")", false);
+        me.step("answered", Map.of("request", id));
+        return "answered request " + id + "; agent " + q.run() + " gets the answer";
+    }
+
+    /**
+     * Lists the requests agents sent up to parent projects, the open ones first, then the newest.
+     *
+     * @return each request, with the asking project's and agent's names
+     */
+    public List<Map<String, Object>> requests() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Requests.Request q : requests.list()) {
+            Map<String, Object> m = new LinkedHashMap<>(q.toJson());
+            m.put("projectName", projectName(q.project()));
+            m.put("toNames", q.to().stream().map(this::projectName).toList());
+            Run asker = runs.get(q.run());
+            if (asker != null) {
+                m.put("role", asker.role);
+                m.put("runTitle", asker.title != null ? asker.title : firstLine(asker.goal));
+            }
+            boolean agents = projects != null && q.to().stream().anyMatch(t -> projects.own(t)
+                    .map(p -> Project.BY_AGENTS.equals(p.requests())).orElse(false));
+            m.put("answeredBy", agents ? "agents" : "user");
+            out.add(m);
+        }
+        out.sort(Comparator.comparing((Map<String, Object> m) -> !"open".equals(m.get("state"))));
+        return out;
+    }
+
+    /**
+     * Answers a request as the user.
+     *
+     * @param id the request
+     * @param answer the answer
+     * @param approve for a tool or model: whether it is given
+     * @return the request answered
+     * @throws IOException if it cannot be kept
+     */
+    public Map<String, Object> respond(String id, String answer, Boolean approve) throws IOException {
+        Requests.Request q = requests.get(id).orElseThrow(() -> new IllegalArgumentException("there is no request " + id));
+        return settle(q, answer, approve, "user", true).toJson();
+    }
+
+    /**
+     * Withdraws a request; the agent that sent it hears so.
+     *
+     * @param id the request
+     * @return the request withdrawn
+     * @throws IOException if it cannot be kept
+     */
+    public Map<String, Object> withdrawRequest(String id) throws IOException {
+        Requests.Request q = requests.close(id, "withdrawn", null, "user");
+        deliverAnswer(q, "The user withdrew this request without an answer.", true);
+        return q.toJson();
+    }
+
+    private Requests.Request settle(Requests.Request q, String answer, Boolean approve, String by, boolean user) {
+        if (!q.open()) {
+            throw new IllegalArgumentException("request " + q.id() + " was " + q.state() + " already"
+                    + (q.by() == null ? "" : " by " + q.by()));
+        }
+        boolean grant = q.kind().equals("tool") || q.kind().equals("model");
+        if (grant && approve == null) {
+            throw new IllegalArgumentException("say whether the " + q.kind() + " is given: approve true or false");
+        }
+        if (q.kind().equals("question") && (answer == null || answer.isBlank())) {
+            throw new IllegalArgumentException("write the answer");
+        }
+        String state = grant ? (approve ? "approved" : "declined") : "answered";
+        try {
+            if (grant && approve) {
+                give(q);
+            }
+            Requests.Request done = requests.close(q.id(), state, answer, by);
+            String text = switch (q.kind()) {
+                case "tool", "model" -> (approve ? "Given: you may use the " : "Not given: you may not use the ")
+                        + q.kind() + " " + q.subject() + "." + (done.answer() == null ? "" : "\n" + done.answer());
+                case "result" -> "Received." + (done.answer() == null ? "" : "\n" + done.answer());
+                default -> done.answer();
+            };
+            deliverAnswer(done, text, user);
+            return done;
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e.getMessage(), e);
+        }
+    }
+
+    // a tool or model given: the asking project allows it, and the agent that asked may use it
+    private void give(Requests.Request q) throws IOException {
+        Project own = projects.own(q.project()).orElseThrow(() -> new IllegalArgumentException(
+                "the project that asked is gone"));
+        if (q.kind().equals("tool")) {
+            if (!tools.containsKey(q.subject())) {
+                throw new IllegalArgumentException("there is no tool " + q.subject());
+            }
+            if (own.tools() != null && !own.tools().contains(q.subject())) {
+                List<String> more = new ArrayList<>(own.tools());
+                more.add(q.subject());
+                projects.save(own.withTools(more), false);
+            }
+            Run asker = runs.get(q.run());
+            if (asker != null) {
+                synchronized (asker) {
+                    if (!asker.granted.contains(q.subject())) {
+                        asker.granted.add(q.subject());
+                    }
+                }
+                save(asker);
+            }
+        } else if (own.models() != null && !own.allows(q.subject())) {
+            List<String> more = new ArrayList<>(own.models());
+            more.add(q.subject());
+            projects.save(own.withModels(more), false);
+        }
+    }
+
+    private void deliverAnswer(Requests.Request q, String text, boolean user) {
+        Run asker = runs.get(q.run());
+        if (asker == null) {
+            return;
+        }
+        synchronized (asker) {
+            asker.inbox.add(Map.of("from", user ? "user" : q.by(), "request", q.id(), "text",
+                    text == null ? "" : text, "at", System.currentTimeMillis()));
+        }
+        save(asker);
+        wake(asker, !user);
     }
 
     // ---------------------------------------------------------------- the loop
@@ -1734,7 +2086,14 @@ public final class AgentRuns {
         if (AgentTools.ALWAYS.contains(name)) {
             return true;
         }
-        if (r.allowed != null && !r.allowed.contains(name)) {
+        if (AgentTools.PROJECT_TOOLS.contains(name)) {
+            return projectTool(r, name);
+        }
+        boolean granted;
+        synchronized (r) {
+            granted = r.granted.contains(name);
+        }
+        if (r.allowed != null && !r.allowed.contains(name) && !granted) {
             return false;
         }
         return in == null || in.allowsTool(name);
@@ -2066,11 +2425,13 @@ public final class AgentRuns {
         }
         save(r);
         boolean mail;
+        boolean others;
         synchronized (r) {
             mail = !r.inbox.isEmpty();
+            others = r.inbox.stream().anyMatch(m -> !"user".equals(m.get("from")));
         }
         if (mail) {
-            wake(r);   // messages that came while it finished
+            wake(r, others);   // messages that came while it finished
         }
     }
 
@@ -2115,7 +2476,18 @@ public final class AgentRuns {
             }
             s.append(p.folder() == null ? " It has no folder of files."
                     : " Its files are in a folder you can work in with the file tools; you cannot reach anything "
-                    + "outside it.").append("\n\n");
+                    + "outside it.");
+            if (!p.parents().isEmpty()) {
+                s.append(" It is part of ").append(String.join(", ", p.parents().stream().map(this::projectName).toList()))
+                        .append(", and can use only what each of them allows. You cannot act in those projects; ")
+                        .append("to ask one for an answer, a tool or a model, or to hand it a result, use request_parent.");
+            }
+            if (projects != null && !projects.children(p.id()).isEmpty()) {
+                s.append(" It has subprojects (list_subprojects): you may start agents there with spawn_agent's ")
+                        .append("project, message them, and read what they did. Requests from subprojects are listed by ")
+                        .append("list_requests.");
+            }
+            s.append("\n\n");
         }
         String notes = AgentTools.notes(folder.resolveSibling("memory"), r.project, MEMORY_CHARS);
         if (!notes.isBlank()) {
@@ -2137,6 +2509,9 @@ public final class AgentRuns {
             case "message" -> "messaged agent " + step.get("to");
             case "inbox" -> "reading messages";
             case "spawn" -> "started agent " + step.get("child");
+            case "request" -> "asked " + step.get("to") + ": " + firstLine(s.apply(step.get("text")));
+            case "subproject" -> "made the subproject " + step.get("name");
+            case "answered" -> "answered request " + step.get("request");
             case "compact" -> "making room";
             case "undo" -> "undid its changes";
             case "error" -> s.apply(step.get("text"));
@@ -2223,6 +2598,9 @@ public final class AgentRuns {
         r.tainted = Boolean.TRUE.equals(m.get("tainted"));
         for (Object g : Json.array(m.getOrDefault("grants", List.of()))) {
             r.grants.add(String.valueOf(g));
+        }
+        for (Object g : Json.array(m.getOrDefault("granted", List.of()))) {
+            r.granted.add(String.valueOf(g));
         }
         r.media = (int) Json.integer(m, "media", 0);
         r.tokenBase = Json.integer(m, "tokenBase", 0);

@@ -217,8 +217,15 @@ final class ItemKinds {
 
         @Override
         public List<Item> list() {
-            // sub-agents show inside the run that started them
-            return runs.list().stream().filter(r -> r.get("parent") == null).map(Agents::item).toList();
+            // sub-agents show inside the run that started them, unless it started them in another project
+            List<Map<String, Object>> all = runs.list();
+            Map<String, String> where = new java.util.HashMap<>();
+            for (Map<String, Object> r : all) {
+                where.put(Json.string(r, "id", ""), Json.string(r, "project", Project.DEFAULT));
+            }
+            return all.stream().filter(r -> r.get("parent") == null
+                    || !Json.string(r, "project", Project.DEFAULT).equals(where.get(String.valueOf(r.get("parent")))))
+                    .map(Agents::item).toList();
         }
 
         @Override
@@ -309,9 +316,8 @@ final class ItemKinds {
 
         @Override
         public String rename(String id, String title) throws IOException {
-            Project p = store.get(id).orElseThrow(() -> new IllegalArgumentException("there is no project " + id));
-            store.save(new Project(p.id(), title, p.description(), p.folder(), p.tools(), p.models(), p.routes(),
-                    p.runners()), false);
+            Project p = store.own(id).orElseThrow(() -> new IllegalArgumentException("there is no project " + id));
+            store.save(p.withName(title), false);
             return id;
         }
 
@@ -321,9 +327,8 @@ final class ItemKinds {
             if (Project.DEFAULT.equals(id)) {
                 throw new IllegalArgumentException("the default project stays");
             }
-            Map<String, Object> kept = Map.of("project", p.toJson());
-            store.delete(id);
-            return kept;
+            // its subprojects with no other parent go with it; the others only lose the link
+            return Map.of("removal", store.remove(p.id()).toJson());
         }
 
         @Override
@@ -331,7 +336,11 @@ final class ItemKinds {
             if (store.get(id).isPresent()) {
                 throw new IllegalArgumentException("there is a project " + id + " again");
             }
-            store.save(Project.fromJson(Json.object(kept.get("project"))), false);
+            if (kept.get("removal") != null) {
+                store.restore(Projects.Removal.fromJson(Json.object(kept.get("removal"))));
+            } else {
+                store.save(Project.fromJson(Json.object(kept.get("project"))), false);
+            }
         }
     }
 }
