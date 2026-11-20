@@ -21,11 +21,12 @@ export function Settings({ tab }) {
         ]} /><//>
     </section>
     <section class="card">
-      <h2 class="card-title">Models, keys and machines</h2>
+      <h2 class="card-title">Models, machines and agents</h2>
       <p class="muted">Each has a page of its own, also in the sidebar.</p>
       <div class="row-btns">
         <${Button} icon="layers" onClick=${() => navigate(tab, { screen: "models" })}>Models and API keys<//>
         <${Button} icon="server" onClick=${() => navigate(tab, { screen: "machines" })}>Machines and GPU memory<//>
+        <${Button} icon="agent" onClick=${() => navigate(tab, { screen: "agents" })}>Agent roles, rules and services<//>
       </div>
     </section>
   </div>`;

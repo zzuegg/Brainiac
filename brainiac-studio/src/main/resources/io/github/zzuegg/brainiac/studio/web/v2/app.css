@@ -989,3 +989,43 @@ a.mini { color: var(--muted); }
 .segments li { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: baseline; }
 .check-inline { display: inline-flex; align-items: center; gap: 4px; }
 .transcript-turn .media-prompt-text { display: inline-flex; align-items: center; gap: 6px; }
+
+/* agent settings */
+.page-seg { margin-bottom: 16px; }
+.page-seg button { height: 30px; padding: 0 14px; font-size: 13px; }
+.section-lead { max-width: 760px; margin: 0 0 12px; font-size: 13.5px; }
+.group-title { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 20px 0 8px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 14px; }
+.form-grid .span-2 { grid-column: span 2; }
+@media (max-width: 560px) { .form-grid .span-2 { grid-column: auto; } }
+.push { margin-left: auto; }
+.role-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.role-card { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.role-card .card-title { gap: 8px; flex-wrap: wrap; margin: 0; }
+.role-card p { margin: 0; }
+.role-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.role-acts { display: flex; justify-content: flex-end; gap: 2px; margin-top: auto; }
+.tier-rows { display: grid; gap: 6px; margin-bottom: 8px; }
+.tier-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+.tool-picks { max-height: 320px; margin-top: 8px; }
+.tool-picks label { grid-template-columns: auto minmax(0, 1fr) auto; }
+.spawn-picks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.rules { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.rule { margin: 0; border-left: 3px solid var(--line); }
+.rule.rule-allow { border-left-color: var(--ok); }
+.rule.rule-ask { border-left-color: var(--warn); }
+.rule.rule-deny { border-left-color: var(--bad); }
+.rule.off { opacity: .6; }
+.rule-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rule-id { width: 180px; height: 28px; }
+.rule-why { margin-bottom: 10px; }
+.rule-grid .field { margin-bottom: 10px; }
+.svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 10px; }
+.svc { margin: 0; }
+.svc .card-title { gap: 8px; }
+.svc .field { margin-bottom: 10px; }
+.reminders { list-style: none; margin: 0; padding: 0; }
+.reminders li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 4px 12px; align-items: center; padding: 8px 2px; border-top: 1px solid var(--line-soft); }
+.reminders li.dim { opacity: .6; }
+.reminders .who { display: grid; min-width: 0; }
+@media (max-width: 760px) { .reminders li { grid-template-columns: auto minmax(0, 1fr) auto; } .reminders li > .muted.small { display: none; } }
