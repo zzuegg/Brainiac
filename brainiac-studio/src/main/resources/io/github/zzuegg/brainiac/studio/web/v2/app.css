@@ -1029,3 +1029,6 @@ a.mini { color: var(--muted); }
 .reminders li.dim { opacity: .6; }
 .reminders .who { display: grid; min-width: 0; }
 @media (max-width: 760px) { .reminders li { grid-template-columns: auto minmax(0, 1fr) auto; } .reminders li > .muted.small { display: none; } }
+.runs-on { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.runs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.runs-row > .small:first-child { min-width: 130px; }

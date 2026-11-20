@@ -52,6 +52,7 @@ export function Machines() {
         <span class="muted small push">${queued ? `${queued} queued` : "one training run at a time"}</span></h2>
       <${Devices} list=${system.value?.devices} speed=${here} />
       ${here && html`<p class="muted small">${here.name} · epoch ${here.epoch + 1} of ${here.epochs}</p>`}
+      <${RunsOn} devices=${system.value?.devices || []} />
     </section>
     <${GpuCard} />
     ${(hosts.value || []).map(h => html`<${Host} key=${h.id} h=${h} />`)}
@@ -60,6 +61,35 @@ export function Machines() {
       <p class="muted">Run <code>brainiac-studio --worker</code> on it. It prints its addresses and a token; add it here and its models answer in chats, and it can train.</p>
       <${Button} icon="plus" onClick=${() => openLayer(AddMachine)}>Add a machine…<//></section>`}
     <${Vast} />
+  </div>`;
+}
+
+const BACKENDS = { cuda: "CUDA", hip: "HIP (ROCm)", vulkan: "Vulkan", metal: "Metal", cpu: "CPU" };
+
+/** Where this PC's models run: the best device or a chosen one, the GPU backend, and a memory limit. */
+function RunsOn({ devices }) {
+  const [ld, setLd] = useState(null);
+  const [gb, setGb] = useState("");
+  useEffect(() => { api("/api/local/device").then(d => { setLd(d); setGb(d.memory ? (d.memory / 1024).toFixed(1) : ""); }, () => {}); }, []);
+  if (!ld) return null;
+  const change = (body, said) => api("/api/local/device", body).then(d => { setLd(d); toast(said(d)); }, fail);
+  const later = (v, now) => v !== now;
+  const mem = mb => (mb ? (mb / 1024).toFixed(1) + " GB" : "no limit");
+  return html`<div class="runs-on">
+    <div class="runs-row"><span class="small"><b>Models run on</b></span>
+      <div class="seg" role="group" aria-label="Device for this PC's models">
+        <button type="button" aria-pressed=${ld.choice === "best"} onClick=${() => change({ device: "" }, d => `The best device: ${d.device}.`)}>Best (${ld.choice === "best" ? ld.device : "auto"})</button>
+        ${devices.map(d => html`<button type="button" key=${d.name} aria-pressed=${ld.choice !== "best" && ld.device === d.name} onClick=${() => change({ device: d.name }, () => `Models now run on ${d.name}.`)}>${d.name}</button>`)}</div></div>
+    ${(ld.backends || []).length > 1 && html`<div class="runs-row"><span class="small"><b>GPU backend</b></span>
+      <div class="seg" role="group" aria-label="GPU backend">${ld.backends.map(b => html`<button type="button" key=${b} aria-pressed=${ld.backend === b}
+        onClick=${() => change({ backend: b }, d => (b === d.backendInEffect ? "Back to the backend this run uses." : "Saved; it changes when the studio starts again."))}>${BACKENDS[b] || b}</button>`)}</div>
+      ${later(ld.backend, ld.backendInEffect) && html`<span class="muted small">Applies when the studio starts again; now ${BACKENDS[ld.backendInEffect] || ld.backendInEffect}.</span>`}</div>`}
+    <form class="runs-row" onSubmit=${e => { e.preventDefault(); change({ memory: Math.round((+gb || 0) * 1024) }, () => "Saved; the limit applies when the studio starts again."); }}>
+      <span class="small"><b>GPU memory limit</b></span>
+      <input class="input mono narrow" type="number" min="0" step="0.5" value=${gb} placeholder="no limit" aria-label="GPU memory limit in GB" onInput=${e => setGb(e.target.value)} /><span class="small muted">GB</span>
+      <${Button} size="sm" type="submit" disabled=${Math.round((+gb || 0) * 1024) === ld.memory}>Set<//>
+      ${later(ld.memory, ld.memoryInEffect) && html`<span class="muted small">Applies when the studio starts again; now ${mem(ld.memoryInEffect)}.</span>`}
+    </form>
   </div>`;
 }
 
