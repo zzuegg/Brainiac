@@ -167,6 +167,8 @@ public final class AgentRuns {
         Map<String, Object> pending;
         CompletableFuture<Decision> decision;
         volatile boolean stopping;
+        // what a long tool call has done so far, such as the steps of a drawing; not kept on disk
+        volatile Map<String, Object> progress;
         final StringBuilder thinking = new StringBuilder();
         Roles.Effective effective;
 
@@ -258,6 +260,10 @@ public final class AgentRuns {
             }
             if (pending != null) {
                 m.put("pending", pending);
+            }
+            Map<String, Object> now = progress;
+            if (now != null && full) {
+                m.put("progress", now);
             }
             Map<String, Object> last = steps.isEmpty() ? null : steps.getLast();
             if (last != null) {
@@ -2379,8 +2385,29 @@ public final class AgentRuns {
         for (Reach.Access a : verdict.outside()) {
             reachable.add(a.path());
         }
-        String out = ScopedValue.where(RUN, r.id).where(Reach.ALLOWED, java.util.Set.copyOf(reachable))
-                .call(() -> run(e, given, cap));
+        String tool = e.tool().name();
+        io.github.zzuegg.brainiac.studio.chat.LocalImages.Listener steps = (step, total, preview) -> {
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("tool", tool);
+            p.put("step", step);
+            p.put("total", total);
+            Map<String, Object> was = r.progress;
+            if (preview != null) {
+                p.put("preview", "data:image/png;base64," + java.util.Base64.getEncoder().encodeToString(preview.png()));
+            } else if (was != null && was.get("preview") != null) {
+                p.put("preview", was.get("preview"));
+            }
+            r.progress = p;
+            return !r.stopping;
+        };
+        String out;
+        try {
+            out = ScopedValue.where(RUN, r.id).where(Reach.ALLOWED, java.util.Set.copyOf(reachable))
+                    .where(io.github.zzuegg.brainiac.studio.chat.ChatService.STEPS, steps)
+                    .call(() -> run(e, given, cap));
+        } finally {
+            r.progress = null;
+        }
         if (out == null) {
             return null;   // stopped while it waited inside the tool
         }

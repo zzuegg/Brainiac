@@ -295,14 +295,19 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "draw_image", value = "Draws pictures and saves them. 'auto' uses the project's image route: "
             + "its model and runner, on this PC or a remote machine.")
     @Tier(value = Risk.COMPUTE, what = "draws pictures, which uses the GPU or a paid provider", medium = "image", media = true)
-    @Returns("{model, files: [path]}")
+    @Returns("{model, files: [path], seeds?: [number]}")
     public Map<String, Object> drawImage(@Tools.Param("what the picture shows") String prompt,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("1:1, 4:3, 3:4, 16:9 or 9:16") Optional<String> aspect,
             @Tools.Param("how many, 1 to 4") Optional<Integer> count) {
         try {
-            return made(chat.images(model.orElse(ChatService.AUTO), prompt, aspect.orElse("1:1"),
-                    Math.clamp(count.orElse(1), 1, 4), null));
+            ChatService.Drawn d = chat.pictures(model.orElse(ChatService.AUTO), prompt, aspect.orElse("1:1"),
+                    Math.clamp(count.orElse(1), 1, 4), null);
+            Map<String, Object> out = made(d.generated());
+            if (!d.seeds().isEmpty()) {
+                out.put("seeds", d.seeds());
+            }
+            return out;
         } catch (IOException e) {
             throw new UncheckedIOException(e.getMessage(), e);
         } catch (InterruptedException e) {

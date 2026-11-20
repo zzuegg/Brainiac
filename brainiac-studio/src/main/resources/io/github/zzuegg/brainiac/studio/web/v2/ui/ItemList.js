@@ -53,7 +53,7 @@ function Row({ tab, item, current, compact, scope }) {
       onContextMenu=${e => { e.preventDefault(); openMenu({ x: e.clientX, y: e.clientY }, menuFor(tab, item, scope), item.title); }}>
     <span class=${cx("item-ic", "k-" + item.kind, failed && "item-failed")} title=${failed ? "Failed" : undefined}>
       ${busy ? html`<span class=${cx("live", item.waiting || item.state === "waiting" ? "live-wait" : "live-run")} title=${item.waiting ? "Waits for you" : item.kind === "training" ? "Training" : "Working"} />`
-        : html`<${Icon} name=${k.icon} />`}
+        : html`<${Icon} name=${item.kind === "chat" && MEDIUM_ICONS[item.medium] || k.icon} />`}
     </span>
     ${renaming
       ? html`<${RenameField} value=${item.title} done=${t => rename(tab, item, t)} cancel=${() => (tab.renaming.value = null)} />`
@@ -70,6 +70,8 @@ function Row({ tab, item, current, compact, scope }) {
         </span>`}
   </li>`;
 }
+
+const MEDIUM_ICONS = { image: "image", speech: "speech", video: "video" };
 
 function subtitle(item) {
   if (item.kind === "chat") return item.messages ? `${item.messages} messages` : "empty";

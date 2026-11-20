@@ -197,7 +197,7 @@ async function agentAnswer(s, c, history) {
     setLast(s, {
       model: run.by ? { key: run.by, name: run.by } : null,
       thinking: run.state === "running" ? run.thinking || "" : "",
-      agent: { id, state: run.state, pending: run.pending || null,
+      agent: { id, state: run.state, pending: run.pending || null, progress: run.progress || null, doing: run.doing || null,
         steps: (run.steps || []).slice(from).filter(x => x.kind !== "goal" && x.kind !== "answer") },
     });
     if (!["running", "waiting"].includes(run.state)) break;

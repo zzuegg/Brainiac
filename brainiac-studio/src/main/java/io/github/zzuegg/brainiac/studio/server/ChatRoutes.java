@@ -134,6 +134,27 @@ final class ChatRoutes {
     }
 
     void register(StudioServer server) {
+        // a picture or recording the studio made, for the page to show; only from the outputs folder
+        server.post("/api/outputs/file", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 1 << 16);
+            java.nio.file.Path root = chat.outputs().toAbsolutePath().normalize();
+            java.nio.file.Path f;
+            try {
+                f = root.resolve(io.github.zzuegg.brainiac.io.Json.string(body, "path", "")).toAbsolutePath().normalize();
+            } catch (java.nio.file.InvalidPathException bad) {
+                Exchanges.error(ex, 400, "not a path");
+                return;
+            }
+            if (!f.startsWith(root) || !java.nio.file.Files.isRegularFile(f)) {
+                Exchanges.error(ex, 404, "there is no such file in the outputs folder");
+                return;
+            }
+            String name = f.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+            String type = name.endsWith(".png") ? "image/png" : name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg"
+                    : name.endsWith(".webp") ? "image/webp" : name.endsWith(".wav") ? "audio/wav" : name.endsWith(".mp3") ? "audio/mpeg"
+                    : name.endsWith(".mp4") ? "video/mp4" : "application/octet-stream";
+            Exchanges.send(ex, 200, type, java.nio.file.Files.readAllBytes(f));
+        });
         server.get("/api/models", ex -> Exchanges.json(ex, 200,
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
         server.get("/api/local/device", ex -> Exchanges.json(ex, 200, localDevice()));

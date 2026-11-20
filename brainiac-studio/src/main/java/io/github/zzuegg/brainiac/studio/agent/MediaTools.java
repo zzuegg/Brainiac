@@ -72,7 +72,9 @@ public final class MediaTools {
         LocalVideos.Settings settings = new LocalVideos.Settings("", aspect.orElse("16:9"), false, seconds.orElse(2.0),
                 30, 5, new java.util.Random().nextLong(1L << 32), 0, 0, first);
         try {
-            ChatService.Filmed f = chat.video(model.orElse(ChatService.AUTO), prompt, settings, (step, total) -> true,
+            io.github.zzuegg.brainiac.studio.chat.LocalImages.Listener heard = ChatService.STEPS.isBound() ? ChatService.STEPS.get() : null;
+            ChatService.Filmed f = chat.video(model.orElse(ChatService.AUTO), prompt, settings,
+                    (step, total) -> heard == null || heard.step(step, total, null),
                     m -> { });
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("model", f.model().key());

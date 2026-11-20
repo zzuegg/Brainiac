@@ -80,6 +80,9 @@ final class ItemKinds {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("status", Json.string(c, "status", "open"));
             extra.put("messages", c.get("messages") instanceof List<?> l ? l.size() : 0);
+            if (c.get("medium") instanceof String medium) {
+                extra.put("medium", medium);
+            }
             return new Item(CHAT, Json.string(c, "id", ""), Json.string(c, "title", "Untitled"), null,
                     Json.integer(c, "updated", 0), extra);
         }

@@ -313,6 +313,12 @@ public final class ChatService {
     /** The project the requests made now belong to; unbound, nothing is limited or routed. */
     public static final ScopedValue<Scope> SCOPE = ScopedValue.newInstance();
 
+    /**
+     * Hears the steps of a drawing made through {@link #images}, when a caller such as an agent
+     * run wants to show its progress; returning false stops the drawing.
+     */
+    public static final ScopedValue<LocalImages.Listener> STEPS = ScopedValue.newInstance();
+
     @FunctionalInterface
     private interface Body<T> {
         T run(ModelInfo target) throws IOException, InterruptedException;
@@ -956,15 +962,33 @@ public final class ChatService {
      */
     public Generated images(String model, String prompt, String aspect, int count, String key)
             throws IOException, InterruptedException {
+        return pictures(model, prompt, aspect, count, key).generated();
+    }
+
+    /**
+     * Draws pictures like {@link #images}, and tells the seed of each one drawn on this PC, so it
+     * can be drawn again with changes.
+     *
+     * @param model a model key or {@value #AUTO}
+     * @param prompt what the picture shows
+     * @param aspect the shape
+     * @param count how many, 1 to 4
+     * @param key the name of the API key to use, or null
+     * @return the pictures; the seeds are empty for a provider that does not tell them
+     * @throws IOException if no model can draw or the provider fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public Drawn pictures(String model, String prompt, String aspect, int count, String key)
+            throws IOException, InterruptedException {
+        LocalImages.Listener steps = STEPS.isBound() ? STEPS.get() : (step, total, preview) -> true;
         return routed("image", resolve(model, "image"), target -> {
             if (provider(target.provider()).runsMedia()) {
-                return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), (step, total, preview) -> true)
-                        .generated();
+                return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), steps);
             }
             ImageRequest request = new ImageRequest(target.id(), prompt, aspect, count, key);
             List<Media> media = logged(target, "image", () -> remote(target).images(request),
                     r -> new long[] {-1, -1, r.size()});
-            return new Generated(target, media, save(media, "image"));
+            return new Drawn(new Generated(target, media, save(media, "image")), List.of());
         });
     }
 

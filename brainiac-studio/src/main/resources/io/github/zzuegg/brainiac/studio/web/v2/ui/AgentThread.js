@@ -6,6 +6,8 @@ import { Button } from "/v2/ui/Button.js";
 import { Pending, stepLine } from "/v2/ui/Pending.js";
 import { fail } from "/v2/state/toasts.js";
 import { plural } from "/v2/lib/format.js";
+import { MediaGrid, mediaOf, Working } from "/v2/ui/Media.js";
+import { fineTune } from "/v2/state/media.js";
 
 // An agent's run read as a conversation, the same on the agent's own page and where an agent is
 // docked beside other work (the builder's assistant): what you said, what it did, what it
@@ -25,10 +27,11 @@ export function Thread({ run, project, done, said = t => t }) {
       ? html`<li key=${i} class="msg msg-user"><div class="msg-text"><${Text} text=${said(t.text)} /></div></li>`
       : t.kind === "answer"
         ? html`<li key=${i} class="msg msg-assistant"><div class="msg-who">${roleName(run.role)}</div><div class="msg-text"><${Text} text=${t.text} /></div></li>`
-        : html`<li key=${i} class="msg msg-assistant"><${Activity} steps=${t.steps} open=${live && i === all.length - 1} live=${live && i === all.length - 1} /></li>`)}
+        : html`<li key=${i} class="msg msg-assistant"><${Activity} steps=${t.steps} open=${live && i === all.length - 1} live=${live && i === all.length - 1} />
+            <${MediaGrid} items=${mediaOf(t.steps)} onFineTune=${it => fineTune(project, it)} /></li>`)}
     </ol>
     ${run.pending && html`<${Pending} id=${run.id} project=${project} pending=${run.pending} done=${done} />`}
-    ${live && !run.pending && html`<p class="working"><span class="live live-run" />${run.thinking ? "Thinking…" : "Working…"}</p>`}
+    ${live && !run.pending && html`<${Working} progress=${run.progress} doing=${run.doing} thinking=${!!run.thinking} />`}
     ${run.state === "failed" && run.error && html`<p class="msg-error"><${Icon} name="warn" size=${14} />${run.error}</p>`}
     ${run.state === "stopped" && html`<p class="muted small">Stopped${run.error ? ": " + run.error : ""}.</p>`}`;
 }

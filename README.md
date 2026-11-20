@@ -1054,6 +1054,16 @@ epoch beside other runs of the same network, every epoch's numbers, the settings
 it saved, which can be tried on a sample of its data or trained further. Run ids are never
 given twice (`runs/last-id`); `POST /api/train/run {id}` reads one run with its loss curve.
 
+**Pictures, speech and video.** What a tool makes (`draw_image`, `make_speech`, `make_video`)
+shows in the chat or on the agent's page as it comes: pictures and clips in a grid (click for a
+large view, ← and → for the others, Save), recordings with a player. While a drawing or clip is
+made, the run shows its step and a rough preview; any other long call says what it is doing and
+for how long. A chat can also be an image, speech or video chat (offered on a new chat): each
+turn is a prompt with its settings (model, shape, count, seed, steps, guidance, what to leave
+out, voice) and what came out, drawn step by step with previews on this PC. Fine tune on a
+picture an agent drew opens it in a new image chat with its prompt, model and seed, ready to be
+changed and drawn again. `POST /api/outputs/file {path}` reads a file from the outputs folder.
+
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that
 browser opens the studio.
