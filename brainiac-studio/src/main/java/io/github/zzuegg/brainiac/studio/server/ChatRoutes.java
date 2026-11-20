@@ -139,7 +139,10 @@ final class ChatRoutes {
             if (body.get("memory") instanceof Number mb) {
                 chat.localDevice().limitMemory(mb.intValue());
             }
-            if (body.containsKey("device") || !body.containsKey("memory")) {
+            if (body.containsKey("backend")) {
+                chat.localDevice().preferBackend(Json.string(body, "backend", ""));
+            }
+            if (body.containsKey("device") || !(body.containsKey("memory") || body.containsKey("backend"))) {
                 chat.localDevice().choose(Json.string(body, "device", ""));
             }
             Exchanges.json(ex, 200, localDevice());
@@ -785,6 +788,10 @@ final class ChatRoutes {
         // the GPU memory limit in MB: the one set here, and the one this run started with
         out.put("memory", d.memory());
         out.put("memoryInEffect", io.github.zzuegg.brainiac.studio.chat.LocalDevice.memoryInEffect());
+        // the preferred GPU backend: the one set here, the one this run started with, and those found
+        out.put("backend", d.backend());
+        out.put("backendInEffect", io.github.zzuegg.brainiac.studio.chat.LocalDevice.backendInEffect());
+        out.put("backends", io.github.zzuegg.brainiac.studio.chat.LocalDevice.backendsFound());
         return out;
     }
 

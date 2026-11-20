@@ -170,7 +170,8 @@ public final class TrainingService implements AutoCloseable {
         List<Object> devices = new ArrayList<>();
         devices.add(Map.of("key", "best", "name", "Best available (" + safeName(Device::best) + ")"));
         for (Device d : Device.available()) {
-            devices.add(Map.of("key", d.kind().name().toLowerCase(java.util.Locale.ROOT), "name", d.name()));
+            // each GPU by its name, so a card's Vulkan, HIP and CUDA devices can each be chosen
+            devices.add(Map.of("key", d.kind() == Device.Kind.CPU ? "cpu" : d.name(), "name", d.name()));
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("optimizers", byKind.get("optimizer"));
@@ -773,7 +774,9 @@ public final class TrainingService implements AutoCloseable {
         return switch (key) {
             case "cpu" -> Device.cpu();
             case "gpu" -> Device.gpu();
-            default -> Device.best();
+            case "best", "" -> Device.best();
+            default -> Device.available().stream().filter(d -> d.name().equals(key)).findFirst()
+                    .orElseGet(Device::best);
         };
     }
 

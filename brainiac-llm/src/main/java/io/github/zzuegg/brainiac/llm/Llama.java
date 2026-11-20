@@ -2060,12 +2060,13 @@ public final class Llama implements LanguageModel {
         }
         // tied: while decoding, a transposed copy of the embeddings made once; while
         // training, through the embeddings so they get the gradient
-        // decoding on the CPU keeps a transposed copy of the embeddings; a GPU reads the
-        // transpose in place, saving the copy's memory (272 MB for Qwen2.5-0.5B)
+        // decoding keeps a transposed copy of the embeddings, except on a device that reads
+        // the transpose in place (Vulkan), saving the copy's memory (272 MB for Qwen2.5-0.5B);
+        // elsewhere (CPU, HIP, CUDA) each token would otherwise copy the whole matrix
         if (tiedOnHead != null) {
             return x.matmul(tiedOnHead.transpose());
         }
-        boolean copy = decoding && embed.value().device().kind() == io.github.zzuegg.brainiac.tensor.Device.Kind.CPU;
+        boolean copy = decoding && !embed.value().device().readsTransposedInPlace();
         return x.matmul(copy ? Var.of(tiedHead()) : base(embed).transpose());
     }
 

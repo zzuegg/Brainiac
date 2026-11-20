@@ -22,8 +22,9 @@ import java.util.ServiceLoader;
  * Device.setDefault(Device.best()); // GPU if there is one, else CPU
  * }</pre>
  *
- * <p>With several GPU backends (Vulkan and CUDA on an NVIDIA card), {@link #gpu()} and
- * {@link #best()} take Vulkan unless {@code -Dbrainiac.gpu=cuda} asks for another.
+ * <p>With several GPU backends (Vulkan and CUDA on an NVIDIA card, Vulkan and HIP on an AMD
+ * one), {@link #gpu()} and {@link #best()} take Vulkan unless {@code -Dbrainiac.gpu=cuda} (or
+ * {@code hip}) asks for another.
  */
 public final class Device {
 
@@ -126,6 +127,17 @@ public final class Device {
      */
     public Kind kind() {
         return backend.kind();
+    }
+
+    /**
+     * Whether a product with a transposed matrix reads it in place on this device instead of
+     * copying it first; where it does not, a matrix used transposed over and over is worth
+     * keeping transposed.
+     *
+     * @return {@code true} if transposed operands cost no copy
+     */
+    public boolean readsTransposedInPlace() {
+        return backend().readsTransposedInPlace();
     }
 
     /**

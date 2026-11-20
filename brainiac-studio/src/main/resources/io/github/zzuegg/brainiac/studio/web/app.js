@@ -2494,7 +2494,7 @@
     { id: "project", title: "Projects", icon: "folder", keywords: "project folder description routes route runner vast tools models agents access scope new delete active",
       status: () => PJ.data ? `${activeProject()?.name || "Default"} is active · ${PJ.data.projects.length} in all` : "Scope, routes and runners",
       render: projectSection, bind: bindProjects },
-    { id: "gpu", title: "GPU and scheduling", icon: "flask", keywords: "gpu vram memory unload pin pinned policy swap queue remote ask spill idle device loaded full",
+    { id: "gpu", title: "GPU and scheduling", icon: "flask", keywords: "gpu vram memory unload pin pinned policy swap queue remote ask spill idle device loaded full backend vulkan rocm hip cuda amd nvidia",
       status: () => { const g = GP.data; if (!g) return "What is loaded, and what waits"; const n = g.slots.filter(s => s.model).length; return `${g.device || "no device"} · ${n ? `${n} loaded` : "nothing loaded"}${g.waiting.length ? ` · ${g.waiting.length} waiting` : ""}`; },
       render: gpuSection, bind: bindGpu },
     { id: "machines", title: "Machines", icon: "plug", keywords: "host hosts worker vast rent rental gpu machine model folders gguf this pc offers",
@@ -2781,7 +2781,7 @@
         <div class="gpu-slot-f"><label class="switch-row sm" title="A pinned model is never unloaded to make room"><input type="checkbox" class="switch" data-gpu-pin="${s.kind}" ${s.pinned ? "checked" : ""}><span>Keep loaded</span></label>
           <span class="grow"></span>${s.model ? `<button class="btn ghost sm" type="button" data-gpu-unload="${s.kind}" ${s.busy ? "disabled" : ""}>Unload</button>` : ""}</div>
       </div>`;
-    return head + hero
+    return head + hero + gpuBackendCard()
       + (g.waiting.length ? `<div class="flag warn">${icon("alert")}<span>Waiting for room: ${g.waiting.map(w => `${esc(KIND_NAMES[w.kind] || w.kind)} · ${esc(w.model)} (${gb(w.need)})`).join(", ")}. Unload a model to let it start.</span></div>` : "")
       + `<div class="gpu-slots">${g.slots.map(slot).join("")}</div>
       <section class="set-card">
@@ -2789,6 +2789,36 @@
         <label class="gpu-idle">Unload a model after <input class="input mono sm" type="number" min="0" max="1440" step="5" data-gpu-idle value="${g.idleMinutes}" aria-label="Idle minutes"> idle minutes <span class="faint">· 0 keeps it until the room is needed</span></label>
         <dl class="policy-key">${POLICIES.map(([, n, d]) => `<dt>${n}</dt><dd>${esc(d)}</dd>`).join("")}</dl>
       </section>`;
+  }
+  // The GPU backend: on a card with several (Vulkan and HIP on AMD, Vulkan and CUDA on NVIDIA) the one
+  // "best" and training on "the GPU" mean. The core reads it once, so a change applies when the studio next starts.
+  const GPU_BACKENDS = [["vulkan", "Vulkan", "Works on every GPU; the studio's default."],
+    ["hip", "ROCm (HIP)", "AMD's compute stack, for Radeon cards (RX 5000 and later). Needs AMD's HIP SDK; much faster large matrix products."],
+    ["cuda", "CUDA", "NVIDIA's compute stack, for GeForce and other NVIDIA cards. Needs the CUDA toolkit."]];
+  function gpuBackendCard() {
+    const ld = M.localDevice;
+    if (!ld || ld.backend === undefined) return "";
+    const found = ld.backends || [], waits = ld.backend !== ld.backendInEffect;
+    const btn = ([k, n, d]) => {
+      const there = found.includes(k);
+      const tip = there ? d : `${d} Not found on this PC: install its runtime, then start the studio again.`;
+      return `<button type="button" data-gpu-backend="${k}" aria-pressed="${ld.backend === k}" ${!there && ld.backend !== k ? "disabled" : ""} title="${esc(tip)}">${n}</button>`;
+    };
+    const nameOf = k => (GPU_BACKENDS.find(b => b[0] === k) || [k, k])[1];
+    return `<section class="set-card look">
+        <div class="look-row"><div><b>GPU backend</b><div class="muted">Which compute stack runs models on the GPU when this PC has more than one.${waits
+          ? ` <b>Applies when the studio is started again</b>; now in effect: ${esc(nameOf(ld.backendInEffect))}.`
+          : ""} To try one right away, click its device in the top bar.</div></div>
+          <div class="seg" role="group" aria-label="GPU backend">${GPU_BACKENDS.map(btn).join("")}</div></div>
+      </section>`;
+  }
+  async function changeGpuBackend(name) {
+    try {
+      M.localDevice = await postJson("/api/local/device", { backend: name });
+      toast(name === M.localDevice.backendInEffect ? "Back to the GPU backend this run uses." : "Saved. The GPU backend changes when the studio is started again.");
+    } catch (e) { toast(String(e.message || e)); }
+    renderDevices();
+    if (state.view === "settings" && S.tab === "gpu") renderSection();
   }
   async function changeGpu(body) {
     try { GP.data = await postJson("/api/gpu", body); GP.error = null; } catch (e) { GP.error = String(e.message || e); toast(GP.error); }
@@ -2803,6 +2833,7 @@
     $$("[data-gpu-pin]").forEach(c => c.addEventListener("change", () => changeGpu({ pinned: $$("[data-gpu-pin]").filter(x => x.checked).map(x => x.dataset.gpuPin) })));
     $$("[data-gpu-unload]").forEach(b => b.addEventListener("click", () => unloadGpu(b.dataset.gpuUnload)));
     $("[data-gpu-idle]")?.addEventListener("change", e => changeGpu({ idleMinutes: Math.max(0, Math.round(+e.target.value || 0)) }));
+    $$("[data-gpu-backend]").forEach(b => b.addEventListener("click", () => { if (b.getAttribute("aria-pressed") !== "true") changeGpuBackend(b.dataset.gpuBackend); }));
   }
 
   // ---- machines: worker hosts, rented GPUs and the folders this PC reads models from

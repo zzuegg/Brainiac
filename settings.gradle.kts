@@ -16,6 +16,7 @@ include(
     "brainiac-backend-cpu",
     "brainiac-backend-vulkan",
     "brainiac-backend-cuda",
+    "brainiac-backend-hip",
     "brainiac-autograd",
     "brainiac-nn",
     "brainiac-train",

@@ -202,6 +202,18 @@ public interface Backend {
     void matmul(Storage a, Storage b, int m, int k, int n, Storage out);
 
     /**
+     * Whether a product reads a transposed right operand in place, without copying it first
+     * (the Vulkan backend, which records the transpose and reads it in the product). Callers
+     * that multiply by the same transposed matrix again and again, such as a tied output head
+     * while decoding, keep a transposed copy where this is false. The default is false.
+     *
+     * @return whether transposed operands cost no copy
+     */
+    default boolean readsTransposedInPlace() {
+        return false;
+    }
+
+    /**
      * Copies a strided view into contiguous storage: {@code out[idx] = in[idx . strides]}
      * for every index of {@code shape}, in row-major order. Used for transposes,
      * permutations and materializing broadcasts.

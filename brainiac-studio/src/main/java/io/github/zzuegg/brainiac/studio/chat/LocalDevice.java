@@ -14,6 +14,10 @@ import java.util.List;
  * {@code brainiac.vulkan.memory}, which caps device memory and lets the rest spill to system
  * memory. The core reads it once, when it first opens the GPU, so a kept limit is applied when
  * the studio starts.
+ *
+ * <p>And the GPU backend preferred when a card has several (Vulkan, or HIP on AMD and CUDA on
+ * NVIDIA cards): the core's {@code brainiac.gpu}, which decides what "the best device" and
+ * training on "the GPU" mean. The core reads it once too, so it applies from the next start.
  */
 public final class LocalDevice {
 
@@ -27,6 +31,15 @@ public final class LocalDevice {
     /** The file a GPU memory limit is kept in, beside the studio's other settings. */
     public static final String MEMORY_FILE = "local-gpu-memory.txt";
 
+    /** The core's property for the preferred GPU backend, such as {@code hip}. */
+    public static final String BACKEND_PROPERTY = "brainiac.gpu";
+    /** The file the preferred GPU backend is kept in, beside the studio's other settings. */
+    public static final String BACKEND_FILE = "gpu-backend.txt";
+    /** The GPU backends the studio can prefer, by the start of their devices' names. */
+    public static final List<String> BACKENDS = List.of("vulkan", "hip", "cuda");
+    /** The backend the core prefers when none is set. */
+    public static final String DEFAULT_BACKEND = "vulkan";
+
     /** The file the GPU scheduling choices are kept in, beside the studio's other settings. */
     public static final String SCHEDULING_FILE = "gpu-scheduling.json";
 
@@ -34,6 +47,7 @@ public final class LocalDevice {
     private final GpuResidency residency;
     private volatile String choice = BEST;
     private volatile int memory;
+    private volatile String backend = DEFAULT_BACKEND;
 
     /**
      * Applies the kept GPU memory limit, before anything opens the GPU. A limit given on the
@@ -45,6 +59,95 @@ public final class LocalDevice {
         int kept = readMemory(file);
         if (kept > 0 && System.getProperty(MEMORY_PROPERTY) == null) {
             System.setProperty(MEMORY_PROPERTY, String.valueOf(kept));
+            // the same budget for the HIP and CUDA backends
+            for (String other : List.of("brainiac.hip.memory", "brainiac.cuda.memory")) {
+                if (System.getProperty(other) == null) {
+                    System.setProperty(other, String.valueOf(kept));
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies the kept GPU backend, before anything lists the devices. One given on the command
+     * line ({@code -Dbrainiac.gpu=hip}) stays as it is.
+     *
+     * @param file where the backend is kept
+     */
+    public static void applyBackend(Path file) {
+        String kept = readBackend(file);
+        if (kept != null && System.getProperty(BACKEND_PROPERTY) == null) {
+            System.setProperty(BACKEND_PROPERTY, kept);
+        }
+    }
+
+    private static String readBackend(Path file) {
+        if (file != null && Files.isRegularFile(file)) {
+            try {
+                String kept = Files.readString(file).strip().toLowerCase(java.util.Locale.ROOT);
+                return BACKENDS.contains(kept) ? kept : null;
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.WARNING, "cannot read " + file, e);
+            }
+        }
+        return null;
+    }
+
+    private Path backendFile() {
+        return file == null ? null : file.resolveSibling(BACKEND_FILE);
+    }
+
+    /**
+     * Returns the GPU backend the user prefers.
+     *
+     * @return {@code vulkan}, {@code hip} or {@code cuda}
+     */
+    public String backend() {
+        return backend;
+    }
+
+    /**
+     * Returns the GPU backend preferred since the studio started.
+     *
+     * @return {@code vulkan}, {@code hip}, {@code cuda} or another the command line named
+     */
+    public static String backendInEffect() {
+        return System.getProperty(BACKEND_PROPERTY, DEFAULT_BACKEND).toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * Returns the GPU backends this PC has a device for, in {@link #BACKENDS} order.
+     *
+     * @return for example {@code [vulkan, hip]} on an AMD card with the HIP SDK
+     */
+    public static List<String> backendsFound() {
+        List<Device> all = devices();
+        return BACKENDS.stream().filter(b -> all.stream()
+                .anyMatch(d -> d.kind() == Device.Kind.GPU && d.name().startsWith(b))).toList();
+    }
+
+    /**
+     * Prefers a GPU backend. It is kept, and applies from the next start of the studio; a device
+     * of it can be chosen right away with {@link #choose}.
+     *
+     * @param name {@code vulkan}, {@code hip} or {@code cuda}
+     * @throws IllegalArgumentException if it is none of them
+     * @throws IOException if it cannot be kept
+     */
+    public void preferBackend(String name) throws IOException {
+        String b = name == null ? "" : name.strip().toLowerCase(java.util.Locale.ROOT);
+        if (!BACKENDS.contains(b)) {
+            throw new IllegalArgumentException("no GPU backend named " + name + "; one of " + BACKENDS);
+        }
+        backend = b;
+        Path f = backendFile();
+        if (f != null) {
+            if (b.equals(DEFAULT_BACKEND)) {
+                Files.deleteIfExists(f);
+            } else {
+                Files.createDirectories(f.toAbsolutePath().getParent());
+                Files.writeString(f, b + "\n");
+            }
         }
     }
 
@@ -124,6 +227,8 @@ public final class LocalDevice {
             }
         }
         memory = readMemory(memoryFile());
+        String b = readBackend(backendFile());
+        backend = b != null ? b : DEFAULT_BACKEND;
     }
 
     /**
