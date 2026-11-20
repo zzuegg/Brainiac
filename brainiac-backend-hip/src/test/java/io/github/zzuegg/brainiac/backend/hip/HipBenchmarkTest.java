@@ -49,17 +49,70 @@ class HipBenchmarkTest {
             int n = 1 << 26;
             Tensor a = Tensor.zeros(Shape.of(n), type, gpu);
             Tensor b = Tensor.zeros(Shape.of(n), type, gpu);
-            a.add(b).release();
+            added(a, b);
             int reps = 50;
             backend.finish();
             long start = System.nanoTime();
             for (int r = 0; r < reps; r++) {
-                a.add(b).release();
+                added(a, b);
             }
             backend.finish();
             double seconds = (System.nanoTime() - start) / 1e9;
             System.out.printf(Locale.ROOT, "add of %d %s: %.0f GB/s (%.3f ms each)%n", n, type,
                     3.0 * n * type.bytes() * reps / seconds / 1e9, seconds * 1e3 / reps);
+        }
+        System.out.println(backend.statistics());
+    }
+
+    /** {@code a + b} computed (not left pending for fusion) and released. */
+    private static void added(Tensor a, Tensor b) {
+        Tensor r = a.add(b);
+        Tensor.evaluate(List.of(r));
+        r.release();
+    }
+
+    /**
+     * Decoding's small kernels, each run 1000 times back to back (the queue always full) and 200
+     * times with the host pausing 100 us after each (the GPU idle between, as when decoding is
+     * host-bound): if the second is much slower per kernel, the GPU lowers its clock when idle.
+     */
+    @Test
+    void decodingKernels() {
+        assumeTrue(Boolean.getBoolean("brainiac.bench"), "benchmark: -Pbench");
+        Device gpu = Device.available().stream().filter(d -> d.name().startsWith("hip")).findFirst().orElseThrow();
+        HipBackend backend = HipBackend.loaded().orElseThrow();
+        Tensor logits = Tensor.uniform(Shape.of(1, 151936), -1, 1, new SplittableRandom(3)).to(gpu);
+        Tensor x = Tensor.uniform(Shape.of(1, 896), -1, 1, new SplittableRandom(4)).to(DType.FLOAT16).to(gpu);
+        Tensor y = Tensor.uniform(Shape.of(1, 896), -1, 1, new SplittableRandom(5)).to(DType.FLOAT16).to(gpu);
+        Tensor down = Tensor.uniform(Shape.of(4864, 896), -1, 1, new SplittableRandom(6)).to(DType.FLOAT16).to(gpu);
+        Tensor h = Tensor.uniform(Shape.of(1, 4864), -1, 1, new SplittableRandom(7)).to(DType.FLOAT16).to(gpu);
+        Runnable[] work = {
+            () -> logits.argmax(1).release(),
+            () -> added(x, y),
+            () -> h.matmul(down).release(),
+        };
+        String[] names = {"argmax of 151936 float32", "add of 896 float16", "[1, 4864] x [4864, 896] float16"};
+        for (int w = 0; w < work.length; w++) {
+            work[w].run();
+            backend.finish();
+            long start = System.nanoTime();
+            for (int r = 0; r < 1000; r++) {
+                work[w].run();
+            }
+            backend.finish();
+            double busy = (System.nanoTime() - start) / 1e3 / 1000;
+            start = System.nanoTime();
+            for (int r = 0; r < 200; r++) {
+                work[w].run();
+                backend.finish();
+                long until = System.nanoTime() + 100_000;
+                while (System.nanoTime() < until) {
+                    Thread.onSpinWait();
+                }
+            }
+            double idle = (System.nanoTime() - start) / 1e3 / 200 - 100;
+            System.out.printf(Locale.ROOT, "%-34s back to back %8.1f us each; with pauses %8.1f us each (incl. a wait)%n",
+                    names[w], busy, idle);
         }
         System.out.println(backend.statistics());
     }

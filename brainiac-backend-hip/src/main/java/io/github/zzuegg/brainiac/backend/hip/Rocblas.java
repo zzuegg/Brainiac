@@ -289,14 +289,19 @@ final class Rocblas {
     }
 
     /**
-     * {@code out[n] = x[k] w[k, n]} in float16, {@code w} row-major: column-major it is
-     * {@code [n, k]} with leading dimension {@code n}, so {@code out = W x} without a transpose.
+     * {@code out[n] = x[k] w[k, n]} in float16, {@code w} row-major with rows {@code ld} apart:
+     * column-major it is {@code [n, k]}, so {@code out = W x} without a transpose. With
+     * {@code transposed}, {@code w} is the transpose of a row-major {@code [n, k]} matrix with
+     * rows {@code ld} apart (a tied output head): column-major {@code [k, n]}, read transposed.
      */
-    void halfGemv(int k, int n, long w, long x, long out) {
+    void halfGemv(boolean transposed, int ld, int k, int n, long w, long x, long out) {
         int status;
         try {
-            status = (int) hshgemv.invokeExact(handle, OP_N, n, k, ONE_F, w, n, (long) n * k, x, 1, (long) k, ZERO_F,
-                    out, 1, (long) n, 1);
+            status = transposed
+                    ? (int) hshgemv.invokeExact(handle, OP_T, k, n, ONE_F, w, ld, (long) n * ld, x, 1, (long) k,
+                            ZERO_F, out, 1, (long) n, 1)
+                    : (int) hshgemv.invokeExact(handle, OP_N, n, k, ONE_F, w, ld, (long) ld * k, x, 1, (long) k,
+                            ZERO_F, out, 1, (long) n, 1);
         } catch (Throwable t) {
             throw Binder.fail("rocblas_hshgemv_strided_batched", t);
         }

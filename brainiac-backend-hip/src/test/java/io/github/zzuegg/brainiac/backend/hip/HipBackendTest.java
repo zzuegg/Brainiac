@@ -272,8 +272,32 @@ class HipBackendTest {
         same(DType.FLOAT32, "embedding model", t -> (t.device().equals(gpu) ? device : cpu).predict(t), x);
     }
 
+    /**
+     * A pending chain written into rows of a larger array (a key/value cache step), and a
+     * pending result that reads an array computed before the array is written.
+     */
     @ParameterizedTest
-    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64"})
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT16", "BFLOAT16"})
+    void pendingResultsWrittenIntoArraysMatchTheCpu(DType type) {
+        assumeTrue(supported(type), type + " not supported by " + gpu);
+        Tensor x = random(31, 2, 3, 8);
+        same(type, "chain written into rows", t -> {
+            Tensor cache = Tensor.zeros(Shape.of(2, 7, 8), type, t.device());
+            cache.write(1, 2, t.mul(2).add(t.exp()));
+            cache.write(1, 5, t.slice(1, 0, 2).neg());
+            return cache.add(0);
+        }, x);
+        same(type, "result read before its source is written", t -> {
+            Tensor cache = t.mul(1).add(0);
+            Tensor.evaluate(List.of(cache));
+            Tensor before = cache.mul(3).add(1);   // pending, reads cache
+            cache.write(1, 1, t.slice(1, 0, 1).add(5));
+            return before.sub(cache);
+        }, x);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = DType.class, names = {"FLOAT32", "FLOAT64", "FLOAT16", "BFLOAT16"})
     void fusedChainsAndViewsMatchTheCpu(DType type) {
         assumeTrue(supported(type), type + " not supported by " + gpu);
         Tensor x = random(21, 6, 9);
@@ -312,6 +336,79 @@ class HipBackendTest {
             same(type, "random mask", t -> t.mul(Tensor.random(t.shape(), 77, t.device()).greater(
                     Tensor.full(t.shape(), 0.5f, type, t.device()))), x);
         }
+    }
+
+    /** Inputs released while pending results still read them: the results stay right, and the inputs free once read. */
+    @Test
+    void releasedInputsOfPendingResultsStayReadable() {
+        for (boolean inputFirst : new boolean[] {true, false}) {
+            Tensor a = random(23, 64, 33);
+            Tensor x = a.to(gpu).mul(1.5f);   // computed below, then read by pending results
+            Tensor.evaluate(List.of(x));
+            Tensor y = x.add(1f);              // pending, reads x
+            Tensor z = y.mul(y);               // pending, reads y (or its expression)
+            Tensor dead = x.sub(2f);           // pending, never used
+            if (inputFirst) {
+                x.release();
+                y.release();
+            } else {
+                y.release();
+                x.release();
+            }
+            dead.release();
+            float[] expected = a.mul(1.5f).add(1f).mul(a.mul(1.5f).add(1f)).toArray();
+            assertArrayEquals(expected, z.toArray(), 1e-4f, "input released first: " + inputFirst);
+        }
+    }
+
+    /** Reads queued with toArrayLater give the values at the time, while more work is queued after them. */
+    @Test
+    void readsLaterGiveTheValuesWhenQueued() {
+        Tensor logits = random(21, 3, 1000).to(gpu);
+        float[] expected = logits.to(CPU).argmax(-1).toArray();
+        Tensor ids = logits.argmax(-1);
+        java.util.function.Supplier<float[]> later = ids.toArrayLater();
+        Tensor more = logits;
+        for (int i = 0; i < 20; i++) {
+            more = more.mul(1.01f).add(logits);   // queued after the read
+        }
+        Tensor.evaluate(List.of(more));
+        assertArrayEquals(expected, later.get(), 0f);
+        assertArrayEquals(expected, later.get(), 0f);
+        Tensor big = random(22, 300, 100).to(gpu);   // past the size read later: read now
+        assertArrayEquals(big.to(CPU).toArray(), big.toArrayLater().get(), 0f);
+    }
+
+    /**
+     * Work from virtual threads, as the studio serves requests: each may run on any carrier
+     * thread, whose current HIP device may be another GPU (such as an integrated one).
+     */
+    @Test
+    void virtualThreadsUseTheRightDevice() throws Exception {
+        Tensor x = random(41, 64, 64);
+        float[] expected = x.matmul(x).tanh().add(1).toArray();
+        List<Thread> threads = new java.util.ArrayList<>();
+        List<Throwable> failures = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        for (int t = 0; t < 16; t++) {
+            threads.add(Thread.ofVirtual().start(() -> {
+                try {
+                    for (int r = 0; r < 5; r++) {
+                        Tensor g = x.to(gpu);
+                        Thread.yield();   // may continue on another carrier thread
+                        float[] actual = g.matmul(g).tanh().add(1).toArray();
+                        for (int i = 0; i < actual.length; i++) {
+                            assertEquals(expected[i], actual[i], 1e-3, "value " + i);
+                        }
+                    }
+                } catch (Throwable e) {
+                    failures.add(e);
+                }
+            }));
+        }
+        for (Thread t : threads) {
+            t.join();
+        }
+        assertTrue(failures.isEmpty(), () -> failures.getFirst().toString());
     }
 
     /** Uploads and downloads larger than the staging buffer go through in pieces, in order. */
