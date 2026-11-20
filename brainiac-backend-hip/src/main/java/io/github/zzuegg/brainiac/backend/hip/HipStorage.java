@@ -28,6 +28,8 @@ final class HipStorage implements Storage {
      * of this length, or 0: a gather over at least this many entries need not download them to check.
      */
     long indexBound;
+    /** Whether it was released while pending results still read it: freed once none does. */
+    boolean releaseWanted;
     /** The element-wise expression not yet computed into memory, or null once it is. */
     HipFusion.Expr pending;
     /** The size of {@link #pending} in nodes, inlined inputs included. */

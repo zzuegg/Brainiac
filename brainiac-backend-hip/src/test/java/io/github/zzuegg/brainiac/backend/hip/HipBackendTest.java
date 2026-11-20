@@ -338,6 +338,29 @@ class HipBackendTest {
         }
     }
 
+    /** Inputs released while pending results still read them: the results stay right, and the inputs free once read. */
+    @Test
+    void releasedInputsOfPendingResultsStayReadable() {
+        for (boolean inputFirst : new boolean[] {true, false}) {
+            Tensor a = random(23, 64, 33);
+            Tensor x = a.to(gpu).mul(1.5f);   // computed below, then read by pending results
+            Tensor.evaluate(List.of(x));
+            Tensor y = x.add(1f);              // pending, reads x
+            Tensor z = y.mul(y);               // pending, reads y (or its expression)
+            Tensor dead = x.sub(2f);           // pending, never used
+            if (inputFirst) {
+                x.release();
+                y.release();
+            } else {
+                y.release();
+                x.release();
+            }
+            dead.release();
+            float[] expected = a.mul(1.5f).add(1f).mul(a.mul(1.5f).add(1f)).toArray();
+            assertArrayEquals(expected, z.toArray(), 1e-4f, "input released first: " + inputFirst);
+        }
+    }
+
     /** Reads queued with toArrayLater give the values at the time, while more work is queued after them. */
     @Test
     void readsLaterGiveTheValuesWhenQueued() {

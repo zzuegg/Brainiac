@@ -520,8 +520,18 @@ public final class HipBackend implements Backend {
         if (storage instanceof Packed || storage instanceof Deferred) {
             return;   // weights: freed with the tensor that holds them, by the collector
         }
-        if (storage instanceof HipStorage s && s.owner == this && s.pending == null && !read(s)) {
-            s.release();   // pending results, and what they read, are left to the collector
+        if (storage instanceof HipStorage s && s.owner == this) {
+            if (read(s)) {
+                s.releaseWanted = true;   // freed once the pending results reading it are computed or dropped
+                return;
+            }
+            // a pending result no other one reads: never computed (one that inlined it holds a
+            // copy of its expression), and what it read may now be freed
+            HipFusion.Expr e = drop(s);
+            s.release();
+            if (e != null) {
+                releaseUnread(e);
+            }
         }
     }
 
@@ -790,7 +800,7 @@ public final class HipBackend implements Backend {
                 ready(in.storage());
             }
         }
-        drop(out);
+        HipFusion.Expr replaced = drop(out);
         out.pending = e;
         out.pendingNodes = Math.min(HipFusion.nodes(e), 1 << 20);
         out.pendingGeneration = generation;
@@ -805,6 +815,9 @@ public final class HipBackend implements Backend {
                 }
                 st.readers.add(new java.lang.ref.WeakReference<>(out));
             }
+        }
+        if (replaced != null) {
+            releaseUnread(replaced);
         }
         if (inPlace) {
             ready(out);
@@ -863,9 +876,29 @@ public final class HipBackend implements Backend {
         if (s.pending == null) {
             return;
         }
-        HipContext c = ctx();
         // no longer pending first: an expression computed in place reads the stored values
         HipFusion.Expr e = drop(s);
+        compute(s, e);
+        releaseUnread(e);
+    }
+
+    /**
+     * Frees what {@code e} read whose release waited for pending results to stop reading it,
+     * now that {@code e} is computed or dropped.
+     */
+    private void releaseUnread(HipFusion.Expr e) {
+        for (HipFusion.Src in : HipFusion.sources(e)) {
+            HipStorage st = in.storage();
+            if (st.releaseWanted && !read(st)) {
+                st.releaseWanted = false;
+                release(st);
+            }
+        }
+    }
+
+    /** Computes expression {@code e} into {@code s}, which no longer holds it pending. */
+    private void compute(HipStorage s, HipFusion.Expr e) {
+        HipContext c = ctx();
         if (e instanceof HipFusion.Const k) {
             fillNow(s, k.value());
             return;
