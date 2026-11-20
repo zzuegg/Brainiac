@@ -256,9 +256,16 @@ final class HipContext {
         rocblasUnavailable = why;
     }
 
-    /** Makes the device current on the calling thread, if it is not already. */
+    /**
+     * Makes the device current on the calling thread, if it is not already. HIP keeps the
+     * current device per operating-system thread, and a virtual thread (the studio serves
+     * requests on them) runs on whichever carrier thread is free, whose current device may be
+     * another GPU's: there the device is set every time.
+     */
     void bind() {
-        if (CURRENT.get() != this) {
+        if (Thread.currentThread().isVirtual()) {
+            cu.setDevice(ordinal);
+        } else if (CURRENT.get() != this) {
             cu.setDevice(ordinal);
             CURRENT.set(this);
         }
@@ -788,6 +795,8 @@ final class HipContext {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
+            } finally {
+                bind();   // a virtual thread may continue on another carrier thread
             }
             drainCollected();
             ArrayDeque<Long> free = freeList(size);
@@ -815,6 +824,8 @@ final class HipContext {
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
+                    } finally {
+                        bind();   // a virtual thread may continue on another carrier thread
                     }
                     drainCollected();
                     trim();

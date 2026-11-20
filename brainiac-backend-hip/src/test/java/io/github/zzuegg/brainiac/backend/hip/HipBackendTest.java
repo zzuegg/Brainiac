@@ -338,6 +338,38 @@ class HipBackendTest {
         }
     }
 
+    /**
+     * Work from virtual threads, as the studio serves requests: each may run on any carrier
+     * thread, whose current HIP device may be another GPU (such as an integrated one).
+     */
+    @Test
+    void virtualThreadsUseTheRightDevice() throws Exception {
+        Tensor x = random(41, 64, 64);
+        float[] expected = x.matmul(x).tanh().add(1).toArray();
+        List<Thread> threads = new java.util.ArrayList<>();
+        List<Throwable> failures = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        for (int t = 0; t < 16; t++) {
+            threads.add(Thread.ofVirtual().start(() -> {
+                try {
+                    for (int r = 0; r < 5; r++) {
+                        Tensor g = x.to(gpu);
+                        Thread.yield();   // may continue on another carrier thread
+                        float[] actual = g.matmul(g).tanh().add(1).toArray();
+                        for (int i = 0; i < actual.length; i++) {
+                            assertEquals(expected[i], actual[i], 1e-3, "value " + i);
+                        }
+                    }
+                } catch (Throwable e) {
+                    failures.add(e);
+                }
+            }));
+        }
+        for (Thread t : threads) {
+            t.join();
+        }
+        assertTrue(failures.isEmpty(), () -> failures.getFirst().toString());
+    }
+
     /** Uploads and downloads larger than the staging buffer go through in pieces, in order. */
     @Test
     void largeUploadsArriveWhole() {
