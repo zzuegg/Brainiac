@@ -2,7 +2,6 @@ package io.github.zzuegg.brainiac.backend.cpu;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import java.nio.ByteOrder;
 
 import jdk.incubator.vector.ByteVector;
 import jdk.incubator.vector.FloatVector;
@@ -27,17 +26,13 @@ final class VectorBlockKernels {
     private static final VectorSpecies<Float> F8 = FloatVector.SPECIES_256;
     private static final VectorSpecies<Byte> B8 = ByteVector.SPECIES_64;
     private static final VectorSpecies<Byte> B16 = ByteVector.SPECIES_128;
-    private static final ValueLayout.OfShort SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
-    private static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
-    private static final ValueLayout.OfInt INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
-    private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
 
     /** MXFP4's E2M1 values, doubled to whole numbers (the scale is halved to match). */
     private static final byte[] MXFP4 = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
     /** IQ4_NL's and IQ4_XS's levels (llama.cpp's kvalues_iq4nl). */
     private static final byte[] IQ4 = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-    /** Each thread's copy of the Q8_0 row being multiplied (see {@link #q80}). */
+    /** Each thread's copy of the row being multiplied (see {@link #row}). */
     private static final ThreadLocal<byte[]> ROW = ThreadLocal.withInitial(() -> new byte[0]);
 
     private VectorBlockKernels() {
@@ -100,27 +95,42 @@ final class VectorBlockKernels {
         return f8(ByteVector.fromArray(B8, scratch, 24)).fma(xs(x, at + 24), s);
     }
 
-    private static float f16(MemorySegment m, long at) {
-        return Float.float16ToFloat(m.get(SHORT, at));
-    }
-
     /** Byte {@code i} (0 to 11) of the 12 bytes held as {@code lo} (0 to 7) and {@code hi}, unsigned. */
     private static int sb(long lo, int hi, int i) {
         return i < 8 ? (int) (lo >>> (8 * i)) & 0xFF : (hi >>> (8 * (i - 8))) & 0xFF;
     }
 
-    private static int u8(MemorySegment m, long at) {
-        return Byte.toUnsignedInt(m.get(ValueLayout.JAVA_BYTE, at));
+    /**
+     * The row's {@code bytes} bytes from {@code row} in {@code m}, copied to this thread's
+     * array. The kernels read from the copy: read from the segment, their loads compiled to
+     * slow out-of-line accesses on JDK 27 whenever another module's segment accesses shared
+     * the profile (measured: a gpt-oss prompt 100 times slower once the HIP backend was on the
+     * module path, with MXFP4 in bounds checks and scoped loads), and Q8_0 ran at 0.1 GMAC/s.
+     */
+    private static byte[] row(MemorySegment m, long row, int bytes) {
+        byte[] q = ROW.get();
+        if (q.length < bytes) {
+            q = new byte[bytes];
+            ROW.set(q);
+        }
+        MemorySegment.copy(m, ValueLayout.JAVA_BYTE, row, q, 0, bytes);
+        return q;
+    }
+
+    /** The float16 at {@code o} in {@code q}, little-endian. */
+    private static float f16(byte[] q, int o) {
+        return Float.float16ToFloat((short) ((q[o] & 0xFF) | q[o + 1] << 8));
     }
 
     private static float mxfp4(MemorySegment m, long row, float[] x, int at, int k) {
+        byte[] q = row(m, row, 17 * (k / 32));
         ByteVector table = ByteVector.fromArray(B16, MXFP4, 0);
         byte[] scratch = new byte[32];
         FloatVector acc = FloatVector.zero(F8);
         for (int b = 0; b < k / 32; b++) {
-            long o = row + 17L * b;
-            float d = Math.scalb(1f, u8(m, o) - 128);
-            FloatVector s = lookup32(table, ByteVector.fromMemorySegment(B16, m, o + 1, LE), x, at + 32 * b, scratch);
+            int o = 17 * b;
+            float d = Math.scalb(1f, (q[o] & 0xFF) - 128);
+            FloatVector s = lookup32(table, ByteVector.fromArray(B16, q, o + 1), x, at + 32 * b, scratch);
             acc = s.fma(FloatVector.broadcast(F8, d), acc);
         }
         return acc.reduceLanes(VectorOperators.ADD);
@@ -130,18 +140,11 @@ final class VectorBlockKernels {
         // the row copied to an array first, then read from there: read from the segment, the
         // 2-byte scale and the 8-byte loads of a 34-byte block stayed slow out-of-line accesses
         // on JDK 27 (0.1 GMAC/s; 1.2 with the block in its own method)
-        int bytes = 34 * (k / 32);
-        byte[] q = ROW.get();
-        if (q.length < bytes) {
-            q = new byte[bytes];
-            ROW.set(q);
-        }
-        MemorySegment.copy(m, ValueLayout.JAVA_BYTE, row, q, 0, bytes);
+        byte[] q = row(m, row, 34 * (k / 32));
         float sum = 0;
         for (int b = 0; b < k / 32; b++) {
             int o = 34 * b;
-            short bits = (short) ((q[o] & 0xFF) | q[o + 1] << 8);
-            sum += Float.float16ToFloat(bits) * q80Block(q, o + 2, x, at + 32 * b);
+            sum += f16(q, o) * q80Block(q, o + 2, x, at + 32 * b);
         }
         return sum;
     }
@@ -160,16 +163,17 @@ final class VectorBlockKernels {
     }
 
     private static float iq4xs(MemorySegment m, long row, float[] x, int at, int k) {
+        byte[] q = row(m, row, 136 * (k / 256));
         ByteVector table = ByteVector.fromArray(B16, IQ4, 0);
         byte[] scratch = new byte[32];
         FloatVector acc = FloatVector.zero(F8);
         for (int b = 0; b < k / 256; b++) {
-            long o = row + 136L * b;
-            float d = f16(m, o);
-            int high = Short.toUnsignedInt(m.get(SHORT, o + 2));
+            int o = 136 * b;
+            float d = f16(q, o);
+            int high = (q[o + 2] & 0xFF) | (q[o + 3] & 0xFF) << 8;
             for (int ib = 0; ib < 8; ib++) {
-                int ls = ((u8(m, o + 4 + ib / 2) >>> (4 * (ib % 2))) & 0xF) | (((high >>> (2 * ib)) & 3) << 4);
-                FloatVector s = lookup32(table, ByteVector.fromMemorySegment(B16, m, o + 8 + 16L * ib, LE), x,
+                int ls = (((q[o + 4 + ib / 2] & 0xFF) >>> (4 * (ib % 2))) & 0xF) | (((high >>> (2 * ib)) & 3) << 4);
+                FloatVector s = lookup32(table, ByteVector.fromArray(B16, q, o + 8 + 16 * ib), x,
                         at + 256 * b + 32 * ib, scratch);
                 acc = s.fma(FloatVector.broadcast(F8, d * (ls - 32)), acc);
             }
@@ -178,26 +182,30 @@ final class VectorBlockKernels {
     }
 
     private static float q4k(MemorySegment m, long row, float[] x, int at, int k) {
+        byte[] q8 = row(m, row, 144 * (k / 256));
         FloatVector acc = FloatVector.zero(F8);
         FloatVector macc = FloatVector.zero(F8);
         for (int b = 0; b < k / 256; b++) {
-            long o = row + 144L * b;
-            float d = f16(m, o);
-            float min = f16(m, o + 2);
-            long lo = m.get(LONG, o + 4);
-            int hi = m.get(INT, o + 12);
+            int o = 144 * b;
+            float d = f16(q8, o);
+            float min = f16(q8, o + 2);
+            long lo = 0;
+            for (int i = 7; i >= 0; i--) {
+                lo = lo << 8 | (q8[o + 4 + i] & 0xFF);
+            }
+            int hi = (q8[o + 12] & 0xFF) | (q8[o + 13] & 0xFF) << 8 | (q8[o + 14] & 0xFF) << 16 | (q8[o + 15] & 0xFF) << 24;
             // pairs of sub-blocks share 32 bytes: low codes for the first, high codes for the next
             for (int j = 0; j < 4; j++) {
                 int s0 = q4kScale(lo, hi, 2 * j);
                 int s1 = q4kScale(lo, hi, 2 * j + 1);
-                long qo = o + 16 + 32L * j;
+                int qo = o + 16 + 32 * j;
                 int xo = at + 256 * b + 64 * j;
                 FloatVector v0 = FloatVector.zero(F8);
                 FloatVector v1 = FloatVector.zero(F8);
                 FloatVector in0 = FloatVector.zero(F8);
                 FloatVector in1 = FloatVector.zero(F8);
                 for (int i = 0; i < 4; i++) {
-                    ByteVector q = ByteVector.fromMemorySegment(B8, m, qo + 8L * i, LE);
+                    ByteVector q = ByteVector.fromArray(B8, q8, qo + 8 * i);
                     FloatVector xl = xs(x, xo + 8 * i);
                     FloatVector xh = xs(x, xo + 32 + 8 * i);
                     v0 = f8(q.and((byte) 0xF)).fma(xl, v0);
@@ -232,17 +240,11 @@ final class VectorBlockKernels {
      * reading the block's scales and codes from the segment.
      */
     private static float q6k(MemorySegment m, long row, float[] x, int at, int k) {
-        int bytes = 210 * (k / 256);
-        byte[] q = ROW.get();
-        if (q.length < bytes) {
-            q = new byte[bytes];
-            ROW.set(q);
-        }
-        MemorySegment.copy(m, ValueLayout.JAVA_BYTE, row, q, 0, bytes);
+        byte[] q = row(m, row, 210 * (k / 256));
         float sum = 0;
         for (int b = 0; b < k / 256; b++) {
             int o = 210 * b;
-            float d = Float.float16ToFloat((short) ((q[o + 208] & 0xFF) | q[o + 209] << 8));
+            float d = f16(q, o + 208);
             for (int i = 0; i < 4; i++) {
                 int half = i >>> 1;
                 int c = i & 1;
