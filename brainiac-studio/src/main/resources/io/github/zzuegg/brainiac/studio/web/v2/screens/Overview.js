@@ -1,7 +1,8 @@
 import { html, useEffect, useState } from "/v2/lib/html.js";
 import { api, local } from "/v2/lib/api.js";
 import { Icon } from "/v2/ui/Icon.js";
-import { Button } from "/v2/ui/Button.js";
+import { Button, IconAction } from "/v2/ui/Button.js";
+import { fail, toast } from "/v2/state/toasts.js";
 import { Empty } from "/v2/ui/Reading.js";
 import { RequestCard } from "/v2/ui/RequestCard.js";
 import { when, plural } from "/v2/lib/format.js";
@@ -21,6 +22,7 @@ export function Overview() {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
   const [seen, setSeen] = useState(() => local.get("seenFailures", {}));   // failures dismissed: id -> when
+  const [sure, setSure] = useState(false);   // stop all: a second click does it
   useEffect(() => {
     let alive = true;
     const load = () => api("/api/items", { project: "*", kinds: ["agent", "graph", "chat"] })
@@ -68,7 +70,11 @@ export function Overview() {
 
     <div class="cards">
       <section class="card">
-        <h2 class="card-title">${working.length ? html`<span class="live live-run" />` : null}Working now<span class="count">${working.length || ""}</span></h2>
+        <h2 class="card-title">${working.length ? html`<span class="live live-run" />` : null}Working now<span class="count">${working.length || ""}</span>
+          ${working.length + waiting.length > 1 && html`<span class="push" /><${IconAction} icon=${sure ? "check" : "stop"}
+            label=${sure ? "Click again to stop them all" : `Stop all ${working.length + waiting.length} agents that work or wait`}
+            onClick=${() => { if (!sure) { setSure(true); setTimeout(() => setSure(false), 4000); return; }
+              setSure(false); api("/api/agents/stop-all", {}).then(r => toast(`Stopped ${plural(r.stopped || 0, "agent")}`), fail); }} />`}</h2>
         ${working.length ? html`<${Rows} items=${working} sub=${i => i.role || "agent"} /> `
           : html`<${Empty} title=${items ? "No agent is working" : "Loading…"} />`}
       </section>

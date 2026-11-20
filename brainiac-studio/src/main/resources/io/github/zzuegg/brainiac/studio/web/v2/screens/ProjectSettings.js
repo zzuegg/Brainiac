@@ -101,6 +101,8 @@ export function ProjectSettings({ tab }) {
 
     <${Allowed} key=${"a" + version} draft=${draft} set=${set} eff=${eff} />
 
+    <${AgentNotes} project=${p.id} />
+
     ${p.id !== "default" && html`<section class="card">
       <h2 class="card-title">Requests from subprojects</h2>
       <${Choices} name="Who answers requests" value=${draft.requests || "user"} onChange=${v => set({ requests: v })} options=${[
@@ -121,6 +123,30 @@ export function ProjectSettings({ tab }) {
       <${Button} variant="primary" icon="check" onClick=${save} disabled=${busy}>${busy ? "Saving…" : "Save"}<//>
     </div>
   </div>`;
+}
+
+/** What agents noted about this project for later tasks: read, corrected or cleared here. Saved on its own. */
+function AgentNotes({ project }) {
+  const [text, setText] = useState(null);
+  const [kept, setKept] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api("/api/agents/notes", { project }).then(r => { setText(r.text || ""); setKept(r.text || ""); }, fail); }, [project]);
+  const save = async () => {
+    setBusy(true);
+    try { await api("/api/agents/notes/save", { project, text }); setKept(text); toast(text.trim() ? "Notes saved" : "Notes cleared"); }
+    catch (e) { fail(e); }
+    setBusy(false);
+  };
+  return html`<section class="card">
+    <h2 class="card-title">Agent notes</h2>
+    <p class="muted small card-lead">Agents keep notes here for their later tasks in this project, and read them first. Correct what is wrong, or clear it to start over.</p>
+    ${text === null ? html`<p class="muted small">Reading…</p>` : html`
+      <textarea class="input mono notes-text" rows=${Math.min(16, Math.max(4, text.split("\n").length + 1))} value=${text} spellcheck="false"
+        placeholder="Nothing noted yet." onInput=${e => setText(e.target.value)} />
+      ${text !== kept && html`<div class="row-btns"><span class="grow" />
+        <${Button} variant="ghost" onClick=${() => setText(kept)} disabled=${busy}>Undo changes<//>
+        <${Button} variant="primary" icon="check" onClick=${save} disabled=${busy}>${busy ? "Saving…" : "Save notes"}<//></div>`}`}
+  </section>`;
 }
 
 function modelsFor(m, remoteOnly) {
