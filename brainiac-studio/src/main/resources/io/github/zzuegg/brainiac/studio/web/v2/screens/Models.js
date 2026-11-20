@@ -8,7 +8,7 @@ import { plural } from "/v2/lib/format.js";
 import { modelInfo, modelsError, loadModels, MEDIA_NAMES } from "/v2/state/models.js";
 import { ModelTools, toolMenu } from "/v2/screens/ModelTools.js";
 import { keyed, ProviderKeys, MoreProviders, Usage, editProvider, providerFlags, readUsage, readBalances } from "/v2/screens/Providers.js";
-import { hub, readHub, active, download, cancel, forget, fmtBytes, fmtWait, fmtCount } from "/v2/state/hub.js";
+import { hub, readHub, readHosts, hosts, target, active, download, cancel, forget, fmtBytes, fmtWait, fmtCount } from "/v2/state/hub.js";
 import { fail, toast } from "/v2/state/toasts.js";
 
 // Every model the studio can use, wherever it runs: this PC, your other machines, and the
@@ -90,17 +90,18 @@ function Downloads({ list }) {
   const [sure, setSure] = useState(null);
   return html`<ul class="downloads">${list.map(d => {
     const pct = d.total ? Math.min(100, (100 * d.done) / d.total) : 0;
-    const status = d.state === "done" ? "on this PC" : d.state === "checking" ? "checking…" : d.state === "queued" ? "starting…"
+    const where = d.host ? "on " + d.hostName : "on this PC";
+    const status = d.state === "done" ? where : d.state === "checking" ? "checking…" : d.state === "queued" ? "starting…"
       : d.state === "downloading" ? `${fmtBytes(d.done)} of ${fmtBytes(d.total)}${d.speed ? ` · ${fmtBytes(d.speed)}/s · ${fmtWait((d.total - d.done) / d.speed)}` : ""}`
       : d.state === "stopped" ? `stopped at ${fmtBytes(d.done)} of ${fmtBytes(d.total)}` : "failed";
-    return html`<li key=${d.id} class=${"dl dl-" + d.state}>
-      <div class="dl-name"><b>${d.name}</b><span class="muted small">${d.repo}</span></div>
+    return html`<li key=${(d.host || "") + d.id} class=${"dl dl-" + d.state}>
+      <div class="dl-name"><b>${d.name}</b><span class="muted small">${d.repo}</span>${d.host && html`<span class="muted small dl-host"><${Icon} name="server" size=${12} />${d.hostName}</span>`}</div>
       <div class="prog" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=${Math.round(pct)}><i style=${`width:${pct}%`} /></div>
       <span class="mono small muted">${status}</span>
-      <span class="dl-acts">${active(d) ? html`<${IconAction} icon="stop" label="Stop" onClick=${() => cancel(d.id)} />`
-        : d.state === "done" ? html`<${IconAction} icon=${sure === d.id ? "check" : "trash"} label=${sure === d.id ? "Click again to delete the files" : "Delete it from this PC"}
-            onClick=${() => (sure === d.id ? (setSure(null), forget(d.name)) : setSure(d.id))} />`
-        : html`<${IconAction} icon="redo" label=${d.state === "stopped" ? "Go on" : "Try again"} onClick=${() => download(d.repo, d.option).catch(fail)} />`}</span>
+      <span class="dl-acts">${active(d) ? html`<${IconAction} icon="stop" label="Stop" onClick=${() => cancel(d.id, d.host)} />`
+        : d.state === "done" ? (d.host ? "" : html`<${IconAction} icon=${sure === d.id ? "check" : "trash"} label=${sure === d.id ? "Click again to delete the files" : "Delete it from this PC"}
+            onClick=${() => (sure === d.id ? (setSure(null), forget(d.name)) : setSure(d.id))} />`)
+        : html`<${IconAction} icon="redo" label=${d.state === "stopped" ? "Go on" : "Try again"} onClick=${() => download(d.repo, d.option, d.host).catch(fail)} />`}</span>
       ${d.error && html`<p class="msg-error small">${d.error}</p>`}
     </li>`;
   })}</ul>`;
@@ -115,7 +116,8 @@ function HubSearch({ close, top }) {
   const [error, setError] = useState(null);
   const [repo, setRepo] = useState(null);
   const [files, setFiles] = useState(null);
-  useEffect(() => { readHub(); }, []);
+  useEffect(() => { readHub(); readHosts(); }, []);
+  const to = target.value, toName = to ? hosts.value.find(h => h.id === to)?.name || "the worker" : "this PC";
   const search = async e => {
     e?.preventDefault();
     setBusy(true); setError(null);
@@ -127,7 +129,11 @@ function HubSearch({ close, top }) {
     try { const l = await api("/api/hub/files", { repo: id }); setFiles(l); } catch (x) { setFiles({ error: x.message }); }
   };
   const runs = hub.value.runs;
-  const footer = html`<span class="muted small">Files go to <span class="mono">${hub.value.folder || "downloads"}</span>.</span><span class="grow" /><${Button} onClick=${close}>Done<//>`;
+  const footer = html`${hosts.value.length > 0
+      ? html`<label class="small hub-target">Download to <select class="input select-sm" value=${to} onChange=${e => { target.value = e.target.value; readHub(); }}>
+          <option value="">This PC</option>${hosts.value.map(h => html`<option value=${h.id}>${h.name}</option>`)}</select></label>` : ""}
+    <span class="muted small">${to ? "Files go to the worker's own model folder." : html`Files go to <span class="mono">${hub.value.folder || "downloads"}</span>.`}</span>
+    <span class="grow" /><${Button} onClick=${close}>Done<//>`;
   return html`<${Layer} title="Download from Hugging Face" wide close=${close} top=${top} footer=${footer}
       subtitle=${runs ? `Only models the studio runs: ${runs.families.length} kinds of model folder and ${runs.architectures.length} of GGUF file.` : ""}>
     <${Token} />
@@ -153,12 +159,12 @@ function HubSearch({ close, top }) {
         : html`<div class="hub-files-head"><span class="mono small">${repo}</span><a class="small" href=${"https://huggingface.co/" + repo} target="_blank" rel="noopener">Model page</a></div>
           ${!files ? html`<p class="muted small pad">Reading its files…</p>` : files.error ? html`<p class="msg-error">${files.error}</p>`
             : html`<ul class="hub-opts">${(files.options || []).slice().sort((a, b) => b.supported - a.supported || a.size - b.size).map(o => {
-                const d = hub.value.downloads.find(x => x.repo === repo && (o.kind === "folder" ? x.kind === "folder" : x.name === o.name));
+                const d = hub.value.downloads.find(x => (x.host || "") === to && x.repo === repo && (o.kind === "folder" ? x.kind === "folder" : x.name === o.name));
                 return html`<li key=${o.id} class=${cx(!o.supported && "dim")}>
                   <span class="hub-opt-name">${o.kind === "folder" ? "Whole model folder" : o.name}${o.quant && html` <span class="badge">${o.quant}</span>`}${o.sees && html` <span class="badge">sees pictures</span>`}</span>
                   <span class="mono small muted">${o.size ? fmtBytes(o.size + (o.projectorSize || 0)) : ""}</span>
-                  ${o.have || d?.state === "done" ? html`<span class="badge s-done">on this PC</span>` : d && active(d) ? html`<span class="badge s-running">downloading</span>`
-                    : o.supported ? html`<${Button} size="sm" icon="download" onClick=${() => download(repo, o.id).then(() => toast("Downloading " + (o.kind === "folder" ? repo : o.name)), fail)}>Download<//>`
+                  ${(o.have && !to) || d?.state === "done" ? html`<span class="badge s-done">on ${toName}</span>` : d && active(d) ? html`<span class="badge s-running">downloading</span>`
+                    : o.supported ? html`<${Button} size="sm" icon="download" onClick=${() => download(repo, o.id, to).then(() => toast("Downloading " + (o.kind === "folder" ? repo : o.name) + (to ? " onto " + toName : "")), fail)}>Download<//>`
                     : html`<span class="badge s-failed" title=${o.reason || ""}>won’t run</span>`}
                   ${o.reason && !o.supported && html`<span class="muted small hub-why">${o.reason}</span>`}
                 </li>`;

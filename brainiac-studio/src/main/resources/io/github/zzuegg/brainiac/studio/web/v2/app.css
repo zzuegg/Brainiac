@@ -1063,3 +1063,5 @@ a.mini { color: var(--muted); }
 .rewrite-ask-foot .link { margin-left: auto; }
 .kbd-hint { font-size: 11.5px; }
 @media (max-width: 640px) { .kbd-hint { display: none; } }
+.hub-target { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-2); }
+.dl-host { display: inline-flex; align-items: center; gap: 4px; }
