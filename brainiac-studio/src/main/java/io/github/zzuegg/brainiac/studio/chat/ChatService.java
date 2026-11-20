@@ -1359,6 +1359,19 @@ public final class ChatService {
         return 0;
     }
 
+    /**
+     * Returns the model Auto picks for a kind of task now, in the project of the call: the
+     * project's route, or the studio's Auto order, within the models the project allows. For
+     * {@code vision} that is Auto's chat model when it sees pictures.
+     *
+     * @param medium {@code text}, {@code vision}, {@code image}, {@code speech}, …
+     * @return the model's key
+     * @throws IOException if no model can do it
+     */
+    public String autoKey(String medium) throws IOException {
+        return resolve(AUTO, medium).key();
+    }
+
     private ModelInfo resolve(String model, String medium) throws IOException {
         ModelInfo target = resolveAny(model, medium);
         if (SCOPE.isBound() && !SCOPE.get().allows(target.key())) {
@@ -1380,6 +1393,17 @@ public final class ChatService {
         if (routed != null && !AUTO.equals(routed.model())) {
             return resolveAny(routed.model(), medium);
         }
+        if (AUTO.equals(model) && medium.equals("vision")) {
+            // Auto for a picture is Auto for chat, when that model sees
+            try {
+                ModelInfo chat = resolveAny(AUTO, "text");
+                if (chat.media().contains("vision")) {
+                    return chat;
+                }
+            } catch (IOException | IllegalArgumentException none) {
+                // no chat model: a model that only sees may still do
+            }
+        }
         if (AUTO.equals(model)) {
             target = pickAuto(listAll(false), medium);
             if (target == null) {
@@ -1389,6 +1413,8 @@ public final class ChatService {
                             + " or add an OpenAI or Google API key";
                     case "transcribe" -> "no transcribing model is available: put a Whisper model in a model folder";
                     case "video" -> "no video model is available: put a Wan 2.1 or 2.2 model in a model folder";
+                    case "vision" -> "no model that sees pictures is available: add a vision model (such as Qwen2-VL)"
+                            + " or a provider key";
                     default -> "no speech model is available: put a Kokoro, F5-TTS, Orpheus or VITS (MMS-TTS) model"
                             + " in a model folder"
                             + " or add an OpenAI or Google API key";

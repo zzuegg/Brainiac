@@ -175,15 +175,23 @@ public final class MediaTools {
      * @return the answer
      */
     @Tools.Tool(name = "describe_image", value = "Looks at a picture and describes it, or answers a question about "
-            + "it, such as whether it matches a brief. Uses a model that sees: the one given, or the first one there is.")
+            + "it, such as whether it matches a brief. Uses a model that sees: the one given, or Auto's choice.")
     @Tier(value = Risk.COMPUTE, what = "shows a picture to a model that sees", medium = "text")
     @Returns("{model, answer}")
     public Map<String, Object> describeImage(@Tools.Param("the picture: a file in the project's folder or one a tool "
             + "made") String path,
             @Tools.Param("what to say about it; a plain description if left out") Optional<String> question,
-            @Tools.Param("a model that sees; the first one there is if left out") Optional<String> model) {
+            @Tools.Param("a model that sees; Auto's choice (the project's chat model when it sees) if left out") Optional<String> model) {
         Media picture = picture(media(path));
-        String key = model.filter(m -> !m.isBlank() && !m.equals(ChatService.AUTO)).orElseGet(this::seeing);
+        String key;
+        try {
+            key = model.filter(m -> !m.isBlank() && !m.equals(ChatService.AUTO)).orElse(null);
+            if (key == null) {
+                key = chat.autoKey("vision");
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
+        }
         StringBuilder answer = new StringBuilder();
         try {
             chat.chat(key, "", List.of(new ChatMessage("user", question.filter(q -> !q.isBlank())
@@ -196,39 +204,6 @@ public final class MediaTools {
             throw new AgentRuns.Stopped();
         }
         return Map.of("model", key, "answer", io.github.zzuegg.brainiac.llm.Agent.content(answer.toString()));
-    }
-
-    // the first model that sees, one on this PC first
-    private String seeing() {
-        Map<String, Object> d = chat.describe(false);
-        Map<String, Boolean> local = new LinkedHashMap<>();
-        for (Object p : Json.array(d.get("providers"))) {
-            Map<String, Object> m = Json.object(p);
-            local.put(String.valueOf(m.get("id")), Boolean.TRUE.equals(m.get("local")));
-        }
-        String remote = null;
-        for (Object o : Json.array(d.get("models"))) {
-            Map<String, Object> m = Json.object(o);
-            if (Boolean.FALSE.equals(m.get("shown")) || !(m.get("media") instanceof List<?> media) || !media.contains("vision")) {
-                continue;
-            }
-            String key = m.get("provider") + "/" + m.get("id");
-            Project p = ChatService.SCOPE.isBound() && ChatService.SCOPE.get() instanceof Project pr ? pr : null;
-            if (p != null && !p.allows(key)) {
-                continue;
-            }
-            if (local.getOrDefault(String.valueOf(m.get("provider")), false)) {
-                return key;
-            }
-            if (remote == null) {
-                remote = key;
-            }
-        }
-        if (remote == null) {
-            throw new IllegalArgumentException("no model that sees pictures is available: add a vision model (such as "
-                    + "Qwen2-VL) or a provider key");
-        }
-        return remote;
     }
 
     /**
