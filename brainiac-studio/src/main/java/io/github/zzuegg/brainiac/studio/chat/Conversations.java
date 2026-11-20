@@ -96,6 +96,41 @@ public final class Conversations {
     }
 
     /**
+     * Returns the folder the conversations are kept in.
+     *
+     * @return the folder
+     */
+    public Path folder() {
+        return folder;
+    }
+
+    /**
+     * Returns a conversation's file.
+     *
+     * @param id its id
+     * @return the file, which may not exist
+     * @throws IllegalArgumentException if the id is not one a conversation can have
+     */
+    public Path file(Object id) {
+        return folder.resolve(id(id) + ".json");
+    }
+
+    /**
+     * Reads one conversation.
+     *
+     * @param id its id
+     * @return it, or empty
+     * @throws IOException if it cannot be read
+     */
+    public synchronized java.util.Optional<Map<String, Object>> get(Object id) throws IOException {
+        Path f = file(id);
+        if (!Files.isRegularFile(f)) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(Json.object(Json.parse(Files.readString(f, StandardCharsets.UTF_8))));
+    }
+
+    /**
      * Deletes a conversation.
      *
      * @param id its id

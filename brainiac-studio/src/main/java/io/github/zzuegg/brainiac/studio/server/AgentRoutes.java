@@ -38,6 +38,9 @@ import java.util.Map;
  *   <li>{@code GET /api/services}, {@code POST /api/services/save {section, values, secret?}}.
  *   <li>{@code GET /api/reminders}, {@code POST /api/reminders/add {at, text, goal?, role?, project?,
  *       repeat?}}, {@code /dismiss {id}}.
+ *   <li>{@code GET /api/requests}: what agents asked of the projects theirs is part of, open
+ *       first; {@code POST /api/requests/answer {id, answer?, approve?}} answers one as the user
+ *       ({@code approve} gives or refuses a tool or model), {@code /withdraw {id}} drops it.
  *   <li>{@code POST /api/agents/notes {project}} and {@code /notes/save {project, text}}: what
  *       agents remember per project.
  * </ul>
@@ -88,10 +91,28 @@ final class AgentRoutes {
                     : Json.array(body.get("tools")).stream().map(String::valueOf).toList();
             String model = Json.string(body, "model", "");
             String mode = Json.string(body, "mode", "");
-            Exchanges.json(ex, 200, agents.start(new AgentRuns.Spec(Json.string(body, "goal", ""),
+            Map<String, Object> run = agents.start(new AgentRuns.Spec(Json.string(body, "goal", ""),
                     blank(Json.string(body, "role", "")), blank(model), blank(mode),
-                    (int) Json.integer(body, "maxSteps", 0), tools, Format.of(body))));
+                    (int) Json.integer(body, "maxSteps", 0), tools, Format.of(body)));
+            // a chat with tools: its agent shows in the chat, not among the agents
+            String chat = Json.string(body, "chat", "");
+            if (!chat.isBlank()) {
+                agents.forChat(Json.string(run, "id", ""), chat);
+                run = new java.util.LinkedHashMap<>(run);
+                run.put("chat", chat);
+            }
+            Exchanges.json(ex, 200, run);
         });
+        // requests agents sent up to parent projects
+        server.get("/api/requests", ex -> Exchanges.json(ex, 200, Map.of("requests", agents.requests())));
+        server.post("/api/requests/answer", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            Object approve = body.get("approve");
+            Exchanges.json(ex, 200, Map.of("request", agents.respond(Json.string(body, "id", ""),
+                    Json.string(body, "answer", null), approve instanceof Boolean bo ? bo : null)));
+        });
+        server.post("/api/requests/withdraw", ex -> Exchanges.json(ex, 200, Map.of("request",
+                agents.withdrawRequest(Json.string(Exchanges.body(ex, MAX_BODY), "id", "")))));
         server.post("/api/agents/answer", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             boolean ok = agents.answer(Json.string(body, "id", ""), Boolean.TRUE.equals(body.get("allow")),
@@ -100,7 +121,8 @@ final class AgentRoutes {
         });
         server.post("/api/agents/reply", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
-            var run = agents.reply(Json.string(body, "id", ""), Json.string(body, "text", ""));
+            var run = agents.reply(Json.string(body, "id", ""), Json.string(body, "text", ""),
+                    blank(Json.string(body, "mode", "")), blank(Json.string(body, "model", "")));
             if (run.isPresent()) {
                 Exchanges.json(ex, 200, run.get());
             } else {

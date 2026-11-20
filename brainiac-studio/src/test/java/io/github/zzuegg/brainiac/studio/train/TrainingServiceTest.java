@@ -143,6 +143,30 @@ class TrainingServiceTest {
     }
 
     @Test
+    void aRunIsRenamedGoesToTheTrashAndComesBackWithoutItsIdBeingGivenAgain() throws Exception {
+        buildModel("small", 2, 3);
+        Path bin = Files.createDirectories(folder.resolve("bin"));
+        try (TrainingService t = new TrainingService(folder)) {
+            java.util.List<String> told = new java.util.ArrayList<>();
+            t.onStart(r -> told.add(r.id()));
+            TrainingRun run = await(t.start(spec("small", 1)));
+            assertEquals(List.of(run.id()), told);
+            t.rename(run.id(), "first try");
+            assertEquals("first try", run.name());
+            t.detach(run.id(), bin);
+            assertTrue(t.run(run.id()).isEmpty());
+            assertTrue(Files.exists(bin.resolve("run.json")));
+        }
+        try (TrainingService t = new TrainingService(folder)) {
+            TrainingRun next = await(t.start(spec("small", 1)));
+            assertEquals("2", next.id(), "the id of the run in the trash is not given again");
+            t.attach("1", bin);
+            assertEquals("first try", t.run("1").orElseThrow().name());
+            assertThrows(IllegalArgumentException.class, () -> t.rename("1", " "));
+        }
+    }
+
+    @Test
     void aRunCanBeStoppedAndKeepsWhatItLearned() throws Exception {
         buildModel("long", 2, 3);
         try (TrainingService t = new TrainingService(folder)) {

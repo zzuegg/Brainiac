@@ -117,7 +117,18 @@ final class GpuSlot {
         String k = key(path, device);
         residency.admit(this, name, device, need(k, path, device), cancelled);
         long before = residency.inUse(device);
-        T t = loader.load();
+        T t;
+        try {
+            t = loader.load();
+        } catch (IllegalArgumentException e) {
+            // the model counts its own need more closely than its files do: when it finds too little
+            // room, the others that may go make room and it is tried once more
+            if (e.getMessage() == null || !e.getMessage().contains("does not fit") || !residency.makeRoom(this, name)) {
+                throw e;
+            }
+            before = residency.inUse(device);
+            t = loader.load();
+        }
         long after = residency.inUse(device);
         long used = after > before ? after - before : GpuResidency.sizeOnDisk(path);
         model = name;

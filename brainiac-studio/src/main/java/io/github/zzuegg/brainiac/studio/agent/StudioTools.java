@@ -295,14 +295,19 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "draw_image", value = "Draws pictures and saves them. 'auto' uses the project's image route: "
             + "its model and runner, on this PC or a remote machine.")
     @Tier(value = Risk.COMPUTE, what = "draws pictures, which uses the GPU or a paid provider", medium = "image", media = true)
-    @Returns("{model, files: [path]}")
+    @Returns("{model, files: [path], seeds?: [number]}")
     public Map<String, Object> drawImage(@Tools.Param("what the picture shows") String prompt,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("1:1, 4:3, 3:4, 16:9 or 9:16") Optional<String> aspect,
             @Tools.Param("how many, 1 to 4") Optional<Integer> count) {
         try {
-            return made(chat.images(model.orElse(ChatService.AUTO), prompt, aspect.orElse("1:1"),
-                    Math.clamp(count.orElse(1), 1, 4), null));
+            ChatService.Drawn d = chat.pictures(model.orElse(ChatService.AUTO), prompt, aspect.orElse("1:1"),
+                    Math.clamp(count.orElse(1), 1, 4), null);
+            Map<String, Object> out = made(d.generated());
+            if (!d.seeds().isEmpty()) {
+                out.put("seeds", d.seeds());
+            }
+            return out;
         } catch (IOException e) {
             throw new UncheckedIOException(e.getMessage(), e);
         } catch (InterruptedException e) {
@@ -318,15 +323,29 @@ public final class StudioTools implements RiskRefiner {
      * @param voice the voice
      * @return the model used and where the audio was saved
      */
-    @Tools.Tool(name = "make_speech", value = "Speaks text and saves the audio. 'auto' uses the project's speech route: "
-            + "its model and runner, on this PC or a remote machine.")
+    @Tools.Tool(name = "list_voices", value = "Lists the voices a speech model has, by their exact names, so make_speech "
+            + "can use one. 'auto' is the model make_speech uses without one.")
+    @Returns("{model, voices: [name], names?: {name: description}, mix?, clones?}")
+    public Map<String, Object> listVoices(@Tools.Param("a speech model key, or 'auto'") Optional<String> model) {
+        try {
+            return chat.voices(model.orElse(ChatService.AUTO));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+    }
+
+        @Tools.Tool(name = "make_speech", value = "Speaks text and saves the audio. 'auto' uses the project's speech route: "
+            + "its model and runner, on this PC or a remote machine. "
+            + "Voices are model-specific: get their exact names with list_voices; a wrong one is an error.")
     @Tier(value = Risk.COMPUTE, what = "makes audio, which uses the GPU or a paid provider", medium = "speech", media = true)
     @Returns("{model, files: [path]}")
     public Map<String, Object> makeSpeech(@Tools.Param("the words to say") String text,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
-            @Tools.Param("the voice's name, if the model has voices") Optional<String> voice) {
+            @Tools.Param("the voice's exact name from list_voices; left out, the model's own voice") Optional<String> voice) {
         try {
-            return made(chat.speech(model.orElse(ChatService.AUTO), text, voice.orElse(""), 1, "", "wav", null));
+            Map<String, Object> m = made(chat.speech(model.orElse(ChatService.AUTO), text, voice.orElse(""), 1, "", "wav", null));
+            m.put("voice", voice.filter(v -> !v.isBlank()).orElse("the model's own"));
+            return m;
         } catch (IOException e) {
             throw new UncheckedIOException(e.getMessage(), e);
         } catch (InterruptedException e) {

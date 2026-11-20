@@ -180,7 +180,8 @@ public final class Roles {
         List<Role> chain = new ArrayList<>();
         for (String at = want; at != null; ) {
             String here = at;
-            Role r = get(here).orElseThrow(() -> new IllegalArgumentException("there is no role " + here));
+            Role r = get(here).orElseThrow(() -> new IllegalArgumentException("there is no role " + here + "; the roles are "
+                    + String.join(", ", list().stream().map(Role::id).toList())));
             if (chain.stream().anyMatch(c -> c.id().equals(r.id()))) {
                 throw new IllegalArgumentException("the role " + want + " extends itself through " + r.id());
             }

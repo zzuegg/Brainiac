@@ -143,6 +143,22 @@ class ChatApiTest {
     }
 
     @Test
+    void aKeptRecordingIsSavedWithTheOutputsBeforeItIsWrittenDown() throws Exception {
+        byte[] wav = new byte[44 + 3200];
+        System.arraycopy("RIFF".getBytes(), 0, wav, 0, 4);
+        String audio = java.util.Base64.getEncoder().encodeToString(wav);
+        HttpResponse<String> r = call("POST", "/api/transcribe", "{\"audio\":\"" + audio + "\",\"keep\":true}");
+        assertEquals(200, r.statusCode());
+        assertTrue(r.body().startsWith("event: audio"), r.body());
+        String line = r.body().lines().filter(l -> l.startsWith("data:")).findFirst().orElseThrow();
+        Path kept = Path.of(Json.string(Json.object(Json.parse(line.substring(5).strip())), "file", ""));
+        assertTrue(kept.getFileName().toString().startsWith("heard-") && java.nio.file.Files.size(kept) == wav.length, kept.toString());
+        // without keep nothing is written
+        r = call("POST", "/api/transcribe", "{\"audio\":\"" + audio + "\"}");
+        assertFalse(r.body().contains("event: audio"), r.body());
+    }
+
+    @Test
     void providerSettingsAreChangedThroughTheApi() throws Exception {
         call("POST", "/api/keys", "{\"provider\":\"anthropic\",\"key\":\"k\"}");
         HttpResponse<String> r = call("POST", "/api/providers",

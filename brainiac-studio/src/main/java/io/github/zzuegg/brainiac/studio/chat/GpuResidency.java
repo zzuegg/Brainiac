@@ -171,7 +171,12 @@ public final class GpuResidency {
     private final AtomicLong ids = new AtomicLong();
     private final Map<String, Policy> policies = new EnumMapByKind();
     private final Set<String> pinned = ConcurrentHashMap.newKeySet();
-    private volatile int idleMinutes;
+    /** Minutes an unused model stays loaded until the user chooses otherwise. */
+    static final int DEFAULT_IDLE_MINUTES = 5;
+
+    private volatile int idleMinutes = DEFAULT_IDLE_MINUTES;
+    // whether the user chose the idle minutes; until then a newer default applies
+    private volatile boolean idleChosen;
     private volatile long waitMillis = 30 * 60_000L;
     private volatile long pollMillis = 500;
 
@@ -287,7 +292,10 @@ public final class GpuResidency {
             pinned.clear();
             pinned.addAll(pins);
         }
-        idleMinutes = idle;
+        if (change.get("idleMinutes") != null) {
+            idleMinutes = idle;
+            idleChosen = true;
+        }
         write();
     }
 
@@ -482,6 +490,31 @@ public final class GpuResidency {
         }
     }
 
+    /**
+     * Unloads every other model that may go, for a model whose own check found too little room
+     * after {@link #admit} let it load, as the swap policy allows.
+     *
+     * @param asking the slot that loads
+     * @param model the model's name, for the log
+     * @return whether any was unloaded
+     */
+    boolean makeRoom(GpuSlot asking, String model) {
+        if (effective(asking.kind()) != Policy.SWAP) {
+            return false;
+        }
+        boolean any = false;
+        for (GpuSlot s : candidates(asking)) {
+            if (s.tryUnload()) {
+                LOG.log(System.Logger.Level.INFO, "unloaded the " + s.kind() + " model to make room for " + model);
+                any = true;
+            }
+        }
+        if (any) {
+            settle();
+        }
+        return any;
+    }
+
     // the other loaded models that may go, the one used longest ago first
     private List<GpuSlot> candidates(GpuSlot asking) {
         return slots.stream()
@@ -589,7 +622,11 @@ public final class GpuResidency {
                     }
                 }
             }
-            idleMinutes = (int) Math.max(0, Json.integer(m, "idleMinutes", 0));
+            // files from before the choice was kept hold the old default of 0, which no one chose
+            idleChosen = Boolean.TRUE.equals(m.get("idleChosen"));
+            if (idleChosen) {
+                idleMinutes = (int) Math.max(0, Json.integer(m, "idleMinutes", DEFAULT_IDLE_MINUTES));
+            }
             if (m.get("measured") != null) {
                 for (Map.Entry<String, Object> e : Json.object(m.get("measured")).entrySet()) {
                     if (e.getValue() instanceof Number n && n.longValue() > 0) {
@@ -614,6 +651,7 @@ public final class GpuResidency {
         m.put("policies", ps);
         m.put("pinned", KINDS.stream().filter(pinned::contains).toList());
         m.put("idleMinutes", idleMinutes);
+        m.put("idleChosen", idleChosen);
         m.put("measured", new LinkedHashMap<>(measured));
         Files.createDirectories(file.toAbsolutePath().getParent());
         Files.writeString(file, Json.write(m));

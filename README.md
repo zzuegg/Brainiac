@@ -993,6 +993,76 @@ Everything the studio keeps goes to one **data folder**: `--data <folder>`, or e
 | `local-models.txt` | model files and folders added on the Models screen |
 | `hosts.properties` | other machines to train on, with their tokens, readable only by your account |
 | `agents/` | every agent run: its goal, each step, tool call and answer |
+| `owners.json` | which project each conversation and graph belongs to |
+| `trash/` | deleted items, restorable for 30 days |
+
+### Studio v2 (preview)
+
+A second page grows beside the classic one at `http://127.0.0.1:7860/v2/`, on the same server and
+data. It opens several projects at once as tabs, each with its own sidebar, and gives every item
+(chat, agent, network, project) the same menu: right-click or `⋯` for Open, Rename (F2),
+Duplicate (Ctrl+D), Move to project and Delete, which is instant and undone from its toast or
+with Ctrl+Z. Every "New …" is a short wizard, and chats and agent runs read in one centred column
+whose width is a setting. It is built from Preact, htm and signals, vendored in
+`web/v2/vendor` (no build step, nothing loaded from the internet); `BRAINIAC_STUDIO_WEB` pointed
+at `brainiac-studio/src/main/resources/io/github/zzuegg/brainiac/studio/web` serves the page
+from the checkout, so a change shows on reload. Both pages use the same item API:
+
+| call | what |
+|---|---|
+| `POST /api/items {project?, kinds?}` | a project's items, newest first |
+| `POST /api/items/rename`, `/move`, `/duplicate {kind, id, …}` | the same actions for every kind |
+| `POST /api/items/delete {kind, id}` | moves it to the trash; the answer's id restores it |
+| `GET /api/trash`, `POST /api/trash/restore {id}`, `/empty {id?}` | the trash |
+| `GET /api/requests`, `POST /api/requests/answer {id, answer?, approve?}`, `/withdraw {id}` | what agents in subprojects ask of their parent projects |
+
+**Subprojects.** A project can be part of one or more others (its `parents`; the default
+project is part of none). It can never use more than every parent allows: its tools and models
+are what it allows itself and each parent allows too, and it uses a parent's folder and routes
+where it has none of its own. Agents in a project can list and make subprojects
+(`list_subprojects`, `create_subproject`), start agents there (`spawn_agent`'s `project`), and
+message and read them. Going up takes a request: `request_parent` sends a question, asks for a
+tool or model, or hands up a result, to one parent or all of them, and the first answer counts.
+Each project says who answers its subprojects' requests (`requests`: `user` or `agents`); its
+agents see them with `list_requests` and may give only what their own project allows. The
+answer wakes the agent that asked. Deleting a project takes along subprojects that are part of
+nothing else and only unlinks the others; restoring it puts both back.
+
+**Overview.** The first tab of the v2 page (Ctrl+Shift+O) shows everything across the
+projects: requests and agents waiting for you, agents that failed, what is working now, what is
+built and what is in progress, and the projects as a tree with their subprojects.
+
+**Builder.** A network opens on a canvas: blocks on the left (every layer the installed
+modules offer), the network in the middle, and on the right the selected block's settings or
+the **assistant**, an agent docked beside the canvas. Tell it what to change ("add a hidden
+layer of 128 units", "make it a small CNN for 32×32 pictures") and it reads and edits the
+network with `read_network` and `edit_network`; each change shows on the canvas as it is made,
+marked, and Ctrl+Z (or Undo on the canvas) takes it back like any change of your own. The same
+rule holds for both: a change that would break a block that works is refused, with the reason.
+A new network can start from a description, which the assistant builds. Changes save as they
+are made; Build builds the model and saves it beside the network. Agents anywhere in the
+project can use `list_networks`, `read_network`, `create_network` and `edit_network` too
+(`POST /api/builder/graphs/get {name}` reads one network).
+
+**Training.** Train… in the builder (or + under Training in the sidebar) starts a run in three
+steps: the network and the data, with a line that says whether they fit; the optimizer,
+learning rate, epochs and batch, with every other setting under More settings; and where it
+runs, with extra learning rates to try side by side. The network is built fresh from its
+design when the run starts. A run belongs to its project like a chat: it can be renamed, moved
+and deleted to the trash (its saved model stays). Its page shows the progress, the loss per
+epoch beside other runs of the same network, every epoch's numbers, the settings, and the model
+it saved, which can be tried on a sample of its data or trained further. Run ids are never
+given twice (`runs/last-id`); `POST /api/train/run {id}` reads one run with its loss curve.
+
+**Pictures, speech and video.** What a tool makes (`draw_image`, `make_speech`, `make_video`)
+shows in the chat or on the agent's page as it comes: pictures and clips in a grid (click for a
+large view, ← and → for the others, Save), recordings with a player. While a drawing or clip is
+made, the run shows its step and a rough preview; any other long call says what it is doing and
+for how long. A chat can also be an image, speech or video chat (offered on a new chat): each
+turn is a prompt with its settings (model, shape, count, seed, steps, guidance, what to leave
+out, voice) and what came out, drawn step by step with previews on this PC. Fine tune on a
+picture an agent drew opens it in a new image chat with its prompt, model and seed, ready to be
+changed and drawn again. `POST /api/outputs/file {path}` reads a file from the outputs folder.
 
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that

@@ -58,6 +58,7 @@ class AgentRulesTest {
                 new MediaTools(chat), new MlTools(chat, training), new WebTools(services),
                 new KnowledgeTools(data.resolve("index")), new CodeTools(services), new GitHubTools(services),
                 new RunnerTools(chat, () -> null, projects), new MailTools(services),
+                new NetworkTools(new io.github.zzuegg.brainiac.studio.builder.Graphs(data), new io.github.zzuegg.brainiac.studio.items.Owners(data.resolve("owners.json"))),
                 publish = new PublishTools(services, data.resolve("posts.json"), projects)),
                 data.resolve("agents"), projects, new Roles(data.resolve("roles")));
     }
@@ -70,6 +71,7 @@ class AgentRulesTest {
                     .forEach(r -> agents.stop((String) r.get("id")));
             Thread.sleep(20);
         }
+        agents.awaitIdle(5000);
         publish.close();
         training.close();
     }

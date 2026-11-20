@@ -44,7 +44,7 @@ public final class TrainingRun {
     static final int MAX_POINTS = 1200;
 
     private final String id;
-    private final String name;
+    private volatile String name;
     private final Map<String, Object> spec;
     private final long created;
     private final String host;
@@ -101,6 +101,15 @@ public final class TrainingRun {
      */
     public String name() {
         return name;
+    }
+
+    /**
+     * Gives the run another name.
+     *
+     * @param name the new name
+     */
+    void rename(String name) {
+        this.name = name;
     }
 
     /**
