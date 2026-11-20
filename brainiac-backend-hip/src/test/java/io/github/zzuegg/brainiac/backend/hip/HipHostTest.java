@@ -90,6 +90,9 @@ class HipHostTest {
         for (long b = 1; b < (1L << 34); b = b * 3 + 7) {
             long c = HipContext.sizeClass(b);
             assertTrue(c >= b && c <= Math.max(256, b * 1.25 + 256), b + " -> " + c);
+            if (b > (1L << 20)) {
+                assertTrue(c <= b + Math.max(64L << 10, b / 64), "large blocks round up by little: " + b + " -> " + c);
+            }
             assertEquals(c, HipContext.sizeClass(c), "a class is its own class");
         }
     }

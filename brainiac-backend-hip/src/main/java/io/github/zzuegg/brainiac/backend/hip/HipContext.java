@@ -871,14 +871,18 @@ final class HipContext {
     private long reserved;
     long collections;
 
-    /** Allocation sizes: multiples of 256 bytes up to 4 KB, then four steps per power of two. */
+    /**
+     * Allocation sizes: multiples of 256 bytes up to 4 KB, then four steps per power of two up
+     * to 1 MB, then 64 (at least 64 KB apart). Large blocks are mostly weights, kept for good,
+     * where four steps wasted up to a quarter (190 MB on a 7B model's 1.1 GB embeddings).
+     */
     static long sizeClass(long bytes) {
         long b = Math.max(256, (bytes + 255) & ~255L);
         if (b <= 4096) {
             return b;
         }
-        int shift = 63 - Long.numberOfLeadingZeros(b) - 2;
-        long step = 1L << shift;
+        long top = Long.highestOneBit(b);
+        long step = b <= (1L << 20) ? top >> 2 : Math.max(64L << 10, top >> 6);
         return (b + step - 1) & -step;
     }
 
