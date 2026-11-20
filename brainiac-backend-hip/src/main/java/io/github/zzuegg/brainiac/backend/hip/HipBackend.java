@@ -1437,6 +1437,8 @@ public final class HipBackend implements Backend {
         final PackedMatrix host;
         /** The uploaded matrix, once uploaded. */
         volatile Packed done;
+        /** Whether the background upload should leave it (it was unpacked to the host first). */
+        volatile boolean skip;
 
         Deferred(HipBackend owner, PackedMatrix host) {
             this.owner = owner;
@@ -1465,14 +1467,71 @@ public final class HipBackend implements Backend {
         }
     }
 
+    /**
+     * Packs a matrix for this backend. It uploads in the background while the caller goes on
+     * (reading a model's next weights), or on its first use if that comes first. A matrix
+     * unpacked to the host before it uploaded, as {@code Llama.fuseProjections} joins q, k and
+     * v and gate and up, is left for its first use instead: joined parts then never upload.
+     */
     @Override
     public PackedStorage pack(PackedMatrix matrix) {
+        Deferred d = new Deferred(this, matrix);
+        if (PREFETCH) {
+            fetch(d, false);
+        }
+        return d;
+    }
+
+    /** Packs a matrix that uploads on its first use or {@link #prefetch}, not in the background at once. */
+    @Override
+    public PackedStorage packLater(PackedMatrix matrix) {
         return new Deferred(this, matrix);
     }
 
+    @Override
+    public void prefetch(PackedStorage packed) {
+        if (packed instanceof Deferred d && d.owner == this) {
+            fetch(d, true);
+        }
+    }
+
+    @Override
+    public void prefetchNow(PackedStorage packed) {
+        if (packed instanceof Deferred d && d.owner == this) {
+            packed(d);
+        }
+    }
+
+    /** Uploads in the background, unless it was unpacked to the host first and {@code always} is false. */
+    private void fetch(Deferred d, boolean always) {
+        prefetcher.execute(() -> {
+            if (always || !d.skip) {
+                try {
+                    packed(d);
+                } catch (RuntimeException | OutOfMemoryError e) {
+                    // out of memory or such: the first use tries again, and fails there
+                }
+            }
+        });
+    }
+
+    /** Whether packed matrices upload in the background ({@code -Dbrainiac.hip.prefetch=false}: on first use). */
+    private static final boolean PREFETCH = !"false".equals(System.getProperty("brainiac.hip.prefetch"));
+    /** Uploads packed matrices in the background, one at a time; its thread starts with the first. */
+    private final java.util.concurrent.ExecutorService prefetcher = java.util.concurrent.Executors
+            .newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "brainiac-hip-upload");
+                t.setDaemon(true);
+                return t;
+            });
+
     /** Uploads a packed matrix, preparing its layout without the lock. */
     private Packed upload(PackedMatrix matrix) {
-        PackedLayout st = PackedLayout.of(matrix);
+        return upload(PackedLayout.of(matrix));
+    }
+
+    private Packed upload(PackedLayout st) {
+        PackedMatrix matrix = st.matrix();
         synchronized (this) {
             ctx();
             HipStorage levels = uploadBytes(st.levels());
@@ -1490,6 +1549,9 @@ public final class HipBackend implements Backend {
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
         if (packed instanceof Deferred d) {
+            if (d.done == null) {
+                d.skip = true;
+            }
             return d.host;
         }
         if (packed instanceof Packed p) {
@@ -1502,16 +1564,17 @@ public final class HipBackend implements Backend {
     private Packed packed(PackedStorage s) {
         if (s instanceof Deferred d && d.owner == this) {
             Packed p = d.done;
-            if (p == null) {
-                synchronized (d) {
-                    p = d.done;
-                    if (p == null) {
-                        p = upload(d.host);
-                        d.done = p;
-                    }
-                }
+            if (p != null) {
+                return p;
             }
-            return p;
+            // prepared without the lock (by both threads, if the background upload is at it too)
+            PackedLayout st = PackedLayout.of(d.host);
+            synchronized (this) {
+                if (d.done == null) {
+                    d.done = upload(st);
+                }
+                return d.done;
+            }
         }
         if (s instanceof Packed p && p.levels().owner == this) {
             return p;
