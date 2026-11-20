@@ -317,7 +317,7 @@ public final class HipBackend implements Backend {
                 + (c.peak() >> 20) + " MB peak, " + (c.reserved() >> 20) + " MB reserved, " + c.collections
                 + " collections, fusion " + (FUSION ? fusedLaunches + " fused launches of " + c.fusedKernels()
                         + " generated kernels (" + c.fusedCompileNanos / 1_000_000 + " ms compiling)" : "off")
-                + c.profileReport();
+                + c.profileReport() + c.sitesReport();
     }
 
     /**
@@ -1727,6 +1727,8 @@ public final class HipBackend implements Backend {
     private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.hip.fusedAttention"));
     /** The fewest keys a piece of a split attention row takes ({@code -Dbrainiac.hip.attentionPiece}). */
     private static final int ATTENTION_PIECE = Math.max(1, Integer.getInteger("brainiac.hip.attentionPiece", 16));
+    /** Warps per block of the attention kernel ({@code -Dbrainiac.hip.attentionBlock}). */
+    private static final int ATTENTION_BLOCK_WARPS = Math.clamp(Integer.getInteger("brainiac.hip.attentionBlock", 2), 1, 8);
     /** Warps per compute unit a split attention aims for ({@code -Dbrainiac.hip.attentionWarps}). */
     private static final int ATTENTION_WARPS = Math.max(1, Integer.getInteger("brainiac.hip.attentionWarps", 64));
     /** The largest head the attention kernels take: 32 lanes times ATT_LANES in kernels.hip. */
@@ -1799,7 +1801,11 @@ public final class HipBackend implements Backend {
                 .ints(attShape(shape, scale, causal)).i64(rows).i32(xb == null ? 0 : 1).i64(strides[0])
                 .i64(strides[1]).i64(strides[2]).i64(strides[3]).i32(parts).i32(chunk)
                 .ptr(counters);
-        warps(c, kernel("attention", t), rows * parts);
+        // blocks of few warps: decoding has only a hundred or so warps, which in blocks of 8
+        // ran on a few compute units of the GPU's dozens
+        long warps = rows * parts;
+        c.launch(kernel("attention", t), (int) Math.max(1, (warps + ATTENTION_BLOCK_WARPS - 1) / ATTENTION_BLOCK_WARPS),
+                1, 1, 32 * ATTENTION_BLOCK_WARPS);
         if (counted) {
             part.release();
         } else if (part != null) {

@@ -901,6 +901,7 @@ final class HipContext {
                     live.add(ptr);
                     inUse += size;
                     peak = Math.max(peak, inUse);
+                    site(ptr, size);
                     return ptr;
                 }
             }
@@ -913,7 +914,54 @@ final class HipContext {
         live.add(ptr);
         inUse += size;
         peak = Math.max(peak, inUse);
+        site(ptr, size);
         return ptr;
+    }
+
+    /**
+     * Whether allocations are traced to the code that made them ({@code -Dbrainiac.hip.memorySites=true}):
+     * the statistics then show what held the memory at its peak.
+     */
+    static final boolean SITES = Boolean.getBoolean("brainiac.hip.memorySites");
+    /** Per live allocation with {@link #SITES}: its size and where it was made. */
+    private final Map<Long, Object[]> sites = new HashMap<>();
+    /** What held the memory at its peak, per site, as of the last peak recorded. */
+    private Map<String, long[]> peakSites = Map.of();
+    private long peakSitesAt;
+
+    private void site(long ptr, long size) {
+        if (!SITES) {
+            return;
+        }
+        String where = StackWalker.getInstance().walk(frames -> frames
+                .filter(f -> !f.getClassName().startsWith("io.github.zzuegg.brainiac.backend.hip")
+                        && !f.getClassName().startsWith("io.github.zzuegg.brainiac.tensor.Tensor"))
+                .limit(3).map(f -> f.getClassName().substring(f.getClassName().lastIndexOf('.') + 1) + "."
+                        + f.getMethodName() + ":" + f.getLineNumber())
+                .collect(java.util.stream.Collectors.joining(" < ")));
+        sites.put(ptr, new Object[] {size, where});
+        if (inUse >= peakSitesAt + (256L << 20)) {
+            Map<String, long[]> now = new HashMap<>();
+            for (Object[] e : sites.values()) {
+                long[] t = now.computeIfAbsent((String) e[1], k -> new long[2]);
+                t[0] += (Long) e[0];
+                t[1]++;
+            }
+            peakSites = now;
+            peakSitesAt = inUse;
+        }
+    }
+
+    /** With {@link #SITES}: the sites that held the most memory at the last recorded peak. */
+    String sitesReport() {
+        if (!SITES) {
+            return "";
+        }
+        StringBuilder b = new StringBuilder("\nmemory at " + (peakSitesAt >> 20) + " MB in use, by where it was allocated:");
+        peakSites.entrySet().stream().sorted((x, y) -> Long.compare(y.getValue()[0], x.getValue()[0])).limit(20)
+                .forEach(e -> b.append(String.format(java.util.Locale.ROOT, "%n  %8d MB in %6d blocks  %s",
+                        e.getValue()[0] >> 20, e.getValue()[1], e.getKey())));
+        return b.toString();
     }
 
     private ArrayDeque<Long> freeList(long size) {
@@ -1019,6 +1067,9 @@ final class HipContext {
     /** Returns memory to the pool; work queued later may use it. */
     void free(long ptr, long bytes) {
         if (live.remove(ptr)) {
+            if (SITES) {
+                sites.remove(ptr);
+            }
             long size = sizeClass(bytes);
             inUse -= size;
             (size <= SLAB_LIMIT ? smallPool : pool).computeIfAbsent(size, s -> new ArrayDeque<>()).push(ptr);

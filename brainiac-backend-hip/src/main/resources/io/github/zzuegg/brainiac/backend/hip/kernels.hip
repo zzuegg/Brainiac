@@ -1383,7 +1383,7 @@ template <class D> __device__ void attention_k(const typename D::T* q, const typ
         const typename D::T* v, typename D::T* out, typename D::T* lse, const typename D::T* bias, float* part,
         AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3, int parts, int chunk, int* counters) {
     int lane = threadIdx.x & 31;
-    i64 w = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
+    i64 w = ((i64) blockIdx.x * blockDim.x + threadIdx.x) >> 5;   // blocks of any number of warps
     if (w >= rows * parts) {
         return;
     }
