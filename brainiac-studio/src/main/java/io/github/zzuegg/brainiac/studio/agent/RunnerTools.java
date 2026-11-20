@@ -41,6 +41,7 @@ public final class RunnerTools {
     @Tools.Tool(name = "find_machines", value = "Lists GPU machines that can be rented from Vast.ai now, cheapest "
             + "first, with their price per hour.")
     @Tier(value = Risk.READ, resultChars = 10_000)
+    @Returns("[{id, gpu, price per hour, ...}], at most 15")
     public List<Map<String, Object>> findMachines(@Tools.Param("a GPU name, such as 'RTX 4090'; any if left out") Optional<String> gpu,
             @Tools.Param("the least GPU memory in GB") Optional<Double> memory,
             @Tools.Param("how many GPUs, 1 if left out") Optional<Integer> gpus,
@@ -59,6 +60,7 @@ public final class RunnerTools {
 
     @Tools.Tool(name = "list_rentals", value = "Lists the machines the studio has rented, with what each has cost so far.")
     @Tier(value = Risk.READ)
+    @Returns("[{instance, state, gpu, price per hour, ...}]")
     public List<Map<String, Object>> listRentals() {
         return need().list();
     }
@@ -66,6 +68,7 @@ public final class RunnerTools {
     @Tools.Tool(name = "rent_machine", value = "Rents a GPU machine from Vast.ai as a worker for the studio, for a "
             + "number of hours, after which it is destroyed. Costs money: the user is asked first.")
     @Tier(value = Risk.SPEND, what = "rents a GPU machine, which costs money by the hour")
+    @Returns("{instance, state, ...}")
     public Map<String, Object> rentMachine(@Tools.Param("the offer's id from find_machines") long offer,
             @Tools.Param("the price per hour the offer showed") double pricePerHour,
             @Tools.Param("how many hours it may run, at most the studio's limit") double hours) {
@@ -84,6 +87,7 @@ public final class RunnerTools {
 
     @Tools.Tool(name = "stop_machine", value = "Destroys a rented machine, so it costs nothing more. Its files are lost.")
     @Tier(value = Risk.WRITE, what = "destroys a rented machine")
+    @Returns("text: that the machine is going")
     public String stopMachine(@Tools.Param("the instance's id from list_rentals") long instance) {
         try {
             need().destroy(instance);
@@ -96,6 +100,7 @@ public final class RunnerTools {
     @Tools.Tool(name = "set_route", value = "Sets which model the project uses for a kind of task (text, image, "
             + "speech, transcribe, video), and what happens when the GPU is busy.")
     @Tier(value = Risk.WRITE, what = "changes the project's routes")
+    @Returns("{project, routes}")
     public Map<String, Object> setRoute(@Tools.Param("text, image, speech, transcribe or video") String medium,
             @Tools.Param("the model, or 'auto'") String model,
             @Tools.Param("when the GPU is busy: swap, queue, remote or ask; swap if left out") Optional<String> policy,

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -131,5 +132,39 @@ class AgentTest {
         Agent.Result r = agent.run(List.of(Map.of("role", "user", "content", "x")), 1);
         assertFalse(r.finished());
         assertEquals("error: no tool named nope", r.messages().get(2).get("content"));
+    }
+
+    @Test
+    void readsTheCallsSmallLocalModelsWrite() {
+        Set<String> known = Set.of("list_files", "read_file");
+        Map<String, Object> call = Map.of("name", "list_files", "arguments", Map.of("path", "src"));
+        // strict forms
+        assertEquals(List.of(call), Agent.calls("<tool_call>{\"name\": \"list_files\", \"arguments\": {\"path\": \"src\"}}</tool_call>"));
+        assertEquals(List.of(call), Agent.calls("{\"name\": \"list_files\", \"parameters\": {\"path\": \"src\"}}"));
+        assertEquals(List.of(), Agent.calls("Here is an example: {\"name\": \"list_files\", \"arguments\": {}} and more"),
+                "without the tools' names, JSON inside prose is not a call");
+        // a missing end tag, a fence inside the tag
+        assertEquals(List.of(call), Agent.calls("<tool_call>\n```json\n{\"name\": \"list_files\", \"arguments\": {\"path\": \"src\"}}\n```"));
+        // JSON in a fence, after words
+        Agent.Parsed p = Agent.read("I will list the files.\n```json\n{\"name\": \"list_files\", \"parameters\": {\"path\": \"src\"}}\n```", known);
+        assertEquals(List.of(call), p.calls());
+        assertEquals("I will list the files.", p.content());
+        // other keys, wrappers, lists, no arguments, prefixed names
+        assertEquals(List.of(call), Agent.read("{\"function\": {\"name\": \"list_files\", \"arguments\": \"{\\\"path\\\": \\\"src\\\"}\"}}", known).calls());
+        assertEquals(List.of(call), Agent.read("{\"tool\": \"list_files\", \"args\": {\"path\": \"src\"}}", known).calls());
+        assertEquals(List.of(Map.of("name", "read_file", "arguments", Map.of())),
+                Agent.read("{\"name\": \"default_api.read_file\"}", known).calls());
+        assertEquals(2, Agent.read("[{\"name\": \"list_files\", \"arguments\": {}}, {\"name\": \"read_file\", \"arguments\": {\"path\": \"a\"}}]", known).calls().size());
+        assertEquals(List.of(), Agent.read("{\"name\": \"format_disk\", \"arguments\": {}} in a sentence", known).calls(),
+                "unknown tools outside the tags are words");
+        // Python-style calls, as Gemma writes them
+        Agent.Parsed py = Agent.read("```tool_code\nprint(default_api.list_files(path='src'))\n```", known);
+        assertEquals(List.of(call), py.calls());
+        assertEquals("", py.content());
+        assertEquals(List.of(Map.of("name", "read_file", "arguments", Map.of("path", "a.txt", "lines", 5L, "all", true))),
+                Agent.read("[read_file(path=\"a.txt\", lines=5, all=True)]", known).calls().stream()
+                        .map(c -> Map.of("name", c.get("name"), "arguments", c.get("arguments"))).toList());
+        assertEquals(List.of(), Agent.read("You could use list_files(path='src') for that.", known).calls());
+        assertEquals("Plain answer.", Agent.read("Plain answer.", known).content());
     }
 }

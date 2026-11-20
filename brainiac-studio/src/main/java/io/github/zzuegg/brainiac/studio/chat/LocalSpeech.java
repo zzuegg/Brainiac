@@ -150,7 +150,7 @@ public final class LocalSpeech {
             }
             for (Path p : candidates) {
                 if (kind(p).isPresent()) {
-                    found.putIfAbsent(p.getFileName().toString(), p);
+                    found.putIfAbsent(ModelPlaces.name(p), p);
                 }
             }
         }

@@ -50,6 +50,7 @@ public final class MlTools {
      */
     @Tools.Tool(name = "gpu_status", value = "Says what is loaded on this PC's GPU, how much memory is free, the "
             + "policy per kind of task, and what is waiting. Use it before loading a big model.")
+    @Returns("{devices and what each holds}")
     public Map<String, Object> gpuStatus() {
         io.github.zzuegg.brainiac.tensor.Device d;
         try {
@@ -74,6 +75,7 @@ public final class MlTools {
     @Tools.Tool(name = "fine_tune", value = "Fine-tunes a chat model on this PC with LoRA on a data file of "
             + "conversations or prompt and answer pairs (JSONL). One fine-tune runs at a time; ml_jobs shows how it goes.")
     @Tier(value = Risk.COMPUTE, what = "fine-tunes a model on this PC, which keeps the GPU busy for a long time")
+    @Returns("{id, state, ...}: the job; ml_jobs follows it")
     public Map<String, Object> fineTune(@Tools.Param("a local chat model, such as 'local/qwen2.5-0.5b-instruct'") String model,
             @Tools.Param("the data file: a path the fine-tune page accepts, such as one in the datasets folder") String data,
             @Tools.Param("a name for the result") Optional<String> name,
@@ -99,6 +101,7 @@ public final class MlTools {
     @Tools.Tool(name = "quantize_model", value = "Makes a smaller copy of a local chat model, such as Q4_K_M, so it "
             + "needs less memory. ml_jobs shows how it goes.")
     @Tier(value = Risk.COMPUTE, what = "makes a smaller copy of a model on this PC")
+    @Returns("{id, state, ...}: the job; ml_jobs follows it")
     public Map<String, Object> quantizeModel(@Tools.Param("a local chat model") String model,
             @Tools.Param("Q8_0, Q6_K, Q5_K_M, Q4_K_M or another size; Q4_K_M if left out") Optional<String> size) {
         try {
@@ -121,6 +124,7 @@ public final class MlTools {
     @Tools.Tool(name = "evaluate_model", value = "Measures a local chat model: its score on a task and data set, or "
             + "its speed. ml_jobs shows the result.")
     @Tier(value = Risk.COMPUTE, what = "measures a model on this PC")
+    @Returns("{id, state, ...}: the job; ml_jobs follows it")
     public Map<String, Object> evaluateModel(@Tools.Param("a local chat model") String model,
             @Tools.Param("the task, as the evaluation page names it; empty when measuring speed") Optional<String> task,
             @Tools.Param("the data file for the task") Optional<String> data,
@@ -144,6 +148,7 @@ public final class MlTools {
     @Tools.Tool(name = "ml_jobs", value = "Says how fine-tuning, quantizing and measuring on this PC go, with their "
             + "results.")
     @Tier(value = Risk.READ, resultChars = 12_000)
+    @Returns("{fineTune: [...], quantize: [...], evaluate: [...]}")
     public Map<String, Object> mlJobs() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("fineTune", chat.fineTune().state());
@@ -161,6 +166,7 @@ public final class MlTools {
     @Tools.Tool(name = "training_curve", value = "Reads a training run's loss and accuracy per epoch, to see whether it "
             + "learns, overfits or has stalled.")
     @Tier(value = Risk.READ, resultChars = 12_000)
+    @Returns("{id, name, state, epoch, epochs, loss, bestEpoch, history: [per epoch]}")
     public Map<String, Object> trainingCurve(@Tools.Param("the run's id from list_training_runs") String id) {
         for (TrainingRun r : training.runs()) {
             if (r.id().equals(id)) {
@@ -186,6 +192,7 @@ public final class MlTools {
     @Tools.Tool(name = "list_layers", value = "Lists the blocks a model can be built from in the builder, with their "
             + "parameters: the 'key' of each goes in a layer node's 'entry'.")
     @Tier(value = Risk.READ, resultChars = 16_000)
+    @Returns("[{the layer's name, group, inputs and settings}]")
     public List<Map<String, Object>> listLayers(@Tools.Param("words in a block's name or group, such as 'conv'") Optional<String> search) {
         List<Map<String, Object>> out = new ArrayList<>();
         String q = search.orElse("").toLowerCase(Locale.ROOT);
@@ -211,6 +218,7 @@ public final class MlTools {
             + "not fit. A graph is {\"nodes\": [...], \"output\": \"id\"}; a node is {\"id\", \"op\": \"input\", "
             + "\"shape\"}, {\"id\", \"op\": \"layer\", \"entry\" (a key from list_layers), \"args\", \"options\", "
             + "\"inputs\"}, or {\"id\", \"op\": \"add\" | \"multiply\" | \"concat\", \"inputs\"}.")
+    @Returns("{ok, shapes or the first error, ...}")
     public Map<String, Object> checkShapes(@Tools.Param("the graph") Map<String, Object> graph) {
         return model().check(graph).toJson();
     }
@@ -225,6 +233,7 @@ public final class MlTools {
     @Tools.Tool(name = "build_model", value = "Builds a model from a graph that checks out, and keeps it in the "
             + "studio's models and graphs, where training can use it.")
     @Tier(value = Risk.CREATE, what = "builds a model and keeps it in the studio")
+    @Returns("{name, parameters, summary, file}")
     public Map<String, Object> buildModel(@Tools.Param("1 to 64 letters, digits, spaces, dots, dashes or underscores") String name,
             @Tools.Param("the graph, as check_shapes takes it") Map<String, Object> graph) {
         if (name == null || !name.matches("[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}") || name.contains("..")) {

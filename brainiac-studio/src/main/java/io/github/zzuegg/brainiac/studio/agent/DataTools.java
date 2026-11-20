@@ -101,6 +101,7 @@ public final class DataTools implements RiskRefiner, Checkpointed {
             + "columns, groups and sums, sorts. With describe=true it says each column's type, range and blanks "
             + "instead. Use it before guessing at numbers.")
     @Tier(value = Risk.READ, resultChars = 14_000)
+    @Returns("{columns: [text], rows: [[text]], matched, note?}")
     public Map<String, Object> queryTable(@Tools.Param("the table, inside the project's folder") String path,
             @Tools.Param("rows must meet all of these") Optional<List<Filter>> where,
             @Tools.Param("the columns to give; all if left out") Optional<List<String>> columns,
@@ -451,6 +452,7 @@ public final class DataTools implements RiskRefiner, Checkpointed {
             + "Give the labels along the bottom and one or more series of values, one value per label; a pie takes "
             + "one series.")
     @Tier(value = Risk.CREATE, what = "draws a chart into the project's folder")
+    @Returns("{file, kind, bytes}")
     public Map<String, Object> makeChart(@Tools.Param("the file to save, such as 'charts/sales.svg'") String path,
             @Tools.Param("bar, line or pie") String kind,
             @Tools.Param("the chart's title") Optional<String> title,
@@ -688,6 +690,7 @@ public final class DataTools implements RiskRefiner, Checkpointed {
             + "'list' shows entries, optionally between two days; 'add' adds one; 'update' changes the fields given of "
             + "the entry with that id; 'remove' drops it. Nothing is posted from here.")
     @Tier(value = Risk.CREATE, what = "changes the project's content calendar")
+    @Returns("{entries: [{id, created, updated, ...}], total, added?, removed?, updated?}")
     public Map<String, Object> contentCalendar(@Tools.Param("list, add, update or remove") String action,
             @Tools.Param("the entry, for add, update or remove") Optional<Entry> entry,
             @Tools.Param("for list: the first day, as 2026-12-01") Optional<String> from,

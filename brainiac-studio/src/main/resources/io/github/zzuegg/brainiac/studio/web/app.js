@@ -3583,8 +3583,9 @@ reason ::= [a-z ]+`;
           ${notes.join("")}</div>
         <div class="body">
           ${m.thinking ? thinkHtml(m.thinking, { open: m.streaming && !m.text, live: m.streaming && !m.text }) : ""}
+          ${m.agent ? chatAgentHtml(m) : ""}
           ${m.format === "json" && m.text ? jsonAnswer(m.text) : md(m.text)}
-          ${m.streaming && !m.text && !m.thinking ? `<span class="typing" aria-label="Writing"><i></i><i></i><i></i></span>` : ""}
+          ${m.streaming && !m.text && !m.thinking && !(m.agent && m.agent.state === "waiting") ? `<span class="typing" aria-label="Writing"><i></i><i></i><i></i></span>` : ""}
           ${m.error ? `<div class="flag bad">${icon("flask")}<div><b>No answer.</b> ${esc(m.error)}</div></div>` : ""}
         </div>
         ${m.streaming ? "" : `<div class="actions">
@@ -3669,6 +3670,11 @@ reason ::= [a-z ]+`;
           <div class="row">
             <button type="button" class="iconbtn" data-attach="${i}" aria-label="Attach pictures" title="Attach pictures for a model that can look at them (Claude, GPT, Gemini). You can also paste or drop them.">${icon("image")}</button>
             <input type="file" accept="image/*" multiple hidden data-attach-file="${i}">
+            <select class="input tools-pick ${paneSettings(i).tools ? "on" : ""}" data-cs-tools="${i}" aria-label="Tools" title="With tools on, the model can call the studio's tools (files, web, models, scripts) as an agent does. Your rules and approvals apply to every call.">
+              <option value="" ${paneSettings(i).tools ? "" : "selected"}>No tools</option>
+              <option value="ask" ${paneSettings(i).tools === "ask" ? "selected" : ""}>Tools, ask first</option>
+              <option value="auto" ${paneSettings(i).tools === "auto" ? "selected" : ""}>Tools, on its own</option>
+            </select>
             <span class="faint" style="font-size:12px;padding-left:2px">Saved in the studio</span>
             <span class="grow"></span>
             ${busy ? `<button class="send stop" data-stop="${key}" aria-label="Stop">${icon("stop")}</button>` : `<button class="send" data-send="${i}" aria-label="Send">${icon("send")}</button>`}
@@ -3711,9 +3717,8 @@ reason ::= [a-z ]+`;
       $$(`.pane[data-convo="${c.id}"]`).forEach(pane => {
         const el = pane.querySelector(`.msg[data-i="${i}"]`), box = pane.querySelector(".transcript");
         if (!el || !box) return;
-        const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
         el.outerHTML = msgHtml(c.messages[i], i);
-        if (stick) box.scrollTop = box.scrollHeight;
+        if (L.scroll[c.id] == null) box.scrollTop = box.scrollHeight;
       });
     }));
   }
@@ -3730,7 +3735,73 @@ reason ::= [a-z ]+`;
     return out;
   }
 
+  // A conversation with tools on is answered by an agent: the same tools, rules and approvals as on the Agents page.
+  async function agentAnswer(c) {
+    const a = { role: "assistant", text: "", model: null, streaming: true, at: Date.now(), agent: { state: "running", steps: [] } };
+    const history = turns(c.messages), last = history[history.length - 1];
+    c.messages.push(a);
+    const i = c.messages.length - 1;
+    let stopped = false;
+    L.running[c.id] = { abort: () => { stopped = true; if (a.agent.id) postJson("/api/agents/stop", { id: a.agent.id }).catch(() => {}); } };
+    render();
+    try {
+      const model = usable(c.model || L.model);
+      let id = c.agentRun, from = 0;
+      const old = id ? await postJson("/api/agents/get", { id }).catch(() => null) : null;
+      if (old && !["running", "waiting"].includes(old.state) && old.mode === c.tools && old.model === model) {
+        from = (old.steps || []).length;
+        await postJson("/api/agents/reply", { id, text: last.text });
+      } else {
+        const earlier = history.slice(0, -1).filter(m => m.text);
+        const goal = ((c.system || "").trim() ? `Instructions for this chat: ${c.system.trim()}\n\n` : "")
+          + (earlier.length ? "Earlier in this chat:\n\n" + earlier.map(m => (m.role === "user" ? "User: " : "You: ") + m.text).join("\n\n") + "\n\nNow the user says:\n\n" : "")
+          + last.text;
+        const j = await postJson("/api/agents/start", { goal, model, mode: c.tools, maxSteps: 30 });
+        id = c.agentRun = j.id;
+        persist(c);
+      }
+      a.agent.id = id;
+      let run;
+      for (;;) {
+        await new Promise(res => setTimeout(res, 600));
+        run = await postJson("/api/agents/get", { id });
+        const by = run.by ? modelByKey(run.by) : null;
+        a.model = by ? { key: by.key, name: by.name, provider: by.provider, local: by.provider === "local" } : run.by ? { key: run.by, name: run.by, provider: "" } : null;
+        a.agent = { id, state: run.state, steps: (run.steps || []).slice(from).filter(s => s.kind !== "goal" && s.kind !== "answer"), pending: run.pending || null };
+        a.thinking = run.state === "running" ? run.thinking || "" : "";
+        paintMsg(c, i);
+        if (!["running", "waiting"].includes(run.state)) break;
+      }
+      a.text = run.answer || "";
+      a.stats = { inputTokens: run.inputTokens || 0, outputTokens: run.outputTokens || 0 };
+      if (run.state === "failed") a.error = run.error || "the agent failed";
+      if (run.state === "stopped" || stopped) a.stopped = true;
+    } catch (e) {
+      a.error = e.message;
+    }
+    a.streaming = false;
+    a.thinking = "";
+    delete L.running[c.id];
+    c.updated = Date.now();
+    persist(c);
+    if (state.view === "chat") render();
+  }
+
+  // the tool calls of an agent's answer in the chat, and a call that waits for the user
+  function chatAgentHtml(m) {
+    const g = m.agent;
+    const steps = (g.steps || []).filter(s => ["call", "result", "decision", "plan", "error", "say"].includes(s.kind));
+    const p = g.state === "waiting" && g.pending;
+    const ask = !p ? "" : p.kind === "call"
+      ? `<div class="flag warn chat-ask">${icon("alert")}<div><b>Allow this?</b> It ${esc(p.acts || "calls a tool")}: <code>${esc(p.tool)}</code> <span class="mono muted">${esc(argText(p.arguments) || "")}</span>
+          ${p.why ? `<div class="muted">${esc(p.why)}</div>` : ""}
+          <div class="row" style="gap:8px;margin-top:6px"><button class="btn sm primary" data-chat-allow="${esc(g.id)}">Allow</button><button class="btn sm" data-chat-deny="${esc(g.id)}">Don't allow</button></div></div></div>`
+      : `<div class="flag warn chat-ask">${icon("alert")}<div><b>It waits for you.</b> ${esc(p.question || p.text || "")} <a href="#" data-go="agents">Answer on the Agents page</a></div></div>`;
+    return steps.length || ask ? `<div class="chat-agent">${steps.map(agentStep).join("")}${ask}</div>` : "";
+  }
+
   async function answer(c) {
+    if (c.tools) return agentAnswer(c);
     const a = { role: "assistant", text: "", thinking: "", model: null, streaming: true, at: Date.now() };
     if (c.format === "json" || c.format === "schema") a.format = "json";
     const history = turns(c.messages);
@@ -3799,7 +3870,7 @@ reason ::= [a-z ]+`;
       if (+L.panes[i].maxTokens > 0) c.maxTokens = +L.panes[i].maxTokens;
       if (L.panes[i].temperature != null) c.temperature = L.panes[i].temperature;
       for (const k of ["topP", "topK", "repeatPenalty"]) if (L.panes[i][k] != null) c[k] = L.panes[i][k];
-      for (const k of ["format", "schema", "grammar"]) if (L.panes[i][k]) c[k] = L.panes[i][k];
+      for (const k of ["format", "schema", "grammar", "tools"]) if (L.panes[i][k]) c[k] = L.panes[i][k];
       if (L.settingsOpen === "#" + i) L.settingsOpen = c.id;
       L.convos.unshift(c);
       L.panes[i] = { id: c.id };
@@ -3812,6 +3883,7 @@ reason ::= [a-z ]+`;
     // an edited message takes the place of the old one; what was answered after it goes
     if (L.editingMsg && L.editingMsg.convo === c.id) { c.messages.splice(L.editingMsg.at); L.editingMsg = null; }
     c.messages.push(pics.length ? { role: "user", text, images: pics, at: Date.now() } : { role: "user", text, at: Date.now() });
+    L.scroll[c.id] = null;                // whoever sends wants to see the answer come in
     persist(c);
     answer(c);
   }
@@ -3853,7 +3925,25 @@ reason ::= [a-z ]+`;
       const box = pane.querySelector(".transcript"), key = pane.dataset.convo;
       if (box) {
         box.scrollTop = key && L.scroll[key] != null ? L.scroll[key] : box.scrollHeight;
-        box.addEventListener("scroll", () => { if (key) L.scroll[key] = box.scrollHeight - box.scrollTop - box.clientHeight < 80 ? null : box.scrollTop; }, { passive: true });
+        // Only the reader leaves the bottom: a scroll that comes from the text growing, or from the page
+        // being drawn again, keeps a conversation that was followed at its end.
+        let byHand = 0, held = false;
+        const hand = () => { byHand = Date.now(); };
+        ["wheel", "touchmove", "keydown"].forEach(t => box.addEventListener(t, hand, { passive: true }));
+        box.addEventListener("pointerdown", () => {     // dragging the scroll bar
+          held = true; hand();
+          const up = () => { held = false; hand(); };
+          window.addEventListener("pointerup", up, { once: true });
+          window.addEventListener("pointercancel", up, { once: true });
+        });
+        box.addEventListener("scroll", () => {
+          if (!key) return;
+          if (box.scrollHeight - box.scrollTop - box.clientHeight < 80) L.scroll[key] = null;
+          else if (held || Date.now() - byHand < 800) L.scroll[key] = box.scrollTop;
+          else if (L.scroll[key] == null) box.scrollTop = box.scrollHeight;
+        }, { passive: true });
+        const lane = box.firstElementChild;
+        if (key && lane && window.ResizeObserver) new ResizeObserver(() => { if (L.scroll[key] == null) box.scrollTop = box.scrollHeight; }).observe(lane);
       }
     });
     $$("[data-pick-model]").forEach(s => s.addEventListener("change", () => {
@@ -3881,6 +3971,7 @@ reason ::= [a-z ]+`;
       setSetting(+t.dataset.csNum, t.dataset.k, raw === "" || !isFinite(n) ? null : Math.max(+t.dataset.min, Math.min(+t.dataset.max, n)));
     }));
     $$("[data-cs-format]").forEach(t => t.addEventListener("change", () => { setSetting(+t.dataset.csFormat, "format", t.value); render(); }));
+    $$("[data-cs-tools]").forEach(t => t.addEventListener("change", () => { setSetting(+t.dataset.csTools, "tools", t.value); t.classList.toggle("on", !!t.value); }));
     $$("[data-cs-form]").forEach(t => t.addEventListener("input", () => {
       const i = +t.dataset.csForm;
       setSetting(i, t.dataset.k, t.value);
@@ -3992,6 +4083,14 @@ reason ::= [a-z ]+`;
         : "Nothing on this PC can speak yet. Add an OpenAI or Google API key and their voice models appear here.") : "Looking for models…"}
       <div style="margin-top:8px"><button class="btn" data-go="library">${icon("library")}Open Models and providers</button></div></div></div></div>`;
   }
+
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-chat-allow],[data-chat-deny]");
+    if (!b) return;
+    b.disabled = true;
+    postJson("/api/agents/answer", { id: b.dataset.chatAllow || b.dataset.chatDeny, allow: !!b.dataset.chatAllow, note: "" })
+      .catch(err => { b.disabled = false; console.warn("studio:", err.message); });
+  });
 
   async function postJson(path, body) {
     const r = await fetch(path, { method: "POST", headers: { "X-Studio-Token": tokenMeta.content, "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -5426,7 +5525,7 @@ reason ::= [a-z ]+`;
     const inside = l ? l.entries.filter(e => e.kind !== "folder").length : 0;
     const here = l && l.path ? (l.kind === "model" ? "This folder is a model." : `${inside || "No"} model${inside === 1 ? "" : "s"} directly in this folder.`) : "";
     return `<form class="placebox" id="place-form" autocomplete="off">
-      <div class="place-head"><div><b>Add models from this PC</b> <span class="muted">A <code>.gguf</code> file, a Hugging Face model folder (Llama, Qwen2, Mistral), or a folder holding them. The files stay where they are.</span></div>
+      <div class="place-head"><div><b>Add models from this PC</b> <span class="muted">A <code>.gguf</code> file, a Hugging Face model folder (Llama, Qwen2, Mistral), or a folder holding them, in folders below it too, such as <code>D:\\models</code>. The files stay where they are.</span></div>
         <button type="button" class="iconbtn sm" id="place-close" aria-label="Close">${icon("x")}</button></div>
       <div class="place-path"><input class="input mono" id="place-path" placeholder="A file or folder, such as D:/Models" value="${esc(P.path)}" spellcheck="false" aria-label="File or folder">
         <button class="btn primary" type="submit" ${P.busy || !P.path.trim() ? "disabled" : ""}>${P.busy ? "Adding…" : "Add"}</button></div>

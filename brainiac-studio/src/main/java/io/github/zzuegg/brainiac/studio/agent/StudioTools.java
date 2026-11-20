@@ -54,9 +54,10 @@ public final class StudioTools implements RiskRefiner {
      * @param resultChars the most characters of a result the model sees, or 0 for the default
      * @param media whether it makes media that count toward a run's budget
      * @param refiner decides a call's tier from its arguments, or null
+     * @param returns what it returns, from {@link Returns}, or null
      */
     public record Entry(Agent.Tool tool, String acts, Risk risk, String medium, boolean untrusted, int resultChars,
-            boolean media, RiskRefiner refiner) {
+            boolean media, RiskRefiner refiner, String returns) {
 
         /**
          * A tool that acts as {@link Risk#COMPUTE} if it acts at all.
@@ -65,7 +66,7 @@ public final class StudioTools implements RiskRefiner {
          * @param acts what it does if it acts, else null
          */
         public Entry(Agent.Tool tool, String acts) {
-            this(tool, acts, acts == null ? Risk.READ : Risk.COMPUTE, null, false, 0, false, null);
+            this(tool, acts, acts == null ? Risk.READ : Risk.COMPUTE, null, false, 0, false, null, null);
         }
 
         /**
@@ -106,18 +107,21 @@ public final class StudioTools implements RiskRefiner {
             if (untrusted) {
                 m.put("untrusted", true);
             }
+            if (returns != null) {
+                m.put("returns", returns);
+            }
             return m;
         }
 
         /**
          * The tool as models are told about it.
          *
-         * @return {@code {name, description, parameters}}
+         * @return {@code {name, description, parameters}}, the description ending with what it returns
          */
         public Map<String, Object> definition() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("name", tool.name());
-            m.put("description", tool.description());
+            m.put("description", returns == null ? tool.description() : tool.description() + " Returns " + returns + ".");
             m.put("parameters", tool.parameters());
             return m;
         }
@@ -144,15 +148,17 @@ public final class StudioTools implements RiskRefiner {
             Method m = methods.get(t.name());
             Tier tier = m == null ? null : m.getAnnotation(Tier.class);
             Acts a = m == null ? null : m.getAnnotation(Acts.class);
+            Returns ret = m == null ? null : m.getAnnotation(Returns.class);
+            String returns = ret == null ? null : ret.value();
             if (tier != null) {
                 out.add(new Entry(t, tier.value() == Risk.READ ? null
                         : tier.what().isEmpty() ? tier.value().what() : tier.what(), tier.value(),
                         tier.medium().isEmpty() ? null : tier.medium(), tier.untrusted(), tier.resultChars(), tier.media(),
-                        refiner));
+                        refiner, returns));
             } else if (a != null) {
-                out.add(new Entry(t, a.value(), Risk.COMPUTE, null, false, 0, false, refiner));
+                out.add(new Entry(t, a.value(), Risk.COMPUTE, null, false, 0, false, refiner, returns));
             } else {
-                out.add(new Entry(t, null, Risk.READ, null, false, 0, false, refiner));
+                out.add(new Entry(t, null, Risk.READ, null, false, 0, false, refiner, returns));
             }
         }
         return out;
@@ -205,6 +211,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "list_models", value = "Lists the models the studio can chat with: those on this PC and those of "
             + "providers the user has a key for. Use the 'model' value with ask_model.")
+    @Returns("[{model, name, local, media}]")
     public List<Map<String, Object>> listModels() {
         Map<String, Object> d = chat.describe(false);
         Map<String, Boolean> local = new LinkedHashMap<>();
@@ -239,6 +246,7 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "ask_model", value = "Sends one question to a chat model and returns its answer. Remote models "
             + "use the user's key and may cost money.")
     @Tier(value = Risk.COMPUTE, what = "sends a question to a model, which may use your key and cost money", medium = "text")
+    @Returns("text: the model's answer")
     public String askModel(@Tools.Param("a model from list_models, or 'auto'") String model,
             @Tools.Param("the question") String prompt,
             @Tools.Param("instructions for the model") Optional<String> system) {
@@ -266,6 +274,7 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "rewrite_text", value = "Summarizes, translates or otherwise rewrites a text with a BART, Marian "
             + "or T5 model on this PC. list_models shows them with the media 'rewrite'.")
     @Acts("runs a text-to-text model on this PC")
+    @Returns("{model, text, task}")
     public Map<String, Object> rewriteText(@Tools.Param("the text") String text,
             @Tools.Param("a model from list_models with the media 'rewrite', or 'auto'") Optional<String> model,
             @Tools.Param("one of the model's tasks, such as 'summarization' or 'translation_en_to_de'") Optional<String> task) {
@@ -286,6 +295,7 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "draw_image", value = "Draws pictures and saves them. 'auto' uses the project's image route: "
             + "its model and runner, on this PC or a remote machine.")
     @Tier(value = Risk.COMPUTE, what = "draws pictures, which uses the GPU or a paid provider", medium = "image", media = true)
+    @Returns("{model, files: [path]}")
     public Map<String, Object> drawImage(@Tools.Param("what the picture shows") String prompt,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("1:1, 4:3, 3:4, 16:9 or 9:16") Optional<String> aspect,
@@ -311,6 +321,7 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "make_speech", value = "Speaks text and saves the audio. 'auto' uses the project's speech route: "
             + "its model and runner, on this PC or a remote machine.")
     @Tier(value = Risk.COMPUTE, what = "makes audio, which uses the GPU or a paid provider", medium = "speech", media = true)
+    @Returns("{model, files: [path]}")
     public Map<String, Object> makeSpeech(@Tools.Param("the words to say") String text,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("the voice's name, if the model has voices") Optional<String> voice) {
@@ -341,6 +352,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "list_project_files", value = "Lists the files and folders in the project's folder, or in a "
             + "folder inside it, or a folder elsewhere, which the user's rules may make ask first.")
+    @Returns("{folder, entries: [{name, folder, bytes}]}")
     public Map<String, Object> listProjectFiles(@Tools.Param("a folder relative to the project's folder, or a full path elsewhere; empty for the top")
             Optional<String> path) {
         Path dir = Reach.file(path.orElse(""));
@@ -376,6 +388,7 @@ public final class StudioTools implements RiskRefiner {
             + "up to 'limit' characters (12000 if left out) from character 'offset'. The answer says how long the file "
             + "is, so you can read on.")
     @Tier(value = Risk.READ, resultChars = 16_000)
+    @Returns("text: the file's text, perhaps a part of it with a note on where the rest is")
     public String readProjectFile(@Tools.Param("the file, relative to the project's folder, or a full path elsewhere") String path,
             @Tools.Param("the character to start at, 0 if left out") Optional<Integer> offset,
             @Tools.Param("how many characters, 12000 if left out, at most 15000") Optional<Integer> limit) {
@@ -423,6 +436,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "search_hub", value = "Searches Hugging Face for text models this studio can run, most "
             + "downloaded first.")
+    @Returns("{models: [{id, family, parameters, downloads, gated, gguf, safetensors}], hidden}")
     public Map<String, Object> searchHub(@Tools.Param("words in the model's name, such as 'qwen 0.5b'") String query) {
         Map<String, Object> found = call(() -> chat.hub().search(query));
         List<Map<String, Object>> models = new ArrayList<>();
@@ -450,6 +464,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "hub_files", value = "Lists the files of a Hugging Face model that can be downloaded, and "
             + "whether each would run here and why not.")
+    @Returns("[{file, bytes, ...}]")
     public List<Map<String, Object>> hubFiles(@Tools.Param("the repository, such as 'Qwen/Qwen2.5-0.5B-Instruct-GGUF'")
             String repo) {
         Map<String, Object> found = call(() -> chat.hub().files(repo));
@@ -477,6 +492,7 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "download_model", value = "Starts downloading one option from hub_files into the studio's "
             + "downloads folder; the model is usable when the download is done.")
     @Acts("downloads a model from Hugging Face to this PC")
+    @Returns("{id, state, ...}: the download; list_downloads follows it")
     public Map<String, Object> downloadModel(@Tools.Param("the repository") String repo,
             @Tools.Param("the option's id from hub_files") String option) {
         return call(() -> chat.hub().download(repo, option));
@@ -488,6 +504,7 @@ public final class StudioTools implements RiskRefiner {
      * @return the downloads
      */
     @Tools.Tool(name = "list_downloads", value = "Lists model downloads with their progress and state.")
+    @Returns("[{id, repo, state, progress, ...}]")
     public List<Map<String, Object>> listDownloads() {
         return chat.hub().downloads();
     }
@@ -501,6 +518,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "list_trainable_models", value = "Lists the models built in the studio that can be trained, "
             + "with their input and output shapes.")
+    @Returns("[{name, ...}]")
     public List<Map<String, Object>> listTrainableModels() {
         return call(training::models);
     }
@@ -512,6 +530,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "list_datasets", value = "Lists the built-in data sets and the data files in the studio's "
             + "datasets folder.")
+    @Returns("{folder, builtins: [{name, what, input, targets, classes}], files: [{name, kind, bytes, columns?, classes?}]}")
     public Map<String, Object> listDatasets() {
         return call(() -> training.data().list());
     }
@@ -526,6 +545,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "check_training", value = "Checks whether a model and a data set fit together, before "
             + "training.")
+    @Returns("{ok, problem?, samples, trainSamples, stepsPerEpoch, features, classes, input, output, ...}")
     public Map<String, Object> checkTraining(@Tools.Param("a model from list_trainable_models") String model,
             @Tools.Param("a built-in set's name or a file from list_datasets") String data,
             @Tools.Param("for a CSV file, the column to predict") Optional<String> label) {
@@ -545,6 +565,7 @@ public final class StudioTools implements RiskRefiner {
     @Tools.Tool(name = "start_training", value = "Trains a model on a data set with the default optimizer and loss. "
             + "Runs one at a time; later ones wait.")
     @Acts("starts training on this PC, which keeps the GPU or CPU busy")
+    @Returns("{id, name, state, host, data, epoch, epochs, loss, bestEpoch, error?, output?}")
     public Map<String, Object> startTraining(@Tools.Param("a model from list_trainable_models") String model,
             @Tools.Param("a built-in set's name or a file from list_datasets") String data,
             @Tools.Param("for a CSV file, the column to predict") Optional<String> label,
@@ -560,6 +581,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "list_training_runs", value = "Lists training runs, newest first, with their state and "
             + "latest loss.")
+    @Returns("[{id, name, state, host, data, epoch, epochs, loss, bestEpoch, error?, output?}]")
     public List<Map<String, Object>> listTrainingRuns() {
         return training.runs().stream().limit(20).map(StudioTools::summary).toList();
     }
@@ -572,6 +594,7 @@ public final class StudioTools implements RiskRefiner {
      */
     @Tools.Tool(name = "stop_training", value = "Stops a training run; what it learned so far is saved.")
     @Acts("stops a training run")
+    @Returns("text: whether it is stopping")
     public String stopTraining(@Tools.Param("the run's id from list_training_runs") String id) {
         return training.stop(id) ? "stopping run " + id : "there is no run " + id;
     }

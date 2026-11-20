@@ -58,6 +58,7 @@ public final class MediaTools {
             + "the project's video route. A start picture makes the clip begin from that picture.")
     @Tier(value = Risk.COMPUTE, what = "makes a video clip, which uses the GPU or a paid provider", medium = "video",
             media = true)
+    @Returns("{model, files: [path], saved}")
     public Map<String, Object> makeVideo(@Tools.Param("what the clip shows and how things move") String prompt,
             @Tools.Param("a model key, or 'auto' for the project's route") Optional<String> model,
             @Tools.Param("how long, 0.5 to 10 seconds; 2 if left out") Optional<Double> seconds,
@@ -100,6 +101,7 @@ public final class MediaTools {
             + "M4A, video files and others work when FFmpeg is installed. 'auto' uses the project's transcription "
             + "route.")
     @Tier(value = Risk.COMPUTE, what = "transcribes a recording on this PC", medium = "transcribe", resultChars = 16_000)
+    @Returns("{model, language, seconds, saved, text}")
     public Map<String, Object> transcribeAudio(@Tools.Param("the recording: a file in the project's folder or one a "
             + "tool made") String path,
             @Tools.Param("a transcribing model's key, or 'auto'") Optional<String> model,
@@ -173,6 +175,7 @@ public final class MediaTools {
     @Tools.Tool(name = "describe_image", value = "Looks at a picture and describes it, or answers a question about "
             + "it, such as whether it matches a brief. Uses a model that sees: the one given, or the first one there is.")
     @Tier(value = Risk.COMPUTE, what = "shows a picture to a model that sees", medium = "text")
+    @Returns("{model, answer}")
     public Map<String, Object> describeImage(@Tools.Param("the picture: a file in the project's folder or one a tool "
             + "made") String path,
             @Tools.Param("what to say about it; a plain description if left out") Optional<String> question,
@@ -241,6 +244,7 @@ public final class MediaTools {
             + "this PC that clones voices. Only with the speaker's consent: say whose voice it is and how they agreed. "
             + "Never for a voice of someone who did not agree.")
     @Tier(value = Risk.WRITE, what = "keeps a person's voice for speech")
+    @Returns("{voice, consent}")
     public Map<String, Object> cloneVoice(@Tools.Param("a local speech model that clones voices, such as 'local/f5-tts'") String model,
             @Tools.Param("a name for the voice") String name,
             @Tools.Param("the recording, WAV, in the project's folder or made by a tool") String path,
@@ -324,6 +328,7 @@ public final class MediaTools {
     @Tools.Tool(name = "assemble_media", value = "Joins video clips and pictures into one MP4, in order, at one size, "
             + "with a sound track and burned-in subtitles if given. Pictures show for 'still' seconds. Needs FFmpeg.")
     @Tier(value = Risk.COMPUTE, what = "puts a video together on this PC", media = true)
+    @Returns("{file, files, bytes}")
     public Map<String, Object> assembleMedia(@Tools.Param("the clips and pictures, in order") List<String> clips,
             @Tools.Param("a sound track to lay under it, such as speech or music") Optional<String> audio,
             @Tools.Param("an SRT subtitle file to burn in") Optional<String> subtitles,

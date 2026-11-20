@@ -82,6 +82,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
             + "fails if it exists; 'overwrite' replaces one; 'append' adds to the end, for writing a long file a part "
             + "at a time. Folders are made as needed.")
     @Tier(value = Risk.WRITE, what = "writes a file in the project's folder")
+    @Returns("{file, characters, mode}")
     public Map<String, Object> writeFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path,
             @Tools.Param("the text") String text,
             @Tools.Param("create, overwrite or append; create if left out") Optional<String> mode) {
@@ -129,6 +130,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "edit_file", value = "Replaces one passage of a text file in the project's folder. The passage "
             + "must appear exactly once; quote enough of it to make it unique. An empty replacement deletes it.")
     @Tier(value = Risk.WRITE, what = "changes a file in the project's folder")
+    @Returns("text: the file and line it changed")
     public String editFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path,
             @Tools.Param("the passage as it is now, exactly") String find,
             @Tools.Param("what replaces it") String replace) {
@@ -172,6 +174,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "delete_file", value = "Deletes a file in the project's folder. The run can be undone, which "
             + "brings it back.")
     @Tier(value = Risk.WRITE, what = "deletes a file in the project's folder")
+    @Returns("text: the file it deleted")
     public String deleteFile(@Tools.Param("the file; a path relative to the project's folder, or a full path outside it, which the user's rules may make ask first") String path) {
         Path f = writable(Reach.file(path));
         if (!Files.isRegularFile(f)) {
@@ -197,6 +200,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
     @Tools.Tool(name = "search_files", value = "Finds lines holding some text in the project's folder, with the file "
             + "and line number of each; then read_project_file reads around them.")
     @Tier(value = Risk.READ, resultChars = 12_000)
+    @Returns("{matches: [...], files, note?}")
     public Map<String, Object> searchFiles(@Tools.Param("the text to find; case does not matter") String query,
             @Tools.Param("which files, such as '**/*.md'; every file if left out") Optional<String> glob,
             @Tools.Param("true if the query is a regular expression") Optional<Boolean> regex,

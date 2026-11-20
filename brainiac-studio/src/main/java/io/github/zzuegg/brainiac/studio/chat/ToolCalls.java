@@ -67,19 +67,70 @@ public final class ToolCalls {
      */
     public static String instructions(List<Map<String, Object>> tools) {
         StringBuilder s = new StringBuilder("# Tools\n\nYou may call one or more functions to assist with the user query.\n\n")
-                .append("You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n");
+                .append("The functions, one per line as name(argument: type, optional?: type), are within <tools></tools> ")
+                .append("XML tags:\n<tools>\n");
         for (Map<String, Object> t : tools) {
-            Map<String, Object> f = new LinkedHashMap<>();
-            f.put("name", t.get("name"));
-            f.put("description", t.get("description"));
-            f.put("parameters", t.get("parameters"));
-            s.append(Json.write(Map.of("type", "function", "function", f))).append('\n');
+            s.append(signature(t)).append('\n');
         }
         return s.append("</tools>\n\nFor each function call, return a json object with function name and arguments ")
                 .append("within <tool_call></tool_call> XML tags:\n<tool_call>\n")
                 .append("{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>\n\n")
                 .append("The results come back in the next message, each within <tool_response></tool_response> ")
                 .append("tags. Stop after your calls and wait for them.").toString();
+    }
+
+    /**
+     * A tool as one short line, with a line for the arguments whose names do not say enough:
+     * {@code name(path: string, from?: integer) - what it does}. Far shorter than its JSON schema,
+     * which matters for small models with small windows.
+     *
+     * @param tool {@code {name, description, parameters}}
+     * @return the lines
+     */
+    public static String signature(Map<String, Object> tool) {
+        Map<String, Object> params = Json.object(tool.getOrDefault("parameters", Map.of()));
+        Map<String, Object> props = params.get("properties") instanceof Map<?, ?> m ? Json.object(m) : Map.of();
+        List<?> required = params.get("required") instanceof List<?> l ? l : List.of();
+        StringBuilder s = new StringBuilder("- ").append(tool.get("name")).append('(');
+        StringBuilder notes = new StringBuilder();
+        boolean first = true;
+        for (Map.Entry<String, Object> p : props.entrySet()) {
+            Map<String, Object> schema = p.getValue() instanceof Map<?, ?> ps ? Json.object(ps) : Map.of();
+            s.append(first ? "" : ", ").append(p.getKey()).append(required.contains(p.getKey()) ? "" : "?").append(": ")
+                    .append(type(schema));
+            first = false;
+            String d = String.valueOf(schema.getOrDefault("description", "")).strip();
+            if (!d.isEmpty() && !d.equalsIgnoreCase("the " + p.getKey().replace('_', ' '))) {
+                notes.append(notes.isEmpty() ? "" : "; ").append(p.getKey()).append(": ").append(d);
+            }
+        }
+        s.append(") - ").append(tool.get("description"));
+        if (!notes.isEmpty()) {
+            s.append("\n  ").append(notes);
+        }
+        return s.toString();
+    }
+
+    // a JSON schema's type in a few characters
+    private static String type(Map<String, Object> schema) {
+        if (schema.get("enum") instanceof List<?> e) {
+            return String.join("|", e.stream().map(String::valueOf).toList());
+        }
+        String t = String.valueOf(schema.getOrDefault("type", "any"));
+        if (t.equals("array")) {
+            Map<String, Object> items = schema.get("items") instanceof Map<?, ?> i ? Json.object(i) : Map.of();
+            return type(items) + "[]";
+        }
+        if (t.equals("object") && schema.get("properties") instanceof Map<?, ?> m && !m.isEmpty()) {
+            StringBuilder b = new StringBuilder("{");
+            List<?> req = schema.get("required") instanceof List<?> l ? l : List.of();
+            for (Map.Entry<String, Object> p : Json.object(m).entrySet()) {
+                b.append(b.length() > 1 ? ", " : "").append(p.getKey()).append(req.contains(p.getKey()) ? "" : "?")
+                        .append(": ").append(type(p.getValue() instanceof Map<?, ?> ps ? Json.object(ps) : Map.of()));
+            }
+            return b.append('}').toString();
+        }
+        return t;
     }
 
     /**

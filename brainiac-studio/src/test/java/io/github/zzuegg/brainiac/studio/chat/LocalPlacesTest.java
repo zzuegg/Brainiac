@@ -97,4 +97,46 @@ class LocalPlacesTest {
         assertFalse(Json.array(start.get("entries")).isEmpty(), "home and the file system roots");
         assertThrows(IOException.class, () -> s.browse(disk.resolve("x.gguf")));
     }
+
+    @Test
+    void modelsInFoldersBelowAPlaceAreFoundButNotInCodeProjects() throws Exception {
+        Path top = Files.createDirectories(disk.resolve("_Programming"));
+        modelFolder(top.resolve("Brainiac/models/llm/qwen-deep"));
+        Files.createDirectories(top.resolve("lmstudio/publisher/repo"));
+        Files.writeString(top.resolve("lmstudio/publisher/repo/phi.gguf"), "GGUF");
+        // a Hugging Face cache: the model is named after the repository, not the snapshot
+        modelFolder(top.resolve("hf/hub/models--Qwen--Qwen2.5-0.5B/snapshots/0123abcd"));
+        Files.createDirectories(top.resolve("hf/hub/models--Qwen--Qwen2.5-0.5B/blobs"));
+        // inside code projects and model folders nothing is looked for
+        modelFolder(top.resolve("app/build/copied-model"));
+        modelFolder(top.resolve("app/.git/objects-model"));
+        modelFolder(top.resolve("Brainiac/models/llm/qwen-deep/inner"));
+        modelFolder(top.resolve("a/b/c/d/e/f/too-deep"));
+
+        ChatService s = service();
+        assertEquals(3, s.addLocal(top));
+        // nearer folders first
+        assertEquals(List.of("qwen-deep", "phi.gguf", "Qwen2.5-0.5B"), localModels(s));
+    }
+
+    @Test
+    void theUsualFoldersIncludeModelsAboveTheStartAndTheCaches() throws Exception {
+        Path start = Files.createDirectories(disk.resolve("_Programming/Brainiac/Brainiac-main"));
+        Path beside = Files.createDirectories(disk.resolve("_Programming/Brainiac/models"));
+        Path large = Files.createDirectories(disk.resolve("_Programming/Brainiac-models-large"));
+        Files.createDirectories(disk.resolve("_Programming/other-project"));
+        Path user = Files.createDirectories(disk.resolve("home"));
+        Path hub = Files.createDirectories(user.resolve(".cache/huggingface/hub"));
+        Path lm = Files.createDirectories(user.resolve(".lmstudio/models"));
+        Path a = disk.resolve("a"), b = disk.resolve("b");
+
+        List<Path> folders = io.github.zzuegg.brainiac.studio.Studio.Settings.modelFoldersFrom(start, user,
+                Map.of("BRAINIAC_MODELS", a + java.io.File.pathSeparator + b));
+        assertEquals(List.of(a, b, start.resolve("models"), beside, large, user.resolve(".brainiac/models"), hub, lm),
+                folders.stream().filter(p -> p.startsWith(disk)).toList());
+
+        Path own = disk.resolve("own-cache");
+        assertTrue(io.github.zzuegg.brainiac.studio.Studio.Settings.modelFoldersFrom(start, user,
+                Map.of("HF_HUB_CACHE", Files.createDirectories(own).toString())).contains(own));
+    }
 }
