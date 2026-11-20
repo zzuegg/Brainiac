@@ -54,7 +54,7 @@ class AgentRulesTest {
         outside = Files.createDirectories(data.resolve("elsewhere"));
         Files.writeString(outside.resolve("notes.txt"), "far away", StandardCharsets.UTF_8);
         project = projects.save(new Project("demo", "Demo", "", folder, null, null, Map.of(), Map.of()), true);
-        agents = new AgentRuns(chat, List.of(new StudioTools(chat, training), new FileTools(), new DataTools(),
+        agents = new AgentRuns(chat, List.of(new StudioTools(chat, training), new FileTools(), new SymbolTools(), new DataTools(),
                 new MediaTools(chat), new MlTools(chat, training), new WebTools(services),
                 new KnowledgeTools(data.resolve("index")), new CodeTools(services), new GitHubTools(services),
                 new RunnerTools(chat, () -> null, projects), new MailTools(services),
