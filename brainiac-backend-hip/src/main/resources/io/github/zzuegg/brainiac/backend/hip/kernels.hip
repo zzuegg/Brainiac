@@ -1316,6 +1316,7 @@ template <class D, int ROWS> __device__ void packed_mv_k(const typename D::T* a,
 // j <= i + tk - tq. A warp per query row (and piece of its keys), lane l holding dimensions
 // l, l + 32, ... of q and of the output, so heads up to 32 * ATT_LANES.
 #define ATT_LANES 8
+#define ATT_KEYS 4
 
 __device__ __forceinline__ float warp_sum(float v) {
     for (int o = 16; o > 0; o >>= 1) {
@@ -1404,33 +1405,59 @@ template <class D> __device__ void attention_k(const typename D::T* q, const typ
     float m = neg_inf();
     float l = 0.0f;
     int end = min(key_end(s, i), (p + 1) * chunk);
-    for (int j = p * chunk; j < end; j++) {
-        const typename D::T* kr = k + (kvRow + j) * s.dk;
-        float dot = 0.0f;
+    // ATT_KEYS keys at a time: their rows loaded and their dot products summed together, so
+    // the loads and shuffles of one key overlap the others' (one at a time, a warp mostly waited)
+    for (int j0 = p * chunk; j0 < end; j0 += ATT_KEYS) {
+        float score[ATT_KEYS];
 #pragma unroll
-        for (int t = 0; t < ATT_LANES; t++) {
-            int d = lane + 32 * t;
-            if (d < s.dk) {
-                dot += qv[t] * (float) D::ld(kr, d);
+        for (int u = 0; u < ATT_KEYS; u++) {
+            int j = min(j0 + u, end - 1);
+            const typename D::T* kr = k + (kvRow + j) * s.dk;
+            float dot = 0.0f;
+#pragma unroll
+            for (int t = 0; t < ATT_LANES; t++) {
+                int d = lane + 32 * t;
+                if (d < s.dk) {
+                    dot += qv[t] * (float) D::ld(kr, d);
+                }
             }
+            score[u] = dot;
         }
-        float score = warp_sum(dot) * s.scale;
-        if (hasBias) {
-            score += (float) D::ld(bias, b * b0 + h * b1 + i * b2 + j * b3);
+        float mNew = m;
+#pragma unroll
+        for (int u = 0; u < ATT_KEYS; u++) {
+            int j = j0 + u;
+            float sc = warp_sum(score[u]) * s.scale;
+            if (j >= end) {
+                sc = neg_inf();
+            } else if (hasBias) {
+                sc += (float) D::ld(bias, b * b0 + h * b1 + i * b2 + j * b3);
+            }
+            score[u] = sc;
+            mNew = fmaxf(mNew, sc);
         }
-        if (score == neg_inf()) {
-            continue;
+        if (mNew == neg_inf()) {
+            continue;   // every key so far masked out
         }
-        float mNew = fmaxf(m, score);
         float correction = expf(m - mNew);
-        float weight = expf(score - mNew);
-        l = l * correction + weight;
-        const typename D::T* vr = v + (kvRow + j) * s.dv;
+        float weight[ATT_KEYS];
+        l *= correction;
+#pragma unroll
+        for (int u = 0; u < ATT_KEYS; u++) {
+            weight[u] = score[u] == neg_inf() ? 0.0f : expf(score[u] - mNew);
+            l += weight[u];
+        }
 #pragma unroll
         for (int t = 0; t < ATT_LANES; t++) {
             int d = lane + 32 * t;
             if (d < s.dv) {
-                acc[t] = acc[t] * correction + weight * (float) D::ld(vr, d);
+                float a = acc[t] * correction;
+#pragma unroll
+                for (int u = 0; u < ATT_KEYS; u++) {
+                    int j = min(j0 + u, end - 1);
+                    a += weight[u] * (float) D::ld(v + (kvRow + j) * s.dv, d);
+                }
+                acc[t] = a;
             }
         }
         m = mNew;
