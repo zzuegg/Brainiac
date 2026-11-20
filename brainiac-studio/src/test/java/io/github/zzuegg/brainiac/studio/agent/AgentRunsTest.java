@@ -313,6 +313,17 @@ class AgentRunsTest {
     }
 
     @Test
+    void aMadeUpToolNameIsAnsweredWithTheRealOnesInsteadOfEndingTheRun() throws Exception {
+        script.turns.add("```json\n{\"name\": \"list_all_the_roles\", \"arguments\": {}}\n```");
+        script.turns.add("Done.");
+        String id = (String) agents.start("Which roles are there?", "script/bot", "auto", 5, null).get("id");
+        Map<String, Object> r = until(id, x -> "done".equals(x.get("state")));
+        assertEquals("Done.", r.get("answer"));
+        String told = script.heard.getLast().messages().getLast().text();
+        assertTrue(told.contains("there is no tool named list_all_the_roles") && told.contains("list_roles"), told);
+    }
+
+    @Test
     void aChatsAgentCarriesOnWithTheChatsModeAndModel() throws Exception {
         script.turns.add("Hello.");
         String id = (String) agents.start("Say hello", "script/bot", "ask", 5, null).get("id");

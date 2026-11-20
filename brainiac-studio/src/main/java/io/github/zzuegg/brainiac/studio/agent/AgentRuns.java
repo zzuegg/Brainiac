@@ -27,6 +27,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -153,6 +154,8 @@ public final class AgentRuns {
         final List<String> granted = new ArrayList<>();
         int media;
         int wakes;
+        // turns that called a tool by a name there is none of, told so
+        int misnamed;
         long tokenBase;
         final List<Map<String, Object>> steps = new ArrayList<>();
         // the context window of the model that answers, once known; 0 before
@@ -2114,6 +2117,25 @@ public final class AgentRuns {
                     end(r, "done", null);
                     return;
                 }
+                if (calls.isEmpty() && r.misnamed < 2) {
+                    // a turn that is a call in form but names no tool there is: small models make
+                    // names up; they are told which tools there are and try again
+                    List<String> unknown = Agent.read(turn, null).calls().stream()
+                            .map(c -> String.valueOf(c.get("name"))).filter(n -> !tools.containsKey(n)).toList();
+                    if (!unknown.isEmpty()) {
+                        r.misnamed++;
+                        String error = "error: there is no tool named " + String.join(" or ", unknown)
+                                + ". Call one of the tools you were given, by its exact name; the closest are "
+                                + String.join(", ", nearest(unknown.get(0), definitions)) + ".";
+                        r.step("call", Map.of("tool", unknown.get(0), "arguments", Map.of()));
+                        r.step("result", Map.of("tool", unknown.get(0), "text", error, "ok", false));
+                        synchronized (r) {
+                            r.messages.add(new ChatMessage("user", "<tool_response>\n" + error + "\n</tool_response>"));
+                        }
+                        save(r);
+                        continue;
+                    }
+                }
                 if (calls.isEmpty()) {
                     r.step("answer", Map.of("text", said));
                     synchronized (r) {
@@ -2158,6 +2180,29 @@ public final class AgentRuns {
             LOG.log(System.Logger.Level.WARNING, "agent " + r.id + " failed", e);
             end(r, "failed", String.valueOf(e.getMessage()));
         }
+    }
+
+    // the offered tools most like a made-up name first: its words in their names, then in what they do
+    static List<String> nearest(String wrong, List<Map<String, Object>> offered) {
+        Set<String> words = new HashSet<>();
+        for (String w : wrong.toLowerCase(java.util.Locale.ROOT).split("[_\\W]+")) {
+            if (w.length() > 2) {
+                words.add(w);
+            }
+        }
+        java.util.function.ToIntFunction<Map<String, Object>> score = d -> {
+            String name = String.valueOf(d.get("name")).toLowerCase(java.util.Locale.ROOT);
+            String about = String.valueOf(d.getOrDefault("description", "")).toLowerCase(java.util.Locale.ROOT);
+            int sc = 0;
+            for (String w : words) {
+                String stem = w.length() > 5 ? w.substring(0, 5) : w;
+                sc += name.contains(stem) ? 10 : 0;
+                sc += about.contains(stem) ? 3 : 0;
+            }
+            return sc;
+        };
+        return offered.stream().sorted(java.util.Comparator.comparingInt(score).reversed()).limit(6)
+                .map(d -> String.valueOf(d.get("name"))).toList();
     }
 
     // whether a run may call a tool at all
