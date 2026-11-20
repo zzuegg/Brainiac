@@ -1257,6 +1257,8 @@ public final class HipBackend implements Backend {
     private static final int FEW_COUNTERS = 1 << 16;
     /** Counters of finished pieces per column block, all 0 between launches. */
     private HipStorage fewCounters;
+    /** Counters of finished pieces per attention row, all 0 between launches. */
+    private HipStorage attentionCounters;
     /** The columns a block of the few-row kernels covers: a thread each. */
     private static final int FEW_COLUMNS = HipContext.GROUP;
 
@@ -1469,12 +1471,21 @@ public final class HipBackend implements Backend {
         int chunk = Math.max(1, (tk + parts - 1) / parts);
         parts = Math.max(1, (tk + chunk - 1) / chunk);
         HipStorage part = parts > 1 ? raw(rows * parts * (shape[6] + 2), DType.FLOAT32, null) : null;
+        // the pieces are combined by each row's last warp to finish, which counts them
+        boolean counted = part != null && rows <= FEW_COUNTERS;
+        if (counted && attentionCounters == null) {
+            attentionCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
+            fillNow(attentionCounters, 0);
+        }
         c.args().ptr(xq.address()).ptr(xk.address()).ptr(xv.address()).ptr(z.address()).ptr(l.address())
                 .ptr(xb == null ? 0 : xb.address()).ptr(part == null ? 0 : part.address())
                 .ints(attShape(shape, scale, causal)).i64(rows).i32(xb == null ? 0 : 1).i64(strides[0])
-                .i64(strides[1]).i64(strides[2]).i64(strides[3]).i32(parts).i32(chunk);
+                .i64(strides[1]).i64(strides[2]).i64(strides[3]).i32(parts).i32(chunk)
+                .ptr(counted ? attentionCounters.address() : 0);
         warps(c, kernel("attention", t), rows * parts);
-        if (part != null) {
+        if (counted) {
+            part.release();
+        } else if (part != null) {
             c.args().ptr(part.address()).ptr(z.address()).ptr(l.address()).i64(rows).i32(parts).i32(shape[6]);
             warps(c, kernel("attention_combine", t), rows);
             part.release();

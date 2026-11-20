@@ -892,10 +892,45 @@ __device__ __forceinline__ int key_end(AttShape s, int i) {
     return s.causal ? max(0, min(s.tk, i + s.tk - s.tq + 1)) : s.tk;
 }
 
-// rows * parts warps; parts == 1 writes out and lse, otherwise partial (max, sum, acc[dv]) per piece
+// one row's pieces (max, sum, acc[dv] each) rescaled to a common maximum and added, by a warp;
+// read past this compute unit's cache, as other blocks may have written them
+template <class D> __device__ void attention_row(const float* pr, typename D::T* out, typename D::T* lse, i64 r,
+        int parts, int dv, int lane) {
+    float m = neg_inf();
+    for (int p = 0; p < parts; p++) {
+        if (load_part(pr + p * (dv + 2) + 1) > 0) {
+            m = fmaxf(m, load_part(pr + p * (dv + 2)));
+        }
+    }
+    float l = 0.0f;
+    for (int p = 0; p < parts; p++) {
+        float lp = load_part(pr + p * (dv + 2) + 1);
+        if (lp > 0) {
+            l += lp * expf(load_part(pr + p * (dv + 2)) - m);
+        }
+    }
+    for (int d = lane; d < dv; d += 32) {
+        float acc = 0.0f;
+        for (int p = 0; p < parts; p++) {
+            const float* pp = pr + p * (dv + 2);
+            float lp = load_part(pp + 1);
+            if (lp > 0) {
+                acc += load_part(pp + 2 + d) * expf(load_part(pp) - m);
+            }
+        }
+        D::st(out, r * dv + d, l > 0 ? acc / l : 0.0f);
+    }
+    if (lane == 0) {
+        D::st(lse, r, l > 0 ? m + logf(l) : neg_inf());
+    }
+}
+
+// rows * parts warps; parts == 1 writes out and lse, otherwise partial (max, sum, acc[dv]) per
+// piece, combined by the row's last warp to finish (counted in counters[r], left at 0 again),
+// or by attention_combine when counters is null
 template <class D> __device__ void attention_k(const typename D::T* q, const typename D::T* k,
         const typename D::T* v, typename D::T* out, typename D::T* lse, const typename D::T* bias, float* part,
-        AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3, int parts, int chunk) {
+        AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3, int parts, int chunk, int* counters) {
     int lane = threadIdx.x & 31;
     i64 w = ((i64) blockIdx.x * GROUP + threadIdx.x) >> 5;
     if (w >= rows * parts) {
@@ -974,6 +1009,21 @@ template <class D> __device__ void attention_k(const typename D::T* q, const typ
             pp[0] = m;
             pp[1] = l;
         }
+        if (counters != nullptr) {
+            __threadfence();
+            int last = 0;
+            if (lane == 0) {
+                last = atomicAdd(&counters[r], 1) == parts - 1;
+            }
+            last = __shfl(last, 0, 32);
+            if (last) {
+                __threadfence();
+                attention_row<D>(part + r * parts * (s.dv + 2), out, lse, r, parts, s.dv, lane);
+                if (lane == 0) {
+                    counters[r] = 0;
+                }
+            }
+        }
     }
 }
 
@@ -985,33 +1035,7 @@ template <class D> __device__ void attention_combine_k(const float* part, typena
     if (r >= rows) {
         return;
     }
-    const float* pr = part + r * parts * (dv + 2);
-    float m = neg_inf();
-    for (int p = 0; p < parts; p++) {
-        if (pr[p * (dv + 2) + 1] > 0) {
-            m = fmaxf(m, pr[p * (dv + 2)]);
-        }
-    }
-    float l = 0.0f;
-    for (int p = 0; p < parts; p++) {
-        float lp = pr[p * (dv + 2) + 1];
-        if (lp > 0) {
-            l += lp * expf(pr[p * (dv + 2)] - m);
-        }
-    }
-    for (int d = lane; d < dv; d += 32) {
-        float acc = 0.0f;
-        for (int p = 0; p < parts; p++) {
-            const float* pp = pr + p * (dv + 2);
-            if (pp[1] > 0) {
-                acc += pp[2 + d] * expf(pp[0] - m);
-            }
-        }
-        D::st(out, r * dv + d, l > 0 ? acc / l : 0.0f);
-    }
-    if (lane == 0) {
-        D::st(lse, r, l > 0 ? m + logf(l) : neg_inf());
-    }
+    attention_row<D>(part + r * parts * (dv + 2), out, lse, r, parts, dv, lane);
 }
 
 // delta[r] = grad[r] . out[r], a warp per row
@@ -1400,8 +1424,8 @@ template <class D> __device__ void attention_latent_k(const typename D::T* qc, c
 #define ATTENTION_KERNELS(S, D)                                                                                   \
 extern "C" __global__ void attention_##S(const D::T* q, const D::T* k, const D::T* v, D::T* out, D::T* lse,       \
         const D::T* bias, float* part, AttShape s, i64 rows, int hasBias, i64 b0, i64 b1, i64 b2, i64 b3,         \
-        int parts, int chunk) {                                                                                   \
-    attention_k<D>(q, k, v, out, lse, bias, part, s, rows, hasBias, b0, b1, b2, b3, parts, chunk);               \
+        int parts, int chunk, int* counters) {                                                                    \
+    attention_k<D>(q, k, v, out, lse, bias, part, s, rows, hasBias, b0, b1, b2, b3, parts, chunk, counters);     \
 }                                                                                                                 \
 extern "C" __global__ void attention_combine_##S(const float* part, D::T* out, D::T* lse, i64 rows, int parts,    \
         int dv) {                                                                                                 \
