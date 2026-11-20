@@ -3,6 +3,7 @@ import { html } from "/v2/lib/html.js";
 // Line icons on a 24-unit grid, drawn with the current text color.
 const PATHS = {
   plus: "M12 5v14M5 12h14",
+  image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15 9h.01",
   close: "M6 6l12 12M18 6L6 18",
   more: "M5 12h.01M12 12h.01M19 12h.01",
   chat: "M4 5h16v11H9l-5 4z",

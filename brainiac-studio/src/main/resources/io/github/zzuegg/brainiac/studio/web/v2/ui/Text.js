@@ -8,7 +8,8 @@ export function Text({ text = "" }) {
   let at = 0, m;
   while ((m = re.exec(text))) {
     if (m.index > at) parts.push({ prose: text.slice(at, m.index) });
-    parts.push({ code: m[2].replace(/\n$/, ""), lang: m[1].trim() });
+    // a block still streaming in may end in the first backticks of its closing fence
+    parts.push({ code: m[2].replace(/\n?`{1,2}$/, "").replace(/\n$/, ""), lang: m[1].trim() });
     at = re.lastIndex;
   }
   if (at < text.length) parts.push({ prose: text.slice(at) });

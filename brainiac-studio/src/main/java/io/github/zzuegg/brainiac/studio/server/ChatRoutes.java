@@ -91,7 +91,8 @@ import java.util.Map;
  *       ({@code ""} for its own) and its options. Fields left out stay as they are.
  *   <li>{@code GET /api/chats} lists the saved conversations, newest first; {@code POST /api/chats}
  *       with a conversation ({@code id}, {@code title}, {@code messages}, {@code status} open or
- *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it.
+ *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it;
+ *       {@code POST /api/chats/get {id}} returns one as {@code {chat}}.
  *   <li>{@code GET /api/state} returns what the page remembers (tabs, layout, chosen models);
  *       {@code POST /api/state} with {@code {"name": value}} changes those values, null removes one.
  *   <li>{@code POST /api/local} with {@code {"path": "D:/models/qwen.gguf"}} adds a place to find
@@ -253,6 +254,15 @@ final class ChatRoutes {
         server.post("/api/keys", this::keys);
         server.post("/api/providers", this::providers);
         server.get("/api/chats", ex -> Exchanges.json(ex, 200, Map.of("chats", chat.conversations().list())));
+        server.post("/api/chats/get", ex -> {
+            String id = Json.string(Exchanges.body(ex, 4096), "id", "");
+            Map<String, Object> c = chat.conversations().get(id).orElse(null);
+            if (c == null) {
+                Exchanges.error(ex, 404, "there is no conversation " + id);
+                return;
+            }
+            Exchanges.json(ex, 200, Map.of("chat", c));
+        });
         server.post("/api/chats", ex -> {
             Map<String, Object> body = Exchanges.body(ex, 32 << 20);
             if (Boolean.TRUE.equals(body.get("delete"))) {

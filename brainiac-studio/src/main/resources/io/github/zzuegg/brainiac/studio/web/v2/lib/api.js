@@ -79,3 +79,42 @@ export const local = {
     } catch { /* private window or full: the studio's copy still holds */ }
   },
 };
+
+/**
+ * Calls an API that answers with server-sent events, handing each event to `onEvent(name, data)`.
+ * Aborting the signal closes the stream, which stops the work in the studio.
+ */
+export async function stream(path, body, { project, signal, onEvent }) {
+  const headers = { "X-Studio-Token": token, "Content-Type": "application/json" };
+  if (project) headers["X-Studio-Project"] = project;
+  let r;
+  try {
+    r = await fetch(path, { method: "POST", headers, body: JSON.stringify(body), signal });
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+    throw new ApiError(0, "The studio is not answering. Is it still running?");
+  }
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new ApiError(r.status, data.error || `The studio answered ${r.status}`);
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let cut;
+    while ((cut = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      let event = "message", data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (data) onEvent(event, JSON.parse(data));
+    }
+  }
+}

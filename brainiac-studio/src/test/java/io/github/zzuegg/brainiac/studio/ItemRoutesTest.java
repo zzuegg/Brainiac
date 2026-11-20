@@ -73,6 +73,8 @@ class ItemRoutesTest {
         ok("/api/chats", null, Map.of("id", "chat0002", "title", "Elsewhere", "messages", List.of(), "updated", 2000));
 
         assertEquals(List.of("chat0001"), ids(items("alpha", List.of("chat"))));
+        assertEquals("First", Json.object(ok("/api/chats/get", null, Map.of("id", "chat0001")).get("chat")).get("title"));
+        assertEquals(404, call("/api/chats/get", null, Map.of("id", "nochat01")).statusCode());
         assertFalse(ids(items("default", List.of("chat"))).contains("chat0001"));
         assertTrue(ids(items("default", List.of("chat"))).contains("chat0002"));
         // saving it again from the other page keeps it where it is
