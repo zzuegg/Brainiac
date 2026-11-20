@@ -1343,30 +1343,43 @@ __device__ __forceinline__ int key_end(AttShape s, int i) {
     return s.causal ? max(0, min(s.tk, i + s.tk - s.tq + 1)) : s.tk;
 }
 
-// one row's pieces (max, sum, acc[dv] each) rescaled to a common maximum and added, by a warp;
-// read past this compute unit's cache, as other blocks may have written them
+// one row's pieces (max, sum, acc[dv] each) rescaled to a common maximum and added, by a warp.
+// Plain loads: the caller fenced at agent scope after the last piece was counted, which
+// invalidates this compute unit's caches (attention_combine runs in a later launch). The
+// pieces' maxima and sums are read a lane each; through atomic loads, one after another, the
+// combine took most of decoding's ~60 us attention.
+__device__ __forceinline__ float warp_max(float v) {
+    for (int o = 16; o > 0; o >>= 1) {
+        v = fmaxf(v, SHFL_XOR(v, o));
+    }
+    return v;
+}
+
 template <class D> __device__ void attention_row(const float* pr, typename D::T* out, typename D::T* lse, i64 r,
         int parts, int dv, int lane) {
+    int stride = dv + 2;
     float m = neg_inf();
-    for (int p = 0; p < parts; p++) {
-        if (load_part(pr + p * (dv + 2) + 1) > 0) {
-            m = fmaxf(m, load_part(pr + p * (dv + 2)));
+    for (int p = lane; p < parts; p += 32) {
+        if (pr[p * stride + 1] > 0) {
+            m = fmaxf(m, pr[p * stride]);
         }
     }
+    m = warp_max(m);
     float l = 0.0f;
-    for (int p = 0; p < parts; p++) {
-        float lp = load_part(pr + p * (dv + 2) + 1);
+    for (int p = lane; p < parts; p += 32) {
+        float lp = pr[p * stride + 1];
         if (lp > 0) {
-            l += lp * expf(load_part(pr + p * (dv + 2)) - m);
+            l += lp * expf(pr[p * stride] - m);
         }
     }
+    l = warp_sum(l);
     for (int d = lane; d < dv; d += 32) {
         float acc = 0.0f;
         for (int p = 0; p < parts; p++) {
-            const float* pp = pr + p * (dv + 2);
-            float lp = load_part(pp + 1);
+            const float* pp = pr + p * stride;
+            float lp = pp[1];
             if (lp > 0) {
-                acc += load_part(pp + 2 + d) * expf(load_part(pp) - m);
+                acc += pp[2 + d] * expf(pp[0] - m);
             }
         }
         D::st(out, r * dv + d, l > 0 ? acc / l : 0.0f);

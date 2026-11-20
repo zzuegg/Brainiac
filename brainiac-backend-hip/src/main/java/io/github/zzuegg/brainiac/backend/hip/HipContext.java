@@ -888,6 +888,9 @@ final class HipContext {
         long size = sizeClass(bytes);
         ArrayDeque<Long> free = freeList(size);
         long ptr;
+        if ((free == null || free.isEmpty()) && collectSoon(size)) {
+            free = freeList(size);
+        }
         if (free != null && !free.isEmpty()) {
             ptr = free.pop();
         } else if (SLABS && size <= SLAB_LIMIT && reserved + slabBytes(size) <= budget) {
@@ -988,6 +991,30 @@ final class HipContext {
             free.push(base + at);
         }
         return base;
+    }
+
+    /** Bytes taken from the driver since the garbage collector was last asked for released tensors. */
+    private long newSinceCollection;
+
+    /**
+     * Before taking new memory from the driver: every so often (128 MB, or a sixteenth of the
+     * budget) asks the garbage collector for tensors no longer used, as the Vulkan backend
+     * does. Memory returns to the pool only once their tensors are collected, which takes long
+     * when little Java memory is allocated: a 7B model's prompt otherwise kept every layer's
+     * intermediates, 6 GB, until the budget was reached. Returns whether it collected.
+     */
+    private boolean collectSoon(long size) {
+        newSinceCollection += size;
+        if (newSinceCollection <= Math.min(128L << 20, budget / 16)) {
+            return false;
+        }
+        newSinceCollection = 0;
+        collections++;
+        long t0 = PROFILE ? System.nanoTime() : 0;
+        System.gc();
+        drainCollected();
+        record("garbage collection for memory", PROFILE ? System.nanoTime() - t0 : 0);
+        return true;
     }
 
     /** Whether {@code ptr} lies in a slab, and so is freed with it. */
