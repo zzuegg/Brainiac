@@ -95,6 +95,23 @@ final class HipContext {
         return e != null ? e : cu.createEvent();
     }
 
+    /** Milliseconds {@code work} takes on the GPU, the mean of {@code reps} runs after one to warm up. */
+    float timeOnGpu(Runnable work, int reps) {
+        work.run();
+        long a = event();
+        long b = event();
+        cu.recordEvent(a, stream);
+        for (int i = 0; i < reps; i++) {
+            work.run();
+        }
+        cu.recordEvent(b, stream);
+        cu.synchronizeEvent(b);
+        float ms = cu.elapsed(a, b) / reps;
+        events.push(a);
+        events.push(b);
+        return ms;
+    }
+
     /** With the GPU profile on: records an event before work that {@link #gpuEnd} names; else 0. */
     long gpuStart() {
         if (!GPU_PROFILE) {

@@ -1051,6 +1051,20 @@ public final class HipBackend implements Backend {
         HipContext c = ctx();
         HipStorage x = as(cs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
+            if (rows < 2L * c.multiprocessors && length > 4096 && rows <= FEW_COUNTERS) {
+                // few long rows (a vocabulary's logits): each split over blocks, which the
+                // row's last block to finish combines
+                int pieces = (int) Math.max(1, Math.min(Math.min(256, 4L * c.multiprocessors / rows),
+                        (length + 2047) / 2048));
+                HipStorage part = raw(2L * rows * pieces, DType.FLOAT64, null);
+                long counters = counters().address();
+                c.args().ptr(x.address()).ptr(y.address()).ptr(part.address()).ptr(counters).i64(rows).i64(length)
+                        .i64(inner).i32(pieces);
+                c.launch(kernel("argmax_split", y.dtype), pieces, (int) rows, 1);
+                part.release();
+                done(x, cs(in));
+                return;
+            }
             c.args().ptr(x.address()).ptr(y.address()).i64(rows).i64(length).i64(inner);
             if (rows < 2L * c.multiprocessors && length > 1024) {
                 // few long rows (a vocabulary's logits): a block each, not a thread
@@ -1103,6 +1117,11 @@ public final class HipBackend implements Backend {
             // a transposed or otherwise strided operand still pending: rocBLAS reads it in place
             Operand va = view(ls(a), batch, m, k, z.dtype);
             Operand vb = view(ls(b), batch, k, n, z.dtype);
+            if (vb != null && vb.transposed() && (m > FEW || va != null)) {
+                // rocBLAS reads a transposed right operand very slowly (a tied head over a
+                // prompt's rows: 260 ms where a copy and a plain product take a few)
+                vb = null;
+            }
             if (va != null || vb != null) {
                 HipStorage x = va != null ? null : as(cs(a), z.dtype);
                 HipStorage y = vb != null ? null : as(cs(b), z.dtype);
@@ -1126,7 +1145,8 @@ public final class HipBackend implements Backend {
         HipStorage y = as(cs(b), z.dtype);
         DType t = z.dtype;
         boolean blas = c.rocblas != null;
-        if (batch == 1 && m == 1 && MATVEC.equals("rocblas") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()) {
+        if (batch == 1 && m == 1 && !MATVEC.equals("few") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()
+                && !fewFaster(c, x, y, k, n, z)) {
             long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
             long g = c.gpuStart();
             c.rocblas.halfGemv(false, n, k, n, y.address(), x.address(), z.address());
@@ -1267,8 +1287,19 @@ public final class HipBackend implements Backend {
     private static final int FEW_COUNTERS = 1 << 16;
     /** Counters of finished pieces per column block, all 0 between launches. */
     private HipStorage fewCounters;
-    /** Counters of finished pieces per attention row, all 0 between launches. */
-    private HipStorage attentionCounters;
+    /**
+     * Counters of finished pieces per row, for attention and argmax: all 0 between launches,
+     * as the last piece of each row sets its counter back.
+     */
+    private HipStorage rowCounters;
+
+    private HipStorage counters() {
+        if (rowCounters == null) {
+            rowCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
+            fillNow(rowCounters, 0);
+        }
+        return rowCounters;
+    }
     /** The columns a block of the few-row kernels covers: a thread each. */
     private static final int FEW_COLUMNS = HipContext.GROUP;
 
@@ -1312,11 +1343,42 @@ public final class HipBackend implements Backend {
 
     /**
      * What multiplies a single float16 row by a dense matrix, decoding's products
-     * ({@code -Dbrainiac.hip.matvec}): {@code rocblas} (the default) rocBLAS's float16 gemv,
-     * about a quarter faster than {@code few}, the few-row kernel. Without rocBLAS, and for
-     * bfloat16 and several rows, the few-row kernel.
+     * ({@code -Dbrainiac.hip.matvec}): {@code auto} (the default) whichever of rocBLAS's float16
+     * gemv and the few-row kernel is faster for the shape, timed once; {@code rocblas} or
+     * {@code few} always that one. Without rocBLAS, and for bfloat16 and several rows, the
+     * few-row kernel.
      */
-    private static final String MATVEC = System.getProperty("brainiac.hip.matvec", "rocblas");
+    private static final String MATVEC = System.getProperty("brainiac.hip.matvec", "auto");
+
+    /** Per shape ({@code k << 32 | n}): whether the few-row kernel beat rocBLAS's gemv. */
+    private final Map<Long, Boolean> fewFaster = new java.util.HashMap<>();
+
+    /**
+     * With {@code -Dbrainiac.hip.matvec=auto} (the default): whether the few-row kernel
+     * multiplies a float16 row by this shape of matrix faster than rocBLAS's gemv, timed on the
+     * GPU the first time the shape comes up (rocBLAS is fast for some shapes and several times
+     * slower for others, such as a feed-forward network's down projection).
+     */
+    private boolean fewFaster(HipContext c, HipStorage x, HipStorage y, int k, int n, HipStorage z) {
+        if (!MATVEC.equals("auto") || !FEW_ROWS || !c.cu.hasEvents()) {
+            return false;
+        }
+        long key = (long) k << 32 | n;
+        Boolean f = fewFaster.get(key);
+        if (f == null) {
+            Runnable blas = () -> c.rocblas.halfGemv(false, n, k, n, y.address(), x.address(), z.address());
+            Runnable few = () -> few(c, "few_dense", x, y.address(), 0, 0, 0, 0, 1, k, n, z);
+            float tb = c.timeOnGpu(blas, 5);
+            float tf = c.timeOnGpu(few, 5);
+            f = tf < 0.95f * tb;
+            fewFaster.put(key, f);
+            if (HipContext.DEBUG || HipContext.PROFILE || HipContext.GPU_PROFILE) {
+                System.err.printf(java.util.Locale.ROOT, "brainiac hip: [1, %d] x [%d, %d] float16: rocBLAS %.1f us,"
+                        + " few-row kernel %.1f us: %s%n", k, k, n, tb * 1e3, tf * 1e3, f ? "few" : "rocBLAS");
+            }
+        }
+        return f;
+    }
 
     // ------------------------------------------------------------------ packed (quantized) weights
 
@@ -1477,21 +1539,18 @@ public final class HipBackend implements Backend {
         int tk = shape[4];
         // split each row's keys into pieces when the rows alone leave the device idle
         long target = 64L * c.multiprocessors;
-        int parts = (int) Math.max(1, Math.min((tk + 63) / 64, (target + rows - 1) / rows));
+        int parts = (int) Math.max(1, Math.min((tk + 15) / 16, (target + rows - 1) / rows));
         int chunk = Math.max(1, (tk + parts - 1) / parts);
         parts = Math.max(1, (tk + chunk - 1) / chunk);
         HipStorage part = parts > 1 ? raw(rows * parts * (shape[6] + 2), DType.FLOAT32, null) : null;
         // the pieces are combined by each row's last warp to finish, which counts them
         boolean counted = part != null && rows <= FEW_COUNTERS;
-        if (counted && attentionCounters == null) {
-            attentionCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
-            fillNow(attentionCounters, 0);
-        }
+        long counters = counted ? counters().address() : 0;
         c.args().ptr(xq.address()).ptr(xk.address()).ptr(xv.address()).ptr(z.address()).ptr(l.address())
                 .ptr(xb == null ? 0 : xb.address()).ptr(part == null ? 0 : part.address())
                 .ints(attShape(shape, scale, causal)).i64(rows).i32(xb == null ? 0 : 1).i64(strides[0])
                 .i64(strides[1]).i64(strides[2]).i64(strides[3]).i32(parts).i32(chunk)
-                .ptr(counted ? attentionCounters.address() : 0);
+                .ptr(counters);
         warps(c, kernel("attention", t), rows * parts);
         if (counted) {
             part.release();

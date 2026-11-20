@@ -499,6 +499,71 @@ template <class D> __device__ void argmax_block_k(const typename D::T* x, typena
     }
 }
 
+// argmax of few long rows split over blocks: block (p, r) finds the best of piece p of row r and
+// writes (value, index) to part; the row's last block to finish (counted in counters[r], left at
+// 0 again) picks among the pieces in order, so the first index still wins a tie
+template <class D> __device__ void argmax_split_k(const typename D::T* x, typename D::T* y, double* part,
+        int* counters, i64 rows, i64 len, i64 inner, int pieces) {
+    typedef typename D::A A;
+    __shared__ A values[GROUP];
+    __shared__ i64 indices[GROUP];
+    __shared__ int last;
+    i64 r = blockIdx.y;
+    int p = blockIdx.x;
+    i64 chunk = (len + pieces - 1) / pieces;
+    i64 t0 = p * chunk;
+    i64 t1 = min(len, t0 + chunk);
+    i64 base = (r / inner) * len * inner + r % inner;
+    i64 best = -1;
+    A bestValue = A(0);
+    for (i64 t = t0 + threadIdx.x; t < t1; t += GROUP) {
+        A v = D::ld(x, base + t * inner);
+        if (best < 0 || v > bestValue) {
+            best = t;
+            bestValue = v;
+        }
+    }
+    values[threadIdx.x] = bestValue;
+    indices[threadIdx.x] = best;
+    __syncthreads();
+    for (int s = GROUP / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            i64 oi = indices[threadIdx.x + s];
+            i64 mi = indices[threadIdx.x];
+            A ov = values[threadIdx.x + s];
+            A mv = values[threadIdx.x];
+            if (oi >= 0 && (mi < 0 || ov > mv || (ov == mv && oi < mi))) {
+                values[threadIdx.x] = ov;
+                indices[threadIdx.x] = oi;
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        part[(r * pieces + p) * 2] = (double) values[0];
+        part[(r * pieces + p) * 2 + 1] = (double) indices[0];
+        __threadfence();
+        last = atomicAdd(&counters[r], 1) == pieces - 1;
+    }
+    __syncthreads();
+    if (last && threadIdx.x == 0) {
+        __threadfence();
+        volatile double* pr = part + r * pieces * 2;
+        double bv = 0;
+        double bi = -1;
+        for (int q = 0; q < pieces; q++) {
+            double vi = pr[q * 2 + 1];
+            double vv = pr[q * 2];
+            if (vi >= 0 && (bi < 0 || vv > bv)) {
+                bv = vv;
+                bi = vi;
+            }
+        }
+        D::st(y, r, A(bi));
+        counters[r] = 0;
+    }
+}
+
 // RMSNorm, one block per row: y = round(x / sqrt(mean(x^2) + eps)) * w, in float
 template <class D> __device__ void rms_norm_k(const typename D::T* x, const typename D::T* w, typename D::T* y,
         i64 rows, int cols, float eps) {
@@ -1262,6 +1327,10 @@ extern "C" __global__ void reduce_block_##S(const D::T* x, D::T* y, i64 rows, i6
 }                                                                                                                 \
 extern "C" __global__ void argmax_##S(const D::T* x, D::T* y, i64 rows, i64 len, i64 inner) {                    \
     argmax_k<D>(x, y, rows, len, inner);                                                                          \
+}                                                                                                                 \
+extern "C" __global__ void argmax_split_##S(const D::T* x, D::T* y, double* part, int* counters, i64 rows,      \
+        i64 len, i64 inner, int pieces) {                                                                         \
+    argmax_split_k<D>(x, y, part, counters, rows, len, inner, pieces);                                            \
 }                                                                                                                 \
 extern "C" __global__ void argmax_block_##S(const D::T* x, D::T* y, i64 rows, i64 len, i64 inner) {              \
     argmax_block_k<D>(x, y, rows, len, inner);                                                                    \
