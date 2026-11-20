@@ -1725,6 +1725,10 @@ public final class HipBackend implements Backend {
 
     /** Whether attention runs fused ({@code -Dbrainiac.hip.fusedAttention=false}: never). */
     private static final boolean FUSED_ATTENTION = !"false".equals(System.getProperty("brainiac.hip.fusedAttention"));
+    /** The fewest keys a piece of a split attention row takes ({@code -Dbrainiac.hip.attentionPiece}). */
+    private static final int ATTENTION_PIECE = Math.max(1, Integer.getInteger("brainiac.hip.attentionPiece", 16));
+    /** Warps per compute unit a split attention aims for ({@code -Dbrainiac.hip.attentionWarps}). */
+    private static final int ATTENTION_WARPS = Math.max(1, Integer.getInteger("brainiac.hip.attentionWarps", 64));
     /** The largest head the attention kernels take: 32 lanes times ATT_LANES in kernels.hip. */
     static final int ATTENTION_HEAD = 256;
 
@@ -1782,8 +1786,8 @@ public final class HipBackend implements Backend {
         HipStorage xb = bias == null ? null : as(cs(bias), t);
         int tk = shape[4];
         // split each row's keys into pieces when the rows alone leave the device idle
-        long target = 64L * c.multiprocessors;
-        int parts = (int) Math.max(1, Math.min((tk + 15) / 16, (target + rows - 1) / rows));
+        long target = (long) ATTENTION_WARPS * c.multiprocessors;
+        int parts = (int) Math.max(1, Math.min((tk + ATTENTION_PIECE - 1) / ATTENTION_PIECE, (target + rows - 1) / rows));
         int chunk = Math.max(1, (tk + parts - 1) / parts);
         parts = Math.max(1, (tk + chunk - 1) / chunk);
         HipStorage part = parts > 1 ? raw(rows * parts * (shape[6] + 2), DType.FLOAT32, null) : null;
