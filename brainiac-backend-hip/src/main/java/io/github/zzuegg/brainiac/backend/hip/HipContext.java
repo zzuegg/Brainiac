@@ -75,8 +75,93 @@ final class HipContext {
         }
     }
 
+    /**
+     * Times each kernel, copy and rocBLAS call on the GPU itself ({@code -Dbrainiac.hip.profile=gpu}),
+     * with events recorded before and after it on the stream, without waiting: what each takes
+     * on the device, and how long the device sat idle before it (waiting for the host, or for
+     * the launch to arrive).
+     */
+    static final boolean GPU_PROFILE = "gpu".equals(System.getProperty("brainiac.hip.profile"));
+    private final ArrayDeque<Long> events = new ArrayDeque<>();
+    private final List<Object[]> marks = new ArrayList<>();
+    /** Per name: calls, busy ms, idle ms before. */
+    private final Map<String, double[]> gpuProfile = new HashMap<>();
+    private long lastEnd;
+    private double gpuBusy;
+    private double gpuIdle;
+
+    private long event() {
+        Long e = events.poll();
+        return e != null ? e : cu.createEvent();
+    }
+
+    /** With the GPU profile on: records an event before work that {@link #gpuEnd} names; else 0. */
+    long gpuStart() {
+        if (!GPU_PROFILE) {
+            return 0;
+        }
+        long e = event();
+        cu.recordEvent(e, stream);
+        return e;
+    }
+
+    /** With the GPU profile on: records the end of work started at {@code start}, as {@code what}. */
+    void gpuEnd(long start, String what) {
+        if (!GPU_PROFILE || start == 0) {
+            return;
+        }
+        long e = event();
+        cu.recordEvent(e, stream);
+        marks.add(new Object[] {what, start, e});
+        if (marks.size() >= 4096) {
+            harvest();
+        }
+    }
+
+    /** Waits for the recorded events and adds up their times. */
+    private void harvest() {
+        if (marks.isEmpty()) {
+            return;
+        }
+        cu.synchronizeEvent((Long) marks.getLast()[2]);
+        for (Object[] m : marks) {
+            long start = (Long) m[1];
+            long end = (Long) m[2];
+            double busy = cu.elapsed(start, end);
+            double idle = lastEnd != 0 ? Math.max(0, cu.elapsed(lastEnd, start)) : 0;
+            double[] t = gpuProfile.computeIfAbsent((String) m[0], k -> new double[3]);
+            t[0]++;
+            t[1] += busy;
+            t[2] += idle;
+            gpuBusy += busy;
+            gpuIdle += idle;
+            events.push(start);
+            if (lastEnd != 0) {
+                events.push(lastEnd);
+            }
+            lastEnd = end;
+        }
+        marks.clear();
+    }
+
+    private String gpuReport() {
+        harvest();
+        StringBuilder b = new StringBuilder(String.format(java.util.Locale.ROOT,
+                "%ngpu profile: %.1f ms busy, %.1f ms idle between timed work", gpuBusy, gpuIdle));
+        gpuProfile.entrySet().stream().sorted((x, y) -> Double.compare(y.getValue()[1] + y.getValue()[2],
+                x.getValue()[1] + x.getValue()[2])).limit(30)
+                .forEach(e -> b.append(String.format(java.util.Locale.ROOT,
+                        "%n  %-34s %8d calls %9.1f ms busy %7.1f us each %9.1f ms idle before",
+                        e.getKey(), (long) e.getValue()[0], e.getValue()[1], e.getValue()[1] * 1e3 / e.getValue()[0],
+                        e.getValue()[2])));
+        return b.toString();
+    }
+
     /** The profile so far: the costliest entries, and how much of the time they cover. */
     String profileReport() {
+        if (GPU_PROFILE && cu.hasEvents()) {
+            return gpuReport();
+        }
         if (!PROFILE || profile.isEmpty()) {
             return "";
         }
@@ -438,9 +523,13 @@ final class HipContext {
     /** Launches a generated kernel's function over {@code n} items; the arguments are set. */
     void launchFused(long f, long n) {
         int blocks = (int) Math.max(1, Math.min(MAX_BLOCKS, (n + GROUP - 1) / GROUP));
+        long g = gpuStart();
         long t0 = System.nanoTime();
         int r = cu.launch(f, blocks, 1, 1, GROUP, 0, stream, argPointers);
         callNanos += System.nanoTime() - t0;
+        if (g != 0) {
+            gpuEnd(g, fusedNames.getOrDefault(f, "fused") + " (" + n + " values)");
+        }
         launches++;
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, "launching a fused kernel (" + blocks + " blocks)");
@@ -552,9 +641,11 @@ final class HipContext {
     void launch(String name, int gridX, int gridY, int gridZ, int block) {
         long f = function(name);
         trace("launch " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
+        long g = gpuStart();
         long t0 = System.nanoTime();
         int r = cu.launch(f, gridX, gridY, gridZ, block, 0, stream, argPointers);
         callNanos += System.nanoTime() - t0;
+        gpuEnd(g, name);
         launches++;
         if (r != HipRuntime.HIP_SUCCESS) {
             throw cu.error(r, "launching " + name + " (" + gridX + " x " + gridY + " x " + gridZ + " blocks)");
@@ -642,9 +733,11 @@ final class HipContext {
     void copy(long dst, long src, long bytes) {
         if (bytes > 0) {
             trace("hipMemcpyDtoDAsync " + bytes + " bytes");
+            long g = gpuStart();
             long t0 = System.nanoTime();
             cu.copy(dst, src, bytes, stream);
             callNanos += System.nanoTime() - t0;
+            gpuEnd(g, "device copy");
             if (DEBUG) {
                 debugWait("device copy of " + bytes + " bytes");
             }

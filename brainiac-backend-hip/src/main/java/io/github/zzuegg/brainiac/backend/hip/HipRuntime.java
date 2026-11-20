@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.backend.hip;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
+import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 import static java.lang.foreign.ValueLayout.JAVA_SHORT;
@@ -76,6 +77,10 @@ final class HipRuntime {
     private final MethodHandle hipGraphExecUpdate;
     private final MethodHandle hipGraphDestroy;
     private final MethodHandle hipGraphExecDestroy;
+    private final MethodHandle hipEventCreate;
+    private final MethodHandle hipEventRecord;
+    private final MethodHandle hipEventSynchronize;
+    private final MethodHandle hipEventElapsedTime;
 
     /**
      * Loads the HIP runtime and binds its functions. Does not call into it.
@@ -149,6 +154,63 @@ final class HipRuntime {
         hipGraphExecUpdate = b.optional("hipGraphExecUpdate", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG, PTR, PTR));
         hipGraphDestroy = b.optional("hipGraphDestroy", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
         hipGraphExecDestroy = b.optional("hipGraphExecDestroy", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        hipEventCreate = b.optional("hipEventCreate", FunctionDescriptor.of(JAVA_INT, PTR));
+        hipEventRecord = b.optional("hipEventRecord", FunctionDescriptor.of(JAVA_INT, JAVA_LONG, JAVA_LONG));
+        hipEventSynchronize = b.optional("hipEventSynchronize", FunctionDescriptor.of(JAVA_INT, JAVA_LONG));
+        hipEventElapsedTime = b.optional("hipEventElapsedTime",
+                FunctionDescriptor.of(JAVA_INT, PTR, JAVA_LONG, JAVA_LONG));
+    }
+
+    // ------------------------------------------------------------------ events (for the GPU profile)
+
+    boolean hasEvents() {
+        return hipEventCreate != null && hipEventRecord != null && hipEventSynchronize != null
+                && hipEventElapsedTime != null;
+    }
+
+    long createEvent() {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment out = a.allocate(JAVA_LONG);
+            check((int) hipEventCreate.invokeExact(out), "hipEventCreate");
+            return out.get(JAVA_LONG, 0);
+        } catch (HipException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw Binder.fail("hipEventCreate", t);
+        }
+    }
+
+    void recordEvent(long event, long stream) {
+        try {
+            check((int) hipEventRecord.invokeExact(event, stream), "hipEventRecord");
+        } catch (HipException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw Binder.fail("hipEventRecord", t);
+        }
+    }
+
+    void synchronizeEvent(long event) {
+        try {
+            check((int) hipEventSynchronize.invokeExact(event), "hipEventSynchronize");
+        } catch (HipException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw Binder.fail("hipEventSynchronize", t);
+        }
+    }
+
+    /** Milliseconds from one recorded event to another, both done. */
+    float elapsed(long from, long to) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment out = a.allocate(JAVA_FLOAT);
+            check((int) hipEventElapsedTime.invokeExact(out, from, to), "hipEventElapsedTime");
+            return out.get(JAVA_FLOAT, 0);
+        } catch (HipException e) {
+            throw e;
+        } catch (Throwable t) {
+            throw Binder.fail("hipEventElapsedTime", t);
+        }
     }
 
     // ------------------------------------------------------------------ graphs

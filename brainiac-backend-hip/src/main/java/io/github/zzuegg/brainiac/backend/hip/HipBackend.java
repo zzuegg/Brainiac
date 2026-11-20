@@ -64,7 +64,9 @@ import java.util.Set;
  * <li>{@code brainiac.hip.slabs=false}: a hipMalloc for every small block instead of cutting
  * blocks up to 1 MB from slabs</li>
  * <li>{@code brainiac.hip.profile=true}: time every kernel, wait, copy and allocation, waiting
- * after each launch, and list the costliest in {@link #statistics()}</li>
+ * after each launch, and list the costliest in {@link #statistics()}; {@code =gpu}: time
+ * kernels, copies and rocBLAS calls on the GPU with events, without waiting, and how long the
+ * GPU sat idle before each</li>
  * <li>{@code brainiac.hip.devices}: {@code one} for only one device; {@code all} for one per GPU
  * ({@code hip}, {@code hip:1}, ...); by default one per GPU of the first one's architecture</li>
  * <li>{@code brainiac.hip.fusedAttention=false}: attention from separate operations</li>
@@ -1126,7 +1128,9 @@ public final class HipBackend implements Backend {
         boolean blas = c.rocblas != null;
         if (batch == 1 && m == 1 && MATVEC.equals("rocblas") && t == DType.FLOAT16 && blas && c.rocblas.hasHalfGemv()) {
             long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
+            long g = c.gpuStart();
             c.rocblas.halfGemv(false, n, k, n, y.address(), x.address(), z.address());
+            c.gpuEnd(g, "rocBLAS gemv " + k + "x" + n);
             c.products++;
             if (HipContext.PROFILE) {
                 c.profileSync();
@@ -1138,8 +1142,10 @@ public final class HipBackend implements Backend {
         } else if (blas) {
             HipContext.trace("rocBLAS " + t + " " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n + "]");
             long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
+            long g = c.gpuStart();
             c.rocblas.gemm(t, false, false, m, n, k, x.address(), k, (long) m * k, y.address(), n, (long) k * n,
                     z.address(), (long) m * n, batch);
+            c.gpuEnd(g, "rocBLAS gemm " + t);
             c.products++;
             if (HipContext.PROFILE) {
                 c.profileSync();
@@ -1231,12 +1237,16 @@ public final class HipBackend implements Backend {
             return;
         } else if (batch == 1 && m == 1 && t == DType.FLOAT16 && MATVEC.equals("rocblas") && c.rocblas.hasHalfGemv()
                 && !a.transposed()) {
+            long g = c.gpuStart();
             c.rocblas.halfGemv(b.transposed(), b.ld(), k, n, pb, pa, z.address());
+            c.gpuEnd(g, "rocBLAS gemv in place");
         } else {
             HipContext.trace("rocBLAS " + t + " " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n
                     + "] in place" + (a.transposed() ? ", a transposed" : "") + (b.transposed() ? ", b transposed" : ""));
+            long g = c.gpuStart();
             c.rocblas.gemm(t, a.transposed(), b.transposed(), m, n, k, pa, a.ld(), batch == 1 ? 0 : a.batch(), pb,
                     b.ld(), batch == 1 ? 0 : b.batch(), z.address(), (long) m * n, batch);
+            c.gpuEnd(g, "rocBLAS gemm in place " + t);
         }
         c.products++;
         if (HipContext.PROFILE) {
