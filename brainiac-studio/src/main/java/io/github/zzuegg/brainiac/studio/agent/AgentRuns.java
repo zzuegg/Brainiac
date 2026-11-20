@@ -1654,6 +1654,9 @@ public final class AgentRuns {
             throw new IllegalArgumentException("this project is part of " + String.join(", ", own.parents())
                     + ", not " + parent);
         }
+        if ("tool".equals(kind) && subject != null && !tools.containsKey(subject.strip())) {
+            throw new IllegalArgumentException("there is no tool " + subject + "; find_tools finds the ones there are");
+        }
         Requests.Request q;
         try {
             q = requests.add(me.id, me.project, to, kind == null || kind.isBlank() ? "question" : kind.strip(), text,

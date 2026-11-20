@@ -1014,6 +1014,23 @@ from the checkout, so a change shows on reload. Both pages use the same item API
 | `POST /api/items/rename`, `/move`, `/duplicate {kind, id, …}` | the same actions for every kind |
 | `POST /api/items/delete {kind, id}` | moves it to the trash; the answer's id restores it |
 | `GET /api/trash`, `POST /api/trash/restore {id}`, `/empty {id?}` | the trash |
+| `GET /api/requests`, `POST /api/requests/answer {id, answer?, approve?}`, `/withdraw {id}` | what agents in subprojects ask of their parent projects |
+
+**Subprojects.** A project can be part of one or more others (its `parents`; the default
+project is part of none). It can never use more than every parent allows: its tools and models
+are what it allows itself and each parent allows too, and it uses a parent's folder and routes
+where it has none of its own. Agents in a project can list and make subprojects
+(`list_subprojects`, `create_subproject`), start agents there (`spawn_agent`'s `project`), and
+message and read them. Going up takes a request: `request_parent` sends a question, asks for a
+tool or model, or hands up a result, to one parent or all of them, and the first answer counts.
+Each project says who answers its subprojects' requests (`requests`: `user` or `agents`); its
+agents see them with `list_requests` and may give only what their own project allows. The
+answer wakes the agent that asked. Deleting a project takes along subprojects that are part of
+nothing else and only unlinks the others; restoring it puts both back.
+
+**Overview.** The first tab of the v2 page (Ctrl+Shift+O) shows everything across the
+projects: requests and agents waiting for you, agents that failed, what is working now, what is
+built and what is in progress, and the projects as a tree with their subprojects.
 
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that

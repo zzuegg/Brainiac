@@ -8,7 +8,8 @@ import { Toasts } from "/v2/ui/Toasts.js";
 import { TabBar } from "/v2/shell/TabBar.js";
 import { Sidebar } from "/v2/shell/Sidebar.js";
 import { pickProject } from "/v2/shell/ProjectPicker.js";
-import { activeTab, tabs, closeTab, navigate } from "/v2/state/workspace.js";
+import { activeTab, tabs, closeTab, navigate, showingOverview, openOverview } from "/v2/state/workspace.js";
+import { forUser } from "/v2/state/requests.js";
 import { byId, loaded } from "/v2/state/projects.js";
 import { sidebarOpen } from "/v2/state/prefs.js";
 import { undoLast } from "/v2/state/toasts.js";
@@ -19,6 +20,7 @@ import { Agent } from "/v2/screens/Agent.js";
 import { Graph } from "/v2/screens/Graph.js";
 import { Trash } from "/v2/screens/Trash.js";
 import { Settings } from "/v2/screens/Settings.js";
+import { Overview } from "/v2/screens/Overview.js";
 
 const SCREENS = { home: Home, chat: Chat, agent: Agent, graph: Graph, trash: Trash, settings: Settings };
 
@@ -30,6 +32,7 @@ export function App() {
       if (layers.value.length || menu.value) return;
       if (mod && !e.shiftKey && e.key.toLowerCase() === "b") sidebarOpen.value = !sidebarOpen.value;
       else if (mod && !e.shiftKey && e.key.toLowerCase() === "p") pickProject();
+      else if (mod && e.shiftKey && e.key.toLowerCase() === "o") openOverview();
       else if (mod && !e.shiftKey && e.key.toLowerCase() === "z" && !typing) { if (!undoLast()) return; }
       else if (e.altKey && /^[1-9]$/.test(e.key)) {
         const t = tabs.value[+e.key - 1];
@@ -45,7 +48,7 @@ export function App() {
   return html`<div class="app">
     <${TabBar} />
     <div class="body">
-      ${tab ? html`<${Workspace} key=${tab.key} tab=${tab} />` : html`<${NoTabs} />`}
+      ${showingOverview.value ? html`<${Overview} />` : tab ? html`<${Workspace} key=${tab.key} tab=${tab} />` : html`<${NoTabs} />`}
     </div>
     <${StatusBar} />
     <${MenuHost} />
@@ -97,7 +100,8 @@ function StatusBar() {
   return html`<footer class="statusbar">
     <span class=${"status-dot " + (online.value ? "ok" : "bad")} />${online.value ? "Studio running" : "Studio not answering"}
     ${running > 0 && html`<span class="status-item"><span class="live live-run" />${running} working</span>`}
-    ${waiting > 0 && html`<span class="status-item"><span class="live live-wait" />${waiting} waiting for you</span>`}
+    ${waiting + forUser.value.length > 0 && html`<button type="button" class="status-item status-link" onClick=${openOverview}>
+      <span class="live live-wait" />${waiting + forUser.value.length} waiting for you</button>`}
     <span class="grow" />
     <span class="status-item muted">Studio v2 preview</span>
     <a class="status-item" href="/">Classic Studio</a>

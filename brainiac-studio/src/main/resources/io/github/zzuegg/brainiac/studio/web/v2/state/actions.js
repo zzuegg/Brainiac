@@ -3,7 +3,7 @@ import { api } from "/v2/lib/api.js";
 import { toast, fail } from "/v2/state/toasts.js";
 import { kindOf } from "/v2/state/kinds.js";
 import { keyOf, navigate, refreshAll, tabs, closeTab, openProject } from "/v2/state/workspace.js";
-import { projects, loadProjects, projectName } from "/v2/state/projects.js";
+import { projects, loadProjects, projectName, byId, descendantsOf, saveProject } from "/v2/state/projects.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { Layer } from "/v2/ui/Layer.js";
 import { Button } from "/v2/ui/Button.js";
@@ -122,6 +122,7 @@ export function menuFor(tab, item, scope = "head") {
   const can = new Set(kindOf(item.kind).actions);
   return [
     can.has("open") && { label: "Open", icon: "open", hint: "Enter", run: () => open(tab, item) },
+    item.kind === "project" && item.id !== "default" && { label: "Part of…", icon: "move", run: () => editParents(item.id) },
     item.kind === "project" && { label: "Open in new window", icon: "window", run: () => window.open("/v2/p/" + encodeURIComponent(item.id) + "/home", "_blank") },
     can.has("rename") && { label: "Rename", icon: "edit", hint: "F2", run: () => (item.kind === "project" ? renameProject(item) : startRename(tab, item, scope)) },
     can.has("duplicate") && { label: "Duplicate", icon: "copy", hint: "Ctrl+D", run: () => duplicate(tab, item) },
@@ -133,6 +134,65 @@ export function menuFor(tab, item, scope = "head") {
       run: () => remove(tab, item),
     },
   ];
+}
+
+/**
+ * Chooses the projects a project is part of. It can be part of several; a project below it
+ * cannot be chosen, since that would make a loop. The default project is part of none.
+ */
+export async function editParents(id) {
+  const p = byId.value.get(id);
+  if (!p) return;
+  const before = p.parents || [];
+  const parents = await openLayer(PartOfDialog, { project: p });
+  if (!parents) return;
+  try {
+    await saveProject(id, { parents });
+    await refreshAll();
+    toast(parents.length ? `${p.name} is part of ${parents.map(projectName).join(", ")}` : `${p.name} stands on its own`, {
+      undo: async () => { await saveProject(id, { parents: before }); await refreshAll(); },
+    });
+  } catch (e) {
+    fail(e);
+  }
+}
+
+/** Takes a subproject out of one parent; it stays part of the others. */
+export async function unlink(id, parent) {
+  const p = byId.value.get(id);
+  if (!p) return;
+  const before = p.parents || [];
+  try {
+    await saveProject(id, { parents: before.filter(x => x !== parent) });
+    toast(`${p.name} is no longer part of ${projectName(parent)}`, {
+      undo: async () => { await saveProject(id, { parents: before }); },
+    });
+  } catch (e) {
+    fail(e);
+  }
+}
+
+function PartOfDialog({ project, close, top }) {
+  const [on, setOn] = useState(new Set(project.parents || []));
+  const below = descendantsOf(project.id);
+  const choices = projects.value.filter(p => p.id !== project.id && p.id !== "default");
+  const flip = id => setOn(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  return html`<${Layer} title=${`“${project.name}” is part of`} close=${() => close()} top=${top}
+      subtitle="A project can be part of several. It uses only what every one of them allows, and their agents can work in it."
+      footer=${html`<${Button} data-close onClick=${() => close()}>Cancel<//>
+        <${Button} variant="primary" onClick=${() => close(choices.map(p => p.id).filter(id => on.has(id)))}>Save<//>`}>
+    ${choices.length === 0 ? html`<p class="muted">There is no other project yet.</p>` : html`<ul class="pick-list">
+      ${choices.map(p => {
+        const loop = below.has(p.id);
+        return html`<li key=${p.id}><label class=${"pick check-row" + (loop ? " disabled" : "")}
+            title=${loop ? `${p.name} is part of ${project.name} already` : ""}>
+          <input type="checkbox" checked=${on.has(p.id)} disabled=${loop} onChange=${() => flip(p.id)} />
+          <span class="pick-title">${p.name}</span>
+          <span class="pick-sub">${loop ? "part of this one" : p.description}</span>
+        </label></li>`;
+      })}
+    </ul>`}
+  <//>`;
 }
 
 /** Renames a project from a dialog (its name shows in tabs, not in a list). */

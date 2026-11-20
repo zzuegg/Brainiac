@@ -19,13 +19,16 @@ export function create(kind, tab) {
 
 // ---------------------------------------------------------------- project
 
-export async function newProject() {
-  const id = await openLayer(NewProject, {});
+/** Starts the new-project wizard; with a parent, the project is made part of it. */
+export async function newProject(parent) {
+  const id = await openLayer(NewProject, { parent });
   if (id) openProject(id);
 }
 
-function NewProject({ close, top }) {
-  return html`<${Wizard} title="New project" draftKey="project" close=${close} top=${top}
+function NewProject({ parent, close, top }) {
+  const parentName = parent && projects.value.find(p => p.id === parent)?.name;
+  return html`<${Wizard} title=${parent ? "New subproject of " + (parentName || parent) : "New project"}
+    draftKey=${parent ? "project:" + parent : "project"} close=${close} top=${top}
     initial=${{ name: "", description: "", folder: "", start: "empty" }}
     steps=${[
       {
@@ -41,7 +44,7 @@ function NewProject({ close, top }) {
       {
         title: "Folder",
         body: (d, set) => html`
-          <${Field} label="A folder on this PC its agents may read" hint="Leave empty for none; you can add one later in the project's settings.">
+          <${Field} label="A folder on this PC its agents may read" hint=${parent ? "Leave empty to use the folder of the project it is part of." : "Leave empty for none; you can add one later in the project's settings."}>
             <input class="input mono" value=${d.folder} placeholder="D:\\Projects\\classifier" onInput=${e => set({ folder: e.target.value })} /><//>`,
       },
       {
@@ -54,7 +57,9 @@ function NewProject({ close, top }) {
       },
     ]}
     summary=${(d, goTo) => html`<${Summary} goTo=${goTo}
-      lead=${`Creates the project “${d.name.trim() || "…"}” and opens it in a new tab.`}
+      lead=${parent
+        ? `Creates “${d.name.trim() || "…"}” as part of ${parentName || parent}, and opens it in a new tab. It can use only what ${parentName || parent} allows, and agents there can work in it.`
+        : `Creates the project “${d.name.trim() || "…"}” and opens it in a new tab.`}
       rows=${[
         { label: "Name", value: d.name.trim(), step: 0 },
         { label: "Purpose", value: d.description.trim(), step: 0 },
@@ -64,7 +69,8 @@ function NewProject({ close, top }) {
     finish=${async d => {
       const r = await api("/api/projects", {
         create: true,
-        project: { id: slug(d.name), name: d.name.trim(), description: d.description.trim(), folder: d.folder.trim() || null },
+        project: { id: slug(d.name), name: d.name.trim(), description: d.description.trim(), folder: d.folder.trim() || null,
+          parents: parent ? [parent] : [] },
       });
       await loadProjects();
       const id = r.saved;

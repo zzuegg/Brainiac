@@ -54,7 +54,14 @@ function createTab({ key, project, route }) {
 
 export const tabs = signal([]);
 export const activeKey = signal(null);
-export const activeTab = computed(() => tabs.value.find(t => t.key === activeKey.value) || tabs.value[0] || null);
+
+/** The key that shows the overview across every project instead of a tab. */
+export const OVERVIEW = "@overview";
+export const showingOverview = computed(() => activeKey.value === OVERVIEW);
+export const openOverview = () => { activeKey.value = OVERVIEW; };
+
+export const activeTab = computed(() => activeKey.value === OVERVIEW ? null
+  : tabs.value.find(t => t.key === activeKey.value) || tabs.value[0] || null);
 
 /** Opens a project in a tab, or brings its tab forward. */
 export function openProject(project, { route, focus = true, newTab = false } = {}) {
@@ -110,12 +117,14 @@ export const refreshAll = () => Promise.all(tabs.value.map(t => t.refresh()));
 // ---------------------------------------------------------------- the address bar
 
 export function urlOf(tab) {
+  if (activeKey.value === OVERVIEW) return "/v2/overview";
   if (!tab) return "/v2/";
   const r = tab.route.value;
   return "/v2/p/" + encodeURIComponent(tab.project) + "/" + r.screen + (r.id != null ? "/" + encodeURIComponent(r.id) : "");
 }
 
 export function parseUrl(path = location.pathname) {
+  if (/^\/v2\/overview\/?$/.test(path)) return { overview: true };
   const m = path.match(/^\/v2\/p\/([^/]+)(?:\/([a-z]+)(?:\/(.+))?)?\/?$/);
   if (!m) return null;
   const screen = SCREENS.includes(m[2]) ? m[2] : "home";
@@ -131,9 +140,11 @@ export function restore(fallbackProject) {
   batch(() => {
     const list = (saved?.tabs || []).filter(t => t && typeof t.project === "string").map(createTab);
     tabs.value = list;
-    activeKey.value = saved?.active && list.some(t => t.key === saved.active) ? saved.active : list[0]?.key ?? null;
-    if (wanted) openProject(wanted.project, { route: wanted.route });
-    if (!tabs.value.length) openProject(fallbackProject);
+    activeKey.value = saved?.active === OVERVIEW || (saved?.active && list.some(t => t.key === saved.active))
+      ? saved.active : list[0]?.key ?? null;
+    if (wanted?.overview) activeKey.value = OVERVIEW;
+    else if (wanted) openProject(wanted.project, { route: wanted.route });
+    if (!tabs.value.length) openProject(fallbackProject, { focus: activeKey.value !== OVERVIEW });
   });
   tabs.value.forEach(t => t.refresh());
 }
@@ -144,7 +155,7 @@ effect(() => {
   const active = activeTab.value;
   const snapshot = {
     tabs: list.map(t => ({ key: t.key, project: t.project, route: t.route.value })),
-    active: active?.key ?? null,
+    active: activeKey.value === OVERVIEW ? OVERVIEW : active?.key ?? null,
   };
   if (!list.length) return;
   local.set("workspace", snapshot);
@@ -162,7 +173,8 @@ addEventListener("popstate", () => {
   const wanted = parseUrl();
   if (wanted) {
     lastUrl = location.pathname;
-    openProject(wanted.project, { route: wanted.route });
+    if (wanted.overview) openOverview();
+    else openProject(wanted.project, { route: wanted.route });
   }
 });
 

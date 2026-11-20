@@ -1,7 +1,8 @@
 import { html, useState, cx } from "/v2/lib/html.js";
 import { Icon } from "/v2/ui/Icon.js";
 import { openMenu } from "/v2/ui/overlay.js";
-import { tabs, activeKey, closeTab, closeOthers, moveTab } from "/v2/state/workspace.js";
+import { tabs, activeKey, closeTab, closeOthers, moveTab, OVERVIEW, openOverview } from "/v2/state/workspace.js";
+import { forUser, openTo } from "/v2/state/requests.js";
 import { byId } from "/v2/state/projects.js";
 import { renameProject, remove } from "/v2/state/actions.js";
 import { pickProject } from "/v2/shell/ProjectPicker.js";
@@ -25,10 +26,16 @@ export function TabBar() {
   };
   return html`<nav class="tabbar" aria-label="Open projects">
     <div class="brand" title="Brainiac Studio"><img src="/v2/icon.svg" alt="" width="22" height="22" /></div>
+    <button type="button" class=${cx("tab tab-overview", activeKey.value === OVERVIEW && "on")} aria-current=${activeKey.value === OVERVIEW ? "page" : undefined}
+        title="Everything across your projects (Ctrl+Shift+O)" onClick=${openOverview}>
+      <${Icon} name="home" size=${14} /><span class="tab-name">Overview</span>
+      ${forUser.value.length > 0 && html`<span class="tab-count" aria-label=${forUser.value.length + " requests wait for you"}>${forUser.value.length}</span>`}
+    </button>
     <div class="tabs" role="tablist">
       ${list.map((t, i) => {
         const p = byId.value.get(t.project);
         const s = t.status.value;
+        const asks = openTo(t.project).filter(q => q.answeredBy === "user").length;
         const on = t.key === activeKey.value;
         return html`<div key=${t.key} role="tab" tabindex=${on ? 0 : -1} aria-selected=${on}
             class=${cx("tab", on && "on", drag === t.key && "dragging", !p && "missing")}
@@ -52,7 +59,7 @@ export function TabBar() {
                 p && p.id !== "default" && { label: "Delete project", icon: "trash", danger: true, run: () => remove(null, { kind: "project", id: p.id, title: p.name }) },
               ], p?.name);
             }}>
-          ${s.waiting > 0 ? html`<span class="live live-wait" title=${s.waiting + " waiting for you"} />`
+          ${s.waiting + asks > 0 ? html`<span class="live live-wait" title=${s.waiting + asks + " waiting for you"} />`
             : s.running > 0 ? html`<span class="live live-run" title=${s.running + " working"} />`
             : html`<${Icon} name="project" size=${14} />`}
           <span class="tab-name">${p?.name ?? t.project}</span>

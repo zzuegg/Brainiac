@@ -3,10 +3,11 @@ import { Icon } from "/v2/ui/Icon.js";
 import { Button } from "/v2/ui/Button.js";
 import { ItemList } from "/v2/ui/ItemList.js";
 import { KINDS, SECTIONS } from "/v2/state/kinds.js";
-import { byId } from "/v2/state/projects.js";
-import { navigate } from "/v2/state/workspace.js";
+import { byId, childrenOf } from "/v2/state/projects.js";
+import { navigate, openProject } from "/v2/state/workspace.js";
+import { openTo } from "/v2/state/requests.js";
 import { sidebarWidth, sidebarOpen } from "/v2/state/prefs.js";
-import { create } from "/v2/wizards/index.js";
+import { create, newProject } from "/v2/wizards/index.js";
 
 // The open project's own things: its home, then a section per kind with a "+" that starts its
 // wizard, and a filter over all of them. The trash and settings sit at the bottom.
@@ -18,6 +19,8 @@ export function Sidebar({ tab }) {
   const collapsed = tab.collapsed.value;
   const toggle = k => (tab.collapsed.value = { ...collapsed, [k]: !collapsed[k] });
   const p = byId.value.get(tab.project);
+  const kids = p ? childrenOf(p.id) : [];
+  const asks = openTo(tab.project);
   return html`<aside class="sidebar" aria-label="Project" style=${{ width: sidebarWidth.value + "px" }}>
     <div class="side-top">
       <div class="side-row">
@@ -47,6 +50,23 @@ export function Sidebar({ tab }) {
             : html`<p class="side-empty">${q ? "No match" : "None yet"}</p>`)}
         </section>`;
       })}
+      ${p && p.id !== "default" && html`<section class="side-sec">
+        <header class="side-head">
+          <button type="button" class="side-toggle" aria-expanded=${!collapsed.sub} onClick=${() => toggle("sub")}>
+            <${Icon} name=${collapsed.sub ? "chevronRight" : "chevronDown"} size=${12} />Subprojects
+            <span class="count">${kids.length || ""}</span>
+          </button>
+          <${Button} variant="ghost" size="sm" icon="plus" label="New subproject" onClick=${() => newProject(p.id)} />
+        </header>
+        ${!collapsed.sub && (kids.length
+          ? html`<ul class="items items-compact" aria-label="Subprojects">${kids.map(k => html`<li key=${k.id} class="item" tabindex="0"
+              onClick=${() => openProject(k.id)} onKeyDown=${e => e.key === "Enter" && openProject(k.id)}>
+              <span class="item-ic k-project"><${Icon} name="project" /></span>
+              <span class="item-text"><span class="item-title">${k.name}</span></span>
+              ${asks.some(q => q.project === k.id) && html`<span class="live live-wait" title="Asks this project" />`}
+            </li>`)}</ul>`
+          : html`<p class="side-empty">None yet</p>`)}
+      </section>`}
     </div>
     <div class="side-bottom">
       <button type="button" class=${cx("side-link", route.screen === "trash" && "on")} onClick=${() => navigate(tab, { screen: "trash" })}><${Icon} name="trash" /><span>Trash</span></button>
