@@ -376,6 +376,8 @@ final class HipContext {
 
     /** Generated kernels ({@link HipFusion}): their functions by source. */
     private final Map<String, Long> fused = new HashMap<>();
+    /** Their names in profiles: fused#0, fused#1, ... as the sources are numbered in the dump folder. */
+    private final Map<Long, String> fusedNames = new HashMap<>();
     /** Time spent compiling (or reading from the cache) and loading generated kernels. */
     long fusedCompileNanos;
 
@@ -398,6 +400,7 @@ final class HipContext {
             }
             modules.put("fused#" + fused.size(), m);
             f = cu.function(m, "fused");
+            fusedNames.put(f, "fused#" + fused.size());
             fused.put(body, f);
             fusedCompileNanos += System.nanoTime() - start;
             if (PROFILE || DEBUG) {
@@ -437,7 +440,7 @@ final class HipContext {
         }
         if (PROFILE) {
             cu.synchronize(stream);
-            record("fused", System.nanoTime() - t0);
+            record(fusedNames.getOrDefault(f, "fused") + " (" + n + " values)", System.nanoTime() - t0);
         }
         if (DEBUG) {
             debugWait("a fused kernel (" + blocks + " blocks)");

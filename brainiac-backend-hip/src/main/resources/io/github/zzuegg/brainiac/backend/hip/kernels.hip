@@ -780,6 +780,67 @@ template <class D, class W> __device__ void few_k(const typename D::T* a, W w, f
     }
 }
 
+// out[m, n] = a[m, k] x e[n, k]^T for m <= FEW_ROWS, e row-major with rows ld apart (a tied
+// output head while decoding, read in place): a warp per row of e, which it reads once and
+// contiguously, 4 values per lane at a time when `vec` (16-bit formats, rows 8-byte aligned).
+template <class D> __device__ void few_t_k(const typename D::T* a, const typename D::T* e, typename D::T* out,
+        int m, int k, int n, i64 ld, int vec) {
+    typedef typename D::A A;
+    typedef typename D::T T;
+    int lane = threadIdx.x % 32;
+    i64 j = (i64) blockIdx.x * (GROUP / 32) + threadIdx.x / 32;
+    if (j >= n) {
+        return;
+    }
+    const T* row = e + j * ld;
+    A acc[FEW_ROWS];
+#pragma unroll
+    for (int r = 0; r < FEW_ROWS; r++) {
+        acc[r] = A(0);
+    }
+    int done = 0;
+    if (vec) {
+        int k4 = k & ~3;
+        for (int i = lane * 4; i < k4; i += 128) {
+            uint2 q = *(const uint2*) (row + i);
+            const T* p = (const T*) &q;
+            A w0 = D::ld(p, 0);
+            A w1 = D::ld(p, 1);
+            A w2 = D::ld(p, 2);
+            A w3 = D::ld(p, 3);
+#pragma unroll
+            for (int r = 0; r < FEW_ROWS; r++) {
+                if (r < m) {
+                    const T* x = a + (i64) r * k + i;
+                    acc[r] += w0 * D::ld(x, 0) + w1 * D::ld(x, 1) + w2 * D::ld(x, 2) + w3 * D::ld(x, 3);
+                }
+            }
+        }
+        done = k4;
+    }
+    for (int i = done + lane; i < k; i += 32) {
+        A w = D::ld(row, i);
+#pragma unroll
+        for (int r = 0; r < FEW_ROWS; r++) {
+            if (r < m) {
+                acc[r] += w * D::ld(a, (i64) r * k + i);
+            }
+        }
+    }
+#pragma unroll
+    for (int r = 0; r < FEW_ROWS; r++) {
+        if (r < m) {
+            A v = acc[r];
+            for (int o = 16; o > 0; o >>= 1) {
+                v += SHFL_XOR(v, o);
+            }
+            if (lane == 0) {
+                D::st(out, (i64) r * n + j, v);
+            }
+        }
+    }
+}
+
 template <class D> __device__ void few_sum_k(const float* part, typename D::T* out, i64 mn, int pieces) {
     typedef typename D::A A;
     FOR_EACH(i, mn) {
@@ -1230,6 +1291,10 @@ extern "C" __global__ void few_packed_##S(const D::T* a, const signed char* leve
         int* counters) {                                                                                          \
     PackedWeights pw = {levels, scales, offsets, n, group, nibbles};                                              \
     few_k<D>(a, pw, part, out, m, k, n, chunk, counters);                                                         \
+}                                                                                                                 \
+extern "C" __global__ void few_t_##S(const D::T* a, const D::T* e, D::T* out, int m, int k, int n, i64 ld,       \
+        int vec) {                                                                                                \
+    few_t_k<D>(a, e, out, m, k, n, ld, vec);                                                                      \
 }                                                                                                                 \
 extern "C" __global__ void few_sum_##S(const float* part, D::T* out, i64 mn, int pieces) {                        \
     few_sum_k<D>(part, out, mn, pieces);                                                                          \

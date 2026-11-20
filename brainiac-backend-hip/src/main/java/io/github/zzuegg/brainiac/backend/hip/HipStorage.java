@@ -30,10 +30,11 @@ final class HipStorage implements Storage {
     /** The backend's fusion generation when {@link #pending} was recorded. */
     long pendingGeneration;
     /**
-     * Pending expressions that read this storage directly (not counting those dropped unread):
-     * while any do, it is not freed early, and a write to it computes them first.
+     * Storages whose pending expressions read this one directly, or did when they were recorded
+     * (null if none ever did): while any still does, this one is not freed early, and a write
+     * to it computes them first.
      */
-    int readers;
+    java.util.ArrayList<java.lang.ref.WeakReference<HipStorage>> readers;
     private final HipContext context;
     private final Holder holder = new Holder();
     private final Cleaner.Cleanable cleanable;

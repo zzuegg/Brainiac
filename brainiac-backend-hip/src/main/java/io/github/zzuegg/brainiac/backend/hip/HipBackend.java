@@ -516,7 +516,7 @@ public final class HipBackend implements Backend {
         if (storage instanceof Packed) {
             return;   // weights: freed with the tensor that holds them, by the collector
         }
-        if (storage instanceof HipStorage s && s.owner == this && s.pending == null && s.readers == 0) {
+        if (storage instanceof HipStorage s && s.owner == this && s.pending == null && !read(s)) {
             s.release();   // pending results, and what they read, are left to the collector
         }
     }
@@ -703,8 +703,6 @@ public final class HipBackend implements Backend {
      */
     private long generation;
     private long fusedLaunches;
-    /** Storages given a pending value, to find those reading a storage about to be written. */
-    private final java.util.ArrayList<java.lang.ref.WeakReference<HipStorage>> pendings = new java.util.ArrayList<>();
 
     /** Whether an element-wise result can be recorded instead of computed now. */
     private boolean fusable(HipStorage out, Storage... inputs) {
@@ -721,6 +719,14 @@ public final class HipBackend implements Backend {
 
     /** Records {@code e} as the pending value of {@code out}, computing inputs first where it pays. */
     private void defer(HipStorage out, HipFusion.Expr e) {
+        long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
+        record(out, e);
+        if (HipContext.PROFILE) {
+            hip.record("host: recording element-wise steps", System.nanoTime() - t0);
+        }
+    }
+
+    private void record(HipStorage out, HipFusion.Expr e) {
         // pending results reading out's current value compute it before it changes
         flushReaders(out);
         // in place: the output's value so far is computed first and read from memory, and the
@@ -753,15 +759,17 @@ public final class HipBackend implements Backend {
         out.pendingNodes = Math.min(HipFusion.nodes(e), 1 << 20);
         out.pendingGeneration = generation;
         for (HipFusion.Src in : HipFusion.sources(e)) {
-            in.storage().readers++;
+            HipStorage st = in.storage();
+            if (st.readers == null) {
+                st.readers = new java.util.ArrayList<>(2);
+            }
+            if (st.readers.isEmpty() || st.readers.getLast().get() != out) {
+                if (st.readers.size() >= 64) {
+                    st.readers.removeIf(r -> r.get() == null || r.get().pending == null);
+                }
+                st.readers.add(new java.lang.ref.WeakReference<>(out));
+            }
         }
-        if (pendings.size() >= 1024) {
-            pendings.removeIf(r -> {
-                HipStorage p = r.get();
-                return p == null || p.pending == null;
-            });
-        }
-        pendings.add(new java.lang.ref.WeakReference<>(out));
         if (inPlace) {
             ready(out);
         }
@@ -776,24 +784,39 @@ public final class HipBackend implements Backend {
     /** Forgets {@code s}'s pending value without computing it; returns it. */
     private static HipFusion.Expr drop(HipStorage s) {
         HipFusion.Expr e = s.pending;
-        if (e != null) {
-            s.pending = null;
-            s.pendingNodes = 0;
-            for (HipFusion.Src in : HipFusion.sources(e)) {
-                in.storage().readers--;
-            }
-        }
+        s.pending = null;
+        s.pendingNodes = 0;
         return e;
     }
 
-    /** Computes the pending results that read {@code s}, before it is written. */
+    /** Whether a pending result still reads {@code s} directly. */
+    private static boolean read(HipStorage s) {
+        if (s.readers == null) {
+            return false;
+        }
+        for (java.lang.ref.WeakReference<HipStorage> r : s.readers) {
+            HipStorage p = r.get();
+            if (p != null && p.pending != null && HipFusion.sources(p.pending).stream().anyMatch(x -> x.storage() == s)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Computes the pending results that read {@code s}, before it is written. Those reading it
+     * through another pending result are covered too: that one is computed, and they read it.
+     */
     private void flushReaders(HipStorage s) {
-        if (s.readers <= 0) {
+        if (s.readers == null || s.readers.isEmpty()) {
             return;
         }
-        for (java.lang.ref.WeakReference<HipStorage> r : List.copyOf(pendings)) {
+        List<java.lang.ref.WeakReference<HipStorage>> all = List.copyOf(s.readers);
+        s.readers.clear();
+        for (java.lang.ref.WeakReference<HipStorage> r : all) {
             HipStorage p = r.get();
-            if (p != null && p != s && p.pending != null && HipFusion.reads(p.pending, s)) {
+            if (p != null && p != s && p.pending != null
+                    && HipFusion.sources(p.pending).stream().anyMatch(x -> x.storage() == s)) {
                 ready(p);
             }
         }
@@ -818,7 +841,12 @@ public final class HipBackend implements Backend {
             c.copy(s.address(), v.storage().address(v.offset()), s.size * bytes);
             return;
         }
-        launch(c, HipFusion.generate(e, s.dtype), s.address(), s.size);
+        long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
+        HipFusion.Kernel k = HipFusion.generate(e, s.dtype);
+        if (HipContext.PROFILE) {
+            c.record("host: generating kernel sources", System.nanoTime() - t0);
+        }
+        launch(c, k, s.address(), s.size);
     }
 
     /** Runs a generated kernel over {@code n} items, storing at {@code out}. */
@@ -1194,7 +1222,14 @@ public final class HipBackend implements Backend {
         long pa = a.values().address(a.offset());
         long pb = b.values().address(b.offset());
         long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
-        if (batch == 1 && m == 1 && t == DType.FLOAT16 && MATVEC.equals("rocblas") && c.rocblas.hasHalfGemv()
+        if (batch == 1 && m <= FEW && b.transposed() && !a.transposed() && (m == 1 || a.ld() == k)) {
+            // few rows times a transposed matrix (a tied output head): a warp per row of the
+            // stored matrix, read contiguously; rocBLAS's transposed gemv is several times slower
+            int vec = t.bytes() == 2 && b.ld() % 4 == 0 && pb % 8 == 0 ? 1 : 0;
+            c.args().ptr(pa).ptr(pb).ptr(z.address()).i32(m).i32(k).i32(n).i64(b.ld()).i32(vec);
+            c.launch(kernel("few_t", t), (n + HipContext.GROUP / 32 - 1) / (HipContext.GROUP / 32), 1, 1);
+            return;
+        } else if (batch == 1 && m == 1 && t == DType.FLOAT16 && MATVEC.equals("rocblas") && c.rocblas.hasHalfGemv()
                 && !a.transposed()) {
             c.rocblas.halfGemv(b.transposed(), b.ld(), k, n, pb, pa, z.address());
         } else {
