@@ -738,30 +738,6 @@ template <class D> struct DenseWeights {
     __device__ __forceinline__ typename D::A load(i64 r, i64 c) const { return D::ld(p, r * n + c); }
 };
 
-// ... or a packed one (PackedMatrix): levels of 2 to 8 bits, two to a byte as nibbles when
-// `nibbles` (rows 2i and 2i + 1 in the low and high half), times a scale per group of rows
-// and column, plus an offset when `offsets` is not null
-struct PackedWeights {
-    const signed char* levels;
-    const float* scales;
-    const float* offsets;
-    i64 n;
-    int group;
-    int nibbles;
-    __device__ __forceinline__ float level(i64 r, i64 c) const {
-        if (nibbles) {
-            int b = levels[(r >> 1) * n + c];
-            return (float) ((r & 1) == 0 ? ((int) (signed char) (b << 4)) >> 4 : b >> 4);
-        }
-        return (float) levels[r * n + c];
-    }
-    __device__ __forceinline__ float load(i64 r, i64 c) const {
-        i64 s = (r / group) * n + c;
-        float v = level(r, c) * scales[s];
-        return offsets ? v + offsets[s] : v;
-    }
-};
-
 #define FEW_ROWS 16
 #define FEW_TILE 64
 
@@ -917,10 +893,356 @@ template <class D> __device__ void few_sum_k(const float* part, typename D::T* o
     }
 }
 
-template <class D> __device__ void unpack_packed_k(PackedWeights w, typename D::T* out, i64 rows) {
+// ---------------------------------------------------------------- packed weights
+
+// A packed matrix as HipBackend.Packed lays it out (as the Vulkan backend's does). q holds one
+// signed byte per value, row-major, or with flag 1 two per byte (rows 2i and 2i + 1 of a column
+// in the low and high half of byte i * n + c). With plane bits (5- and 6-bit levels) q holds the
+// low four bits of level + 2^(bits-1) as nibbles and hi the rest, 8 / planeBits rows of a column
+// per byte at (r / (8 / planeBits)) * n + c. With flag 32 q holds 4-bit indices (as nibbles)
+// into a table of 16 signed bytes in hi. The scale of group g in column c is its signed byte
+// code (flag 4; else 1) times supers[(g / perSuper) * n + c], float32 or with flag 16 float16;
+// the offset (flag 2) likewise from its codes (flag 8) and supers, plus the scale times shift.
+// Flags bits 8-11: the plane bits; bits 12-15: the bits per level.
+struct PackedLayout {
+    const unsigned* q;
+    const unsigned* hi;
+    const unsigned* scaleCodes;
+    const unsigned* offsetCodes;
+    const unsigned* scales;
+    const unsigned* offsets;
+    int n;
+    int group;
+    int flags;
+    int perSuper;
+    float shift;
+};
+
+// b bits of w from bit s, unsigned and sign-extended
+__device__ __forceinline__ unsigned ubits(unsigned w, int s, int b) { return (w >> s) & ((1u << b) - 1u); }
+__device__ __forceinline__ int sbits(unsigned w, int s, int b) { return ((int) (w << (32 - s - b))) >> (32 - b); }
+
+__device__ __forceinline__ int pk_table(const PackedLayout& p, int i) { return sbits(p.hi[i >> 2], (i & 3) * 8, 8); }
+
+// the level at row r, column c
+__device__ int pk_level(const PackedLayout& p, i64 r, i64 c) {
+    int sh = (int) (r & 1) * 4;
+    if (p.flags & 32) {
+        i64 b = (r >> 1) * p.n + c;
+        return pk_table(p, (int) ubits(p.q[b >> 2], (int) (b & 3) * 8 + sh, 4));
+    }
+    int planeBits = (p.flags >> 8) & 15;
+    if (planeBits != 0) {
+        i64 lb = (r >> 1) * p.n + c;
+        unsigned low = ubits(p.q[lb >> 2], (int) (lb & 3) * 8 + sh, 4);
+        int perByte = 8 / planeBits;
+        i64 hb = (r / perByte) * p.n + c;
+        unsigned high = ubits(p.hi[hb >> 2], (int) (hb & 3) * 8 + (int) (r % perByte) * planeBits, planeBits);
+        return (int) (low | (high << 4)) - (1 << (((p.flags >> 12) & 15) - 1));
+    }
+    if (p.flags & 1) {
+        i64 b = (r >> 1) * p.n + c;
+        return sbits(p.q[b >> 2], (int) (b & 3) * 8 + sh, 4);
+    }
+    i64 b = r * p.n + c;
+    return sbits(p.q[b >> 2], (int) (b & 3) * 8, 8);
+}
+
+__device__ __forceinline__ float pk_super(const PackedLayout& p, const unsigned* w, i64 i) {
+    if (p.flags & 16) {
+        return h2f((u16) (w[i >> 1] >> ((i & 1) * 16)));
+    }
+    return __uint_as_float(w[i]);
+}
+
+__device__ __forceinline__ float pk_code(const unsigned* w, i64 i) {
+    return (float) sbits(w[i >> 2], (int) (i & 3) * 8, 8);
+}
+
+// the scale of group g in column c
+__device__ float pk_scale(const PackedLayout& p, i64 g, i64 c) {
+    float s = pk_super(p, p.scales, (g / p.perSuper) * p.n + c);
+    return (p.flags & 4) ? pk_code(p.scaleCodes, g * p.n + c) * s : s;
+}
+
+// the offset of group g in column c, whose scale is s
+__device__ float pk_offset(const PackedLayout& p, i64 g, i64 c, float s) {
+    float o = pk_super(p, p.offsets, (g / p.perSuper) * p.n + c);
+    o = (p.flags & 8) ? pk_code(p.offsetCodes, g * p.n + c) * o : o;
+    return o + s * p.shift;
+}
+
+template <class D> __device__ void unpack_packed_k(PackedLayout p, typename D::T* out, i64 rows) {
     typedef typename D::A A;
-    FOR_EACH(i, rows * w.n) {
-        D::st(out, i, (A) w.load(i / w.n, i % w.n));
+    FOR_EACH(i, rows * p.n) {
+        i64 r = i / p.n;
+        i64 c = i % p.n;
+        i64 g = r / p.group;
+        float s = pk_scale(p, g, c);
+        float v = (float) pk_level(p, r, c) * s;
+        if (p.flags & 2) {
+            v += pk_offset(p, g, c, s);
+        }
+        D::st(out, i, (A) v);
+    }
+}
+
+// the scales (or offsets, from supers and codes) of group g in columns c .. c + 3, n a multiple of 4
+__device__ __forceinline__ void pk_factors4(const PackedLayout& p, const unsigned* supers, const unsigned* codes,
+        bool hasCodes, i64 g, int c, float* v) {
+    i64 i = (g / p.perSuper) * p.n + c;
+    if (p.flags & 16) {
+        unsigned w0 = supers[i >> 1];
+        unsigned w1 = supers[(i >> 1) + 1];
+        v[0] = h2f((u16) w0);
+        v[1] = h2f((u16) (w0 >> 16));
+        v[2] = h2f((u16) w1);
+        v[3] = h2f((u16) (w1 >> 16));
+    } else {
+        for (int j = 0; j < 4; j++) {
+            v[j] = __uint_as_float(supers[i + j]);
+        }
+    }
+    if (hasCodes) {
+        unsigned w = codes[(g * p.n + c) >> 2];
+        for (int j = 0; j < 4; j++) {
+            v[j] *= (float) sbits(w, 8 * j, 8);
+        }
+    }
+}
+
+// the four columns' levels of one row: nibbles at ls of each byte of lw, pb high bits at hs of each byte of hw
+#define PK_PLANES(lw, ls, hw, hs, pb) \
+    (int) (ubits(lw, ls, 4) | (ubits(hw, hs, pb) << 4)) - bias, \
+    (int) (ubits(lw, 8 + (ls), 4) | (ubits(hw, 8 + (hs), pb) << 4)) - bias, \
+    (int) (ubits(lw, 16 + (ls), 4) | (ubits(hw, 16 + (hs), pb) << 4)) - bias, \
+    (int) (ubits(lw, 24 + (ls), 4) | (ubits(hw, 24 + (hs), pb) << 4)) - bias
+// the four signed fields of b bits at s, s + 8, s + 16 and s + 24 of w
+#define PK_FIELDS(w, s, b) sbits(w, s, b), sbits(w, 8 + (s), b), sbits(w, 16 + (s), b), sbits(w, 24 + (s), b)
+#define PK_TABLE(w, s) table[ubits(w, s, 4)], table[ubits(w, 8 + (s), 4)], table[ubits(w, 16 + (s), 4)], \
+    table[ubits(w, 24 + (s), 4)]
+
+#define PK_QUADS 32
+#define PK_SLICES 8
+
+// adds row rr's levels of the four columns, times each row of a, to part (and a to sum)
+#define PK_ACC(rr, ...) { \
+    const int lv_[4] = {__VA_ARGS__}; \
+    _Pragma("unroll") for (int i = 0; i < ROWS; i++) { \
+        A x = D::ld(a, rowOf[i] + (rr)); \
+        part[i][0] += x * (A) lv_[0]; part[i][1] += x * (A) lv_[1]; \
+        part[i][2] += x * (A) lv_[2]; part[i][3] += x * (A) lv_[3]; \
+        sum[i] += x; } }
+
+// out[m, n] = a[m, k] x packed[k, n] for m <= ROWS (rows past m repeat row 0 and are not
+// stored), as the Vulkan backend's matmul_packed. Each thread computes four adjacent columns,
+// reading their levels of a row as one 32-bit word when n is a multiple of 4, so neighbouring
+// lanes read neighbouring words. A block covers 4 * PK_QUADS columns with PK_SLICES threads
+// (wavefronts) per column quad, each over its own run of rows; blockIdx.y picks a piece of
+// `chunk` rows. With several pieces each writes float sums to part[piece, m, n], added up by
+// the last block of its column block to finish (counted in counters[blockIdx.x], left at 0).
+// Levels are summed per scale group and scaled once per group; with offsets each group also
+// adds its offset times the sum of a over its rows.
+template <class D, int ROWS> __device__ void packed_mv_k(const typename D::T* a, PackedLayout p, float* partial,
+        typename D::T* out, int m, int k, int chunk, int* counters) {
+    typedef typename D::A A;
+    __shared__ A sums[PK_SLICES][PK_QUADS * 4];
+    __shared__ int table[16];
+    __shared__ int last;
+    int quad = threadIdx.x % PK_QUADS;
+    int slice = threadIdx.x / PK_QUADS;
+    int n = p.n;
+    int c = (blockIdx.x * PK_QUADS + quad) * 4;
+    int piece = blockIdx.y;
+    bool words = (n & 3) == 0;
+    int from = piece * chunk;
+    int to = min(k, from + chunk);
+    int run = ((to - from + PK_SLICES - 1) / PK_SLICES + 1) & ~1;
+    int start = min(to, from + slice * run);
+    int end = min(to, start + run);
+    i64 rowOf[ROWS];
+    A total[ROWS][4];
+#pragma unroll
+    for (int i = 0; i < ROWS; i++) {
+        rowOf[i] = (i64) (i < m ? i : 0) * k;
+        total[i][0] = total[i][1] = total[i][2] = total[i][3] = A(0);
+    }
+    int planeBits = (p.flags >> 8) & 15;
+    int mode = (p.flags & 32) ? 3 : planeBits != 0 ? 2 : (p.flags & 1) ? 1 : 0;
+    int bias = 1 << (((p.flags >> 12) & 15) - 1);
+    if (mode == 3 && threadIdx.x < 16) {
+        table[threadIdx.x] = pk_table(p, threadIdx.x);
+    }
+    __syncthreads();
+    if (c < n) {
+        const unsigned* q = p.q;
+        unsigned stride = (unsigned) n >> 2;   // words per row (per two rows with 4-bit levels)
+        int r = start;
+        while (r < end) {
+            int g = r / p.group;
+            int stop = min(end, (g + 1) * p.group);
+            A part[ROWS][4];
+            A sum[ROWS];
+#pragma unroll
+            for (int i = 0; i < ROWS; i++) {
+                part[i][0] = part[i][1] = part[i][2] = part[i][3] = sum[i] = A(0);
+            }
+            // a loop per layout, each reading a word of levels once for the rows it holds (r
+            // and stop are even in the 4-bit layouts: groups and runs have an even number of rows)
+            if (words && mode == 1) {
+                for (; r + 4 <= stop; r += 4) {
+                    unsigned at = ((unsigned) (r >> 1) * n + c) >> 2;
+                    unsigned w = q[at];
+                    unsigned v = q[at + stride];
+                    PK_ACC(r, PK_FIELDS(w, 0, 4));
+                    PK_ACC(r + 1, PK_FIELDS(w, 4, 4));
+                    PK_ACC(r + 2, PK_FIELDS(v, 0, 4));
+                    PK_ACC(r + 3, PK_FIELDS(v, 4, 4));
+                }
+                for (; r < stop; r += 2) {
+                    unsigned w = q[((unsigned) (r >> 1) * n + c) >> 2];
+                    PK_ACC(r, PK_FIELDS(w, 0, 4));
+                    PK_ACC(r + 1, PK_FIELDS(w, 4, 4));
+                }
+            } else if (words && mode == 2) {
+                int perByte = 8 / planeBits;
+                if (planeBits == 2) {
+                    // 6-bit levels: a word of high bits holds four rows; to a multiple of four
+                    // rows, then four at a time from two words of nibbles and one of high bits
+                    for (; r < stop && (r & 3) != 0; r += 2) {
+                        unsigned lw = q[((unsigned) (r >> 1) * n + c) >> 2];
+                        unsigned hw = p.hi[((unsigned) (r >> 2) * n + c) >> 2];
+                        PK_ACC(r, PK_PLANES(lw, 0, hw, 4, 2));
+                        PK_ACC(r + 1, PK_PLANES(lw, 4, hw, 6, 2));
+                    }
+                    for (; r + 4 <= stop; r += 4) {
+                        unsigned at = ((unsigned) (r >> 1) * n + c) >> 2;
+                        unsigned lw = q[at];
+                        unsigned lv = q[at + stride];
+                        unsigned hw = p.hi[((unsigned) (r >> 2) * n + c) >> 2];
+                        PK_ACC(r, PK_PLANES(lw, 0, hw, 0, 2));
+                        PK_ACC(r + 1, PK_PLANES(lw, 4, hw, 2, 2));
+                        PK_ACC(r + 2, PK_PLANES(lv, 0, hw, 4, 2));
+                        PK_ACC(r + 3, PK_PLANES(lv, 4, hw, 6, 2));
+                    }
+                }
+                for (; r < stop; r += 2) {
+                    unsigned lw = q[((unsigned) (r >> 1) * n + c) >> 2];
+                    unsigned hw = p.hi[((unsigned) (r / perByte) * n + c) >> 2];
+                    int hs = (r % perByte) * planeBits;
+                    PK_ACC(r, PK_PLANES(lw, 0, hw, hs, planeBits));
+                    PK_ACC(r + 1, PK_PLANES(lw, 4, hw, hs + planeBits, planeBits));
+                }
+            } else if (words && mode == 3) {
+                for (; r < stop; r += 2) {
+                    unsigned w = q[((unsigned) (r >> 1) * n + c) >> 2];
+                    PK_ACC(r, PK_TABLE(w, 0));
+                    PK_ACC(r + 1, PK_TABLE(w, 4));
+                }
+            } else if (words) {
+                for (; r + 4 <= stop; r += 4) {
+                    unsigned at = ((unsigned) r * n + c) >> 2;
+                    unsigned w0 = q[at];
+                    unsigned w1 = q[at + stride];
+                    unsigned w2 = q[at + 2 * stride];
+                    unsigned w3 = q[at + 3 * stride];
+                    PK_ACC(r, PK_FIELDS(w0, 0, 8));
+                    PK_ACC(r + 1, PK_FIELDS(w1, 0, 8));
+                    PK_ACC(r + 2, PK_FIELDS(w2, 0, 8));
+                    PK_ACC(r + 3, PK_FIELDS(w3, 0, 8));
+                }
+                for (; r < stop; r++) {
+                    unsigned w = q[((unsigned) r * n + c) >> 2];
+                    PK_ACC(r, PK_FIELDS(w, 0, 8));
+                }
+            } else {
+                for (; r < stop; r++) {
+                    PK_ACC(r, pk_level(p, r, c), c + 1 < n ? pk_level(p, r, c + 1) : 0,
+                            c + 2 < n ? pk_level(p, r, c + 2) : 0, c + 3 < n ? pk_level(p, r, c + 3) : 0);
+                }
+            }
+            float s[4];
+            float o[4];
+            if (words) {
+                pk_factors4(p, p.scales, p.scaleCodes, (p.flags & 4) != 0, g, c, s);
+            } else {
+                for (int j = 0; j < 4; j++) {
+                    s[j] = c + j < n ? pk_scale(p, g, c + j) : 0.0f;
+                }
+            }
+            if (p.flags & 2) {
+                if (words) {
+                    pk_factors4(p, p.offsets, p.offsetCodes, (p.flags & 8) != 0, g, c, o);
+                    for (int j = 0; j < 4; j++) {
+                        o[j] += s[j] * p.shift;
+                    }
+                } else {
+                    for (int j = 0; j < 4; j++) {
+                        o[j] = c + j < n ? pk_offset(p, g, c + j, s[j]) : 0.0f;
+                    }
+                }
+            }
+#pragma unroll
+            for (int i = 0; i < ROWS; i++) {
+                for (int j = 0; j < 4; j++) {
+                    total[i][j] += part[i][j] * (A) s[j];
+                    if (p.flags & 2) {
+                        total[i][j] += sum[i] * (A) o[j];
+                    }
+                }
+            }
+        }
+    }
+    bool single = gridDim.y == 1;
+#pragma unroll
+    for (int i = 0; i < ROWS; i++) {
+        for (int j = 0; j < 4; j++) {
+            sums[slice][quad * 4 + j] = total[i][j];
+        }
+        __syncthreads();
+        // the block's 128 sums of row i, one per thread of the first half
+        if (threadIdx.x < PK_QUADS * 4 && i < m) {
+            int col = blockIdx.x * PK_QUADS * 4 + threadIdx.x;
+            if (col < n) {
+                A t = sums[0][threadIdx.x];
+                for (int s = 1; s < PK_SLICES; s++) {
+                    t += sums[s][threadIdx.x];
+                }
+                if (single) {
+                    D::st(out, (i64) i * n + col, t);
+                } else {
+                    partial[((i64) piece * m + i) * n + col] = (float) t;
+                }
+            }
+        }
+        __syncthreads();
+    }
+    if (single) {
+        return;
+    }
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        last = atomicAdd(&counters[blockIdx.x], 1) == (int) gridDim.y - 1;
+    }
+    __syncthreads();
+    if (!last) {
+        return;
+    }
+    __threadfence();
+    int col = blockIdx.x * PK_QUADS * 4 + (threadIdx.x % (PK_QUADS * 4));
+    if (col < n) {
+        // two rows at a time: the block has twice as many threads as columns
+        for (int i = threadIdx.x / (PK_QUADS * 4); i < m; i += 2) {
+            A t = A(0);
+            for (int q = 0; q < (int) gridDim.y; q++) {
+                t += (A) load_part(partial + ((i64) q * m + i) * n + col);
+            }
+            D::st(out, (i64) i * n + col, t);
+        }
+    }
+    if (threadIdx.x == 0) {
+        counters[blockIdx.x] = 0;   // ready for the next product
     }
 }
 
@@ -1379,12 +1701,6 @@ extern "C" __global__ void few_dense_##S(const D::T* a, const D::T* w, float* pa
     DenseWeights<D> dw = {w, n};                                                                                  \
     few_k<D>(a, dw, part, out, m, k, n, chunk, counters);                                                         \
 }                                                                                                                 \
-extern "C" __global__ void few_packed_##S(const D::T* a, const signed char* levels, const float* scales,          \
-        const float* offsets, int group, int nibbles, float* part, D::T* out, int m, int k, int n, int chunk,     \
-        int* counters) {                                                                                          \
-    PackedWeights pw = {levels, scales, offsets, n, group, nibbles};                                              \
-    few_k<D>(a, pw, part, out, m, k, n, chunk, counters);                                                         \
-}                                                                                                                 \
 extern "C" __global__ void few_t_##S(const D::T* a, const D::T* e, D::T* out, int m, int k, int n, i64 ld,       \
         int vec) {                                                                                                \
     few_t_k<D>(a, e, out, m, k, n, ld, vec);                                                                      \
@@ -1392,10 +1708,35 @@ extern "C" __global__ void few_t_##S(const D::T* a, const D::T* e, D::T* out, in
 extern "C" __global__ void few_sum_##S(const float* part, D::T* out, i64 mn, int pieces) {                        \
     few_sum_k<D>(part, out, mn, pieces);                                                                          \
 }                                                                                                                 \
-extern "C" __global__ void unpack_packed_##S(const signed char* levels, const float* scales,                      \
-        const float* offsets, int group, int nibbles, D::T* out, int rows, int cols) {                            \
-    PackedWeights pw = {levels, scales, offsets, cols, group, nibbles};                                           \
-    unpack_packed_k<D>(pw, out, rows);                                                                            \
+extern "C" __global__ void unpack_packed_##S(const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
+        const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                                \
+        D::T* out, int rows) {                                                                                     \
+    PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                                \
+    unpack_packed_k<D>(p, out, rows);                                                                             \
+}                                                                                                                 \
+extern "C" __global__ void packed_mv1_##S(const D::T* a, const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
+        const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                    \
+        float* part, D::T* out, int m, int k, int chunk, int* counters) {                                          \
+    PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                                \
+    packed_mv_k<D, 1>(a, p, part, out, m, k, chunk, counters);                                                 \
+}                                                                                                                 \
+extern "C" __global__ void packed_mv2_##S(const D::T* a, const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
+        const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                    \
+        float* part, D::T* out, int m, int k, int chunk, int* counters) {                                          \
+    PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                                \
+    packed_mv_k<D, 2>(a, p, part, out, m, k, chunk, counters);                                                 \
+}                                                                                                                 \
+extern "C" __global__ void packed_mv4_##S(const D::T* a, const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
+        const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                    \
+        float* part, D::T* out, int m, int k, int chunk, int* counters) {                                          \
+    PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                                \
+    packed_mv_k<D, 4>(a, p, part, out, m, k, chunk, counters);                                                 \
+}                                                                                                                 \
+extern "C" __global__ void packed_mv8_##S(const D::T* a, const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
+        const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                    \
+        float* part, D::T* out, int m, int k, int chunk, int* counters) {                                          \
+    PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                                \
+    packed_mv_k<D, 8>(a, p, part, out, m, k, chunk, counters);                                                 \
 }
 
 #ifdef BRAINIAC_FEW_F32

@@ -78,7 +78,8 @@ import java.util.Set;
  * </ul>
  *
  * <p>Attention runs fused (forward, backward, and with a bias) for heads up to 256; packed
- * weights stay packed on the device, read directly by products of up to 16 rows; Fourier
+ * weights stay packed on the device, in the Vulkan backend's compact layout and read directly by products of
+ * up to 8 rows; Fourier
  * transforms of power-of-two lengths up to 2048 run on the device. Gradients of several GPUs
  * are summed on the host (there is no RCCL on Windows).
  */
@@ -1158,7 +1159,7 @@ public final class HipBackend implements Backend {
             }
         } else if (FEW_ROWS && batch == 1 && m >= 1 && m <= FEW && (t == DType.FLOAT16 || t == DType.BFLOAT16)) {
             // a handful of rows: a BLAS library runs these 16-bit products slower than float32 ones
-            few(c, "few_dense", x, y.address(), 0, 0, 0, 0, m, k, n, z);
+            few(c, "few_dense", x, y.address(), m, k, n, z);
         } else if (blas) {
             HipContext.trace("rocBLAS " + t + " " + batch + " x [" + m + ", " + k + "] x [" + k + ", " + n + "]");
             long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
@@ -1281,7 +1282,7 @@ public final class HipBackend implements Backend {
 
     /** Whether products of a few 16-bit rows use a kernel of their own ({@code -Dbrainiac.hip.fewRows=false}: rocBLAS). */
     private static final boolean FEW_ROWS = !"false".equals(System.getProperty("brainiac.hip.fewRows"));
-    /** The most rows {@code few_dense} and {@code few_packed} take (FEW_ROWS in kernels.hip). */
+    /** The most rows {@code few_dense} takes (FEW_ROWS in kernels.hip). */
     static final int FEW = 16;
     /** Column blocks the few-row kernels can count finished pieces for: an int each in {@link #fewCounters}. */
     private static final int FEW_COUNTERS = 1 << 16;
@@ -1306,11 +1307,9 @@ public final class HipBackend implements Backend {
     /**
      * {@code out[m, n] = a[m, k] x w[k, n]} for at most {@link #FEW} rows: a thread per column of
      * {@code w}, the {@code k} rows split into pieces until the device is busy, the pieces' float
-     * sums then added by {@code few_sum}. {@code w} is dense ({@code few_dense}: its address) or
-     * packed ({@code few_packed}: levels, scales, offsets, group, nibbles).
+     * sums then added by {@code few_sum}. {@code w} is the dense matrix's address.
      */
-    private void few(HipContext c, String kernel, HipStorage a, long w, long scales, long offsets, int group,
-            int nibbles, int m, int k, int n, HipStorage out) {
+    private void few(HipContext c, String kernel, HipStorage a, long w, int m, int k, int n, HipStorage out) {
         int columnBlocks = (n + FEW_COLUMNS - 1) / FEW_COLUMNS;
         int target = 4 * c.multiprocessors;
         int pieces = Math.max(1, Math.min((k + 127) / 128, target / columnBlocks));
@@ -1326,9 +1325,6 @@ public final class HipBackend implements Backend {
             ready(fewCounters);
         }
         c.args().ptr(a.address()).ptr(w);
-        if (kernel.equals("few_packed")) {
-            c.ptr(scales).ptr(offsets).i32(group).i32(nibbles);
-        }
         c.ptr(partAddress).ptr(out.address()).i32(m).i32(k).i32(n).i32(chunk).ptr(counted ? fewCounters.address() : 0);
         c.launch(kernel(kernel, out.dtype), columnBlocks, pieces, 1);
         if (counted) {
@@ -1367,7 +1363,7 @@ public final class HipBackend implements Backend {
         Boolean f = fewFaster.get(key);
         if (f == null) {
             Runnable blas = () -> c.rocblas.halfGemv(false, n, k, n, y.address(), x.address(), z.address());
-            Runnable few = () -> few(c, "few_dense", x, y.address(), 0, 0, 0, 0, 1, k, n, z);
+            Runnable few = () -> few(c, "few_dense", x, y.address(), 1, k, n, z);
             float tb = c.timeOnGpu(blas, 5);
             float tf = c.timeOnGpu(few, 5);
             f = tf < 0.95f * tb;
@@ -1383,11 +1379,13 @@ public final class HipBackend implements Backend {
     // ------------------------------------------------------------------ packed (quantized) weights
 
     /**
-     * A packed matrix on the device: the levels as PackedMatrix lays them out (a signed byte
-     * each, or two per byte), the scales and offsets as float32 per group.
+     * A packed matrix on the device, in the layout {@link PackedLayout} prepares (the Vulkan
+     * backend's): the levels as bytes, nibbles, nibble and high-bit planes or table indices, the
+     * scales and offsets factored and float16 where the matrix allows.
      */
-    private record Packed(int rows, int cols, PackedMatrix host, HipStorage levels, HipStorage scales,
-            HipStorage offsets) implements PackedStorage {
+    private record Packed(int rows, int cols, PackedLayout layout, HipStorage levels, HipStorage hi,
+            HipStorage scaleCodes, HipStorage offsetCodes, HipStorage scales, HipStorage offsets)
+            implements PackedStorage {
 
         @Override
         public long size() {
@@ -1396,15 +1394,24 @@ public final class HipBackend implements Backend {
 
         @Override
         public long bytes() {
-            return levels.bytes() + scales.bytes() + (offsets == null ? 0 : offsets.bytes());
+            long b = 0;
+            for (HipStorage s : new HipStorage[] {levels, hi, scaleCodes, offsetCodes, scales, offsets}) {
+                b += s == null ? 0 : s.bytes();
+            }
+            return b;
         }
 
-        int group() {
-            return host.group();
+        PackedMatrix host() {
+            return layout.matrix();
         }
 
-        int nibbles() {
-            return host.nibbles() ? 1 : 0;
+        /** Adds the arguments of a packed matrix in kernels.hip: six addresses, n, group, flags, perSuper, shift. */
+        void push(HipContext c) {
+            long any = levels.address();
+            c.ptr(any).ptr(hi == null ? any : hi.address()).ptr(scaleCodes == null ? any : scaleCodes.address())
+                    .ptr(offsetCodes == null ? any : offsetCodes.address()).ptr(scales.address())
+                    .ptr(offsets == null ? any : offsets.address()).i32(cols).i32(host().group())
+                    .i32(layout.layout()).i32(layout.perSuper()).f32(layout.shift());
         }
     }
 
@@ -1414,13 +1421,27 @@ public final class HipBackend implements Backend {
         return s;
     }
 
+    private HipStorage uploadHalves(short[] data) {
+        HipStorage s = raw(Math.max(1, (data.length + 1) / 2), DType.FLOAT32, null);
+        hip.upload(s.address(), MemorySegment.ofArray(data));
+        return s;
+    }
+
     @Override
-    public synchronized PackedStorage pack(PackedMatrix matrix) {
-        ctx();
-        HipStorage levels = uploadBytes(matrix.data());
-        HipStorage scales = (HipStorage) upload(matrix.scales());
-        HipStorage offsets = matrix.offsets() == null ? null : (HipStorage) upload(matrix.offsets());
-        return new Packed(matrix.rows(), matrix.cols(), matrix, levels, scales, offsets);
+    public PackedStorage pack(PackedMatrix matrix) {
+        PackedLayout st = PackedLayout.of(matrix);   // without the lock: it may take a while
+        synchronized (this) {
+            ctx();
+            HipStorage levels = uploadBytes(st.levels());
+            HipStorage hi = st.hi() == null ? null : uploadBytes(st.hi());
+            HipStorage scaleCodes = st.scaleCodes() == null ? null : uploadBytes(st.scaleCodes());
+            HipStorage offsetCodes = st.offsetCodes() == null ? null : uploadBytes(st.offsetCodes());
+            HipStorage scales = st.scaleHalves() != null ? uploadHalves(st.scaleHalves())
+                    : (HipStorage) upload(st.scales());
+            HipStorage offsets = st.offsetHalves() != null ? uploadHalves(st.offsetHalves())
+                    : st.offsets() != null ? (HipStorage) upload(st.offsets()) : null;
+            return new Packed(matrix.rows(), matrix.cols(), st, levels, hi, scaleCodes, offsetCodes, scales, offsets);
+        }
     }
 
     @Override
@@ -1448,11 +1469,18 @@ public final class HipBackend implements Backend {
         Packed p = packed(packed);
         HipStorage z = wr(out);
         HipContext c = ctx();
-        c.args().ptr(p.levels().address()).ptr(p.scales().address())
-                .ptr(p.offsets() == null ? 0 : p.offsets().address()).i32(p.group()).i32(p.nibbles())
-                .ptr(z.address()).i32(p.rows()).i32(p.cols());
+        c.args();
+        p.push(c);
+        c.ptr(z.address()).i32(p.rows());
         c.launch(kernel("unpack_packed", z.dtype), p.size());
     }
+
+    /** Rows up to which a product reads packed levels directly ({@code packed_mv}); more unpack first. */
+    private static final int PACKED_ROWS = 8;
+    /** Blocks a product by packed weights aims for ({@code -Dbrainiac.hip.packedBlocks}; 0: four per compute unit). */
+    private static final int PACKED_BLOCKS = Integer.getInteger("brainiac.hip.packedBlocks", 0);
+    /** The fewest rows of k a piece of such a product takes. */
+    private static final int PACKED_PIECE = Integer.getInteger("brainiac.hip.packedPiece", 64);
 
     @Override
     public synchronized void matmulPacked(Storage a, PackedStorage b, int m, int k, int n, Storage out) {
@@ -1462,7 +1490,7 @@ public final class HipBackend implements Backend {
         }
         HipStorage z = wr(out);
         HipContext c = ctx();
-        if (m > FEW) {
+        if (m > PACKED_ROWS) {
             // many rows: unpacked into a temporary for rocBLAS, which is then free for the next
             HipStorage w = raw((long) k * n, z.dtype, null);
             unpack(b, w);
@@ -1472,8 +1500,29 @@ public final class HipBackend implements Backend {
         }
         Packed p = packed(b);
         HipStorage x = as(cs(a), z.dtype);
-        few(c, "few_packed", x, p.levels().address(), p.scales().address(),
-                p.offsets() == null ? 0 : p.offsets().address(), p.group(), p.nibbles(), m, k, n, z);
+        // 128 columns per block; enough pieces of k to fill the device, of at least PACKED_PIECE rows
+        int columnBlocks = (n + 127) / 128;
+        int target = PACKED_BLOCKS > 0 ? PACKED_BLOCKS : 4 * c.multiprocessors;
+        int pieces = Math.max(1, Math.min((k + PACKED_PIECE - 1) / PACKED_PIECE, target / columnBlocks));
+        if (columnBlocks > FEW_COUNTERS) {
+            pieces = 1;
+        }
+        int chunk = ((k + pieces - 1) / pieces + 1) / 2 * 2;
+        pieces = (k + chunk - 1) / chunk;
+        HipStorage part = pieces > 1 ? raw((long) pieces * m * n, DType.FLOAT32, null) : null;
+        if (part != null && fewCounters == null) {
+            fewCounters = raw(FEW_COUNTERS, DType.FLOAT32, null);
+            fillNow(fewCounters, 0);
+        }
+        int rows = m == 1 ? 1 : m == 2 ? 2 : m <= 4 ? 4 : 8;
+        c.args().ptr(x.address());
+        p.push(c);
+        c.ptr(part != null ? part.address() : 0).ptr(z.address()).i32(m).i32(k).i32(chunk)
+                .ptr(part != null ? fewCounters.address() : 0);
+        c.launch(kernel("packed_mv" + rows, z.dtype), columnBlocks, pieces, 1);
+        if (part != null) {
+            part.release();
+        }
         done(x, cs(a));
     }
 
