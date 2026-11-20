@@ -25,6 +25,7 @@ import java.util.Optional;
  * Tools for the model work the studio does on this PC: the GPU, fine-tuning, quantizing,
  * measuring, training curves and building layer graphs.
  */
+@ToolGroup(id = "ml", summary = "building, training, fine-tuning and measuring models")
 public final class MlTools {
 
     private final ChatService chat;

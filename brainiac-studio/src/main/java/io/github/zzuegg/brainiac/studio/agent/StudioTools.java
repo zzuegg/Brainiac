@@ -32,6 +32,7 @@ import java.util.Optional;
  * <p>Tools marked {@link Acts} change something, spend money or use the GPU; an agent running in
  * {@code ask} mode waits for the user's approval before calling them.
  */
+@ToolGroup(id = "models", summary = "chat models, Hugging Face, training runs, images and speech")
 public final class StudioTools implements RiskRefiner {
 
     /** Marks a tool that changes something, spends money or keeps the machine busy. */
@@ -196,10 +197,7 @@ public final class StudioTools implements RiskRefiner {
 
     @Override
     public List<Reach.Access> reach(String tool, Map<String, Object> arguments) {
-        return switch (tool) {
-            case "read_project_file", "list_project_files" -> Reach.of(arguments, false, "path");
-            default -> List.of();
-        };
+        return List.of();
     }
 
     // ---------------------------------------------------------------- models
@@ -342,81 +340,6 @@ public final class StudioTools implements RiskRefiner {
         return m;
     }
 
-    // ---------------------------------------------------------------- the project's files
-
-    /**
-     * Lists files in the project's folder.
-     *
-     * @param path a folder inside it
-     * @return the entries
-     */
-    @Tools.Tool(name = "list_project_files", value = "Lists the files and folders in the project's folder, or in a "
-            + "folder inside it, or a folder elsewhere, which the user's rules may make ask first.")
-    @Returns("{folder, entries: [{name, folder, bytes}]}")
-    public Map<String, Object> listProjectFiles(@Tools.Param("a folder relative to the project's folder, or a full path elsewhere; empty for the top")
-            Optional<String> path) {
-        Path dir = Reach.file(path.orElse(""));
-        if (!Files.isDirectory(dir)) {
-            throw new IllegalArgumentException(path.orElse("") + " is not a folder");
-        }
-        List<Map<String, Object>> out = new ArrayList<>();
-        try (java.util.stream.Stream<Path> s = Files.list(dir)) {
-            for (Path p : s.sorted().limit(500).toList()) {
-                Map<String, Object> e = new LinkedHashMap<>();
-                e.put("name", p.getFileName().toString());
-                e.put("folder", Files.isDirectory(p));
-                if (Files.isRegularFile(p)) {
-                    e.put("bytes", Files.size(p));
-                }
-                out.add(e);
-            }
-        } catch (IOException e) {
-            throw new UncheckedIOException(e.getMessage(), e);
-        }
-        return Map.of("folder", dir.toString(), "entries", out);
-    }
-
-    /**
-     * Reads a text file in the project's folder.
-     *
-     * @param path the file inside it
-     * @param offset the first character
-     * @param limit how many characters
-     * @return the part, with where it is in the file
-     */
-    @Tools.Tool(name = "read_project_file", value = "Reads a text file in the project's folder, a part at a time: "
-            + "up to 'limit' characters (12000 if left out) from character 'offset'. The answer says how long the file "
-            + "is, so you can read on.")
-    @Tier(value = Risk.READ, resultChars = 16_000)
-    @Returns("text: the file's text, perhaps a part of it with a note on where the rest is")
-    public String readProjectFile(@Tools.Param("the file, relative to the project's folder, or a full path elsewhere") String path,
-            @Tools.Param("the character to start at, 0 if left out") Optional<Integer> offset,
-            @Tools.Param("how many characters, 12000 if left out, at most 15000") Optional<Integer> limit) {
-        Path f = Reach.file(path);
-        if (!Files.isRegularFile(f)) {
-            throw new IllegalArgumentException("there is no file " + path);
-        }
-        String text;
-        try {
-            if (Files.size(f) > READ_BYTES) {
-                throw new IllegalArgumentException(path + " is over 32 MB; search it with search_files instead");
-            }
-            text = Files.readString(f, java.nio.charset.StandardCharsets.UTF_8);
-        } catch (java.nio.charset.MalformedInputException e) {
-            throw new IllegalArgumentException(path + " is not a text file");
-        } catch (IOException e) {
-            throw new UncheckedIOException(e.getMessage(), e);
-        }
-        int from = Math.clamp(offset.orElse(0), 0, text.length());
-        int to = Math.min(text.length(), from + Math.clamp(limit.orElse(12_000), 1, 15_000));
-        if (from == 0 && to == text.length()) {
-            return text;
-        }
-        return "[characters " + from + " to " + to + " of " + text.length() + (to < text.length()
-                ? "; read on with offset " + to : "") + "]\n" + text.substring(from, to);
-    }
-
-    private static final long READ_BYTES = 32L << 20;
 
     // the project the call belongs to
     private static Project project() {

@@ -11,6 +11,7 @@ module io.github.zzuegg.brainiac.studio {
     requires io.github.zzuegg.brainiac.cloud;
     requires java.desktop;
     requires java.net.http;
+    requires java.xml;
     requires jdk.httpserver;
 
     exports io.github.zzuegg.brainiac.studio;

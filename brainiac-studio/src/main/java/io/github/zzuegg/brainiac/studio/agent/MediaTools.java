@@ -27,6 +27,7 @@ import java.util.Optional;
  * file is named by its place in the project's folder, or by the full path a tool that made it
  * returned.
  */
+@ToolGroup(id = "media", summary = "pictures, audio and video")
 public final class MediaTools {
 
     private static final long MAX_MEDIA = 512L << 20;

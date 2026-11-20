@@ -19,6 +19,7 @@ import java.util.UUID;
 /**
  * Tools for tables and charts in the project's folder, and the project's content calendar.
  */
+@ToolGroup(id = "data", summary = "tables, charts and the content calendar")
 public final class DataTools implements RiskRefiner, Checkpointed {
 
     /** The most bytes of a table that are read. */

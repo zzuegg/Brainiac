@@ -129,7 +129,8 @@ public record Project(String id, String name, String description, Path folder, L
      * @return whether it is allowed
      */
     public boolean allowsTool(String tool) {
-        return tools == null || tools.contains(tool);
+        return tools == null || tools.contains(tool)
+                || tools.stream().anyMatch(t -> io.github.zzuegg.brainiac.studio.agent.ToolNames.current(t).equals(tool));
     }
 
     /**

@@ -328,7 +328,7 @@ public final class Rules {
 
     private static boolean name(String pattern, String tool) {
         if (!pattern.contains("*")) {
-            return pattern.equals(tool);
+            return ToolNames.current(pattern).equals(ToolNames.current(tool));
         }
         return tool.matches(java.util.regex.Pattern.quote(pattern).replace("*", "\\E.*\\Q"));
     }

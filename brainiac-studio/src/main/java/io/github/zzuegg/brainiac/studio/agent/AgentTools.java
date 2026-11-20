@@ -18,6 +18,7 @@ import java.util.Optional;
  * Tools that act on the agent calling them: its plan, its questions to the user, the agents it
  * starts, and the notes it keeps for its project.
  */
+@ToolGroup(id = "agents", summary = "plans, questions, other agents, notes and reminders")
 public final class AgentTools implements RiskRefiner {
 
     /** Tools every agent has, whatever its role and project allow: they only talk to the user. */
@@ -122,12 +123,14 @@ public final class AgentTools implements RiskRefiner {
             + "the work. It works alongside you; its final answer comes back through wait_agents. Give it a goal "
             + "that stands on its own: it does not see your conversation.")
     @Tier(value = Risk.COMPUTE, what = "starts another agent, which uses a model and may call tools")
-    @Returns("{id, role, mode, model, note?}")
+    @Returns("{id, role, mode, model, worktree?, branch?, note?}")
     public Map<String, Object> spawnAgent(@Tools.Param("the role's id, such as 'researcher'") String role,
             @Tools.Param("what it should do, with everything it needs to know") String goal,
             @Tools.Param("a chat model key; its role's model if left out") Optional<String> model,
-            @Tools.Param("fewer tools than its role has, if it needs only some") Optional<List<String>> tools) {
-        return runs.spawn(role, goal, model.orElse(null), tools.orElse(null));
+            @Tools.Param("fewer tools than its role has, if it needs only some") Optional<List<String>> tools,
+            @Tools.Param("true to give it a git worktree and branch of its own, so its changes do not mix with yours or "
+                    + "other agents'; merge its branch with git_merge when it is done") Optional<Boolean> worktree) {
+        return runs.spawn(role, goal, model.orElse(null), tools.orElse(null), worktree.orElse(false));
     }
 
     /**
@@ -229,10 +232,11 @@ public final class AgentTools implements RiskRefiner {
      * @return their definitions
      */
     @Tools.Tool(name = "find_tools", value = "Loads tools listed under More tools, so you can call them from your next "
-            + "turn on. Give their names, or words for what you need.")
+            + "turn on. Give their names, a group's name such as 'files' or 'code' to load the group, or words for "
+            + "what you need.")
     @Tier(value = Risk.READ)
-    @Returns("[{name, description, parameters}], at most 12")
-    public List<Map<String, Object>> findTools(@Tools.Param("the tools' names") Optional<List<String>> names,
+    @Returns("[{name, description, parameters}], at most 12, or 24 for a group")
+    public List<Map<String, Object>> findTools(@Tools.Param("the tools' names, or groups' names") Optional<List<String>> names,
             @Tools.Param("words for what you need, if you do not know the names") Optional<String> query) {
         return runs.findTools(names.orElse(null), query.orElse(null));
     }
@@ -264,7 +268,7 @@ public final class AgentTools implements RiskRefiner {
             + "console.log lines come back too. Modern JavaScript without classes, modules or real promises: await "
             + "is allowed but needless. No file system, network or timers except through tools. At most 100 tool "
             + "calls and 30 seconds of its own work. Where a Returns is vague, look before you rely on a shape: "
-            + "console.log a result or return it whole. Example: const fs = tools.list_project_files({}); "
+            + "console.log a result or return it whole. Example: const fs = tools.list_files({}); "
             + "return fs.entries.filter(e => e.name.endsWith('.md')).map(e => e.name);")
     @Tier(value = Risk.READ, resultChars = 20_000)
     @Returns("{result, calls, logs?, notes?}: the script's value as JSON, the number of tool calls, its console lines "
