@@ -709,10 +709,9 @@ final class HipContext {
         uploadedBytes += bytes;
         long t0 = PROFILE ? System.nanoTime() : 0;
         trace("hipMemcpyHtoDAsync " + bytes + " bytes" + (src.isNative() ? "" : " from the heap"));
-        if (src.isNative()) {
-            cu.copyToDevice(dst, src, bytes, stream);
-        } else if (bytes <= SMALL_UPLOAD && cu.hasEvents() && !DEBUG) {
-            // small (a step's positions or mask): through a ring of pinned buffers, each reused
+        if (bytes <= SMALL_UPLOAD && cu.hasEvents() && !DEBUG) {
+            // small (a step's positions or mask, a CPU expert's output): through a ring of pinned
+            // buffers, so the caller's memory may go at once, each reused
             // once the copy that last read it is done, so the device need not go idle first
             int slot = nextUpload++ % UPLOAD_SLOTS;
             if (uploadBuffers[slot] == null) {
@@ -724,6 +723,11 @@ final class HipContext {
             MemorySegment.copy(src, 0, uploadBuffers[slot], 0, bytes);
             cu.copyToDevice(dst, uploadBuffers[slot], bytes, stream);
             cu.recordEvent(uploadEvents[slot], stream);
+        } else if (src.isNative()) {
+            // the caller's memory, which may be freed (a CPU tensor collected) as soon as this
+            // returns, while HIP may still be reading it: the copy is waited for
+            cu.copyToDevice(dst, src, bytes, stream);
+            finish();
         } else {
             // a Java array: copied off the heap first. HIP may still read pageable memory after
             // the call returns, so the copy is waited for before the memory is freed.
