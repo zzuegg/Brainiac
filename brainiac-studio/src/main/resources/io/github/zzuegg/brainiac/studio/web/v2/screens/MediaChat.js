@@ -11,6 +11,7 @@ import { MEDIA, modelsFor, defaults, generate, stopMaking, speechOptions, voiceN
 import { openLayer } from "/v2/ui/overlay.js";
 import { VoicePicker, VoiceFace } from "/v2/screens/Voices.js";
 import { TranscriptTurn, TranscribeComposer } from "/v2/screens/Transcribe.js";
+import { RewriteTurn, RewriteComposer } from "/v2/screens/Rewrite.js";
 
 // An image, speech or video chat: each turn is a prompt with the settings it was made with, and
 // what came out. Any picture can be taken back into the composer (Fine tune: its prompt and seed)
@@ -34,12 +35,14 @@ export function MediaChat({ tab, item, s }) {
   };
   const turns = pairs(chat.messages);
   const header = html`<${ItemHeader} tab=${tab} item=${item}
-    sub=${`${M.label} · ${plural(turns.length, chat.medium === "transcribe" ? "recording" : "prompt")}`} />`;
-  const footer = chat.medium === "transcribe" ? html`<${TranscribeComposer} s=${s} settings=${settings} put=${put} busy=${busy} />` : html`<${MediaComposer} project=${s.project} M=${M} medium=${chat.medium} settings=${settings} put=${put} prompt=${prompt} setPrompt=${setPrompt}
+    sub=${`${M.label} · ${plural(turns.length, chat.medium === "transcribe" ? "recording" : chat.medium === "rewrite" ? "text" : "prompt")}`} />`;
+  const footer = chat.medium === "transcribe" ? html`<${TranscribeComposer} s=${s} settings=${settings} put=${put} busy=${busy} />`
+    : chat.medium === "rewrite" ? html`<${RewriteComposer} settings=${settings} put=${put} prompt=${prompt} setPrompt=${setPrompt} busy=${busy} go=${() => generate(s, prompt)} stop=${() => stopMaking(s)} />` : html`<${MediaComposer} project=${s.project} M=${M} medium=${chat.medium} settings=${settings} put=${put} prompt=${prompt} setPrompt=${setPrompt}
     busy=${busy} go=${() => generate(s, prompt)} stop=${() => stopMaking(s)} />`;
   return html`<${Reading} header=${header} footer=${footer} scrollRef=${scroll} class="chat media-chat">
     ${!turns.length ? html`<${Empty} title=${M.label} icon=${html`<${Icon} name=${M.icon} size=${28} />`}>${M.lead}<//>`
       : chat.medium === "transcribe" ? html`<ol class="transcript">${turns.map((t, i) => html`<${TranscriptTurn} key=${i} t=${t} />`)}</ol>`
+      : chat.medium === "rewrite" ? html`<ol class="transcript">${turns.map((t, i) => html`<${RewriteTurn} key=${i} t=${t} busy=${busy} reuse=${x => { setPrompt(x); document.querySelector(".media-prompt")?.focus(); }} />`)}</ol>`
       : html`<ol class="transcript">${turns.map((t, i) => html`<${Turn} key=${i} t=${t} M=${M} busy=${busy}
           tune=${it => tune(it, t.ask)} again=${() => { setPrompt(t.ask.text); configure(s, { settings: { ...settings, ...t.ask.settings, seed: "" } }); setTimeout(() => generate(s, t.ask.text)); }} />`)}</ol>`}
   <//>`;

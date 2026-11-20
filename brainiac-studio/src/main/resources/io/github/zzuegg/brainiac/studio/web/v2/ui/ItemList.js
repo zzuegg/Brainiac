@@ -71,7 +71,7 @@ function Row({ tab, item, current, compact, scope }) {
   </li>`;
 }
 
-const MEDIUM_ICONS = { image: "image", speech: "speech", video: "video", transcribe: "mic" };
+const MEDIUM_ICONS = { image: "image", speech: "speech", video: "video", transcribe: "mic", rewrite: "rewrite" };
 
 function subtitle(item) {
   if (item.kind === "chat") return item.messages ? `${item.messages} messages` : "empty";

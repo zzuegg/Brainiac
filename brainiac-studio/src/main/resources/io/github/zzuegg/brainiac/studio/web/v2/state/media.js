@@ -19,6 +19,8 @@ export const MEDIA = {
     lead: "Describe a short clip. It takes a while on this PC; the steps show as it goes." },
   transcribe: { label: "Transcription", noun: "transcript", verb: "Write down", doing: "Listening", icon: "mic", modelMedia: "transcribe",
     lead: "Record something or choose a recording, and it is written down here with its times. The recording stays with the transcript." },
+  rewrite: { label: "Rewriting", noun: "text", verb: "Rewrite", doing: "Writing", icon: "rewrite", modelMedia: "rewrite",
+    lead: "Paste a text to summarize or translate it with a model on this PC. Any answer can be taken further, a summary translated, say." },
 };
 
 /** The models that make a medium. */
@@ -27,7 +29,7 @@ export const modelsFor = medium => (modelInfo.value?.models || []).filter(m => (
 export const defaults = medium => ({
   model: "auto", aspect: medium === "video" ? "16:9" : "1:1", count: 1, steps: "", guidance: "", seed: "", negativePrompt: "",
   voice: "", blend: "", mix: 0.7, format: "", seconds: 2, speed: 1, instructions: "",
-  language: "auto", translate: false, hint: "",
+  language: "auto", translate: false, hint: "", task: "", maxTokens: "",
 });
 
 /** What a transcription model offers: its languages, and whether it translates to English. */
@@ -36,6 +38,13 @@ export function transcribeOptions(key) {
   const k = key === "auto" ? modelInfo.value?.auto?.transcribe || "" : key;
   if (!listening.has(k)) listening.set(k, api("/api/transcribe/options", { model: k }).catch(() => ({ languages: [], translate: false })));
   return listening.get(k);
+}
+
+/** The tasks a rewriting model was trained for, such as summarization or translation_en_to_de. */
+const rewriting = new Map();
+export function rewriteTasks(key) {
+  if (!rewriting.has(key)) rewriting.set(key, api("/api/rewrite/options", { model: key }).then(r => r.tasks || [], () => []));
+  return rewriting.get(key);
 }
 
 /** What a speech model offers: its voices, and whether it takes a speed and instructions. */
@@ -130,6 +139,7 @@ export async function generate(s, prompt) {
   try {
     if (medium === "image") await image(s, prompt.trim(), settings);
     else if (medium === "video") await video(s, prompt.trim(), settings);
+    else if (medium === "rewrite") await rewrite(s, prompt.trim(), settings);
     else await speech(s, prompt.trim(), settings);
     setLast(s, { seconds: (performance.now() - started) / 1000 });
   } catch (e) {
@@ -249,4 +259,10 @@ async function speech(s, text, o) {
   const r = await api("/api/speech", { model: o.model || "auto", text, voice: spokenVoice(o), format,
     speed: numberOr(o.speed, 1), instructions: o.instructions || "" }, { project: s.project, signal: s.ctrl.signal });
   setLast(s, { model: r.model, media: (r.items || []).map(it => ({ file: it.file, kind: "audio" })) });
+}
+
+async function rewrite(s, text, o) {
+  const r = await api("/api/rewrite", { model: o.model || "auto", text, task: o.task || "", maxTokens: numberOr(o.maxTokens, 0) },
+    { project: s.project, signal: s.ctrl.signal });
+  setLast(s, { model: { key: r.model, name: modelByKey(r.model)?.name || r.model.replace(/^local\//, "") }, text: r.text, task: r.task });
 }

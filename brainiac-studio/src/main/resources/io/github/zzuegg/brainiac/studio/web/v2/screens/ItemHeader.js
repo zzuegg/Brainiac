@@ -12,7 +12,7 @@ export function ItemHeader({ tab, item, children, sub }) {
   const k = kindOf(item.kind);
   const renaming = isRenaming(tab, item, "head");
   return html`<div class="item-head">
-    <span class=${"item-ic k-" + item.kind}><${Icon} name=${(item.kind === "chat" && { image: "image", speech: "speech", video: "video", transcribe: "mic" }[item.medium]) || k.icon} /></span>
+    <span class=${"item-ic k-" + item.kind}><${Icon} name=${(item.kind === "chat" && { image: "image", speech: "speech", video: "video", transcribe: "mic", rewrite: "rewrite" }[item.medium]) || k.icon} /></span>
     <div class="item-head-text">
       ${renaming
         ? html`<${RenameField} value=${item.title} done=${t => rename(tab, item, t)} cancel=${() => (tab.renaming.value = null)} />`

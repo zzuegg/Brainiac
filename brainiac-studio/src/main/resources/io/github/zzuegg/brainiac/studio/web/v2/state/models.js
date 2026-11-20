@@ -5,7 +5,7 @@ import { api, local } from "/v2/lib/api.js";
 // shared; the chat's model picker and the agent wizard read it.
 
 /** What a model can do, in words. */
-export const MEDIA_NAMES = { text: "Chat", vision: "Sees pictures", image: "Pictures", speech: "Speech", transcribe: "Transcription", video: "Video", embed: "Embeddings" };
+export const MEDIA_NAMES = { text: "Chat", vision: "Sees pictures", image: "Pictures", speech: "Speech", transcribe: "Transcription", video: "Video", rewrite: "Summaries and translations", embed: "Embeddings" };
 
 export const modelInfo = signal(null);
 export const modelsError = signal(null);
