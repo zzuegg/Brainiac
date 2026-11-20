@@ -1074,3 +1074,27 @@ a.mini { color: var(--muted); }
 .start-pic img { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; }
 .start-pic .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .media-bar > .btn:last-child { margin-left: auto; }
+
+/* Tools */
+.tools-filter { width: 200px; }
+.tool-tier + .tool-tier { margin-top: 14px; }
+.tool-rows { list-style: none; margin: 4px 0 0; padding: 0; display: grid; }
+.tool-row { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto 16px; gap: 12px; align-items: center; width: 100%; padding: 7px 8px;
+  border: 0; border-radius: var(--r-s, 6px); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.tool-row:hover { background: var(--hover); }
+.tool-row > .mono { font-size: 13px; overflow-wrap: anywhere; }
+.tool-row .icon { color: var(--muted); }
+.tool-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-flags { display: inline-flex; gap: 4px; }
+@media (max-width: 720px) { .tool-row { grid-template-columns: minmax(0, 1fr) auto 16px; } .tool-what { grid-column: 1 / -1; grid-row: 2; white-space: normal; } }
+.cap-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.cap { display: grid; gap: 4px; align-content: start; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: var(--r-m); }
+.cap.dim { opacity: .65; }
+.cap p { margin: 0; color: var(--fg-2); }
+.cap-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.tool-desc { margin: 0 0 12px; white-space: pre-wrap; line-height: 1.55; }
+.tool-args { display: grid; gap: 2px; }
+.tool-out { margin-top: 12px; }
+.tool-out-head { display: flex; align-items: center; gap: 8px; }
+.tool-out pre { margin: 6px 0 0; padding: 10px 12px; background: var(--bg-sunk); border-radius: var(--r-m); max-height: 45vh; overflow: auto; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-tier .group-title .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }

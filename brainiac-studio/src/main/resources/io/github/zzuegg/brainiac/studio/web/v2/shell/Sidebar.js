@@ -82,6 +82,7 @@ export function Sidebar({ tab }) {
       <button type="button" class=${cx("side-link", route.screen === "machines" && "on")} onClick=${() => navigate(tab, { screen: "machines" })}><${Icon} name="server" /><span>Machines</span></button>
       <button type="button" class=${cx("side-link", route.screen === "rl" && "on")} onClick=${() => navigate(tab, { screen: "rl" })}><${Icon} name="gauge" /><span>Learning from rewards</span></button>
       <button type="button" class=${cx("side-link", route.screen === "agents" && "on")} onClick=${() => navigate(tab, { screen: "agents" })}><${Icon} name="agent" /><span>Agent settings</span></button>
+      <button type="button" class=${cx("side-link", route.screen === "tools" && "on")} onClick=${() => navigate(tab, { screen: "tools" })}><${Icon} name="build" /><span>Tools</span></button>
       <button type="button" class=${cx("side-link", route.screen === "settings" && "on")} onClick=${() => navigate(tab, { screen: "settings" })}><${Icon} name="settings" /><span>Studio settings</span></button>
     </div>
     <${Resizer} />
