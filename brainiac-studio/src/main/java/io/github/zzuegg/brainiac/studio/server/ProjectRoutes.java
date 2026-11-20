@@ -6,6 +6,7 @@ import io.github.zzuegg.brainiac.studio.chat.GpuResidency;
 import io.github.zzuegg.brainiac.studio.project.Project;
 import io.github.zzuegg.brainiac.studio.project.Projects;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -46,8 +47,29 @@ final class ProjectRoutes {
         this.chat = chat;
     }
 
+    // each project's own settings, and for one that is part of others, what it may use after their limits
+    private Map<String, Object> withEffective() {
+        Map<String, Object> out = new LinkedHashMap<>(projects.toJson());
+        List<Object> ps = new java.util.ArrayList<>();
+        for (Object o : Json.array(out.get("projects"))) {
+            Map<String, Object> p = new LinkedHashMap<>(Json.object(o));
+            if (!Json.array(p.getOrDefault("parents", List.of())).isEmpty()) {
+                projects.get(Json.string(p, "id", "")).ifPresent(e -> {
+                    Map<String, Object> eff = new LinkedHashMap<>();
+                    eff.put("tools", e.tools());
+                    eff.put("models", e.models());
+                    eff.put("folder", e.folder() == null ? null : e.folder().toString());
+                    p.put("effective", eff);
+                });
+            }
+            ps.add(p);
+        }
+        out.put("projects", ps);
+        return out;
+    }
+
     void register(StudioServer server) {
-        server.get("/api/projects", ex -> Exchanges.json(ex, 200, projects.toJson()));
+        server.get("/api/projects", ex -> Exchanges.json(ex, 200, withEffective()));
         server.post("/api/projects", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             Object p = body.get("project");

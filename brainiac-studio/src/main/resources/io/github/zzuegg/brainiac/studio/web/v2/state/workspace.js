@@ -1,12 +1,13 @@
 import { signal, computed, effect, batch } from "/v2/lib/html.js";
 import { api, local, pageState, remember } from "/v2/lib/api.js";
+import { loaded as projectsLoaded, byId } from "/v2/state/projects.js";
 
 // The open projects, one per tab. Each tab has a store of its own: where it is (its route), the
 // project's items, its filter and what is being renamed, so switching tabs keeps every
 // project exactly as it was left. Several tabs can show the same studio at once because the
 // project travels with each API call instead of being a server-wide setting.
 
-const SCREENS = ["home", "chat", "agent", "graph", "trash", "settings"];
+const SCREENS = ["home", "chat", "agent", "graph", "trash", "settings", "config"];
 
 /** Item keys are "kind:id", unique across kinds. */
 export const keyOf = item => item.kind + ":" + item.id;
@@ -184,6 +185,8 @@ setInterval(() => {
   if (document.hidden) return;
   tick++;
   for (const t of tabs.value) {
+    // a tab whose project was deleted elsewhere waits for the project to come back
+    if (projectsLoaded.value && !byId.value.has(t.project)) continue;
     if (t === activeTab.value || tick % 4 === 0) t.refresh();
   }
 }, 3000);

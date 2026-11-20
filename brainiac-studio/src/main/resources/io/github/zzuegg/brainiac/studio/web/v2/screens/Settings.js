@@ -8,7 +8,7 @@ import { Icon } from "/v2/ui/Icon.js";
 
 export function Settings() {
   return html`<div class="page page-narrow">
-    <header class="page-head"><div><p class="eyebrow">Studio</p><h1 class="page-title">Settings</h1></div></header>
+    <header class="page-head"><div><p class="eyebrow">Studio</p><h1 class="page-title">Studio settings</h1><p class="page-lead">For every project. A project’s own folder, models and tools are in its Project settings.</p></div></header>
     <section class="card">
       <h2 class="card-title">Appearance</h2>
       <${Field} label="Theme"><${Choices} name="Theme" value=${theme.value} onChange=${v => (theme.value = v)} options=${[

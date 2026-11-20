@@ -76,8 +76,9 @@ export function Sidebar({ tab }) {
       </section>`}
     </div>
     <div class="side-bottom">
+      <button type="button" class=${cx("side-link", route.screen === "config" && "on")} onClick=${() => navigate(tab, { screen: "config" })}><${Icon} name="edit" /><span>Project settings</span></button>
       <button type="button" class=${cx("side-link", route.screen === "trash" && "on")} onClick=${() => navigate(tab, { screen: "trash" })}><${Icon} name="trash" /><span>Trash</span></button>
-      <button type="button" class=${cx("side-link", route.screen === "settings" && "on")} onClick=${() => navigate(tab, { screen: "settings" })}><${Icon} name="settings" /><span>Settings</span></button>
+      <button type="button" class=${cx("side-link", route.screen === "settings" && "on")} onClick=${() => navigate(tab, { screen: "settings" })}><${Icon} name="settings" /><span>Studio settings</span></button>
     </div>
     <${Resizer} />
   </aside>`;

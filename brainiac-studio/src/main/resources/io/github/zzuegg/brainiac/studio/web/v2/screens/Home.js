@@ -32,6 +32,7 @@ export function Home({ tab }) {
         ${p && p.id !== "default" && html`<${PartOf} p=${p} />`}
       </div>
       <div class="page-actions">
+        <${Button} icon="settings" onClick=${() => navigate(tab, { screen: "config" })}>Project settings<//>
         ${projectItem && html`<${Button} variant="ghost" icon="more" label="Project actions" onClick=${e => openMenu(e.currentTarget, menuFor(tab, projectItem), p.name)} />`}
       </div>
     </header>

@@ -122,6 +122,7 @@ export function menuFor(tab, item, scope = "head") {
   const can = new Set(kindOf(item.kind).actions);
   return [
     can.has("open") && { label: "Open", icon: "open", hint: "Enter", run: () => open(tab, item) },
+    item.kind === "project" && { label: "Project settings", icon: "settings", run: () => openProject(item.id, { route: { screen: "config" } }) },
     item.kind === "project" && item.id !== "default" && { label: "Part of…", icon: "move", run: () => editParents(item.id) },
     item.kind === "project" && { label: "Open in new window", icon: "window", run: () => window.open("/v2/p/" + encodeURIComponent(item.id) + "/home", "_blank") },
     can.has("rename") && { label: "Rename", icon: "edit", hint: "F2", run: () => (item.kind === "project" ? renameProject(item) : startRename(tab, item, scope)) },
