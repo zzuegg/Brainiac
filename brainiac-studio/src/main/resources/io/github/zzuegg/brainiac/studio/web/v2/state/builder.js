@@ -440,6 +440,8 @@ export async function tellAssistant(ed, start, reply) {
   const a = assistantOf(ed);
   if (!a.id.value || !a.run.value) {
     const r = await api("/api/agents/start", start, { project: ed.project });
+    // named after the network it works on, so the project's agent list says what it is
+    api("/api/items/rename", { kind: "agent", id: r.id, title: "Assistant · " + ed.name }, { project: ed.project }).catch(() => {});
     local.set(a.key, r.id);
     a.seen = 0;
     a.id.value = r.id;

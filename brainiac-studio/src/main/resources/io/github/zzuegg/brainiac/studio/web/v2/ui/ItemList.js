@@ -49,7 +49,8 @@ function Row({ tab, item, current, compact, scope }) {
       tabindex="0" aria-current=${current ? "page" : undefined}
       onClick=${e => !renaming && !e.target.closest("button") && open(tab, item)}
       onContextMenu=${e => { e.preventDefault(); openMenu({ x: e.clientX, y: e.clientY }, menuFor(tab, item, scope), item.title); }}>
-    <span class=${cx("item-ic", "k-" + item.kind)}>
+    <span class=${cx("item-ic", "k-" + item.kind, item.kind === "agent" && item.state === "failed" && "item-failed")}
+        title=${item.kind === "agent" && item.state === "failed" ? "Failed" : undefined}>
       ${busy ? html`<span class=${cx("live", item.waiting || item.state === "waiting" ? "live-wait" : "live-run")} title=${item.waiting ? "Waits for you" : "Working"} />`
         : html`<${Icon} name=${k.icon} />`}
     </span>

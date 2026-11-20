@@ -588,3 +588,7 @@ textarea.input { height: auto; padding: 9px 11px; resize: vertical; line-height:
 .gnode.fit-checking { opacity: .8; }
 .gnode-why { margin: 0 10px 4px; padding: 4px 6px; border-radius: 5px; background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); font-size: 11px; line-height: 1.35; }
 .canvas-keys { margin-right: 6px; }
+.item-ic.item-failed { position: relative; }
+.item-ic.item-failed::after { content: ""; position: absolute; right: 0; bottom: 1px; width: 7px; height: 7px; border-radius: 99px; background: var(--bad); box-shadow: 0 0 0 2px var(--panel); }
+.side-more { display: block; margin: 2px 0 4px 34px; padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+.side-more:hover { color: var(--fg); text-decoration: underline; }

@@ -12,6 +12,8 @@ import { create, newProject } from "/v2/wizards/index.js";
 // The open project's own things: its home, then a section per kind with a "+" that starts its
 // wizard, and a filter over all of them. The trash and settings sit at the bottom.
 
+const CAP = 8;
+
 export function Sidebar({ tab }) {
   const route = tab.route.value;
   const q = tab.filter.value.trim().toLowerCase();
@@ -21,6 +23,9 @@ export function Sidebar({ tab }) {
   const p = byId.value.get(tab.project);
   const kids = p ? childrenOf(p.id) : [];
   const asks = openTo(tab.project);
+  // a long section shows its newest few, and the open item, until "Show all"
+  const shown = (of, k) => q || collapsed["all:" + k] || of.length <= CAP ? of
+    : of.filter((i, n) => n < CAP || (i.kind === route.screen && i.id === route.id));
   return html`<aside class="sidebar" aria-label="Project" style=${{ width: sidebarWidth.value + "px" }}>
     <div class="side-top">
       <div class="side-row">
@@ -46,7 +51,9 @@ export function Sidebar({ tab }) {
             <${Button} variant="ghost" size="sm" icon="plus" label=${"New " + KINDS[k].label.toLowerCase()} onClick=${() => create(k, tab)} />
           </header>
           ${!shut && (of.length
-            ? html`<${ItemList} tab=${tab} items=${of} current=${route} compact scope="side" label=${KINDS[k].plural} />`
+            ? html`<${ItemList} tab=${tab} items=${shown(of, k)} current=${route} compact scope="side" label=${KINDS[k].plural} />
+              ${of.length > CAP && !q && html`<button type="button" class="side-more" onClick=${() => toggle("all:" + k)}>
+                ${collapsed["all:" + k] ? "Show fewer" : `Show all ${of.length}`}</button>`}`
             : html`<p class="side-empty">${q ? "No match" : "None yet"}</p>`)}
         </section>`;
       })}

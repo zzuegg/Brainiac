@@ -1,5 +1,5 @@
 import { html, useEffect, useState } from "/v2/lib/html.js";
-import { api } from "/v2/lib/api.js";
+import { api, local } from "/v2/lib/api.js";
 import { Icon } from "/v2/ui/Icon.js";
 import { Button } from "/v2/ui/Button.js";
 import { Empty } from "/v2/ui/Reading.js";
@@ -20,6 +20,7 @@ const DAY = 86_400_000;
 export function Overview() {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
+  const [seen, setSeen] = useState(() => local.get("seenFailures", {}));   // failures dismissed: id -> when
   useEffect(() => {
     let alive = true;
     const load = () => api("/api/items", { project: "*", kinds: ["agent", "graph", "chat"] })
@@ -34,7 +35,7 @@ export function Overview() {
   const now = Date.now();
   const agents = all.filter(i => i.kind === "agent");
   const waiting = agents.filter(i => i.waiting || i.state === "waiting");
-  const failed = agents.filter(i => i.state === "failed" && now - i.updated < 3 * DAY);
+  const failed = agents.filter(i => i.state === "failed" && now - i.updated < 3 * DAY && seen[i.project + "/" + i.id] !== i.updated);
   const working = agents.filter(i => i.state === "running" && !i.waiting);
   const finished = agents.filter(i => i.state === "done" && now - i.updated < 3 * DAY).slice(0, 8);
   const built = all.filter(i => i.kind === "graph" && i.built);
@@ -61,7 +62,8 @@ export function Overview() {
       ${needs === 0 && html`<${Empty} title="Nothing needs you right now">Requests from subprojects and agents waiting for an answer show up here.<//>`}
       ${asks.length > 0 && html`<div class="req-list">${asks.map(q => html`<${RequestCard} key=${q.id} q=${q} />`)}</div>`}
       ${waiting.length > 0 && html`<${Rows} items=${waiting} sub=${() => "waits for your answer"} />`}
-      ${failed.length > 0 && html`<${Rows} items=${failed} sub=${i => "failed " + when(i.updated)} />`}
+      ${failed.length > 0 && html`<${Rows} items=${failed} sub=${i => "failed " + when(i.updated)}
+        dismiss=${i => setSeen(m => { const n = { ...m, [i.project + "/" + i.id]: i.updated }; local.set("seenFailures", n); return n; })} />`}
     </section>
 
     <div class="cards">
@@ -94,7 +96,7 @@ export function Overview() {
 }
 
 // items of every project: each opens in its project's tab
-function Rows({ items, sub }) {
+function Rows({ items, sub, dismiss }) {
   return html`<ul class="items ov-rows">${items.map(i => html`<li key=${i.kind + ":" + i.id} class="item" tabindex="0"
       onClick=${() => openProject(i.project, { route: { screen: i.kind, id: i.id } })}
       onKeyDown=${e => e.key === "Enter" && openProject(i.project, { route: { screen: i.kind, id: i.id } })}>
@@ -103,6 +105,8 @@ function Rows({ items, sub }) {
     <span class="item-text"><span class="item-title">${i.title}</span>
       <span class="item-sub"><span class="chip">${projectName(i.project)}</span> ${sub(i)}</span></span>
     <span class="item-when">${when(i.updated)}</span>
+    ${dismiss && html`<button type="button" class="mini" aria-label="Dismiss" title="Seen it; take it off this list"
+      onClick=${e => { e.stopPropagation(); dismiss(i); }}><${Icon} name="close" size=${14} /></button>`}
   </li>`)}</ul>`;
 }
 
