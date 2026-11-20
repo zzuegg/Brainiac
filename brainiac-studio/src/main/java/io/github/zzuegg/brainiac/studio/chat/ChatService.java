@@ -1117,6 +1117,37 @@ public final class ChatService {
     }
 
     /**
+     * Says which model a speech request goes to and the voices it has.
+     *
+     * @param model a model key or {@value #AUTO}
+     * @return {@code {model, voices, names?, mix?, clones?}}, the voices empty when it names none
+     * @throws IOException if no model speaks
+     */
+    public Map<String, Object> voices(String model) throws IOException {
+        ModelInfo target = resolve(model, "speech");
+        ChatProvider where = provider(target.provider());
+        Map<String, Object> o = where instanceof RemoteProvider r ? r.speechOptions(target.id()).toJson() : where.voiceOptions(target.id());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("model", target.key());
+        if (o == null) {
+            out.put("voices", List.of());
+            return out;
+        }
+        List<?> vs = o.get("voices") instanceof List<?> l ? l.stream().filter(v -> !"default".equals(v)).toList() : List.of();
+        out.put("voices", vs);
+        if (o.get("names") instanceof Map<?, ?> n && !n.isEmpty()) {
+            out.put("names", n);
+        }
+        if (Boolean.TRUE.equals(o.get("mix"))) {
+            out.put("mix", "blend voices as a*0.7+b*0.3");
+        }
+        if (Boolean.TRUE.equals(o.get("clone"))) {
+            out.put("clones", "also speaks in voices made from a recording");
+        }
+        return out;
+    }
+
+    /**
      * Speaks text and saves the audio to the outputs folder.
      *
      * @param model a model key ({@code provider/id}) or {@value #AUTO}
