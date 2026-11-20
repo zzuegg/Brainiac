@@ -794,3 +794,7 @@ a.mini { color: var(--muted); }
 .tag-btn { height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 99px; background: var(--panel-2); color: var(--fg-2); font: inherit; font-size: 12px; cursor: pointer; }
 .tag-btn:hover:not(:disabled) { background: var(--raise); color: var(--fg); }
 .speech-more select { max-width: 220px; }
+
+/* a line in a chat where tools were turned on or off */
+.msg-note { display: flex; align-items: center; gap: 10px; margin: 6px 0; color: var(--muted); font-size: 12px; list-style: none; }
+.msg-note::before, .msg-note::after { content: ""; flex: 1; height: 1px; background: var(--line); }

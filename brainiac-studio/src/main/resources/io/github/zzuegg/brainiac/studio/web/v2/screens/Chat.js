@@ -9,7 +9,7 @@ import { ItemHeader, routeItem, Gone } from "/v2/screens/ItemHeader.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { ChatSettings } from "/v2/wizards/ChatSettings.js";
 import { plural } from "/v2/lib/format.js";
-import { session, reload, send, regenerate, stop, configure } from "/v2/state/chats.js";
+import { session, reload, send, regenerate, stop, configure, setTools } from "/v2/state/chats.js";
 import { modelByKey, autoModel, loadModels, chatModels, modelInfo, rememberChatModel } from "/v2/state/models.js";
 import { MediaGrid, mediaOf, Working } from "/v2/ui/Media.js";
 import { fineTune, MEDIA, makeMedium } from "/v2/state/media.js";
@@ -74,14 +74,14 @@ export function Chat({ tab }) {
   const model = chat.model || "auto";
   const m = model === "auto" ? autoModel.value : modelByKey(model);
 
-  const header = html`<${ItemHeader} tab=${tab} item=${item} sub=${html`${plural(messages.length, "message")}
+  const header = html`<${ItemHeader} tab=${tab} item=${item} sub=${html`${plural(messages.filter(x => x.role !== "note").length, "message")}
       ${chat.tools && html` · <span class="badge s-running">tools ${chat.tools === "auto" ? "automatic" : "ask first"}</span>`}`}>
     <${Button} variant="ghost" icon="settings" label="Chat settings" onClick=${() => openLayer(ChatSettings, { s })} />
   <//>`;
 
   const footer = html`<${Composer} key=${id} s=${s} busy=${busy} model=${model} editing=${editing}
     onModel=${k => { configure(s, { model: k }); rememberChatModel(k); }}
-    onTools=${v => configure(s, { tools: v })}
+    onTools=${v => setTools(s, v)}
     cancelEdit=${() => setEditing(null)}
     onSend=${(text, images) => {
       follow.current = true;
@@ -93,7 +93,9 @@ export function Chat({ tab }) {
   return html`<${Reading} header=${header} footer=${footer} scrollRef=${scroll} onScroll=${onScroll} class="chat">
     ${messages.length === 0
       ? html`<${Welcome} model=${m} auto=${model === "auto"} s=${s} />`
-      : html`<ol class="transcript">${messages.map((msg, i) => msg.role === "user"
+      : html`<ol class="transcript">${messages.map((msg, i) => msg.role === "note"
+          ? html`<li key=${i} class="msg-note" role="separator"><span>${msg.tools ? `Tools on from here, ${msg.tools === "auto" ? "automatic" : "ask first"}` : "Tools off from here"}</span></li>`
+          : msg.role === "user"
           ? html`<${UserMsg} key=${i} msg=${msg} editing=${editing?.at === i}
               edit=${busy ? null : () => setEditing({ at: i, text: msg.text, images: msg.images || [] })} />`
           : html`<${AnswerMsg} key=${i} msg=${msg} s=${s} last=${i === last} busy=${busy} />`)}</ol>`}

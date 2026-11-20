@@ -59,11 +59,24 @@ export function configure(s, changes) {
   save(s);
 }
 
+/**
+ * Turns tools on or off for the next messages. In a conversation already going, a line in the
+ * transcript says from where, and the agent is told its earlier answers had no tools.
+ */
+export function setTools(s, tools) {
+  const c = s.chat.value, ms = c.messages || [];
+  if ((c.tools || "") === (tools || "")) return;
+  const note = { role: "note", tools: tools || "", at: Date.now() };
+  const messages = !ms.length ? ms : ms.at(-1).role === "note" ? [...ms.slice(0, -1), note] : [...ms, note];
+  configure(s, { tools, messages });
+}
+
 // the turns sent to the model: answers that failed are left out, and two turns in a row from
 // the same side are joined, as models expect them to alternate
 function turns(messages) {
   const out = [];
   for (const m of messages) {
+    if (m.role === "note") continue;
     if (m.role === "assistant" && (m.error || !m.text)) continue;
     const last = out.at(-1);
     if (last && last.role === m.role) {
@@ -185,15 +198,25 @@ async function agentAnswer(s, c, history) {
       old = await api("/api/agents/get", { id }, { project: s.project }).catch(() => null);
     }
   }
+  // what was said here without this agent: before it started, or while tools were off
+  const at = c.messages.length - 1;
+  let since = c.messages.slice(0, at);
+  if (old) {
+    const mine = since.findLastIndex(m => m.role === "assistant" && m.agent?.id === id);
+    since = mine >= 0 ? since.slice(mine + 1) : since;
+  }
+  const without = since.filter(m => m.role !== "note" && m.text && !(m.role === "assistant" && m.error));
+  const toolsOn = since.some(m => m.role === "note" && m.tools) || without.some(m => m.role === "assistant");
+  const told = (without.length ? (old ? "Meanwhile in this chat, without you:\n\n" : "Earlier in this chat:\n\n")
+      + without.map(m => (m.role === "user" ? "User: " : "Assistant: ") + m.text).join("\n\n") + "\n\n" : "")
+    + (toolsOn ? "Tools are on now. The answers above were written without any tools, so where they said something "
+      + "cannot be done, that no longer holds: use your tools for it.\n\n" : "")
+    + (without.length || toolsOn ? "Now the user says:\n\n" : "");
   if (old && !["running", "waiting"].includes(old.state)) {
     from = (old.steps || []).length;
-    await api("/api/agents/reply", { id, text: last.text, mode, model }, { project: s.project });
+    await api("/api/agents/reply", { id, text: told + (c.messages[at]?.text || last.text), mode, model }, { project: s.project });
   } else {
-    const earlier = history.slice(0, -1).filter(m => m.text);
-    const goal = ((c.system || "").trim() ? `Instructions for this chat: ${c.system.trim()}\n\n` : "")
-      + (earlier.length ? "Earlier in this chat:\n\n" + earlier.map(m => (m.role === "user" ? "User: " : "You: ") + m.text).join("\n\n")
-        + "\n\nNow the user says:\n\n" : "")
-      + last.text;
+    const goal = ((c.system || "").trim() ? `Instructions for this chat: ${c.system.trim()}\n\n` : "") + told + (c.messages[at]?.text || last.text);
     const r = await api("/api/agents/start", { goal, model, mode, maxSteps: 30, chat: c.id }, { project: s.project });
     id = r.id;
     set(s, { agentRun: id });
