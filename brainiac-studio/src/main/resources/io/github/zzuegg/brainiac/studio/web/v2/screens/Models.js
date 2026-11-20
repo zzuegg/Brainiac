@@ -6,6 +6,7 @@ import { Layer } from "/v2/ui/Layer.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { plural } from "/v2/lib/format.js";
 import { modelInfo, modelsError, loadModels, MEDIA_NAMES } from "/v2/state/models.js";
+import { ModelTools, toolMenu } from "/v2/screens/ModelTools.js";
 import { keyed, ProviderKeys, MoreProviders, Usage, editProvider, providerFlags, readUsage, readBalances } from "/v2/screens/Providers.js";
 import { hub, readHub, active, download, cancel, forget, fmtBytes, fmtWait, fmtCount } from "/v2/state/hub.js";
 import { fail, toast } from "/v2/state/toasts.js";
@@ -36,6 +37,7 @@ export function Models() {
         <${Button} variant="primary" icon="download" onClick=${() => openLayer(HubSearch)}>Download…<//>
       </div></header>
     ${downloads.length > 0 && html`<section class="card"><h2 class="card-title">Downloads</h2><${Downloads} list=${downloads} /></section>`}
+    <${ModelTools} />
     ${modelsError.value && html`<p class="msg-error"><${Icon} name="warn" size=${14} />${modelsError.value}</p>`}
     ${!info ? html`<p class="muted">Looking for models…</p>` : html`
       <div class="models-bar">
@@ -63,6 +65,7 @@ export function Models() {
               <div class="model-use">${m.shown === false ? html`<span class="badge" title="Not offered in the model pickers or by Auto">hidden</span>`
                 : auto.has(m.key) ? html`<span class="badge s-done">Auto picks it</span>` : ""}</div>
               <div class="mono muted small model-detail">${m.detail}</div>
+              <div class="model-more">${m.provider === "local" && (m.media || []).includes("text") && html`<${IconAction} icon="more" label=${"Work on " + m.name + ": serve, make smaller, fine-tune, merge, measure"} onClick=${e => toolMenu(m, e.currentTarget)} />`}</div>
             </li>`)}</ul>`
             : html`<p class="muted small">${p.kind === "local" ? "No models here yet: download one, or add a folder that has some." : "No models."}</p>`)}
         </section>`;

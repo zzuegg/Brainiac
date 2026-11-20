@@ -1,7 +1,6 @@
 import { html } from "/v2/lib/html.js";
 import { Choices, Field } from "/v2/ui/Wizard.js";
 import { theme, readingWidth } from "/v2/state/prefs.js";
-import { Icon } from "/v2/ui/Icon.js";
 import { Button } from "/v2/ui/Button.js";
 import { navigate } from "/v2/state/workspace.js";
 
