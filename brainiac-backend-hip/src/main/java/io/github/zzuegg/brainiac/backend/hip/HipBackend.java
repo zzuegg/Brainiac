@@ -516,7 +516,7 @@ public final class HipBackend implements Backend {
 
     @Override
     public synchronized void release(Storage storage) {
-        if (storage instanceof Packed) {
+        if (storage instanceof Packed || storage instanceof Deferred) {
             return;   // weights: freed with the tensor that holds them, by the collector
         }
         if (storage instanceof HipStorage s && s.owner == this && s.pending == null && !read(s)) {
@@ -1427,9 +1427,52 @@ public final class HipBackend implements Backend {
         return s;
     }
 
+    /**
+     * A packed matrix not uploaded until a product or unpacking first needs it: a model's
+     * loader joins some matrices on the host ({@code Llama.fuseProjections} joins q, k and v,
+     * and gate and up), and the parts it joins then never take device memory.
+     */
+    private static final class Deferred implements PackedStorage {
+        final HipBackend owner;
+        final PackedMatrix host;
+        /** The uploaded matrix, once uploaded. */
+        volatile Packed done;
+
+        Deferred(HipBackend owner, PackedMatrix host) {
+            this.owner = owner;
+            this.host = host;
+        }
+
+        @Override
+        public int rows() {
+            return host.rows();
+        }
+
+        @Override
+        public int cols() {
+            return host.cols();
+        }
+
+        @Override
+        public long size() {
+            return (long) host.rows() * host.cols();
+        }
+
+        @Override
+        public long bytes() {
+            Packed p = done;
+            return p != null ? p.bytes() : host.bytes();
+        }
+    }
+
     @Override
     public PackedStorage pack(PackedMatrix matrix) {
-        PackedLayout st = PackedLayout.of(matrix);   // without the lock: it may take a while
+        return new Deferred(this, matrix);
+    }
+
+    /** Uploads a packed matrix, preparing its layout without the lock. */
+    private Packed upload(PackedMatrix matrix) {
+        PackedLayout st = PackedLayout.of(matrix);
         synchronized (this) {
             ctx();
             HipStorage levels = uploadBytes(st.levels());
@@ -1446,18 +1489,34 @@ public final class HipBackend implements Backend {
 
     @Override
     public PackedMatrix unpackToHost(PackedStorage packed) {
+        if (packed instanceof Deferred d) {
+            return d.host;
+        }
         if (packed instanceof Packed p) {
             return p.host();
         }
         return Backend.super.unpackToHost(packed);
     }
 
-    /** {@code s} as this backend's packed form, moved here when it was packed for another backend. */
+    /** {@code s} as this backend's packed form on the device: uploaded on first use, or moved here from another backend. */
     private Packed packed(PackedStorage s) {
+        if (s instanceof Deferred d && d.owner == this) {
+            Packed p = d.done;
+            if (p == null) {
+                synchronized (d) {
+                    p = d.done;
+                    if (p == null) {
+                        p = upload(d.host);
+                        d.done = p;
+                    }
+                }
+            }
+            return p;
+        }
         if (s instanceof Packed p && p.levels().owner == this) {
             return p;
         }
-        return (Packed) pack(unpackToHost(s));
+        return upload(unpackToHost(s));
     }
 
     @Override
