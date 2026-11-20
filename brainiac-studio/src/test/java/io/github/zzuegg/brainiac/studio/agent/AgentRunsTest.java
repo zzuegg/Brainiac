@@ -98,6 +98,7 @@ class AgentRunsTest {
                     .forEach(r -> agents.stop((String) r.get("id")));
             Thread.sleep(20);
         }
+        agents.awaitIdle(5000);
         training.close();
     }
 

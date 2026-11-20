@@ -71,6 +71,7 @@ class AgentRulesTest {
                     .forEach(r -> agents.stop((String) r.get("id")));
             Thread.sleep(20);
         }
+        agents.awaitIdle(5000);
         publish.close();
         training.close();
     }

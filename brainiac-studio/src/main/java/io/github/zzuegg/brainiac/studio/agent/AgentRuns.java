@@ -354,6 +354,39 @@ public final class AgentRuns {
         reminders.close();
     }
 
+    // the threads agents work on, so a caller can wait until their last file is written
+    private final java.util.Set<Thread> workers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private void worker(Run r) {
+        Thread t = Thread.ofVirtual().name("studio-agent-" + r.id).unstarted(() -> {
+            try {
+                work(r);
+            } finally {
+                workers.remove(Thread.currentThread());
+            }
+        });
+        workers.add(t);
+        t.start();
+    }
+
+    /**
+     * Waits until no agent works, or the time is up.
+     *
+     * @param millis how long to wait at most
+     * @return whether every agent's thread ended
+     * @throws InterruptedException if the wait is interrupted
+     */
+    public boolean awaitIdle(long millis) throws InterruptedException {
+        long end = System.currentTimeMillis() + millis;
+        for (Thread t : List.copyOf(workers)) {
+            long left = end - System.currentTimeMillis();
+            if (left <= 0 || !t.join(java.time.Duration.ofMillis(left))) {
+                return false;
+            }
+        }
+        return workers.isEmpty();
+    }
+
     // a reminder with a goal starts an agent on it, which asks before it acts
     private void remindNow(Map<String, Object> m) {
         String goal = io.github.zzuegg.brainiac.io.Json.string(m, "goal", "");
@@ -605,7 +638,7 @@ public final class AgentRuns {
         if (parent != null) {
             save(parent);
         }
-        Thread.ofVirtual().name("studio-agent-" + r.id).start(() -> work(r));
+        worker(r);
         return r;
     }
 
@@ -668,7 +701,7 @@ public final class AgentRuns {
             }
         }
         save(r);
-        Thread.ofVirtual().name("studio-agent-" + r.id).start(() -> work(r));
+        worker(r);
     }
 
     /**
