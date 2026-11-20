@@ -1,4 +1,5 @@
-import { html, useEffect, useState, cx } from "/v2/lib/html.js";
+import { html, useEffect, useRef, useState, cx } from "/v2/lib/html.js";
+import { peaksOf, clock } from "/v2/lib/audio.js";
 import { Icon } from "/v2/ui/Icon.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { Layer } from "/v2/ui/Layer.js";
@@ -9,15 +10,26 @@ import { Button } from "/v2/ui/Button.js";
 // with the session token, once, and kept as blob URLs while the page is open.
 
 const token = document.querySelector('meta[name="studio-token"]')?.content ?? "";
+const blobs = new Map();
 const urls = new Map();
+
+/** A file in the studio's outputs folder, read once. */
+export function outputBlob(path) {
+  let b = blobs.get(path);
+  if (!b) {
+    b = fetch("/api/outputs/file", { method: "POST", headers: { "X-Studio-Token": token, "Content-Type": "application/json" }, body: JSON.stringify({ path }) })
+      .then(r => (r.ok ? r.blob() : Promise.reject(new Error(r.status === 404 ? "The file is not in the outputs folder any more." : "The studio answered " + r.status))));
+    b.catch(() => blobs.delete(path));
+    blobs.set(path, b);
+  }
+  return b;
+}
 
 /** A blob URL for a file in the studio's outputs folder. */
 export function outputUrl(path) {
   let u = urls.get(path);
   if (!u) {
-    u = fetch("/api/outputs/file", { method: "POST", headers: { "X-Studio-Token": token, "Content-Type": "application/json" }, body: JSON.stringify({ path }) })
-      .then(r => (r.ok ? r.blob() : Promise.reject(new Error(r.status === 404 ? "The file is not in the outputs folder any more." : "The studio answered " + r.status))))
-      .then(b => URL.createObjectURL(b));
+    u = outputBlob(path).then(b => URL.createObjectURL(b));
     u.catch(() => urls.delete(path));
     urls.set(path, u);
   }
@@ -77,10 +89,7 @@ function MediaTile({ it: given, open, onFineTune }) {
   const { url, error } = useOutput(it.file);
   const title = `${fileName(it.file)}${it.seed != null ? " · seed " + it.seed : ""}`;
   if (error) return html`<div class="media-tile media-missing" title=${it.file}><${Icon} name="warn" size=${14} />${error}</div>`;
-  if (it.kind === "audio") return html`<div class="media-tile media-audio" title=${title}>
-    ${url ? html`<audio controls preload="metadata" src=${url} />` : html`<span class="media-wait" />`}
-    <span class="media-cap">${it.prompt ? `“${short(it.prompt, 80)}”` : fileName(it.file)}${it.voice ? html` <span class="muted">· ${it.voice}</span>` : ""}
-      ${onFineTune && html`<button type="button" class="link media-tune" onClick=${() => onFineTune(it)}>Fine tune…</button>`}</span></div>`;
+  if (it.kind === "audio") return html`<${AudioTile} it=${it} url=${url} onFineTune=${onFineTune} />`;
   return html`<button type="button" class=${cx("media-tile", "media-" + it.kind)} title=${title} onClick=${open} aria-label=${"Open " + title}>
     ${!url ? html`<span class="media-wait" />`
       : it.kind === "video" ? html`<video src=${url} muted loop autoplay playsinline />`
@@ -88,6 +97,59 @@ function MediaTile({ it: given, open, onFineTune }) {
     ${it.seed != null && html`<span class="media-seed">seed ${it.seed}</span>`}
   </button>`;
 }
+/**
+ * A recording as a waveform to play and click into, with its length, what was said and in which
+ * voice, and Save and Fine tune. One recording plays at a time.
+ */
+function AudioTile({ it, url, onFineTune }) {
+  const audio = useRef(null);
+  const [wave, setWave] = useState(null);
+  const [at, setAt] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => { if (url) peaksOf(it.file, () => outputBlob(it.file)).then(setWave, () => setWave({ peaks: [], seconds: 0 })); }, [url]);
+  useEffect(() => {
+    if (!playing) return;
+    let f;
+    const tick = () => { setAt(audio.current?.currentTime || 0); f = requestAnimationFrame(tick); };
+    f = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(f);
+  }, [playing]);
+  const length = wave?.seconds || audio.current?.duration || 0;
+  const toggle = () => {
+    const a = audio.current;
+    if (!a) return;
+    if (a.paused) { document.querySelectorAll("audio").forEach(o => o !== a && o.pause()); a.play().catch(() => {}); } else a.pause();
+  };
+  const seekTo = s => { const a = audio.current; if (a && length) { a.currentTime = Math.max(0, Math.min(length, s)); setAt(a.currentTime); } };
+  const done = length ? at / length : 0;
+  const bars = wave?.peaks || [];
+  return html`<div class="media-tile media-audio" title=${fileName(it.file)}>
+    <button type="button" class="audio-play" disabled=${!url} aria-label=${playing ? "Pause" : "Play"} onClick=${toggle}>
+      <${Icon} name=${playing ? "pause" : "play"} size=${18} /></button>
+    <div class="audio-main">
+      <div class="audio-wave" role="slider" tabindex="0" aria-label="Position" aria-valuemin="0" aria-valuemax=${Math.round(length)} aria-valuenow=${Math.round(at)}
+          aria-valuetext=${`${clock(at)} of ${clock(length)}`}
+          onClick=${e => { const r = e.currentTarget.getBoundingClientRect(); seekTo(((e.clientX - r.left) / r.width) * length); if (audio.current?.paused) toggle(); }}
+          onKeyDown=${e => {
+            if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); seekTo(at + (e.key === "ArrowRight" ? 1 : -1)); }
+            else if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); }
+          }}>
+        ${bars.length ? bars.map((v, i) => html`<i class=${(i + 0.5) / bars.length <= done ? "on" : ""} style=${`height:${Math.max(6, v * 100)}%`} />`)
+          : html`<span class="media-wait" />`}
+      </div>
+      <div class="audio-cap">
+        <span class="mono small">${clock(at)} / ${clock(length)}</span>
+        <span class="audio-what">${it.prompt ? `“${short(it.prompt, 90)}”` : fileName(it.file)}${it.voice ? html` <span class="muted">· ${it.voice}</span>` : ""}</span>
+        <span class="grow" />
+        ${url && html`<a class="link small" href=${url} download=${fileName(it.file)}>Save</a>`}
+        ${onFineTune && html`<button type="button" class="link small" onClick=${() => onFineTune(it)}>Fine tune…</button>`}
+      </div>
+    </div>
+    ${url && html`<audio ref=${audio} src=${url} preload="metadata" onPlay=${() => setPlaying(true)}
+      onPause=${() => { setPlaying(false); setAt(audio.current?.currentTime || 0); }} onEnded=${() => { setPlaying(false); setAt(0); }} />`}
+  </div>`;
+}
+
 const short = (t, n) => (t.length > n ? t.slice(0, n - 1) + "…" : t);
 
 /** One picture or clip large, with the others a key press away, and what to do with it. */

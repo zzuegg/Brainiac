@@ -24,13 +24,37 @@ export const modelsFor = medium => (modelInfo.value?.models || []).filter(m => (
 
 export const defaults = medium => ({
   model: "auto", aspect: medium === "video" ? "16:9" : "1:1", count: 1, steps: "", guidance: "", seed: "", negativePrompt: "",
-  voice: "", seconds: 2, speed: 1, instructions: "",
+  voice: "", blend: "", mix: 0.7, format: "", seconds: 2, speed: 1, instructions: "",
 });
 
 /** What a speech model offers: its voices, and whether it takes a speed and instructions. */
 export function speechOptions(key) {
   const k = key === "auto" ? modelInfo.value?.auto?.speech : key;
-  return modelByKey(k)?.speech || { voices: [], speed: false, instructions: false };
+  return { voices: [], names: {}, speed: false, instructions: false, mix: false, clone: false, tags: [], formats: [], ...(modelByKey(k)?.speech || {}) };
+}
+
+/** A voice's name and what it is like, from "Heart (American female)" or its id. */
+export function voiceName(v, names = {}) {
+  if (!v) return { name: "", about: "" };
+  const full = names[v], hit = full && /^(.*?)\s*\((.*)\)$/.exec(full);
+  return hit ? { name: hit[1], about: hit[2] } : { name: full || v[0].toUpperCase() + v.slice(1), about: "" };
+}
+
+/** What is sent as the voice: the voice, or a blend such as af_heart*0.70+am_adam*0.30. */
+export const spokenVoice = o => (o.blend && o.voice && o.blend !== o.voice
+  ? `${o.voice}*${(+o.mix || 0.7).toFixed(2)}+${o.blend}*${(1 - (+o.mix || 0.7)).toFixed(2)}` : o.voice || "");
+
+/** Speaks a short sentence in a voice, to hear it before choosing it; resolves to the file. */
+export async function preview(project, model, voice, name) {
+  const r = await api("/api/speech", { model: model || "auto", text: `Hello, I'm ${name}. This is how I sound.`, voice, format: "wav" }, { project });
+  return r.items?.[0]?.file;
+}
+
+/** Makes a voice from 3 to 12 seconds of speech; resolves to its id. */
+export async function addVoice(project, model, name, wav, transcript) {
+  const r = await api("/api/speech/voice", { model, name, audio: wav, transcript }, { project });
+  await loadModels(true);
+  return r.voice;
 }
 
 const chatId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -159,7 +183,9 @@ async function video(s, prompt, o) {
 }
 
 async function speech(s, text, o) {
-  const r = await api("/api/speech", { model: o.model || "auto", text, voice: o.voice || "", format: "wav",
+  const opt = speechOptions(o.model || "auto");
+  const format = opt.formats?.includes(o.format) ? o.format : opt.formats?.[0] || "wav";
+  const r = await api("/api/speech", { model: o.model || "auto", text, voice: spokenVoice(o), format,
     speed: numberOr(o.speed, 1), instructions: o.instructions || "" }, { project: s.project, signal: s.ctrl.signal });
   setLast(s, { model: r.model, media: (r.items || []).map(it => ({ file: it.file, kind: "audio" })) });
 }

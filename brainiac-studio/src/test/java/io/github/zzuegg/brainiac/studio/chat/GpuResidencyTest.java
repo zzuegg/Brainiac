@@ -132,4 +132,39 @@ class GpuResidencyTest {
         assertEquals(List.of("chat"), again.toJson(device).get("pinned"));
         assertThrows(IllegalArgumentException.class, () -> r.change(Map.of("policies", Map.of("chat", "maybe"))));
     }
+
+    @Test
+    void anUnusedModelGoesAfterFiveMinutesUnlessTheUserChoseOtherwise() throws IOException {
+        assertEquals(5, residency(null).idleMinutes());
+        // a file from before the choice was kept holds 0, which nobody chose
+        Path old = dir.resolve("old.json");
+        java.nio.file.Files.writeString(old, "{\"idleMinutes\": 0}");
+        assertEquals(5, residency(old).idleMinutes());
+        Path chosen = dir.resolve("chosen.json");
+        residency(chosen).change(Map.of("idleMinutes", 0));
+        assertEquals(0, residency(chosen).idleMinutes());
+    }
+
+    @Test
+    void aModelThatFindsTooLittleRoomItselfGetsTheOthersRoomAndTriesAgain() throws IOException {
+        GpuResidency r = residency(null);
+        GpuSlot chat = new GpuSlot("chat", r);
+        GpuSlot image = new GpuSlot("image", r);
+        load(chat, model("coordinator", 5));
+        // the files say 5 fits in the 5 free; the model itself wants 1 more to work in
+        Path flux = model("flux", 5);
+        image.lock();
+        try {
+            image.load("flux", flux, device, () -> false, () -> {
+                if (10 - used.get() < 6) {
+                    throw new IllegalArgumentException("flux does not fit on the GPU");
+                }
+                return used.addAndGet(5);
+            }, () -> used.addAndGet(-5));
+        } finally {
+            image.unlock();
+        }
+        assertNull(chat.loadedModel());
+        assertEquals("flux", image.loadedModel());
+    }
 }

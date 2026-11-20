@@ -2,6 +2,7 @@ import { html } from "/v2/lib/html.js";
 import { Choices, Field } from "/v2/ui/Wizard.js";
 import { theme, readingWidth } from "/v2/state/prefs.js";
 import { Icon } from "/v2/ui/Icon.js";
+import { GpuCard } from "/v2/screens/Gpu.js";
 
 // Settings for this page. Studio-wide setup (providers, keys, machines) moves here with the
 // Placement step; until then it lives in the classic page.
@@ -20,6 +21,7 @@ export function Settings() {
           { value: "wide", label: "Wide", text: "960 px" }, { value: "full", label: "Full", text: "the whole width" },
         ]} /><//>
     </section>
+    <${GpuCard} />
     <section class="card">
       <h2 class="card-title">Models, keys and machines</h2>
       <p class="muted">These still live in the classic Studio while this one grows.</p>
