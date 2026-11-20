@@ -23,6 +23,11 @@ final class HipStorage implements Storage {
     final DType dtype;
     /** The values as uploaded, kept for small uploads so indices can be checked without a download. */
     final float[] host;
+    /**
+     * Above every value when they are indices made on the device, such as an argmax over rows
+     * of this length, or 0: a gather over at least this many entries need not download them to check.
+     */
+    long indexBound;
     /** The element-wise expression not yet computed into memory, or null once it is. */
     HipFusion.Expr pending;
     /** The size of {@link #pending} in nodes, inlined inputs included. */

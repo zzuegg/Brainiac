@@ -455,6 +455,7 @@ public final class HipBackend implements Backend {
         flushReaders(c);
         ready(c);
         generation++;
+        c.indexBound = 0;   // overwritten: whatever bounded its values before no longer does
         return c;
     }
 
@@ -1084,6 +1085,9 @@ public final class HipBackend implements Backend {
         HipContext c = ctx();
         HipStorage x = as(cs(in), y.dtype);
         if (op == ReduceOp.ARGMAX) {
+            if (y.dtype == DType.FLOAT32 || y.dtype == DType.FLOAT64) {
+                y.indexBound = length;   // a gather by these indices need not download them to check
+            }
             if (rows < 2L * c.multiprocessors && length > 4096 && rows <= FEW_COUNTERS) {
                 // few long rows (a vocabulary's logits): each split over blocks, which the
                 // row's last block to finish combines
@@ -2048,7 +2052,10 @@ public final class HipBackend implements Backend {
             Storage out) {
         HipStorage z = wr(out);
         HipContext c = ctx();
-        indices(cs(indices), count, length);
+        long bound = cs(indices).indexBound;
+        if (bound <= 0 || bound > length) {
+            indices(cs(indices), count, length);   // else made on the device in range: no download
+        }
         HipStorage x = as(cs(in), z.dtype);
         HipStorage ind = as(cs(indices), DType.FLOAT32);
         long total = outer * count * inner;

@@ -711,6 +711,19 @@ final class HipContext {
         trace("hipMemcpyHtoDAsync " + bytes + " bytes" + (src.isNative() ? "" : " from the heap"));
         if (src.isNative()) {
             cu.copyToDevice(dst, src, bytes, stream);
+        } else if (bytes <= SMALL_UPLOAD && cu.hasEvents() && !DEBUG) {
+            // small (a step's positions or mask): through a ring of pinned buffers, each reused
+            // once the copy that last read it is done, so the device need not go idle first
+            int slot = nextUpload++ % UPLOAD_SLOTS;
+            if (uploadBuffers[slot] == null) {
+                uploadBuffers[slot] = cu.allocateHost(SMALL_UPLOAD);
+                uploadEvents[slot] = cu.createEvent();
+            } else {
+                cu.synchronizeEvent(uploadEvents[slot]);   // long done, but for a burst of uploads
+            }
+            MemorySegment.copy(src, 0, uploadBuffers[slot], 0, bytes);
+            cu.copyToDevice(dst, uploadBuffers[slot], bytes, stream);
+            cu.recordEvent(uploadEvents[slot], stream);
         } else {
             // a Java array: copied off the heap first. HIP may still read pageable memory after
             // the call returns, so the copy is waited for before the memory is freed.
@@ -748,6 +761,14 @@ final class HipContext {
         }
         record("download", PROFILE ? System.nanoTime() - t0 : 0);
     }
+
+    /** The largest upload from the Java heap that goes through {@link #uploadBuffers} without a wait. */
+    static final long SMALL_UPLOAD = 64 << 10;
+    private static final int UPLOAD_SLOTS = 32;
+    /** Pinned buffers for small uploads from the heap, used in turn, and the events that mark their copies done. */
+    private final MemorySegment[] uploadBuffers = new MemorySegment[UPLOAD_SLOTS];
+    private final long[] uploadEvents = new long[UPLOAD_SLOTS];
+    private int nextUpload;
 
     /** The largest copy {@link #downloadLater} takes: a pinned buffer of this size each. */
     static final long SMALL_READBACK = 64 << 10;
@@ -1065,6 +1086,12 @@ final class HipContext {
         if (staging != null) {
             cu.freeHost(staging);
             staging = null;
+        }
+        for (int i = 0; i < UPLOAD_SLOTS; i++) {
+            if (uploadBuffers[i] != null) {
+                cu.freeHost(uploadBuffers[i]);
+                uploadBuffers[i] = null;
+            }
         }
         for (MemorySegment h : readbacks) {
             cu.freeHost(h);
