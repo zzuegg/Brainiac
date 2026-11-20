@@ -29,7 +29,7 @@ export const modelsFor = medium => (modelInfo.value?.models || []).filter(m => (
 export const defaults = medium => ({
   model: "auto", aspect: medium === "video" ? "16:9" : "1:1", count: 1, steps: "", guidance: "", seed: "", negativePrompt: "",
   voice: "", blend: "", mix: 0.7, format: "", seconds: 2, speed: 1, instructions: "",
-  language: "auto", translate: false, hint: "", task: "", maxTokens: "",
+  language: "auto", translate: false, hint: "", task: "", maxTokens: "", sampler: "", small: false,
 });
 
 /** What a transcription model offers: its languages, and whether it translates to English. */
@@ -39,6 +39,22 @@ export function transcribeOptions(key) {
   if (!listening.has(k)) listening.set(k, api("/api/transcribe/options", { model: k }).catch(() => ({ languages: [], translate: false })));
   return listening.get(k);
 }
+
+/**
+ * What a local picture or video model takes: its usual steps and guidance, which settings it uses,
+ * the samplers (pictures), and the sizes, frame rate and whether a start picture goes in (video).
+ */
+const making = new Map();
+export function makeOptions(medium, key) {
+  const k = (key === "auto" ? modelInfo.value?.auto?.[medium] : key) || "";
+  const id = medium + ":" + k;
+  if (medium !== "image" && medium !== "video") return Promise.resolve({});
+  if (!making.has(id)) making.set(id, api(`/api/${medium === "image" ? "images" : "video"}/options`, { model: k }).catch(() => ({})));
+  return making.get(id);
+}
+
+/** Pictures' samplers as people say them. */
+export const SAMPLER_NAMES = { EULER: "Euler", EULER_ANCESTRAL: "Euler, varied", DPM_PP_2M: "DPM++ 2M", DPM_PP_2M_KARRAS: "DPM++ 2M Karras", EULER_KARRAS: "Euler Karras" };
 
 /** The tasks a rewriting model was trained for, such as summarization or translation_en_to_de. */
 const rewriting = new Map();
@@ -122,7 +138,7 @@ const setLast = (s, changes) => {
 const numberOr = (v, d) => (v === "" || v == null || isNaN(+v) ? d : +v);
 
 /** Makes what the prompt asks for with the chat's settings, as a new turn. */
-export async function generate(s, prompt) {
+export async function generate(s, prompt, extra = {}) {
   const c = s.chat.value, medium = c.medium;
   if (s.busy.value || !prompt.trim()) return;
   const settings = { ...defaults(medium), ...(c.settings || {}) };
@@ -130,7 +146,8 @@ export async function generate(s, prompt) {
   batch(() => {
     s.chat.value = {
       ...c, prompt: "", updated: at, title: !c.messages.length && Object.values(MEDIA).some(m => m.label === c.title) ? titleOf(prompt) : c.title,
-      messages: [...c.messages, { role: "user", text: prompt.trim(), settings, at }, { role: "assistant", media: [], streaming: true, at }],
+      messages: [...c.messages, { role: "user", text: prompt.trim(), settings, at, ...(extra.image ? { startPicture: extra.imageLabel || "a picture" } : {}) },
+        { role: "assistant", media: [], streaming: true, at }],
     };
     s.busy.value = true;
   });
@@ -138,7 +155,7 @@ export async function generate(s, prompt) {
   const started = performance.now();
   try {
     if (medium === "image") await image(s, prompt.trim(), settings);
-    else if (medium === "video") await video(s, prompt.trim(), settings);
+    else if (medium === "video") await video(s, prompt.trim(), settings, extra.image);
     else if (medium === "rewrite") await rewrite(s, prompt.trim(), settings);
     else await speech(s, prompt.trim(), settings);
     setLast(s, { seconds: (performance.now() - started) / 1000 });
@@ -214,7 +231,7 @@ const add = (s, item) => setLast(s, { media: [...(s.chat.value.messages.at(-1).m
 async function image(s, prompt, o) {
   const body = { model: o.model || "auto", prompt, negativePrompt: o.negativePrompt || "", aspect: o.aspect, count: +o.count || 1,
     ...(o.steps !== "" ? { steps: numberOr(o.steps, 25) } : {}), ...(o.guidance !== "" ? { guidance: numberOr(o.guidance, 7) } : {}),
-    ...(o.seed !== "" && o.seed != null ? { seed: numberOr(o.seed, undefined) } : {}) };
+    ...(o.seed !== "" && o.seed != null ? { seed: numberOr(o.seed, undefined) } : {}), ...(o.sampler ? { sampler: o.sampler } : {}) };
   let failed = null;
   try {
     await stream("/api/images/draw", body, {
@@ -236,8 +253,9 @@ async function image(s, prompt, o) {
   if (failed) throw new Error(failed);
 }
 
-async function video(s, prompt, o) {
+async function video(s, prompt, o, image) {
   const body = { model: o.model || "auto", prompt, negativePrompt: o.negativePrompt || "", aspect: o.aspect, seconds: numberOr(o.seconds, 2),
+    small: !!o.small, ...(image ? { image } : {}),
     ...(o.steps !== "" ? { steps: numberOr(o.steps, 30) } : {}), ...(o.guidance !== "" ? { guidance: numberOr(o.guidance, 5) } : {}),
     ...(o.seed !== "" && o.seed != null ? { seed: numberOr(o.seed, undefined) } : {}) };
   let failed = null;

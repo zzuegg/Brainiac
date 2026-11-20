@@ -7,7 +7,7 @@ import { MediaGrid, Working } from "/v2/ui/Media.js";
 import { plural } from "/v2/lib/format.js";
 import { configure } from "/v2/state/chats.js";
 import { modelInfo, placeOf } from "/v2/state/models.js";
-import { MEDIA, modelsFor, defaults, generate, stopMaking, speechOptions, voiceName } from "/v2/state/media.js";
+import { MEDIA, modelsFor, defaults, generate, stopMaking, speechOptions, voiceName, makeOptions, SAMPLER_NAMES } from "/v2/state/media.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { VoicePicker, VoiceFace } from "/v2/screens/Voices.js";
 import { TranscriptTurn, TranscribeComposer } from "/v2/screens/Transcribe.js";
@@ -24,7 +24,8 @@ export function MediaChat({ tab, item, s }) {
   const settings = { ...defaults(chat.medium), ...(chat.settings || {}) };
   const scroll = useRef(null);
   const [prompt, setPrompt] = useState(chat.prompt || "");
-  useEffect(() => setPrompt(chat.prompt || ""), [chat.id]);
+  const [start, setStart] = useState(null);   // a video's start picture: {data, label, url}
+  useEffect(() => { setPrompt(chat.prompt || ""); setStart(null); }, [chat.id]);
   useLayoutEffect(() => { const el = scroll.current; if (el) el.scrollTop = el.scrollHeight; }, [chat.messages.length, busy]);
   const put = changes => configure(s, { settings: { ...settings, ...changes } });
   // a picture back in the composer: its prompt and seed, the rest as it was made
@@ -38,7 +39,8 @@ export function MediaChat({ tab, item, s }) {
     sub=${`${M.label} · ${plural(turns.length, chat.medium === "transcribe" ? "recording" : chat.medium === "rewrite" ? "text" : "prompt")}`} />`;
   const footer = chat.medium === "transcribe" ? html`<${TranscribeComposer} s=${s} settings=${settings} put=${put} busy=${busy} />`
     : chat.medium === "rewrite" ? html`<${RewriteComposer} settings=${settings} put=${put} prompt=${prompt} setPrompt=${setPrompt} busy=${busy} go=${() => generate(s, prompt)} stop=${() => stopMaking(s)} />` : html`<${MediaComposer} project=${s.project} M=${M} medium=${chat.medium} settings=${settings} put=${put} prompt=${prompt} setPrompt=${setPrompt}
-    busy=${busy} go=${() => generate(s, prompt)} stop=${() => stopMaking(s)} />`;
+    start=${start} setStart=${setStart}
+    busy=${busy} go=${() => { const x = start; setStart(null); generate(s, prompt, x ? { image: x.data, imageLabel: x.label } : {}); }} stop=${() => stopMaking(s)} />`;
   return html`<${Reading} header=${header} footer=${footer} scrollRef=${scroll} class="chat media-chat">
     ${!turns.length ? html`<${Empty} title=${M.label} icon=${html`<${Icon} name=${M.icon} size=${28} />`}>${M.lead}<//>`
       : chat.medium === "transcribe" ? html`<ol class="transcript">${turns.map((t, i) => html`<${TranscriptTurn} key=${i} t=${t} />`)}</ol>`
@@ -69,7 +71,8 @@ function Turn({ t, M, busy, tune, again }) {
   const { ask, made } = t;
   const o = ask.settings || {};
   const facts = [o.aspect && M !== MEDIA.speech && o.aspect, o.count > 1 && o.count + " " + M.noun + "s", o.steps && o.steps + " steps",
-    o.guidance && "guidance " + o.guidance, o.seed !== "" && o.seed != null && "seed " + o.seed, o.voice && "voice " + spokenName(o), M === MEDIA.speech && o.speed && +o.speed !== 1 && "speed " + o.speed, o.instructions && "“" + o.instructions + "”"].filter(Boolean);
+    o.guidance && "guidance " + o.guidance, o.seed !== "" && o.seed != null && "seed " + o.seed, o.voice && "voice " + spokenName(o), M === MEDIA.speech && o.speed && +o.speed !== 1 && "speed " + o.speed, o.instructions && "“" + o.instructions + "”",
+    M === MEDIA.image && o.sampler && SAMPLER_NAMES[o.sampler], M === MEDIA.video && o.small && "half size", ask.startPicture && "from " + ask.startPicture].filter(Boolean);
   const items = (made?.media || []).map(m => ({ ...m, prompt: ask.text, model: made.model?.key, aspect: o.aspect, voice: o.voice ? spokenName(o) : null }));
   return html`<li class="msg media-turn">
     <div class="media-ask"><span class="media-prompt-text">${ask.text}</span>
@@ -88,9 +91,20 @@ function Turn({ t, M, busy, tune, again }) {
   </li>`;
 }
 
-function MediaComposer({ project, M, medium, settings: o, put, prompt, setPrompt, busy, go, stop }) {
+function MediaComposer({ project, M, medium, settings: o, put, prompt, setPrompt, busy, go, stop, start, setStart }) {
   const ref = useRef(null);
+  const pic = useRef(null);
   const [more, setMore] = useState(false);
+  const [opts, setOpts] = useState({});
+  useEffect(() => { let on = true; setOpts({}); makeOptions(medium, o.model || "auto").then(r => on && setOpts(r || {})); return () => { on = false; }; }, [medium, o.model]);
+  const takesPicture = medium === "video" && (opts.input === "TEXT_OR_IMAGE" || opts.input === "IMAGE");
+  const needsPicture = medium === "video" && opts.input === "IMAGE" && !start;
+  const choose = f => {
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => setStart({ data: r.result, label: f.name, url: URL.createObjectURL(f) });
+    r.readAsDataURL(f);
+  };
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -127,20 +141,38 @@ function MediaComposer({ project, M, medium, settings: o, put, prompt, setPrompt
         ${medium !== "speech" && html`<label class="seed-field" title="The same seed with the same prompt and settings gives the same result; empty picks a new one">Seed
           <input class="input mono select-sm" value=${o.seed} placeholder="new" disabled=${busy} onInput=${e => put({ seed: e.target.value.replace(/[^0-9]/g, "") })} />
           ${o.seed !== "" && html`<button type="button" class="mini" aria-label="New seed each time" title="New seed each time" onClick=${() => put({ seed: "" })}><${Icon} name="close" size=${12} /></button>`}</label>`}
+        ${takesPicture && (start
+          ? html`<span class="start-pic" title=${"Starts from " + start.label}><img src=${start.url} alt="" /><span class="small">${start.label}</span>
+              <${IconAction} icon="close" size=${12} label="Start without the picture" onClick=${() => setStart(null)} /></span>`
+          : html`<${IconAction} icon="image" label=${needsPicture ? "Choose the picture it starts from (this model needs one)" : "Start from a picture…"} onClick=${() => pic.current.click()} />`)}
+        <input ref=${pic} type="file" accept="image/*" hidden onChange=${e => { choose(e.target.files[0]); e.target.value = ""; }} />
         ${html`<button type="button" class="link" aria-expanded=${more} onClick=${() => setMore(!more)}>${more ? "Less" : "More"}</button>`}
         <span class="grow" />
+        ${needsPicture && html`<span class="muted small">Needs a start picture</span>`}
         ${busy ? html`<${Button} icon="stop" onClick=${stop}>Stop<//>`
-          : html`<${Button} variant="primary" icon=${M.icon} onClick=${go} disabled=${!prompt.trim()}>${M.verb}<//>`}
+          : html`<${Button} variant="primary" icon=${M.icon} onClick=${go} disabled=${!prompt.trim() || needsPicture}>${M.verb}<//>`}
       </div>
       ${more && medium === "speech" && html`<${SpeechMore} o=${o} put=${put} busy=${busy} />`}
       ${more && medium !== "speech" && html`<div class="composer-bar media-more">
-        <label>Steps <input class="input mono select-sm" value=${o.steps} placeholder="model's" onInput=${e => put({ steps: e.target.value })} /></label>
-        <label>Guidance <input class="input mono select-sm" value=${o.guidance} placeholder="model's" onInput=${e => put({ guidance: e.target.value })} /></label>
-        ${medium === "video" && html`<label>Seconds <input class="input mono select-sm" value=${o.seconds} onInput=${e => put({ seconds: e.target.value })} /></label>`}
-        <label class="grow">Leave out <input class="input select-sm" value=${o.negativePrompt} placeholder="blurry, text, watermark" onInput=${e => put({ negativePrompt: e.target.value })} /></label>
+        <label>Steps <input class="input mono select-sm" value=${o.steps} placeholder=${opts.steps || "model's"} onInput=${e => put({ steps: e.target.value })} /></label>
+        ${opts.usesGuidance !== false && html`<label>Guidance <input class="input mono select-sm" value=${o.guidance} placeholder=${opts.guidance ?? "model's"} onInput=${e => put({ guidance: e.target.value })} /></label>`}
+        ${medium === "image" && opts.usesSampler !== false && opts.samplers?.length > 0 && html`<label>Sampler <select class="input select-sm" value=${o.sampler || ""} onChange=${e => put({ sampler: e.target.value })}>
+          <option value="">Model's</option>${opts.samplers.map(x => html`<option value=${x}>${SAMPLER_NAMES[x] || x}</option>`)}</select></label>`}
+        ${medium === "video" && html`<label>Seconds <input class="input mono select-sm" value=${o.seconds} onInput=${e => put({ seconds: e.target.value })} /></label>
+          <label class="check-inline small" title="Half the width and height: about four times faster"><input type="checkbox" checked=${!!o.small} onChange=${e => put({ small: e.target.checked })} /> Half size</label>
+          ${clipSize(opts, o) && html`<span class="muted small mono">${clipSize(opts, o)}</span>`}`}
+        ${opts.usesNegative !== false && html`<label class="grow">Leave out <input class="input select-sm" value=${o.negativePrompt} placeholder="blurry, text, watermark" onInput=${e => put({ negativePrompt: e.target.value })} /></label>`}
       </div>`}
     </div>
   </div>`;
+}
+
+// the size and frame rate a clip will have, as the studio picks them: "832×480 · 16 fps"
+function clipSize(opts, o) {
+  const wh = opts.sizes?.[o.aspect];
+  if (!wh) return "";
+  const [w, h] = o.small ? wh.map(v => Math.max(16, Math.round(v / 2 / 16) * 16)) : wh;
+  return `${w}×${h}${opts.fps ? ` · ${opts.fps} fps` : ""}`;
 }
 
 /** The voice (opens the voices) and the pace, as far as the model offers them. */
