@@ -7,7 +7,7 @@ import { loaded as projectsLoaded, byId } from "/v2/state/projects.js";
 // project exactly as it was left. Several tabs can show the same studio at once because the
 // project travels with each API call instead of being a server-wide setting.
 
-const SCREENS = ["home", "chat", "agent", "graph", "trash", "settings", "config", "training", "models", "machines", "agents"];
+const SCREENS = ["home", "chat", "agent", "graph", "trash", "settings", "config", "training", "models", "machines", "agents", "rl"];
 
 /** Item keys are "kind:id", unique across kinds. */
 export const keyOf = item => item.kind + ":" + item.id;

@@ -43,7 +43,8 @@ function NewTraining({ tab, from, close, top }) {
       {
         title: "What to train",
         missing: d => !d.what ? (networks.length ? "Pick a network to train." : "This project has no network yet. Make one in Networks first.") : null,
-        body: (d, set) => html`<${WhatStep} d=${d} set=${set} networks=${networks} results=${results} project=${tab.project} />`,
+        body: (d, set) => html`<${WhatStep} d=${d} set=${set} networks=${networks} results=${results} project=${tab.project} />
+          <p class="field-hint wizard-aside">No data, only a world to act in? <button type="button" class="link" onClick=${() => { close(); navigate(tab, { screen: "rl" }); }}>Let an agent learn from rewards</button></p>`,
       },
       {
         title: "How it learns",

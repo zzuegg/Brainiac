@@ -1032,3 +1032,25 @@ a.mini { color: var(--muted); }
 .runs-on { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
 .runs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .runs-row > .small:first-child { min-width: 130px; }
+
+/* Learning from rewards */
+.rl-cols { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 860px) { .rl-cols { grid-template-columns: 1fr; } }
+.rl-main { display: grid; gap: 16px; min-width: 0; }
+.rl-new .form-grid { grid-template-columns: 1fr 1fr; }
+.rl-runs tr.rl-row { cursor: pointer; }
+.rl-runs td.r { white-space: nowrap; }
+.rl-runs tr.rl-row:hover td { background: var(--hover); }
+.rl-runs tr.on td { background: var(--accent-soft, var(--hover)); }
+.rl-curve { margin: 4px 0 0; }
+.rl-curve figcaption { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.rl-curve svg { display: block; width: 100%; height: auto; overflow: visible; }
+.rl-curve text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rl-curve .grid { stroke: var(--line-soft); stroke-width: 1; }
+.rl-curve .line { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.rl-curve .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.rl-curve .dot { fill: var(--series-1); stroke: var(--panel); stroke-width: 2; }
+.rl-watch { display: grid; gap: 8px; }
+.rl-watch input[type=range] { width: 100%; }
+.rl-frame { margin: 0; padding: 12px; font: 13px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg-sunk); border-radius: 8px; overflow: auto; white-space: pre; }
+.wizard-aside { margin-top: 18px; }

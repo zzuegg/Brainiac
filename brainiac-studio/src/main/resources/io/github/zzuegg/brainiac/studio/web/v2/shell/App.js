@@ -26,8 +26,9 @@ import { Training } from "/v2/screens/Training.js";
 import { AgentSettings } from "/v2/screens/AgentSettings.js";
 import { Machines } from "/v2/screens/Machines.js";
 import { Models } from "/v2/screens/Models.js";
+import { Rl } from "/v2/screens/Rl.js";
 
-const SCREENS = { home: Home, chat: Chat, agent: Agent, graph: Graph, trash: Trash, settings: Settings, config: ProjectSettings, training: Training, models: Models, machines: Machines, agents: AgentSettings };
+const SCREENS = { home: Home, chat: Chat, agent: Agent, graph: Graph, trash: Trash, settings: Settings, config: ProjectSettings, training: Training, models: Models, machines: Machines, agents: AgentSettings, rl: Rl };
 
 export function App() {
   useEffect(() => {
