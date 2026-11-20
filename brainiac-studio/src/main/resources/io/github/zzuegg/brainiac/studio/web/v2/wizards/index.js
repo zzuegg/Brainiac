@@ -1,11 +1,13 @@
 import { html, useEffect, useState } from "/v2/lib/html.js";
-import { api } from "/v2/lib/api.js";
+import { api, local } from "/v2/lib/api.js";
 import { slug } from "/v2/lib/format.js";
 import { openLayer } from "/v2/ui/overlay.js";
 import { Wizard, Field, Choices, Summary } from "/v2/ui/Wizard.js";
 import { projects, loadProjects } from "/v2/state/projects.js";
 import { openProject, navigate } from "/v2/state/workspace.js";
 import { toast, fail } from "/v2/state/toasts.js";
+import { editorFor, askAssistant } from "/v2/state/builder.js";
+import { lastChatModel } from "/v2/state/models.js";
 
 // The "New …" flows. Each one is a short wizard built from the shared parts; `create(kind, tab)`
 // is what every "+" button calls.
@@ -75,7 +77,7 @@ function NewProject({ parent, close, top }) {
       await loadProjects();
       const id = r.saved;
       if (d.start === "chat") await makeChat(id);
-      if (d.start === "network") await api("/api/builder/graphs", { name: "network", graph: { nodes: [], edges: [] } }, { project: id });
+      if (d.start === "network") await api("/api/builder/graphs", { name: "network", graph: { nodes: [{ id: "in", op: "input", shape: [3, 32, 32], x: 40, y: 120 }] } }, { project: id });
       return id;
     }} />`;
 }
@@ -159,7 +161,7 @@ function NewAgent({ tab, close, top }) {
 
 function NewNetwork({ tab, close, top }) {
   return html`<${Wizard} title="New network" draftKey=${"graph:" + tab.project} close=${close} top=${top}
-    initial=${{ name: "", start: "blank" }}
+    initial=${{ name: "", start: "blank", shape: "3, 32, 32", describe: "" }}
     steps=${[
       {
         title: "Name",
@@ -170,24 +172,39 @@ function NewNetwork({ tab, close, top }) {
       },
       {
         title: "Start from",
+        missing: d => d.start === "describe" && !d.describe.trim() ? "Say what the network is for." : !dims(d.shape) ? "Give the shape of one sample as numbers, such as 3, 32, 32." : null,
         body: (d, set) => html`<${Choices} name="Start from" value=${d.start} onChange=${v => set({ start: v })} options=${[
-          { value: "blank", label: "Blank", icon: "graph", text: "An empty canvas." },
+          { value: "blank", label: "An input block", icon: "graph", text: "You add the rest from the blocks on the left." },
+          { value: "describe", label: "Describe it", icon: "sparkle", text: "The assistant builds it on the canvas while you watch." },
         ]} />
-        <p class="muted small">Templates and sizing from a dataset come with the Experiments step.</p>`,
+        <${Field} label="Shape of one sample" hint="Channels first: 3, 32, 32 for small colour pictures, 784 for flat 28×28 digits.">
+          <input class="input mono" value=${d.shape} onInput=${e => set({ shape: e.target.value })} /><//>
+        ${d.start === "describe" && html`<${Field} label="What is it for?" hint="Such as: sort 32×32 photos into 10 classes, small enough for a laptop GPU.">
+          <textarea class="input" rows="3" value=${d.describe} onInput=${e => set({ describe: e.target.value })} /><//>`}`,
       },
     ]}
-    summary=${(d, goTo) => html`<${Summary} goTo=${goTo} lead=${`Creates the network “${d.name.trim()}” in this project.`}
-      rows=${[{ label: "Name", value: d.name.trim(), step: 0 }, { label: "Start from", value: "blank", step: 1 }]} />`}
+    summary=${(d, goTo) => html`<${Summary} goTo=${goTo} lead=${`Creates the network “${d.name.trim()}” in this project${d.start === "describe" ? ", and the assistant starts building it" : ""}.`}
+      rows=${[{ label: "Name", value: d.name.trim(), step: 0 }, { label: "Input", value: (dims(d.shape) || []).join(" × "), step: 1 },
+        ...(d.start === "describe" ? [{ label: "The assistant builds", value: d.describe.trim(), step: 1 }] : [])]} />`}
     finish=${async d => {
       const name = d.name.trim();
       const existing = await api("/api/builder/graphs", undefined, { project: tab.project });
       if ((existing.graphs || []).some(g => g.name === name)) throw new Error(`There is already a network called “${name}”.`);
-      await api("/api/builder/graphs", { name, graph: { nodes: [], edges: [] } }, { project: tab.project });
+      await api("/api/builder/graphs", { name, graph: { nodes: [{ id: "in", op: "input", shape: dims(d.shape), x: 40, y: 120 }] } }, { project: tab.project });
+      if (d.start === "describe") {
+        local.set("builderSide", "assistant");
+        await askAssistant(editorFor(tab.project, name), d.describe.trim(), lastChatModel.value);
+      }
       await tab.refresh();
       navigate(tab, { screen: "graph", id: name });
       toast(`Network “${name}” created`);
       return name;
     }} />`;
 }
+
+const dims = s => {
+  const v = String(s ?? "").split(/[\s,×x]+/).filter(Boolean).map(Number);
+  return v.length && v.every(n => Number.isInteger(n) && n > 0) ? v : null;
+};
 
 export { projects };

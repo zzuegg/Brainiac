@@ -1032,6 +1032,18 @@ nothing else and only unlinks the others; restoring it puts both back.
 projects: requests and agents waiting for you, agents that failed, what is working now, what is
 built and what is in progress, and the projects as a tree with their subprojects.
 
+**Builder.** A network opens on a canvas: blocks on the left (every layer the installed
+modules offer), the network in the middle, and on the right the selected block's settings or
+the **assistant**, an agent docked beside the canvas. Tell it what to change ("add a hidden
+layer of 128 units", "make it a small CNN for 32×32 pictures") and it reads and edits the
+network with `read_network` and `edit_network`; each change shows on the canvas as it is made,
+marked, and Ctrl+Z (or Undo on the canvas) takes it back like any change of your own. The same
+rule holds for both: a change that would break a block that works is refused, with the reason.
+A new network can start from a description, which the assistant builds. Changes save as they
+are made; Build builds the model and saves it beside the network. Agents anywhere in the
+project can use `list_networks`, `read_network`, `create_network` and `edit_network` too
+(`POST /api/builder/graphs/get {name}` reads one network).
+
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that
 browser opens the studio.

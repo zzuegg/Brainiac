@@ -65,7 +65,17 @@ final class BuilderRoutes {
             } else {
                 saveGraph(name, Json.object(body.get("graph")));
             }
-            Exchanges.json(ex, 200, Map.of("ok", true));
+            Map<String, Object> out = new LinkedHashMap<>(Map.of("ok", true));
+            graphs.get(name).ifPresent(g -> out.put("updated", g.get("updated")));
+            Exchanges.json(ex, 200, out);
+        });
+        server.post("/api/builder/graphs/get", ex -> {
+            var g = graphs.get(name(Exchanges.body(ex, MAX_BODY).get("name")));
+            if (g.isPresent()) {
+                Exchanges.json(ex, 200, Map.of("graph", g.get()));
+            } else {
+                Exchanges.error(ex, 404, "there is no such network");
+            }
         });
     }
 

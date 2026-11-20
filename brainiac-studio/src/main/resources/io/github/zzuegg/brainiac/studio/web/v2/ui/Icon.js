@@ -31,6 +31,9 @@ const PATHS = {
   folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
   dot: "M12 11a1 1 0 1 0 0 2a1 1 0 1 0 0-2z",
   classic: "M4 4h16v16H4zM4 9h16M9 9v11",
+  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
+  build: "M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5",
+  arrange: "M4 5h5v5H4zM15 5h5v5h-5zM15 14h5v5h-5zM9 7.5h6M17.5 10v4",
   sparkle: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z",
 };
 
