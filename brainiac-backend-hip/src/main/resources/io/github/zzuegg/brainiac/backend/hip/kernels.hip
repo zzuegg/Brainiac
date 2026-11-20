@@ -1022,6 +1022,69 @@ __device__ __forceinline__ void pk_factors4(const PackedLayout& p, const unsigne
 #define PK_TABLE(w, s) table[ubits(w, s, 4)], table[ubits(w, 8 + (s), 4)], table[ubits(w, 16 + (s), 4)], \
     table[ubits(w, 24 + (s), 4)]
 
+// unpack_packed for n a multiple of 4: a thread per word of levels, four columns of one row
+// (8-bit levels) or of two rows (the 4-bit layouts, whose groups have an even number of rows)
+template <class D> __device__ void unpack_words_k(PackedLayout p, typename D::T* out, int rows) {
+    typedef typename D::A A;
+    __shared__ int table[16];
+    int planeBits = (p.flags >> 8) & 15;
+    int mode = (p.flags & 32) ? 3 : planeBits != 0 ? 2 : (p.flags & 1) ? 1 : 0;
+    int bias = 1 << (((p.flags >> 12) & 15) - 1);
+    if (mode == 3 && threadIdx.x < 16) {
+        table[threadIdx.x] = pk_table(p, threadIdx.x);
+    }
+    __syncthreads();
+    int n = p.n;
+    int quads = n >> 2;
+    i64 units = (i64) (mode == 0 ? rows : rows / 2) * quads;
+    for (i64 u = (i64) blockIdx.x * blockDim.x + threadIdx.x; u < units; u += (i64) gridDim.x * blockDim.x) {
+        int unit = (int) (u / quads);
+        int c = (int) (u % quads) * 4;
+        int r = mode == 0 ? unit : unit * 2;
+        unsigned w = p.q[(i64) unit * quads + (c >> 2)];
+        int l0[4];
+        int l1[4] = {0, 0, 0, 0};
+        if (mode == 0) {
+            const int v[4] = {PK_FIELDS(w, 0, 8)};
+            for (int j = 0; j < 4; j++) l0[j] = v[j];
+        } else if (mode == 1) {
+            const int v[4] = {PK_FIELDS(w, 0, 4)};
+            const int x[4] = {PK_FIELDS(w, 4, 4)};
+            for (int j = 0; j < 4; j++) { l0[j] = v[j]; l1[j] = x[j]; }
+        } else if (mode == 3) {
+            const int v[4] = {PK_TABLE(w, 0)};
+            const int x[4] = {PK_TABLE(w, 4)};
+            for (int j = 0; j < 4; j++) { l0[j] = v[j]; l1[j] = x[j]; }
+        } else {
+            int perByte = 8 / planeBits;
+            unsigned hw = p.hi[((i64) (r / perByte) * n + c) >> 2];
+            int hs = (r % perByte) * planeBits;
+            const int v[4] = {PK_PLANES(w, 0, hw, hs, planeBits)};
+            const int x[4] = {PK_PLANES(w, 4, hw, hs + planeBits, planeBits)};
+            for (int j = 0; j < 4; j++) { l0[j] = v[j]; l1[j] = x[j]; }
+        }
+        int g = r / p.group;
+        float s[4];
+        float o[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        pk_factors4(p, p.scales, p.scaleCodes, (p.flags & 4) != 0, g, c, s);
+        if (p.flags & 2) {
+            pk_factors4(p, p.offsets, p.offsetCodes, (p.flags & 8) != 0, g, c, o);
+            for (int j = 0; j < 4; j++) {
+                o[j] += s[j] * p.shift;
+            }
+        }
+        i64 at = (i64) r * n + c;
+        for (int j = 0; j < 4; j++) {
+            D::st(out, at + j, (A) ((float) l0[j] * s[j] + o[j]));
+        }
+        if (mode != 0) {
+            for (int j = 0; j < 4; j++) {
+                D::st(out, at + n + j, (A) ((float) l1[j] * s[j] + o[j]));
+            }
+        }
+    }
+}
+
 #define PK_QUADS 32
 #define PK_SLICES 8
 
@@ -1713,6 +1776,12 @@ extern "C" __global__ void unpack_packed_##S(const unsigned* q, const unsigned* 
         D::T* out, int rows) {                                                                                     \
     PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                                \
     unpack_packed_k<D>(p, out, rows);                                                                             \
+}                                                                                                                 \
+extern "C" __global__ void unpack_words_##S(const unsigned* q, const unsigned* hi, const unsigned* sc,             \
+        const unsigned* oc, const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper,      \
+        float shift, D::T* out, int rows) {                                                                       \
+    PackedLayout p = {q, hi, sc, oc, s, o, n, group, flags, perSuper, shift};                                     \
+    unpack_words_k<D>(p, out, rows);                                                                              \
 }                                                                                                                 \
 extern "C" __global__ void packed_mv1_##S(const D::T* a, const unsigned* q, const unsigned* hi, const unsigned* sc, const unsigned* oc,                \
         const unsigned* s, const unsigned* o, int n, int group, int flags, int perSuper, float shift,                    \

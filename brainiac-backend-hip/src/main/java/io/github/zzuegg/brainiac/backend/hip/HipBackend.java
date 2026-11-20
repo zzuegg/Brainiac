@@ -1531,7 +1531,11 @@ public final class HipBackend implements Backend {
         c.args();
         p.push(c);
         c.ptr(z.address()).i32(p.rows());
-        c.launch(kernel("unpack_packed", z.dtype), p.size());
+        if (p.cols() % 4 == 0) {
+            c.launch(kernel("unpack_words", z.dtype), p.size() / 4);   // a word of levels per thread
+        } else {
+            c.launch(kernel("unpack_packed", z.dtype), p.size());
+        }
     }
 
     /** Rows up to which a product reads packed levels directly ({@code packed_mv}); more unpack first. */
