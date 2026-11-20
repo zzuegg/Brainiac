@@ -138,6 +138,9 @@ public final class AgentRuns {
         String project = Project.DEFAULT;
         Format format = Format.NONE;
         String parent;
+        // a git worktree of its own that it works in instead of the project's folder, and its branch
+        String worktree;
+        String branch;
         int depth;
         final List<String> children = new ArrayList<>();
         final List<Map<String, Object>> plan = new ArrayList<>();
@@ -218,6 +221,10 @@ public final class AgentRuns {
             }
             if (parent != null) {
                 m.put("parent", parent);
+            }
+            if (worktree != null) {
+                m.put("worktree", worktree);
+                m.put("branch", branch);
             }
             m.put("depth", depth);
             m.put("children", List.copyOf(children));
@@ -527,6 +534,10 @@ public final class AgentRuns {
     }
 
     private synchronized Run start(Spec spec, Run parent) {
+        return start(spec, parent, null, null);
+    }
+
+    private synchronized Run start(Spec spec, Run parent, String worktree, String branch) {
         Format format = spec.format();
         if (format.kind().equals("grammar")) {
             throw new IllegalArgumentException("an agent answers in free text, JSON, or JSON that fits a schema");
@@ -589,6 +600,9 @@ public final class AgentRuns {
             synchronized (parent) {
                 parent.children.add(r.id);
             }
+            // without a worktree of its own, it works where its parent does
+            r.worktree = worktree != null ? worktree : parent.worktree;
+            r.branch = worktree != null ? branch : parent.branch;
         }
         r.format = format;
         r.messages.add(new ChatMessage("user", r.goal));
@@ -843,7 +857,7 @@ public final class AgentRuns {
      */
     String script(String code) {
         Run r = caller();
-        Project p = current() instanceof Project cp ? cp : projects == null ? null : projects.get(r.project).orElse(null);
+        Project p = current() instanceof Project cp ? cp : projectOf(r);
         List<String> notes = new ArrayList<>();
         List<String> logs = new ArrayList<>();
         int[] calls = {0};
@@ -1114,7 +1128,7 @@ public final class AgentRuns {
     /** Loads tools for the caller's next turns: by name, or the ones whose words match. */
     List<Map<String, Object>> findTools(List<String> names, String query) {
         Run r = caller();
-        Project p = current() instanceof Project cp ? cp : projects == null ? null : projects.get(r.project).orElse(null);
+        Project p = current() instanceof Project cp ? cp : projectOf(r);
         List<String> words = query == null ? List.of()
                 : java.util.Arrays.stream(query.toLowerCase(java.util.Locale.ROOT).split("\\W+")).filter(w -> w.length() > 2).toList();
         List<String> wanted = names == null ? List.of() : names.stream().map(ToolNames::current).toList();
@@ -1174,6 +1188,11 @@ public final class AgentRuns {
 
     /** Starts a sub-agent for the caller. */
     Map<String, Object> spawn(String role, String goal, String model, List<String> narrow) {
+        return spawn(role, goal, model, narrow, false);
+    }
+
+    /** Starts a sub-agent for the caller, in a git worktree of its own if asked. */
+    Map<String, Object> spawn(String role, String goal, String model, List<String> narrow, boolean worktree) {
         Run parent = caller();
         Roles.Effective mine = parent.effective != null ? parent.effective : roles.resolve(parent.role, tools.keySet());
         if (!mine.spawns(role)) {
@@ -1183,15 +1202,20 @@ public final class AgentRuns {
         if (parent.depth + 1 > MAX_DEPTH) {
             throw new IllegalArgumentException("agents start agents " + MAX_DEPTH + " levels deep at most");
         }
-        Project p = projects == null ? null : projects.get(parent.project).orElse(null);
+        Project p = projectOf(parent);
+        String[] tree = worktree ? worktree(p) : new String[] {null, null};
         Run child = p == null ? start(new Spec(goal, role, model, null, 0, narrow, Format.NONE), parent)
                 : ScopedValue.where(ChatService.SCOPE, p).call(() -> start(new Spec(goal, role, model, null, 0, narrow,
-                        Format.NONE), parent));
+                        Format.NONE), parent, tree[0], tree[1]));
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", child.id);
         out.put("role", child.role);
         out.put("mode", child.mode);
         out.put("model", child.model);
+        if (tree[0] != null) {
+            out.put("worktree", tree[0]);
+            out.put("branch", tree[1]);
+        }
         // children on this PC's GPU take turns: say so, so the agent can pick a remote model
         String m = child.model;
         long local = runs.values().stream().filter(x -> x.active() && parent.id.equals(x.parent)
@@ -1409,6 +1433,43 @@ public final class AgentRuns {
 
     // ---------------------------------------------------------------- the loop
 
+    // the project a run works in: its own, or that project seen through the run's worktree
+    private Project projectOf(Run r) {
+        Project p = projects == null ? null : projects.get(r.project).orElse(null);
+        if (p == null || r.worktree == null) {
+            return p;
+        }
+        return new Project(p.id(), p.name(), p.description(), Path.of(r.worktree), p.tools(), p.models(), p.routes(),
+                p.runners());
+    }
+
+    // makes a git worktree on a new branch for a sub-agent: {folder, branch}
+    private String[] worktree(Project p) {
+        if (p == null || p.folder() == null) {
+            throw new IllegalArgumentException("a worktree needs a project with a folder");
+        }
+        Path repo = p.folder();
+        if (!Files.exists(repo.resolve(".git"))) {
+            throw new IllegalArgumentException("the project's folder is not a git repository, so it has no worktrees; "
+                    + "leave worktree out");
+        }
+        String token = Long.toHexString(System.nanoTime() & 0xffffffL) + Integer.toHexString(counter + 1);
+        String branch = "agent/" + token;
+        Path dir = folder.resolve("worktrees").resolve(repo.getFileName() + "-" + token).toAbsolutePath();
+        try {
+            Files.createDirectories(dir.getParent());
+            Proc.Result made = Proc.run(List.of("git", "-C", repo.toString(), "-c", "core.hooksPath="
+                    + repo.resolve(".git").resolve("no-hooks"), "worktree", "add", "-b", branch, dir.toString()), repo,
+                    Map.of("GIT_TERMINAL_PROMPT", "0"), 120, 4000);
+            if (made.code() != 0) {
+                throw new IllegalArgumentException("git could not make a worktree: " + made.out().strip());
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot run git: " + e.getMessage(), e);
+        }
+        return new String[] {dir.toString(), branch};
+    }
+
     // the project a call belongs to, if any
     private static Project current() {
         return ChatService.SCOPE.isBound() && ChatService.SCOPE.get() instanceof Project p ? p : null;
@@ -1416,7 +1477,7 @@ public final class AgentRuns {
 
     // works in its project: its routes and limits hold for every model and tool it uses
     private void work(Run r) {
-        Project p = projects == null ? null : projects.get(r.project).orElse(null);
+        Project p = projectOf(r);
         if (p == null) {
             workIn(r, null);
         } else {
@@ -2012,6 +2073,11 @@ public final class AgentRuns {
                     : " Its files are in a folder you can work in with the file tools; you cannot reach anything "
                     + "outside it.").append("\n\n");
         }
+        if (r.worktree != null) {
+            s.append("# Your own worktree\n\nYou work in a git worktree of your own, on the branch ").append(r.branch)
+                    .append(", so other agents' changes do not mix with yours. Commit your work with git_commit before ")
+                    .append("you answer: the agent that started you merges the branch.\n\n");
+        }
         String guide = projectInstructions(p);
         if (!guide.isEmpty()) {
             s.append("# The project's instructions\n\nThe project's folder holds this guide for agents. Follow it for how ")
@@ -2136,6 +2202,8 @@ public final class AgentRuns {
             r.format = Format.NONE;
         }
         r.parent = Json.string(m, "parent", null);
+        r.worktree = Json.string(m, "worktree", null);
+        r.branch = Json.string(m, "branch", null);
         r.depth = (int) Json.integer(m, "depth", 0);
         for (Object c : Json.array(m.getOrDefault("children", List.of()))) {
             r.children.add(String.valueOf(c));

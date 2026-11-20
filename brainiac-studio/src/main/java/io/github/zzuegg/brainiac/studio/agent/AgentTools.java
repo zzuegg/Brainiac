@@ -123,12 +123,14 @@ public final class AgentTools implements RiskRefiner {
             + "the work. It works alongside you; its final answer comes back through wait_agents. Give it a goal "
             + "that stands on its own: it does not see your conversation.")
     @Tier(value = Risk.COMPUTE, what = "starts another agent, which uses a model and may call tools")
-    @Returns("{id, role, mode, model, note?}")
+    @Returns("{id, role, mode, model, worktree?, branch?, note?}")
     public Map<String, Object> spawnAgent(@Tools.Param("the role's id, such as 'researcher'") String role,
             @Tools.Param("what it should do, with everything it needs to know") String goal,
             @Tools.Param("a chat model key; its role's model if left out") Optional<String> model,
-            @Tools.Param("fewer tools than its role has, if it needs only some") Optional<List<String>> tools) {
-        return runs.spawn(role, goal, model.orElse(null), tools.orElse(null));
+            @Tools.Param("fewer tools than its role has, if it needs only some") Optional<List<String>> tools,
+            @Tools.Param("true to give it a git worktree and branch of its own, so its changes do not mix with yours or "
+                    + "other agents'; merge its branch with git_merge when it is done") Optional<Boolean> worktree) {
+        return runs.spawn(role, goal, model.orElse(null), tools.orElse(null), worktree.orElse(false));
     }
 
     /**

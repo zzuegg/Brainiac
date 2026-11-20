@@ -68,7 +68,7 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
     @Override
     public List<Reach.Access> reach(String tool, Map<String, Object> arguments) {
         boolean write = switch (tool) {
-            case "git_status", "git_diff", "git_log" -> false;
+            case "git_status", "git_diff", "git_log", "git_show", "git_blame" -> false;
             default -> true;
         };
         if (!tool.startsWith("git_")) {
@@ -108,14 +108,23 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
         return git(repo, 15_000, a.toArray(String[]::new));
     }
 
-    @Tools.Tool(name = "git_log", value = "Lists the repository's last commits, one line each.")
+    @Tools.Tool(name = "git_log", value = "Lists the repository's last commits, one line each, optionally only "
+            + "those touching a file, by an author, since a date or with words in their message.")
     @Tier(value = Risk.READ)
     @Returns("text: the log")
     public String gitLog(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
             @Tools.Param("how many, 20 if left out, at most 200") Optional<Integer> count,
-            @Tools.Param("only commits touching this file or folder") Optional<String> path) {
+            @Tools.Param("only commits touching this file or folder") Optional<String> path,
+            @Tools.Param("only commits whose message holds these words") Optional<String> grep,
+            @Tools.Param("only commits by this author, a part of the name or email") Optional<String> author,
+            @Tools.Param("only commits since a date, such as '2026-11-01' or '2 weeks ago'") Optional<String> since) {
         List<String> a = new ArrayList<>(List.of("log", "--no-color", "--date=short",
-                "--pretty=format:%h %ad %an: %s", "-n", String.valueOf(Math.clamp(count.orElse(20), 1, 200)), "--"));
+                "--pretty=format:%h %ad %an: %s", "-n", String.valueOf(Math.clamp(count.orElse(20), 1, 200))));
+        grep.filter(s -> !s.isBlank()).ifPresent(g -> a.add("--grep=" + g.strip()));
+        author.filter(s -> !s.isBlank()).ifPresent(w -> a.add("--author=" + w.strip()));
+        since.filter(s -> !s.isBlank()).ifPresent(w -> a.add("--since=" + w.strip()));
+        a.add("-i");
+        a.add("--");
         path.filter(s -> !s.isBlank()).ifPresent(a::add);
         return git(repo, OUT, a.toArray(String[]::new));
     }
@@ -166,6 +175,158 @@ public final class CodeTools implements RiskRefiner, Checkpointed {
             throw new IllegalArgumentException("the repository is on no branch; switch to one first");
         }
         return git(repo, OUT, "push", "-u", ref(remote.orElse("origin")), b);
+    }
+
+    @Tools.Tool(name = "git_show", value = "Shows one commit: its message, the files it changed and its diff; or, "
+            + "given a file, that file as it was at the commit.")
+    @Tier(value = Risk.READ, resultChars = 16_000)
+    @Returns("text: the commit and its diff, or the file's text at that commit")
+    public String gitShow(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
+            @Tools.Param("a commit, branch or tag, such as 'HEAD~1' or 'a1b2c3d'") String commit,
+            @Tools.Param("a file, to see it as it was at the commit") Optional<String> path) {
+        String c = ref(commit);
+        if (path.isPresent() && !path.get().isBlank()) {
+            String p = path.get().strip().replace('\\', '/');
+            if (p.startsWith("/") || p.contains("..") || p.startsWith("-")) {
+                throw new IllegalArgumentException("give the file relative to the repository, such as 'src/App.java'");
+            }
+            return git(repo, 15_000, "show", "--no-color", c + ":" + p);
+        }
+        return git(repo, 15_000, "show", "--no-color", "--no-ext-diff", "--no-textconv", "--stat", "--patch",
+                "--format=commit %H%nAuthor: %an%nDate:   %ad%n%n%B", c, "--");
+    }
+
+    @Tools.Tool(name = "git_blame", value = "Says who last changed each line of a file, in which commit and when; "
+            + "for a range of lines if given. git_show then shows the commit.")
+    @Tier(value = Risk.READ, resultChars = 16_000)
+    @Returns("text: one line per line of the file: commit, author, date, line number, text")
+    public String gitBlame(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
+            @Tools.Param("the file, relative to the repository") String path,
+            @Tools.Param("the first line, 1 if left out") Optional<Integer> startLine,
+            @Tools.Param("the last line; 200 lines on if left out") Optional<Integer> endLine) {
+        String p = path == null ? "" : path.strip().replace('\\', '/');
+        if (p.isEmpty() || p.startsWith("-")) {
+            throw new IllegalArgumentException("give the file, such as 'src/App.java'");
+        }
+        int from = Math.max(1, startLine.orElse(1));
+        int to = Math.max(from, endLine.orElse(from + 199));
+        return git(repo, 15_000, "blame", "--date=short", "-L", from + "," + to, "--", p);
+    }
+
+    @Tools.Tool(name = "git_restore", value = "Puts files back as they were at the last commit, or at another "
+            + "commit: drops uncommitted changes to them. Only the files or folder named. The run can be undone, "
+            + "which brings the changes back.")
+    @Tier(value = Risk.WRITE, what = "puts files back as they were committed")
+    @Returns("text: the files put back")
+    public String gitRestore(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
+            @Tools.Param("the files or folders, relative to the repository") List<String> paths,
+            @Tools.Param("the commit to take them from; the last commit if left out") Optional<String> commit) {
+        if (paths == null || paths.isEmpty()) {
+            throw new IllegalArgumentException("name the files to put back; '.' for every file");
+        }
+        String c = ref(commit.filter(s -> !s.isBlank()).orElse("HEAD"));
+        List<String> files = new ArrayList<>();
+        for (String p : paths) {
+            String q = p.strip().replace('\\', '/');
+            if (q.isEmpty() || q.startsWith("-") || q.contains("..")) {
+                throw new IllegalArgumentException("not a path in the repository: " + p);
+            }
+            files.add(q);
+        }
+        Path dir = Reach.file(repo.filter(s -> !s.isBlank()).orElse(""));
+        List<String> diff = new ArrayList<>(List.of("diff", "--name-only", c, "--"));
+        diff.addAll(files);
+        String changed = git(repo, 50_000, diff.toArray(String[]::new));
+        List<String> touched = changed.equals("(nothing)") ? List.of() : changed.lines().filter(l -> !l.isBlank()).toList();
+        try {
+            for (String f : touched) {
+                Checkpointed.before(checkpoints, dir.resolve(f));
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+        List<String> restore = new ArrayList<>(List.of("restore", "--source=" + c, "--worktree", "--staged", "--"));
+        restore.addAll(files);
+        git(repo, OUT, restore.toArray(String[]::new));
+        return touched.isEmpty() ? "nothing differed from " + c
+                : "put back " + touched.size() + " file(s) as at " + c + ": " + String.join(", ",
+                        touched.subList(0, Math.min(40, touched.size()))) + (touched.size() > 40 ? ", …" : "");
+    }
+
+    @Tools.Tool(name = "git_fetch", value = "Fetches new commits and branches from a remote, such as GitHub, without "
+            + "changing your files or branch. Then git_log or git_diff against 'origin/main' shows what is new, and "
+            + "git_merge brings it in.")
+    @Tier(value = Risk.WRITE, what = "fetches from a remote into the repository")
+    @Returns("text: git's answer")
+    public String gitFetch(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
+            @Tools.Param("the remote, 'origin' if left out") Optional<String> remote) {
+        String out = git(repo, OUT, "fetch", "--prune", ref(remote.orElse("origin")));
+        return out.equals("(nothing)") ? "up to date" : out;
+    }
+
+    @Tools.Tool(name = "git_merge", value = "Merges a branch into the current one, such as an agent's branch or "
+            + "'origin/main'. If files conflict, the merge stops with the conflicts marked in them: fix each with "
+            + "edit_file and finish with git_commit, or call again with abort true.")
+    @Tier(value = Risk.WRITE, what = "merges a branch into the current one")
+    @Returns("text: git's answer, or the files in conflict")
+    public String gitMerge(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
+            @Tools.Param("the branch to merge in") Optional<String> branch,
+            @Tools.Param("true to give up a merge that stopped on conflicts") Optional<Boolean> abort) {
+        if (abort.orElse(false)) {
+            git(repo, OUT, "merge", "--abort");
+            return "the merge was given up; the files are as before it";
+        }
+        String b = ref(branch.orElseThrow(() -> new IllegalArgumentException("name the branch to merge in")));
+        Path dir = Reach.file(repo.filter(s -> !s.isBlank()).orElse(""));
+        String incoming = git(repo, 50_000, "diff", "--name-only", "HEAD..." + b);
+        try {
+            for (String f : incoming.equals("(nothing)") ? List.<String>of() : incoming.lines().toList()) {
+                if (!f.isBlank()) {
+                    Checkpointed.before(checkpoints, dir.resolve(f));
+                }
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e.getMessage(), e);
+        }
+        try {
+            return git(repo, OUT, "merge", "--no-edit", "--no-verify", b);
+        } catch (IllegalArgumentException failed) {
+            String conflicts = git(repo, OUT, "diff", "--name-only", "--diff-filter=U");
+            if (conflicts.equals("(nothing)")) {
+                throw failed;
+            }
+            return "the merge stopped: these files conflict, with <<<<<<< ======= >>>>>>> marking each place:\n"
+                    + conflicts.strip() + "\nfix them with edit_file, then git_commit; or git_merge with abort true";
+        }
+    }
+
+    @Tools.Tool(name = "git_worktree_remove", value = "Removes the folder of an agent's worktree, made by "
+            + "spawn_agent with worktree true, once its branch is merged or not wanted. The branch stays.")
+    @Tier(value = Risk.WRITE, what = "removes an agent's worktree folder")
+    @Returns("text: what was removed")
+    public String gitWorktreeRemove(@Tools.Param("the repository's folder; the project's folder if left out") Optional<String> repo,
+            @Tools.Param("the worktree's branch, such as 'agent/3f2a'") String branch,
+            @Tools.Param("true to remove it even with uncommitted changes") Optional<Boolean> force) {
+        String b = ref(branch);
+        String list = git(repo, 50_000, "worktree", "list", "--porcelain");
+        String path = null;
+        String at = null;
+        for (String l : list.lines().toList()) {
+            if (l.startsWith("worktree ")) {
+                at = l.substring("worktree ".length());
+            } else if (l.equals("branch refs/heads/" + b)) {
+                path = at;
+            }
+        }
+        if (path == null) {
+            throw new IllegalArgumentException("no worktree is on the branch " + b);
+        }
+        if (force.orElse(false)) {
+            git(repo, OUT, "worktree", "remove", "--force", path);
+        } else {
+            git(repo, OUT, "worktree", "remove", path);
+        }
+        return "removed the worktree " + path + "; the branch " + b + " stays";
     }
 
     private static String ref(String s) {
