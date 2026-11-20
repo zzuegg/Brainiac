@@ -58,7 +58,7 @@ export function Models() {
           </h2>
           ${p.error && html`<p class="msg-error"><${Icon} name="warn" size=${14} />${p.error}</p>`}
           ${open && p.id === "local" && html`<${Folders} p=${p} />`}
-          ${open && keyed(p) && (p.kind === "api" || p.keys?.length > 0) && html`<${ProviderKeys} p=${p} />`}
+          ${open && keyed(p) && (p.kind === "api" || p.keys?.length > 0 || p.env?.length > 0) && html`<${ProviderKeys} p=${p} />`}
           ${open && (list.length ? html`<ul class="model-rows">${list.map(m => html`<li key=${m.key} class=${cx(m.shown === false && "dim")}>
               <div class="model-name"><b>${m.name}</b><span class="mono muted small">${m.key}</span></div>
               <div class="model-can">${(m.media || []).map(x => html`<span class=${"cap cap-" + x}>${MEDIA_NAMES[x] || x}</span>`)}</div>
@@ -67,7 +67,7 @@ export function Models() {
               <div class="mono muted small model-detail">${m.detail}</div>
               <div class="model-more">${m.provider === "local" && (m.media || []).includes("text") && html`<${IconAction} icon="more" label=${"Work on " + m.name + ": serve, make smaller, fine-tune, merge, measure"} onClick=${e => toolMenu(m, e.currentTarget)} />`}</div>
             </li>`)}</ul>`
-            : html`<p class="muted small">${p.kind === "local" ? "No models here yet: download one, or add a folder that has some." : "No models."}</p>`)}
+            : html`<p class="muted small">${p.id === "local" ? "No models here yet: download one, or add a folder that has some." : p.error ? "No models while it does not answer." : "No models."}</p>`)}
         </section>`;
       })}
       ${q && !groups.length && html`<p class="muted">No model matches “${find}”.</p>`}

@@ -1109,3 +1109,4 @@ a.mini { color: var(--muted); }
   font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.2; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); text-align: left; }
 .side-group:hover { color: var(--fg-2); }
 .side-group .turned { transform: rotate(-90deg); }
+.key-note { margin: 0 0 6px; }

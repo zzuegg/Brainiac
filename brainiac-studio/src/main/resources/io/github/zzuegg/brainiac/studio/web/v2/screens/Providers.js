@@ -61,8 +61,11 @@ export function ProviderKeys({ p }) {
         ${editing === k.label && html`<div class="key-err"><${KeyForm} p=${p} label=${k.label} done=${() => setEditing(null)} cancel=${() => setEditing(null)} /></div>`}
       </li>`;
     })}</ul>`}
-    ${adding || !p.keys.length ? html`<${KeyForm} p=${p} first=${!saved} done=${() => setAdding(false)} cancel=${p.keys.length ? () => setAdding(false) : null} />`
-      : html`<button type="button" class="link small link-icon" onClick=${() => setAdding(true)}><${Icon} name="plus" size=${12} /> Add another key</button>
+    ${p.kind === "local" && html`<p class="muted small key-note">${p.id === "ollama"
+      ? "Models on this PC need no key. A key is for Ollama Cloud (set the address https://ollama.com with the gear icon above) and for agents' web search through Ollama."
+      : "Models on this PC need no key. A key is for another address, set with the gear icon above."}</p>`}
+    ${adding || (!p.keys.length && p.kind !== "local") ? html`<${KeyForm} p=${p} first=${!saved} done=${() => setAdding(false)} cancel=${p.keys.length || p.kind === "local" ? () => setAdding(false) : null} />`
+      : html`<button type="button" class="link small link-icon" onClick=${() => setAdding(true)}><${Icon} name="plus" size=${12} /> ${p.keys.length ? "Add another key" : "Add a key"}</button>
         ${p.keys.length > 1 && html`<span class="muted small"> · tried in order; the next takes over when one is refused or out of credit</span>`}`}
   </div>`;
 }
