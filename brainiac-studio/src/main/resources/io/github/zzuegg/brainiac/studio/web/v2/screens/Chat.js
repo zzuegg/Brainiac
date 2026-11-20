@@ -15,6 +15,7 @@ import { MediaGrid, mediaOf, Working } from "/v2/ui/Media.js";
 import { fineTune, MEDIA, makeMedium } from "/v2/state/media.js";
 import { MediaChat } from "/v2/screens/MediaChat.js";
 import { toast, fail } from "/v2/state/toasts.js";
+import { navigate } from "/v2/state/workspace.js";
 
 // A conversation in the reading column: the transcript, and a composer that stays at the
 // bottom with the model, tools and pictures. Answers stream in; one can be stopped, answered
@@ -92,7 +93,7 @@ export function Chat({ tab }) {
   const last = messages.length - 1;
   return html`<${Reading} header=${header} footer=${footer} scrollRef=${scroll} onScroll=${onScroll} class="chat">
     ${messages.length === 0
-      ? html`<${Welcome} model=${m} auto=${model === "auto"} s=${s} />`
+      ? html`<${Welcome} tab=${tab} model=${m} auto=${model === "auto"} s=${s} />`
       : html`<ol class="transcript">${messages.map((msg, i) => msg.role === "note"
           ? html`<li key=${i} class="msg-note" role="separator"><span>${msg.tools ? `Tools on from here, ${msg.tools === "auto" ? "automatic" : "ask first"}` : "Tools off from here"}</span></li>`
           : msg.role === "user"
@@ -103,14 +104,14 @@ export function Chat({ tab }) {
   <//>`;
 }
 
-function Welcome({ model, auto, s }) {
+function Welcome({ tab, model, auto, s }) {
   const none = modelInfo.value && !chatModels.value.length;
   return html`<${Empty} title=${none ? "No chat model yet" : "What should we work on?"} icon=${html`<${Icon} name="chat" size=${28} />`}>
     ${none
-      ? html`Add a model folder on this PC, or a key for a provider, in <a href="/" target="_blank" rel="noopener">classic Studio</a>'s settings.`
+      ? html`Download one, add a folder on this PC, or add a key for a provider on the <button type="button" class="link" onClick=${() => navigate(tab, { screen: "models" })}>Models</button> page.`
       : model ? `${auto ? "Auto sends this to" : "This goes to"} ${model.name}. Pick another model below the message box.` : ""}
     <div class="medium-picks"><span class="muted small">Or make this</span>
-      ${Object.entries(MEDIA).map(([k, M]) => html`<button type="button" class="btn btn-sm" onClick=${() => makeMedium(s, k)}><${Icon} name=${M.icon} /><span>${M.label.toLowerCase().replace(" chat", "")} chat</span></button>`)}</div>
+      ${Object.entries(MEDIA).map(([k, M]) => html`<button type="button" class="btn btn-sm" onClick=${() => makeMedium(s, k)}><${Icon} name=${M.icon} /><span>${M.label.toLowerCase()}</span></button>`)}</div>
   <//>`;
 }
 

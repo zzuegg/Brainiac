@@ -980,3 +980,12 @@ a.mini { color: var(--muted); }
 .layer-body p.field-hint { margin: -8px 0 16px; }
 .size-pick > .mono.small { white-space: nowrap; }
 .eval-table td.r { white-space: nowrap; }
+
+/* transcription */
+.heard-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px 4px; }
+.heard { margin: 8px 0 0; padding: 10px 14px; border-radius: var(--r-m); background: var(--panel-2); border: 1px solid var(--line-soft); line-height: 1.6; }
+.heard p { margin: 0; white-space: pre-wrap; }
+.segments { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.segments li { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: baseline; }
+.check-inline { display: inline-flex; align-items: center; gap: 4px; }
+.transcript-turn .media-prompt-text { display: inline-flex; align-items: center; gap: 6px; }

@@ -246,7 +246,7 @@ function WhereStep({ d, set }) {
     : [{ key: "best", name: "Best available" }, ...(host.devices || []).map(x => ({ key: x.kind, name: x.name }))];
   const at = rateAt(s.optimizer);
   return html`
-    <${Field} label="Train on" hint=${hosts.length ? "" : "Other machines running brainiac-studio --worker show up here once added in the classic Studio's Settings, Machines."}>
+    <${Field} label="Train on" hint=${hosts.length ? "" : "Other machines running brainiac-studio --worker show up here once added on the Machines page."}>
       <select class="input" value=${s.host || "local"} onChange=${e => put({ host: e.target.value, device: "best" })}>
         <option value="local">This PC</option>
         ${hosts.map(h => html`<option value=${h.id} disabled=${!h.online}>${h.name}${h.online ? "" : " (offline)"}</option>`)}

@@ -17,6 +17,8 @@ export const MEDIA = {
     lead: "Type what should be said. Pick a voice and a model below." },
   video: { label: "Video chat", noun: "clip", verb: "Film", doing: "Filming", icon: "video", modelMedia: "video",
     lead: "Describe a short clip. It takes a while on this PC; the steps show as it goes." },
+  transcribe: { label: "Transcription", noun: "transcript", verb: "Write down", doing: "Listening", icon: "mic", modelMedia: "transcribe",
+    lead: "Record something or choose a recording, and it is written down here with its times. The recording stays with the transcript." },
 };
 
 /** The models that make a medium. */
@@ -25,7 +27,16 @@ export const modelsFor = medium => (modelInfo.value?.models || []).filter(m => (
 export const defaults = medium => ({
   model: "auto", aspect: medium === "video" ? "16:9" : "1:1", count: 1, steps: "", guidance: "", seed: "", negativePrompt: "",
   voice: "", blend: "", mix: 0.7, format: "", seconds: 2, speed: 1, instructions: "",
+  language: "auto", translate: false, hint: "",
 });
+
+/** What a transcription model offers: its languages, and whether it translates to English. */
+const listening = new Map();
+export function transcribeOptions(key) {
+  const k = key === "auto" ? modelInfo.value?.auto?.transcribe || "" : key;
+  if (!listening.has(k)) listening.set(k, api("/api/transcribe/options", { model: k }).catch(() => ({ languages: [], translate: false })));
+  return listening.get(k);
+}
 
 /** What a speech model offers: its voices, and whether it takes a speed and instructions. */
 export function speechOptions(key) {
@@ -127,6 +138,56 @@ export async function generate(s, prompt) {
   }
   batch(() => {
     setLast(s, { streaming: false, progress: undefined });
+    s.busy.value = false;
+  });
+  s.ctrl = null;
+  await save(s);
+}
+
+/**
+ * Writes down a recording (16 kHz WAV, base64) as a new turn: the recording on the asking side,
+ * kept with the outputs so it can be heard again, and the text with its times as the answer.
+ */
+export async function writeDown(s, clip) {
+  const c = s.chat.value;
+  if (s.busy.value || !clip?.data) return;
+  const settings = { ...defaults("transcribe"), ...(c.settings || {}) };
+  const at = Date.now();
+  batch(() => {
+    s.chat.value = {
+      ...c, updated: at, title: !c.messages.length && c.title === MEDIA.transcribe.label ? titleOf(clip.label) : c.title,
+      messages: [...c.messages, { role: "user", text: "", audio: { label: clip.label, seconds: clip.seconds }, settings, at },
+        { role: "assistant", text: "", segments: [], streaming: true, at }],
+    };
+    s.busy.value = true;
+  });
+  s.ctrl = new AbortController();
+  const started = performance.now();
+  const setAsk = changes => {
+    const ms = s.chat.value.messages;
+    s.chat.value = { ...s.chat.value, messages: [...ms.slice(0, -2), { ...ms.at(-2), ...changes }, ms.at(-1)] };
+  };
+  let failed = null;
+  try {
+    await stream("/api/transcribe", { model: settings.model || "auto", audio: clip.data, language: settings.language || "auto",
+      translate: !!settings.translate, timestamps: true, prompt: settings.hint || "", keep: true }, {
+      project: s.project, signal: s.ctrl.signal,
+      onEvent(event, d) {
+        if (event === "audio") setAsk({ audio: { ...s.chat.value.messages.at(-2).audio, file: d.file } });
+        else if (event === "route") setLast(s, { model: { key: d.key, name: d.name } });
+        else if (event === "segment") setLast(s, { segments: [...(s.chat.value.messages.at(-1).segments || []), d] });
+        else if (event === "done") setLast(s, { text: d.text, language: d.language, audioSeconds: d.audioSeconds });
+        else if (event === "error") failed = d.message;
+      },
+    });
+    if (failed) throw new Error(failed);
+    setLast(s, { seconds: (performance.now() - started) / 1000 });
+  } catch (e) {
+    if (e.name === "AbortError" || e.message === "stopped") setLast(s, { stopped: true });
+    else setLast(s, { error: e.message });
+  }
+  batch(() => {
+    setLast(s, { streaming: false });
     s.busy.value = false;
   });
   s.ctrl = null;

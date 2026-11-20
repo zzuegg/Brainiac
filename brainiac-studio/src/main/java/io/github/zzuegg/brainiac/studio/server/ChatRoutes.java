@@ -80,8 +80,9 @@ import java.util.Map;
  *       one.
  *   <li>{@code POST /api/transcribe} with {@code {"model": "auto", "audio": "<base64 WAV>",
  *       "language": "de", "translate": false, "timestamps": true, "prompt": ""}} writes down what is
- *       said with a Whisper model on this PC, as a server-sent event stream: {@code route}, one
- *       {@code segment} ({@code {start, end, text}}) at a time, then {@code done} ({@code {text,
+ *       said with a Whisper model on this PC, as a server-sent event stream: {@code audio} ({@code
+ *       {file}}, the recording kept in the outputs folder, when the body has {@code "keep": true}),
+ *       {@code route}, one {@code segment} ({@code {start, end, text}}) at a time, then {@code done} ({@code {text,
  *       language, audioSeconds, seconds}}) or {@code error}. Closing the stream stops it. {@code POST
  *       /api/transcribe/options} with {@code {"model": "local/whisper-base"}} gives its languages
  *       and whether it translates.
@@ -667,6 +668,9 @@ final class ChatRoutes {
                 Boolean.TRUE.equals(body.get("translate")), !Boolean.FALSE.equals(body.get("timestamps")),
                 Json.string(body, "prompt", ""));
 
+        // the recording is kept with the studio's outputs, so a transcript can be listened to again
+        java.nio.file.Path kept = Boolean.TRUE.equals(body.get("keep")) ? keepRecording(wav) : null;
+
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");
         ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
@@ -674,6 +678,9 @@ final class ChatRoutes {
         try (OutputStream out = ex.getResponseBody()) {
             Events events = new Events(out);
             long start = System.nanoTime();
+            if (kept != null) {
+                events.sendQuietly("audio", Map.of("file", kept.toString()));
+            }
             try {
                 ChatService.Transcribed t = chat.transcribe(Json.string(body, "model", ChatService.AUTO), wav, listening, seg -> {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -708,6 +715,18 @@ final class ChatRoutes {
         } catch (IOException closed) {
             // the page stopped reading
         }
+    }
+
+    private java.nio.file.Path keepRecording(byte[] wav) throws IOException {
+        java.nio.file.Path dir = chat.outputs();
+        java.nio.file.Files.createDirectories(dir);
+        String stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        java.nio.file.Path f = dir.resolve("heard-" + stamp + ".wav");
+        for (int n = 2; java.nio.file.Files.exists(f); n++) {
+            f = dir.resolve("heard-" + stamp + "-" + n + ".wav");
+        }
+        java.nio.file.Files.write(f, wav);
+        return f;
     }
 
     // one text into another with a BART, Marian or T5 model on this PC
