@@ -7,6 +7,7 @@ dependencies {
     api(project(":brainiac-io"))
     testRuntimeOnly(project(":brainiac-backend-cpu"))
     testRuntimeOnly(project(":brainiac-backend-vulkan"))
+    testRuntimeOnly(project(":brainiac-backend-hip"))
 }
 
 // -PtestDevice=vulkan (or part of a device name) runs the tests on that device
