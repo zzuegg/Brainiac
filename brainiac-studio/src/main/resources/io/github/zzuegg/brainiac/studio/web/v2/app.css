@@ -575,3 +575,16 @@ textarea.input { height: auto; padding: 9px 11px; resize: vertical; line-height:
   .builder-side { border-left: 0; border-top: 1px solid var(--line-soft); }
   .builder-head { padding-left: 52px; }
 }
+/* removing a block, and while a wire is pulled: where it fits (and why not where it does not) */
+.gnode-x { display: grid; place-items: center; width: 18px; height: 18px; margin-right: -4px; padding: 0; border: 0; border-radius: 5px;
+  background: none; color: var(--muted); cursor: pointer; opacity: 0; }
+.gnode:hover .gnode-x, .gnode.selected .gnode-x, .gnode-x:focus-visible { opacity: 1; }
+.gnode-x:hover { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+@media (hover: none) { .gnode-x { opacity: 1; } }
+.canvas.pulling .gnode { transition: opacity .12s, box-shadow .12s; }
+.gnode.fits { box-shadow: 0 0 0 2px var(--ok), var(--shadow); }
+.gnode.fits .gnode-row .sock:not(.on) { transform: scale(1.4); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent); }
+.gnode.nofit { opacity: .45; }
+.gnode.fit-checking { opacity: .8; }
+.gnode-why { margin: 0 10px 4px; padding: 4px 6px; border-radius: 5px; background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--bad); font-size: 11px; line-height: 1.35; }
+.canvas-keys { margin-right: 6px; }

@@ -8,12 +8,12 @@ import { ItemHeader, routeItem, Gone } from "/v2/screens/ItemHeader.js";
 import { fail } from "/v2/state/toasts.js";
 import { navigate } from "/v2/state/workspace.js";
 import { lastChatModel, rememberChatModel, loadModels, modelInfo } from "/v2/state/models.js";
-import { layers, menu } from "/v2/ui/overlay.js";
+import { layers, menu, openMenu } from "/v2/ui/overlay.js";
 import { plural } from "/v2/lib/format.js";
 import {
   catalog, loadCatalog, editorFor, open, reload, setView, tryChange, addBlock, specOf, connect, disconnect, removeBlock,
   moveBlock, arrange, undo, redo, build, entryOf, entryLabel, nodeLabel, multiIn, incomplete, shapeKind, fmtShape, fmtCount,
-  fmtVal, guess, parseVal, WIRING, assistantOf, assistantLive, follow, forgetAssistant, askAssistant, saidToAssistant,
+  fmtVal, guess, parseVal, WIRING, assistantOf, assistantLive, wireTargets, unplug, toggleOutput, follow, forgetAssistant, askAssistant, saidToAssistant,
 } from "/v2/state/builder.js";
 
 // The builder: blocks on the left, the network in the middle, and on the right either the
@@ -187,6 +187,7 @@ function Canvas({ ed }) {
     setView(ed, { s, x: 32 - x1 * s, y: 56 - y1 * s });
   };
   const shown = useRef(null);
+  const [fits, setFits] = useState(null);    // while a wire is pulled: {from, ids: {id: null | why not}}
   useLayoutEffect(() => {
     if (!ed.view.value) fit();
     draw();
@@ -280,8 +281,14 @@ function Canvas({ ed }) {
   };
   const pullWire = (e, n, out) => {
     const a = centre(out), kind = shapeKind(shapeOf(n.id));
+    // every block says, while the wire is pulled, whether it would fit there and why not
+    let live = true;
+    setFits({ from: n.id, ids: null });
+    wireTargets(ed, n.id).then(ids => { if (live) setFits({ from: n.id, ids }); });
     const move = ev => draw({ a, b: point(ev.clientX, ev.clientY), kind });
     const up = ev => {
+      live = false;
+      setFits(null);
       removeEventListener("pointermove", move);
       removeEventListener("pointerup", up);
       draw();
@@ -293,6 +300,20 @@ function Canvas({ ed }) {
     addEventListener("pointermove", move);
     addEventListener("pointerup", up);
   };
+  const blockMenu = e => {
+    const el = e.target.closest(".gnode");
+    if (!el) return;
+    e.preventDefault();
+    const n = ed.graph.value.nodes.find(x => x.id === el.dataset.node);
+    if (!n) return;
+    ed.sel.value = n.id;
+    openMenu({ x: e.clientX, y: e.clientY }, [
+      n.op !== "input" && { label: ed.graph.value.output === n.id ? "Unmark as output" : "Make this the output", icon: "check", run: () => toggleOutput(ed, n.id) },
+      n.inputs?.length > 0 && { label: "Unplug its inputs", icon: "close", run: () => unplug(ed, n.id) },
+      { separator: true },
+      { label: "Remove", icon: "trash", hint: "Del", danger: true, run: () => removeBlock(ed, n.id) },
+    ], nodeLabel(n));
+  };
   const onDrop = e => {
     const k = e.dataTransfer.getData("text/x-block");
     if (!k) return;
@@ -303,7 +324,7 @@ function Canvas({ ed }) {
 
   const errs = g.nodes.filter(n => errorOf(n.id)), loose = errs.filter(n => incomplete(errorOf(n.id)));
   const changed = new Set(notice?.ids || []);
-  return html`<section class="canvas" ref=${wrap} aria-label="The network" onPointerDown=${onPointerDown}
+  return html`<section class=${cx("canvas", fits && "pulling")} ref=${wrap} aria-label="The network" onPointerDown=${onPointerDown} onContextMenu=${blockMenu}
       onDragOver=${e => { if (e.dataTransfer.types.includes("text/x-block")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } }}
       onDrop=${onDrop}>
     <div class="canvas-tools">
@@ -317,7 +338,9 @@ function Canvas({ ed }) {
     <div class="world" ref=${world} style=${`transform:translate(${view.x}px,${view.y}px) scale(${view.s})`}>
       <svg class="wires" ref=${svg} />
       ${g.nodes.map(n => html`<${Block} key=${n.id} n=${n} sel=${n.id === ed.sel.value} out=${n.id === check?.output}
-        changed=${changed.has(n.id)} shapeOf=${shapeOf} err=${errorOf(n.id)} />`)}
+        changed=${changed.has(n.id)} shapeOf=${shapeOf} err=${errorOf(n.id)}
+        fit=${!fits || fits.from === n.id ? undefined : !fits.ids ? "checking" : n.id in fits.ids ? (fits.ids[n.id] ?? true) : undefined}
+        remove=${() => removeBlock(ed, n.id)} />`)}
     </div>
     ${g.nodes.length <= 1 && html`<p class="canvas-hint">Click a block on the left, or drag it here. Drag from a block's output to another's input to wire them.</p>`}
     <div class="canvas-status">
@@ -327,21 +350,25 @@ function Canvas({ ed }) {
       ${refusal && html`<span class="chip chip-bad" title=${refusal.text}>Refused: ${refusal.text.length > 90 ? refusal.text.slice(0, 90) + "…" : refusal.text}</span>`}
       ${notice && html`<span class="chip chip-accent">${notice.text}<button type="button" class="chip-btn" onClick=${() => undo(ed)}>Undo</button></span>`}
       <span class="grow" />
+      <span class="muted small canvas-keys">Right-click a block for more · Del removes</span>
       <span class="legend"><i class="sock image on" />image<i class="sock vector on" />vector<i class="sock seq on" />sequence</span>
     </div>
   </section>`;
 }
 
-function Block({ n, sel, out, changed, shapeOf, err }) {
+function Block({ n, sel, out, changed, shapeOf, err, fit, remove }) {
   const e = entryOf(n), shp = shapeOf(n.id);
   const ins = n.op === "input" ? [] : multiIn(n) ? [...(n.inputs || []), null] : [(n.inputs || [])[0] || null];
   const vals = [];
   if (n.op === "input") vals.push(["shape", fmtShape(n.shape)]);
   if (e) e.params.forEach((p, i) => { if (p.kind !== "random") vals.push([p.name, fmtVal(n.args?.[i])]); });
   Object.entries(n.options || {}).forEach(([k, a]) => vals.push([k.replace(/\(.*$/, ""), (a || []).map(fmtVal).join(", ") || "on"]));
-  return html`<div class=${cx("gnode", "op-" + n.op, sel && "selected", err && (incomplete(err) ? "loose" : "bad"), e?.experimental && "exp", changed && "changed")}
-      data-node=${n.id} style=${`left:${n.x}px;top:${n.y}px`}>
-    <div class="gnode-head"><b>${nodeLabel(n)}</b><span class="grow" />${out ? html`<span class="chip chip-ok">output</span>` : html`<span class="mono muted">${n.id}</span>`}</div>
+  const fitClass = fit === true ? "fits" : fit === "checking" ? "fit-checking" : typeof fit === "string" ? "nofit" : null;
+  return html`<div class=${cx("gnode", "op-" + n.op, sel && "selected", err && (incomplete(err) ? "loose" : "bad"), e?.experimental && "exp", changed && "changed", fitClass)}
+      data-node=${n.id} style=${`left:${n.x}px;top:${n.y}px`} title=${typeof fit === "string" && fit !== "checking" ? "Does not fit: " + fit : undefined}>
+    <div class="gnode-head"><b>${nodeLabel(n)}</b><span class="grow" />${out ? html`<span class="chip chip-ok">output</span>` : html`<span class="mono muted">${n.id}</span>`}
+      <button type="button" class="gnode-x" aria-label=${"Remove " + n.id} title="Remove (Del)" onClick=${e => { e.stopPropagation(); remove(); }}><${Icon} name="close" size=${12} /></button></div>
+    ${typeof fit === "string" && fit !== "checking" && html`<p class="gnode-why">${fit}</p>`}
     ${ins.map((src, i) => html`<div class="gnode-row" key=${"i" + i}>
       <span class=${cx("sock", shapeKind(shapeOf(src)), src && "on")} data-in=${n.id} data-slot=${i} title=${src ? "From " + src + ". Drag to unplug." : "Drop a wire here"} />
       <span class="gnode-nm">${src || (multiIn(n) && i ? "+" : "in")}</span><span class="gnode-shp">${src ? fmtShape(shapeOf(src)) : ""}</span></div>`)}

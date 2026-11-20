@@ -181,18 +181,54 @@ export async function tryChange(ed, change, focus) {
     return false;
   }
   if (!r) return false;
-  const broken = Object.entries(r.nodes).filter(([id, v]) => v.error && (!was || was.nodes?.[id]?.shape || id === focus))
-    .filter(([id, v]) => !(id === focus && incomplete(v.error)));
-  if (broken.length) {
-    const [id, v] = broken.find(([i]) => i === focus) || broken[0];
-    const n = before.nodes.find(x => x.id === id) || next.nodes.find(x => x.id === id);
-    ed.refusal.value = { id: focus || id, text: `${n ? nodeLabel(n) : id}: ${v.error}` };
+  const why = verdict(r, was, before, next, focus);
+  if (why) {
+    ed.refusal.value = { id: focus, text: why };
     return false;
   }
   ed.check.value = r;
   ed.refusal.value = null;
   commit(ed, next, before);
   return true;
+}
+
+// why a checked change is refused, or null: a block that worked breaks, or the one aimed at does
+function verdict(r, was, before, next, focus) {
+  const broken = Object.entries(r.nodes).filter(([id, v]) => v.error && (!was || was.nodes?.[id]?.shape || id === focus))
+    .filter(([id, v]) => !(id === focus && incomplete(v.error)));
+  if (!broken.length) return null;
+  const [id, v] = broken.find(([i]) => i === focus) || broken[0];
+  const n = before.nodes.find(x => x.id === id) || next.nodes.find(x => x.id === id);
+  return `${n ? nodeLabel(n) : id}: ${v.error}`;
+}
+
+const wired = (g, src, dst, slot) => {
+  const t = g.nodes.find(n => n.id === dst);
+  const ins = [...(t.inputs || [])];
+  if (multiIn(t)) { if (slot < ins.length) ins[slot] = src; else ins.push(src); } else ins[0] = src;
+  t.inputs = [...new Set(ins)];
+};
+
+/**
+ * While a wire is pulled from a block: for every block it could go to, null if it fits there,
+ * else why not. The same check a dropped wire gets, asked ahead.
+ */
+export async function wireTargets(ed, src) {
+  const before = ed.graph.value, was = ed.check.value;
+  const out = {};
+  const targets = before.nodes.filter(n => n.id !== src && n.op !== "input").slice(0, 60);
+  await Promise.all(targets.map(async t => {
+    const next = clone(before);
+    wired(next, src, t.id, 99);
+    try {
+      const r = await api("/api/builder/check", { graph: wireGraph(next) }, { project: ed.project });
+      out[t.id] = verdict(r, was, before, next, t.id);
+    } catch (e) {
+      out[t.id] = e.message;
+    }
+  }));
+  for (const n of before.nodes) if (n.op === "input" && n.id !== src) out[n.id] = "an Input block takes no wire";
+  return out;
 }
 
 /** A change that cannot break a block worth refusing it for: moving, removing, unwiring. */
@@ -254,13 +290,14 @@ export async function addBlock(ed, spec, at) {
 export function connect(ed, src, dst, slot) {
   const target = ed.graph.value.nodes.find(n => n.id === dst);
   if (src === dst || !target || target.op === "input") return;
-  return tryChange(ed, g => {
-    const t = g.nodes.find(n => n.id === dst);
-    const ins = [...(t.inputs || [])];
-    if (multiIn(t)) { if (slot < ins.length) ins[slot] = src; else ins.push(src); } else ins[0] = src;
-    t.inputs = [...new Set(ins)];
-  }, dst);
+  return tryChange(ed, g => wired(g, src, dst, slot), dst);
 }
+
+/** Unplugs every wire going into a block. */
+export const unplug = (ed, id) => change(ed, g => { g.nodes.find(x => x.id === id).inputs = []; });
+
+/** Marks a block as the network's output, or unmarks it. */
+export const toggleOutput = (ed, id) => tryChange(ed, g => { g.output = g.output === id ? undefined : id; }, id);
 
 export const disconnect = (ed, id, slot) => change(ed, g => {
   const n = g.nodes.find(x => x.id === id);
