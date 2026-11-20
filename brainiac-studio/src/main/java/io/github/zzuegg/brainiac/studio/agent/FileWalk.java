@@ -117,6 +117,20 @@ final class FileWalk {
     }
 
     /**
+     * A file found under a folder, as a path relative to the project's folder when it lies inside
+     * it, so that read_file and edit_file take it as it is.
+     *
+     * @param root the folder searched
+     * @param rel the file, relative to that folder
+     * @return the path to show
+     */
+    static Path shown(Path root, Path rel) {
+        Path project = Reach.root();
+        Path f = root.resolve(rel).toAbsolutePath().normalize();
+        return project != null && f.startsWith(project) ? project.relativize(f) : f;
+    }
+
+    /**
      * A path as agents see it: relative, with forward slashes.
      *
      * @param rel the path

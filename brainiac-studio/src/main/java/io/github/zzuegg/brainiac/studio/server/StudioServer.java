@@ -112,6 +112,7 @@ public final class StudioServer implements AutoCloseable {
                 agentsFolder.resolve("scheduled-posts.json"), server.projects);
         AgentRuns agents = server.agents = new AgentRuns(chat, List.of(new StudioTools(chat, server.training),
                 new io.github.zzuegg.brainiac.studio.agent.FileTools(),
+                new io.github.zzuegg.brainiac.studio.agent.SymbolTools(),
                 new io.github.zzuegg.brainiac.studio.agent.DataTools(),
                 new io.github.zzuegg.brainiac.studio.agent.MediaTools(chat),
                 new io.github.zzuegg.brainiac.studio.agent.MlTools(chat, server.training),

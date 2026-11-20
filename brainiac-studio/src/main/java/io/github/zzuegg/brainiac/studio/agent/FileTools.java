@@ -225,7 +225,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
                 } catch (IOException e) {
                     t = 0;
                 }
-                hits.add(new Hit(FileWalk.name(rel), t));
+                hits.add(new Hit(FileWalk.name(FileWalk.shown(root, rel)), t));
             }
             return ++seen[0] < SEARCH_FILES;
         });
@@ -773,7 +773,7 @@ public final class FileTools implements RiskRefiner, Checkpointed {
             } catch (IOException | UncheckedIOException e) {
                 return true;   // not UTF-8 text
             }
-            String name = FileWalk.name(rel);
+            String name = FileWalk.name(FileWalk.shown(root, rel));
             int inFile = 0;
             for (int i = 0; i < lines.size(); i++) {
                 if (!hit.test(lines.get(i))) {
