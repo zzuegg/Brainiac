@@ -103,7 +103,11 @@ public final class StudioServer implements AutoCloseable {
                 id -> server.projects.get(id).isPresent())
                 .register(new ItemKinds.Chats(chat.conversations()))
                 .register(new ItemKinds.GraphKind(graphs))
+                .register(new ItemKinds.Runs(server.training))
                 .register(new ItemKinds.ProjectKind(server.projects));
+        // a run belongs to the project of the request or agent that started it
+        server.training.onStart(r -> owners.claim(io.github.zzuegg.brainiac.studio.items.ItemKind.TRAINING, r.id(),
+                ItemRoutes.callerProject()));
         new ItemRoutes(items).register(server);
         new ChatRoutes(chat, owners).register(server);
         new BuilderRoutes(graphs, owners).register(server);

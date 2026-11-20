@@ -5,10 +5,11 @@ export const KINDS = {
   chat: { label: "Chat", plural: "Chats", icon: "chat", actions: ["open", "rename", "duplicate", "move", "delete"] },
   agent: { label: "Agent", plural: "Agents", icon: "agent", actions: ["open", "rename", "move", "delete"] },
   graph: { label: "Network", plural: "Networks", icon: "graph", actions: ["open", "rename", "duplicate", "move", "delete"] },
+  training: { label: "Training run", plural: "Training", icon: "train", actions: ["open", "rename", "move", "delete"] },
   project: { label: "Project", plural: "Projects", icon: "project", actions: ["open", "rename", "delete"] },
 };
 
 /** The sections of a project's sidebar, in order. */
-export const SECTIONS = ["chat", "agent", "graph"];
+export const SECTIONS = ["chat", "agent", "graph", "training"];
 
 export const kindOf = k => KINDS[k] || { label: k, plural: k, icon: "dot", actions: ["open", "delete"] };

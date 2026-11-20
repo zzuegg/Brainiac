@@ -8,6 +8,7 @@ import { openProject, navigate } from "/v2/state/workspace.js";
 import { toast, fail } from "/v2/state/toasts.js";
 import { editorFor, askAssistant } from "/v2/state/builder.js";
 import { lastChatModel } from "/v2/state/models.js";
+import { newTraining } from "/v2/wizards/Training.js";
 
 // The "New …" flows. Each one is a short wizard built from the shared parts; `create(kind, tab)`
 // is what every "+" button calls.
@@ -17,6 +18,7 @@ export function create(kind, tab) {
   if (kind === "chat") return newChat(tab);
   if (kind === "agent") return openLayer(NewAgent, { tab });
   if (kind === "graph") return openLayer(NewNetwork, { tab });
+  if (kind === "training") return newTraining(tab);
 }
 
 // ---------------------------------------------------------------- project

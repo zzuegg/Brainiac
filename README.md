@@ -1044,6 +1044,16 @@ are made; Build builds the model and saves it beside the network. Agents anywher
 project can use `list_networks`, `read_network`, `create_network` and `edit_network` too
 (`POST /api/builder/graphs/get {name}` reads one network).
 
+**Training.** Train… in the builder (or + under Training in the sidebar) starts a run in three
+steps: the network and the data, with a line that says whether they fit; the optimizer,
+learning rate, epochs and batch, with every other setting under More settings; and where it
+runs, with extra learning rates to try side by side. The network is built fresh from its
+design when the run starts. A run belongs to its project like a chat: it can be renamed, moved
+and deleted to the trash (its saved model stays). Its page shows the progress, the loss per
+epoch beside other runs of the same network, every epoch's numbers, the settings, and the model
+it saved, which can be tried on a sample of its data or trained further. Run ids are never
+given twice (`runs/last-id`); `POST /api/train/run {id}` reads one run with its loss curve.
+
 Nothing is kept in the browser, so every browser on the PC shows the same conversations and
 tabs; what an older version kept in a browser moves to the data folder the first time that
 browser opens the studio.

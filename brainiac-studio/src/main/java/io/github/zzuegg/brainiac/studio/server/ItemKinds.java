@@ -286,6 +286,64 @@ final class ItemKinds {
         }
     }
 
+    /** Training runs; their project is kept by the owners. The trash takes a run's record, not the model it saved. */
+    static final class Runs implements ItemKind {
+
+        private final io.github.zzuegg.brainiac.studio.train.TrainingService training;
+
+        Runs(io.github.zzuegg.brainiac.studio.train.TrainingService training) {
+            this.training = training;
+        }
+
+        @Override
+        public String kind() {
+            return TRAINING;
+        }
+
+        @Override
+        public List<Item> list() {
+            return training.runs().stream().map(Runs::item).toList();
+        }
+
+        @Override
+        public Optional<Item> get(String id) {
+            return training.run(id).map(Runs::item);
+        }
+
+        private static Item item(io.github.zzuegg.brainiac.studio.train.TrainingRun r) {
+            Map<String, Object> j = r.toJson(false);
+            Map<String, Object> extra = new LinkedHashMap<>();
+            for (String k : List.of("state", "epoch", "epochs", "output", "error", "data", "host")) {
+                if (j.get(k) != null) {
+                    extra.put(k, j.get(k));
+                }
+            }
+            extra.put("model", Json.string(r.spec(), "model", ""));
+            if (j.get("loss") != null) {
+                extra.put("loss", j.get("loss"));
+            }
+            long updated = Math.max(Json.integer(j, "ended", 0), Math.max(Json.integer(j, "started", 0), Json.integer(j, "created", 0)));
+            return new Item(TRAINING, r.id(), r.name(), null, updated, extra);
+        }
+
+        @Override
+        public String rename(String id, String title) throws IOException {
+            training.rename(id, title);
+            return id;
+        }
+
+        @Override
+        public Map<String, Object> detach(String id, Path into) throws IOException {
+            training.detach(id, into);
+            return Map.of();
+        }
+
+        @Override
+        public void attach(String id, Path from, Map<String, Object> kept) throws IOException {
+            training.attach(id, from);
+        }
+    }
+
     /** Projects; deleting one keeps its items, which come back with it. */
     static final class ProjectKind implements ItemKind {
 

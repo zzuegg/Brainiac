@@ -19,6 +19,8 @@ public interface ItemKind {
     String AGENT = "agent";
     /** The builder's graphs. */
     String GRAPH = "graph";
+    /** Training runs. */
+    String TRAINING = "training";
     /** Projects themselves. */
     String PROJECT = "project";
 

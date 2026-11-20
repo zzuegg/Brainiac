@@ -43,15 +43,16 @@ export function ItemList({ tab, items, current, compact, label, scope = "list" }
 function Row({ tab, item, current, compact, scope }) {
   const k = kindOf(item.kind);
   const renaming = isRenaming(tab, item, scope);
-  const busy = item.kind === "agent" && (item.state === "running" || item.waiting || item.state === "waiting");
+  const busy = (item.kind === "agent" && (item.state === "running" || item.waiting || item.state === "waiting"))
+    || (item.kind === "training" && ["queued", "loading", "running"].includes(item.state));
+  const failed = (item.kind === "agent" || item.kind === "training") && item.state === "failed";
   const sub = subtitle(item);
   return html`<li class=${cx("item", current && "current", renaming && "renaming")} data-key=${keyOf(item)}
       tabindex="0" aria-current=${current ? "page" : undefined}
       onClick=${e => !renaming && !e.target.closest("button") && open(tab, item)}
       onContextMenu=${e => { e.preventDefault(); openMenu({ x: e.clientX, y: e.clientY }, menuFor(tab, item, scope), item.title); }}>
-    <span class=${cx("item-ic", "k-" + item.kind, item.kind === "agent" && item.state === "failed" && "item-failed")}
-        title=${item.kind === "agent" && item.state === "failed" ? "Failed" : undefined}>
-      ${busy ? html`<span class=${cx("live", item.waiting || item.state === "waiting" ? "live-wait" : "live-run")} title=${item.waiting ? "Waits for you" : "Working"} />`
+    <span class=${cx("item-ic", "k-" + item.kind, failed && "item-failed")} title=${failed ? "Failed" : undefined}>
+      ${busy ? html`<span class=${cx("live", item.waiting || item.state === "waiting" ? "live-wait" : "live-run")} title=${item.waiting ? "Waits for you" : item.kind === "training" ? "Training" : "Working"} />`
         : html`<${Icon} name=${k.icon} />`}
     </span>
     ${renaming
@@ -74,6 +75,8 @@ function subtitle(item) {
   if (item.kind === "chat") return item.messages ? `${item.messages} messages` : "empty";
   if (item.kind === "agent") return item.waiting ? "waits for you" : item.state;
   if (item.kind === "graph") return `${item.nodes} blocks${item.built ? " · built" : ""}`;
+  if (item.kind === "training") return item.state === "running" || item.state === "loading" ? `epoch ${item.epoch} of ${item.epochs}`
+    : item.state === "finished" && item.loss != null ? `finished · loss ${(+item.loss).toPrecision(3)}` : item.state;
   return "";
 }
 

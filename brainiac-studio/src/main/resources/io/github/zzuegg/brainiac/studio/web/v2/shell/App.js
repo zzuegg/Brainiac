@@ -22,8 +22,9 @@ import { Trash } from "/v2/screens/Trash.js";
 import { Settings } from "/v2/screens/Settings.js";
 import { ProjectSettings } from "/v2/screens/ProjectSettings.js";
 import { Overview } from "/v2/screens/Overview.js";
+import { Training } from "/v2/screens/Training.js";
 
-const SCREENS = { home: Home, chat: Chat, agent: Agent, graph: Graph, trash: Trash, settings: Settings, config: ProjectSettings };
+const SCREENS = { home: Home, chat: Chat, agent: Agent, graph: Graph, trash: Trash, settings: Settings, config: ProjectSettings, training: Training };
 
 export function App() {
   useEffect(() => {

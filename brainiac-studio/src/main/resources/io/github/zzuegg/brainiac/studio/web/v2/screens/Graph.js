@@ -10,6 +10,7 @@ import { navigate } from "/v2/state/workspace.js";
 import { lastChatModel, rememberChatModel, loadModels, modelInfo } from "/v2/state/models.js";
 import { layers, menu, openMenu } from "/v2/ui/overlay.js";
 import { plural } from "/v2/lib/format.js";
+import { newTraining } from "/v2/wizards/Training.js";
 import {
   catalog, loadCatalog, editorFor, open, reload, setView, tryChange, addBlock, specOf, connect, disconnect, removeBlock,
   moveBlock, arrange, undo, redo, build, entryOf, entryLabel, nodeLabel, multiIn, incomplete, shapeKind, fmtShape, fmtCount,
@@ -53,6 +54,8 @@ export function Graph({ tab }) {
       <${Button} icon="sparkle" aria-pressed=${side === "assistant"} class=${cx(side === "assistant" && "is-on")}
         onClick=${() => setSide(side === "assistant" ? "block" : "assistant")} title="An agent that changes this network for you">
         Assistant${assistantLive(ed) && side !== "assistant" ? html`<span class="live live-run" />` : ""}<//>
+      <${Button} icon="train" disabled=${!c?.ok} onClick=${() => newTraining(tab, { network: name })}
+        title=${c?.ok ? "Trains this network on data" : "Every block has to check out first"}>Train…<//>
       <${Button} variant="primary" icon="build" disabled=${!c?.ok || ed.building.value} onClick=${() => build(ed)}
         title=${c?.ok ? "Builds the model and saves it" : "Every block has to check out first"}>${ed.building.value ? "Building…" : "Build"}<//>
     </div>

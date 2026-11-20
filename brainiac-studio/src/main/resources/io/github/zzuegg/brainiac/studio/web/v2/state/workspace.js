@@ -7,7 +7,7 @@ import { loaded as projectsLoaded, byId } from "/v2/state/projects.js";
 // project exactly as it was left. Several tabs can show the same studio at once because the
 // project travels with each API call instead of being a server-wide setting.
 
-const SCREENS = ["home", "chat", "agent", "graph", "trash", "settings", "config"];
+const SCREENS = ["home", "chat", "agent", "graph", "trash", "settings", "config", "training"];
 
 /** Item keys are "kind:id", unique across kinds. */
 export const keyOf = item => item.kind + ":" + item.id;
@@ -44,6 +44,7 @@ function createTab({ key, project, route }) {
   tab.status = computed(() => {
     let running = 0, waiting = 0;
     for (const i of tab.items.value) {
+      if (i.kind === "training" && ["queued", "loading", "running"].includes(i.state)) { running++; continue; }
       if (i.kind !== "agent") continue;
       if (i.waiting || i.state === "waiting") waiting++;
       else if (i.state === "running") running++;
