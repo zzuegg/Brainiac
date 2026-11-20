@@ -911,16 +911,29 @@ public final class HipBackend implements Backend {
             return;
         }
         long t0 = HipContext.PROFILE ? System.nanoTime() : 0;
-        HipFusion.Kernel k = HipFusion.generate(e, s.dtype);
+        HipFusion.Kernel k = HipFusion.generate(e, s.dtype, 0, 0, false);
+        long f = fused(c, k, e, s.dtype, 0, 0);
         if (HipContext.PROFILE) {
             c.record("host: generating kernel sources", System.nanoTime() - t0);
         }
-        launch(c, k, s.address(), s.size);
+        launch(c, f, k, s.address(), s.size);
+    }
+
+    /** Fused kernels by {@link HipFusion.Kernel#key}: a known chain needs no source. */
+    private final Map<String, Long> fusedByKey = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The function for {@code k} (generated without text): the cached one, else compiled from the source. */
+    private long fused(HipContext c, HipFusion.Kernel k, HipFusion.Expr e, DType type, int inner, int outerStride) {
+        Long f = fusedByKey.get(k.key());
+        if (f == null) {
+            f = c.fusedFunction(HipFusion.generate(e, type, inner, outerStride, true).source());
+            fusedByKey.put(k.key(), f);
+        }
+        return f;
     }
 
     /** Runs a generated kernel over {@code n} items, storing at {@code out}. */
-    private void launch(HipContext c, HipFusion.Kernel k, long out, long n) {
-        long f = c.fusedFunction(k.source());
+    private void launch(HipContext c, long f, HipFusion.Kernel k, long out, long n) {
         for (HipStorage in : k.loads()) {
             in.address();   // memory taken before the arguments are written
         }
@@ -961,8 +974,10 @@ public final class HipBackend implements Backend {
 
     /** Computes {@code in}'s pending value into rows of {@code z} (see {@link #rows}); {@code in} keeps it. */
     private void writePending(HipStorage in, HipStorage z, long outOffset, long n, int inner, int outerStride) {
-        HipFusion.Kernel k = HipFusion.generate(in.pending, z.dtype, inner, outerStride);
-        launch(ctx(), k, z.address(outOffset), n);
+        HipContext c = ctx();
+        HipFusion.Kernel k = HipFusion.generate(in.pending, z.dtype, inner, outerStride, false);
+        long f = fused(c, k, in.pending, z.dtype, inner, outerStride);
+        launch(c, f, k, z.address(outOffset), n);
     }
 
     // ------------------------------------------------------------------ element-wise

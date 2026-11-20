@@ -219,10 +219,11 @@ final class HipFusion {
     // ------------------------------------------------------------------ generation
 
     /**
-     * A generated kernel: its source after kernels.hip's shared part, the storages it loads, and
-     * the table ({@code struct Meta}, passed by value) it reads its pointers, constants and views from.
+     * A generated kernel: a short key that tells its structure apart from every other, its
+     * source after kernels.hip's shared part (null when generated for the key only), the
+     * storages it loads, and the table ({@code struct Meta}, passed by value) it reads its pointers, constants and views from.
      */
-    record Kernel(String source, List<HipStorage> loads, List<Object> pointers, List<Float> constants,
+    record Kernel(String key, String source, List<HipStorage> loads, List<Object> pointers, List<Float> constants,
             List<Integer> words) {
 
         /** The table's size: pointers, then floats, then ints, padded to 8 bytes as C++ lays it out. */
@@ -254,7 +255,7 @@ final class HipFusion {
 
     /** Generates the kernel computing {@code root} at every index of the output. */
     static Kernel generate(Expr root, DType type) {
-        return generate(root, type, 0, 0);
+        return generate(root, type, 0, 0, true);
     }
 
     /**
@@ -263,14 +264,33 @@ final class HipFusion {
      * larger array, such as a step of a key/value cache. An {@code inner} of 0 stores at {@code i}.
      */
     static Kernel generate(Expr root, DType type, int inner, int outerStride) {
-        Gen g = new Gen(type);
+        return generate(root, type, inner, outerStride, true);
+    }
+
+    /**
+     * As {@link #generate(Expr, DType, int, int)}; without {@code text} only the key and the
+     * table, which take a fraction of the time: a decoded token's chains are the same kernels
+     * every step, found by key, and only a new key needs the source.
+     */
+    static Kernel generate(Expr root, DType type, int inner, int outerStride, boolean text) {
+        Gen g = new Gen(type, text);
+        g.sig.append(format(type));
         String v = g.eval(root, "i0");
         String at = "i0";
         if (inner > 0) {
             int w = g.words.size();
             g.words.add(inner);
             g.words.add(outerStride);
-            at = "(i0 / (unsigned) m.w[" + w + "]) * (unsigned) m.w[" + (w + 1) + "] + i0 % (unsigned) m.w[" + w + "]";
+            g.sig.append("|R").append(w);
+            at = text ? "(i0 / (unsigned) m.w[" + w + "]) * (unsigned) m.w[" + (w + 1) + "] + i0 % (unsigned) m.w[" + w + "]"
+                    : null;
+        }
+        g.sig.append("|S").append(v).append('|').append(g.pointers.size()).append(',').append(g.constants.size())
+                .append(',').append(g.words.size()).append(g.random ? "r" : "");
+        String key = g.sig.toString();
+        if (!text) {
+            return new Kernel(key, null, List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
+                    List.copyOf(g.words));
         }
         StringBuilder src = new StringBuilder();
         src.append("typedef ").append(format(type)).append(" D;\ntypedef D::A ACC;\n");
@@ -293,7 +313,7 @@ final class HipFusion {
         src.append("  for (unsigned i0 = blockIdx.x * blockDim.x + threadIdx.x; i0 < n; i0 += gridDim.x * blockDim.x) {\n");
         src.append(g.body);
         src.append("    D::st(out_, ").append(at).append(", ").append(v).append(");\n  }\n}\n");
-        return new Kernel(src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
+        return new Kernel(key, src.toString(), List.copyOf(g.loads), List.copyOf(g.pointers), List.copyOf(g.constants),
                 List.copyOf(g.words));
     }
 
@@ -310,6 +330,10 @@ final class HipFusion {
 
     private static final class Gen {
         final StringBuilder body = new StringBuilder();
+        /** The structure in short: every variable made, with what it is made of. */
+        final StringBuilder sig = new StringBuilder(64);
+        /** Whether the source is written too, or only the key and the table. */
+        final boolean text;
         final List<Object> pointers = new ArrayList<>();
         final List<HipStorage> loads = new ArrayList<>();
         final Map<HipStorage, Integer> pointerIndex = new IdentityHashMap<>();
@@ -324,45 +348,71 @@ final class HipFusion {
         /** The kernel's format; sources in another one are converted as they are read. */
         final DType type;
 
-        Gen(DType type) {
+        Gen(DType type, boolean text) {
             this.type = type;
+            this.text = text;
         }
 
+        /** A new variable of {@code value} (only written with {@link #text}). */
         String fresh(String type, String prefix, String value) {
             String name = prefix + (vars++);
-            body.append("    ").append(type).append(' ').append(name).append(" = ").append(value).append(";\n");
+            if (text) {
+                body.append("    ").append(type).append(' ').append(name).append(" = ").append(value).append(";\n");
+            }
             return name;
+        }
+
+        /** Adds to the key: what the next variable is made of. */
+        void sig(char kind, int op, String... operands) {
+            sig.append(kind).append(op);
+            for (String o : operands) {
+                sig.append(',').append(o);
+            }
+            sig.append(';');
         }
 
         String constant(float c) {
             constants.add(c);
-            return "(ACC) m.c[" + (constants.size() - 1) + "]";
+            return text ? "(ACC) m.c[" + (constants.size() - 1) + "]" : "";
         }
 
         String eval(Expr e, String idx) {
             return switch (e) {
-                case Const c -> consts.computeIfAbsent(c, k -> fresh("ACC", "v", constant(k.value())));
+                case Const c -> consts.computeIfAbsent(c, k -> {
+                    String m = constant(k.value());
+                    sig('C', constants.size() - 1);
+                    return fresh("ACC", "v", m);
+                });
                 case Random r -> {
                     random = true;
                     pointers.add(r.seed());
-                    yield fresh("ACC", "v", "(ACC) rnd(m.p[" + (pointers.size() - 1) + "], " + idx + ")");
+                    sig('N', pointers.size() - 1, idx);
+                    yield fresh("ACC", "v", text ? "(ACC) rnd(m.p[" + (pointers.size() - 1) + "], " + idx + ")" : null);
                 }
                 case Src s -> load(s, idx);
-                case Un u -> fresh("ACC", "v", "unary_op<ACC>(" + u.op() + ", " + eval(u.x(), idx) + ")");
+                case Un u -> {
+                    String x = eval(u.x(), idx);
+                    sig('U', u.op(), x);
+                    yield fresh("ACC", "v", text ? "unary_op<ACC>(" + u.op() + ", " + x + ")" : null);
+                }
                 case Act a -> {
                     String x = eval(a.x(), idx);
-                    yield fresh("ACC", "v", "activation_op<ACC>(" + a.op() + ", " + constant(a.param()) + ", " + x + ")");
+                    String p = constant(a.param());
+                    sig('A', a.op(), x);
+                    yield fresh("ACC", "v", text ? "activation_op<ACC>(" + a.op() + ", " + p + ", " + x + ")" : null);
                 }
                 case ActBack a -> {
                     String x = eval(a.x(), idx);
                     String gr = eval(a.grad(), idx);
-                    yield fresh("ACC", "v",
-                            gr + " * activation_slope<ACC>(" + a.op() + ", " + constant(a.param()) + ", " + x + ")");
+                    String p = constant(a.param());
+                    sig('G', a.op(), x, gr);
+                    yield fresh("ACC", "v", text ? gr + " * activation_slope<ACC>(" + a.op() + ", " + p + ", " + x + ")" : null);
                 }
                 case Bin b -> {
                     String x = eval(b.a(), idx);
                     String y = eval(b.b(), idx);
-                    yield fresh("ACC", "v", "binary_op<ACC>(" + b.op() + ", " + x + ", " + y + ")");
+                    sig('B', b.op(), x, y);
+                    yield fresh("ACC", "v", text ? "binary_op<ACC>(" + b.op() + ", " + x + ", " + y + ")" : null);
                 }
             };
         }
@@ -390,7 +440,8 @@ final class HipFusion {
                     pointerIndex.put(st, k);
                 }
                 String f = format(st.dtype);
-                v = fresh("ACC", "v", "(ACC) " + f + "::ld((const " + f + "::T*) m.p[" + k + "], " + j + ")");
+                sig('L', k, f, j);
+                v = fresh("ACC", "v", text ? "(ACC) " + f + "::ld((const " + f + "::T*) m.p[" + k + "], " + j + ")" : null);
             }
             at.put(j, v);
             return v;
@@ -407,22 +458,30 @@ final class HipFusion {
             int a = words.size();
             words.add(s.offset());
             if (r == 1 && st[0] == 1) {
-                return fresh("unsigned", "i", idx + " + (unsigned) m.w[" + a + "]");
+                sig('O', a, idx);
+                return fresh("unsigned", "i", text ? idx + " + (unsigned) m.w[" + a + "]" : null);
             }
+            sig('I', r, idx);
             String name = "i" + (vars++);
-            body.append("    unsigned ").append(name).append(";\n    {\n        unsigned r = ").append(idx)
-                    .append(";\n        int j = m.w[").append(a).append("];\n");
+            if (text) {
+                body.append("    unsigned ").append(name).append(";\n    {\n        unsigned r = ").append(idx)
+                        .append(";\n        int j = m.w[").append(a).append("];\n");
+            }
             for (int d = r - 1; d >= 1; d--) {
                 int w = words.size();
                 words.add(dims[d]);
                 words.add(st[d]);
-                body.append("        { unsigned d = (unsigned) m.w[").append(w).append("]; j += (int) (r % d) * m.w[")
-                        .append(w + 1).append("]; r /= d; }\n");
+                if (text) {
+                    body.append("        { unsigned d = (unsigned) m.w[").append(w).append("]; j += (int) (r % d) * m.w[")
+                            .append(w + 1).append("]; r /= d; }\n");
+                }
             }
             int w = words.size();
             words.add(st[0]);
-            body.append("        j += (int) r * m.w[").append(w).append("];\n        ").append(name)
-                    .append(" = (unsigned) j;\n    }\n");
+            if (text) {
+                body.append("        j += (int) r * m.w[").append(w).append("];\n        ").append(name)
+                        .append(" = (unsigned) j;\n    }\n");
+            }
             return name;
         }
     }
