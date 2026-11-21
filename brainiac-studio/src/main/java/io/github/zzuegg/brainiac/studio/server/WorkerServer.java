@@ -532,7 +532,7 @@ public final class WorkerServer implements AutoCloseable {
         String model = modelId(body);
         stream(ex, (out, gone) -> {
             io.github.zzuegg.brainiac.studio.chat.Media audio = models.speak(model, text, Json.string(body, "voice", ""),
-                    Json.number(body, "speed", 1), () -> gone[0]);
+                    Json.number(body, "speed", 1), Json.string(body, "instructions", ""), () -> gone[0]);
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("mime", audio.mime());
             m.put("data", java.util.Base64.getEncoder().encodeToString(audio.data()));

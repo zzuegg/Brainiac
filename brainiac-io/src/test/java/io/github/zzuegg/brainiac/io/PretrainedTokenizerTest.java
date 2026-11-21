@@ -62,6 +62,25 @@ class PretrainedTokenizerTest {
         assertArrayEquals(tok.encode("Grüße aus München! 🙂"), again.encode("Grüße aus München! 🙂"));
     }
 
+    /** Qwen3-TTS ships its text tokenizer as vocab.json and merges.txt only (see make_qwen2_slow.py). */
+    @org.junit.jupiter.api.Test
+    void readsVocabAndMergesAsQwen2TokenizerFast() throws IOException {
+        Path model = dir.resolve("qwen2-slow");
+        Files.createDirectories(model);
+        for (String f : List.of("vocab.json", "merges.txt", "tokenizer_config.json", "expected.json")) {
+            try (InputStream in = getClass().getResourceAsStream("tokenizers/qwen2-slow/" + f)) {
+                Files.copy(in, model.resolve(f));
+            }
+        }
+        PretrainedTokenizer tok = PretrainedTokenizer.load(model);
+        for (Object o : Json.array(Json.read(model.resolve("expected.json")))) {
+            Map<String, Object> c = Json.object(o);
+            String text = (String) c.get("text");
+            assertArrayEquals(ints(c.get("ids")), tok.encode(text, true), "\"" + text + "\"");
+            assertEquals(java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFC), tok.decode(ints(c.get("ids"))));
+        }
+    }
+
     /** transformers rebuilds a Llama tokenizer's pipeline: with "legacy": false no "▁" after special tokens. */
     @ParameterizedTest
     @ValueSource(strings = {"llama-legacy-false", "llama-legacy-true"})

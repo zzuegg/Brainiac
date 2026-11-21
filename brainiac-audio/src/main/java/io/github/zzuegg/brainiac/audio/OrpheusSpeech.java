@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.llm.Generator;
 import io.github.zzuegg.brainiac.llm.Llama;
 import io.github.zzuegg.brainiac.llm.Sampling;
+import io.github.zzuegg.brainiac.nn.Signal;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 
@@ -245,6 +246,11 @@ public final class OrpheusSpeech implements TextToSpeech {
 
     /** Sentences grouped into pieces of at most {@link #MAX_CHARS} characters (longer sentences stay whole). */
     static List<String> pieces(String text) {
+        return pieces(text, MAX_CHARS);
+    }
+
+    /** Sentences grouped into pieces of at most {@code maxChars} characters (longer sentences stay whole). */
+    static List<String> pieces(String text, int maxChars) {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
         for (String line : text.split("\\n+")) {
@@ -252,7 +258,7 @@ public final class OrpheusSpeech implements TextToSpeech {
                 if (s.isBlank()) {
                     continue;
                 }
-                if (!cur.isEmpty() && cur.length() + 1 + s.length() > MAX_CHARS) {
+                if (!cur.isEmpty() && cur.length() + 1 + s.length() > maxChars) {
                     out.add(cur.toString());
                     cur.setLength(0);
                 }
@@ -298,6 +304,9 @@ public final class OrpheusSpeech implements TextToSpeech {
             }
             long seed = options.seed() + i;
             float[] wave = snac.decode(codes, b -> new SplittableRandom(seed * 31 + b));
+            if (options.speed() != 1) {
+                wave = Signal.timeStretch(wave, sampleRate(), options.speed());
+            }
             parts.add(wave);
             total += wave.length;
             if (onChunk != null) {
@@ -318,6 +327,7 @@ public final class OrpheusSpeech implements TextToSpeech {
 
     @Override
     public void close() {
+        Weights.release(model);
         snac.close();
     }
 }

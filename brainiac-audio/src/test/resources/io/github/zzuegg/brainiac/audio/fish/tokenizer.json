@@ -1,0 +1,1210 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 300,
+      "content": "<|endoftext|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 301,
+      "content": "<|im_start|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 302,
+      "content": "<|im_end|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 303,
+      "content": "<|pad|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 304,
+      "content": "<|phoneme_start|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 305,
+      "content": "<|phoneme_end|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 306,
+      "content": "<|text|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 307,
+      "content": "<|voice|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 308,
+      "content": "<|interleave|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 309,
+      "content": "<|audio_start|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 310,
+      "content": "<|audio_end|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 311,
+      "content": "<|audio_pad|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 312,
+      "content": "<|semantic:0|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 313,
+      "content": "<|semantic:1|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 314,
+      "content": "<|semantic:2|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 315,
+      "content": "<|semantic:3|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 316,
+      "content": "<|semantic:4|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 317,
+      "content": "<|semantic:5|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 318,
+      "content": "<|semantic:6|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 319,
+      "content": "<|semantic:7|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 320,
+      "content": "<|semantic:8|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 321,
+      "content": "<|semantic:9|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 322,
+      "content": "<|semantic:10|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 323,
+      "content": "<|semantic:11|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 324,
+      "content": "<|semantic:12|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 325,
+      "content": "<|semantic:13|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 326,
+      "content": "<|semantic:14|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 327,
+      "content": "<|semantic:15|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 328,
+      "content": "<|semantic:16|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 329,
+      "content": "<|semantic:17|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 330,
+      "content": "<|semantic:18|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 331,
+      "content": "<|semantic:19|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 332,
+      "content": "<|semantic:20|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 333,
+      "content": "<|semantic:21|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 334,
+      "content": "<|semantic:22|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 335,
+      "content": "<|semantic:23|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 336,
+      "content": "<|semantic:24|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 337,
+      "content": "<|semantic:25|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 338,
+      "content": "<|semantic:26|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 339,
+      "content": "<|semantic:27|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 340,
+      "content": "<|semantic:28|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 341,
+      "content": "<|semantic:29|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 342,
+      "content": "<|semantic:30|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 343,
+      "content": "<|semantic:31|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 344,
+      "content": "<|semantic:32|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 345,
+      "content": "<|semantic:33|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 346,
+      "content": "<|semantic:34|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 347,
+      "content": "<|semantic:35|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 348,
+      "content": "<|semantic:36|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 349,
+      "content": "<|semantic:37|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 350,
+      "content": "<|semantic:38|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 351,
+      "content": "<|semantic:39|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 352,
+      "content": "<|semantic:40|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 353,
+      "content": "<|semantic:41|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 354,
+      "content": "<|semantic:42|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 355,
+      "content": "<|semantic:43|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 356,
+      "content": "<|semantic:44|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 357,
+      "content": "<|semantic:45|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 358,
+      "content": "<|semantic:46|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 359,
+      "content": "<|semantic:47|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 360,
+      "content": "<|semantic:48|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 361,
+      "content": "<|semantic:49|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 362,
+      "content": "<|semantic:50|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 363,
+      "content": "<|semantic:51|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 364,
+      "content": "<|semantic:52|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 365,
+      "content": "<|semantic:53|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 366,
+      "content": "<|semantic:54|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 367,
+      "content": "<|semantic:55|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 368,
+      "content": "<|semantic:56|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 369,
+      "content": "<|semantic:57|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 370,
+      "content": "<|semantic:58|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 371,
+      "content": "<|semantic:59|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 372,
+      "content": "<|semantic:60|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 373,
+      "content": "<|semantic:61|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 374,
+      "content": "<|semantic:62|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 375,
+      "content": "<|semantic:63|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": {
+    "type": "NFC"
+  },
+  "pre_tokenizer": {
+    "type": "Sequence",
+    "pretokenizers": [
+      {
+        "type": "Split",
+        "pattern": {
+          "Regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+        },
+        "behavior": "Isolated",
+        "invert": false
+      },
+      {
+        "type": "ByteLevel",
+        "add_prefix_space": false,
+        "trim_offsets": true,
+        "use_regex": false
+      }
+    ]
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "!": 0,
+      "\"": 1,
+      "#": 2,
+      "$": 3,
+      "%": 4,
+      "&": 5,
+      "'": 6,
+      "(": 7,
+      ")": 8,
+      "*": 9,
+      "+": 10,
+      ",": 11,
+      "-": 12,
+      ".": 13,
+      "/": 14,
+      "0": 15,
+      "1": 16,
+      "2": 17,
+      "3": 18,
+      "4": 19,
+      "5": 20,
+      "6": 21,
+      "7": 22,
+      "8": 23,
+      "9": 24,
+      ":": 25,
+      ";": 26,
+      "<": 27,
+      "=": 28,
+      ">": 29,
+      "?": 30,
+      "@": 31,
+      "A": 32,
+      "B": 33,
+      "C": 34,
+      "D": 35,
+      "E": 36,
+      "F": 37,
+      "G": 38,
+      "H": 39,
+      "I": 40,
+      "J": 41,
+      "K": 42,
+      "L": 43,
+      "M": 44,
+      "N": 45,
+      "O": 46,
+      "P": 47,
+      "Q": 48,
+      "R": 49,
+      "S": 50,
+      "T": 51,
+      "U": 52,
+      "V": 53,
+      "W": 54,
+      "X": 55,
+      "Y": 56,
+      "Z": 57,
+      "[": 58,
+      "\\": 59,
+      "]": 60,
+      "^": 61,
+      "_": 62,
+      "`": 63,
+      "a": 64,
+      "b": 65,
+      "c": 66,
+      "d": 67,
+      "e": 68,
+      "f": 69,
+      "g": 70,
+      "h": 71,
+      "i": 72,
+      "j": 73,
+      "k": 74,
+      "l": 75,
+      "m": 76,
+      "n": 77,
+      "o": 78,
+      "p": 79,
+      "q": 80,
+      "r": 81,
+      "s": 82,
+      "t": 83,
+      "u": 84,
+      "v": 85,
+      "w": 86,
+      "x": 87,
+      "y": 88,
+      "z": 89,
+      "{": 90,
+      "|": 91,
+      "}": 92,
+      "~": 93,
+      "¡": 94,
+      "¢": 95,
+      "£": 96,
+      "¤": 97,
+      "¥": 98,
+      "¦": 99,
+      "§": 100,
+      "¨": 101,
+      "©": 102,
+      "ª": 103,
+      "«": 104,
+      "¬": 105,
+      "®": 106,
+      "¯": 107,
+      "°": 108,
+      "±": 109,
+      "²": 110,
+      "³": 111,
+      "´": 112,
+      "µ": 113,
+      "¶": 114,
+      "·": 115,
+      "¸": 116,
+      "¹": 117,
+      "º": 118,
+      "»": 119,
+      "¼": 120,
+      "½": 121,
+      "¾": 122,
+      "¿": 123,
+      "À": 124,
+      "Á": 125,
+      "Â": 126,
+      "Ã": 127,
+      "Ä": 128,
+      "Å": 129,
+      "Æ": 130,
+      "Ç": 131,
+      "È": 132,
+      "É": 133,
+      "Ê": 134,
+      "Ë": 135,
+      "Ì": 136,
+      "Í": 137,
+      "Î": 138,
+      "Ï": 139,
+      "Ð": 140,
+      "Ñ": 141,
+      "Ò": 142,
+      "Ó": 143,
+      "Ô": 144,
+      "Õ": 145,
+      "Ö": 146,
+      "×": 147,
+      "Ø": 148,
+      "Ù": 149,
+      "Ú": 150,
+      "Û": 151,
+      "Ü": 152,
+      "Ý": 153,
+      "Þ": 154,
+      "ß": 155,
+      "à": 156,
+      "á": 157,
+      "â": 158,
+      "ã": 159,
+      "ä": 160,
+      "å": 161,
+      "æ": 162,
+      "ç": 163,
+      "è": 164,
+      "é": 165,
+      "ê": 166,
+      "ë": 167,
+      "ì": 168,
+      "í": 169,
+      "î": 170,
+      "ï": 171,
+      "ð": 172,
+      "ñ": 173,
+      "ò": 174,
+      "ó": 175,
+      "ô": 176,
+      "õ": 177,
+      "ö": 178,
+      "÷": 179,
+      "ø": 180,
+      "ù": 181,
+      "ú": 182,
+      "û": 183,
+      "ü": 184,
+      "ý": 185,
+      "þ": 186,
+      "ÿ": 187,
+      "Ā": 188,
+      "ā": 189,
+      "Ă": 190,
+      "ă": 191,
+      "Ą": 192,
+      "ą": 193,
+      "Ć": 194,
+      "ć": 195,
+      "Ĉ": 196,
+      "ĉ": 197,
+      "Ċ": 198,
+      "ċ": 199,
+      "Č": 200,
+      "č": 201,
+      "Ď": 202,
+      "ď": 203,
+      "Đ": 204,
+      "đ": 205,
+      "Ē": 206,
+      "ē": 207,
+      "Ĕ": 208,
+      "ĕ": 209,
+      "Ė": 210,
+      "ė": 211,
+      "Ę": 212,
+      "ę": 213,
+      "Ě": 214,
+      "ě": 215,
+      "Ĝ": 216,
+      "ĝ": 217,
+      "Ğ": 218,
+      "ğ": 219,
+      "Ġ": 220,
+      "ġ": 221,
+      "Ģ": 222,
+      "ģ": 223,
+      "Ĥ": 224,
+      "ĥ": 225,
+      "Ħ": 226,
+      "ħ": 227,
+      "Ĩ": 228,
+      "ĩ": 229,
+      "Ī": 230,
+      "ī": 231,
+      "Ĭ": 232,
+      "ĭ": 233,
+      "Į": 234,
+      "į": 235,
+      "İ": 236,
+      "ı": 237,
+      "Ĳ": 238,
+      "ĳ": 239,
+      "Ĵ": 240,
+      "ĵ": 241,
+      "Ķ": 242,
+      "ķ": 243,
+      "ĸ": 244,
+      "Ĺ": 245,
+      "ĺ": 246,
+      "Ļ": 247,
+      "ļ": 248,
+      "Ľ": 249,
+      "ľ": 250,
+      "Ŀ": 251,
+      "ŀ": 252,
+      "Ł": 253,
+      "ł": 254,
+      "Ń": 255,
+      "Ġt": 256,
+      "en": 257,
+      "Ġth": 258,
+      "ch": 259,
+      "ee": 260,
+      "er": 261,
+      "is": 262,
+      "pee": 263,
+      "Ġs": 264,
+      "Ġthe": 265,
+      "peech": 266,
+      "es": 267,
+      "ex": 268,
+      "in": 269,
+      "ll": 270,
+      "or": 271,
+      "Ġa": 272,
+      "Ġto": 273,
+      "Ġspeech": 274,
+      "ext": 275,
+      "llo": 276,
+      "Gu": 277,
+      "He": 278,
+      "Mor": 279,
+      "Speech": 280,
+      "Text": 281,
+      "Wi": 282,
+      "an": 283,
+      "ce": 284,
+      "co": 285,
+      "de": 286,
+      "di": 287,
+      "ef": 288,
+      "eh": 289,
+      "em": 290,
+      "fo": 291,
+      "gen": 292,
+      "gin": 293,
+      "geh": 294,
+      "ide": 295,
+      "ld": 296,
+      "nv": 297,
+      "of": 298,
+      "ov": 299
+    },
+    "merges": [
+      [
+        "Ġ",
+        "t"
+      ],
+      [
+        "e",
+        "n"
+      ],
+      [
+        "Ġt",
+        "h"
+      ],
+      [
+        "c",
+        "h"
+      ],
+      [
+        "e",
+        "e"
+      ],
+      [
+        "e",
+        "r"
+      ],
+      [
+        "i",
+        "s"
+      ],
+      [
+        "p",
+        "ee"
+      ],
+      [
+        "Ġ",
+        "s"
+      ],
+      [
+        "Ġth",
+        "e"
+      ],
+      [
+        "pee",
+        "ch"
+      ],
+      [
+        "e",
+        "s"
+      ],
+      [
+        "e",
+        "x"
+      ],
+      [
+        "i",
+        "n"
+      ],
+      [
+        "l",
+        "l"
+      ],
+      [
+        "o",
+        "r"
+      ],
+      [
+        "Ġ",
+        "a"
+      ],
+      [
+        "Ġt",
+        "o"
+      ],
+      [
+        "Ġs",
+        "peech"
+      ],
+      [
+        "ex",
+        "t"
+      ],
+      [
+        "ll",
+        "o"
+      ],
+      [
+        "G",
+        "u"
+      ],
+      [
+        "H",
+        "e"
+      ],
+      [
+        "M",
+        "or"
+      ],
+      [
+        "S",
+        "peech"
+      ],
+      [
+        "T",
+        "ext"
+      ],
+      [
+        "W",
+        "i"
+      ],
+      [
+        "a",
+        "n"
+      ],
+      [
+        "c",
+        "e"
+      ],
+      [
+        "c",
+        "o"
+      ],
+      [
+        "d",
+        "e"
+      ],
+      [
+        "d",
+        "i"
+      ],
+      [
+        "e",
+        "f"
+      ],
+      [
+        "e",
+        "h"
+      ],
+      [
+        "e",
+        "m"
+      ],
+      [
+        "f",
+        "o"
+      ],
+      [
+        "g",
+        "en"
+      ],
+      [
+        "g",
+        "in"
+      ],
+      [
+        "g",
+        "eh"
+      ],
+      [
+        "i",
+        "de"
+      ],
+      [
+        "l",
+        "d"
+      ],
+      [
+        "n",
+        "v"
+      ],
+      [
+        "o",
+        "f"
+      ],
+      [
+        "o",
+        "v"
+      ]
+    ]
+  }
+}

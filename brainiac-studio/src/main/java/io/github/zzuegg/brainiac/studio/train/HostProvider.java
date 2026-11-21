@@ -77,7 +77,13 @@ public final class HostProvider implements ChatProvider {
     @Override
     public io.github.zzuegg.brainiac.studio.chat.Media speak(String model, String text, String voice, double speed,
             java.util.function.BooleanSupplier stop) throws IOException {
-        return client.speak(model, text, voice, speed);
+        return client.speak(model, text, voice, speed, "");
+    }
+
+    @Override
+    public io.github.zzuegg.brainiac.studio.chat.Media speak(String model, String text, String voice, double speed,
+            String instructions, java.util.function.BooleanSupplier stop) throws IOException {
+        return client.speak(model, text, voice, speed, instructions);
     }
 
     @Override

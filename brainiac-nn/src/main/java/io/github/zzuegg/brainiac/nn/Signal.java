@@ -355,4 +355,70 @@ public final class Signal {
         }
         return out;
     }
+
+    /**
+     * Speeds speech up or slows it down without changing its pitch: WSOLA (Verhelst and
+     * Roelands, 1993). Hann windows of 30 ms overlap by half in the output; each is taken from
+     * near where the rate puts it in the input, shifted by up to 10 ms to line up best (by
+     * cross-correlation) with the natural continuation of the window before it.
+     *
+     * @param x the samples
+     * @param rate their sample rate
+     * @param speed how much faster, such as 1.25; 1 returns a copy
+     * @return about {@code x.length / speed} samples
+     */
+    public static float[] timeStretch(float[] x, int rate, double speed) {
+        if (!(speed > 0)) {
+            throw new IllegalArgumentException("speed must be positive, got " + speed);
+        }
+        if (speed == 1 || x.length == 0) {
+            return x.clone();
+        }
+        int n = Math.max(4, (int) Math.round(rate * 0.03)) & ~1;
+        int hop = n / 2;
+        int tolerance = Math.max(1, (int) Math.round(rate * 0.01));
+        int stride = Math.max(1, rate / 8000);                    // correlate at about 8 kHz
+        int out = (int) Math.round(x.length / speed);
+        float[] y = new float[out + n];
+        double[] w = new double[n];
+        for (int i = 0; i < n; i++) {
+            w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n);     // periodic: halves sum to 1
+        }
+        int previous = 0;
+        for (int k = 0; (long) k * hop < out; k++) {
+            int nominal = (int) Math.round(k * hop * speed);
+            int at = nominal;
+            if (k > 0) {
+                int natural = previous + hop;
+                double best = Double.NEGATIVE_INFINITY;
+                for (int d = -tolerance; d <= tolerance; d++) {
+                    int c = nominal + d;
+                    if (c < 0) {
+                        continue;
+                    }
+                    double sum = 0;
+                    for (int i = 0; i < n; i += stride) {
+                        sum += at(x, c + i) * at(x, natural + i);
+                    }
+                    if (sum > best) {
+                        best = sum;
+                        at = c;
+                    }
+                }
+            }
+            for (int i = 0; i < n; i++) {
+                y[k * hop + i] += (float) (w[i] * at(x, at + i));
+            }
+            previous = at;
+        }
+        // the first half window has no partner before it
+        for (int i = 0; i < Math.min(hop, out); i++) {
+            y[i] = x[Math.min(i, x.length - 1)];
+        }
+        return java.util.Arrays.copyOf(y, out);
+    }
+
+    private static float at(float[] x, int i) {
+        return i >= 0 && i < x.length ? x[i] : 0;
+    }
 }

@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.audio;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.llm.Llama;
 import io.github.zzuegg.brainiac.nn.Recurrent;
 import io.github.zzuegg.brainiac.nn.StyleNorm;
 import io.github.zzuegg.brainiac.tensor.DType;
@@ -121,15 +122,21 @@ final class Weights implements AutoCloseable {
 
     /** A one-layer (optionally bidirectional) {@code torch.nn.LSTM}, batch first. */
     Recurrent lstm(String name) {
-        boolean bi = source.contains(name + ".weight_ih_l0_reverse");
+        return lstm(name, 0);
+    }
+
+    /** One layer of a (optionally bidirectional) {@code torch.nn.LSTM}, batch first. */
+    Recurrent lstm(String name, int layer) {
+        String l = "_l" + layer;
+        boolean bi = source.contains(name + ".weight_ih" + l + "_reverse");
         int count = bi ? 2 : 1;
         Var[] wx = new Var[count];
         Var[] wh = new Var[count];
         Var[] b = new Var[count];
-        int units = source.shape(name + ".weight_hh_l0").dim(1);
-        int inputs = source.shape(name + ".weight_ih_l0").dim(1);
+        int units = source.shape(name + ".weight_hh" + l).dim(1);
+        int inputs = source.shape(name + ".weight_ih" + l).dim(1);
         for (int d = 0; d < count; d++) {
-            String suffix = d == 0 ? "_l0" : "_l0_reverse";
+            String suffix = d == 0 ? l : l + "_reverse";
             wx[d] = linear(name + ".weight_ih" + suffix);
             wh[d] = linear(name + ".weight_hh" + suffix);
             float[] bi1 = floats(name + ".bias_ih" + suffix);
@@ -161,5 +168,21 @@ final class Weights implements AutoCloseable {
             t.release();
         }
         owned.clear();
+    }
+
+    /**
+     * Frees language models' weights at once: left to the collector, the next model to load
+     * finds the memory still in use and is refused or spills to system memory.
+     *
+     * @param models the models, whose parameters are not used again
+     */
+    static void release(Llama... models) {
+        List<Tensor> dead = new ArrayList<>();
+        for (Llama m : models) {
+            for (Var p : m.parameters()) {
+                dead.add(p.value());
+            }
+        }
+        Tensor.release(dead, List.of());
     }
 }

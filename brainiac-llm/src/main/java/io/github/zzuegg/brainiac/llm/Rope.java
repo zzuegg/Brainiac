@@ -22,7 +22,8 @@ public final class Rope {
      * @param theta the frequency base
      * @param type {@code "default"}, {@code "linear"}, {@code "llama3"}, {@code "yarn"} (Peng et
      *     al., 2023), {@code "dynamic"} (NTK-aware, the base grows once positions pass
-     *     {@code originalMaxPositions}) or {@code "longrope"} (Phi-3: the divisors are {@code
+     *     {@code originalMaxPositions}), {@code "bf16"} (the default frequencies, with cos and sin
+     *     rounded to bfloat16 as Fish Speech's tables are) or {@code "longrope"} (Phi-3: the divisors are {@code
      *     freqFactors}, and cos and sin are scaled by {@code sqrt(1 + ln factor / ln original)})
      * @param factor the scaling factor (every type but default)
      * @param lowFreqFactor llama3's low-frequency factor
@@ -140,7 +141,7 @@ public final class Rope {
             inv[i] = 1.0 / (float) Math.pow(theta, (float) (2.0 * i) / s.dim());
         }
         switch (s.type()) {
-            case "default", "dynamic", "longrope" -> {
+            case "default", "dynamic", "longrope", "bf16" -> {
                 // longrope (Phi-3): its per-pair divisors are the freqFactors
             }
             case "linear" -> {
@@ -248,8 +249,8 @@ public final class Rope {
                 int row = (b * steps + t) * d;
                 for (int i = 0; i < half; i++) {
                     float angle = (float) positions[b][t] * (float) inv[i];
-                    put(cos, sin, row, i, half, (float) Math.cos(angle) * magnitude,
-                            (float) Math.sin(angle) * magnitude);
+                    put(cos, sin, row, i, half, table((float) Math.cos(angle) * magnitude),
+                            table((float) Math.sin(angle) * magnitude));
                 }
             }
         }
@@ -298,8 +299,8 @@ public final class Rope {
                 int row = (b * steps + t) * d;
                 for (int i = 0; i < half; i++) {
                     float angle = (float) positions[sectionOf[i]][b][t] * (float) inv[i];
-                    put(cos, sin, row, i, half, (float) Math.cos(angle) * magnitude,
-                            (float) Math.sin(angle) * magnitude);
+                    put(cos, sin, row, i, half, table((float) Math.cos(angle) * magnitude),
+                            table((float) Math.sin(angle) * magnitude));
                 }
             }
         }
@@ -317,6 +318,16 @@ public final class Rope {
     /** The shape of the angle tables: per step, the two halves or the pairs. */
     private Shape angles(int batch, int steps, int half) {
         return interleaved ? Shape.of(batch, 1, steps, half, 2) : Shape.of(batch, 1, steps, 2, half);
+    }
+
+    /** A table value: as computed, or rounded to bfloat16 (to nearest, ties to even) for type bf16. */
+    private float table(float v) {
+        if (!settings.type().equals("bf16")) {
+            return v;
+        }
+        int bits = Float.floatToRawIntBits(v);
+        bits += 0x7FFF + ((bits >>> 16) & 1);
+        return Float.intBitsToFloat(bits & 0xFFFF0000);
     }
 
     /** Pair {@code i}'s cos and sin in a step's row: {@code cos, cos} and {@code -sin, sin}. */

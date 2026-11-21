@@ -17,9 +17,14 @@ import java.util.function.BooleanSupplier;
  * @param reference a few seconds of a voice to imitate, for models that {@linkplain
  *     TextToSpeech#canClone() clone voices}, or {@code null}
  * @param referenceText what is said in {@code reference}, or {@code null} to transcribe it
+ * @param instruction how to speak, in words, for models that {@linkplain
+ *     TextToSpeech#followsInstructions() follow instructions} (such as {@code "Speak slowly, in
+ *     a whisper"}, or for a model that designs voices, the voice itself), or {@code null}
+ * @param language the language of the text, for models that {@linkplain TextToSpeech#languages()
+ *     name languages}, or {@code null} to let the model tell
  */
 public record SpeechOptions(String voice, float speed, long seed, BooleanSupplier cancelled, Audio reference,
-        String referenceText) {
+        String referenceText, String instruction, String language) {
 
     /**
      * Checks the values.
@@ -30,6 +35,8 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @param cancelled the cancellation check, or {@code null} for never
      * @param reference a voice sample, or {@code null}
      * @param referenceText its transcript, or {@code null}
+     * @param instruction how to speak, or {@code null}
+     * @param language the text's language, or {@code null}
      */
     public SpeechOptions {
         if (!(speed > 0) || speed > 10) {
@@ -44,6 +51,27 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
         if (referenceText != null && referenceText.isBlank()) {
             referenceText = null;
         }
+        if (instruction != null && instruction.isBlank()) {
+            instruction = null;
+        }
+        if (language != null && language.isBlank()) {
+            language = null;
+        }
+    }
+
+    /**
+     * Options with a voice sample, without an instruction or language.
+     *
+     * @param voice the voice or {@code null}
+     * @param speed the rate, positive
+     * @param seed the seed
+     * @param cancelled the cancellation check, or {@code null} for never
+     * @param reference a voice sample, or {@code null}
+     * @param referenceText its transcript, or {@code null}
+     */
+    public SpeechOptions(String voice, float speed, long seed, BooleanSupplier cancelled, Audio reference,
+            String referenceText) {
+        this(voice, speed, seed, cancelled, reference, referenceText, null, null);
     }
 
     /**
@@ -55,7 +83,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @param cancelled the cancellation check, or {@code null} for never
      */
     public SpeechOptions(String voice, float speed, long seed, BooleanSupplier cancelled) {
-        this(voice, speed, seed, cancelled, null, null);
+        this(voice, speed, seed, cancelled, null, null, null, null);
     }
 
     /**
@@ -74,7 +102,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions voice(String id) {
-        return new SpeechOptions(id, speed, seed, cancelled, reference, referenceText);
+        return new SpeechOptions(id, speed, seed, cancelled, reference, referenceText, instruction, language);
     }
 
     /**
@@ -84,7 +112,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions speed(float rate) {
-        return new SpeechOptions(voice, rate, seed, cancelled, reference, referenceText);
+        return new SpeechOptions(voice, rate, seed, cancelled, reference, referenceText, instruction, language);
     }
 
     /**
@@ -94,7 +122,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions seed(long s) {
-        return new SpeechOptions(voice, speed, s, cancelled, reference, referenceText);
+        return new SpeechOptions(voice, speed, s, cancelled, reference, referenceText, instruction, language);
     }
 
     /**
@@ -104,7 +132,7 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions cancelled(BooleanSupplier check) {
-        return new SpeechOptions(voice, speed, seed, check, reference, referenceText);
+        return new SpeechOptions(voice, speed, seed, check, reference, referenceText, instruction, language);
     }
 
     /**
@@ -115,6 +143,26 @@ public record SpeechOptions(String voice, float speed, long seed, BooleanSupplie
      * @return new options
      */
     public SpeechOptions reference(Audio sample, String transcript) {
-        return new SpeechOptions(voice, speed, seed, cancelled, sample, transcript);
+        return new SpeechOptions(voice, speed, seed, cancelled, sample, transcript, instruction, language);
+    }
+
+    /**
+     * Sets how to speak, for models that follow instructions.
+     *
+     * @param text such as {@code "Excited, a little out of breath"}, or {@code null}
+     * @return new options
+     */
+    public SpeechOptions instruction(String text) {
+        return new SpeechOptions(voice, speed, seed, cancelled, reference, referenceText, text, language);
+    }
+
+    /**
+     * Sets the language of the text, for models that name languages.
+     *
+     * @param name one of {@link TextToSpeech#languages()}, or {@code null} to let the model tell
+     * @return new options
+     */
+    public SpeechOptions language(String name) {
+        return new SpeechOptions(voice, speed, seed, cancelled, reference, referenceText, instruction, name);
     }
 }

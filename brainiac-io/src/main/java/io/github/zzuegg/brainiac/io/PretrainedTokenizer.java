@@ -125,7 +125,14 @@ public final class PretrainedTokenizer implements Tokenizer {
                 if (Files.isRegularFile(model)) {
                     return fromSentencePiece(Files.readAllBytes(model), cfg);
                 }
-                throw new IllegalArgumentException("no tokenizer.json or tokenizer.model in " + path);
+                Path vocab = path.resolve("vocab.json");
+                Path merges = path.resolve("merges.txt");
+                if (Files.isRegularFile(vocab) && Files.isRegularFile(merges)) {
+                    return fromVocabAndMerges(Files.readString(vocab, StandardCharsets.UTF_8),
+                            Files.readString(merges, StandardCharsets.UTF_8), cfg);
+                }
+                throw new IllegalArgumentException("no tokenizer.json, tokenizer.model or vocab.json with merges.txt in "
+                        + path);
             }
             String name = path.getFileName().toString();
             if (name.endsWith(".gguf")) {
@@ -151,7 +158,56 @@ public final class PretrainedTokenizer implements Tokenizer {
      * @return the tokenizer
      */
     public static PretrainedTokenizer fromJson(String json, Map<String, Object> tokenizerConfig) {
-        Map<String, Object> root = Json.object(Json.parse(json));
+        return fromTree(Json.object(Json.parse(json)), tokenizerConfig);
+    }
+
+    /** Qwen2's pre-tokenizer pattern, as transformers' {@code Qwen2Converter} writes it. */
+    private static final String QWEN2_SPLIT = "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}"
+            + "| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+";
+
+    /**
+     * Reads a byte-level BPE tokenizer saved as the slow tokenizers save it, a {@code
+     * vocab.json} and a {@code merges.txt} with no {@code tokenizer.json}, as transformers
+     * converts it: Qwen2's pattern and NFC for a {@code Qwen2Tokenizer}, GPT-2's byte-level
+     * split otherwise. Special tokens come from {@code tokenizer_config.json}'s {@code
+     * added_tokens_decoder}.
+     *
+     * @param vocabJson the text of {@code vocab.json}
+     * @param mergesTxt the text of {@code merges.txt}
+     * @param tokenizerConfig the parsed {@code tokenizer_config.json}, or an empty map
+     * @return the tokenizer
+     */
+    public static PretrainedTokenizer fromVocabAndMerges(String vocabJson, String mergesTxt,
+            Map<String, Object> tokenizerConfig) {
+        List<Object> merges = new ArrayList<>();
+        for (String line : mergesTxt.split("\r?\n")) {
+            if (line.isEmpty() || line.startsWith("#version")) {
+                continue;
+            }
+            merges.add(line);
+        }
+        Map<String, Object> model = new java.util.LinkedHashMap<>();
+        model.put("type", "BPE");
+        model.put("vocab", Json.object(Json.parse(vocabJson)));
+        model.put("merges", merges);
+        Map<String, Object> root = new java.util.LinkedHashMap<>();
+        root.put("model", model);
+        boolean qwen = String.valueOf(tokenizerConfig.get("tokenizer_class")).startsWith("Qwen2");
+        boolean prefix = Boolean.TRUE.equals(tokenizerConfig.get("add_prefix_space"));
+        if (qwen) {
+            root.put("normalizer", Map.of("type", "NFC"));
+            root.put("pre_tokenizer", Map.of("type", "Sequence", "pretokenizers", List.of(
+                    Map.of("type", "Split", "pattern", Map.of("Regex", QWEN2_SPLIT), "behavior", "Isolated",
+                            "invert", false),
+                    Map.of("type", "ByteLevel", "add_prefix_space", prefix, "use_regex", false))));
+        } else {
+            root.put("pre_tokenizer", Map.of("type", "ByteLevel", "add_prefix_space", prefix, "use_regex", true));
+        }
+        root.put("decoder", Map.of("type", "ByteLevel"));
+        return fromTree(root, tokenizerConfig);
+    }
+
+    private static PretrainedTokenizer fromTree(Map<String, Object> root, Map<String, Object> tokenizerConfig) {
         if (root.containsKey("sentencepiece")) {
             return fromSpmJson(Json.object(root.get("sentencepiece")));
         }

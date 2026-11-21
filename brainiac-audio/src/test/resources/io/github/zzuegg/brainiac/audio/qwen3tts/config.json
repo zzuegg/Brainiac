@@ -1,0 +1,82 @@
+{
+ "architectures": [
+  "Qwen3TTSForConditionalGeneration"
+ ],
+ "model_type": "qwen3_tts",
+ "talker_config": {
+  "code_predictor_config": {
+   "vocab_size": 32,
+   "hidden_size": 16,
+   "intermediate_size": 24,
+   "num_hidden_layers": 2,
+   "num_attention_heads": 2,
+   "num_key_value_heads": 1,
+   "head_dim": 8,
+   "hidden_act": "silu",
+   "max_position_embeddings": 64,
+   "rms_norm_eps": 1e-06,
+   "rope_theta": 10000,
+   "num_code_groups": 4,
+   "tie_word_embeddings": false,
+   "attention_bias": false
+  },
+  "vocab_size": 1056,
+  "hidden_size": 32,
+  "intermediate_size": 48,
+  "num_hidden_layers": 2,
+  "num_attention_heads": 4,
+  "num_key_value_heads": 2,
+  "head_dim": 8,
+  "hidden_act": "silu",
+  "max_position_embeddings": 256,
+  "rms_norm_eps": 1e-06,
+  "rope_theta": 1000000.0,
+  "rope_scaling": {
+   "interleaved": true,
+   "mrope_section": [
+    1,
+    1,
+    2
+   ],
+   "rope_type": "default",
+   "type": "default"
+  },
+  "num_code_groups": 4,
+  "text_hidden_size": 24,
+  "text_vocab_size": 40,
+  "codec_eos_token_id": 1036,
+  "codec_think_id": 1040,
+  "codec_nothink_id": 1041,
+  "codec_think_bos_id": 1042,
+  "codec_think_eos_id": 1043,
+  "codec_pad_id": 1034,
+  "codec_bos_id": 1035,
+  "tie_word_embeddings": false,
+  "attention_bias": false,
+  "spk_id": {
+   "alice": 1050,
+   "bob": 1051
+  },
+  "spk_is_dialect": {
+   "alice": false,
+   "bob": "sichuan_dialect"
+  },
+  "codec_language_id": {
+   "english": 1045,
+   "chinese": 1046,
+   "sichuan_dialect": 1047
+  }
+ },
+ "speaker_encoder_config": {
+  "enc_dim": 32,
+  "sample_rate": 24000
+ },
+ "tokenizer_type": "qwen3_tts_tokenizer_12hz",
+ "tts_model_size": "0b6",
+ "tts_model_type": "base",
+ "im_start_token_id": 30,
+ "im_end_token_id": 31,
+ "tts_pad_token_id": 37,
+ "tts_bos_token_id": 38,
+ "tts_eos_token_id": 39
+}

@@ -26,6 +26,7 @@ final class GpuSlot {
     private volatile long bytes;
     private volatile long lastUsed;
     private volatile Runnable unloader;
+    private volatile Device device;
     private final java.util.function.ToLongBiFunction<Path, Device> estimator;
 
     GpuSlot(String kind, GpuResidency residency) {
@@ -110,11 +111,22 @@ final class GpuSlot {
      */
     <T> T load(String name, Path path, Device device, BooleanSupplier cancelled, Loader<T> loader, Runnable unload)
             throws IOException {
+        return load(name, path, device, "", cancelled, loader, unload);
+    }
+
+    /**
+     * As {@link #load(String, Path, Device, BooleanSupplier, Loader, Runnable)}, for a model
+     * that can load in several forms (such as its number type), each measured on its own.
+     *
+     * @param variant the form, such as {@code "bf16"}; empty for the plain one
+     */
+    <T> T load(String name, Path path, Device device, String variant, BooleanSupplier cancelled, Loader<T> loader,
+            Runnable unload) throws IOException {
         if (!lock.isHeldByCurrentThread()) {
             throw new IllegalStateException("hold the slot to load into it");
         }
         forget();
-        String k = key(path, device);
+        String k = variant.isEmpty() ? key(path, device) : key(path, device) + "#" + variant;
         residency.admit(this, name, device, need(k, path, device), cancelled);
         long before = residency.inUse(device);
         T t = loader.load();
@@ -124,6 +136,7 @@ final class GpuSlot {
         key = k;
         bytes = used;
         unloader = unload;
+        this.device = device;
         residency.measuredAs(k, after > before ? used : 0);
         residency.keepMeasured();
         return t;
@@ -143,12 +156,19 @@ final class GpuSlot {
     /** Lets go of the model, holding the slot. */
     void forget() {
         Runnable u = unloader;
+        Device d = device;
         unloader = null;
+        device = null;
         model = null;
         key = null;
         bytes = 0;
         if (u != null) {
             u.run();
+            if (d != null) {
+                // the backend keeps released memory pooled for tensors of the same sizes; the next
+                // model has other sizes, and without this it spilled to system memory, 3 to 4 times slower
+                d.trim();
+            }
         }
     }
 

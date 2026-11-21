@@ -38,7 +38,7 @@ suite behind a small, easy public API. Every calculation goes through a pluggabl
 | `brainiac-data` | Datasets, batching, splitting, CSV loading, preprocessing |
 | `brainiac-io` | File formats: JSON, memory-mapped safetensors (single or sharded) and GGUF weights, weight-name mapping, pretrained tokenizers |
 | `brainiac-llm` | Pretrained language models (Llama, Llama 3, Qwen2 from Hugging Face or GGUF files), a KV cache, sampling, streaming, batched generation and beam search |
-| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and text-to-speech with VITS / MMS-TTS, Kokoro (voices and blends), F5-TTS (voice cloning) and Orpheus (emotion tags), from published weights, behind `SpeechToText` and `TextToSpeech` |
+| `brainiac-audio` | Speech: WAV files, Whisper speech-to-text (any length, timestamps, language detection, translation) and text-to-speech with VITS / MMS-TTS, Kokoro (voices and blends), F5-TTS (voice cloning), Orpheus (emotion tags), Qwen3-TTS (cloning, style instructions, 10 languages), Chatterbox (cloning, emotion exaggeration) and Fish Audio S2-Pro (cloning, many languages), from published weights, behind `SpeechToText` and `TextToSpeech` |
 | `brainiac-diffusion` | Image generation with pretrained Stable Diffusion 1.x, 2.x and XL (diffusers folders or single `.safetensors` checkpoints): CLIP tokenizer and text encoders, UNet, VAE, Euler / Euler ancestral / DPM++ 2M (Karras) samplers, classifier-free guidance; FLUX.1 dev and schnell (T5-XXL, MMDiT transformer, flow matching, 8- or 4-bit weights); text- and image-to-video with Wan 2.1 and 2.2 (umT5, CLIP vision, video DiT, causal 3D VAE, UniPC) |
 | `brainiac-rl` | Reinforcement learning: environments, replay buffers, Q-learning, SARSA, REINFORCE, A2C, PPO, DQN |
 | `brainiac-evolve` | Neuroevolution: a genetic algorithm that searches wiring, neuron counts, per-neuron activations and hyperparameters |
@@ -513,7 +513,7 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 ## Speech: speech-to-text and text-to-speech
 
 `brainiac-audio` reads WAV files and runs published speech models: OpenAI's Whisper
-(`openai/whisper-tiny` up to `large-v3`) for speech-to-text, and four text-to-speech models:
+(`openai/whisper-tiny` up to `large-v3`) for speech-to-text, and seven text-to-speech models:
 
 | Model | Folder | What it adds |
 |---|---|---|
@@ -521,6 +521,9 @@ attends to the last `n` positions, and `model.prefillChunk(n)` reads long prompt
 | Kokoro | `hexgrad/Kokoro-82M` | 28 English voices, blends such as `"af_heart*0.7+bm_george*0.3"`, custom style packs (`addVoice`), a built-in English phonemizer |
 | F5-TTS | `SWivid/F5-TTS` (`F5TTS_v1_Base`) with `charactr/vocos-mel-24khz` next to it | clones a voice from a few seconds of audio and its transcript |
 | Orpheus | `canopylabs/orpheus-3b-0.1-ft` with `hubertsiuzdak/snac_24khz` next to it | eight voices and emotion tags in the text: `<laugh>`, `<sigh>`, `<gasp>`... |
+| Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `-1.7B-VoiceDesign`, `-1.7B-Base` (and the 0.6B ones) | 10 languages including German; CustomVoice has nine voices and takes instructions such as "whisper, slowly"; VoiceDesign makes a voice from a description; Base clones a voice from about 3 seconds |
+| Chatterbox | `ResembleAI/chatterbox` (`ve`, `t3_cfg`, `s3gen` `.safetensors`, `tokenizer.json`, `conds.pt`) | English; clones a voice from 5 to 10 seconds of audio, no transcript needed; an emotion exaggeration setting |
+| Fish Audio S2-Pro | `fishaudio/s2-pro` (with its `codec.pth`) | 44.1 kHz; many languages including German; clones a voice from a few seconds of audio and its transcript; tags such as `[whisper]` in the text. Its weights are under the Fish Audio Research License, which limits commercial use |
 
 Each matches its reference implementation on tiny random models.
 
@@ -541,9 +544,12 @@ temperatures when a window repeats itself, skips silence, and can translate to E
 (`Task.TRANSLATE`). `SpeechModels.kind(folder)` tells which kind of model a folder holds
 without loading it. Both take a cancellation check.
 
-`TextToSpeech` says what a model can do: `voices()`, `canMixVoices()`, `canClone()` and
-`tags()`. Cloning takes the reference in the options; F5-TTS also lists `name.wav` /
-`name.txt` pairs in a `voices` folder next to its checkpoint as voices.
+`TextToSpeech` says what a model can do: `voices()`, `canMixVoices()`, `canClone()`,
+`tags()`, `followsInstructions()` and `languages()`. Cloning takes the reference in the
+options; F5-TTS also lists `name.wav` / `name.txt` pairs in a `voices` folder next to its
+checkpoint as voices, and F5-TTS, a Qwen3-TTS Base model, Chatterbox and Fish Audio keep voices given to
+`addVoice`. `SpeechOptions.instruction("...")` says how to speak and `language("german")` sets
+the language (else the model detects it).
 
 ```java
 try (TextToSpeech f5 = SpeechModels.textToSpeech(Path.of("models/f5-tts"), Device.cpu(), DType.FLOAT32);
@@ -553,7 +559,30 @@ try (TextToSpeech f5 = SpeechModels.textToSpeech(Path.of("models/f5-tts"), Devic
             SpeechOptions.defaults().reference(me, "What I said in me.wav."), null);
     Audio fun = orpheus.synthesize("That is hilarious <laugh> really.", SpeechOptions.defaults().voice("leo"), null);
 }
+
+try (TextToSpeech qwen = SpeechModels.textToSpeech(Path.of("models/Qwen3-TTS-12Hz-1.7B-CustomVoice"), gpu,
+        DType.BFLOAT16)) {
+    Audio a = qwen.synthesize("Guten Morgen! Heute wird es sonnig.", SpeechOptions.defaults().voice("vivian")
+            .language("german").instruction("cheerful and a little fast"), null);
+}
 ```
+
+A Qwen3-TTS folder holds the model and its `speech_tokenizer` folder, as published. Its talker
+writes 12.5 frames of 16 codes a second, which the speech tokenizer turns into 24 kHz audio;
+`Qwen3Speech.sampling(...)` changes the sampling settings read from `generation_config.json`.
+
+Chatterbox's T3 (a 0.5B Llama) writes 25 speech tokens a second, conditioned on the voice; S3Gen
+turns them into a mel spectrogram (a conformer and 10 flow-matching steps) and its HiFT vocoder
+into 24 kHz audio. Cloning reads the reference with three encoders: Resemble's voice encoder, the
+S3 speech tokenizer and CAM++. `ChatterboxSpeech.settings(temperature, cfgWeight, exaggeration)`
+changes the defaults of 0.8, 0.5 and 0.5; a higher exaggeration speaks more expressively.
+
+Fish Audio S2-Pro is a 4B dual autoregressive model: a Qwen3 transformer writes one semantic
+token per frame from a chat-style prompt (the reference voice's transcript and codec frames,
+then the text), a small transformer writes each frame's nine other codes, and its DAC codec
+decodes about 21.5 frames a second to 44.1 kHz audio. Longer text is spoken in pieces, each
+seeing the ones before. `FishSpeech.sampling(...)` changes the defaults (temperature 0.7,
+top-p 0.7, top-k 30).
 
 The building blocks are ordinary layers, so self-built models can use them too:
 `MelSpectrogram` (raw audio to log-mel, including `MelSpectrogram.whisper(80)`),
@@ -1196,7 +1225,10 @@ name, and **Blend with** mixes a second voice in at the share you pick (sent as
 its 8 voices and offers its expression tags, such as `<laugh>`, as buttons that put them in the
 text. An F5-TTS folder (with the Vocos vocoder next to it) speaks in voices made from recordings:
 under **New voice**, name it, choose or **Record** 3 to 12 seconds of speech and say what is said
-(left empty, a Whisper model writes it down). Such voices are kept in `voices` in the data folder. A Whisper model (such as
+(left empty, a Whisper model writes it down); a Qwen3-TTS Base folder does the same, a Fish Audio S2-Pro folder
+too, and a Chatterbox folder needs only the recording. A Qwen3-TTS
+CustomVoice folder speaks with its voices, and it and a VoiceDesign folder take instructions on how
+to speak (a VoiceDesign model makes the voice from them). Such voices are kept in `voices` in the data folder. A Whisper model (such as
 `openai/whisper-base`, with its `tokenizer.json`) writes down what is said: switch the Voice screen
 to **Transcribe**, then drop a recording (any audio or video the browser plays; it is turned into
 16 kHz mono in the browser) or **Record** one with the microphone. The text appears piece by piece,

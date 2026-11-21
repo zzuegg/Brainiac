@@ -81,6 +81,25 @@ public interface TextToSpeech extends AutoCloseable {
         return List.of();
     }
 
+    /**
+     * Whether the model reads {@link SpeechOptions#instruction()}: how to speak, in words.
+     *
+     * @return {@code true} if it follows instructions
+     */
+    default boolean followsInstructions() {
+        return false;
+    }
+
+    /**
+     * The languages {@link SpeechOptions#language()} may name; empty when the model takes
+     * none (it speaks one language, or tells from the text).
+     *
+     * @return the language names
+     */
+    default List<String> languages() {
+        return List.of();
+    }
+
     /** Frees the model's memory. */
     @Override
     void close();

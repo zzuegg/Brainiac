@@ -296,6 +296,15 @@ final class LocalProvider implements ChatProvider {
     }
 
     @Override
+    public Media speak(String model, String text, String voice, double speed, String instructions,
+            java.util.function.BooleanSupplier stop) throws IOException {
+        if (speech == null) {
+            throw new IOException("this studio does not speak on this PC");
+        }
+        return speech.speak(model, text, voice, speed, instructions, stop);
+    }
+
+    @Override
     public io.github.zzuegg.brainiac.audio.Transcription transcribe(String model, byte[] wav,
             LocalSpeech.Listening listening,
             java.util.function.Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment,
