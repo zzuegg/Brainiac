@@ -272,7 +272,7 @@ public final class Qwen3Speech implements TextToSpeech {
     }
 
     /** Weights under other names: some of a source's tensors, each under one or more names. */
-    private record Alias(WeightSource base, Map<String, String> map) implements WeightSource {
+    record Alias(WeightSource base, Map<String, String> map) implements WeightSource {
         @Override
         public List<String> names() {
             return List.copyOf(map.keySet());

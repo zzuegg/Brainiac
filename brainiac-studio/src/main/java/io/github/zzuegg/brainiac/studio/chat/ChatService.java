@@ -1161,8 +1161,9 @@ public final class ChatService {
     }
 
     /**
-     * Keeps a voice made from a recording, for a local model that clones voices (F5-TTS). Without a
-     * transcript, the first transcribing model on this PC writes it down.
+     * Keeps a voice made from a recording, for a local model that clones voices (F5-TTS, Qwen3-TTS Base,
+     * Chatterbox). Without a transcript, the first transcribing model on this PC writes it down, for
+     * the models that read one.
      *
      * @param model the model's key ({@code local/f5-tts})
      * @param name the voice's name
@@ -1178,7 +1179,7 @@ public final class ChatService {
             throw new IllegalArgumentException("only a speech model on this PC takes a voice from a recording");
         }
         String text = transcript == null ? "" : transcript.strip();
-        if (text.isEmpty()) {
+        if (text.isEmpty() && speech.needsTranscript(model.substring("local/".length()))) {
             String ears = speech.firstTranscriber().orElseThrow(() -> new IllegalArgumentException(
                     "say what is spoken in the recording, or put a Whisper model in a model folder to write it down"));
             text = speech.transcribe(ears, wav, new LocalSpeech.Listening(null, false, false, ""), s -> { }, () -> false)

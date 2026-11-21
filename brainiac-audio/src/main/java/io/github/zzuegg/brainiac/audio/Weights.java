@@ -121,15 +121,21 @@ final class Weights implements AutoCloseable {
 
     /** A one-layer (optionally bidirectional) {@code torch.nn.LSTM}, batch first. */
     Recurrent lstm(String name) {
-        boolean bi = source.contains(name + ".weight_ih_l0_reverse");
+        return lstm(name, 0);
+    }
+
+    /** One layer of a (optionally bidirectional) {@code torch.nn.LSTM}, batch first. */
+    Recurrent lstm(String name, int layer) {
+        String l = "_l" + layer;
+        boolean bi = source.contains(name + ".weight_ih" + l + "_reverse");
         int count = bi ? 2 : 1;
         Var[] wx = new Var[count];
         Var[] wh = new Var[count];
         Var[] b = new Var[count];
-        int units = source.shape(name + ".weight_hh_l0").dim(1);
-        int inputs = source.shape(name + ".weight_ih_l0").dim(1);
+        int units = source.shape(name + ".weight_hh" + l).dim(1);
+        int inputs = source.shape(name + ".weight_ih" + l).dim(1);
         for (int d = 0; d < count; d++) {
-            String suffix = d == 0 ? "_l0" : "_l0_reverse";
+            String suffix = d == 0 ? l : l + "_reverse";
             wx[d] = linear(name + ".weight_ih" + suffix);
             wh[d] = linear(name + ".weight_hh" + suffix);
             float[] bi1 = floats(name + ".bias_ih" + suffix);

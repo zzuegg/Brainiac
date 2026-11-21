@@ -1,6 +1,7 @@
 package io.github.zzuegg.brainiac.studio.chat;
 
 import io.github.zzuegg.brainiac.audio.Audio;
+import io.github.zzuegg.brainiac.audio.ChatterboxSpeech;
 import io.github.zzuegg.brainiac.audio.F5Speech;
 import io.github.zzuegg.brainiac.audio.F5Tts;
 import io.github.zzuegg.brainiac.audio.Kokoro;
@@ -32,8 +33,8 @@ import java.util.stream.Stream;
 
 /**
  * The speech models on this PC, found in the same places as the language models: Whisper, which
- * writes down what is said, and Kokoro, F5-TTS, Orpheus, Qwen3-TTS or VITS (MMS-TTS), which speak. F5-TTS
- * and the Qwen3-TTS Base models speak in voices made from recordings, which are kept in the studio's data folder. One of each is kept loaded, on the best device, with 32-bit weights.
+ * writes down what is said, and Kokoro, F5-TTS, Orpheus, Qwen3-TTS, Chatterbox or VITS (MMS-TTS), which speak.
+ * F5-TTS, Chatterbox and the Qwen3-TTS Base models speak in voices made from recordings, which are kept in the studio's data folder. One of each is kept loaded, on the best device, with 32-bit weights.
  */
 public final class LocalSpeech {
 
@@ -50,7 +51,7 @@ public final class LocalSpeech {
     public record Listening(String language, boolean translate, boolean timestamps, String prompt) {
     }
 
-    // family: whisper, kokoro, f5, orpheus, qwen3 or vits
+    // family: whisper, kokoro, f5, orpheus, qwen3, chatterbox or vits
     private record Found(FileTime modified, Optional<SpeechModels.Kind> kind, String family) {
     }
 
@@ -116,6 +117,7 @@ public final class LocalSpeech {
                         case "kokoro" -> "Kokoro text to speech";
                         case "f5" -> "F5-TTS voice cloning";
                         case "orpheus" -> "Orpheus text to speech";
+                        case "chatterbox" -> "Chatterbox voice cloning";
                         case "qwen3" -> switch (Qwen3Speech.kind(e.getValue()).orElseThrow()) {
                             case BASE -> "Qwen3-TTS voice cloning";
                             case VOICE_DESIGN -> "Qwen3-TTS voice design";
@@ -183,7 +185,8 @@ public final class LocalSpeech {
                             : Kokoro.isKokoro(p) ? "kokoro"
                             : F5Speech.isF5(p) ? "f5"
                             : OrpheusSpeech.isOrpheus(p) ? "orpheus"
-                            : Qwen3Speech.isQwen3Tts(p) ? "qwen3" : "vits";
+                            : Qwen3Speech.isQwen3Tts(p) ? "qwen3"
+                            : ChatterboxSpeech.isChatterbox(p) ? "chatterbox" : "vits";
                 }
             } catch (RuntimeException e) {
                 k = Optional.empty();
@@ -224,10 +227,21 @@ public final class LocalSpeech {
     // whether a model speaks in voices made from recordings
     private boolean clones(Path p) {
         return switch (family(p)) {
-            case "f5" -> true;
+            case "f5", "chatterbox" -> true;
             case "qwen3" -> Qwen3Speech.kind(p).orElse(null) == Qwen3Speech.Kind.BASE;
             default -> false;
         };
+    }
+
+    /**
+     * Whether a model that clones voices reads what the recording says (Chatterbox does not).
+     *
+     * @param id the model's name
+     * @return true unless the model clones from the sound alone
+     */
+    boolean needsTranscript(String id) {
+        Path p = find().get(id);
+        return p == null || !"chatterbox".equals(family(p));
     }
 
     // a Qwen3-TTS CustomVoice model's speakers, from its config.json, without loading it
@@ -294,9 +308,10 @@ public final class LocalSpeech {
         if (name == null || !VOICE_NAME.matcher(name).matches()) {
             throw new IllegalArgumentException("name the voice with up to 40 letters, digits, spaces, _ or -");
         }
-        if (transcript == null || transcript.isBlank()) {
+        if ((transcript == null || transcript.isBlank()) && needsTranscript(id)) {
             throw new IllegalArgumentException("say what is spoken in the recording");
         }
+        transcript = transcript == null ? "" : transcript;
         Audio a = Wav.decode(wav);   // refuses what is not WAV
         if (a.seconds() < 1) {
             throw new IllegalArgumentException("the recording is too short: use 3 to 12 seconds of speech");
@@ -310,6 +325,8 @@ public final class LocalSpeech {
                 f5.addVoice(name, a, transcript.strip());
             } else if (voice instanceof Qwen3Speech q && p.equals(voicePath)) {
                 q.addVoice(name, a, transcript.strip());
+            } else if (voice instanceof ChatterboxSpeech c && p.equals(voicePath)) {
+                c.addVoice(name, a);
             }
         } finally {
             speaking.unlock();
@@ -435,6 +452,12 @@ public final class LocalSpeech {
                 savedVoices(id).keySet().forEach(n -> names.put(n, n));
                 yield options(names, false, List.of(), true);
             }
+            case "chatterbox" -> {
+                Map<String, String> names = new LinkedHashMap<>();
+                names.put(ChatterboxSpeech.DEFAULT_VOICE, "Default");
+                savedVoices(id).keySet().forEach(n -> names.put(n, n));
+                yield options(names, false, List.of(), true);
+            }
             case "qwen3" -> {
                 Qwen3Speech.Kind k = Qwen3Speech.kind(p).orElse(Qwen3Speech.Kind.BASE);
                 Map<String, String> names = switch (k) {
@@ -530,6 +553,10 @@ public final class LocalSpeech {
             } else if (t instanceof Qwen3Speech q && q.canClone()) {
                 for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
                     q.addVoice(e.getKey(), Wav.read(savedDir(id).resolve(e.getKey() + ".wav")), e.getValue());
+                }
+            } else if (t instanceof ChatterboxSpeech c) {
+                for (String name : savedVoices(id).keySet()) {
+                    c.addVoice(name, Wav.read(savedDir(id).resolve(name + ".wav")));
                 }
             }
             LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to speak on " + d);
