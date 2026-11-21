@@ -1162,7 +1162,7 @@ public final class ChatService {
 
     /**
      * Keeps a voice made from a recording, for a local model that clones voices (F5-TTS, Qwen3-TTS Base,
-     * Chatterbox). Without a transcript, the first transcribing model on this PC writes it down, for
+     * Chatterbox, Fish Audio). Without a transcript, the first transcribing model on this PC writes it down, for
      * the models that read one.
      *
      * @param model the model's key ({@code local/f5-tts})

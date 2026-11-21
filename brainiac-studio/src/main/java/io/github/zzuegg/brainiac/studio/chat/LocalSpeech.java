@@ -4,6 +4,7 @@ import io.github.zzuegg.brainiac.audio.Audio;
 import io.github.zzuegg.brainiac.audio.ChatterboxSpeech;
 import io.github.zzuegg.brainiac.audio.F5Speech;
 import io.github.zzuegg.brainiac.audio.F5Tts;
+import io.github.zzuegg.brainiac.audio.FishSpeech;
 import io.github.zzuegg.brainiac.audio.Kokoro;
 import io.github.zzuegg.brainiac.audio.OrpheusSpeech;
 import io.github.zzuegg.brainiac.audio.Qwen3Speech;
@@ -33,8 +34,8 @@ import java.util.stream.Stream;
 
 /**
  * The speech models on this PC, found in the same places as the language models: Whisper, which
- * writes down what is said, and Kokoro, F5-TTS, Orpheus, Qwen3-TTS, Chatterbox or VITS (MMS-TTS), which speak.
- * F5-TTS, Chatterbox and the Qwen3-TTS Base models speak in voices made from recordings, which are kept in the studio's data folder. One of each is kept loaded, on the best device, with 32-bit weights.
+ * writes down what is said, and Kokoro, F5-TTS, Orpheus, Qwen3-TTS, Chatterbox, Fish Audio or VITS (MMS-TTS),
+ * which speak. F5-TTS, Chatterbox, Fish Audio and the Qwen3-TTS Base models speak in voices made from recordings, which are kept in the studio's data folder. One of each is kept loaded, on the best device, with 32-bit weights.
  */
 public final class LocalSpeech {
 
@@ -51,7 +52,7 @@ public final class LocalSpeech {
     public record Listening(String language, boolean translate, boolean timestamps, String prompt) {
     }
 
-    // family: whisper, kokoro, f5, orpheus, qwen3, chatterbox or vits
+    // family: whisper, kokoro, f5, orpheus, qwen3, chatterbox, fish or vits
     private record Found(FileTime modified, Optional<SpeechModels.Kind> kind, String family) {
     }
 
@@ -118,6 +119,7 @@ public final class LocalSpeech {
                         case "f5" -> "F5-TTS voice cloning";
                         case "orpheus" -> "Orpheus text to speech";
                         case "chatterbox" -> "Chatterbox voice cloning";
+                        case "fish" -> "Fish Audio voice cloning";
                         case "qwen3" -> switch (Qwen3Speech.kind(e.getValue()).orElseThrow()) {
                             case BASE -> "Qwen3-TTS voice cloning";
                             case VOICE_DESIGN -> "Qwen3-TTS voice design";
@@ -186,7 +188,8 @@ public final class LocalSpeech {
                             : F5Speech.isF5(p) ? "f5"
                             : OrpheusSpeech.isOrpheus(p) ? "orpheus"
                             : Qwen3Speech.isQwen3Tts(p) ? "qwen3"
-                            : ChatterboxSpeech.isChatterbox(p) ? "chatterbox" : "vits";
+                            : ChatterboxSpeech.isChatterbox(p) ? "chatterbox"
+                            : FishSpeech.isFish(p) ? "fish" : "vits";
                 }
             } catch (RuntimeException e) {
                 k = Optional.empty();
@@ -227,7 +230,7 @@ public final class LocalSpeech {
     // whether a model speaks in voices made from recordings
     private boolean clones(Path p) {
         return switch (family(p)) {
-            case "f5", "chatterbox" -> true;
+            case "f5", "chatterbox", "fish" -> true;
             case "qwen3" -> Qwen3Speech.kind(p).orElse(null) == Qwen3Speech.Kind.BASE;
             default -> false;
         };
@@ -327,6 +330,8 @@ public final class LocalSpeech {
                 q.addVoice(name, a, transcript.strip());
             } else if (voice instanceof ChatterboxSpeech c && p.equals(voicePath)) {
                 c.addVoice(name, a);
+            } else if (voice instanceof FishSpeech f && p.equals(voicePath)) {
+                f.addVoice(name, a, transcript.strip());
             }
         } finally {
             speaking.unlock();
@@ -452,7 +457,7 @@ public final class LocalSpeech {
                 savedVoices(id).keySet().forEach(n -> names.put(n, n));
                 yield options(names, false, List.of(), true);
             }
-            case "chatterbox" -> {
+            case "chatterbox", "fish" -> {
                 Map<String, String> names = new LinkedHashMap<>();
                 names.put(ChatterboxSpeech.DEFAULT_VOICE, "Default");
                 savedVoices(id).keySet().forEach(n -> names.put(n, n));
@@ -557,6 +562,10 @@ public final class LocalSpeech {
             } else if (t instanceof ChatterboxSpeech c) {
                 for (String name : savedVoices(id).keySet()) {
                     c.addVoice(name, Wav.read(savedDir(id).resolve(name + ".wav")));
+                }
+            } else if (t instanceof FishSpeech f) {
+                for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
+                    f.addVoice(e.getKey(), Wav.read(savedDir(id).resolve(e.getKey() + ".wav")), e.getValue());
                 }
             }
             LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to speak on " + d);
