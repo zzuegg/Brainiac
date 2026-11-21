@@ -340,19 +340,20 @@ final class FishCodec implements AutoCloseable {
         float[] padded = java.util.Arrays.copyOf(audio, frames * frame);
         return Var.noGrad(() -> {
             Var x = Var.of(Tensor.of(Shape.of(1, 1, padded.length), padded, device).to(dtype));
-            x = encIn.apply(x);
+            // at 44.1 kHz each step is hundreds of megabytes: the one before goes at once
+            x = next(x, Vocos.settle(encIn.apply(x)));
             for (EncoderBlock b : encBlocks) {
                 for (Unit u : b.units()) {
-                    x = Vocos.settle(u.apply(x));
+                    x = next(x, Vocos.settle(u.apply(x)));
                 }
-                x = Vocos.settle(b.down().apply(b.act().apply(x)));
+                x = next(x, Vocos.settle(b.down().apply(b.act().apply(x))));
                 if (b.transformer() != null) {
-                    x = b.transformer().apply(x);
+                    x = next(x, Vocos.settle(b.transformer().apply(x)));
                 }
             }
-            x = Vocos.settle(encOut.apply(encAct.apply(x)));
+            x = next(x, Vocos.settle(encOut.apply(encAct.apply(x))));
             for (int i = 0; i < downs.size(); i++) {
-                x = Vocos.settle(downNexts.get(i).apply(downs.get(i).apply(x)));
+                x = next(x, Vocos.settle(downNexts.get(i).apply(downs.get(i).apply(x))));
             }
             x = pre.apply(x);                                               // [1, dim, t]
             int t = x.shape().dim(2);
@@ -371,6 +372,12 @@ final class FishCodec implements AutoCloseable {
             }
             return codes;
         });
+    }
+
+    /** {@code now}, releasing {@code before} unless {@code now} shares its memory. */
+    private static Var next(Var before, Var now) {
+        Tensor.release(List.of(before.value()), List.of(now.value()));
+        return now;
     }
 
     private Var lookup(Vq v, int[] codes) {
