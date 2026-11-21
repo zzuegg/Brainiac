@@ -87,4 +87,27 @@ class SignalTest {
         }
         assertEquals(Device.cpu(), Signal.hann(4, Device.cpu()).device());
     }
+
+    @Test
+    void timeStretchKeepsThePitch() {
+        int rate = 16_000;
+        float[] tone = new float[rate];
+        for (int i = 0; i < rate; i++) {
+            tone[i] = (float) Math.sin(2 * Math.PI * 220 * i / rate);
+        }
+        for (double speed : new double[] {0.5, 0.8, 1.5, 2}) {
+            float[] y = Signal.timeStretch(tone, rate, speed);
+            assertEquals(Math.round(rate / speed), y.length, "length at " + speed);
+            int crossings = 0;
+            double power = 0;
+            for (int i = 1; i < y.length; i++) {
+                crossings += (y[i - 1] < 0) != (y[i] < 0) ? 1 : 0;
+                power += y[i] * y[i];
+            }
+            double hz = crossings / 2.0 / ((double) y.length / rate);
+            assertEquals(220, hz, 4, "pitch at " + speed);
+            assertEquals(Math.sqrt(0.5), Math.sqrt(power / y.length), 0.05, "loudness at " + speed);
+        }
+        assertArrayEquals(tone, Signal.timeStretch(tone, rate, 1));
+    }
 }

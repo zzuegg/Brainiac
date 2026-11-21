@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.io.PretrainedTokenizer;
 import io.github.zzuegg.brainiac.llm.Generator;
 import io.github.zzuegg.brainiac.llm.Llama;
 import io.github.zzuegg.brainiac.llm.Sampling;
+import io.github.zzuegg.brainiac.nn.Signal;
 import io.github.zzuegg.brainiac.tensor.DType;
 import io.github.zzuegg.brainiac.tensor.Device;
 
@@ -303,6 +304,9 @@ public final class OrpheusSpeech implements TextToSpeech {
             }
             long seed = options.seed() + i;
             float[] wave = snac.decode(codes, b -> new SplittableRandom(seed * 31 + b));
+            if (options.speed() != 1) {
+                wave = Signal.timeStretch(wave, sampleRate(), options.speed());
+            }
             parts.add(wave);
             total += wave.length;
             if (onChunk != null) {

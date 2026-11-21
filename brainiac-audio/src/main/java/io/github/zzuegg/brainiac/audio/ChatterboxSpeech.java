@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.SplittableRandom;
 import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
@@ -279,7 +280,10 @@ public final class ChatterboxSpeech implements TextToSpeech {
             if (tokens.length == 0) {
                 continue;
             }
-            float[] wave = vocode(tokens, voice, random);
+            float[] wave = vocode(tokens, voice, random, options.cancelled());
+            if (options.speed() != 1) {
+                wave = Signal.timeStretch(wave, sampleRate(), options.speed());
+            }
             parts.add(wave);
             total += wave.length;
             if (onChunk != null) {
@@ -374,9 +378,16 @@ public final class ChatterboxSpeech implements TextToSpeech {
     }
 
     /** S3Gen: tokens to mel (after the voice's) to audio, with the reference's fade-in. */
-    float[] vocode(int[] tokens, Conditionals voice, SplittableRandom random) {
+    private float[] vocode(int[] tokens, Conditionals voice, SplittableRandom random, BooleanSupplier cancelled) {
+        if (cancelled.getAsBoolean()) {
+            throw new CancellationException("speech synthesis cancelled");
+        }
         return Var.noGrad(() -> {
-            Var mel = mel(tokens, voice, gaussian(S3Flow.MELS * 2 * (voice.genTokens().length + tokens.length), random));
+            Var mel = mel(tokens, voice, gaussian(S3Flow.MELS * 2 * (voice.genTokens().length + tokens.length), random),
+                    cancelled);
+            if (cancelled.getAsBoolean()) {
+                throw new CancellationException("speech synthesis cancelled");
+            }
             float[] wave = hift.synthesize(mel, random);
             HiftVocoder.fadeIn(wave);
             return wave;
@@ -384,12 +395,12 @@ public final class ChatterboxSpeech implements TextToSpeech {
     }
 
     /** The flow's mel for tokens after the voice's, from given noise. */
-    Var mel(int[] tokens, Conditionals voice, float[] noise) {
+    private Var mel(int[] tokens, Conditionals voice, float[] noise, BooleanSupplier cancelled) {
         int[] all = new int[voice.genTokens().length + tokens.length];
         System.arraycopy(voice.genTokens(), 0, all, 0, voice.genTokens().length);
         System.arraycopy(tokens, 0, all, voice.genTokens().length, tokens.length);
         Var mu = flow.encode(all);
-        return flow.decode(mu, voice.xvector(), voice.genMel(), voice.genFrames(), noise, FLOW_STEPS);
+        return flow.decode(mu, voice.xvector(), voice.genMel(), voice.genFrames(), noise, FLOW_STEPS, cancelled);
     }
 
     private static float[] gaussian(int n, SplittableRandom random) {

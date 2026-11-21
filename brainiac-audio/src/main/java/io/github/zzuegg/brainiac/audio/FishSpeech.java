@@ -321,6 +321,9 @@ public final class FishSpeech implements TextToSpeech {
             said.add(piece);
             answers.add(codes);
             float[] wave = codec.decode(codes);
+            if (options.speed() != 1) {
+                wave = Signal.timeStretch(wave, sampleRate(), options.speed());
+            }
             parts.add(wave);
             total += wave.length;
             if (onChunk != null) {

@@ -550,6 +550,9 @@ public final class Qwen3Speech implements TextToSpeech {
                 continue;
             }
             float[] wave = decode(frames, p.refCodes());
+            if (options.speed() != 1) {
+                wave = Signal.timeStretch(wave, sampleRate(), options.speed());
+            }
             parts.add(wave);
             total += wave.length;
             if (onChunk != null) {

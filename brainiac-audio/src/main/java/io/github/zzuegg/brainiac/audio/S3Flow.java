@@ -225,6 +225,16 @@ final class S3Flow {
      * @return {@code [80, frames - promptFrames]}
      */
     Var decode(Var mu, float[] speaker, float[] promptFeat, int promptFrames, float[] noise, int steps) {
+        return decode(mu, speaker, promptFeat, promptFrames, noise, steps, () -> false);
+    }
+
+    /**
+     * {@link #decode(Var, float[], float[], int, float[], int)}, stopping between steps when asked.
+     *
+     * @throws java.util.concurrent.CancellationException when {@code cancelled} says so
+     */
+    Var decode(Var mu, float[] speaker, float[] promptFeat, int promptFrames, float[] noise, int steps,
+            java.util.function.BooleanSupplier cancelled) {
         int frames = mu.shape().dim(1);
         var dtype = mu.dtype();
         double norm = 0;
@@ -257,6 +267,9 @@ final class S3Flow {
             span[i] = 1 - Math.cos(t * 0.5 * Math.PI);
         }
         for (int i = 0; i < steps; i++) {
+            if (cancelled.getAsBoolean()) {
+                throw new java.util.concurrent.CancellationException("speech synthesis cancelled");
+            }
             float t = (float) span[i];
             float dt = (float) span[i + 1] - t;
             Var in = Var.concat(1, Var.concat(0, x, x), context);
