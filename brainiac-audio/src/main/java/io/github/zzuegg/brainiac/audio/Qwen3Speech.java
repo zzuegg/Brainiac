@@ -869,6 +869,7 @@ public final class Qwen3Speech implements TextToSpeech {
 
     @Override
     public void close() {
+        Weights.release(talker, predictor);
         weights.close();
         codec.close();
     }

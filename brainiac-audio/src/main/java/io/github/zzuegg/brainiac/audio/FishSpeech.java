@@ -753,6 +753,7 @@ public final class FishSpeech implements TextToSpeech {
 
     @Override
     public void close() {
+        Weights.release(slow, fast);
         weights.close();
         codec.close();
     }

@@ -327,6 +327,7 @@ public final class OrpheusSpeech implements TextToSpeech {
 
     @Override
     public void close() {
+        Weights.release(model);
         snac.close();
     }
 }

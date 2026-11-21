@@ -2,6 +2,7 @@ package io.github.zzuegg.brainiac.audio;
 
 import io.github.zzuegg.brainiac.autograd.Var;
 import io.github.zzuegg.brainiac.io.WeightSource;
+import io.github.zzuegg.brainiac.llm.Llama;
 import io.github.zzuegg.brainiac.nn.Recurrent;
 import io.github.zzuegg.brainiac.nn.StyleNorm;
 import io.github.zzuegg.brainiac.tensor.DType;
@@ -167,5 +168,21 @@ final class Weights implements AutoCloseable {
             t.release();
         }
         owned.clear();
+    }
+
+    /**
+     * Frees language models' weights at once: left to the collector, the next model to load
+     * finds the memory still in use and is refused or spills to system memory.
+     *
+     * @param models the models, whose parameters are not used again
+     */
+    static void release(Llama... models) {
+        List<Tensor> dead = new ArrayList<>();
+        for (Llama m : models) {
+            for (Var p : m.parameters()) {
+                dead.add(p.value());
+            }
+        }
+        Tensor.release(dead, List.of());
     }
 }

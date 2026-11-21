@@ -298,4 +298,9 @@ final class ChatterboxT3 {
         return best;
     }
 
+
+    /** Frees the transformer's weights; it is not used again. */
+    void release() {
+        Weights.release(llama);
+    }
 }

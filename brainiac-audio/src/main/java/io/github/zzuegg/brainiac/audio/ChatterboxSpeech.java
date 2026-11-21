@@ -503,6 +503,7 @@ public final class ChatterboxSpeech implements TextToSpeech {
 
     @Override
     public void close() {
+        t3.release();
         for (Weights w : weights) {
             w.close();
         }
