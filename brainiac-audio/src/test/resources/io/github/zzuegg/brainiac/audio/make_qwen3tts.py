@@ -636,6 +636,8 @@ with torch.no_grad():
         p.copy_(torch.randn_like(p) / math.sqrt(max(1, p[0].numel())) if p.dim() > 1 else rnd(*p.shape, s=0.2))
 state.update({"speaker_encoder." + k: v for k, v in speaker.state_dict().items()})
 save([("", state)], f"{model_dir}/model.safetensors")
+# the released configs name only these; the dilations and res2net scale are the defaults above
+model_cfg["speaker_encoder_config"] = {"enc_dim": H, "sample_rate": 24000}
 json.dump(model_cfg, open(f"{model_dir}/config.json", "w"), indent=1)
 json.dump({"do_sample": True, "top_k": 50, "top_p": 1.0, "temperature": 0.9, "repetition_penalty": 1.05,
            "subtalker_dosample": True, "subtalker_top_k": 50, "subtalker_top_p": 1.0, "subtalker_temperature": 0.9,

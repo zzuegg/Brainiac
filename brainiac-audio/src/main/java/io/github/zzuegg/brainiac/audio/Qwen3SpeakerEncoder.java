@@ -51,9 +51,14 @@ final class Qwen3SpeakerEncoder {
     Qwen3SpeakerEncoder(Weights w, Map<String, Object> config) {
         this.device = w.device();
         this.dtype = w.dtype();
-        List<Object> dilations = Json.array(config.get("enc_dilations"));
-        int scale = (int) Json.integer(config, "enc_res2net_scale", 8);
         String p = "speaker_encoder.";
+        // the released configs name only enc_dim; the rest are the reference's defaults
+        List<Object> dilations = config.get("enc_dilations") == null
+                ? List.of(1, 2, 3, 4, 1) : Json.array(config.get("enc_dilations"));
+        int scale = 1;
+        while (w.contains(p + "blocks.1.res2net_block.blocks." + (scale - 1) + ".conv.weight")) {
+            scale++;
+        }
         first = tdnn(w, p + "blocks.0.conv", dil(dilations, 0));
         for (int i = 1; i < dilations.size() - 1; i++) {
             String b = p + "blocks." + i + ".";
