@@ -4645,7 +4645,8 @@ reason ::= [a-z ]+`;
             <textarea class="input vo-text" id="vo-text" placeholder="Write what the voice should say. Ctrl+Enter speaks it.">${esc(G.text)}</textarea>
             ${G.takes.map((t, i) => `<div class="take">
               <div class="who"><span class="chip c-speech">${esc(t.voice)}</span><span class="mono muted">${esc(t.model)}${t.seconds ? ` · ${t.seconds.toFixed(1)} s` : ""}</span><span class="grow"></span>
-                ${t.url ? `${G.video ? `<button class="btn ghost sm" data-with-video="${i}">${icon("play")}With video</button>` : ""}<a class="btn ghost sm" href="${t.url}" download="${esc(fileName(t.file))}" title="Saved as ${esc(t.file)}">Save</a>` : ""}</div>
+                ${t.url ? `${G.video ? `<button class="btn ghost sm" data-with-video="${i}">${icon("play")}With video</button>` : ""}<a class="btn ghost sm" href="${t.url}" download="${esc(fileName(t.file))}" title="Saved as ${esc(t.file)}">Save</a>${t.wav && characterModels().length ? `<button class="btn ghost sm" data-character="${i}" title="Keep this voice, to speak any text in it with ${esc(characterModels().map(c => c.name).join(", "))}">${icon("plus")}Save as character</button>` : ""}` : ""}</div>
+              ${t.character ? characterBox(t, i) : ""}
               <div class="muted" style="font-size:13px">${esc(t.text.length > 160 ? t.text.slice(0, 160) + "…" : t.text)}</div>
               ${t.error ? `<div class="flag bad">${icon("flask")}<div><b>No audio.</b> ${esc(t.error)}</div></div>` : `<audio controls src="${t.url}" data-take="${i}"></audio>`}
             </div>`).join("")}
@@ -4665,13 +4666,49 @@ reason ::= [a-z ]+`;
         ${G.blend ? `<div class="field"><label for="vo-mix">Mix <output>${mixLabel(names)}</output></label>
           <input type="range" id="vo-mix" min="0.1" max="0.9" step="0.05" value="${G.blendW}" aria-label="How much of ${esc(voiceName(G.voice, names)[0])}"></div>` : ""}` : ""}
         ${opt.clone ? cloneBox() : ""}
-        ${opt.tags?.length ? `<div class="field"><label>Expressions <output>put in the text</output></label><div class="tag-row">${opt.tags.map(t => `<button class="btn ghost sm" data-vo-tag="${esc(t)}">&lt;${esc(t)}&gt;</button>`).join("")}</div></div>` : ""}
+        ${opt.tags?.length ? `<div class="field"><label>Expressions <output>put in the text</output></label><div class="tag-row">${opt.tags.map(t => `<button class="btn ghost sm" data-vo-tag="${esc(t)}">${esc(tagText(t))}</button>`).join("")}</div></div>` : ""}
         <div class="field"><label for="vo-instr">How to say it ${opt.instructions ? "" : "<output>not offered</output>"}</label>
           <textarea class="input" id="vo-instr" rows="3" placeholder="Calm narrator, a little slower, warm" ${opt.instructions ? "" : "disabled"}>${esc(G.instructions)}</textarea></div>
         ${opt.formats.length > 1 ? `<div class="field"><label>File</label><div class="seg">${opt.formats.map(f => `<button data-format="${f}" aria-pressed="${G.format === f}">${f.toUpperCase()}</button>`).join("")}</div></div>`
           : opt.formats.length ? `<div class="field"><label>File <output>${opt.formats[0].toUpperCase()}</output></label></div>` : ""}
       </aside>
     </div>`;
+  }
+
+  // Orpheus' tags come without their angle brackets; Fish's square-bracket ones as they are
+  const tagText = t => t.startsWith("[") ? t : `<${t}>`;
+
+  // the models on this PC that speak in a voice made from a recording: a take saved as a
+  // character becomes a voice in each, where expressions and moods can then be added
+  const characterModels = () => mediaModels("speech").filter(m => m.provider === "local" && m.speech?.clone);
+
+  function characterBox(t, i) {
+    const c = t.character;
+    const where = characterModels().map(m => m.name).join(", ");
+    return `<div class="character-box">
+      <div class="clone-row"><input class="input" data-character-name="${i}" placeholder="The character's name, such as Captain" maxlength="40" value="${esc(c.name)}" ${c.busy ? "disabled" : ""}>
+        <button class="btn primary sm" data-character-save="${i}" type="button" ${c.busy || !c.name.trim() ? "disabled" : ""}>${c.busy ? "Saving…" : "Save"}</button></div>
+      <div class="faint" style="font-size:12.5px">${c.done ? `Saved as a voice in ${esc(c.done.join(", "))}.` : `Becomes a voice in ${esc(where)}, with this take's text as what it says. Clear takes of 5 to 15 seconds work best.`}</div>
+      ${c.error ? `<div class="flag bad">${icon("flask")}<div>${esc(c.error)}</div></div>` : ""}
+    </div>`;
+  }
+
+  async function characterSave(t) {
+    const c = t.character, name = c.name.trim();
+    if (!name || !t.wav) return;
+    c.busy = true; c.error = ""; render();
+    const done = [], failed = [];
+    for (const m of characterModels()) {
+      try {
+        await postJson("/api/speech/voice", { model: m.key, name, audio: t.wav, transcript: t.text });
+        done.push(m.name);
+      } catch (e) { failed.push(`${m.name}: ${e.message}`); }
+    }
+    c.busy = false;
+    c.done = done.length ? done : null;
+    c.error = failed.join(" · ");
+    await loadModels();
+    if (state.view === "voice") render();
   }
 
   // making a voice from a recording: a name, 3 to 12 seconds of speech, and what is said in it
@@ -4764,7 +4801,8 @@ reason ::= [a-z ]+`;
     if (!preview) { G.speaking = true; render(); }
     try {
       const j = await postJson("/api/speech", { model: G.voModel, text, voice, speed: G.speed, instructions: G.instructions, format: G.format });
-      Object.assign(take, { url: blobUrl(j.items[0]), file: j.items[0].file, seconds: j.seconds, model: j.model.name });
+      Object.assign(take, { url: blobUrl(j.items[0]), file: j.items[0].file, seconds: j.seconds, model: j.model.name,
+        wav: /wav/.test(j.items[0].mime || "") ? j.items[0].data : null });
     } catch (e) { take.error = e.message; }
     if (preview) {
       if (take.url) new Audio(take.url).play().catch(() => {});
@@ -4802,9 +4840,20 @@ reason ::= [a-z ]+`;
       G.blendW = +e.target.value;
       e.target.previousElementSibling.querySelector("output").textContent = mixLabel(pickedModel(G.voModel, "speech")?.speech?.names);
     });
+    $$("[data-character]").forEach(b => b.addEventListener("click", () => {
+      keep(); const t = G.takes[+b.dataset.character];
+      t.character = t.character ? null : { name: "", busy: false, error: "", done: null }; render();
+      $(`[data-character-name="${b.dataset.character}"]`)?.focus();
+    }));
+    $$("[data-character-name]").forEach(el => el.addEventListener("input", e => {
+      const t = G.takes[+el.dataset.characterName]; t.character.name = e.target.value;
+      const btn = $(`[data-character-save="${el.dataset.characterName}"]`); if (btn) btn.disabled = !e.target.value.trim() || t.character.busy;
+    }));
+    $$("[data-character-name]").forEach(el => el.addEventListener("keydown", e => { if (e.key === "Enter") { keep(); characterSave(G.takes[+el.dataset.characterName]); } }));
+    $$("[data-character-save]").forEach(b => b.addEventListener("click", () => { keep(); characterSave(G.takes[+b.dataset.characterSave]); }));
     $$("[data-vo-tag]").forEach(b => b.addEventListener("click", () => {
       const t = $("#vo-text"); if (!t) return;
-      const at = t.selectionStart ?? t.value.length, tag = `<${b.dataset.voTag}>`;
+      const at = t.selectionStart ?? t.value.length, tag = tagText(b.dataset.voTag) + (b.dataset.voTag.startsWith("[") ? " " : "");
       t.value = t.value.slice(0, at) + tag + t.value.slice(t.selectionEnd ?? at);
       G.text = t.value; t.focus(); t.selectionStart = t.selectionEnd = at + tag.length;
     }));

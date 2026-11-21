@@ -145,6 +145,30 @@ class LocalSpeechTest {
     }
 
     @Test
+    void aCharacterSavedFromATakeBecomesAVoiceInFishAndChatterbox() throws Exception {
+        copy(FIXTURES.resolve("fish"), data.resolve("models/tiny-fish"));
+        copy(FIXTURES.resolve("chatterbox"), data.resolve("models/tiny-chatterbox"));
+        ChatService chat = ChatService.at(new Keys(data.resolve("keys.properties"), Map.of()), List.of(data.resolve("models")),
+                Map.of(), data.resolve("outputs"));
+        Map<String, Object> fish = Json.object(model(chat.describe(true), "local/tiny-fish").get("speech"));
+        assertEquals(Boolean.TRUE, fish.get("clone"));
+        assertTrue(Json.array(fish.get("tags")).contains("[angry]"), "Fish's tags keep their brackets: " + fish.get("tags"));
+        assertEquals(Boolean.TRUE, Json.object(model(chat.describe(true), "local/tiny-chatterbox").get("speech")).get("clone"));
+
+        // what the page sends for each model when a take is saved as a character
+        float[] tone = new float[3 * 24_000];
+        for (int i = 0; i < tone.length; i++) {
+            tone[i] = (float) (0.3 * Math.sin(2 * Math.PI * 140 * i / 24_000.0));
+        }
+        byte[] take = Wav.encode(new Audio(tone, 24_000));
+        for (String m : List.of("local/tiny-fish", "local/tiny-chatterbox")) {
+            chat.saveVoice(m, "Captain", take, "Aye, the sea gives and the sea takes.");
+            assertTrue(Json.array(Json.object(model(chat.describe(true), m).get("speech")).get("voices")).contains("Captain"),
+                    m + " lists the character");
+        }
+    }
+
+    @Test
     void aWorkersLocalModelsOnlyChat() throws Exception {
         assertTrue(ChatService.localModels(List.of(models())).models().isEmpty());
     }

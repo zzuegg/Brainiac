@@ -461,7 +461,7 @@ public final class LocalSpeech {
                 Map<String, String> names = new LinkedHashMap<>();
                 names.put(ChatterboxSpeech.DEFAULT_VOICE, "Default");
                 savedVoices(id).keySet().forEach(n -> names.put(n, n));
-                yield options(names, false, List.of(), true);
+                yield options(names, false, family.equals("fish") ? FishSpeech.TAGS : List.of(), true);
             }
             case "qwen3" -> {
                 Qwen3Speech.Kind k = Qwen3Speech.kind(p).orElse(Qwen3Speech.Kind.BASE);
@@ -480,7 +480,8 @@ public final class LocalSpeech {
         };
     }
 
-    // tags go to the page without their brackets: <laugh> is offered as laugh
+    // angle-bracket tags go to the page without their brackets (<laugh> is offered as laugh);
+    // square-bracket ones, such as Fish's [angry], as they are
     private static SpeechOptions options(Map<String, String> names, boolean mix, List<String> tags, boolean clone) {
         return options(names, mix, tags, clone, false);
     }

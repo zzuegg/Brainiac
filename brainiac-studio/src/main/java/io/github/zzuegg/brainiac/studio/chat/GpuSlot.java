@@ -26,6 +26,7 @@ final class GpuSlot {
     private volatile long bytes;
     private volatile long lastUsed;
     private volatile Runnable unloader;
+    private volatile Device device;
     private final java.util.function.ToLongBiFunction<Path, Device> estimator;
 
     GpuSlot(String kind, GpuResidency residency) {
@@ -124,6 +125,7 @@ final class GpuSlot {
         key = k;
         bytes = used;
         unloader = unload;
+        this.device = device;
         residency.measuredAs(k, after > before ? used : 0);
         residency.keepMeasured();
         return t;
@@ -143,12 +145,19 @@ final class GpuSlot {
     /** Lets go of the model, holding the slot. */
     void forget() {
         Runnable u = unloader;
+        Device d = device;
         unloader = null;
+        device = null;
         model = null;
         key = null;
         bytes = 0;
         if (u != null) {
             u.run();
+            if (d != null) {
+                // the backend keeps released memory pooled for tensors of the same sizes; the next
+                // model has other sizes, and without this it spilled to system memory, 3 to 4 times slower
+                d.trim();
+            }
         }
     }
 

@@ -46,6 +46,14 @@ import java.util.function.Supplier;
  */
 public final class FishSpeech implements TextToSpeech {
 
+    /**
+     * Some of the expressions S2-Pro reads in brackets inside the text, such as {@code [angry]}
+     * before a line; it understands many more said in words, such as {@code [speaking slowly]}.
+     */
+    public static final List<String> TAGS = List.of("[angry]", "[sad]", "[excited]", "[whisper]", "[laughing]",
+            "[shouting]", "[surprised]", "[sigh]");
+
+
     /** The id under which a model with no reference speaks: a voice the model picks. */
     public static final String DEFAULT_VOICE = "default";
     private static final int RAS_WINDOW = 10;
@@ -749,6 +757,11 @@ public final class FishSpeech implements TextToSpeech {
         @Override
         public void close() {
         }
+    }
+
+    @Override
+    public List<String> tags() {
+        return TAGS;
     }
 
     @Override
