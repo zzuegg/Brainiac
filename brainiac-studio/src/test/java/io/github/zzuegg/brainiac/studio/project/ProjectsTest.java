@@ -90,4 +90,55 @@ class ProjectsTest {
         Project p = Project.fromJson(Map.of("name", "C", "runners", Map.of("video", runner)));
         assertEquals(Map.of("maxPrice", 0.5), p.runner("video"));
     }
+
+    private static Project sub(String id, List<String> tools, List<String> models, List<String> parents) {
+        return new Project(id, id, "", null, tools, models, Map.of(), Map.of(), parents, Project.BY_USER);
+    }
+
+    @Test
+    void aSubprojectCanBePartOfSeveralAndUsesOnlyWhatEachAllows() throws IOException {
+        Projects ps = new Projects(dir.resolve("projects.json"));
+        ps.save(sub("film", List.of("make_speech", "web_search", "read_project_file"), List.of("local/", "openai/"), List.of()), true);
+        ps.save(sub("research", List.of("web_search", "read_project_file"), List.of("local/qwen"), List.of()), true);
+        ps.save(sub("script", null, null, List.of("film", "research")), true);
+
+        Project eff = ps.get("script").orElseThrow();
+        assertEquals(List.of("web_search", "read_project_file"), eff.tools());
+        assertTrue(eff.allows("local/qwen"));
+        assertFalse(eff.allows("local/llama"));
+        assertFalse(eff.allows("openai/gpt-5"));
+        assertEquals(null, ps.own("script").orElseThrow().tools(), "its own settings are kept as they are");
+        assertTrue(ps.within("script", "film"));
+        assertFalse(ps.within("film", "script"));
+        assertEquals(List.of("script"), ps.descendants("research"));
+
+        assertThrows(IllegalArgumentException.class, () -> ps.save(sub("film", null, null, List.of("script")), false),
+                "a project cannot be part of its own subproject");
+        assertThrows(IllegalArgumentException.class, () -> ps.save(sub("x", null, null, List.of("nope")), true));
+        assertThrows(IllegalArgumentException.class, () -> sub("y", null, null, List.of(Project.DEFAULT)));
+        assertEquals(List.of("film", "research"), new Projects(dir.resolve("projects.json")).own("script")
+                .orElseThrow().parents(), "the links are kept");
+    }
+
+    @Test
+    void deletingAParentOnlyCutsSharedSubprojectsLooseAndUndoingPutsThemBack() throws IOException {
+        Projects ps = new Projects(null);
+        ps.save(sub("a", null, null, List.of()), true);
+        ps.save(sub("b", null, null, List.of()), true);
+        ps.save(sub("shared", null, null, List.of("a", "b")), true);
+        ps.save(sub("only-a", null, null, List.of("a")), true);
+        ps.save(sub("deep", null, null, List.of("only-a")), true);
+
+        Projects.Removal r = ps.remove("a");
+        assertTrue(ps.own("a").isEmpty());
+        assertTrue(ps.own("only-a").isEmpty(), "a subproject of nothing else goes with it");
+        assertTrue(ps.own("deep").isEmpty(), "and so does its own");
+        assertEquals(List.of("b"), ps.own("shared").orElseThrow().parents(), "a shared one stays, linked to the rest");
+
+        ps.restore(Projects.Removal.fromJson(io.github.zzuegg.brainiac.io.Json.object(
+                io.github.zzuegg.brainiac.io.Json.parse(io.github.zzuegg.brainiac.io.Json.write(r.toJson())))));
+        assertEquals(List.of("only-a"), ps.own("deep").orElseThrow().parents());
+        assertEquals(List.of("b", "a"), ps.own("shared").orElseThrow().parents());
+        assertEquals(List.of("a"), ps.own("only-a").orElseThrow().parents());
+    }
 }

@@ -80,8 +80,9 @@ import java.util.Map;
  *       one.
  *   <li>{@code POST /api/transcribe} with {@code {"model": "auto", "audio": "<base64 WAV>",
  *       "language": "de", "translate": false, "timestamps": true, "prompt": ""}} writes down what is
- *       said with a Whisper model on this PC, as a server-sent event stream: {@code route}, one
- *       {@code segment} ({@code {start, end, text}}) at a time, then {@code done} ({@code {text,
+ *       said with a Whisper model on this PC, as a server-sent event stream: {@code audio} ({@code
+ *       {file}}, the recording kept in the outputs folder, when the body has {@code "keep": true}),
+ *       {@code route}, one {@code segment} ({@code {start, end, text}}) at a time, then {@code done} ({@code {text,
  *       language, audioSeconds, seconds}}) or {@code error}. Closing the stream stops it. {@code POST
  *       /api/transcribe/options} with {@code {"model": "local/whisper-base"}} gives its languages
  *       and whether it translates.
@@ -91,7 +92,8 @@ import java.util.Map;
  *       ({@code ""} for its own) and its options. Fields left out stay as they are.
  *   <li>{@code GET /api/chats} lists the saved conversations, newest first; {@code POST /api/chats}
  *       with a conversation ({@code id}, {@code title}, {@code messages}, {@code status} open or
- *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it.
+ *       finished) saves it, and with {@code {"id": "...", "delete": true}} deletes it;
+ *       {@code POST /api/chats/get {id}} returns one as {@code {chat}}.
  *   <li>{@code GET /api/state} returns what the page remembers (tabs, layout, chosen models);
  *       {@code POST /api/state} with {@code {"name": value}} changes those values, null removes one.
  *   <li>{@code POST /api/local} with {@code {"path": "D:/models/qwen.gguf"}} adds a place to find
@@ -125,12 +127,35 @@ final class ChatRoutes {
     private static final int DEFAULT_MAX_TOKENS = 8192;
 
     private final ChatService chat;
+    private final io.github.zzuegg.brainiac.studio.items.Owners owners;
 
-    ChatRoutes(ChatService chat) {
+    ChatRoutes(ChatService chat, io.github.zzuegg.brainiac.studio.items.Owners owners) {
         this.chat = chat;
+        this.owners = owners;
     }
 
     void register(StudioServer server) {
+        // a picture or recording the studio made, for the page to show; only from the outputs folder
+        server.post("/api/outputs/file", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, 1 << 16);
+            java.nio.file.Path root = chat.outputs().toAbsolutePath().normalize();
+            java.nio.file.Path f;
+            try {
+                f = root.resolve(io.github.zzuegg.brainiac.io.Json.string(body, "path", "")).toAbsolutePath().normalize();
+            } catch (java.nio.file.InvalidPathException bad) {
+                Exchanges.error(ex, 400, "not a path");
+                return;
+            }
+            if (!f.startsWith(root) || !java.nio.file.Files.isRegularFile(f)) {
+                Exchanges.error(ex, 404, "there is no such file in the outputs folder");
+                return;
+            }
+            String name = f.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+            String type = name.endsWith(".png") ? "image/png" : name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg"
+                    : name.endsWith(".webp") ? "image/webp" : name.endsWith(".wav") ? "audio/wav" : name.endsWith(".mp3") ? "audio/mpeg"
+                    : name.endsWith(".mp4") ? "video/mp4" : "application/octet-stream";
+            Exchanges.send(ex, 200, type, java.nio.file.Files.readAllBytes(f));
+        });
         server.get("/api/models", ex -> Exchanges.json(ex, 200,
                 chat.describe("refresh=1".equals(ex.getRequestURI().getQuery()))));
         server.get("/api/local/device", ex -> Exchanges.json(ex, 200, localDevice()));
@@ -251,12 +276,24 @@ final class ChatRoutes {
         server.post("/api/keys", this::keys);
         server.post("/api/providers", this::providers);
         server.get("/api/chats", ex -> Exchanges.json(ex, 200, Map.of("chats", chat.conversations().list())));
+        server.post("/api/chats/get", ex -> {
+            String id = Json.string(Exchanges.body(ex, 4096), "id", "");
+            Map<String, Object> c = chat.conversations().get(id).orElse(null);
+            if (c == null) {
+                Exchanges.error(ex, 404, "there is no conversation " + id);
+                return;
+            }
+            Exchanges.json(ex, 200, Map.of("chat", c));
+        });
         server.post("/api/chats", ex -> {
             Map<String, Object> body = Exchanges.body(ex, 32 << 20);
             if (Boolean.TRUE.equals(body.get("delete"))) {
                 chat.conversations().delete(body.get("id"));
             } else {
                 chat.conversations().save(body);
+                // a new conversation belongs to the project it was started in
+                owners.claim(io.github.zzuegg.brainiac.studio.items.ItemKind.CHAT, String.valueOf(body.get("id")),
+                        ItemRoutes.callerProject());
             }
             Exchanges.json(ex, 200, Map.of("ok", true));
         });
@@ -631,6 +668,9 @@ final class ChatRoutes {
                 Boolean.TRUE.equals(body.get("translate")), !Boolean.FALSE.equals(body.get("timestamps")),
                 Json.string(body, "prompt", ""));
 
+        // the recording is kept with the studio's outputs, so a transcript can be listened to again
+        java.nio.file.Path kept = Boolean.TRUE.equals(body.get("keep")) ? keepRecording(wav) : null;
+
         ex.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
         ex.getResponseHeaders().set("Cache-Control", "no-store");
         ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
@@ -638,6 +678,9 @@ final class ChatRoutes {
         try (OutputStream out = ex.getResponseBody()) {
             Events events = new Events(out);
             long start = System.nanoTime();
+            if (kept != null) {
+                events.sendQuietly("audio", Map.of("file", kept.toString()));
+            }
             try {
                 ChatService.Transcribed t = chat.transcribe(Json.string(body, "model", ChatService.AUTO), wav, listening, seg -> {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -672,6 +715,18 @@ final class ChatRoutes {
         } catch (IOException closed) {
             // the page stopped reading
         }
+    }
+
+    private java.nio.file.Path keepRecording(byte[] wav) throws IOException {
+        java.nio.file.Path dir = chat.outputs();
+        java.nio.file.Files.createDirectories(dir);
+        String stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        java.nio.file.Path f = dir.resolve("heard-" + stamp + ".wav");
+        for (int n = 2; java.nio.file.Files.exists(f); n++) {
+            f = dir.resolve("heard-" + stamp + "-" + n + ".wav");
+        }
+        java.nio.file.Files.write(f, wav);
+        return f;
     }
 
     // one text into another with a BART, Marian or T5 model on this PC

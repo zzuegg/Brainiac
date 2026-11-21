@@ -313,6 +313,12 @@ public final class ChatService {
     /** The project the requests made now belong to; unbound, nothing is limited or routed. */
     public static final ScopedValue<Scope> SCOPE = ScopedValue.newInstance();
 
+    /**
+     * Hears the steps of a drawing made through {@link #images}, when a caller such as an agent
+     * run wants to show its progress; returning false stops the drawing.
+     */
+    public static final ScopedValue<LocalImages.Listener> STEPS = ScopedValue.newInstance();
+
     @FunctionalInterface
     private interface Body<T> {
         T run(ModelInfo target) throws IOException, InterruptedException;
@@ -956,15 +962,33 @@ public final class ChatService {
      */
     public Generated images(String model, String prompt, String aspect, int count, String key)
             throws IOException, InterruptedException {
+        return pictures(model, prompt, aspect, count, key).generated();
+    }
+
+    /**
+     * Draws pictures like {@link #images}, and tells the seed of each one drawn on this PC, so it
+     * can be drawn again with changes.
+     *
+     * @param model a model key or {@value #AUTO}
+     * @param prompt what the picture shows
+     * @param aspect the shape
+     * @param count how many, 1 to 4
+     * @param key the name of the API key to use, or null
+     * @return the pictures; the seeds are empty for a provider that does not tell them
+     * @throws IOException if no model can draw or the provider fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public Drawn pictures(String model, String prompt, String aspect, int count, String key)
+            throws IOException, InterruptedException {
+        LocalImages.Listener steps = STEPS.isBound() ? STEPS.get() : (step, total, preview) -> true;
         return routed("image", resolve(model, "image"), target -> {
             if (provider(target.provider()).runsMedia()) {
-                return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), (step, total, preview) -> true)
-                        .generated();
+                return drawHere(target, prompt, LocalImages.Settings.defaults(aspect, count), steps);
             }
             ImageRequest request = new ImageRequest(target.id(), prompt, aspect, count, key);
             List<Media> media = logged(target, "image", () -> remote(target).images(request),
                     r -> new long[] {-1, -1, r.size()});
-            return new Generated(target, media, save(media, "image"));
+            return new Drawn(new Generated(target, media, save(media, "image")), List.of());
         });
     }
 
@@ -1088,6 +1112,37 @@ public final class ChatService {
             // this PC's model, or a worker host's, which is asked
             providers().stream().filter(p -> p.id().equals(model.substring(0, slash)) && p.makesVideo()).findFirst()
                     .map(p -> p.videoOptions(model.substring(slash + 1))).ifPresent(out::putAll);
+        }
+        return out;
+    }
+
+    /**
+     * Says which model a speech request goes to and the voices it has.
+     *
+     * @param model a model key or {@value #AUTO}
+     * @return {@code {model, voices, names?, mix?, clones?}}, the voices empty when it names none
+     * @throws IOException if no model speaks
+     */
+    public Map<String, Object> voices(String model) throws IOException {
+        ModelInfo target = resolve(model, "speech");
+        ChatProvider where = provider(target.provider());
+        Map<String, Object> o = where instanceof RemoteProvider r ? r.speechOptions(target.id()).toJson() : where.voiceOptions(target.id());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("model", target.key());
+        if (o == null) {
+            out.put("voices", List.of());
+            return out;
+        }
+        List<?> vs = o.get("voices") instanceof List<?> l ? l.stream().filter(v -> !"default".equals(v)).toList() : List.of();
+        out.put("voices", vs);
+        if (o.get("names") instanceof Map<?, ?> n && !n.isEmpty()) {
+            out.put("names", n);
+        }
+        if (Boolean.TRUE.equals(o.get("mix"))) {
+            out.put("mix", "blend voices as a*0.7+b*0.3");
+        }
+        if (Boolean.TRUE.equals(o.get("clone"))) {
+            out.put("clones", "also speaks in voices made from a recording");
         }
         return out;
     }
@@ -1335,6 +1390,19 @@ public final class ChatService {
         return 0;
     }
 
+    /**
+     * Returns the model Auto picks for a kind of task now, in the project of the call: the
+     * project's route, or the studio's Auto order, within the models the project allows. For
+     * {@code vision} that is Auto's chat model when it sees pictures.
+     *
+     * @param medium {@code text}, {@code vision}, {@code image}, {@code speech}, …
+     * @return the model's key
+     * @throws IOException if no model can do it
+     */
+    public String autoKey(String medium) throws IOException {
+        return resolve(AUTO, medium).key();
+    }
+
     private ModelInfo resolve(String model, String medium) throws IOException {
         ModelInfo target = resolveAny(model, medium);
         if (SCOPE.isBound() && !SCOPE.get().allows(target.key())) {
@@ -1356,6 +1424,17 @@ public final class ChatService {
         if (routed != null && !AUTO.equals(routed.model())) {
             return resolveAny(routed.model(), medium);
         }
+        if (AUTO.equals(model) && medium.equals("vision")) {
+            // Auto for a picture is Auto for chat, when that model sees
+            try {
+                ModelInfo chat = resolveAny(AUTO, "text");
+                if (chat.media().contains("vision")) {
+                    return chat;
+                }
+            } catch (IOException | IllegalArgumentException none) {
+                // no chat model: a model that only sees may still do
+            }
+        }
         if (AUTO.equals(model)) {
             target = pickAuto(listAll(false), medium);
             if (target == null) {
@@ -1365,6 +1444,8 @@ public final class ChatService {
                             + " or add an OpenAI or Google API key";
                     case "transcribe" -> "no transcribing model is available: put a Whisper model in a model folder";
                     case "video" -> "no video model is available: put a Wan 2.1 or 2.2 model in a model folder";
+                    case "vision" -> "no model that sees pictures is available: add a vision model (such as Qwen2-VL)"
+                            + " or a provider key";
                     default -> "no speech model is available: put a Kokoro, F5-TTS, Orpheus or VITS (MMS-TTS) model"
                             + " in a model folder"
                             + " or add an OpenAI or Google API key";

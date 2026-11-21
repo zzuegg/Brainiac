@@ -269,6 +269,13 @@ class ChatServiceTest {
     }
 
     @Test
+    void autoForAPictureIsAutoForChatWhenThatModelSees() throws Exception {
+        ChatService chat = apis.service(keys(Map.of("ANTHROPIC_API_KEY", "a")), List.of(dir));
+        assertEquals("anthropic/claude-opus-5-5", chat.autoKey("text"));
+        assertEquals(chat.autoKey("text"), chat.autoKey("vision"), "not whichever seeing model is listed first");
+    }
+
+    @Test
     void autoWithNothingAvailableSaysWhatToDo() {
         ChatService chat = apis.service(keys(Map.of()), List.of(dir));
         Heard heard = new Heard();

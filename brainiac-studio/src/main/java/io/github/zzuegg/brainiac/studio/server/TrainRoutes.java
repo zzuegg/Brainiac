@@ -19,6 +19,7 @@ import java.util.Map;
  *   <li>{@code GET /api/train/models}: the models in {@code models}, with their input and output shapes.
  *   <li>{@code POST /api/train/check {spec}}: whether the model and the data fit together.
  *   <li>{@code POST /api/train/start {spec}}: starts a run, or queues it behind the one training.
+ *   <li>{@code POST /api/train/run {id}}: one run with its loss curve.
  *   <li>{@code POST /api/train/stop {id}} and {@code POST /api/train/delete {id}}.
  *   <li>{@code GET /api/train/runs}: every run with its progress and loss curve.
  *   <li>{@code GET /api/hosts}: the other machines runs can train on, and how each is; {@code POST
@@ -85,6 +86,15 @@ final class TrainRoutes {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
             TrainingRun run = training.start(Json.object(body.get("spec")));
             Exchanges.json(ex, 200, run.toJson(false));
+        });
+        server.post("/api/train/run", ex -> {
+            Map<String, Object> body = Exchanges.body(ex, MAX_BODY);
+            TrainingRun run = training.run(Json.string(body, "id", "")).orElse(null);
+            if (run == null) {
+                Exchanges.error(ex, 404, "there is no such run");
+                return;
+            }
+            Exchanges.json(ex, 200, run.toJson(true));
         });
         server.post("/api/train/stop", ex -> {
             Map<String, Object> body = Exchanges.body(ex, MAX_BODY);

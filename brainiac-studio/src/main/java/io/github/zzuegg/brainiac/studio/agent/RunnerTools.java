@@ -121,8 +121,8 @@ public final class RunnerTools {
         Map<String, ChatService.Route> routes = new LinkedHashMap<>(p.routes());
         routes.put(medium, new ChatService.Route(model, pol, fallback.orElse(null)));
         try {
-            Project saved = projects.save(new Project(p.id(), p.name(), p.description(), p.folder(), p.tools(), p.models(),
-                    routes, p.runners()), false);
+            // the project's own settings, not the limits it takes from the projects it is part of
+            Project saved = projects.save(projects.own(p.id()).orElse(p).withRoutes(routes), false);
             return Map.of("project", saved.id(), "routes", saved.toJson().get("routes"));
         } catch (IOException e) {
             throw new UncheckedIOException(e.getMessage(), e);

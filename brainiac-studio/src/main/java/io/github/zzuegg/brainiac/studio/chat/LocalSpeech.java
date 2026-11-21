@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -424,8 +425,18 @@ public final class LocalSpeech {
             TextToSpeech tts = loadVoice(id);
             io.github.zzuegg.brainiac.audio.SpeechOptions o = io.github.zzuegg.brainiac.audio.SpeechOptions.defaults()
                     .speed((float) speed).cancelled(stop);
-            if (voiceId != null && !voiceId.isBlank() && (tts.voices().stream().anyMatch(v -> v.id().equals(voiceId))
-                    || (tts.canMixVoices() && voiceId.matches("[A-Za-z0-9_]+(\\*[0-9.]+)?([+,][A-Za-z0-9_]+(\\*[0-9.]+)?)+")))) {
+            if (voiceId != null && !voiceId.isBlank() && !voiceId.equals("default")) {
+                Set<String> known = new java.util.LinkedHashSet<>();
+                tts.voices().forEach(v -> known.add(v.id()));
+                known.addAll(options(id).voices());
+                known.remove("default");
+                boolean mix = tts.canMixVoices() && voiceId.matches("[A-Za-z0-9_]+(\\*[0-9.]+)?([+,][A-Za-z0-9_]+(\\*[0-9.]+)?)+");
+                List<String> unknown = mix
+                        ? java.util.Arrays.stream(voiceId.split("[+,]")).map(x -> x.replaceAll("\\*.*", "")).filter(x -> !known.contains(x)).toList()
+                        : known.contains(voiceId) ? List.of() : List.of(voiceId);
+                if (!unknown.isEmpty()) {
+                    throw new IllegalArgumentException(noVoice(id, unknown.get(0), known, tts.canClone()));
+                }
                 o = o.voice(voiceId);
             }
             Audio a = tts.synthesize(text, o, null);
@@ -433,6 +444,34 @@ public final class LocalSpeech {
         } finally {
             speaking.unlock();
         }
+    }
+
+    // what to say when a voice is asked for that the model does not have: its voices, closest first
+    static String noVoice(String id, String wrong, Set<String> known, boolean clones) {
+        if (known.isEmpty()) {
+            return id + " has no voice named " + wrong + (clones
+                    ? ": it speaks only in voices made from a recording, and none is made yet. Leave the voice out for its own"
+                            + " voice, or use a speech model with named voices, such as Kokoro or Orpheus"
+                    : ": it has one voice. Leave the voice out, or use a speech model with named voices, such as Kokoro or Orpheus");
+        }
+        String w = wrong.toLowerCase(Locale.ROOT);
+        List<String> sorted = known.stream().sorted(java.util.Comparator.comparingInt((String v) -> {
+            String l = v.toLowerCase(Locale.ROOT);
+            int sc = 0;
+            for (String part : w.split("[^a-z0-9]+")) {
+                if (part.length() > 2 && l.contains(part)) {
+                    sc += 10;
+                }
+            }
+            for (String part : l.split("[^a-z0-9]+")) {
+                if (part.length() > 2 && w.contains(part)) {
+                    sc += 10;
+                }
+            }
+            return -sc;
+        })).toList();
+        return id + " has no voice named " + wrong + ". Its voices are: " + String.join(", ", sorted.subList(0, Math.min(40, sorted.size())))
+                + (sorted.size() > 40 ? " and " + (sorted.size() - 40) + " more" : "") + ". Use one of them by its exact name";
     }
 
     private TextToSpeech loadVoice(String id) throws IOException {

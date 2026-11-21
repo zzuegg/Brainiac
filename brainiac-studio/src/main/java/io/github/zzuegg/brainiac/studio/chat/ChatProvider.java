@@ -66,6 +66,13 @@ public interface ChatProvider {
         if (medium.equals("text")) {
             return preferred(models);
         }
+        if (medium.equals("vision")) {
+            // the provider's usual chat model when it sees, not whichever seeing model is listed first
+            ModelInfo usual = preferred(models);
+            if (usual != null && usual.media().contains("vision")) {
+                return usual;
+            }
+        }
         return models.stream().filter(m -> m.media().contains(medium)).findFirst().orElse(null);
     }
 

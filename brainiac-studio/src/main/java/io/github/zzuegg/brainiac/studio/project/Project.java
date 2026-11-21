@@ -24,10 +24,21 @@ import java.util.Optional;
  *     or null for all of them
  * @param routes how each kind of task runs, by medium ({@code text}, {@code image},
  *     {@code speech}, {@code transcribe}, {@code video})
+ * @param runners machines a route may rent, by name
+ * @param parents the projects this one is part of; it may be part of several, and it can never
+ *     do more than every one of them allows (see {@link Projects#get})
+ * @param requests who answers its subprojects' requests: {@value #BY_USER} or {@value #BY_AGENTS}
  */
 public record Project(String id, String name, String description, Path folder, List<String> tools,
-        List<String> models, Map<String, ChatService.Route> routes, Map<String, Map<String, Object>> runners)
+        List<String> models, Map<String, ChatService.Route> routes, Map<String, Map<String, Object>> runners,
+        List<String> parents, String requests)
         implements ChatService.Scope {
+
+    /** Requests from subprojects wait for the user. */
+    public static final String BY_USER = "user";
+
+    /** Requests from subprojects may be answered by this project's agents, within their own limits. */
+    public static final String BY_AGENTS = "agents";
 
     /** The project everything belongs to unless another is chosen: it limits nothing. */
     public static final String DEFAULT = "default";
@@ -71,6 +82,70 @@ public record Project(String id, String name, String description, Path folder, L
             }
         }
         runners = java.util.Collections.unmodifiableMap(rn);
+        List<String> ps = new ArrayList<>();
+        for (String parent : parents == null ? List.<String>of() : parents) {
+            if (parent != null && !parent.isBlank() && !ps.contains(parent.strip())) {
+                ps.add(parent.strip());
+            }
+        }
+        if (ps.contains(id)) {
+            throw new IllegalArgumentException("a project cannot be part of itself");
+        }
+        if (!ps.isEmpty() && DEFAULT.equals(id)) {
+            throw new IllegalArgumentException("the default project is part of no other");
+        }
+        if (ps.contains(DEFAULT)) {
+            throw new IllegalArgumentException("the default project holds no subprojects");
+        }
+        parents = List.copyOf(ps);
+        requests = BY_AGENTS.equals(requests) ? BY_AGENTS : BY_USER;
+    }
+
+    /**
+     * Makes a project that is part of no other.
+     *
+     * @param id its id
+     * @param name its name
+     * @param description what it is for
+     * @param folder the folder its agents may read, or null
+     * @param tools the tools allowed, or null for all
+     * @param models the models allowed, or null for all
+     * @param routes the routes by medium
+     * @param runners machines a route may rent
+     */
+    public Project(String id, String name, String description, Path folder, List<String> tools, List<String> models,
+            Map<String, ChatService.Route> routes, Map<String, Map<String, Object>> runners) {
+        this(id, name, description, folder, tools, models, routes, runners, List.of(), BY_USER);
+    }
+
+    /** @return this project with another id */
+    public Project withId(String newId) {
+        return new Project(newId, name, description, folder, tools, models, routes, runners, parents, requests);
+    }
+
+    /** @return this project with another name */
+    public Project withName(String newName) {
+        return new Project(id, newName, description, folder, tools, models, routes, runners, parents, requests);
+    }
+
+    /** @return this project with other routes */
+    public Project withRoutes(Map<String, ChatService.Route> newRoutes) {
+        return new Project(id, name, description, folder, tools, models, newRoutes, runners, parents, requests);
+    }
+
+    /** @return this project as part of other projects */
+    public Project withParents(List<String> newParents) {
+        return new Project(id, name, description, folder, tools, models, routes, runners, newParents, requests);
+    }
+
+    /** @return this project with other tools allowed, null for all */
+    public Project withTools(List<String> newTools) {
+        return new Project(id, name, description, folder, newTools, models, routes, runners, parents, requests);
+    }
+
+    /** @return this project with other models allowed, null for all */
+    public Project withModels(List<String> newModels) {
+        return new Project(id, name, description, folder, tools, newModels, routes, runners, parents, requests);
     }
 
     /**
@@ -182,6 +257,8 @@ public record Project(String id, String name, String description, Path folder, L
         }
         m.put("routes", rs);
         m.put("runners", runners);
+        m.put("parents", parents);
+        m.put("requests", requests);
         return m;
     }
 
@@ -225,7 +302,7 @@ public record Project(String id, String name, String description, Path folder, L
         }
         return new Project(id, Json.string(m, "name", id), Json.string(m, "description", ""),
                 folder.isBlank() ? null : Path.of(folder), strings(m.get("tools")), strings(m.get("models")), routes,
-                runners);
+                runners, strings(m.get("parents")), Json.string(m, "requests", BY_USER));
     }
 
     private static List<String> strings(Object o) {

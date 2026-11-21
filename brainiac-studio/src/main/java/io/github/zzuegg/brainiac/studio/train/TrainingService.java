@@ -57,6 +57,7 @@ public final class TrainingService implements AutoCloseable {
     private final Map<Path, Map<String, Object>> shapes = new ConcurrentHashMap<>();
     private volatile LayerCatalog options;
     private int counter;
+    private volatile java.util.function.Consumer<TrainingRun> onStart = r -> { };
 
     /**
      * Uses a data folder.
@@ -69,6 +70,16 @@ public final class TrainingService implements AutoCloseable {
         this.data = new DataSources(folder.resolve("datasets"));
         this.hosts = new Hosts(folder.resolve("hosts.properties"));
         loadRuns();
+    }
+
+    /**
+     * Tells someone of every run started, from the thread that starts it, so the project the
+     * request came from can claim it.
+     *
+     * @param listener called with each new run
+     */
+    public void onStart(java.util.function.Consumer<TrainingRun> listener) {
+        this.onStart = listener;
     }
 
     /**
@@ -426,6 +437,7 @@ public final class TrainingService implements AutoCloseable {
         Hosts.Host host = hostId.isEmpty() || hostId.equals("local") ? null : hosts.find(hostId)
                 .orElseThrow(() -> new IllegalArgumentException("there is no host " + hostId));
         String id = String.valueOf(++counter);
+        keepCounter();
         String model = Json.string(spec, "model", "");
         String name = Json.string(spec, "name", "");
         if (name.isBlank()) {
@@ -434,6 +446,11 @@ public final class TrainingService implements AutoCloseable {
         TrainingRun run = new TrainingRun(id, name.strip(), spec, host == null ? THIS_PC : host.name());
         runs.put(id, run);
         save(run);
+        try {
+            onStart.accept(run);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "cannot record who started run " + id, e);
+        }
         if (host == null) {
             worker.submit(() -> execute(run));
         } else {
@@ -485,6 +502,79 @@ public final class TrainingService implements AutoCloseable {
         runs.remove(id);
         Files.deleteIfExists(runsFolder.resolve(id + ".json"));
         return true;
+    }
+
+    /**
+     * Renames a run.
+     *
+     * @param id the run
+     * @param name its new name
+     * @throws IOException if the change cannot be kept
+     */
+    public void rename(String id, String name) throws IOException {
+        TrainingRun r = runs.get(id);
+        if (r == null) {
+            throw new IllegalArgumentException("there is no run " + id);
+        }
+        String n = name == null ? "" : name.strip();
+        if (n.isEmpty() || n.length() > 120) {
+            throw new IllegalArgumentException("a run's name has 1 to 120 characters");
+        }
+        r.rename(n);
+        save(r);
+    }
+
+    /**
+     * Takes an ended run out of the list, moving its record into a folder, for the trash. The
+     * model it saved stays.
+     *
+     * @param id the run
+     * @param into an empty folder
+     * @throws IOException if the record cannot be moved
+     */
+    public void detach(String id, Path into) throws IOException {
+        TrainingRun r = runs.get(id);
+        if (r == null) {
+            throw new IllegalArgumentException("there is no run " + id);
+        }
+        if (r.state().active()) {
+            throw new IllegalArgumentException("stop the run before removing it");
+        }
+        Path f = runsFolder.resolve(id + ".json");
+        if (Files.isRegularFile(f)) {
+            Files.move(f, into.resolve("run.json"));
+        } else {
+            Files.writeString(into.resolve("run.json"), Json.write(r.toJson(true)), StandardCharsets.UTF_8);
+        }
+        runs.remove(id);
+    }
+
+    /**
+     * Puts a run {@linkplain #detach taken out} back.
+     *
+     * @param id the run
+     * @param from the folder its record was moved to
+     * @throws IOException if it cannot be read back
+     */
+    public void attach(String id, Path from) throws IOException {
+        if (runs.containsKey(id)) {
+            throw new IllegalArgumentException("there is a run " + id + " already");
+        }
+        Path f = from.resolve("run.json");
+        TrainingRun r = TrainingRun.fromJson(Json.object(Json.parse(Files.readString(f, StandardCharsets.UTF_8))));
+        Files.createDirectories(runsFolder);
+        Files.move(f, runsFolder.resolve(id + ".json"), StandardCopyOption.REPLACE_EXISTING);
+        runs.put(id, r);
+    }
+
+    // run ids are never given twice, even to a run started after another went to the trash
+    private void keepCounter() {
+        try {
+            Files.createDirectories(runsFolder);
+            Files.writeString(runsFolder.resolve("last-id"), String.valueOf(counter), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "cannot keep the last run id", e);
+        }
     }
 
     /**
@@ -810,6 +900,14 @@ public final class TrainingService implements AutoCloseable {
     private void loadRuns() {
         if (!Files.isDirectory(runsFolder)) {
             return;
+        }
+        try {
+            Path last = runsFolder.resolve("last-id");
+            if (Files.isRegularFile(last)) {
+                counter = Integer.parseInt(Files.readString(last, StandardCharsets.UTF_8).strip());
+            }
+        } catch (IOException | NumberFormatException e) {
+            LOG.log(System.Logger.Level.WARNING, "cannot read the last run id", e);
         }
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(runsFolder, "*.json")) {
             for (Path f : ds) {
